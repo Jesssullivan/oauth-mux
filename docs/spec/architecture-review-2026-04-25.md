@@ -27,6 +27,9 @@ Implemented:
 - Operator-facing `probe` command for account validation and capability probes
   without launching a target command.
 - Codex Max example config and operator plan for three subscription accounts.
+- `init --codex-max` for generating the three-account scaffold directly.
+- Persisted last-probe evidence fields: source, observed time, retry-after,
+  hint class, and mux decision.
 
 ## Key Decisions
 
@@ -70,19 +73,15 @@ rate-limited, or auth-dead.
   range, retry-after, and one hint header. Request body templating and richer
   header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
-  beyond v2 is not yet documented.
-- The Codex Max example config is checked in, but `init` still emits the generic
-  starter config.
+  beyond the current evidence fields is not yet documented.
 - No release packaging changes have been made in this checkpoint.
 
 ## Next Arc
 
 1. Verify real Codex CLI subscription live route probe shape.
-2. Decide whether `init` should offer a `--codex-max` starter profile or keep
-   the example config as the canonical scaffold.
-3. Extend health JSON/text output with last probe evidence fields:
-   source, observed_at, retry_after, hint class, and decision.
-4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+2. Add live provider verification for the first safe non-quota-burning Codex
+   status endpoint, if one exists.
+3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation

@@ -313,6 +313,21 @@ fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
         if (health.last_http_status) |status| {
             try writer.print(" http={d}", .{status});
         }
+        if (health.last_probe_source) |source| {
+            try writer.print("\n  evidence: source={s}", .{@tagName(source)});
+            if (health.last_probe_observed_at) |observed_at| {
+                try writer.print(" observed_at={d}", .{observed_at});
+            }
+            if (health.last_probe_retry_after_s) |retry_after| {
+                try writer.print(" retry_after_s={d}", .{retry_after});
+            }
+            if (health.last_probe_hint_class) |hint_class| {
+                try writer.print(" hint={s}", .{@tagName(hint_class)});
+            }
+            if (health.last_probe_decision) |decision| {
+                try writer.print(" decision={s}", .{@tagName(decision)});
+            }
+        }
     } else {
         try writer.writeAll("unrecorded");
     }
@@ -347,6 +362,12 @@ fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
     try writer.writeAll(",\"liveness\":");
     if (selection.health) |health| {
         try writeLivenessJson(writer, health.liveness);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"last_probe\":");
+    if (selection.health) |health| {
+        try writeProbeEvidenceJson(writer, health);
     } else {
         try writer.writeAll("null");
     }
@@ -460,9 +481,56 @@ fn writeHealthJson(writer: anytype, store: *health_mod.HealthStore, provider_fil
         }
         try writer.writeAll(",\"liveness\":");
         try writeLivenessJson(writer, h.liveness);
+        try writer.writeAll(",\"last_probe\":");
+        try writeProbeEvidenceJson(writer, h);
         try writer.writeByte('}');
     }
     try writer.writeAll("]}\n");
+}
+
+fn writeProbeEvidenceJson(writer: anytype, health: health_mod.AccountHealth) !void {
+    if (health.last_probe_source == null and
+        health.last_probe_observed_at == null and
+        health.last_probe_retry_after_s == null and
+        health.last_probe_hint_class == null and
+        health.last_probe_decision == null)
+    {
+        try writer.writeAll("null");
+        return;
+    }
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"source\":");
+    if (health.last_probe_source) |source| {
+        try std.json.stringify(@tagName(source), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"observed_at\":");
+    if (health.last_probe_observed_at) |observed_at| {
+        try writer.print("{d}", .{observed_at});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"retry_after_s\":");
+    if (health.last_probe_retry_after_s) |retry_after| {
+        try writer.print("{d}", .{retry_after});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"hint_class\":");
+    if (health.last_probe_hint_class) |hint_class| {
+        try std.json.stringify(@tagName(hint_class), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"decision\":");
+    if (health.last_probe_decision) |decision| {
+        try std.json.stringify(@tagName(decision), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeByte('}');
 }
 
 fn writeLivenessJson(writer: anytype, liveness: types.CredentialLiveness) !void {
@@ -515,7 +583,6 @@ fn matchesProvider(key: []const u8, provider_filter: ?[]const u8) bool {
 }
 
 fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.InitArgs) !void {
-    _ = args;
     const path = try paths.configFilePath(allocator);
     defer allocator.free(path);
 
@@ -532,7 +599,7 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         };
     }
 
-    const starter_config =
+    const generic_starter_config =
         \\{
         \\  "version": 1,
         \\  "defaults": {
@@ -631,6 +698,83 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\  }
         \\}
     ;
+    const codex_max_starter_config =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": {
+        \\    "provider": "codex",
+        \\    "strategy": "health-weighted",
+        \\    "shell": "fish"
+        \\  },
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "config_dir_env": "CODEX_HOME",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "priority": 30,
+        \\          "config_dir": "~/.local/share/oauth-mux/codex/max-1",
+        \\          "secret": {
+        \\            "backend": "file",
+        \\            "path": "~/.local/share/oauth-mux/codex/max-1/auth.json"
+        \\          },
+        \\          "tags": ["subscription", "codex-max"]
+        \\        },
+        \\        "max-2": {
+        \\          "priority": 20,
+        \\          "config_dir": "~/.local/share/oauth-mux/codex/max-2",
+        \\          "secret": {
+        \\            "backend": "file",
+        \\            "path": "~/.local/share/oauth-mux/codex/max-2/auth.json"
+        \\          },
+        \\          "tags": ["subscription", "codex-max"]
+        \\        },
+        \\        "max-3": {
+        \\          "priority": 10,
+        \\          "config_dir": "~/.local/share/oauth-mux/codex/max-3",
+        \\          "secret": {
+        \\            "backend": "file",
+        \\            "path": "~/.local/share/oauth-mux/codex/max-3/auth.json"
+        \\          },
+        \\          "tags": ["subscription", "codex-max"]
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "codex:max-1#gpt-5.1-codex-max",
+        \\        "codex:max-2#gpt-5.1-codex-max",
+        \\        "codex:max-3#gpt-5.1-codex-max"
+        \\      ],
+        \\      "strategy": "health-weighted",
+        \\      "affinity_ttl_minutes": 20
+        \\    },
+        \\    "codex-mini": {
+        \\      "providers": [
+        \\        "codex:max-1#gpt-5.1-codex-mini",
+        \\        "codex:max-2#gpt-5.1-codex-mini",
+        \\        "codex:max-3#gpt-5.1-codex-mini"
+        \\      ],
+        \\      "strategy": "health-weighted",
+        \\      "affinity_ttl_minutes": 20
+        \\    }
+        \\  },
+        \\  "strategies": {
+        \\    "health-weighted": {
+        \\      "kind": "health-weighted",
+        \\      "rate_limit_penalty": -10,
+        \\      "failure_penalty": -20,
+        \\      "success_bonus": 1
+        \\    }
+        \\  }
+        \\}
+    ;
+    const starter_config = if (args.codex_max)
+        codex_max_starter_config
+    else
+        generic_starter_config;
 
     const file = try std.fs.createFileAbsolute(path, .{});
     defer file.close();
@@ -662,6 +806,8 @@ test "writeHealthJson includes redacted liveness" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"provider\":\"codex\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"account\":\"max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"rate_limited\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"last_probe\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hint_class\":\"rate_limit\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "claude:work") == null);
 }
 

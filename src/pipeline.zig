@@ -362,6 +362,7 @@ fn validateToken(ctx: *Context) PipelineError!void {
     if (tok.token_type == .api_key) {
         const key = health_mod.accountKey(prov, acct);
         ctx.health.recordSuccess(key.slice());
+        ctx.health.recordProbeEvidence(key.slice(), .credential_validation, null, .none, .use_this);
         return;
     }
 
@@ -380,6 +381,7 @@ fn validateToken(ctx: *Context) PipelineError!void {
 
     const key = health_mod.accountKey(prov, acct);
     ctx.health.recordSuccess(key.slice());
+    ctx.health.recordProbeEvidence(key.slice(), .credential_validation, null, .none, .use_this);
 }
 
 fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
@@ -399,19 +401,29 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     const classification = probe.classifyResult(def, plan, result);
     ctx.last_probe_executed = true;
     ctx.last_probe_status = result.status;
+    var evidence_key: health_mod.KeyBuf = undefined;
     switch (classification) {
         .dead => {
             const key = health_mod.accountKey(prov, acct);
             ctx.health.recordHttpClassification(key.slice(), result.status, classification);
+            evidence_key = key;
         },
         else => {
             const key = health_mod.capabilityKey(prov, acct, capability);
             ctx.health.recordHttpClassification(key.slice(), result.status, classification);
+            evidence_key = key;
         },
     }
 
     const decision = ctx.health.muxDecisionFor(prov, acct, capability);
     ctx.last_probe_decision = decision;
+    ctx.health.recordProbeEvidence(
+        evidence_key.slice(),
+        .capability_probe,
+        result.retry_after_s,
+        health_mod.hintClassFromClassification(classification),
+        decision,
+    );
     return decision;
 }
 

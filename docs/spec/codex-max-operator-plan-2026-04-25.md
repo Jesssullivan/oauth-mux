@@ -46,6 +46,12 @@ The config file lives at:
 examples/codex-max.config.json
 ```
 
+It can also be generated as the active user config:
+
+```bash
+oauth-mux init --codex-max
+```
+
 Each account is represented twice:
 
 - `config_dir`: the directory exported to Codex as `CODEX_HOME`
@@ -89,6 +95,20 @@ Force a specific account:
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json \
   oauth-mux probe --provider codex --account max-2 --capability gpt-5.1-codex-max --json
+```
+
+The JSON output includes redacted last-probe evidence:
+
+```json
+{
+  "last_probe": {
+    "source": "credential_validation",
+    "observed_at": 1770000000,
+    "retry_after_s": null,
+    "hint_class": "none",
+    "decision": "use_this"
+  }
+}
 ```
 
 Run Codex through the mux:

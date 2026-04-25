@@ -55,6 +55,7 @@ pub const Command = union(enum) {
 
     pub const InitArgs = struct {
         interactive: bool = false,
+        codex_max: bool = false,
     };
 
     pub const CompletionsArgs = struct {
@@ -200,6 +201,7 @@ fn parseInit(args: []const []const u8) Command {
     var result = Command.InitArgs{};
     for (args) |arg| {
         if (eql(arg, "--interactive") or eql(arg, "-i")) result.interactive = true;
+        if (eql(arg, "--codex-max")) result.codex_max = true;
     }
     return .{ .init = result };
 }
@@ -237,7 +239,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  daemon stop        Stop the daemon.
         \\  daemon status      Show daemon status.
         \\
-        \\  init [--interactive]
+        \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
         \\
         \\  completions <shell> Generate shell completions (fish|zsh|bash).
@@ -309,6 +311,15 @@ test "parse probe with account capability and json" {
     }
 }
 
+test "parse init codex max" {
+    const args = [_][]const u8{ "init", "--codex-max" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .init => |init| try std.testing.expect(init.codex_max),
+        else => return error.Unexpected,
+    }
+}
+
 test "parse health json provider" {
     const args = [_][]const u8{ "health", "--json", "--provider", "codex" };
     const cmd = parse(&args);
@@ -341,6 +352,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
             \\
         );

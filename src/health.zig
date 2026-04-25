@@ -10,9 +10,37 @@ pub const AccountHealth = struct {
     bucket: types.TokenBucket = .{},
     liveness: types.CredentialLiveness = .{ .live = .{ .availability = .available } },
     last_http_status: ?u16 = null,
+    last_probe_source: ?ProbeEvidenceSource = null,
+    last_probe_observed_at: ?i64 = null,
+    last_probe_retry_after_s: ?u32 = null,
+    last_probe_hint_class: ?ProbeHintClass = null,
+    last_probe_decision: ?types.MuxDecision = null,
     consecutive_failures: u32 = 0,
     quota_exhausted_until: ?i64 = null,
     rate_limited_until: ?i64 = null,
+};
+
+pub const ProbeEvidenceSource = enum {
+    credential_validation,
+    capability_probe,
+    http_status,
+};
+
+pub const ProbeHintClass = enum {
+    none,
+    rate_limit,
+    quota_exhausted,
+    auth_dead,
+    provider_degraded,
+    tier_insufficient,
+    subscription_paused,
+    scope_insufficient,
+    schema_invalid,
+    terms_required,
+    step_up_required,
+    pending_verification,
+    unknown_4xx,
+    failure,
 };
 
 pub const HealthKey = struct {
@@ -101,6 +129,37 @@ pub fn writeLivenessSummary(writer: anytype, liveness: types.CredentialLiveness)
     }
 }
 
+pub fn hintClassFromClassification(classification: types.HttpClassification) ProbeHintClass {
+    return switch (classification) {
+        .success => .none,
+        .rate_limited => .rate_limit,
+        .quota_exhausted => .quota_exhausted,
+        .dead => .auth_dead,
+        .provider_degraded => .provider_degraded,
+        .degraded => |reason| switch (reason) {
+            .tier_insufficient => .tier_insufficient,
+            .subscription_paused => .subscription_paused,
+            .scope_insufficient => .scope_insufficient,
+            .schema_invalid => .schema_invalid,
+            .terms_required => .terms_required,
+            .step_up_required => .step_up_required,
+            .pending_verification => .pending_verification,
+            .provider_degraded => .provider_degraded,
+            .unknown_4xx => .unknown_4xx,
+        },
+        .failure => .failure,
+    };
+}
+
+pub fn decisionFromClassification(classification: types.HttpClassification) types.MuxDecision {
+    return switch (classification) {
+        .success => .use_this,
+        .rate_limited => .wait_and_retry,
+        .quota_exhausted, .dead, .degraded, .failure => .try_next_account,
+        .provider_degraded => .try_next_provider,
+    };
+}
+
 pub const HealthStore = struct {
     allocator: std.mem.Allocator,
     accounts: std.StringHashMap(AccountHealth),
@@ -150,6 +209,22 @@ pub const HealthStore = struct {
             },
             else => {},
         }
+    }
+
+    pub fn recordProbeEvidence(
+        self: *HealthStore,
+        key: []const u8,
+        source: ProbeEvidenceSource,
+        retry_after_s: ?u32,
+        hint_class: ProbeHintClass,
+        decision: types.MuxDecision,
+    ) void {
+        const health = self.getOrCreate(key) catch return;
+        health.last_probe_source = source;
+        health.last_probe_observed_at = std.time.timestamp();
+        health.last_probe_retry_after_s = retry_after_s;
+        health.last_probe_hint_class = hint_class;
+        health.last_probe_decision = decision;
     }
 
     pub fn recordFailure(self: *HealthStore, key: []const u8, kind: FailureKind) void {
@@ -307,6 +382,7 @@ pub const HealthStore = struct {
                 },
             );
             try writeOptU16Field(writer, "last_http_status", h.last_http_status);
+            try writeProbeEvidenceFields(writer, h);
             try writeOptI64Field(writer, "quota_exhausted_until", h.quota_exhausted_until);
             try writeOptI64Field(writer, "rate_limited_until", h.rate_limited_until);
             try writer.writeAll(",\"liveness\":");
@@ -331,6 +407,11 @@ pub const HealthStore = struct {
         last_updated: i64 = 0,
         circuit_open: bool = false,
         last_http_status: ?u16 = null,
+        last_probe_source: ?[]const u8 = null,
+        last_probe_observed_at: ?i64 = null,
+        last_probe_retry_after_s: ?u32 = null,
+        last_probe_hint_class: ?[]const u8 = null,
+        last_probe_decision: ?[]const u8 = null,
         consecutive_failures: u32 = 0,
         quota_exhausted_until: ?i64 = null,
         rate_limited_until: ?i64 = null,
@@ -371,6 +452,11 @@ pub const HealthStore = struct {
             } } else .closed,
             .liveness = if (entry.liveness) |le| livenessFromEntry(le) else .{ .live = .{ .availability = .available } },
             .last_http_status = entry.last_http_status,
+            .last_probe_source = if (entry.last_probe_source) |source| probeEvidenceSourceFromString(source) else null,
+            .last_probe_observed_at = entry.last_probe_observed_at,
+            .last_probe_retry_after_s = entry.last_probe_retry_after_s,
+            .last_probe_hint_class = if (entry.last_probe_hint_class) |hint| probeHintClassFromString(hint) else null,
+            .last_probe_decision = if (entry.last_probe_decision) |decision| muxDecisionFromString(decision) else null,
             .consecutive_failures = entry.consecutive_failures,
             .quota_exhausted_until = entry.quota_exhausted_until,
             .rate_limited_until = entry.rate_limited_until,
@@ -440,6 +526,55 @@ pub const HealthStore = struct {
             if (std.mem.eql(u8, s, field.name)) return @enumFromInt(field.value);
         }
         return .unknown;
+    }
+
+    fn probeEvidenceSourceFromString(s: []const u8) ?ProbeEvidenceSource {
+        inline for (std.meta.fields(ProbeEvidenceSource)) |field| {
+            if (std.mem.eql(u8, s, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+
+    fn probeHintClassFromString(s: []const u8) ?ProbeHintClass {
+        inline for (std.meta.fields(ProbeHintClass)) |field| {
+            if (std.mem.eql(u8, s, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+
+    fn muxDecisionFromString(s: []const u8) ?types.MuxDecision {
+        inline for (std.meta.fields(types.MuxDecision)) |field| {
+            if (std.mem.eql(u8, s, field.name)) return @enumFromInt(field.value);
+        }
+        return null;
+    }
+
+    fn writeProbeEvidenceFields(writer: anytype, health: AccountHealth) !void {
+        try writer.writeAll(",\"last_probe_source\":");
+        if (health.last_probe_source) |source| {
+            try writeJsonString(writer, @tagName(source));
+        } else {
+            try writer.writeAll("null");
+        }
+        try writeOptI64Field(writer, "last_probe_observed_at", health.last_probe_observed_at);
+        try writer.writeAll(",\"last_probe_retry_after_s\":");
+        if (health.last_probe_retry_after_s) |retry_after| {
+            try writer.print("{d}", .{retry_after});
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"last_probe_hint_class\":");
+        if (health.last_probe_hint_class) |hint_class| {
+            try writeJsonString(writer, @tagName(hint_class));
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"last_probe_decision\":");
+        if (health.last_probe_decision) |decision| {
+            try writeJsonString(writer, @tagName(decision));
+        } else {
+            try writer.writeAll("null");
+        }
     }
 
     fn writeLiveness(writer: anytype, liveness: types.CredentialLiveness) !void {
@@ -556,10 +691,14 @@ pub const HealthStore = struct {
         retry_after: ?u32,
         hint: ?[]const u8,
     ) void {
-        self.recordHttpClassification(
+        const classification = provider_schema.classifyHttp(def, status, retry_after, hint);
+        self.recordHttpClassification(key, status, classification);
+        self.recordProbeEvidence(
             key,
-            status,
-            provider_schema.classifyHttp(def, status, retry_after, hint),
+            .http_status,
+            retry_after,
+            hintClassFromClassification(classification),
+            decisionFromClassification(classification),
         );
     }
 
@@ -877,6 +1016,13 @@ test "HealthStore persists typed liveness" {
     try std.testing.expectEqual(types.MuxDecision.wait_and_retry, loaded.muxDecision("codex:max-1"));
     try std.testing.expectEqual(types.MuxDecision.try_next_account, loaded.muxDecision("codex:max-2"));
     try std.testing.expectEqual(types.MuxDecision.try_next_account, loaded.muxDecision("codex:max-3"));
+
+    const rate_limited = loaded.accounts.get("codex:max-1").?;
+    try std.testing.expectEqual(ProbeEvidenceSource.http_status, rate_limited.last_probe_source.?);
+    try std.testing.expect(rate_limited.last_probe_observed_at != null);
+    try std.testing.expectEqual(@as(?u32, 30), rate_limited.last_probe_retry_after_s);
+    try std.testing.expectEqual(ProbeHintClass.rate_limit, rate_limited.last_probe_hint_class.?);
+    try std.testing.expectEqual(types.MuxDecision.wait_and_retry, rate_limited.last_probe_decision.?);
 
     const quota = loaded.accounts.get("codex:max-2").?;
     try std.testing.expectEqual(@as(?u16, 429), quota.last_http_status);
