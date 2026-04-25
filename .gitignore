@@ -1,0 +1,41 @@
+# Zig
+zig-out/
+.zig-cache/
+
+# Nix
+result
+result-*
+.direnv/
+
+# Secrets — NEVER commit
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+token.json
+
+# Claude/AI state
+.claude/
+memory/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Bazel (future)
+bazel-*
+
+# Distribution artifacts
+dist/build/
+*.tar.gz
+*.deb
+*.rpm

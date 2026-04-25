@@ -1,0 +1,12 @@
+name: oauth-mux
+arch: "${ARCH}"
+version: "${VERSION}"
+maintainer: "Jess Sullivan <jess@sulliwood.org>"
+description: "OAuth fallback muxing for AI harness subscriptions"
+homepage: "https://github.com/tinyland-inc/oauth-mux"
+license: MIT
+contents:
+  - src: oauth-mux
+    dst: /usr/bin/oauth-mux
+    file_info:
+      mode: 0755
