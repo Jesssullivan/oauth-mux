@@ -54,22 +54,159 @@ pub const Context = struct {
 
 pub const PipelineError = types.PipelineError;
 
-/// Full pipeline for `exec` mode: select account, read secret, validate, inject, exec.
+/// Full pipeline with retry-across-accounts.
+/// For each candidate account: read → validate → if ok, inject.
+/// On recoverable failure: mark account, try next.
+/// On exhaustion of all accounts: return AllAccountsExhausted.
 pub fn runExec(ctx: *Context) PipelineError!void {
     try resolveProvider(ctx);
-    try selectAccount(ctx);
-    try readSecret(ctx);
-    try validateToken(ctx);
+    try selectWithFallback(ctx);
     try injectEnv(ctx);
 }
 
-/// Full pipeline for `env` mode: select account, read secret, validate, inject (no exec).
 pub fn runEnv(ctx: *Context) PipelineError!void {
     try resolveProvider(ctx);
-    try selectAccount(ctx);
-    try readSecret(ctx);
-    try validateToken(ctx);
+    try selectWithFallback(ctx);
     try injectEnv(ctx);
+}
+
+/// The retry loop: try each candidate account in priority order.
+/// On failure, record the typed failure and move to the next candidate.
+fn selectWithFallback(ctx: *Context) PipelineError!void {
+    const candidates = gatherCandidates(ctx);
+    if (candidates.len == 0) return error.AllAccountsExhausted;
+
+    var last_err: PipelineError = error.AllAccountsExhausted;
+
+    for (candidates) |candidate| {
+        const key = accountKey(candidate.provider, candidate.account);
+        const decision = ctx.health.muxDecision(key.slice());
+
+        switch (decision) {
+            .try_next_account => {
+                log.debug("pipeline: skip {s}:{s} (health: try_next)", .{ candidate.provider, candidate.account });
+                continue;
+            },
+            .try_next_provider => {
+                log.debug("pipeline: skip {s}:{s} (health: try_next_provider)", .{ candidate.provider, candidate.account });
+                continue;
+            },
+            .give_up => {
+                log.debug("pipeline: skip {s}:{s} (health: give_up)", .{ candidate.provider, candidate.account });
+                continue;
+            },
+            .wait_and_retry => {
+                // Could wait, but for now try next account
+                log.debug("pipeline: skip {s}:{s} (health: rate limited)", .{ candidate.provider, candidate.account });
+                continue;
+            },
+            .use_this => {},
+        }
+
+        // Set context for this attempt
+        ctx.provider_name = candidate.provider;
+        ctx.account_name = candidate.account;
+        ctx.provider_kind = types.ProviderKind.fromString(candidate.provider);
+
+        // Try the read → validate path
+        readSecret(ctx) catch |e| {
+            ctx.health.recordFailure(key.slice(), .auth_failure);
+            last_err = e;
+            // Free any partial token before retrying
+            if (ctx.token) |tok| {
+                ctx.allocator.free(tok.access_token);
+                if (tok.refresh_token) |rt| ctx.allocator.free(rt);
+                ctx.token = null;
+            }
+            continue;
+        };
+
+        validateToken(ctx) catch |e| {
+            last_err = e;
+            if (ctx.token) |tok| {
+                ctx.allocator.free(tok.access_token);
+                if (tok.refresh_token) |rt| ctx.allocator.free(rt);
+                ctx.token = null;
+            }
+            continue;
+        };
+
+        // Success — this account works
+        log.info("pipeline: using {s}:{s}", .{ candidate.provider, candidate.account });
+        return;
+    }
+
+    return last_err;
+}
+
+const Candidate = struct {
+    provider: []const u8,
+    account: []const u8,
+    priority: i32,
+};
+
+fn gatherCandidates(ctx: *Context) []const Candidate {
+    // Static buffer — up to 32 candidates
+    const S = struct {
+        var buf: [32]Candidate = undefined;
+    };
+    var count: usize = 0;
+
+    // If profile specified, use its provider:account list
+    if (ctx.profile_name) |pname| {
+        if (ctx.cfg.profiles.map.get(pname)) |profile| {
+            for (profile.providers) |spec| {
+                if (splitProviderAccount(spec)) |pa| {
+                    // If provider filter set, skip non-matching
+                    if (ctx.provider_name) |filter| {
+                        if (!std.mem.eql(u8, pa.provider, filter)) continue;
+                    }
+                    if (count < S.buf.len) {
+                        const prov_cfg = ctx.cfg.providers.map.get(pa.provider) orelse continue;
+                        const acct_cfg = prov_cfg.accounts.map.get(pa.account) orelse continue;
+                        S.buf[count] = .{
+                            .provider = pa.provider,
+                            .account = pa.account,
+                            .priority = acct_cfg.priority,
+                        };
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // If no profile or profile yielded nothing, gather from provider config
+    if (count == 0) {
+        const prov_name = ctx.provider_name orelse ctx.cfg.defaults.provider orelse return S.buf[0..0];
+        const prov_cfg = ctx.cfg.providers.map.get(prov_name) orelse return S.buf[0..0];
+
+        var it = prov_cfg.accounts.map.iterator();
+        while (it.next()) |entry| {
+            if (count < S.buf.len) {
+                S.buf[count] = .{
+                    .provider = prov_name,
+                    .account = entry.key_ptr.*,
+                    .priority = entry.value_ptr.priority,
+                };
+                count += 1;
+            }
+        }
+    }
+
+    // Sort by priority descending (insertion sort, small N)
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        var j = i;
+        while (j > 0 and S.buf[j].priority > S.buf[j - 1].priority) {
+            const tmp = S.buf[j];
+            S.buf[j] = S.buf[j - 1];
+            S.buf[j - 1] = tmp;
+            j -= 1;
+        }
+    }
+
+    return S.buf[0..count];
 }
 
 fn resolveProvider(ctx: *Context) PipelineError!void {
@@ -114,52 +251,6 @@ fn resolveProvider(ctx: *Context) PipelineError!void {
     }
 
     return error.ProviderNotFound;
-}
-
-fn selectAccount(ctx: *Context) PipelineError!void {
-    const prov_name = ctx.provider_name orelse return error.ProviderNotFound;
-
-    // If profile specifies provider:account pairs, use health-based selection
-    if (ctx.profile_name) |pname| {
-        if (ctx.cfg.profiles.map.get(pname)) |profile| {
-            for (profile.providers) |spec| {
-                if (splitProviderAccount(spec)) |pa| {
-                    if (!std.mem.eql(u8, pa.provider, prov_name)) continue;
-                    const key = accountKey(pa.provider, pa.account);
-                    if (ctx.health.isAvailable(key.slice())) {
-                        ctx.account_name = pa.account;
-                        ctx.provider_name = pa.provider;
-                        ctx.provider_kind = types.ProviderKind.fromString(pa.provider);
-                        log.debug("pipeline: selected {s}:{s}", .{ pa.provider, pa.account });
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    // If account already set (from provider:account spec), keep it
-    if (ctx.account_name != null) return;
-
-    // Pick highest-priority account from the provider
-    const prov_cfg = ctx.cfg.providers.map.get(prov_name) orelse return error.ProviderNotFound;
-    var best_name: ?[]const u8 = null;
-    var best_priority: i32 = std.math.minInt(i32);
-
-    var it = prov_cfg.accounts.map.iterator();
-    while (it.next()) |entry| {
-        const name = entry.key_ptr.*;
-        const acct = entry.value_ptr.*;
-        const key = accountKey(prov_name, name);
-        if (!ctx.health.isAvailable(key.slice())) continue;
-        if (acct.priority > best_priority) {
-            best_priority = acct.priority;
-            best_name = name;
-        }
-    }
-
-    ctx.account_name = best_name orelse return error.AllAccountsExhausted;
-    log.debug("pipeline: selected {s}:{s} (priority {d})", .{ prov_name, best_name.?, best_priority });
 }
 
 fn readSecret(ctx: *Context) PipelineError!void {

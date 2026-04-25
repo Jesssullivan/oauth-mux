@@ -149,6 +149,117 @@ pub const FailReason = enum {
     network_error,
 };
 
+// ── Credential Liveness ──
+//
+// Three distinct layers that the mux pipeline must reason about:
+//
+// 1. Authentication: Can the token prove identity to the provider?
+//    (not expired, not revoked, parseable)
+//
+// 2. Operability: Is the account in a state where it can serve requests?
+//    (not suspended, subscription active, tier sufficient)
+//
+// 3. Availability: Does the account have capacity right now?
+//    (not rate-limited, quota not exhausted, not in cooldown)
+//
+// The mux response differs for each:
+//   Auth failed    → mark dead, never retry automatically
+//   Inoperable     → mark degraded, retry after long interval (hours)
+//   Rate limited   → cooldown timer, retry same account after seconds
+//   Quota exhausted → switch account, retry after window reset (hours/days)
+//   Provider down  → switch provider entirely, not just account
+
+pub const CredentialLiveness = union(enum) {
+    live: LiveCredential,
+    degraded: DegradedCredential,
+    dead: DeadCredential,
+
+    pub const LiveCredential = struct {
+        availability: Availability,
+    };
+
+    pub const DegradedCredential = struct {
+        reason: DegradedReason,
+        since: i64,
+        retry_at: ?i64 = null,
+    };
+
+    pub const DeadCredential = struct {
+        reason: DeadReason,
+        since: i64,
+    };
+};
+
+pub const Availability = union(enum) {
+    available,
+    rate_limited: RateLimitInfo,
+    quota_exhausted: QuotaInfo,
+    cooldown: CooldownInfo,
+
+    pub const RateLimitInfo = struct {
+        retry_after_s: u32,
+        limited_at: i64,
+        window: RateLimitWindow,
+    };
+
+    pub const QuotaInfo = struct {
+        window_resets_at: ?i64 = null,
+        usage_pct: ?u8 = null,
+        exhausted_at: i64,
+    };
+
+    pub const CooldownInfo = struct {
+        until: i64,
+        reason: []const u8,
+    };
+};
+
+pub const RateLimitWindow = enum {
+    per_minute,
+    per_hour,
+    per_day,
+    unknown,
+};
+
+pub const DegradedReason = enum {
+    tier_insufficient,
+    subscription_paused,
+    provider_degraded,
+    unknown_4xx,
+};
+
+pub const DeadReason = enum {
+    token_revoked,
+    account_deleted,
+    auth_permanently_failed,
+};
+
+// ── Mux Decision ──
+// What the pipeline should do after probing a credential.
+
+pub const MuxDecision = enum {
+    use_this,
+    try_next_account,
+    try_next_provider,
+    wait_and_retry,
+    give_up,
+
+    pub fn fromHttpStatus(status: u16) MuxDecision {
+        return switch (status) {
+            200...299 => .use_this,
+            401 => .try_next_account,
+            403 => .try_next_account,
+            429 => .wait_and_retry,
+            500...599 => .try_next_provider,
+            else => .try_next_account,
+        };
+    }
+
+    pub fn isRecoverable(self: MuxDecision) bool {
+        return self != .give_up;
+    }
+};
+
 // ── Health & Circuit Breaker ──
 
 pub const HealthScore = struct {
