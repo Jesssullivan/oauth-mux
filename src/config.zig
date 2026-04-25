@@ -434,7 +434,7 @@ test "loadFromBytes provider definition override" {
         \\      "capabilities": [
         \\        {
         \\          "name": "chat:max",
-        \\          "aliases": ["gpt-5.1-codex-max"],
+        \\          "aliases": ["codex-max"],
         \\          "probe": {
         \\            "method": "POST",
         \\            "url": "https://example.invalid/v1/probe",
@@ -472,7 +472,7 @@ test "loadFromBytes provider definition override" {
     try std.testing.expectEqualStrings("Toy CLI", def.display_name);
     try std.testing.expectEqualStrings("tokens.access", def.credential.access_token_path);
     try std.testing.expectEqual(@as(usize, 1), def.capabilities.len);
-    const plan = provider_schema.probePlanForCapability(def, "gpt-5.1-codex-max").?;
+    const plan = provider_schema.probePlanForCapability(def, "codex-max").?;
     try std.testing.expectEqualStrings("chat:max", plan.capability);
     try std.testing.expectEqualStrings("POST", plan.method);
     try std.testing.expectEqual(@as(usize, 1), def.failure_rules.len);
@@ -559,7 +559,7 @@ test "validate accepts capability profile route" {
         \\    }
         \\  },
         \\  "profiles": {
-        \\    "research": { "providers": ["codex:max-1#gpt-5.1-codex-max"] }
+        \\    "research": { "providers": ["codex:max-1#codex-max"] }
         \\  },
         \\  "strategies": {}
         \\}

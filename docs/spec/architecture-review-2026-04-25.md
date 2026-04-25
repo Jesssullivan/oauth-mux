@@ -35,7 +35,7 @@ Implemented:
 
 ### Route Health Does Not Poison Account Health
 
-Quota exhaustion for `codex:max-1#gpt-5.1-codex-max` must not mark
+Quota exhaustion for `codex:max-1#codex-max` must not mark
 `codex:max-1` unusable for every route. Account-level auth failures still
 dominate every route on that account.
 

@@ -122,12 +122,12 @@ Route-level health uses a suffix on the account key:
 provider:account
 provider:account#capability
 codex:max-1
-codex:max-1#gpt-5.1-codex-max
+codex:max-1#codex-max
 mcp:figma#tools/design-context
 ```
 
 Account state dominates route state. If `codex:max-1` is dead, every route on
-that account is unusable. If only `codex:max-1#gpt-5.1-codex-max` is quota
+that account is unusable. If only `codex:max-1#codex-max` is quota
 exhausted, the same account can still be selected for another capability.
 Profiles may also include the route suffix directly:
 
@@ -136,9 +136,9 @@ Profiles may also include the route suffix directly:
   "profiles": {
     "codex-max": {
       "providers": [
-        "codex:max-1#gpt-5.1-codex-max",
-        "codex:max-2#gpt-5.1-codex-max",
-        "codex:max-3#gpt-5.1-codex-max"
+        "codex:max-1#codex-max",
+        "codex:max-2#codex-max",
+        "codex:max-3#codex-max"
       ]
     }
   }
@@ -288,7 +288,7 @@ Provider support is data first:
   "capabilities": [
     {
       "name": "chat:max",
-      "aliases": ["gpt-5.1-codex-max"],
+      "aliases": ["codex-max"],
       "probe": {
         "method": "POST",
         "url": "https://provider.example/v1/probe",

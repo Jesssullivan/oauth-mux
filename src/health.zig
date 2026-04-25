@@ -936,15 +936,15 @@ test "HealthStore capability route decisions do not poison account" {
     var store = HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
 
-    store.recordCapabilityHttpStatus("codex", "max-1", "gpt-5.1-codex-max", 429, 7200);
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
 
     try std.testing.expectEqual(
         types.MuxDecision.try_next_account,
-        store.muxDecisionFor("codex", "max-1", "gpt-5.1-codex-max"),
+        store.muxDecisionFor("codex", "max-1", "codex-max"),
     );
     try std.testing.expectEqual(
         types.MuxDecision.use_this,
-        store.muxDecisionFor("codex", "max-1", "gpt-5.1-codex-mini"),
+        store.muxDecisionFor("codex", "max-1", "codex-mini"),
     );
 }
 
@@ -955,7 +955,7 @@ test "HealthStore account decisions dominate capability route decisions" {
     store.recordHttpStatus("codex:max-1", 401, null);
     try std.testing.expectEqual(
         types.MuxDecision.try_next_account,
-        store.muxDecisionFor("codex", "max-1", "gpt-5.1-codex-max"),
+        store.muxDecisionFor("codex", "max-1", "codex-max"),
     );
 }
 
@@ -965,10 +965,10 @@ test "parseHealthKey supports account and capability routes" {
     try std.testing.expectEqualStrings("max-1", account.account);
     try std.testing.expect(account.capability == null);
 
-    const route = parseHealthKey("codex:max-1#gpt-5.1-codex-max").?;
+    const route = parseHealthKey("codex:max-1#codex-max").?;
     try std.testing.expectEqualStrings("codex", route.provider);
     try std.testing.expectEqualStrings("max-1", route.account);
-    try std.testing.expectEqualStrings("gpt-5.1-codex-max", route.capability.?);
+    try std.testing.expectEqualStrings("codex-max", route.capability.?);
 }
 
 test "HealthStore 429 distinguishes rate limit from quota exhaustion" {

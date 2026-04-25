@@ -262,12 +262,12 @@ pub fn printUsage(writer: anytype) !void {
 }
 
 test "parse exec with profile and target" {
-    const args = [_][]const u8{ "exec", "--profile", "work", "--capability", "gpt-5.1-codex-max", "--", "claude", "chat" };
+    const args = [_][]const u8{ "exec", "--profile", "work", "--capability", "codex-max", "--", "claude", "chat" };
     const cmd = parse(&args);
     switch (cmd) {
         .exec => |exec| {
             try std.testing.expectEqualStrings("work", exec.profile.?);
-            try std.testing.expectEqualStrings("gpt-5.1-codex-max", exec.capability.?);
+            try std.testing.expectEqualStrings("codex-max", exec.capability.?);
             try std.testing.expectEqual(@as(usize, 2), exec.target_argv.len);
             try std.testing.expectEqualStrings("claude", exec.target_argv[0]);
             try std.testing.expectEqualStrings("chat", exec.target_argv[1]);
@@ -298,13 +298,13 @@ test "parse status json" {
 }
 
 test "parse probe with account capability and json" {
-    const args = [_][]const u8{ "probe", "--provider", "codex", "--account", "max-2", "--capability", "gpt-5.1-codex-max", "--json" };
+    const args = [_][]const u8{ "probe", "--provider", "codex", "--account", "max-2", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
     switch (cmd) {
         .probe => |probe| {
             try std.testing.expectEqualStrings("codex", probe.provider.?);
             try std.testing.expectEqualStrings("max-2", probe.account.?);
-            try std.testing.expectEqualStrings("gpt-5.1-codex-max", probe.capability.?);
+            try std.testing.expectEqualStrings("codex-max", probe.capability.?);
             try std.testing.expect(probe.json);
         },
         else => return error.Unexpected,

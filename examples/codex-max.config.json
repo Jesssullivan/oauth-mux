@@ -43,18 +43,18 @@
   "profiles": {
     "codex-max": {
       "providers": [
-        "codex:max-1#gpt-5.1-codex-max",
-        "codex:max-2#gpt-5.1-codex-max",
-        "codex:max-3#gpt-5.1-codex-max"
+        "codex:max-1#codex-max",
+        "codex:max-2#codex-max",
+        "codex:max-3#codex-max"
       ],
       "strategy": "health-weighted",
       "affinity_ttl_minutes": 20
     },
     "codex-mini": {
       "providers": [
-        "codex:max-1#gpt-5.1-codex-mini",
-        "codex:max-2#gpt-5.1-codex-mini",
-        "codex:max-3#gpt-5.1-codex-mini"
+        "codex:max-1#codex-mini",
+        "codex:max-2#codex-mini",
+        "codex:max-3#codex-mini"
       ],
       "strategy": "health-weighted",
       "affinity_ttl_minutes": 20

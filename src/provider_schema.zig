@@ -220,14 +220,27 @@ const mcp_failure_rules = [_]FailureRule{
     },
 };
 
-const codex_capabilities = [_]CapabilityDefinition{
+const codex_failure_rules = [_]FailureRule{
     .{
-        .name = "gpt-5.1-codex-max",
-        .aliases = &.{ "codex-max", "max" },
+        .status = 400,
+        .hint_contains = "not supported when using Codex with a ChatGPT account",
+        .class = .{ .degraded = .tier_insufficient },
     },
     .{
-        .name = "gpt-5.1-codex-mini",
-        .aliases = &.{ "codex-mini", "mini" },
+        .status = 400,
+        .hint_contains = "model is not supported",
+        .class = .{ .degraded = .tier_insufficient },
+    },
+};
+
+const codex_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "codex-max",
+        .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
+    },
+    .{
+        .name = "codex-mini",
+        .aliases = &.{ "mini", "spark", "gpt-5.3-codex-spark", "gpt-5.1-codex-mini" },
     },
 };
 
@@ -288,6 +301,7 @@ pub const codex_def = ProviderDefinition{
         .reset_header = "x-ratelimit-reset-requests",
     },
     .capabilities = &codex_capabilities,
+    .failure_rules = &codex_failure_rules,
 };
 
 pub const gemini_def = ProviderDefinition{
@@ -432,6 +446,47 @@ pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?
         };
     }
     return null;
+}
+
+pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?types.HttpClassification {
+    var lines = std.mem.splitScalar(u8, jsonl, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch continue;
+        defer parsed.deinit();
+
+        if (resolveJsonString(parsed.value, "type")) |event_type| {
+            if (std.mem.eql(u8, event_type, "turn.completed")) return .success;
+
+            if (std.mem.eql(u8, event_type, "error")) {
+                if (resolveJsonString(parsed.value, "message")) |message| {
+                    return classifyCodexErrorMessage(allocator, message);
+                }
+            }
+        }
+
+        if (classifyCodexErrorValue(parsed.value)) |classification| return classification;
+    }
+
+    return null;
+}
+
+fn classifyCodexErrorMessage(allocator: std.mem.Allocator, message: []const u8) types.HttpClassification {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, message, .{}) catch {
+        return classifyHttp(codex_def, 400, null, message);
+    };
+    defer parsed.deinit();
+    return classifyCodexErrorValue(parsed.value) orelse classifyHttp(codex_def, 400, null, message);
+}
+
+fn classifyCodexErrorValue(value: std.json.Value) ?types.HttpClassification {
+    const status_i = resolveJsonInt(value, "status") orelse return null;
+    if (status_i < 0 or status_i > 65535) return null;
+    const status: u16 = @intCast(status_i);
+    const hint = resolveJsonString(value, "error.message");
+    return classifyHttp(codex_def, status, null, hint);
 }
 
 fn capabilityMatches(cap: CapabilityDefinition, requested: []const u8) bool {
@@ -865,8 +920,39 @@ test "probePlanForCapability resolves aliases" {
     try std.testing.expect(probePlanForCapability(def, "unknown") == null);
 }
 
-test "codex capabilities include max and mini aliases without pinned probes" {
-    try std.testing.expect(probePlanForCapability(codex_def, "gpt-5.1-codex-max") == null);
+test "codex capabilities include semantic max and mini aliases without pinned probes" {
+    try std.testing.expectEqualStrings("codex-max", codex_def.capabilities[0].name);
+    try std.testing.expect(probePlanForCapability(codex_def, "gpt-5.3-codex") == null);
     try std.testing.expect(probePlanForCapability(codex_def, "max") == null);
-    try std.testing.expectEqualStrings("gpt-5.1-codex-mini", codex_def.capabilities[1].name);
+    try std.testing.expectEqualStrings("codex-mini", codex_def.capabilities[1].name);
+    try std.testing.expect(probePlanForCapability(codex_def, "gpt-5.3-codex-spark") == null);
+}
+
+test "classifyCodexExecJsonl success cassette" {
+    const jsonl =
+        \\{"type":"thread.started","thread_id":"redacted"}
+        \\{"type":"turn.started"}
+        \\{"type":"item.completed","item":{"type":"agent_message","text":"OMUX_CODEX_SPARK_PROBE"}}
+        \\{"type":"turn.completed","usage":{"input_tokens":26656,"cached_input_tokens":3712,"output_tokens":57,"reasoning_output_tokens":43}}
+        \\
+    ;
+    try std.testing.expectEqual(
+        types.HttpClassification.success,
+        classifyCodexExecJsonl(std.testing.allocator, jsonl).?,
+    );
+}
+
+test "classifyCodexExecJsonl unsupported model cassette" {
+    const jsonl =
+        \\{"type":"thread.started","thread_id":"redacted"}
+        \\{"type":"turn.started"}
+        \\{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.\"}}"}
+        \\{"type":"turn.failed","error":{"message":"redacted"}}
+        \\
+    ;
+    const classification = classifyCodexExecJsonl(std.testing.allocator, jsonl).?;
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }

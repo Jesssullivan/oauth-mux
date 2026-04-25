@@ -744,18 +744,18 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\  "profiles": {
         \\    "codex-max": {
         \\      "providers": [
-        \\        "codex:max-1#gpt-5.1-codex-max",
-        \\        "codex:max-2#gpt-5.1-codex-max",
-        \\        "codex:max-3#gpt-5.1-codex-max"
+        \\        "codex:max-1#codex-max",
+        \\        "codex:max-2#codex-max",
+        \\        "codex:max-3#codex-max"
         \\      ],
         \\      "strategy": "health-weighted",
         \\      "affinity_ttl_minutes": 20
         \\    },
         \\    "codex-mini": {
         \\      "providers": [
-        \\        "codex:max-1#gpt-5.1-codex-mini",
-        \\        "codex:max-2#gpt-5.1-codex-mini",
-        \\        "codex:max-3#gpt-5.1-codex-mini"
+        \\        "codex:max-1#codex-mini",
+        \\        "codex:max-2#codex-mini",
+        \\        "codex:max-3#codex-mini"
         \\      ],
         \\      "strategy": "health-weighted",
         \\      "affinity_ttl_minutes": 20
@@ -785,7 +785,7 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
 
 test "matchesProvider filters account keys" {
     try std.testing.expect(matchesProvider("codex:max-1", "codex"));
-    try std.testing.expect(matchesProvider("codex:max-1#gpt-5.1-codex-max", "codex"));
+    try std.testing.expect(matchesProvider("codex:max-1#codex-max", "codex"));
     try std.testing.expect(matchesProvider("codex", "codex"));
     try std.testing.expect(!matchesProvider("codexish:max-1", "codex"));
     try std.testing.expect(!matchesProvider("claude:work", "codex"));
@@ -815,14 +815,14 @@ test "writeHealthJson includes capability routes" {
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
 
-    store.recordCapabilityHttpStatus("codex", "max-1", "gpt-5.1-codex-max", 429, 7200);
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
 
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 
     try writeHealthJson(buf.writer(), &store, "codex");
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"key\":\"codex:max-1#gpt-5.1-codex-max\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability\":\"gpt-5.1-codex-max\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"key\":\"codex:max-1#codex-max\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability\":\"codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"quota_exhausted\"") != null);
 }
 

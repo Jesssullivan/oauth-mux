@@ -574,10 +574,10 @@ test "splitProviderAccount" {
     try std.testing.expectEqualStrings("work", pa.account);
     try std.testing.expect(pa.capability == null);
 
-    const route = splitProviderAccount("codex:max-1#gpt-5.1-codex-max").?;
+    const route = splitProviderAccount("codex:max-1#codex-max").?;
     try std.testing.expectEqualStrings("codex", route.provider);
     try std.testing.expectEqualStrings("max-1", route.account);
-    try std.testing.expectEqualStrings("gpt-5.1-codex-max", route.capability.?);
+    try std.testing.expectEqualStrings("codex-max", route.capability.?);
 
     try std.testing.expect(splitProviderAccount("nocolon") == null);
 }
@@ -684,7 +684,7 @@ test "runEnv honors capability route health from profile" {
         \\    }}
         \\  }},
         \\  "profiles": {{
-        \\    "mux": {{ "providers": ["codex:max-1#gpt-5.1-codex-max", "codex:max-2#gpt-5.1-codex-max"] }}
+        \\    "mux": {{ "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"] }}
         \\  }},
         \\  "strategies": {{}}
         \\}}
@@ -698,7 +698,7 @@ test "runEnv honors capability route health from profile" {
 
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
-    store.recordCapabilityHttpStatus("codex", "max-1", "gpt-5.1-codex-max", 429, 7200);
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
 
     var ctx = Context.init(std.testing.allocator, parsed.value, &store);
     defer ctx.deinit();
@@ -708,9 +708,9 @@ test "runEnv honors capability route health from profile" {
 
     try std.testing.expectEqualStrings("codex", ctx.provider_name.?);
     try std.testing.expectEqualStrings("max-2", ctx.account_name.?);
-    try std.testing.expectEqualStrings("gpt-5.1-codex-max", ctx.capability_name.?);
+    try std.testing.expectEqualStrings("codex-max", ctx.capability_name.?);
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "max-2");
-    try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "gpt-5.1-codex-max");
+    try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "codex-max");
 }
 
 test "runProbe honors explicit account filter without a configured probe plan" {
@@ -766,13 +766,13 @@ test "runProbe honors explicit account filter without a configured probe plan" {
     defer ctx.deinit();
     ctx.provider_name = "codex";
     ctx.account_name = "max-2";
-    ctx.capability_name = "gpt-5.1-codex-max";
+    ctx.capability_name = "codex-max";
 
     try runProbe(&ctx);
 
     try std.testing.expectEqualStrings("codex", ctx.provider_name.?);
     try std.testing.expectEqualStrings("max-2", ctx.account_name.?);
-    try std.testing.expectEqualStrings("gpt-5.1-codex-max", ctx.capability_name.?);
+    try std.testing.expectEqualStrings("codex-max", ctx.capability_name.?);
     try std.testing.expect(!ctx.last_probe_executed);
     try std.testing.expect(store.accounts.get("codex:max-2") != null);
     try std.testing.expect(store.accounts.get("codex:max-1") == null);

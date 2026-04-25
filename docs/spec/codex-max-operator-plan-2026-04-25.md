@@ -8,8 +8,10 @@ This note narrows the next `oauth-mux` arc to three Codex Max accounts.
 
 Official OpenAI help currently describes Codex as available with ChatGPT Plus,
 Pro, Business, and Enterprise/Edu plans, with Codex CLI and IDE sign-in through
-ChatGPT. The same help surface says the current Codex CLI / IDE model family is
-GPT-5.1-Codex, with Max as default and Mini as optional.
+ChatGPT. The help surface still mentions the GPT-5.1-Codex family, but the
+installed Codex CLI 0.125.0 catalog on this workstation exposes
+`gpt-5.3-codex` and `gpt-5.3-codex-spark`. Treat `codex-max` and
+`codex-mini` as oauth-mux route labels, not fixed OpenAI model IDs.
 
 Local structure-only inspection of this workstation's Codex cache confirms the
 credential shape expected by `oauth-mux`:
@@ -24,6 +26,21 @@ last_refresh
 ```
 
 No token values were printed or copied.
+
+Live non-secret Codex evidence captured on 2026-04-25:
+
+```text
+codex login status -> Logged in using ChatGPT
+codex debug models -> gpt-5.3-codex, gpt-5.3-codex-spark
+codex exec -m gpt-5.3-codex-spark -> turn.completed with usage
+codex exec -m gpt-5.1-codex-max -> status 400 unsupported model for ChatGPT account
+```
+
+Redacted JSONL cassettes for these two `codex exec --json` outcomes live under:
+
+```text
+test/fixtures/cassettes/codex/
+```
 
 Sources:
 
@@ -64,16 +81,18 @@ same relative path.
 
 ## Route Profiles
 
-Two profile lanes are defined:
+Two profile lanes are defined with stable route labels:
 
 ```text
-codex-max  -> codex:max-1#gpt-5.1-codex-max, max-2, max-3
-codex-mini -> codex:max-1#gpt-5.1-codex-mini, max-2, max-3
+codex-max  -> codex:max-1#codex-max, max-2, max-3
+codex-mini -> codex:max-1#codex-mini, max-2, max-3
+codex-max  -> codex:max-1#codex-max, max-2, max-3
+codex-mini -> codex:max-1#codex-mini, max-2, max-3
 ```
 
 Route health is stored independently from account health. A quota-exhausted
-`codex:max-1#gpt-5.1-codex-max` route should not make `codex:max-1` unusable
-for `gpt-5.1-codex-mini`.
+`codex:max-1#codex-max` route should not make `codex:max-1` unusable for
+`codex-mini`.
 
 ## Operator Commands
 
@@ -87,14 +106,14 @@ Check selection and credential parse/expiry state for the max route:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json \
-  oauth-mux probe --profile codex-max --capability gpt-5.1-codex-max
+  oauth-mux probe --profile codex-max --capability codex-max
 ```
 
 Force a specific account:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json \
-  oauth-mux probe --provider codex --account max-2 --capability gpt-5.1-codex-max --json
+  oauth-mux probe --provider codex --account max-2 --capability codex-max --json
 ```
 
 The JSON output includes redacted last-probe evidence:
