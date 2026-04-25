@@ -8,6 +8,7 @@ const types = @import("types.zig");
 const pipeline = @import("pipeline.zig");
 const health_mod = @import("health.zig");
 const provider = @import("provider.zig");
+const daemon = @import("daemon.zig");
 
 pub fn main() !void {
     log.init();
@@ -71,6 +72,22 @@ pub fn main() !void {
 
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
+        },
+
+        .daemon_start => {
+            daemon.start(allocator) catch |e| {
+                log.err("daemon: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
+        .daemon_stop => {
+            daemon.stop(allocator) catch |e| {
+                log.err("daemon: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
+        .daemon_status => {
+            try daemon.status(allocator, stdout);
         },
     }
 }
@@ -388,4 +405,5 @@ comptime {
     _ = @import("pipeline.zig");
     _ = @import("oauth.zig");
     _ = @import("age.zig");
+    _ = @import("daemon.zig");
 }

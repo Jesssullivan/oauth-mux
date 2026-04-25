@@ -12,6 +12,9 @@ pub const Command = union(enum) {
     config_path,
     init: InitArgs,
     completions: CompletionsArgs,
+    daemon_start,
+    daemon_stop,
+    daemon_status,
     version_cmd,
     help,
 
@@ -60,6 +63,14 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
+    if (eql(cmd, "daemon")) {
+        if (rest.len > 0) {
+            if (eql(rest[0], "start")) return .daemon_start;
+            if (eql(rest[0], "stop")) return .daemon_stop;
+            if (eql(rest[0], "status")) return .daemon_status;
+        }
+        return .daemon_status;
+    }
     if (eql(cmd, "completions")) {
         if (rest.len > 0) return .{ .completions = .{ .shell = rest[0] } };
         return .{ .completions = .{} };
@@ -175,8 +186,14 @@ pub fn printUsage(writer: anytype) !void {
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
         \\
+        \\  daemon start       Start background token refresh daemon.
+        \\  daemon stop        Stop the daemon.
+        \\  daemon status      Show daemon status.
+        \\
         \\  init [--interactive]
         \\      Generate a starter config file.
+        \\
+        \\  completions <shell> Generate shell completions (fish|zsh|bash).
         \\
         \\  version            Print version.
         \\  help               Print this help.
