@@ -59,6 +59,25 @@ pub fn detectProvider(argv: []const []const u8) ?types.ProviderKind {
 // Format: {"accessToken":"...","refreshToken":"...","expiresAt":"2025-..."}
 
 fn parseClaude(raw: []const u8, allocator: std.mem.Allocator) ParseError!TokenFields {
+    // Try wrapped format first: {"claudeAiOauth":{"accessToken":"...",...}}
+    if (std.json.parseFromSlice(ClaudeWrapped, allocator, raw, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    })) |parsed| {
+        defer parsed.deinit();
+        if (parsed.value.claudeAiOauth) |creds| {
+            return .{
+                .access_token = allocator.dupe(u8, creds.accessToken) catch return error.OutOfMemory,
+                .refresh_token = if (creds.refreshToken) |rt|
+                    (allocator.dupe(u8, rt) catch return error.OutOfMemory)
+                else
+                    null,
+                .expires_at = creds.expiresAt,
+            };
+        }
+    } else |_| {}
+
+    // Try flat format: {"accessToken":"...",...}
     const parsed = std.json.parseFromSlice(ClaudeCredentials, allocator, raw, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
@@ -74,6 +93,10 @@ fn parseClaude(raw: []const u8, allocator: std.mem.Allocator) ParseError!TokenFi
         .expires_at = parsed.value.expiresAt,
     };
 }
+
+const ClaudeWrapped = struct {
+    claudeAiOauth: ?ClaudeCredentials = null,
+};
 
 const ClaudeCredentials = struct {
     accessToken: []const u8,
