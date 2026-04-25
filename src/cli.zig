@@ -6,6 +6,7 @@ pub const version = "0.1.0";
 pub const Command = union(enum) {
     exec: ExecArgs,
     env: EnvArgs,
+    probe: ProbeArgs,
     status: StatusArgs,
     health: HealthArgs,
     config_validate,
@@ -31,6 +32,14 @@ pub const Command = union(enum) {
         provider: ?[]const u8 = null,
         capability: ?[]const u8 = null,
         shell: ?[]const u8 = null,
+    };
+
+    pub const ProbeArgs = struct {
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+        json: bool = false,
     };
 
     pub const StatusArgs = struct {
@@ -61,6 +70,7 @@ pub fn parse(args: []const []const u8) Command {
 
     if (eql(cmd, "exec")) return parseExec(rest);
     if (eql(cmd, "env")) return parseEnv(rest);
+    if (eql(cmd, "probe")) return parseProbe(rest);
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
@@ -131,6 +141,29 @@ fn parseEnv(args: []const []const u8) Command {
     return .{ .env = result };
 }
 
+fn parseProbe(args: []const []const u8) Command {
+    var result = Command.ProbeArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .probe = result };
+}
+
 fn parseStatus(args: []const []const u8) Command {
     var result = Command.StatusArgs{};
     for (args) |arg| {
@@ -187,6 +220,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  env [--profile <name>] [--provider <name>] [--capability <name>] [--shell fish|zsh|bash|ksh]
         \\      Print shell export statements for eval.
+        \\
+        \\  probe [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Validate a selected account and run its capability probe when configured.
         \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
@@ -259,6 +295,20 @@ test "parse status json" {
     }
 }
 
+test "parse probe with account capability and json" {
+    const args = [_][]const u8{ "probe", "--provider", "codex", "--account", "max-2", "--capability", "gpt-5.1-codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .probe => |probe| {
+            try std.testing.expectEqualStrings("codex", probe.provider.?);
+            try std.testing.expectEqualStrings("max-2", probe.account.?);
+            try std.testing.expectEqualStrings("gpt-5.1-codex-max", probe.capability.?);
+            try std.testing.expect(probe.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse health json provider" {
     const args = [_][]const u8{ "health", "--json", "--provider", "codex" };
     const cmd = parse(&args);
@@ -277,15 +327,18 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -f
             \\complete -c oauth-mux -n __fish_use_subcommand -a exec -d 'Execute with muxed credentials'
             \\complete -c oauth-mux -n __fish_use_subcommand -a env -d 'Print shell exports'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a probe -d 'Probe account liveness'
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
@@ -299,6 +352,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\  commands=(
             \\    'exec:Execute with muxed credentials'
             \\    'env:Print shell exports'
+            \\    'probe:Probe account liveness'
             \\    'status:Show status'
             \\    'health:Show health data'
             \\    'config:Config operations'
@@ -315,7 +369,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env status health config init version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe status health config init version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

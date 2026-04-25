@@ -60,6 +60,13 @@ pub fn main() !void {
             };
         },
 
+        .probe => |probe_args| {
+            runProbe(allocator, stdout, probe_args) catch |e| {
+                log.err("probe: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .exec => |exec_args| {
             runExec(allocator, exec_args) catch |e| {
                 log.err("exec: {s}", .{@errorName(e)});
@@ -187,6 +194,33 @@ fn runEnv(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnvAr
     store.persist();
 }
 
+fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ProbeArgs) !void {
+    const parsed = config.load(allocator) catch {
+        return error.ConfigNotFound;
+    };
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var ctx = pipeline.Context.init(allocator, parsed.value, &store);
+    defer ctx.deinit();
+
+    ctx.profile_name = args.profile;
+    ctx.provider_name = args.provider;
+    ctx.account_name = args.account;
+    ctx.capability_name = args.capability;
+
+    try pipeline.runProbe(&ctx);
+    store.persist();
+
+    if (args.json) {
+        try writeProbeJson(writer, &store, &ctx);
+    } else {
+        try writeProbeText(writer, &store, &ctx);
+    }
+}
+
 fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
     if (args.target_argv.len == 0) {
         log.err("exec: no target command specified (use -- before the command)", .{});
@@ -227,6 +261,96 @@ fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
         log.err("exec: failed to execute {s}", .{args.target_argv[0]});
         std.process.exit(types.ExitCode.general_error.int());
     };
+}
+
+const HealthSelection = struct {
+    key: health_mod.KeyBuf,
+    health: ?health_mod.AccountHealth,
+};
+
+fn selectedHealth(store: *health_mod.HealthStore, ctx: *const pipeline.Context) HealthSelection {
+    const prov = ctx.provider_name orelse "";
+    const acct = ctx.account_name orelse "";
+    if (ctx.capability_name) |capability| {
+        const route_key = health_mod.capabilityKey(prov, acct, capability);
+        if (store.accounts.get(route_key.slice())) |health| {
+            return .{ .key = route_key, .health = health };
+        }
+    }
+
+    const account_key = health_mod.accountKey(prov, acct);
+    return .{ .key = account_key, .health = store.accounts.get(account_key.slice()) };
+}
+
+fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context) !void {
+    const provider_name = ctx.provider_name orelse "-";
+    const account_name = ctx.account_name orelse "-";
+    try writer.writeAll("oauth-mux probe\n\n");
+    try writer.print("  selected: {s}:{s}", .{ provider_name, account_name });
+    if (ctx.capability_name) |capability| {
+        try writer.print("#{s}", .{capability});
+    }
+    try writer.writeByte('\n');
+
+    if (ctx.last_probe_executed) {
+        try writer.writeAll("  probe:    executed status=");
+        if (ctx.last_probe_status) |status| {
+            try writer.print("{d}", .{status});
+        } else {
+            try writer.writeAll("-");
+        }
+        try writer.print(" decision={s}\n", .{@tagName(ctx.last_probe_decision orelse .use_this)});
+    } else if (ctx.capability_name != null) {
+        try writer.writeAll("  probe:    no configured probe plan for capability\n");
+    } else {
+        try writer.writeAll("  probe:    no capability requested; credential parse/expiry validation only\n");
+    }
+
+    const selection = selectedHealth(store, ctx);
+    try writer.print("  health:   {s} ", .{selection.key.slice()});
+    if (selection.health) |health| {
+        try health_mod.writeLivenessSummary(writer, health.liveness);
+        if (health.last_http_status) |status| {
+            try writer.print(" http={d}", .{status});
+        }
+    } else {
+        try writer.writeAll("unrecorded");
+    }
+    try writer.writeByte('\n');
+}
+
+fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context) !void {
+    const selection = selectedHealth(store, ctx);
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(ctx.provider_name orelse "", .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(ctx.account_name orelse "", .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (ctx.capability_name) |capability| {
+        try std.json.stringify(capability, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"probe_executed\":");
+    try writer.writeAll(if (ctx.last_probe_executed) "true" else "false");
+    try writer.writeAll(",\"probe_status\":");
+    if (ctx.last_probe_status) |status| {
+        try writer.print("{d}", .{status});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"decision\":");
+    try std.json.stringify(@tagName(ctx.last_probe_decision orelse .use_this), .{}, writer);
+    try writer.writeAll(",\"health_key\":");
+    try std.json.stringify(selection.key.slice(), .{}, writer);
+    try writer.writeAll(",\"liveness\":");
+    if (selection.health) |health| {
+        try writeLivenessJson(writer, health.liveness);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll("}\n");
 }
 
 fn runHealth(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.HealthArgs) !void {

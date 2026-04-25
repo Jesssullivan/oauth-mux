@@ -25,6 +25,9 @@ pub const Context = struct {
     allocated_values: std.ArrayList([]const u8),
     target_argv: []const []const u8 = &.{},
     shell: types.ShellKind = .posix,
+    last_probe_executed: bool = false,
+    last_probe_status: ?u16 = null,
+    last_probe_decision: ?types.MuxDecision = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config_mod.Config, store: *health_mod.HealthStore) Context {
         return .{
@@ -71,6 +74,11 @@ pub fn runEnv(ctx: *Context) PipelineError!void {
     try resolveProvider(ctx);
     try selectWithFallback(ctx);
     try injectEnv(ctx);
+}
+
+pub fn runProbe(ctx: *Context) PipelineError!void {
+    try resolveProvider(ctx);
+    try selectWithFallback(ctx);
 }
 
 /// The retry loop: try each candidate account in priority order.
@@ -204,6 +212,9 @@ fn gatherCandidates(ctx: *Context) []const Candidate {
                     if (ctx.provider_name) |filter| {
                         if (!std.mem.eql(u8, pa.provider, filter)) continue;
                     }
+                    if (ctx.account_name) |account_filter| {
+                        if (!std.mem.eql(u8, pa.account, account_filter)) continue;
+                    }
                     if (count < S.buf.len) {
                         const prov_cfg = ctx.cfg.providers.map.get(pa.provider) orelse continue;
                         const acct_cfg = prov_cfg.accounts.map.get(pa.account) orelse continue;
@@ -225,16 +236,30 @@ fn gatherCandidates(ctx: *Context) []const Candidate {
         const prov_name = ctx.provider_name orelse ctx.cfg.defaults.provider orelse return S.buf[0..0];
         const prov_cfg = ctx.cfg.providers.map.get(prov_name) orelse return S.buf[0..0];
 
-        var it = prov_cfg.accounts.map.iterator();
-        while (it.next()) |entry| {
-            if (count < S.buf.len) {
-                S.buf[count] = .{
-                    .provider = prov_name,
-                    .account = entry.key_ptr.*,
-                    .capability = ctx.capability_name,
-                    .priority = entry.value_ptr.priority,
-                };
-                count += 1;
+        if (ctx.account_name) |account_filter| {
+            if (prov_cfg.accounts.map.get(account_filter)) |acct_cfg| {
+                if (count < S.buf.len) {
+                    S.buf[count] = .{
+                        .provider = prov_name,
+                        .account = account_filter,
+                        .capability = ctx.capability_name,
+                        .priority = acct_cfg.priority,
+                    };
+                    count += 1;
+                }
+            }
+        } else {
+            var it = prov_cfg.accounts.map.iterator();
+            while (it.next()) |entry| {
+                if (count < S.buf.len) {
+                    S.buf[count] = .{
+                        .provider = prov_name,
+                        .account = entry.key_ptr.*,
+                        .capability = ctx.capability_name,
+                        .priority = entry.value_ptr.priority,
+                    };
+                    count += 1;
+                }
             }
         }
     }
@@ -372,6 +397,8 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     defer result.deinit(ctx.allocator);
 
     const classification = probe.classifyResult(def, plan, result);
+    ctx.last_probe_executed = true;
+    ctx.last_probe_status = result.status;
     switch (classification) {
         .dead => {
             const key = health_mod.accountKey(prov, acct);
@@ -383,7 +410,9 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
         },
     }
 
-    return ctx.health.muxDecisionFor(prov, acct, capability);
+    const decision = ctx.health.muxDecisionFor(prov, acct, capability);
+    ctx.last_probe_decision = decision;
+    return decision;
 }
 
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
@@ -670,6 +699,71 @@ test "runEnv honors capability route health from profile" {
     try std.testing.expectEqualStrings("gpt-5.1-codex-max", ctx.capability_name.?);
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "max-2");
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "gpt-5.1-codex-max");
+}
+
+test "runProbe honors explicit account filter without a configured probe plan" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex1 = try tmp.dir.createFile("codex-1.json", .{});
+    defer codex1.close();
+    try codex1.writeAll(
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"codex-one","refresh_token":"codex-rt"}}
+    );
+
+    const codex2 = try tmp.dir.createFile("codex-2.json", .{});
+    defer codex2.close();
+    try codex2.writeAll(
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"codex-two","refresh_token":"codex-rt"}}
+    );
+
+    const codex1_path = try tmp.dir.realpathAlloc(std.testing.allocator, "codex-1.json");
+    defer std.testing.allocator.free(codex1_path);
+    const codex2_path = try tmp.dir.realpathAlloc(std.testing.allocator, "codex-2.json");
+    defer std.testing.allocator.free(codex2_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "defaults": {{ "provider": "codex" }},
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "priority": 30, "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-2": {{ "priority": 20, "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ codex1_path, codex2_path },
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "max-2";
+    ctx.capability_name = "gpt-5.1-codex-max";
+
+    try runProbe(&ctx);
+
+    try std.testing.expectEqualStrings("codex", ctx.provider_name.?);
+    try std.testing.expectEqualStrings("max-2", ctx.account_name.?);
+    try std.testing.expectEqualStrings("gpt-5.1-codex-max", ctx.capability_name.?);
+    try std.testing.expect(!ctx.last_probe_executed);
+    try std.testing.expect(store.accounts.get("codex:max-2") != null);
+    try std.testing.expect(store.accounts.get("codex:max-1") == null);
 }
 
 test "runEnv skips remaining accounts for degraded provider" {

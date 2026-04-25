@@ -35,6 +35,9 @@ status: build
 health: build
     ./zig-out/bin/oauth-mux health
 
+probe *ARGS: build
+    ./zig-out/bin/oauth-mux probe {{ARGS}}
+
 # ── Cross-compilation ──
 
 release-all: release-linux-amd64 release-linux-arm64 release-macos-amd64 release-macos-arm64

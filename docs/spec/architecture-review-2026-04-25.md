@@ -24,6 +24,9 @@ Implemented:
   secrets, direct env mappings, failure rules, and probe definitions.
 - Std-only probe execution module that classifies probe HTTP results and records
   them into typed health state.
+- Operator-facing `probe` command for account validation and capability probes
+  without launching a target command.
+- Codex Max example config and operator plan for three subscription accounts.
 
 ## Key Decisions
 
@@ -68,20 +71,18 @@ rate-limited, or auth-dead.
   header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond v2 is not yet documented.
-- Starter config still models generic/default accounts; it does not yet emit a
-  three-Codex-Max profile scaffold.
+- The Codex Max example config is checked in, but `init` still emits the generic
+  starter config.
 - No release packaging changes have been made in this checkpoint.
 
 ## Next Arc
 
-1. Add a Codex Max example config with three account stores and a
-   `codex-max` route profile.
-2. Verify real Codex CLI subscription auth storage and live route probe shape.
-3. Add a `probe` or `health check` operator command that can run a capability
-   probe without launching a target command.
-4. Extend health JSON/text output with last probe evidence fields:
+1. Verify real Codex CLI subscription live route probe shape.
+2. Decide whether `init` should offer a `--codex-max` starter profile or keep
+   the example config as the canonical scaffold.
+3. Extend health JSON/text output with last probe evidence fields:
    source, observed_at, retry_after, hint class, and decision.
-5. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation

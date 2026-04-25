@@ -220,6 +220,17 @@ const mcp_failure_rules = [_]FailureRule{
     },
 };
 
+const codex_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "gpt-5.1-codex-max",
+        .aliases = &.{ "codex-max", "max" },
+    },
+    .{
+        .name = "gpt-5.1-codex-mini",
+        .aliases = &.{ "codex-mini", "mini" },
+    },
+};
+
 pub const claude_def = ProviderDefinition{
     .name = "claude",
     .display_name = "Claude Code",
@@ -276,6 +287,7 @@ pub const codex_def = ProviderDefinition{
         .remaining_header = "x-ratelimit-remaining-requests",
         .reset_header = "x-ratelimit-reset-requests",
     },
+    .capabilities = &codex_capabilities,
 };
 
 pub const gemini_def = ProviderDefinition{
@@ -851,4 +863,10 @@ test "probePlanForCapability resolves aliases" {
     try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
     try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
     try std.testing.expect(probePlanForCapability(def, "unknown") == null);
+}
+
+test "codex capabilities include max and mini aliases without pinned probes" {
+    try std.testing.expect(probePlanForCapability(codex_def, "gpt-5.1-codex-max") == null);
+    try std.testing.expect(probePlanForCapability(codex_def, "max") == null);
+    try std.testing.expectEqualStrings("gpt-5.1-codex-mini", codex_def.capabilities[1].name);
 }
