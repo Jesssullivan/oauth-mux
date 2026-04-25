@@ -406,4 +406,5 @@ comptime {
     _ = @import("oauth.zig");
     _ = @import("age.zig");
     _ = @import("daemon.zig");
+    _ = @import("provider_schema.zig");
 }

@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const config_mod = @import("config.zig");
 const secret = @import("secret.zig");
 const provider = @import("provider.zig");
+const provider_schema = @import("provider_schema.zig");
 const health_mod = @import("health.zig");
 const shell_mod = @import("shell.zig");
 const paths = @import("paths.zig");
@@ -270,6 +271,28 @@ fn readSecret(ctx: *Context) PipelineError!void {
     };
     defer ctx.allocator.free(raw);
 
+    // Schema-driven parsing: look up provider definition, parse generically
+    if (provider_schema.findBuiltin(prov_name)) |def| {
+        const generic = provider_schema.parseTokenGeneric(def, raw, ctx.allocator) catch {
+            log.debug("token: schema parse failed for {s}:{s}, trying legacy parser", .{ prov_name, acct_name });
+            // Fall through to legacy parser
+            const kind = ctx.provider_kind orelse types.ProviderKind.fromString(prov_name) orelse return error.ProviderNotFound;
+            ctx.token = provider.parseToken(kind, raw, ctx.allocator) catch {
+                log.err("token: parse failed for {s}:{s}", .{ prov_name, acct_name });
+                return error.TokenParseFailed;
+            };
+            return;
+        };
+        ctx.token = .{
+            .access_token = generic.access_token,
+            .refresh_token = generic.refresh_token,
+            .token_type = generic.token_type,
+            .expires_at = generic.expires_at,
+        };
+        return;
+    }
+
+    // No schema definition — use legacy hardcoded parser
     const kind = ctx.provider_kind orelse types.ProviderKind.fromString(prov_name) orelse return error.ProviderNotFound;
     ctx.token = provider.parseToken(kind, raw, ctx.allocator) catch {
         log.err("token: parse failed for {s}:{s}", .{ prov_name, acct_name });
