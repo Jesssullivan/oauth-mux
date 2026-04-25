@@ -19,7 +19,7 @@ const log = @import("log.zig");
 // The schema is informed by:
 //   RFC 8414 — OAuth Authorization Server Metadata
 //   RFC 9728 — Protected Resource Metadata
-//   MCP Auth Spec (2025-11-25) — CIMD + Enterprise-Managed Authorization
+//   MCP Auth Spec (2025-11-25) — HTTP auth, stdio env credentials, CIMD
 //   RFC 9449 — DPoP (sender-constrained tokens)
 //   RFC 8628 — Device Authorization Grant
 
@@ -47,9 +47,20 @@ pub const ProviderDefinition = struct {
     // How to auto-detect this provider from the target command.
     detection: DetectionConfig = .{},
 
-    // ─�� Rate Limit Interpretation ──
+    // ── Capability Probes ──
+    // Optional route/capability probes. These are declarative plans, not
+    // secrets: token material is added by the caller at execution time.
+    capabilities: []const CapabilityDefinition = &.{},
+
+    // ── Rate Limit Interpretation ──
     // How to parse rate limit signals from HTTP responses.
     rate_limits: RateLimitConfig = .{},
+
+    // ── Failure Classification ──
+    // Provider-specific HTTP/status/body hints that override generic OAuth
+    // fallback classification. No regex; only exact status/range and substring
+    // hints so the parser remains std-only.
+    failure_rules: []const FailureRule = &.{},
 };
 
 pub const AuthConfig = struct {
@@ -104,6 +115,36 @@ pub const DetectionConfig = struct {
     env_markers: []const []const u8 = &.{},
 };
 
+pub const CapabilityDefinition = struct {
+    name: []const u8,
+    aliases: []const []const u8 = &.{},
+    probe: ?ProbeDefinition = null,
+};
+
+pub const ProbeDefinition = struct {
+    method: []const u8 = "GET",
+    url: []const u8,
+    auth: ProbeAuth = .bearer,
+    success_status_min: u16 = 200,
+    success_status_max: u16 = 299,
+    hint_header: ?[]const u8 = null,
+};
+
+pub const ProbeAuth = enum {
+    bearer,
+    none,
+};
+
+pub const ProbePlan = struct {
+    capability: []const u8,
+    method: []const u8,
+    url: []const u8,
+    auth: ProbeAuth,
+    success_status_min: u16,
+    success_status_max: u16,
+    hint_header: ?[]const u8 = null,
+};
+
 pub const RateLimitConfig = struct {
     // HTTP header names for rate limit info
     retry_after_header: []const u8 = "retry-after",
@@ -112,6 +153,26 @@ pub const RateLimitConfig = struct {
     limit_header: ?[]const u8 = null,
     // Threshold: retry_after above this (seconds) = quota exhaustion, below = rate limit
     quota_threshold_seconds: u32 = 3600,
+};
+
+pub const FailureRule = struct {
+    status: ?u16 = null,
+    status_min: ?u16 = null,
+    status_max: ?u16 = null,
+    retry_after_gte: ?u32 = null,
+    retry_after_lt: ?u32 = null,
+    hint_contains: ?[]const u8 = null,
+    class: FailureClass,
+};
+
+pub const FailureClass = union(enum) {
+    success,
+    rate_limited,
+    quota_exhausted,
+    degraded: types.DegradedReason,
+    dead: types.DeadReason,
+    provider_degraded,
+    failure,
 };
 
 // ── Built-in Provider Definitions ──
@@ -124,6 +185,39 @@ pub const builtin_providers = [_]ProviderDefinition{
     vercel_def,
     github_def,
     mcp_def,
+};
+
+pub const generic_def = ProviderDefinition{
+    .name = "generic",
+    .display_name = "Generic OAuth Provider",
+};
+
+const mcp_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .hint_contains = "insufficient_scope",
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "step_up",
+        .class = .{ .degraded = .step_up_required },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "pending",
+        .class = .{ .degraded = .pending_verification },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "schema",
+        .class = .{ .degraded = .schema_invalid },
+    },
+    .{
+        .status = 422,
+        .hint_contains = "schema",
+        .class = .{ .degraded = .schema_invalid },
+    },
 };
 
 pub const claude_def = ProviderDefinition{
@@ -142,7 +236,7 @@ pub const claude_def = ProviderDefinition{
         .config_dir_env = "CLAUDE_CONFIG_DIR",
         .credential_filename = ".credentials.json",
         .credential_template =
-            \\{"claudeAiOauth":{"accessToken":"{{access_token}}","refreshToken":"{{refresh_token}}"}}
+        \\{"claudeAiOauth":{"accessToken":"{{access_token}}","refreshToken":"{{refresh_token}}"}}
         ,
     },
     .detection = .{
@@ -171,7 +265,7 @@ pub const codex_def = ProviderDefinition{
         .config_dir_env = "CODEX_HOME",
         .credential_filename = "auth.json",
         .credential_template =
-            \\{"auth_mode":"chatgpt","tokens":{"access_token":"{{access_token}}","refresh_token":"{{refresh_token}}"}}
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"{{access_token}}","refresh_token":"{{refresh_token}}"}}
         ,
     },
     .detection = .{
@@ -255,7 +349,151 @@ pub const mcp_def = ProviderDefinition{
     .injection = .{
         .direct_env = &.{.{ "MCP_TOKEN", "access_token" }},
     },
+    .failure_rules = &mcp_failure_rules,
 };
+
+// ── HTTP Failure Classifier ──
+
+pub fn classifyHttp(
+    def: ProviderDefinition,
+    status: u16,
+    retry_after: ?u32,
+    hint: ?[]const u8,
+) types.HttpClassification {
+    for (def.failure_rules) |rule| {
+        if (!failureRuleMatches(rule, status, retry_after, hint)) continue;
+        return classificationFromRule(rule.class, retry_after);
+    }
+
+    if (status >= 200 and status <= 299) return .success;
+
+    if (status == 429) {
+        const wait = retry_after orelse 30;
+        if (wait > def.rate_limits.quota_threshold_seconds) {
+            return .{ .quota_exhausted = .{ .retry_after_s = wait } };
+        }
+        return .{ .rate_limited = .{
+            .retry_after_s = wait,
+            .window = windowFromRetryAfter(wait),
+        } };
+    }
+
+    if (status == 401) return .{ .dead = .token_revoked };
+
+    if (status == 403) {
+        if (hint) |h| {
+            if (containsIgnoreAsciiCase(h, "insufficient_scope") or containsIgnoreAsciiCase(h, "scope")) {
+                return .{ .degraded = .scope_insufficient };
+            }
+            if (containsIgnoreAsciiCase(h, "step_up")) {
+                return .{ .degraded = .step_up_required };
+            }
+            if (containsIgnoreAsciiCase(h, "pending") or containsIgnoreAsciiCase(h, "verification")) {
+                return .{ .degraded = .pending_verification };
+            }
+            if (containsIgnoreAsciiCase(h, "terms")) {
+                return .{ .degraded = .terms_required };
+            }
+        }
+        return .{ .degraded = .tier_insufficient };
+    }
+
+    if (status >= 500 and status <= 599) return .provider_degraded;
+
+    if (status >= 400 and status <= 499) return .{ .degraded = .unknown_4xx };
+
+    return .failure;
+}
+
+pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?ProbePlan {
+    for (def.capabilities) |cap| {
+        if (!capabilityMatches(cap, capability)) continue;
+        const probe = cap.probe orelse return null;
+        return .{
+            .capability = cap.name,
+            .method = probe.method,
+            .url = probe.url,
+            .auth = probe.auth,
+            .success_status_min = probe.success_status_min,
+            .success_status_max = probe.success_status_max,
+            .hint_header = probe.hint_header,
+        };
+    }
+    return null;
+}
+
+fn capabilityMatches(cap: CapabilityDefinition, requested: []const u8) bool {
+    if (std.mem.eql(u8, cap.name, requested)) return true;
+    for (cap.aliases) |alias| {
+        if (std.mem.eql(u8, alias, requested)) return true;
+    }
+    return false;
+}
+
+fn failureRuleMatches(rule: FailureRule, status: u16, retry_after: ?u32, hint: ?[]const u8) bool {
+    if (rule.status) |exact| {
+        if (status != exact) return false;
+    }
+    if (rule.status_min) |min| {
+        if (status < min) return false;
+    }
+    if (rule.status_max) |max| {
+        if (status > max) return false;
+    }
+    if (rule.retry_after_gte) |min_wait| {
+        const wait = retry_after orelse return false;
+        if (wait < min_wait) return false;
+    }
+    if (rule.retry_after_lt) |max_wait| {
+        const wait = retry_after orelse return false;
+        if (wait >= max_wait) return false;
+    }
+    if (rule.hint_contains) |needle| {
+        const h = hint orelse return false;
+        if (!containsIgnoreAsciiCase(h, needle)) return false;
+    }
+    return true;
+}
+
+fn classificationFromRule(class: FailureClass, retry_after: ?u32) types.HttpClassification {
+    return switch (class) {
+        .success => .success,
+        .rate_limited => blk: {
+            const wait = retry_after orelse 30;
+            break :blk .{ .rate_limited = .{
+                .retry_after_s = wait,
+                .window = windowFromRetryAfter(wait),
+            } };
+        },
+        .quota_exhausted => .{ .quota_exhausted = .{ .retry_after_s = retry_after orelse 3600 } },
+        .degraded => |reason| .{ .degraded = reason },
+        .dead => |reason| .{ .dead = reason },
+        .provider_degraded => .provider_degraded,
+        .failure => .failure,
+    };
+}
+
+fn windowFromRetryAfter(wait: u32) types.RateLimitWindow {
+    return if (wait <= 60) .per_minute else if (wait <= 3600) .per_hour else .per_day;
+}
+
+fn containsIgnoreAsciiCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var matched = true;
+        for (needle, 0..) |needle_char, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle_char)) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
+    return false;
+}
 
 // ── JSON Path Resolver ──
 // Resolves dot-separated paths like "claudeAiOauth.accessToken" against parsed JSON.
@@ -551,4 +789,66 @@ test "detectFromCommand" {
     try std.testing.expectEqualStrings("codex", detectFromCommand(&.{"codex"}).?.name);
     try std.testing.expectEqualStrings("github", detectFromCommand(&.{"gh"}).?.name);
     try std.testing.expect(detectFromCommand(&.{"unknown"}) == null);
+}
+
+test "classifyHttp generic rate limit and quota" {
+    const short = classifyHttp(generic_def, 429, 30, null);
+    switch (short) {
+        .rate_limited => |rl| {
+            try std.testing.expectEqual(@as(u32, 30), rl.retry_after_s);
+            try std.testing.expectEqual(types.RateLimitWindow.per_minute, rl.window);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const long = classifyHttp(generic_def, 429, 7200, null);
+    switch (long) {
+        .quota_exhausted => |q| try std.testing.expectEqual(@as(u32, 7200), q.retry_after_s),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyHttp MCP route failures" {
+    const scope = classifyHttp(mcp_def, 403, null, "Bearer error=\"insufficient_scope\"");
+    switch (scope) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const step_up = classifyHttp(mcp_def, 403, null, "mcp step_up required");
+    switch (step_up) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.step_up_required, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const schema = classifyHttp(mcp_def, 422, null, "tool schema invalid");
+    switch (schema) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.schema_invalid, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "probePlanForCapability resolves aliases" {
+    const caps = [_]CapabilityDefinition{
+        .{
+            .name = "chat:max",
+            .aliases = &.{"gpt-5.1-codex-max"},
+            .probe = .{
+                .method = "POST",
+                .url = "https://example.invalid/v1/probe",
+                .hint_header = "www-authenticate",
+            },
+        },
+    };
+    const def = ProviderDefinition{
+        .name = "toy",
+        .capabilities = &caps,
+    };
+
+    const plan = probePlanForCapability(def, "gpt-5.1-codex-max").?;
+    try std.testing.expectEqualStrings("chat:max", plan.capability);
+    try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
+    try std.testing.expect(probePlanForCapability(def, "unknown") == null);
 }

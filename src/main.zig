@@ -8,6 +8,7 @@ const types = @import("types.zig");
 const pipeline = @import("pipeline.zig");
 const health_mod = @import("health.zig");
 const provider = @import("provider.zig");
+const provider_schema = @import("provider_schema.zig");
 const daemon = @import("daemon.zig");
 
 pub fn main() !void {
@@ -40,7 +41,11 @@ pub fn main() !void {
                 log.err("config: {s}", .{@errorName(e)});
                 std.process.exit(types.ExitCode.config_error.int());
             };
-            parsed.deinit();
+            defer parsed.deinit();
+            config.validate(parsed.value, stdout) catch |e| {
+                log.err("config: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.config_error.int());
+            };
             try stdout.writeAll("config: valid\n");
         },
 
@@ -164,6 +169,7 @@ fn runEnv(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnvAr
 
     ctx.profile_name = args.profile;
     ctx.provider_name = args.provider;
+    ctx.capability_name = args.capability;
     ctx.shell = if (args.shell) |s| blk: {
         const map = std.StaticStringMap(types.ShellKind).initComptime(.{
             .{ "fish", .fish },
@@ -200,6 +206,7 @@ fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
 
     ctx.profile_name = args.profile;
     ctx.provider_name = args.provider;
+    ctx.capability_name = args.capability;
     ctx.target_argv = args.target_argv;
 
     pipeline.runExec(&ctx) catch |e| return e;
@@ -237,20 +244,30 @@ fn runHealth(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.He
         return;
     }
 
+    if (args.json) {
+        try writeHealthJson(writer, &store, args.provider);
+        return;
+    }
+
+    try writeHealthText(writer, &store, args.provider);
+}
+
+fn writeHealthText(writer: anytype, store: *health_mod.HealthStore, provider_filter: ?[]const u8) !void {
     try writer.print("oauth-mux health\n\n", .{});
-    if (store.accounts.count() == 0) {
+    if (matchingHealthCount(store, provider_filter) == 0) {
         try writer.writeAll("  no health data recorded yet\n");
     } else {
-        try writer.print("  {s:<30} {s:>6} {s:>5} {s:>5} {s:>5}  {s}\n", .{
-            "Account", "Score", "OK", "Fail", "Rate", "Circuit",
+        try writer.print("  {s:<30} {s:>6} {s:>5} {s:>5} {s:>5}  {s:<9} {s:>5}  {s}\n", .{
+            "Account", "Score", "OK", "Fail", "Rate", "Circuit", "HTTP", "Liveness",
         });
-        try writer.print("  {s:-<30} {s:->6} {s:->5} {s:->5} {s:->5}  {s:-<9}\n", .{
-            "", "", "", "", "", "",
+        try writer.print("  {s:-<30} {s:->6} {s:->5} {s:->5} {s:->5}  {s:-<9} {s:->5}  {s:-<24}\n", .{
+            "", "", "", "", "", "", "", "",
         });
         var it = store.accounts.iterator();
         while (it.next()) |entry| {
+            if (!matchesProvider(entry.key_ptr.*, provider_filter)) continue;
             const h = entry.value_ptr.*;
-            try writer.print("  {s:<30} {d:>5}% {d:>5} {d:>5} {d:>5}  {s}\n", .{
+            try writer.print("  {s:<30} {d:>5}% {d:>5} {d:>5} {d:>5}  {s:<9} ", .{
                 entry.key_ptr.*,
                 h.score.score,
                 h.score.successes,
@@ -262,8 +279,115 @@ fn runHealth(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.He
                     .half_open => "half-open",
                 },
             });
+            if (h.last_http_status) |status| {
+                try writer.print("{d:>5}  ", .{status});
+            } else {
+                try writer.writeAll("    -  ");
+            }
+            try health_mod.writeLivenessSummary(writer, h.liveness);
+            try writer.writeByte('\n');
         }
     }
+}
+
+fn writeHealthJson(writer: anytype, store: *health_mod.HealthStore, provider_filter: ?[]const u8) !void {
+    try writer.writeAll("{\"accounts\":[");
+    var first = true;
+    var it = store.accounts.iterator();
+    while (it.next()) |entry| {
+        if (!matchesProvider(entry.key_ptr.*, provider_filter)) continue;
+        if (!first) try writer.writeByte(',');
+        first = false;
+        const h = entry.value_ptr.*;
+        try writer.writeByte('{');
+        try writer.writeAll("\"key\":");
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        if (health_mod.parseHealthKey(entry.key_ptr.*)) |parts| {
+            try writer.writeAll(",\"provider\":");
+            try std.json.stringify(parts.provider, .{}, writer);
+            try writer.writeAll(",\"account\":");
+            try std.json.stringify(parts.account, .{}, writer);
+            try writer.writeAll(",\"capability\":");
+            if (parts.capability) |capability| {
+                try std.json.stringify(capability, .{}, writer);
+            } else {
+                try writer.writeAll("null");
+            }
+        }
+        try writer.print(
+            ",\"score\":{d},\"successes\":{d},\"failures\":{d},\"rate_limits\":{d},\"circuit\":\"{s}\"",
+            .{
+                h.score.score,
+                h.score.successes,
+                h.score.failures,
+                h.score.rate_limits,
+                switch (h.circuit) {
+                    .closed => "closed",
+                    .open => "open",
+                    .half_open => "half_open",
+                },
+            },
+        );
+        try writer.writeAll(",\"last_http_status\":");
+        if (h.last_http_status) |status| {
+            try writer.print("{d}", .{status});
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"liveness\":");
+        try writeLivenessJson(writer, h.liveness);
+        try writer.writeByte('}');
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeLivenessJson(writer: anytype, liveness: types.CredentialLiveness) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"summary\":");
+    try writer.writeByte('"');
+    try health_mod.writeLivenessSummary(writer, liveness);
+    try writer.writeByte('"');
+
+    switch (liveness) {
+        .live => |live| {
+            try writer.writeAll(",\"state\":\"live\"");
+            switch (live.availability) {
+                .available => try writer.writeAll(",\"availability\":\"available\""),
+                .rate_limited => |rl| try writer.print(
+                    ",\"availability\":\"rate_limited\",\"retry_after_s\":{d},\"window\":\"{s}\"",
+                    .{ rl.retry_after_s, @tagName(rl.window) },
+                ),
+                .quota_exhausted => |q| {
+                    try writer.writeAll(",\"availability\":\"quota_exhausted\",\"window_resets_at\":");
+                    if (q.window_resets_at) |reset| {
+                        try writer.print("{d}", .{reset});
+                    } else {
+                        try writer.writeAll("null");
+                    }
+                },
+                .cooldown => |c| try writer.print(",\"availability\":\"cooldown\",\"until\":{d}", .{c.until}),
+            }
+        },
+        .degraded => |d| try writer.print(",\"state\":\"degraded\",\"reason\":\"{s}\"", .{@tagName(d.reason)}),
+        .dead => |d| try writer.print(",\"state\":\"dead\",\"reason\":\"{s}\"", .{@tagName(d.reason)}),
+    }
+    try writer.writeByte('}');
+}
+
+fn matchingHealthCount(store: *health_mod.HealthStore, provider_filter: ?[]const u8) usize {
+    var count: usize = 0;
+    var it = store.accounts.iterator();
+    while (it.next()) |entry| {
+        if (matchesProvider(entry.key_ptr.*, provider_filter)) count += 1;
+    }
+    return count;
+}
+
+fn matchesProvider(key: []const u8, provider_filter: ?[]const u8) bool {
+    const filter = provider_filter orelse return true;
+    if (std.mem.eql(u8, key, filter)) return true;
+    if (!std.mem.startsWith(u8, key, filter)) return false;
+    return key.len > filter.len and key[filter.len] == ':';
 }
 
 fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.InitArgs) !void {
@@ -391,6 +515,47 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
     try writer.print("created {s}\n", .{path});
 }
 
+test "matchesProvider filters account keys" {
+    try std.testing.expect(matchesProvider("codex:max-1", "codex"));
+    try std.testing.expect(matchesProvider("codex:max-1#gpt-5.1-codex-max", "codex"));
+    try std.testing.expect(matchesProvider("codex", "codex"));
+    try std.testing.expect(!matchesProvider("codexish:max-1", "codex"));
+    try std.testing.expect(!matchesProvider("claude:work", "codex"));
+}
+
+test "writeHealthJson includes redacted liveness" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    store.recordHttpStatus("codex:max-1", 429, 30);
+    store.recordHttpStatus("claude:work", 401, null);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeHealthJson(buf.writer(), &store, "codex");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"key\":\"codex:max-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"provider\":\"codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"account\":\"max-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"rate_limited\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "claude:work") == null);
+}
+
+test "writeHealthJson includes capability routes" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    store.recordCapabilityHttpStatus("codex", "max-1", "gpt-5.1-codex-max", 429, 7200);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeHealthJson(buf.writer(), &store, "codex");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"key\":\"codex:max-1#gpt-5.1-codex-max\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability\":\"gpt-5.1-codex-max\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"quota_exhausted\"") != null);
+}
+
 // Pull in all module tests
 comptime {
     _ = @import("types.zig");
@@ -404,6 +569,7 @@ comptime {
     _ = @import("provider.zig");
     _ = @import("pipeline.zig");
     _ = @import("oauth.zig");
+    _ = @import("probe.zig");
     _ = @import("age.zig");
     _ = @import("daemon.zig");
     _ = @import("provider_schema.zig");

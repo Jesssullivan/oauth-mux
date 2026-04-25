@@ -1,10 +1,12 @@
 const std = @import("std");
 const types = @import("types.zig");
 const paths = @import("paths.zig");
+const provider_schema = @import("provider_schema.zig");
 
 pub const Config = struct {
     version: u32 = 1,
     defaults: Defaults = .{},
+    provider_definitions: std.json.ArrayHashMap(provider_schema.ProviderDefinition) = .{},
     providers: std.json.ArrayHashMap(ProviderConfig) = .{},
     profiles: std.json.ArrayHashMap(ProfileConfig) = .{},
     strategies: std.json.ArrayHashMap(StrategyConfig) = .{},
@@ -89,6 +91,70 @@ pub fn loadFromBytes(allocator: std.mem.Allocator, bytes: []const u8) !std.json.
     });
 }
 
+pub fn validate(cfg: Config, writer: anytype) !void {
+    var ok = true;
+
+    if (cfg.defaults.provider) |provider_name| {
+        if (cfg.providers.map.get(provider_name) == null) {
+            try writer.print("config error: defaults.provider references unknown provider '{s}'\n", .{provider_name});
+            ok = false;
+        }
+    }
+
+    if (cfg.defaults.strategy) |strategy_name| {
+        if (cfg.strategies.map.get(strategy_name) == null) {
+            try writer.print("config error: defaults.strategy references unknown strategy '{s}'\n", .{strategy_name});
+            ok = false;
+        }
+    }
+
+    var def_it = cfg.provider_definitions.map.iterator();
+    while (def_it.next()) |entry| {
+        try validateProviderDefinition(entry.key_ptr.*, entry.value_ptr.*, writer, &ok);
+    }
+
+    var provider_it = cfg.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        try validateProviderConfig(cfg, provider_name, prov, writer, &ok);
+    }
+
+    var profile_it = cfg.profiles.map.iterator();
+    while (profile_it.next()) |entry| {
+        const profile_name = entry.key_ptr.*;
+        const profile = entry.value_ptr.*;
+
+        if (profile.strategy) |strategy_name| {
+            if (cfg.strategies.map.get(strategy_name) == null) {
+                try writer.print("config error: profiles.{s}.strategy references unknown strategy '{s}'\n", .{ profile_name, strategy_name });
+                ok = false;
+            }
+        }
+
+        for (profile.providers) |spec| {
+            const ref = splitProviderAccount(spec) orelse {
+                try writer.print("config error: profiles.{s}.providers entry '{s}' must be provider:account[#capability]\n", .{ profile_name, spec });
+                ok = false;
+                continue;
+            };
+
+            const prov = cfg.providers.map.get(ref.provider) orelse {
+                try writer.print("config error: profiles.{s}.providers references unknown provider '{s}'\n", .{ profile_name, ref.provider });
+                ok = false;
+                continue;
+            };
+
+            if (prov.accounts.map.get(ref.account) == null) {
+                try writer.print("config error: profiles.{s}.providers references unknown account '{s}:{s}'\n", .{ profile_name, ref.provider, ref.account });
+                ok = false;
+            }
+        }
+    }
+
+    if (!ok) return error.ConfigValidationError;
+}
+
 pub fn resolveSecretBackend(secret: SecretConfig) !types.SecretBackend {
     const map = std.StaticStringMap(enum { keychain, sops, age, env, file, command, stdin }).initComptime(.{
         .{ "keychain", .keychain },
@@ -126,6 +192,188 @@ pub fn resolveSecretBackend(secret: SecretConfig) !types.SecretBackend {
         } },
         .stdin => .stdin,
     };
+}
+
+pub fn resolveProviderDefinition(cfg: Config, provider_name: []const u8) provider_schema.ProviderDefinition {
+    if (cfg.provider_definitions.map.get(provider_name)) |def| return def;
+
+    if (cfg.providers.map.get(provider_name)) |prov_cfg| {
+        if (cfg.provider_definitions.map.get(prov_cfg.kind)) |def| return def;
+        if (provider_schema.findBuiltin(prov_cfg.kind)) |def| return def;
+    }
+
+    if (provider_schema.findBuiltin(provider_name)) |def| return def;
+    return provider_schema.generic_def;
+}
+
+pub fn resolveProviderKind(cfg: Config, provider_name: []const u8) ?types.ProviderKind {
+    if (cfg.providers.map.get(provider_name)) |prov_cfg| {
+        return types.ProviderKind.fromString(prov_cfg.kind);
+    }
+    return types.ProviderKind.fromString(provider_name);
+}
+
+fn validateProviderConfig(cfg: Config, provider_name: []const u8, prov: ProviderConfig, writer: anytype, ok: *bool) !void {
+    if (provider_name.len == 0) {
+        try writer.writeAll("config error: provider name must not be empty\n");
+        ok.* = false;
+    }
+
+    if (prov.kind.len == 0) {
+        try writer.print("config error: providers.{s}.kind must not be empty\n", .{provider_name});
+        ok.* = false;
+    }
+
+    if (!hasProviderDefinition(cfg, provider_name, prov.kind)) {
+        try writer.print("config error: providers.{s}.kind '{s}' has no built-in or provider_definitions entry\n", .{ provider_name, prov.kind });
+        ok.* = false;
+    }
+
+    var account_it = prov.accounts.map.iterator();
+    while (account_it.next()) |entry| {
+        const account_name = entry.key_ptr.*;
+        const account = entry.value_ptr.*;
+
+        if (account_name.len == 0) {
+            try writer.print("config error: providers.{s}.accounts contains an empty account name\n", .{provider_name});
+            ok.* = false;
+        }
+
+        validateSecretConfig(provider_name, account_name, account.secret, writer, ok) catch |e| switch (e) {
+            error.ConfigValidationError => {},
+            else => return e,
+        };
+    }
+}
+
+fn validateProviderDefinition(def_key: []const u8, def: provider_schema.ProviderDefinition, writer: anytype, ok: *bool) !void {
+    if (def.name.len == 0) {
+        try writer.print("config error: provider_definitions.{s}.name must not be empty\n", .{def_key});
+        ok.* = false;
+    }
+
+    if (def.credential.access_token_path.len == 0) {
+        try writer.print("config error: provider_definitions.{s}.credential.access_token_path must not be empty\n", .{def_key});
+        ok.* = false;
+    }
+
+    if (def.credential.refresh_token_path.len == 0) {
+        try writer.print("config error: provider_definitions.{s}.credential.refresh_token_path must not be empty\n", .{def_key});
+        ok.* = false;
+    }
+
+    if (def.injection.credential_filename.len == 0) {
+        try writer.print("config error: provider_definitions.{s}.injection.credential_filename must not be empty\n", .{def_key});
+        ok.* = false;
+    }
+
+    if (def.injection.direct_env) |direct_env| {
+        for (direct_env) |mapping| {
+            if (mapping[0].len == 0) {
+                try writer.print("config error: provider_definitions.{s}.injection.direct_env contains an empty env var name\n", .{def_key});
+                ok.* = false;
+            }
+            if (!isSupportedTokenField(mapping[1])) {
+                try writer.print("config error: provider_definitions.{s}.injection.direct_env maps {s} to unsupported token field '{s}'\n", .{ def_key, mapping[0], mapping[1] });
+                ok.* = false;
+            }
+        }
+    }
+
+    for (def.capabilities, 0..) |capability, idx| {
+        if (capability.name.len == 0) {
+            try writer.print("config error: provider_definitions.{s}.capabilities[{d}].name must not be empty\n", .{ def_key, idx });
+            ok.* = false;
+        }
+        if (capability.probe) |probe| {
+            if (!isSupportedProbeMethod(probe.method)) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.method '{s}' is unsupported\n", .{ def_key, idx, probe.method });
+                ok.* = false;
+            }
+            if (probe.url.len == 0) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not be empty\n", .{ def_key, idx });
+                ok.* = false;
+            }
+            if (probe.success_status_min > probe.success_status_max) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe success status range is invalid\n", .{ def_key, idx });
+                ok.* = false;
+            }
+        }
+    }
+
+    for (def.failure_rules, 0..) |rule, idx| {
+        if (rule.status_min) |min| {
+            if (rule.status_max) |max| {
+                if (min > max) {
+                    try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] has status_min greater than status_max\n", .{ def_key, idx });
+                    ok.* = false;
+                }
+            }
+        }
+        if (rule.retry_after_gte) |min_wait| {
+            if (rule.retry_after_lt) |max_wait| {
+                if (min_wait >= max_wait) {
+                    try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] retry_after_gte must be less than retry_after_lt\n", .{ def_key, idx });
+                    ok.* = false;
+                }
+            }
+        }
+    }
+}
+
+fn validateSecretConfig(provider_name: []const u8, account_name: []const u8, secret: SecretConfig, writer: anytype, ok: *bool) !void {
+    _ = resolveSecretBackend(secret) catch {
+        try writer.print("config error: providers.{s}.accounts.{s}.secret is incomplete for backend '{s}'\n", .{ provider_name, account_name, secret.backend });
+        ok.* = false;
+        return error.ConfigValidationError;
+    };
+
+    if (std.mem.eql(u8, secret.backend, "command")) {
+        if (secret.command == null or secret.command.?.len == 0) {
+            try writer.print("config error: providers.{s}.accounts.{s}.secret.command must not be empty\n", .{ provider_name, account_name });
+            ok.* = false;
+        }
+    }
+}
+
+fn hasProviderDefinition(cfg: Config, provider_name: []const u8, provider_kind: []const u8) bool {
+    if (cfg.provider_definitions.map.get(provider_name) != null) return true;
+    if (cfg.provider_definitions.map.get(provider_kind) != null) return true;
+    return provider_schema.findBuiltin(provider_kind) != null or provider_schema.findBuiltin(provider_name) != null;
+}
+
+const ProviderAccountRef = struct {
+    provider: []const u8,
+    account: []const u8,
+    capability: ?[]const u8 = null,
+};
+
+fn splitProviderAccount(spec: []const u8) ?ProviderAccountRef {
+    const idx = std.mem.indexOf(u8, spec, ":") orelse return null;
+    if (idx == 0 or idx + 1 >= spec.len) return null;
+
+    const rest = spec[idx + 1 ..];
+    if (std.mem.indexOf(u8, rest, "#")) |hash| {
+        if (hash == 0 or hash + 1 >= rest.len) return null;
+        return .{
+            .provider = spec[0..idx],
+            .account = rest[0..hash],
+            .capability = rest[hash + 1 ..],
+        };
+    }
+
+    return .{ .provider = spec[0..idx], .account = rest };
+}
+
+fn isSupportedTokenField(field: []const u8) bool {
+    return std.mem.eql(u8, field, "access_token") or
+        std.mem.eql(u8, field, "refresh_token");
+}
+
+fn isSupportedProbeMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "GET") or
+        std.mem.eql(u8, method, "POST") or
+        std.mem.eql(u8, method, "HEAD");
 }
 
 test "loadFromBytes minimal config" {
@@ -166,6 +414,241 @@ test "loadFromBytes minimal config" {
     try std.testing.expectEqual(@as(i32, 10), work.priority);
     try std.testing.expectEqualStrings("env", work.secret.backend);
     try std.testing.expectEqualStrings("CLAUDE_TOKEN", work.secret.variable.?);
+}
+
+test "loadFromBytes provider definition override" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "display_name": "Toy CLI",
+        \\      "credential": {
+        \\        "access_token_path": "tokens.access",
+        \\        "refresh_token_path": "tokens.refresh"
+        \\      },
+        \\      "injection": {
+        \\        "direct_env": [["TOY_TOKEN", "access_token"]]
+        \\      },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "aliases": ["gpt-5.1-codex-max"],
+        \\          "probe": {
+        \\            "method": "POST",
+        \\            "url": "https://example.invalid/v1/probe",
+        \\            "hint_header": "www-authenticate"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        {
+        \\          "status": 403,
+        \\          "hint_contains": "scope",
+        \\          "class": { "degraded": "scope_insufficient" }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    const def = resolveProviderDefinition(parsed.value, "toy");
+    try std.testing.expectEqualStrings("Toy CLI", def.display_name);
+    try std.testing.expectEqualStrings("tokens.access", def.credential.access_token_path);
+    try std.testing.expectEqual(@as(usize, 1), def.capabilities.len);
+    const plan = provider_schema.probePlanForCapability(def, "gpt-5.1-codex-max").?;
+    try std.testing.expectEqualStrings("chat:max", plan.capability);
+    try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqual(@as(usize, 1), def.failure_rules.len);
+    const classified = provider_schema.classifyHttp(def, 403, null, "missing scope");
+    switch (classified) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try validate(parsed.value, out.writer());
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "validate rejects unknown provider kind without definition" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "has no built-in or provider_definitions entry") != null);
+}
+
+test "validate rejects unknown profile account" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "research": { "providers": ["codex:max-2"] }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "unknown account 'codex:max-2'") != null);
+}
+
+test "validate accepts capability profile route" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "research": { "providers": ["codex:max-1#gpt-5.1-codex-max"] }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try validate(parsed.value, out.writer());
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "validate rejects unsupported direct env token field" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "injection": {
+        \\        "direct_env": [["TOY_EXPIRES", "expires_at"]]
+        \\      }
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "unsupported token field 'expires_at'") != null);
+}
+
+test "validate rejects unsupported capability probe method" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "TRACE",
+        \\            "url": "https://example.invalid/v1/probe"
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.method 'TRACE' is unsupported") != null);
 }
 
 test "resolveSecretBackend keychain" {

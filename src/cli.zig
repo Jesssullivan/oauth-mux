@@ -21,6 +21,7 @@ pub const Command = union(enum) {
     pub const ExecArgs = struct {
         profile: ?[]const u8 = null,
         provider: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
         strategy: ?[]const u8 = null,
         target_argv: []const []const u8 = &.{},
     };
@@ -28,6 +29,7 @@ pub const Command = union(enum) {
     pub const EnvArgs = struct {
         profile: ?[]const u8 = null,
         provider: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
         shell: ?[]const u8 = null,
     };
 
@@ -37,6 +39,7 @@ pub const Command = union(enum) {
     };
 
     pub const HealthArgs = struct {
+        json: bool = false,
         provider: ?[]const u8 = null,
         reset: ?[]const u8 = null,
     };
@@ -96,6 +99,9 @@ fn parseExec(args: []const []const u8) Command {
         } else if (eql(args[i], "--provider")) {
             i += 1;
             if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
         } else if (eql(args[i], "--strategy")) {
             i += 1;
             if (i < args.len) result.strategy = args[i];
@@ -114,6 +120,9 @@ fn parseEnv(args: []const []const u8) Command {
         } else if (eql(args[i], "--provider")) {
             i += 1;
             if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
         } else if (eql(args[i], "--shell")) {
             i += 1;
             if (i < args.len) result.shell = args[i];
@@ -134,7 +143,9 @@ fn parseHealth(args: []const []const u8) Command {
     var result = Command.HealthArgs{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (eql(args[i], "--reset")) {
+        if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (eql(args[i], "--reset")) {
             i += 1;
             if (i < args.len) result.reset = args[i];
         } else if (eql(args[i], "--provider")) {
@@ -171,17 +182,17 @@ pub fn printUsage(writer: anytype) !void {
         \\Usage: oauth-mux <command> [options]
         \\
         \\Commands:
-        \\  exec [--profile <name>] [--provider <name>] -- <cmd> [args...]
+        \\  exec [--profile <name>] [--provider <name>] [--capability <name>] -- <cmd> [args...]
         \\      Execute a command with muxed OAuth credentials injected.
         \\
-        \\  env [--profile <name>] [--shell fish|zsh|bash|ksh]
+        \\  env [--profile <name>] [--provider <name>] [--capability <name>] [--shell fish|zsh|bash|ksh]
         \\      Print shell export statements for eval.
         \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
         \\
-        \\  health [--reset <account>] [--provider <name>]
-        \\      Show or reset health tracking data.
+        \\  health [--json] [--reset <account>] [--provider <name>]
+        \\      Show or reset redacted health and liveness tracking data.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -213,11 +224,12 @@ pub fn printUsage(writer: anytype) !void {
 }
 
 test "parse exec with profile and target" {
-    const args = [_][]const u8{ "exec", "--profile", "work", "--", "claude", "chat" };
+    const args = [_][]const u8{ "exec", "--profile", "work", "--capability", "gpt-5.1-codex-max", "--", "claude", "chat" };
     const cmd = parse(&args);
     switch (cmd) {
         .exec => |exec| {
             try std.testing.expectEqualStrings("work", exec.profile.?);
+            try std.testing.expectEqualStrings("gpt-5.1-codex-max", exec.capability.?);
             try std.testing.expectEqual(@as(usize, 2), exec.target_argv.len);
             try std.testing.expectEqualStrings("claude", exec.target_argv[0]);
             try std.testing.expectEqualStrings("chat", exec.target_argv[1]);
@@ -227,10 +239,13 @@ test "parse exec with profile and target" {
 }
 
 test "parse env with shell" {
-    const args = [_][]const u8{ "env", "--shell", "fish" };
+    const args = [_][]const u8{ "env", "--shell", "fish", "--capability", "tools/design-context" };
     const cmd = parse(&args);
     switch (cmd) {
-        .env => |env_args| try std.testing.expectEqualStrings("fish", env_args.shell.?),
+        .env => |env_args| {
+            try std.testing.expectEqualStrings("fish", env_args.shell.?);
+            try std.testing.expectEqualStrings("tools/design-context", env_args.capability.?);
+        },
         else => return error.Unexpected,
     }
 }
@@ -240,6 +255,18 @@ test "parse status json" {
     const cmd = parse(&args);
     switch (cmd) {
         .status => |status| try std.testing.expect(status.json),
+        else => return error.Unexpected,
+    }
+}
+
+test "parse health json provider" {
+    const args = [_][]const u8{ "health", "--json", "--provider", "codex" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .health => |health| {
+            try std.testing.expect(health.json);
+            try std.testing.expectEqualStrings("codex", health.provider.?);
+        },
         else => return error.Unexpected,
     }
 }
@@ -258,6 +285,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env' -l profile -s p -d 'Profile name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
