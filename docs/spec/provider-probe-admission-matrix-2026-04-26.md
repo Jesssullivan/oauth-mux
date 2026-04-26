@@ -26,7 +26,7 @@ implemented yet.
 | Provider | Current Admission | Probe Shape | Required Classification |
 | --- | --- | --- | --- |
 | Codex / OpenAI subscription | `admitted_command`; direct HTTP `unadmitted` | `codex exec --json` under selected `CODEX_HOME` | JSONL success, unsupported model/tier, quota/rate, revoked auth |
-| Claude Code subscription | `admitted_command` | Claude Code-owned login/config/keychain boundary; command probe still needs exact CLI command selection | logged out, keychain/session missing, Pro/Max tier mismatch, rate/quota, 401-triggered helper refresh |
+| Claude Code subscription | `admitted_command`; built-in `auth-status` probe | `claude auth status --json` under selected `CLAUDE_CONFIG_DIR`; no prompt/model call | logged in, logged out, keychain/session missing; tier/rate/quota still require future route probes |
 | Anthropic API key | `admitted_http`; not subscription equivalent | `GET https://api.anthropic.com/v1/models` with `x-api-key` and `anthropic-version`; avoid message probes that spend tokens | 200 live, 401 dead, 403/scope or workspace issue, 429 rate/quota, 5xx provider degraded |
 | MCP HTTP server | `mcp_profile` | First request or metadata discovery via RFC 9728 protected resource metadata, then resource-bound bearer token requests | 401 auth required/dead, 403 insufficient_scope or step-up, malformed metadata, provider degraded |
 | MCP stdio server | `admitted_command` / injection | Environment or config injection; MCP HTTP OAuth flow does not apply | missing secret, malformed env/config, child-process failure |

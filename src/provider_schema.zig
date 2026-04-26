@@ -214,6 +214,41 @@ pub const generic_def = ProviderDefinition{
     .display_name = "Generic OAuth Provider",
 };
 
+const claude_failure_rules = [_]FailureRule{
+    .{
+        .status = 400,
+        .hint_contains = "\"loggedIn\": false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "\"loggedIn\":false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const claude_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "auth-status",
+        .aliases = &.{ "status", "identity", "whoami" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .timeout_ms = 30_000,
+            .command = &.{ "claude", "auth", "status", "--json" },
+        },
+    },
+};
+
 const mcp_failure_rules = [_]FailureRule{
     .{
         .status = 403,
@@ -457,6 +492,8 @@ pub const claude_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"claude"},
     },
+    .capabilities = &claude_capabilities,
+    .failure_rules = &claude_failure_rules,
     .rate_limits = .{
         .remaining_header = "x-ratelimit-remaining",
         .reset_header = "x-ratelimit-reset",
@@ -1180,6 +1217,25 @@ test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqual(ProbeTransport.command, mini_plan.transport);
     try std.testing.expectEqualStrings("codex-mini", mini_plan.capability);
     try std.testing.expectEqualStrings("gpt-5.3-codex-spark", mini_plan.command.?[6]);
+}
+
+test "claude auth status capability uses admitted command probe" {
+    const plan = probePlanForCapability(claude_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.command, plan.transport);
+    try std.testing.expectEqualStrings("auth-status", plan.capability);
+    try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expectEqualStrings("claude", plan.command.?[0]);
+    try std.testing.expectEqualStrings("auth", plan.command.?[1]);
+    try std.testing.expectEqualStrings("status", plan.command.?[2]);
+    try std.testing.expectEqualStrings("--json", plan.command.?[3]);
+}
+
+test "claude failure rules classify logged out status as dead" {
+    const classification = classifyHttp(claude_def, 400, null, "{\"loggedIn\":false}");
+    switch (classification) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "github identity capability uses admitted user probe" {
