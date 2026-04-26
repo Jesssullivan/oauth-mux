@@ -37,6 +37,9 @@ Implemented:
 - Induced route-failure pipeline coverage: a degraded `codex-max` route falls
   through to the next account while the same account remains eligible for
   `codex-mini`.
+- Provider authoring checklist for schema-only OAuth harness support, including
+  HTTP-vs-command probe admission rules and the current Codex direct-HTTP
+  research finding.
 
 ## Key Decisions
 
@@ -103,9 +106,8 @@ events.
 
 1. Add live provider verification for the first safe non-quota-burning Codex
    HTTP status endpoint, if one exists.
-2. Define the provider authoring checklist for adding a new OAuth harness from
-   schema alone: identity boundary, secret backend, injection shape, refresh
-   behavior, probe plan, failure rules, and privacy constraints.
+2. Promote provider authoring checks into config/test affordances where useful,
+   starting with probe privacy, failure-rule coverage, and fixture redaction.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
