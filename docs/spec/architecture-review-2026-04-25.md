@@ -74,6 +74,8 @@ Implemented:
   `GET /v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta`.
 - Built-in Claude Code `auth-status` command probe using the documented
   `claude auth status --json` command under the selected `CLAUDE_CONFIG_DIR`.
+- Built-in FlakeHub / Determinate `status` command probe using
+  `determinate-nixd status`; direct HTTP remains unadmitted.
 
 ## Key Decisions
 
@@ -133,8 +135,8 @@ Decision record:
 ## Current Risks
 
 - Direct Codex HTTP probing is intentionally unadmitted pending official
-  endpoint documentation. MCP and FlakeHub still need the same
-  provider-by-provider probe admission review before direct probes are added.
+  endpoint documentation. MCP still needs resource-server probe modeling before
+  direct probes are added.
 - Probe execution is intentionally minimal: HTTP method, URL, bearer auth,
   explicit custom token headers, success range, retry-after, one hint header,
   one optional response-body hint, or argv plus account env and an explicit
@@ -151,8 +153,8 @@ Decision record:
 
 ## Next Arc
 
-1. Apply the provider admission gate to MCP and FlakeHub before adding any
-   direct HTTP probes.
+1. Apply the provider admission gate to MCP before adding any direct HTTP
+   probes.
 2. Convert the remaining `admitted_http` rows into schema fixtures and
    failure-rule tests one provider at a time. Figma plan tokens now use a
    resource-scoped metadata probe; live use requires
@@ -193,6 +195,9 @@ OMUX_CONFIG=$PWD/examples/figma-plan.config.json ./zig-out/bin/oauth-mux config 
 config: valid
 
 OMUX_CONFIG=$PWD/examples/claude.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
+
+OMUX_CONFIG=$PWD/examples/flakehub.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
 
 just check

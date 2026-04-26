@@ -206,6 +206,7 @@ pub const builtin_providers = [_]ProviderDefinition{
     github_def,
     linear_def,
     figma_def,
+    flakehub_def,
     mcp_def,
 };
 
@@ -429,6 +430,41 @@ const figma_capabilities = [_]CapabilityDefinition{
     },
 };
 
+const flakehub_failure_rules = [_]FailureRule{
+    .{
+        .status = 200,
+        .hint_contains = "Logged in: false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "Logged in: false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const flakehub_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "status",
+        .aliases = &.{ "identity", "whoami" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .timeout_ms = 30_000,
+            .command = &.{ "determinate-nixd", "status" },
+        },
+    },
+};
+
 const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-max",
@@ -635,6 +671,20 @@ pub const figma_def = ProviderDefinition{
     },
     .capabilities = &figma_capabilities,
     .failure_rules = &figma_failure_rules,
+};
+
+pub const flakehub_def = ProviderDefinition{
+    .name = "flakehub",
+    .display_name = "FlakeHub / Determinate Nix",
+    .credential = .{
+        .access_token_path = "token",
+        .token_type = "api_key",
+    },
+    .detection = .{
+        .binary_names = &.{ "determinate-nixd", "fh" },
+    },
+    .capabilities = &flakehub_capabilities,
+    .failure_rules = &flakehub_failure_rules,
 };
 
 pub const mcp_def = ProviderDefinition{
@@ -1326,6 +1376,23 @@ test "figma failure rules classify missing resource as route degradation" {
     const classification = classifyHttp(figma_def, 404, null, null);
     switch (classification) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "flakehub status capability uses admitted command probe" {
+    const plan = probePlanForCapability(flakehub_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.command, plan.transport);
+    try std.testing.expectEqualStrings("status", plan.capability);
+    try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expectEqualStrings("determinate-nixd", plan.command.?[0]);
+    try std.testing.expectEqualStrings("status", plan.command.?[1]);
+}
+
+test "flakehub failure rules classify logged out status as dead" {
+    const classification = classifyHttp(flakehub_def, 200, null, "Logged in: false");
+    switch (classification) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
         else => return error.TestUnexpectedResult,
     }
 }

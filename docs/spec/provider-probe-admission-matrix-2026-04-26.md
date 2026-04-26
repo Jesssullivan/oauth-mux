@@ -35,7 +35,7 @@ implemented yet.
 | Figma REST | `admitted_http`; built-in OAuth `identity`, PAT `identity-pat`, and plan-token `file-metadata-plan` probes | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs use `X-Figma-Token`; plan access tokens use `GET /v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta` with `file_metadata:read` | 200 live, 401 dead, 403 scope/tier, 404 resource not allowed/found, 429/rate, 5xx degraded |
 | Figma Remote MCP | `mcp_profile` | Treat as MCP HTTP resource, not as Figma REST | MCP metadata, scope challenge, tool/schema errors |
 | Vercel | `admitted_http`; built-in `identity` probe | `GET https://api.vercel.com/v2/user`; token metadata endpoint and semantic `softBlock` body checks are later optional refinements | 200 live, 401 dead, 403 forbidden/team/scope, 429/rate, 5xx degraded |
-| FlakeHub / Determinate | `admitted_command`; direct HTTP `unadmitted` | `fh status` / Determinate-managed netrc and JWT boundary | logged in, token expiry, missing netrc, generated token expiry |
+| FlakeHub / Determinate | `admitted_command`; built-in `status` probe; direct HTTP `unadmitted` | `determinate-nixd status`; `fh status` remains an equivalent future CLI path when installed | logged in, logged out, local daemon/auth failure; generated token expiry remains future typed parsing |
 
 ## Implementation Notes
 
