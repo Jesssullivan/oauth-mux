@@ -79,6 +79,9 @@ Implemented:
 - Built-in MCP HTTP `resource-metadata` and `resource` probe templates for
   RFC 9728 protected resource metadata and audience-bound bearer resource
   checks.
+- Release entrypoint alignment: `just release` now aliases the full release
+  build, Windows targets are included in `release-all`, and `just check`
+  validates every example config after build.
 
 ## Key Decisions
 
@@ -146,7 +149,8 @@ Decision record:
   timeout. Request body templating and richer header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
-- No release packaging changes have been made in this checkpoint.
+- Release packaging templates exist for curl installer, npm, Homebrew, and
+  nfpm; checksum/artifact publication remains release-automation work.
 - The live Codex route probes intentionally spend small subscription calls and
   should remain explicit operator actions or bounded fallback checks, not a
   background polling loop.
@@ -158,10 +162,9 @@ Decision record:
 
 1. Add provider-specific MCP examples only when the resource server URL and
    token audience are explicit.
-2. Convert the remaining `admitted_http` rows into schema fixtures and
-   failure-rule tests one provider at a time. Figma plan tokens now use a
-   resource-scoped metadata probe; live use requires
-   `OMUX_FIGMA_PLAN_FILE_KEY` to name a file allowed by the token.
+2. Turn the existing dist templates into a release automation path that emits
+   tarballs, checksums, npm platform packages, Homebrew formula updates, and
+   nfpm deb/rpm artifacts from one version input.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -207,7 +210,7 @@ OMUX_CONFIG=$PWD/examples/mcp-http.config.json ./zig-out/bin/oauth-mux config va
 config: valid
 
 just check
-all checks passed
+validates every examples/*.config.json and prints all checks passed
 
 just codex-max-login-status-all
 max-1 -> Logged in using ChatGPT
