@@ -286,14 +286,7 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
             ok.* = false;
         }
         if (capability.probe) |probe| {
-            if (!isSupportedProbeMethod(probe.method)) {
-                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.method '{s}' is unsupported\n", .{ def_key, idx, probe.method });
-                ok.* = false;
-            }
-            if (probe.url.len == 0) {
-                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not be empty\n", .{ def_key, idx });
-                ok.* = false;
-            }
+            try validateProbeDefinition(def_key, idx, probe, writer, ok);
             if (probe.success_status_min > probe.success_status_max) {
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe success status range is invalid\n", .{ def_key, idx });
                 ok.* = false;
@@ -318,6 +311,33 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
                 }
             }
         }
+    }
+}
+
+fn validateProbeDefinition(
+    def_key: []const u8,
+    capability_idx: usize,
+    probe: provider_schema.ProbeDefinition,
+    writer: anytype,
+    ok: *bool,
+) !void {
+    switch (probe.transport) {
+        .http => {
+            if (!isSupportedProbeMethod(probe.method)) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.method '{s}' is unsupported\n", .{ def_key, capability_idx, probe.method });
+                ok.* = false;
+            }
+            if (probe.url.len == 0) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not be empty\n", .{ def_key, capability_idx });
+                ok.* = false;
+            }
+        },
+        .command => {
+            if (probe.command == null or probe.command.?.len == 0) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.command must not be empty\n", .{ def_key, capability_idx });
+                ok.* = false;
+            }
+        },
     }
 }
 
@@ -649,6 +669,48 @@ test "validate rejects unsupported capability probe method" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.method 'TRACE' is unsupported") != null);
+}
+
+test "validate rejects empty command capability probe" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "transport": "command",
+        \\            "command": []
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.command must not be empty") != null);
 }
 
 test "resolveSecretBackend keychain" {

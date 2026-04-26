@@ -22,8 +22,8 @@ Implemented:
   refresh endpoints, failure classification, and capability probes.
 - Semantic `config validate` for provider definitions, profile references,
   secrets, direct env mappings, failure rules, and probe definitions.
-- Std-only probe execution module that classifies probe HTTP results and records
-  them into typed health state.
+- Std-only probe execution module that classifies HTTP and command probe
+  results and records them into typed health state.
 - Operator-facing `probe` command for account validation and capability probes
   without launching a target command.
 - Codex Max example config and operator plan for three subscription accounts.
@@ -58,29 +58,43 @@ Provider definitions may describe how to probe a capability. The access token is
 injected only at execution time, never persisted in the provider schema, health
 state, or logs.
 
+Command probes follow the same rule: the provider definition stores argv only,
+and the pipeline supplies account-scoped env such as `CODEX_HOME` at execution
+time.
+
 ### Codex Max Needs Capability Routes
 
 Three Codex Max accounts are not just three login stores. The mux must know
 whether a specific model/task route is unavailable, quota exhausted, temporarily
 rate-limited, or auth-dead.
 
+### Codex Uses Command Probes First
+
+The first verified Codex route probes use `codex exec --json` rather than a
+direct OAuth resource endpoint. That matches the subscription-backed ChatGPT
+surface actually exposed by Codex CLI 0.125.0 on this workstation and lets the
+mux distinguish a live route from plan/model incompatibility by parsing JSONL
+events.
+
 ## Current Risks
 
-- Real provider probe endpoints are not yet pinned for Codex/Claude/MCP. The
-  schema can express probes, and the runtime can execute them, but provider
-  definitions still need verified live endpoints and response semantics.
-- Probe execution is intentionally minimal: method, URL, bearer auth, success
-  range, retry-after, and one hint header. Request body templating and richer
-  header extraction are future work.
+- Direct provider probe endpoints are not yet pinned for Codex/Claude/MCP. The
+  schema can express HTTP and command probes, but direct HTTP endpoint semantics
+  still need provider verification.
+- Probe execution is intentionally minimal: HTTP method, URL, bearer auth,
+  success range, retry-after, one hint header, or argv plus account env. Request
+  body templating, richer header extraction, and command timeout policy are
+  future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
 - No release packaging changes have been made in this checkpoint.
 
 ## Next Arc
 
-1. Verify real Codex CLI subscription live route probe shape.
+1. Exercise `oauth-mux probe` against each of the three real Codex Max account
+   directories.
 2. Add live provider verification for the first safe non-quota-burning Codex
-   status endpoint, if one exists.
+   HTTP status endpoint, if one exists.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 

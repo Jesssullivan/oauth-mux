@@ -122,12 +122,19 @@ pub const CapabilityDefinition = struct {
 };
 
 pub const ProbeDefinition = struct {
+    transport: ProbeTransport = .http,
     method: []const u8 = "GET",
-    url: []const u8,
+    url: []const u8 = "",
+    command: ?[]const []const u8 = null,
     auth: ProbeAuth = .bearer,
     success_status_min: u16 = 200,
     success_status_max: u16 = 299,
     hint_header: ?[]const u8 = null,
+};
+
+pub const ProbeTransport = enum {
+    http,
+    command,
 };
 
 pub const ProbeAuth = enum {
@@ -137,8 +144,10 @@ pub const ProbeAuth = enum {
 
 pub const ProbePlan = struct {
     capability: []const u8,
+    transport: ProbeTransport,
     method: []const u8,
     url: []const u8,
+    command: ?[]const []const u8 = null,
     auth: ProbeAuth,
     success_status_min: u16,
     success_status_max: u16,
@@ -237,10 +246,38 @@ const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-max",
         .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .command = &.{
+                "codex",
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-rules",
+                "-m",
+                "gpt-5.3-codex",
+                "Reply exactly: OMUX_CODEX_MAX_PROBE",
+            },
+        },
     },
     .{
         .name = "codex-mini",
         .aliases = &.{ "mini", "spark", "gpt-5.3-codex-spark", "gpt-5.1-codex-mini" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .command = &.{
+                "codex",
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-rules",
+                "-m",
+                "gpt-5.3-codex-spark",
+                "Reply exactly: OMUX_CODEX_MINI_PROBE",
+            },
+        },
     },
 };
 
@@ -437,8 +474,10 @@ pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?
         const probe = cap.probe orelse return null;
         return .{
             .capability = cap.name,
+            .transport = probe.transport,
             .method = probe.method,
             .url = probe.url,
+            .command = probe.command,
             .auth = probe.auth,
             .success_status_min = probe.success_status_min,
             .success_status_max = probe.success_status_max,
@@ -920,12 +959,19 @@ test "probePlanForCapability resolves aliases" {
     try std.testing.expect(probePlanForCapability(def, "unknown") == null);
 }
 
-test "codex capabilities include semantic max and mini aliases without pinned probes" {
+test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqualStrings("codex-max", codex_def.capabilities[0].name);
-    try std.testing.expect(probePlanForCapability(codex_def, "gpt-5.3-codex") == null);
-    try std.testing.expect(probePlanForCapability(codex_def, "max") == null);
+    const max_plan = probePlanForCapability(codex_def, "gpt-5.3-codex").?;
+    try std.testing.expectEqual(ProbeTransport.command, max_plan.transport);
+    try std.testing.expectEqualStrings("codex-max", max_plan.capability);
+    try std.testing.expectEqualStrings("codex", max_plan.command.?[0]);
+    try std.testing.expectEqualStrings("gpt-5.3-codex", max_plan.command.?[6]);
+    try std.testing.expectEqualStrings("codex-max", probePlanForCapability(codex_def, "max").?.capability);
     try std.testing.expectEqualStrings("codex-mini", codex_def.capabilities[1].name);
-    try std.testing.expect(probePlanForCapability(codex_def, "gpt-5.3-codex-spark") == null);
+    const mini_plan = probePlanForCapability(codex_def, "gpt-5.3-codex-spark").?;
+    try std.testing.expectEqual(ProbeTransport.command, mini_plan.transport);
+    try std.testing.expectEqualStrings("codex-mini", mini_plan.capability);
+    try std.testing.expectEqualStrings("gpt-5.3-codex-spark", mini_plan.command.?[6]);
 }
 
 test "classifyCodexExecJsonl success cassette" {

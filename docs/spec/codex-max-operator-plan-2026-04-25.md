@@ -86,8 +86,6 @@ Two profile lanes are defined with stable route labels:
 ```text
 codex-max  -> codex:max-1#codex-max, max-2, max-3
 codex-mini -> codex:max-1#codex-mini, max-2, max-3
-codex-max  -> codex:max-1#codex-max, max-2, max-3
-codex-mini -> codex:max-1#codex-mini, max-2, max-3
 ```
 
 Route health is stored independently from account health. A quota-exhausted
@@ -102,7 +100,8 @@ Validate the example schema:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux config validate
 ```
 
-Check selection and credential parse/expiry state for the max route:
+Check selection, credential parse/expiry state, and the built-in max route
+command probe:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json \
@@ -139,12 +138,25 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json \
 
 ## Probe Status
 
-The Codex capabilities are named in the built-in provider definition, but no
-live route probe is pinned yet. The `probe` command therefore validates account
-selection and credential parsing today, then reports that no configured
-capability probe exists.
+The built-in Codex provider now has command-transport probes for the semantic
+route labels:
 
-Do not add a Codex probe endpoint until all of the following are verified:
+```text
+codex-max  -> codex exec --json --ephemeral --ignore-rules -m gpt-5.3-codex
+codex-mini -> codex exec --json --ephemeral --ignore-rules -m gpt-5.3-codex-spark
+```
+
+These probes run with the selected account's `CODEX_HOME`, parse Codex JSONL,
+and classify `turn.completed` as success. Codex JSONL errors are fed through
+provider failure rules, so unsupported model or plan-tier messages become
+`degraded.tier_insufficient` instead of a generic circuit-breaker penalty.
+
+The command probes intentionally burn a tiny Codex call. Use them for explicit
+operator `probe` runs and capability-aware fallback decisions, not as a tight
+background polling loop.
+
+Do not add a direct Codex HTTP probe endpoint until all of the following are
+verified:
 
 - endpoint and method
 - required request body, if any

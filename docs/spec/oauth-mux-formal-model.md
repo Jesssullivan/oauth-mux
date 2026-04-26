@@ -290,12 +290,20 @@ Provider support is data first:
       "name": "chat:max",
       "aliases": ["codex-max"],
       "probe": {
-        "method": "POST",
-        "url": "https://provider.example/v1/probe",
-        "auth": "bearer",
+        "transport": "command",
+        "auth": "none",
+        "command": [
+          "codex",
+          "exec",
+          "--json",
+          "--ephemeral",
+          "--ignore-rules",
+          "-m",
+          "gpt-5.3-codex",
+          "Reply exactly: OMUX_CODEX_MAX_PROBE"
+        ],
         "success_status_min": 200,
-        "success_status_max": 299,
-        "hint_header": "www-authenticate"
+        "success_status_max": 299
       }
     }
   ],
@@ -311,11 +319,15 @@ Provider support is data first:
 
 The compiled adapter may add provider probes, but the common shape should be
 declarative enough for new OAuth-backed tools to be added without editing the
-selection core. Capability probes are plans, not secrets: token material is
-added only when the probe executes. Failure rules are intentionally small:
-exact status or status range, optional `retry_after` threshold, optional
-case-insensitive hint substring, and a typed liveness class. This keeps
-provider extension friendly without introducing regex engines or plugin code.
+selection core. Capability probes are plans, not secrets: token material or
+account-scoped env such as `CODEX_HOME` is added only when the probe executes.
+HTTP probes use `method`, `url`, bearer auth, and optional hint headers.
+Command probes use argv plus inherited environment overlays and are classified
+from stdout/stderr cassettes when the provider supplies a parser. Failure rules
+are intentionally small: exact status or status range, optional `retry_after`
+threshold, optional case-insensitive hint substring, and a typed liveness class.
+This keeps provider extension friendly without introducing regex engines or
+plugin code.
 
 ## Health Evidence
 

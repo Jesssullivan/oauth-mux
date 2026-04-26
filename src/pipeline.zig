@@ -392,13 +392,20 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
     const plan = provider_schema.probePlanForCapability(def, capability) orelse return .use_this;
 
-    const result = probe.execute(ctx.allocator, plan, tok.access_token) catch |e| switch (e) {
+    var probe_env = buildProbeEnv(ctx, prov, acct, def, plan) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.UnsupportedMethod, error.NetworkError => return error.NetworkError,
+        else => return error.ConfigValidationError,
+    };
+    defer probe_env.deinit();
+
+    const result = probe.execute(ctx.allocator, plan, tok.access_token, probe_env.pairs.items) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.UnsupportedMethod, error.UnsupportedTransport => return error.ConfigValidationError,
+        error.NetworkError => return error.NetworkError,
     };
     defer result.deinit(ctx.allocator);
 
-    const classification = probe.classifyResult(def, plan, result);
+    const classification = probe.classifyResult(ctx.allocator, def, plan, result);
     ctx.last_probe_executed = true;
     ctx.last_probe_status = result.status;
     var evidence_key: health_mod.KeyBuf = undefined;
@@ -425,6 +432,69 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
         decision,
     );
     return decision;
+}
+
+const ProbeEnv = struct {
+    allocator: std.mem.Allocator,
+    pairs: std.ArrayList([2][]const u8),
+    allocated_values: std.ArrayList([]const u8),
+
+    fn init(allocator: std.mem.Allocator) ProbeEnv {
+        return .{
+            .allocator = allocator,
+            .pairs = std.ArrayList([2][]const u8).init(allocator),
+            .allocated_values = std.ArrayList([]const u8).init(allocator),
+        };
+    }
+
+    fn deinit(self: *ProbeEnv) void {
+        for (self.allocated_values.items) |value| self.allocator.free(value);
+        self.allocated_values.deinit();
+        self.pairs.deinit();
+    }
+
+    fn addOwned(self: *ProbeEnv, key: []const u8, owned_value: []const u8) !void {
+        self.allocated_values.append(owned_value) catch {
+            self.allocator.free(owned_value);
+            return error.OutOfMemory;
+        };
+        self.pairs.append(.{ key, owned_value }) catch return error.OutOfMemory;
+    }
+
+    fn addBorrowed(self: *ProbeEnv, key: []const u8, value: []const u8) !void {
+        self.pairs.append(.{ key, value }) catch return error.OutOfMemory;
+    }
+};
+
+fn buildProbeEnv(
+    ctx: *Context,
+    prov: []const u8,
+    acct: []const u8,
+    def: provider_schema.ProviderDefinition,
+    plan: provider_schema.ProbePlan,
+) !ProbeEnv {
+    var env = ProbeEnv.init(ctx.allocator);
+    errdefer env.deinit();
+
+    if (plan.transport != .command) return env;
+
+    const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
+    const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return error.AccountNotFound;
+    const config_dir_env = providerConfigDirEnv(prov_cfg, def, ctx.provider_kind);
+
+    if (acct_cfg.config_dir) |dir| {
+        if (config_dir_env) |env_var| {
+            const expanded = paths.expandTilde(ctx.allocator, dir) catch return error.OutOfMemory;
+            try env.addOwned(env_var, expanded);
+        }
+    }
+
+    try env.addBorrowed("OMUX_ACTIVE_PROVIDER", prov);
+    try env.addBorrowed("OMUX_ACTIVE_ACCOUNT", acct);
+    try env.addBorrowed("OMUX_ACTIVE_CAPABILITY", plan.capability);
+    if (ctx.profile_name) |profile| try env.addBorrowed("OMUX_ACTIVE_PROFILE", profile);
+
+    return env;
 }
 
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
@@ -684,7 +754,7 @@ test "runEnv honors capability route health from profile" {
         \\    }}
         \\  }},
         \\  "profiles": {{
-        \\    "mux": {{ "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"] }}
+        \\    "mux": {{ "providers": ["codex:max-1#codex-route", "codex:max-2#codex-route"] }}
         \\  }},
         \\  "strategies": {{}}
         \\}}
@@ -698,7 +768,7 @@ test "runEnv honors capability route health from profile" {
 
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
-    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-route", 429, 7200);
 
     var ctx = Context.init(std.testing.allocator, parsed.value, &store);
     defer ctx.deinit();
@@ -708,9 +778,9 @@ test "runEnv honors capability route health from profile" {
 
     try std.testing.expectEqualStrings("codex", ctx.provider_name.?);
     try std.testing.expectEqualStrings("max-2", ctx.account_name.?);
-    try std.testing.expectEqualStrings("codex-max", ctx.capability_name.?);
+    try std.testing.expectEqualStrings("codex-route", ctx.capability_name.?);
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "max-2");
-    try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "codex-max");
+    try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "codex-route");
 }
 
 test "runProbe honors explicit account filter without a configured probe plan" {
@@ -766,13 +836,13 @@ test "runProbe honors explicit account filter without a configured probe plan" {
     defer ctx.deinit();
     ctx.provider_name = "codex";
     ctx.account_name = "max-2";
-    ctx.capability_name = "codex-max";
+    ctx.capability_name = "codex-route";
 
     try runProbe(&ctx);
 
     try std.testing.expectEqualStrings("codex", ctx.provider_name.?);
     try std.testing.expectEqualStrings("max-2", ctx.account_name.?);
-    try std.testing.expectEqualStrings("codex-max", ctx.capability_name.?);
+    try std.testing.expectEqualStrings("codex-route", ctx.capability_name.?);
     try std.testing.expect(!ctx.last_probe_executed);
     try std.testing.expect(store.accounts.get("codex:max-2") != null);
     try std.testing.expect(store.accounts.get("codex:max-1") == null);

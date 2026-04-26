@@ -4,6 +4,7 @@ const provider_schema = @import("provider_schema.zig");
 
 pub const ProbeError = error{
     UnsupportedMethod,
+    UnsupportedTransport,
     NetworkError,
     OutOfMemory,
 };
@@ -19,10 +20,21 @@ pub const ProbeResult = struct {
 };
 
 pub fn classifyResult(
+    allocator: std.mem.Allocator,
     def: provider_schema.ProviderDefinition,
     plan: provider_schema.ProbePlan,
     result: ProbeResult,
 ) types.HttpClassification {
+    if (plan.transport == .command) {
+        if (std.mem.eql(u8, def.name, "codex")) {
+            if (result.hint) |hint| {
+                if (provider_schema.classifyCodexExecJsonl(allocator, hint)) |classification| {
+                    return classification;
+                }
+            }
+        }
+    }
+
     if (result.status >= plan.success_status_min and result.status <= plan.success_status_max) {
         return .success;
     }
@@ -30,6 +42,18 @@ pub fn classifyResult(
 }
 
 pub fn execute(
+    allocator: std.mem.Allocator,
+    plan: provider_schema.ProbePlan,
+    access_token: []const u8,
+    env_pairs: []const [2][]const u8,
+) ProbeError!ProbeResult {
+    return switch (plan.transport) {
+        .http => executeHttp(allocator, plan, access_token),
+        .command => executeCommand(allocator, plan, env_pairs),
+    };
+}
+
+fn executeHttp(
     allocator: std.mem.Allocator,
     plan: provider_schema.ProbePlan,
     access_token: []const u8,
@@ -78,6 +102,70 @@ pub fn execute(
     };
 }
 
+fn executeCommand(
+    allocator: std.mem.Allocator,
+    plan: provider_schema.ProbePlan,
+    env_pairs: []const [2][]const u8,
+) ProbeError!ProbeResult {
+    const argv = plan.command orelse return error.UnsupportedTransport;
+    if (argv.len == 0) return error.UnsupportedTransport;
+
+    var env_map = std.process.getEnvMap(allocator) catch return error.OutOfMemory;
+    defer env_map.deinit();
+    for (env_pairs) |pair| {
+        env_map.put(pair[0], pair[1]) catch return error.OutOfMemory;
+    }
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.env_map = &env_map;
+
+    child.spawn() catch |e| {
+        const hint = std.fmt.allocPrint(allocator, "probe command spawn failed: {s}", .{@errorName(e)}) catch return error.OutOfMemory;
+        return .{ .status = 500, .hint = hint };
+    };
+
+    var stdout_buf = std.ArrayListUnmanaged(u8){};
+    var stderr_buf = std.ArrayListUnmanaged(u8){};
+    errdefer stdout_buf.deinit(allocator);
+    errdefer stderr_buf.deinit(allocator);
+
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 1024 * 1024) catch {};
+    const term = child.wait() catch |e| {
+        stdout_buf.deinit(allocator);
+        stderr_buf.deinit(allocator);
+        const hint = std.fmt.allocPrint(allocator, "probe command wait failed: {s}", .{@errorName(e)}) catch return error.OutOfMemory;
+        return .{ .status = 500, .hint = hint };
+    };
+
+    const stdout = stdout_buf.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    defer allocator.free(stdout);
+    const stderr = stderr_buf.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    defer allocator.free(stderr);
+
+    const hint = joinCommandOutput(allocator, stdout, stderr) catch return error.OutOfMemory;
+    const status: u16 = switch (term) {
+        .Exited => |code| if (code == 0) 200 else 400,
+        else => 500,
+    };
+
+    return .{ .status = status, .hint = hint };
+}
+
+fn joinCommandOutput(allocator: std.mem.Allocator, stdout: []const u8, stderr: []const u8) ![]const u8 {
+    if (stderr.len == 0) return try allocator.dupe(u8, stdout);
+    if (stdout.len == 0) return try allocator.dupe(u8, stderr);
+
+    var out = try std.ArrayList(u8).initCapacity(allocator, stdout.len + 1 + stderr.len);
+    errdefer out.deinit();
+    try out.appendSlice(stdout);
+    if (stdout[stdout.len - 1] != '\n') try out.append('\n');
+    try out.appendSlice(stderr);
+    return try out.toOwnedSlice();
+}
+
 fn methodFromString(method: []const u8) ?std.http.Method {
     if (std.mem.eql(u8, method, "GET")) return .GET;
     if (std.mem.eql(u8, method, "POST")) return .POST;
@@ -110,6 +198,7 @@ fn headerValue(response: std.http.Client.Response, name: []const u8) ?[]const u8
 test "classifyResult honors probe success range" {
     const plan = provider_schema.ProbePlan{
         .capability = "chat:max",
+        .transport = .http,
         .method = "POST",
         .url = "https://example.invalid/v1/probe",
         .auth = .bearer,
@@ -119,13 +208,14 @@ test "classifyResult honors probe success range" {
 
     try std.testing.expectEqual(
         types.HttpClassification.success,
-        classifyResult(provider_schema.generic_def, plan, .{ .status = 204 }),
+        classifyResult(std.testing.allocator, provider_schema.generic_def, plan, .{ .status = 204 }),
     );
 }
 
 test "classifyResult falls back to provider failure rules" {
     const plan = provider_schema.ProbePlan{
         .capability = "chat:max",
+        .transport = .http,
         .method = "POST",
         .url = "https://example.invalid/v1/probe",
         .auth = .bearer,
@@ -137,7 +227,7 @@ test "classifyResult falls back to provider failure rules" {
         .retry_after_s = 7200,
     };
 
-    const classified = classifyResult(provider_schema.generic_def, plan, result);
+    const classified = classifyResult(std.testing.allocator, provider_schema.generic_def, plan, result);
     switch (classified) {
         .quota_exhausted => |quota| try std.testing.expectEqual(@as(u32, 7200), quota.retry_after_s),
         else => return error.TestUnexpectedResult,
@@ -147,6 +237,7 @@ test "classifyResult falls back to provider failure rules" {
 test "classifyResult uses hint text" {
     const plan = provider_schema.ProbePlan{
         .capability = "tools/design-context",
+        .transport = .http,
         .method = "GET",
         .url = "https://example.invalid/mcp",
         .auth = .bearer,
@@ -158,9 +249,34 @@ test "classifyResult uses hint text" {
         .hint = "Bearer error=\"insufficient_scope\"",
     };
 
-    const classified = classifyResult(provider_schema.mcp_def, plan, result);
+    const classified = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, result);
     switch (classified) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyResult decodes codex command jsonl" {
+    const plan = provider_schema.ProbePlan{
+        .capability = "codex-mini",
+        .transport = .command,
+        .method = "GET",
+        .url = "",
+        .command = &.{ "codex", "exec" },
+        .auth = .none,
+        .success_status_min = 200,
+        .success_status_max = 299,
+    };
+    const result = ProbeResult{
+        .status = 400,
+        .hint =
+        \\{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"model is not supported when using Codex with a ChatGPT account\"}}"}
+        ,
+    };
+
+    const classified = classifyResult(std.testing.allocator, provider_schema.codex_def, plan, result);
+    switch (classified) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
         else => return error.TestUnexpectedResult,
     }
 }
