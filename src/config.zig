@@ -280,12 +280,14 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
         }
     }
 
+    var has_capability_probe = false;
     for (def.capabilities, 0..) |capability, idx| {
         if (capability.name.len == 0) {
             try writer.print("config error: provider_definitions.{s}.capabilities[{d}].name must not be empty\n", .{ def_key, idx });
             ok.* = false;
         }
         if (capability.probe) |probe| {
+            has_capability_probe = true;
             try validateProbeDefinition(def_key, idx, probe, writer, ok);
             if (probe.timeout_ms == 0) {
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.timeout_ms must be greater than zero\n", .{ def_key, idx });
@@ -298,24 +300,61 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
         }
     }
 
+    if (has_capability_probe and def.failure_rules.len == 0) {
+        try writer.print("config error: provider_definitions.{s} must define failure_rules when capabilities include probes\n", .{def_key});
+        ok.* = false;
+    }
+
     for (def.failure_rules, 0..) |rule, idx| {
-        if (rule.status_min) |min| {
-            if (rule.status_max) |max| {
-                if (min > max) {
-                    try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] has status_min greater than status_max\n", .{ def_key, idx });
-                    ok.* = false;
-                }
-            }
+        try validateFailureRule(def_key, idx, rule, writer, ok);
+    }
+}
+
+fn validateFailureRule(
+    def_key: []const u8,
+    rule_idx: usize,
+    rule: provider_schema.FailureRule,
+    writer: anytype,
+    ok: *bool,
+) !void {
+    if (!failureRuleHasMatcher(rule)) {
+        try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] must include at least one matcher\n", .{ def_key, rule_idx });
+        ok.* = false;
+    }
+
+    if (rule.hint_contains) |hint| {
+        if (hint.len == 0) {
+            try writer.print("config error: provider_definitions.{s}.failure_rules[{d}].hint_contains must not be empty\n", .{ def_key, rule_idx });
+            ok.* = false;
         }
-        if (rule.retry_after_gte) |min_wait| {
-            if (rule.retry_after_lt) |max_wait| {
-                if (min_wait >= max_wait) {
-                    try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] retry_after_gte must be less than retry_after_lt\n", .{ def_key, idx });
-                    ok.* = false;
-                }
+    }
+
+    if (rule.status_min) |min| {
+        if (rule.status_max) |max| {
+            if (min > max) {
+                try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] has status_min greater than status_max\n", .{ def_key, rule_idx });
+                ok.* = false;
             }
         }
     }
+
+    if (rule.retry_after_gte) |min_wait| {
+        if (rule.retry_after_lt) |max_wait| {
+            if (min_wait >= max_wait) {
+                try writer.print("config error: provider_definitions.{s}.failure_rules[{d}] retry_after_gte must be less than retry_after_lt\n", .{ def_key, rule_idx });
+                ok.* = false;
+            }
+        }
+    }
+}
+
+fn failureRuleHasMatcher(rule: provider_schema.FailureRule) bool {
+    return rule.status != null or
+        rule.status_min != null or
+        rule.status_max != null or
+        rule.retry_after_gte != null or
+        rule.retry_after_lt != null or
+        rule.hint_contains != null;
 }
 
 fn validateProbeDefinition(
@@ -887,6 +926,120 @@ test "validate rejects token material in command probe argv" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.command[3] must not contain token material") != null);
+}
+
+test "validate rejects probed provider without failure rules" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/probe"
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "must define failure_rules when capabilities include probes") != null);
+}
+
+test "validate rejects catch-all failure rule" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "failure_rules": [
+        \\        { "class": { "degraded": "unknown_4xx" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "failure_rules[0] must include at least one matcher") != null);
+}
+
+test "validate rejects empty failure rule hint" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "failure_rules": [
+        \\        { "status": 403, "hint_contains": "", "class": { "degraded": "unknown_4xx" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "failure_rules[0].hint_contains must not be empty") != null);
 }
 
 test "resolveSecretBackend keychain" {

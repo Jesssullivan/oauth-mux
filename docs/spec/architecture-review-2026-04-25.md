@@ -42,6 +42,9 @@ Implemented:
   research finding.
 - Probe privacy validation in `config validate`: capability probe URLs and
   command argv entries may not embed token material.
+- Failure-rule coverage validation in `config validate`: probed schema
+  providers must define failure rules, and each failure rule must include a
+  concrete matcher rather than acting as a catch-all classifier.
 
 ## Key Decisions
 
@@ -109,7 +112,7 @@ events.
 1. Add live provider verification for the first safe non-quota-burning Codex
    HTTP status endpoint, if one exists.
 2. Promote the remaining provider authoring checks into config/test affordances
-   where useful, starting with failure-rule coverage and fixture redaction.
+   where useful, starting with fixture redaction.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 

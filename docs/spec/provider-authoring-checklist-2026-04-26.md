@@ -203,6 +203,12 @@ Every provider should define the smallest useful `failure_rules` set:
 ]
 ```
 
+`config validate` requires schema-defined providers with capability probes to
+include failure rules. It also rejects catch-all failure rules: every rule must
+include at least one matcher such as `status`, `status_min`, `status_max`,
+`retry_after_gte`, `retry_after_lt`, or `hint_contains`. Empty
+`hint_contains` values are invalid.
+
 Routing semantics:
 
 - `dead`: user action required; do not automatically retry.

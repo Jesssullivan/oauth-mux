@@ -744,9 +744,19 @@ test "runEnv honors capability route health from profile" {
         \\{{
         \\  "version": 1,
         \\  "defaults": {{ "provider": "codex" }},
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "credential": {{
+        \\        "access_token_path": "tokens.access_token",
+        \\        "refresh_token_path": "tokens.refresh_token"
+        \\      }},
+        \\      "injection": {{ "direct_env": [["TOY_TOKEN", "access_token"]] }}
+        \\    }}
+        \\  }},
         \\  "providers": {{
         \\    "codex": {{
-        \\      "kind": "codex",
+        \\      "kind": "toy",
         \\      "accounts": {{
         \\        "max-1": {{ "priority": 30, "secret": {{ "backend": "file", "path": "{s}" }} }},
         \\        "max-2": {{ "priority": 20, "secret": {{ "backend": "file", "path": "{s}" }} }}
