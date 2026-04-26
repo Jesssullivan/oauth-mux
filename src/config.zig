@@ -335,14 +335,59 @@ fn validateProbeDefinition(
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not be empty\n", .{ def_key, capability_idx });
                 ok.* = false;
             }
+            if (containsSecretLikeProbeMaterial(probe.url)) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not contain token material\n", .{ def_key, capability_idx });
+                ok.* = false;
+            }
         },
         .command => {
             if (probe.command == null or probe.command.?.len == 0) {
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.command must not be empty\n", .{ def_key, capability_idx });
                 ok.* = false;
             }
+            if (probe.command) |command| {
+                for (command, 0..) |arg, arg_idx| {
+                    if (containsSecretLikeProbeMaterial(arg)) {
+                        try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.command[{d}] must not contain token material\n", .{ def_key, capability_idx, arg_idx });
+                        ok.* = false;
+                    }
+                }
+            }
         },
     }
+}
+
+fn containsSecretLikeProbeMaterial(value: []const u8) bool {
+    const needles = [_][]const u8{
+        "access_token=",
+        "refresh_token=",
+        "id_token=",
+        "authorization=",
+        "authorization:",
+        "bearer ",
+        "bearer%20",
+        "{{access_token}}",
+        "{{refresh_token}}",
+        "{{id_token}}",
+    };
+
+    for (needles) |needle| {
+        if (indexOfIgnoreCase(value, needle) != null) return true;
+    }
+
+    return false;
+}
+
+fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return 0;
+    if (needle.len > haystack.len) return null;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return i;
+    }
+
+    return null;
 }
 
 fn validateSecretConfig(provider_name: []const u8, account_name: []const u8, secret: SecretConfig, writer: anytype, ok: *bool) !void {
@@ -758,6 +803,90 @@ test "validate rejects zero capability probe timeout" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.timeout_ms must be greater than zero") != null);
+}
+
+test "validate rejects token material in http probe url" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/probe?access_token=secret"
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.url must not contain token material") != null);
+}
+
+test "validate rejects token material in command probe argv" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "transport": "command",
+        \\            "command": ["toy", "probe", "--header", "Authorization: Bearer secret"]
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.command[3] must not contain token material") != null);
 }
 
 test "resolveSecretBackend keychain" {

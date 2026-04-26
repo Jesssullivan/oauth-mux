@@ -40,6 +40,8 @@ Implemented:
 - Provider authoring checklist for schema-only OAuth harness support, including
   HTTP-vs-command probe admission rules and the current Codex direct-HTTP
   research finding.
+- Probe privacy validation in `config validate`: capability probe URLs and
+  command argv entries may not embed token material.
 
 ## Key Decisions
 
@@ -106,8 +108,8 @@ events.
 
 1. Add live provider verification for the first safe non-quota-burning Codex
    HTTP status endpoint, if one exists.
-2. Promote provider authoring checks into config/test affordances where useful,
-   starting with probe privacy, failure-rule coverage, and fixture redaction.
+2. Promote the remaining provider authoring checks into config/test affordances
+   where useful, starting with failure-rule coverage and fixture redaction.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 

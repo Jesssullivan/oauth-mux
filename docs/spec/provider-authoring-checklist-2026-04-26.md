@@ -184,6 +184,11 @@ when no safe public HTTP probe is documented. Command probes must be bounded by
 `timeout_ms`, must not log secrets, and should have cassettes for success and
 typed failure cases.
 
+`config validate` rejects probe URLs or command argv entries that embed obvious
+token material such as bearer authorization headers, access tokens, refresh
+tokens, ID tokens, or token-template placeholders. The mux injects credentials
+at execution time; provider schemas describe only how to run the probe.
+
 7. Map failures into liveness.
 
 Every provider should define the smallest useful `failure_rules` set:
