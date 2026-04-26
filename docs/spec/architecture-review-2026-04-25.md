@@ -65,8 +65,10 @@ Implemented:
 - Built-in Vercel `identity` capability probe using the documented `GET /v2/user`
   endpoint, with a scoped env-backed example config.
 - Built-in Figma REST OAuth `identity` capability probe using the documented
-  `GET /v1/me` endpoint. PAT and plan-access-token probing remains a future
-  custom-header schema extension.
+  `GET /v1/me` endpoint.
+- Generic custom-token-header probe auth (`auth = token_header`) plus Figma
+  PAT `identity-pat` support using `X-Figma-Token`. Plan access tokens are not
+  mapped to `/v1/me` because Figma excludes that endpoint for plan tokens.
 
 ## Key Decisions
 
@@ -129,9 +131,9 @@ Decision record:
   endpoint documentation. Claude, MCP, and FlakeHub still need the same
   provider-by-provider probe admission review before direct probes are added.
 - Probe execution is intentionally minimal: HTTP method, URL, bearer auth,
-  success range, retry-after, one hint header, or argv plus account env and an
-  explicit timeout. Request body templating and richer header extraction are
-  future work.
+  explicit custom token headers, success range, retry-after, one hint header,
+  one optional response-body hint, or argv plus account env and an explicit
+  timeout. Request body templating and richer header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
 - No release packaging changes have been made in this checkpoint.
@@ -147,8 +149,8 @@ Decision record:
 1. Apply the provider admission gate to Claude, MCP, and FlakeHub before adding
    any direct HTTP probes.
 2. Convert the remaining `admitted_http` rows into schema fixtures and
-   failure-rule tests one provider at a time. The next schema extension should
-   model explicit custom-token headers for Figma PAT and plan access tokens.
+   failure-rule tests one provider at a time. Figma plan access tokens need a
+   resource-scoped probe because `/v1/me` is not supported for plan tokens.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -176,6 +178,9 @@ OMUX_CONFIG=$PWD/examples/vercel.config.json ./zig-out/bin/oauth-mux config vali
 config: valid
 
 OMUX_CONFIG=$PWD/examples/figma.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
+
+OMUX_CONFIG=$PWD/examples/figma-pat.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
 
 just check

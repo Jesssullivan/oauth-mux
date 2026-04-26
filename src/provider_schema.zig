@@ -129,6 +129,7 @@ pub const ProbeDefinition = struct {
     content_type: ?[]const u8 = null,
     command: ?[]const []const u8 = null,
     auth: ProbeAuth = .bearer,
+    auth_header: ?[]const u8 = null,
     timeout_ms: u32 = 30_000,
     success_status_min: u16 = 200,
     success_status_max: u16 = 299,
@@ -143,6 +144,7 @@ pub const ProbeTransport = enum {
 
 pub const ProbeAuth = enum {
     bearer,
+    token_header,
     none,
 };
 
@@ -155,6 +157,7 @@ pub const ProbePlan = struct {
     content_type: ?[]const u8 = null,
     command: ?[]const []const u8 = null,
     auth: ProbeAuth,
+    auth_header: ?[]const u8 = null,
     timeout_ms: u32,
     success_status_min: u16,
     success_status_max: u16,
@@ -363,6 +366,16 @@ const figma_capabilities = [_]CapabilityDefinition{
             .method = "GET",
             .url = "https://api.figma.com/v1/me",
             .auth = .bearer,
+        },
+    },
+    .{
+        .name = "identity-pat",
+        .aliases = &.{ "me-pat", "pat" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.figma.com/v1/me",
+            .auth = .token_header,
+            .auth_header = "X-Figma-Token",
         },
     },
 };
@@ -656,6 +669,7 @@ pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?
             .content_type = probe.content_type,
             .command = probe.command,
             .auth = probe.auth,
+            .auth_header = probe.auth_header,
             .timeout_ms = probe.timeout_ms,
             .success_status_min = probe.success_status_min,
             .success_status_max = probe.success_status_max,
@@ -1208,6 +1222,16 @@ test "figma identity capability uses OAuth me probe" {
     try std.testing.expectEqualStrings("GET", plan.method);
     try std.testing.expectEqualStrings("https://api.figma.com/v1/me", plan.url);
     try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+}
+
+test "figma pat identity capability uses explicit token header" {
+    const plan = probePlanForCapability(figma_def, "me-pat").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity-pat", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.figma.com/v1/me", plan.url);
+    try std.testing.expectEqual(ProbeAuth.token_header, plan.auth);
+    try std.testing.expectEqualStrings("X-Figma-Token", plan.auth_header.?);
 }
 
 test "figma failure rules classify forbidden as scope degradation" {

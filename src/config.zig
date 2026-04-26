@@ -378,6 +378,20 @@ fn validateProbeDefinition(
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not contain token material\n", .{ def_key, capability_idx });
                 ok.* = false;
             }
+            if (probe.auth == .token_header) {
+                if (probe.auth_header) |header| {
+                    if (!isSafeTokenHeaderName(header)) {
+                        try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.auth_header must be a non-Authorization HTTP header name without control characters\n", .{ def_key, capability_idx });
+                        ok.* = false;
+                    }
+                } else {
+                    try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.auth_header is required when auth is token_header\n", .{ def_key, capability_idx });
+                    ok.* = false;
+                }
+            } else if (probe.auth_header != null) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.auth_header requires auth token_header\n", .{ def_key, capability_idx });
+                ok.* = false;
+            }
             if (probe.body) |body| {
                 if (!std.mem.eql(u8, probe.method, "POST")) {
                     try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.body requires method POST\n", .{ def_key, capability_idx });
@@ -505,6 +519,15 @@ fn isSupportedProbeMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "GET") or
         std.mem.eql(u8, method, "POST") or
         std.mem.eql(u8, method, "HEAD");
+}
+
+fn isSafeTokenHeaderName(header: []const u8) bool {
+    if (header.len == 0) return false;
+    if (std.ascii.eqlIgnoreCase(header, "authorization")) return false;
+    for (header) |c| {
+        if (c <= 32 or c == 127 or c == ':') return false;
+    }
+    return true;
 }
 
 test "loadFromBytes minimal config" {
@@ -996,6 +1019,146 @@ test "validate rejects http probe body without post" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.body requires method POST") != null);
+}
+
+test "validate rejects token header auth without header name" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "identity",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/me",
+        \\            "auth": "token_header"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 403, "class": { "degraded": "scope_insufficient" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.auth_header is required when auth is token_header") != null);
+}
+
+test "validate rejects authorization as custom token header" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "identity",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/me",
+        \\            "auth": "token_header",
+        \\            "auth_header": "Authorization"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 403, "class": { "degraded": "scope_insufficient" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.auth_header must be a non-Authorization HTTP header name") != null);
+}
+
+test "validate rejects auth header without token header auth" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "identity",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/me",
+        \\            "auth": "bearer",
+        \\            "auth_header": "X-Figma-Token"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 403, "class": { "degraded": "scope_insufficient" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.auth_header requires auth token_header") != null);
 }
 
 test "validate rejects token material in command probe argv" {

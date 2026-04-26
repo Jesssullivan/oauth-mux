@@ -71,10 +71,18 @@ fn executeHttp(
     headers_buf[header_count] = .{ .name = "Accept", .value = "application/json" };
     header_count += 1;
 
-    if (plan.auth == .bearer) {
-        bearer_value = std.fmt.allocPrint(allocator, "Bearer {s}", .{access_token}) catch return error.OutOfMemory;
-        headers_buf[header_count] = .{ .name = "Authorization", .value = bearer_value.? };
-        header_count += 1;
+    switch (plan.auth) {
+        .bearer => {
+            bearer_value = std.fmt.allocPrint(allocator, "Bearer {s}", .{access_token}) catch return error.OutOfMemory;
+            headers_buf[header_count] = .{ .name = "Authorization", .value = bearer_value.? };
+            header_count += 1;
+        },
+        .token_header => {
+            const header_name = plan.auth_header orelse return error.UnsupportedTransport;
+            headers_buf[header_count] = .{ .name = header_name, .value = access_token };
+            header_count += 1;
+        },
+        .none => {},
     }
 
     if (plan.body != null) {
