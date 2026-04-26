@@ -42,6 +42,24 @@ Redacted JSONL cassettes for these two `codex exec --json` outcomes live under:
 test/fixtures/cassettes/codex/
 ```
 
+Live three-account evidence captured on 2026-04-26:
+
+```text
+just codex-max-login-status-all
+max-1 -> Logged in using ChatGPT
+max-2 -> Logged in using ChatGPT
+max-3 -> Logged in using ChatGPT
+
+just codex-max-probe-all
+codex-mini: max-1, max-2, max-3 -> 200/use_this/live/available
+
+just codex-max-probe-all codex-max
+codex-max: max-1, max-2, max-3 -> 200/use_this/live/available
+```
+
+Only login status, auth store paths, and mux probe classifications were
+inspected. Token contents were not read or printed.
+
 Sources:
 
 - <https://help.openai.com/en/articles/11369540-codex-in-chatgpt>
@@ -85,9 +103,13 @@ The three Codex Max stores are intentionally not created or populated by
 `oauth-mux`; each store must be logged in through Codex so refresh/session state
 belongs to that isolated `CODEX_HOME`.
 
-On this workstation, inspection on 2026-04-26 found the default
-`~/.codex/auth.json` but not the three example stores under
-`~/.local/share/oauth-mux/codex/`.
+On this workstation, the three isolated stores now exist and are logged in:
+
+```text
+~/.local/share/oauth-mux/codex/max-1/auth.json
+~/.local/share/oauth-mux/codex/max-2/auth.json
+~/.local/share/oauth-mux/codex/max-3/auth.json
+```
 
 Create the isolation directories:
 
@@ -211,6 +233,9 @@ provider failure rules, so unsupported model or plan-tier messages become
 `degraded.tier_insufficient` instead of a generic circuit-breaker penalty.
 The built-in Codex probes use a 120 second timeout; custom probes default to 30
 seconds unless `timeout_ms` is set explicitly.
+
+As of the 2026-04-26 live sweep, both built-in Codex route labels have been
+verified against all three isolated Max stores.
 
 The command probes intentionally burn a tiny Codex call. Use them for explicit
 operator `probe` runs and capability-aware fallback decisions, not as a tight

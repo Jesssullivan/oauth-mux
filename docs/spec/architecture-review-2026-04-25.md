@@ -1,6 +1,6 @@
 # OAuth Mux Architecture Review
 
-Updated: 2026-04-25
+Updated: 2026-04-26
 
 Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 
@@ -30,6 +30,10 @@ Implemented:
 - `init --codex-max` for generating the three-account scaffold directly.
 - Persisted last-probe evidence fields: source, observed time, retry-after,
   hint class, and mux decision.
+- Live validation of three isolated Codex Max stores, each logged in through
+  Codex CLI with its own `CODEX_HOME`.
+- Live command-probe validation for both semantic Codex route labels:
+  `codex-mini` and `codex-max`.
 
 ## Key Decisions
 
@@ -88,14 +92,21 @@ events.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
 - No release packaging changes have been made in this checkpoint.
+- The live Codex route probes intentionally spend small subscription calls and
+  should remain explicit operator actions or bounded fallback checks, not a
+  background polling loop.
 
 ## Next Arc
 
-1. Exercise `oauth-mux probe` against each of the three real Codex Max account
-   directories.
-2. Add live provider verification for the first safe non-quota-burning Codex
+1. Add live provider verification for the first safe non-quota-burning Codex
    HTTP status endpoint, if one exists.
-3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+2. Add induced-failure coverage that proves a route-level degraded or
+   quota-exhausted state falls through to the next Codex account without
+   poisoning the account globally.
+3. Define the provider authoring checklist for adding a new OAuth harness from
+   schema alone: identity boundary, secret backend, injection shape, refresh
+   behavior, probe plan, failure rules, and privacy constraints.
+4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation
@@ -105,4 +116,15 @@ Latest validation at this checkpoint:
 ```text
 just check
 all checks passed
+
+just codex-max-login-status-all
+max-1 -> Logged in using ChatGPT
+max-2 -> Logged in using ChatGPT
+max-3 -> Logged in using ChatGPT
+
+just codex-max-probe-all
+codex-mini: max-1, max-2, max-3 -> 200/use_this/live/available
+
+just codex-max-probe-all codex-max
+codex-max: max-1, max-2, max-3 -> 200/use_this/live/available
 ```
