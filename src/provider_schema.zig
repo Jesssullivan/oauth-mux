@@ -127,6 +127,7 @@ pub const ProbeDefinition = struct {
     url: []const u8 = "",
     command: ?[]const []const u8 = null,
     auth: ProbeAuth = .bearer,
+    timeout_ms: u32 = 30_000,
     success_status_min: u16 = 200,
     success_status_max: u16 = 299,
     hint_header: ?[]const u8 = null,
@@ -149,6 +150,7 @@ pub const ProbePlan = struct {
     url: []const u8,
     command: ?[]const []const u8 = null,
     auth: ProbeAuth,
+    timeout_ms: u32,
     success_status_min: u16,
     success_status_max: u16,
     hint_header: ?[]const u8 = null,
@@ -249,6 +251,7 @@ const codex_capabilities = [_]CapabilityDefinition{
         .probe = .{
             .transport = .command,
             .auth = .none,
+            .timeout_ms = 120_000,
             .command = &.{
                 "codex",
                 "exec",
@@ -267,6 +270,7 @@ const codex_capabilities = [_]CapabilityDefinition{
         .probe = .{
             .transport = .command,
             .auth = .none,
+            .timeout_ms = 120_000,
             .command = &.{
                 "codex",
                 "exec",
@@ -479,6 +483,7 @@ pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?
             .url = probe.url,
             .command = probe.command,
             .auth = probe.auth,
+            .timeout_ms = probe.timeout_ms,
             .success_status_min = probe.success_status_min,
             .success_status_max = probe.success_status_max,
             .hint_header = probe.hint_header,
@@ -966,6 +971,7 @@ test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqualStrings("codex-max", max_plan.capability);
     try std.testing.expectEqualStrings("codex", max_plan.command.?[0]);
     try std.testing.expectEqualStrings("gpt-5.3-codex", max_plan.command.?[6]);
+    try std.testing.expectEqual(@as(u32, 120_000), max_plan.timeout_ms);
     try std.testing.expectEqualStrings("codex-max", probePlanForCapability(codex_def, "max").?.capability);
     try std.testing.expectEqualStrings("codex-mini", codex_def.capabilities[1].name);
     const mini_plan = probePlanForCapability(codex_def, "gpt-5.3-codex-spark").?;

@@ -287,6 +287,10 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
         }
         if (capability.probe) |probe| {
             try validateProbeDefinition(def_key, idx, probe, writer, ok);
+            if (probe.timeout_ms == 0) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.timeout_ms must be greater than zero\n", .{ def_key, idx });
+                ok.* = false;
+            }
             if (probe.success_status_min > probe.success_status_max) {
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe success status range is invalid\n", .{ def_key, idx });
                 ok.* = false;
@@ -711,6 +715,49 @@ test "validate rejects empty command capability probe" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.command must not be empty") != null);
+}
+
+test "validate rejects zero capability probe timeout" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/probe",
+        \\            "timeout_ms": 0
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.timeout_ms must be greater than zero") != null);
 }
 
 test "resolveSecretBackend keychain" {

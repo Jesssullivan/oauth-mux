@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const provider_schema = @import("provider_schema.zig");
 
@@ -127,31 +128,30 @@ fn executeCommand(
         return .{ .status = 500, .hint = hint };
     };
 
-    var stdout_buf = std.ArrayListUnmanaged(u8){};
-    var stderr_buf = std.ArrayListUnmanaged(u8){};
-    errdefer stdout_buf.deinit(allocator);
-    errdefer stderr_buf.deinit(allocator);
-
-    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 1024 * 1024) catch {};
-    const term = child.wait() catch |e| {
-        stdout_buf.deinit(allocator);
-        stderr_buf.deinit(allocator);
-        const hint = std.fmt.allocPrint(allocator, "probe command wait failed: {s}", .{@errorName(e)}) catch return error.OutOfMemory;
-        return .{ .status = 500, .hint = hint };
+    const output = collectCommandOutput(allocator, &child, plan.timeout_ms) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            const hint = std.fmt.allocPrint(allocator, "probe command wait failed: {s}", .{@errorName(e)}) catch return error.OutOfMemory;
+            return .{ .status = 500, .hint = hint };
+        },
     };
+    defer output.deinit(allocator);
 
-    const stdout = stdout_buf.toOwnedSlice(allocator) catch return error.OutOfMemory;
-    defer allocator.free(stdout);
-    const stderr = stderr_buf.toOwnedSlice(allocator) catch return error.OutOfMemory;
-    defer allocator.free(stderr);
+    const joined = joinCommandOutput(allocator, output.stdout, output.stderr) catch return error.OutOfMemory;
+    errdefer allocator.free(joined);
 
-    const hint = joinCommandOutput(allocator, stdout, stderr) catch return error.OutOfMemory;
-    const status: u16 = switch (term) {
+    if (output.timed_out) {
+        const hint = std.fmt.allocPrint(allocator, "probe command timed out after {d}ms\n{s}", .{ plan.timeout_ms, joined }) catch return error.OutOfMemory;
+        allocator.free(joined);
+        return .{ .status = 408, .hint = hint };
+    }
+
+    const status: u16 = switch (output.term) {
         .Exited => |code| if (code == 0) 200 else 400,
         else => 500,
     };
 
-    return .{ .status = status, .hint = hint };
+    return .{ .status = status, .hint = joined };
 }
 
 fn joinCommandOutput(allocator: std.mem.Allocator, stdout: []const u8, stderr: []const u8) ![]const u8 {
@@ -164,6 +164,115 @@ fn joinCommandOutput(allocator: std.mem.Allocator, stdout: []const u8, stderr: [
     if (stdout[stdout.len - 1] != '\n') try out.append('\n');
     try out.appendSlice(stderr);
     return try out.toOwnedSlice();
+}
+
+const CommandOutput = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    term: std.process.Child.Term,
+    timed_out: bool = false,
+
+    fn deinit(self: CommandOutput, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn collectCommandOutput(
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    timeout_ms: u32,
+) ProbeError!CommandOutput {
+    var stdout_buf = std.ArrayListUnmanaged(u8){};
+    errdefer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayListUnmanaged(u8){};
+    errdefer stderr_buf.deinit(allocator);
+
+    const timed = try collectOutputWithTimeout(
+        allocator,
+        child,
+        &stdout_buf,
+        &stderr_buf,
+        1024 * 1024,
+        timeout_ms,
+    );
+
+    const term = if (timed)
+        child.kill() catch return error.NetworkError
+    else
+        child.wait() catch return error.NetworkError;
+
+    const stdout = stdout_buf.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    errdefer allocator.free(stdout);
+    const stderr = stderr_buf.toOwnedSlice(allocator) catch return error.OutOfMemory;
+
+    return .{
+        .stdout = stdout,
+        .stderr = stderr,
+        .term = term,
+        .timed_out = timed,
+    };
+}
+
+fn collectOutputWithTimeout(
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    stdout: *std.ArrayListUnmanaged(u8),
+    stderr: *std.ArrayListUnmanaged(u8),
+    max_output_bytes: usize,
+    timeout_ms: u32,
+) ProbeError!bool {
+    var poller = std.io.poll(allocator, enum { stdout, stderr }, .{
+        .stdout = child.stdout.?,
+        .stderr = child.stderr.?,
+    });
+    defer poller.deinit();
+
+    const timeout_ns = @as(i128, timeout_ms) * @as(i128, std.time.ns_per_ms);
+    const deadline_ns = std.time.nanoTimestamp() + timeout_ns;
+
+    while (true) {
+        if (poller.fifo(.stdout).readableLength() > max_output_bytes or
+            poller.fifo(.stderr).readableLength() > max_output_bytes)
+        {
+            _ = child.kill() catch {};
+            return error.NetworkError;
+        }
+
+        const now = std.time.nanoTimestamp();
+        if (now >= deadline_ns) {
+            try appendPollFifo(allocator, stdout, poller.fifo(.stdout));
+            try appendPollFifo(allocator, stderr, poller.fifo(.stderr));
+            return true;
+        }
+
+        const remaining_ns = deadline_ns - now;
+        const poll_ns_i = @min(remaining_ns, @as(i128, 50 * std.time.ns_per_ms));
+        const keep_polling = poller.pollTimeout(@intCast(poll_ns_i)) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.NetworkError,
+        };
+        if (!keep_polling) {
+            try appendPollFifo(allocator, stdout, poller.fifo(.stdout));
+            try appendPollFifo(allocator, stderr, poller.fifo(.stderr));
+            return false;
+        }
+    }
+}
+
+fn appendPollFifo(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayListUnmanaged(u8),
+    fifo: *std.io.PollFifo,
+) !void {
+    var offset: usize = 0;
+    const total = fifo.readableLength();
+    while (offset < total) {
+        const chunk = fifo.readableSlice(offset);
+        if (chunk.len == 0) break;
+        try list.appendSlice(allocator, chunk);
+        offset += chunk.len;
+    }
 }
 
 fn methodFromString(method: []const u8) ?std.http.Method {
@@ -202,6 +311,7 @@ test "classifyResult honors probe success range" {
         .method = "POST",
         .url = "https://example.invalid/v1/probe",
         .auth = .bearer,
+        .timeout_ms = 30_000,
         .success_status_min = 202,
         .success_status_max = 204,
     };
@@ -219,6 +329,7 @@ test "classifyResult falls back to provider failure rules" {
         .method = "POST",
         .url = "https://example.invalid/v1/probe",
         .auth = .bearer,
+        .timeout_ms = 30_000,
         .success_status_min = 200,
         .success_status_max = 299,
     };
@@ -241,6 +352,7 @@ test "classifyResult uses hint text" {
         .method = "GET",
         .url = "https://example.invalid/mcp",
         .auth = .bearer,
+        .timeout_ms = 30_000,
         .success_status_min = 200,
         .success_status_max = 299,
     };
@@ -264,6 +376,7 @@ test "classifyResult decodes codex command jsonl" {
         .url = "",
         .command = &.{ "codex", "exec" },
         .auth = .none,
+        .timeout_ms = 30_000,
         .success_status_min = 200,
         .success_status_max = 299,
     };
@@ -279,4 +392,26 @@ test "classifyResult decodes codex command jsonl" {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "execute command probe enforces timeout" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const plan = provider_schema.ProbePlan{
+        .capability = "toy",
+        .transport = .command,
+        .method = "GET",
+        .url = "",
+        .command = &.{ "sh", "-c", "while true; do :; done" },
+        .auth = .none,
+        .timeout_ms = 1,
+        .success_status_min = 200,
+        .success_status_max = 299,
+    };
+
+    const result = try execute(std.testing.allocator, plan, "", &.{});
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 408), result.status);
+    try std.testing.expect(std.mem.indexOf(u8, result.hint.?, "timed out") != null);
 }

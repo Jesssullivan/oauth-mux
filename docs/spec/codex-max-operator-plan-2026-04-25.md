@@ -150,6 +150,8 @@ These probes run with the selected account's `CODEX_HOME`, parse Codex JSONL,
 and classify `turn.completed` as success. Codex JSONL errors are fed through
 provider failure rules, so unsupported model or plan-tier messages become
 `degraded.tier_insufficient` instead of a generic circuit-breaker penalty.
+The built-in Codex probes use a 120 second timeout; custom probes default to 30
+seconds unless `timeout_ms` is set explicitly.
 
 The command probes intentionally burn a tiny Codex call. Use them for explicit
 operator `probe` runs and capability-aware fallback decisions, not as a tight

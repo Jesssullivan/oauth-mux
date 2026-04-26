@@ -302,6 +302,7 @@ Provider support is data first:
           "gpt-5.3-codex",
           "Reply exactly: OMUX_CODEX_MAX_PROBE"
         ],
+        "timeout_ms": 120000,
         "success_status_min": 200,
         "success_status_max": 299
       }
@@ -322,12 +323,12 @@ declarative enough for new OAuth-backed tools to be added without editing the
 selection core. Capability probes are plans, not secrets: token material or
 account-scoped env such as `CODEX_HOME` is added only when the probe executes.
 HTTP probes use `method`, `url`, bearer auth, and optional hint headers.
-Command probes use argv plus inherited environment overlays and are classified
-from stdout/stderr cassettes when the provider supplies a parser. Failure rules
-are intentionally small: exact status or status range, optional `retry_after`
-threshold, optional case-insensitive hint substring, and a typed liveness class.
-This keeps provider extension friendly without introducing regex engines or
-plugin code.
+Command probes use argv plus inherited environment overlays, must have a
+positive `timeout_ms`, and are classified from stdout/stderr cassettes when the
+provider supplies a parser. Failure rules are intentionally small: exact status
+or status range, optional `retry_after` threshold, optional case-insensitive
+hint substring, and a typed liveness class. This keeps provider extension
+friendly without introducing regex engines or plugin code.
 
 ## Health Evidence
 

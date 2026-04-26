@@ -82,8 +82,8 @@ events.
   schema can express HTTP and command probes, but direct HTTP endpoint semantics
   still need provider verification.
 - Probe execution is intentionally minimal: HTTP method, URL, bearer auth,
-  success range, retry-after, one hint header, or argv plus account env. Request
-  body templating, richer header extraction, and command timeout policy are
+  success range, retry-after, one hint header, or argv plus account env and an
+  explicit timeout. Request body templating and richer header extraction are
   future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
