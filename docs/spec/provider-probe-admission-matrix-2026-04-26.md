@@ -32,7 +32,7 @@ implemented yet.
 | MCP stdio server | `admitted_command` / injection | Environment or config injection; MCP HTTP OAuth flow does not apply | missing secret, malformed env/config, child-process failure |
 | GitHub | `admitted_http`; built-in `identity` probe | `GET https://api.github.com/user` with bearer token | 200 live, 401 dead, 403 forbidden/rate-limited, rate-limit headers |
 | Linear | `admitted_http`; built-in `identity` probe | `POST https://api.linear.app/graphql` with `query { viewer { id name email } }` and OAuth bearer token | 200 plus GraphQL errors, 401 dead, 403/scope, 429/rate, 5xx degraded |
-| Figma REST | `admitted_http` | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs use `X-Figma-Token` | 200 live, 401 dead, 403 scope/tier, 429/rate, 5xx degraded |
+| Figma REST | `admitted_http`; built-in OAuth `identity` probe | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs and plan access tokens require a separate custom-header probe shape | 200 live, 401 dead, 403 scope/tier, 429/rate, 5xx degraded |
 | Figma Remote MCP | `mcp_profile` | Treat as MCP HTTP resource, not as Figma REST | MCP metadata, scope challenge, tool/schema errors |
 | Vercel | `admitted_http`; built-in `identity` probe | `GET https://api.vercel.com/v2/user`; token metadata endpoint and semantic `softBlock` body checks are later optional refinements | 200 live, 401 dead, 403 forbidden/team/scope, 429/rate, 5xx degraded |
 | FlakeHub / Determinate | `admitted_command`; direct HTTP `unadmitted` | `fh status` / Determinate-managed netrc and JWT boundary | logged in, token expiry, missing netrc, generated token expiry |

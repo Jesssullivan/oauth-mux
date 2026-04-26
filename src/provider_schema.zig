@@ -202,6 +202,7 @@ pub const builtin_providers = [_]ProviderDefinition{
     vercel_def,
     github_def,
     linear_def,
+    figma_def,
     mcp_def,
 };
 
@@ -338,6 +339,30 @@ const linear_capabilities = [_]CapabilityDefinition{
             .content_type = "application/json",
             .auth = .bearer,
             .hint_body = true,
+        },
+    },
+};
+
+const figma_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const figma_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "me", "whoami" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.figma.com/v1/me",
+            .auth = .bearer,
         },
     },
 };
@@ -524,6 +549,28 @@ pub const linear_def = ProviderDefinition{
     },
     .capabilities = &linear_capabilities,
     .failure_rules = &linear_failure_rules,
+};
+
+pub const figma_def = ProviderDefinition{
+    .name = "figma",
+    .display_name = "Figma REST API",
+    .auth = .{
+        .authorization_endpoint = "https://www.figma.com/oauth",
+        .token_endpoint = "https://api.figma.com/v1/oauth/token",
+    },
+    .credential = .{
+        .access_token_path = "access_token",
+        .refresh_token_path = "refresh_token",
+        .expires_in_path = "expires_in",
+    },
+    .injection = .{
+        .direct_env = &.{.{ "FIGMA_ACCESS_TOKEN", "access_token" }},
+    },
+    .detection = .{
+        .env_markers = &.{"FIGMA_ACCESS_TOKEN"},
+    },
+    .capabilities = &figma_capabilities,
+    .failure_rules = &figma_failure_rules,
 };
 
 pub const mcp_def = ProviderDefinition{
@@ -1150,6 +1197,23 @@ test "linear failure rules classify GraphQL errors as degraded" {
     const classification = classifyHttp(linear_def, 200, null, "{\"errors\":[{\"message\":\"Forbidden\"}]}");
     switch (classification) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "figma identity capability uses OAuth me probe" {
+    const plan = probePlanForCapability(figma_def, "me").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.figma.com/v1/me", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+}
+
+test "figma failure rules classify forbidden as scope degradation" {
+    const classification = classifyHttp(figma_def, 403, null, null);
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
         else => return error.TestUnexpectedResult,
     }
 }

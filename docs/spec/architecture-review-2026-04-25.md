@@ -64,6 +64,9 @@ Implemented:
   endpoint.
 - Built-in Vercel `identity` capability probe using the documented `GET /v2/user`
   endpoint, with a scoped env-backed example config.
+- Built-in Figma REST OAuth `identity` capability probe using the documented
+  `GET /v1/me` endpoint. PAT and plan-access-token probing remains a future
+  custom-header schema extension.
 
 ## Key Decisions
 
@@ -123,7 +126,7 @@ Decision record:
 ## Current Risks
 
 - Direct Codex HTTP probing is intentionally unadmitted pending official
-  endpoint documentation. Claude, MCP, Figma, and FlakeHub still need the same
+  endpoint documentation. Claude, MCP, and FlakeHub still need the same
   provider-by-provider probe admission review before direct probes are added.
 - Probe execution is intentionally minimal: HTTP method, URL, bearer auth,
   success range, retry-after, one hint header, or argv plus account env and an
@@ -141,11 +144,11 @@ Decision record:
 
 ## Next Arc
 
-1. Apply the provider admission gate to Claude, MCP, Figma, and FlakeHub before
-   adding any direct HTTP probes.
+1. Apply the provider admission gate to Claude, MCP, and FlakeHub before adding
+   any direct HTTP probes.
 2. Convert the remaining `admitted_http` rows into schema fixtures and
-   failure-rule tests one provider at a time, with Figma REST as the next
-   narrow identity probe.
+   failure-rule tests one provider at a time. The next schema extension should
+   model explicit custom-token headers for Figma PAT and plan access tokens.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -170,6 +173,9 @@ OMUX_CONFIG=$PWD/examples/linear.config.json ./zig-out/bin/oauth-mux config vali
 config: valid
 
 OMUX_CONFIG=$PWD/examples/vercel.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
+
+OMUX_CONFIG=$PWD/examples/figma.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
 
 just check
