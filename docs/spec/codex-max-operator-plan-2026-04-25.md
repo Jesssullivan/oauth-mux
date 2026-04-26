@@ -92,23 +92,32 @@ On this workstation, inspection on 2026-04-26 found the default
 Create the isolation directories:
 
 ```bash
-mkdir -p \
-  ~/.local/share/oauth-mux/codex/max-1 \
-  ~/.local/share/oauth-mux/codex/max-2 \
-  ~/.local/share/oauth-mux/codex/max-3
+just codex-max-bootstrap-dirs
 ```
 
 Then login each subscription account separately:
 
 ```bash
-CODEX_HOME=$HOME/.local/share/oauth-mux/codex/max-1 codex login
-CODEX_HOME=$HOME/.local/share/oauth-mux/codex/max-2 codex login
-CODEX_HOME=$HOME/.local/share/oauth-mux/codex/max-3 codex login
+just codex-max-login max-1
+just codex-max-login max-2
+just codex-max-login max-3
 ```
 
 Do not copy `~/.codex/auth.json` into these stores unless the goal is
 deliberately to duplicate the same account. For the three-plan mux, each login
 should produce its own `auth.json` in its own store.
+
+For device-code login instead of browser redirect, use:
+
+```bash
+just codex-max-login-device max-1
+```
+
+Check store login status without probing model routes:
+
+```bash
+just codex-max-login-status-all
+```
 
 ## Route Profiles
 
