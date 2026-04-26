@@ -38,6 +38,25 @@ health: build
 probe *ARGS: build
     ./zig-out/bin/oauth-mux probe {{ARGS}}
 
+# ── Codex Max operator helpers ──
+
+codex_max_config := "examples/codex-max.config.json"
+codex_max_state := "/tmp/oauth-mux-codex-max-health"
+
+codex-max-validate: build
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux config validate
+
+codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
+    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
+
+codex-max-probe-all CAPABILITY="codex-mini": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for account in max-1 max-2 max-3; do
+      echo "=== ${account} {{CAPABILITY}} ==="
+      OMUX_CONFIG="$PWD/{{codex_max_config}}" OMUX_STATE_DIR="{{codex_max_state}}" ./zig-out/bin/oauth-mux probe --provider codex --account "${account}" --capability "{{CAPABILITY}}" --json
+    done
+
 # ── Cross-compilation ──
 
 release-all: release-linux-amd64 release-linux-arm64 release-macos-amd64 release-macos-arm64

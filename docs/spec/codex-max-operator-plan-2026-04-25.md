@@ -1,6 +1,6 @@
 # Codex Max Operator Plan
 
-Updated: 2026-04-25
+Updated: 2026-04-26
 
 This note narrows the next `oauth-mux` arc to three Codex Max accounts.
 
@@ -79,6 +79,37 @@ This duplication is intentional for now. It keeps the runtime explicit and
 avoids guessing that every config-dir-backed provider stores credentials at the
 same relative path.
 
+## Store Bootstrap
+
+The three Codex Max stores are intentionally not created or populated by
+`oauth-mux`; each store must be logged in through Codex so refresh/session state
+belongs to that isolated `CODEX_HOME`.
+
+On this workstation, inspection on 2026-04-26 found the default
+`~/.codex/auth.json` but not the three example stores under
+`~/.local/share/oauth-mux/codex/`.
+
+Create the isolation directories:
+
+```bash
+mkdir -p \
+  ~/.local/share/oauth-mux/codex/max-1 \
+  ~/.local/share/oauth-mux/codex/max-2 \
+  ~/.local/share/oauth-mux/codex/max-3
+```
+
+Then login each subscription account separately:
+
+```bash
+CODEX_HOME=$HOME/.local/share/oauth-mux/codex/max-1 codex login
+CODEX_HOME=$HOME/.local/share/oauth-mux/codex/max-2 codex login
+CODEX_HOME=$HOME/.local/share/oauth-mux/codex/max-3 codex login
+```
+
+Do not copy `~/.codex/auth.json` into these stores unless the goal is
+deliberately to duplicate the same account. For the three-plan mux, each login
+should produce its own `auth.json` in its own store.
+
 ## Route Profiles
 
 Two profile lanes are defined with stable route labels:
@@ -100,6 +131,12 @@ Validate the example schema:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux config validate
 ```
 
+Equivalent repo helper:
+
+```bash
+just codex-max-validate
+```
+
 Check selection, credential parse/expiry state, and the built-in max route
 command probe:
 
@@ -113,6 +150,19 @@ Force a specific account:
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json \
   oauth-mux probe --provider codex --account max-2 --capability codex-max --json
+```
+
+Safer first-pass matrix probe, using the cheaper `codex-mini` route and a
+temporary health store:
+
+```bash
+just codex-max-probe-all
+```
+
+Probe one account and route:
+
+```bash
+just codex-max-probe max-2 codex-max
 ```
 
 The JSON output includes redacted last-probe evidence:
