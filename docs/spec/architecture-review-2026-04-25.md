@@ -34,6 +34,9 @@ Implemented:
   Codex CLI with its own `CODEX_HOME`.
 - Live command-probe validation for both semantic Codex route labels:
   `codex-mini` and `codex-max`.
+- Induced route-failure pipeline coverage: a degraded `codex-max` route falls
+  through to the next account while the same account remains eligible for
+  `codex-mini`.
 
 ## Key Decisions
 
@@ -100,13 +103,10 @@ events.
 
 1. Add live provider verification for the first safe non-quota-burning Codex
    HTTP status endpoint, if one exists.
-2. Add induced-failure coverage that proves a route-level degraded or
-   quota-exhausted state falls through to the next Codex account without
-   poisoning the account globally.
-3. Define the provider authoring checklist for adding a new OAuth harness from
+2. Define the provider authoring checklist for adding a new OAuth harness from
    schema alone: identity boundary, secret backend, injection shape, refresh
    behavior, probe plan, failure rules, and privacy constraints.
-4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation

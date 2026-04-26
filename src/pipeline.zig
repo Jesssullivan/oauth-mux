@@ -783,6 +783,87 @@ test "runEnv honors capability route health from profile" {
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "codex-route");
 }
 
+test "runEnv routes around degraded capability without poisoning account" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const codex1 = try tmp.dir.createFile("codex-1.json", .{});
+    defer codex1.close();
+    try codex1.writeAll(
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"codex-one","refresh_token":"codex-rt"}}
+    );
+
+    const codex2 = try tmp.dir.createFile("codex-2.json", .{});
+    defer codex2.close();
+    try codex2.writeAll(
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"codex-two","refresh_token":"codex-rt"}}
+    );
+
+    const codex1_path = try tmp.dir.realpathAlloc(std.testing.allocator, "codex-1.json");
+    defer std.testing.allocator.free(codex1_path);
+    const codex2_path = try tmp.dir.realpathAlloc(std.testing.allocator, "codex-2.json");
+    defer std.testing.allocator.free(codex2_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "defaults": {{ "provider": "codex" }},
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "priority": 30, "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-2": {{ "priority": 20, "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "max": {{ "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"] }},
+        \\    "mini": {{ "providers": ["codex:max-1#codex-mini", "codex:max-2#codex-mini"] }}
+        \\  }},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ codex1_path, codex2_path },
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const degraded_route = health_mod.capabilityKey("codex", "max-1", "codex-max");
+    store.recordHttpClassification(
+        degraded_route.slice(),
+        403,
+        .{ .degraded = .tier_insufficient },
+    );
+
+    var max_ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer max_ctx.deinit();
+    max_ctx.profile_name = "max";
+
+    try runEnv(&max_ctx);
+
+    try std.testing.expectEqualStrings("max-2", max_ctx.account_name.?);
+    try std.testing.expectEqualStrings("codex-max", max_ctx.capability_name.?);
+    try expectEnvPair(max_ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "max-2");
+    try expectEnvPair(max_ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "codex-max");
+
+    var mini_ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer mini_ctx.deinit();
+    mini_ctx.profile_name = "mini";
+
+    try runEnv(&mini_ctx);
+
+    try std.testing.expectEqualStrings("max-1", mini_ctx.account_name.?);
+    try std.testing.expectEqualStrings("codex-mini", mini_ctx.capability_name.?);
+    try expectEnvPair(mini_ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "max-1");
+    try expectEnvPair(mini_ctx.env_pairs.items, "OMUX_ACTIVE_CAPABILITY", "codex-mini");
+}
+
 test "runProbe honors explicit account filter without a configured probe plan" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
