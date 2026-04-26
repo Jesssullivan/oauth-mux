@@ -843,4 +843,5 @@ comptime {
     _ = @import("age.zig");
     _ = @import("daemon.zig");
     _ = @import("provider_schema.zig");
+    _ = @import("fixture_redaction.zig");
 }

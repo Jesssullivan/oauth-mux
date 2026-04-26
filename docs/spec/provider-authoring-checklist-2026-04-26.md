@@ -235,6 +235,12 @@ At minimum, add redacted fixtures or synthetic tests for:
 For command probes, store cassettes under `test/fixtures/cassettes/<provider>/`
 with all secrets removed.
 
+`zig build test` walks `test/fixtures` and rejects common OAuth/API secret
+markers, including access tokens, refresh tokens, ID tokens, bearer
+authorization material, cookies, OpenAI-style `sk-` keys, and session-token
+prefixes. This is intentionally a high-signal guard, not a substitute for
+operator review before committing a new cassette.
+
 9. Validate the operator surface.
 
 Before merging a provider definition:

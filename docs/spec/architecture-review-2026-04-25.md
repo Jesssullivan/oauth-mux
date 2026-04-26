@@ -45,6 +45,9 @@ Implemented:
 - Failure-rule coverage validation in `config validate`: probed schema
   providers must define failure rules, and each failure rule must include a
   concrete matcher rather than acting as a catch-all classifier.
+- Fixture redaction validation in `zig build test`: files under
+  `test/fixtures` are scanned for common OAuth token, bearer header, cookie,
+  and API-key markers.
 
 ## Key Decisions
 
@@ -111,9 +114,7 @@ events.
 
 1. Add live provider verification for the first safe non-quota-burning Codex
    HTTP status endpoint, if one exists.
-2. Promote the remaining provider authoring checks into config/test affordances
-   where useful, starting with fixture redaction.
-3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+2. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation
