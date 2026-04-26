@@ -32,7 +32,7 @@ implemented yet.
 | MCP stdio server | `admitted_command` / injection | Environment or config injection; MCP HTTP OAuth flow does not apply | missing secret, malformed env/config, child-process failure |
 | GitHub | `admitted_http`; built-in `identity` probe | `GET https://api.github.com/user` with bearer token | 200 live, 401 dead, 403 forbidden/rate-limited, rate-limit headers |
 | Linear | `admitted_http`; built-in `identity` probe | `POST https://api.linear.app/graphql` with `query { viewer { id name email } }` and OAuth bearer token | 200 plus GraphQL errors, 401 dead, 403/scope, 429/rate, 5xx degraded |
-| Figma REST | `admitted_http`; built-in OAuth `identity` and PAT `identity-pat` probes | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs use `X-Figma-Token`; plan access tokens cannot use `/v1/me` and need resource-scoped probes | 200 live, 401 dead, 403 scope/tier, 429/rate, 5xx degraded |
+| Figma REST | `admitted_http`; built-in OAuth `identity`, PAT `identity-pat`, and plan-token `file-metadata-plan` probes | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs use `X-Figma-Token`; plan access tokens use `GET /v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta` with `file_metadata:read` | 200 live, 401 dead, 403 scope/tier, 404 resource not allowed/found, 429/rate, 5xx degraded |
 | Figma Remote MCP | `mcp_profile` | Treat as MCP HTTP resource, not as Figma REST | MCP metadata, scope challenge, tool/schema errors |
 | Vercel | `admitted_http`; built-in `identity` probe | `GET https://api.vercel.com/v2/user`; token metadata endpoint and semantic `softBlock` body checks are later optional refinements | 200 live, 401 dead, 403 forbidden/team/scope, 429/rate, 5xx degraded |
 | FlakeHub / Determinate | `admitted_command`; direct HTTP `unadmitted` | `fh status` / Determinate-managed netrc and JWT boundary | logged in, token expiry, missing netrc, generated token expiry |
@@ -55,6 +55,9 @@ implemented yet.
 6. Custom token-header probes are explicit. Use `auth = token_header` with a
    non-`Authorization` header name such as `X-Figma-Token`; use `auth = bearer`
    for OAuth Authorization headers.
+7. URL templates are for non-secret resource identifiers only. Placeholder
+   names must be env-var shaped (`A_Z0_9_`); runtime values must be URL-safe
+   unreserved characters.
 
 ## Provider Source Links
 

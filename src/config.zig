@@ -378,6 +378,10 @@ fn validateProbeDefinition(
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not contain token material\n", .{ def_key, capability_idx });
                 ok.* = false;
             }
+            if (!isValidUrlTemplate(probe.url)) {
+                try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url contains an invalid template placeholder\n", .{ def_key, capability_idx });
+                ok.* = false;
+            }
             if (probe.auth == .token_header) {
                 if (probe.auth_header) |header| {
                     if (!isSafeTokenHeaderName(header)) {
@@ -519,6 +523,26 @@ fn isSupportedProbeMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "GET") or
         std.mem.eql(u8, method, "POST") or
         std.mem.eql(u8, method, "HEAD");
+}
+
+fn isValidUrlTemplate(template: []const u8) bool {
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, template, offset, "{{")) |start| {
+        const name_start = start + 2;
+        const end = std.mem.indexOfPos(u8, template, name_start, "}}") orelse return false;
+        if (!isSafeUrlTemplateName(template[name_start..end])) return false;
+        offset = end + 2;
+    }
+    return std.mem.indexOfPos(u8, template, offset, "}}") == null;
+}
+
+fn isSafeUrlTemplateName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '_') continue;
+        return false;
+    }
+    return true;
 }
 
 fn isSafeTokenHeaderName(header: []const u8) bool {
@@ -930,6 +954,51 @@ test "validate rejects token material in http probe url" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.url must not contain token material") != null);
+}
+
+test "validate rejects malformed url template placeholder" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "identity",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/files/{{BAD-NAME}}/meta"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 403, "class": { "degraded": "scope_insufficient" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.url contains an invalid template placeholder") != null);
 }
 
 test "validate rejects token material in http probe body" {

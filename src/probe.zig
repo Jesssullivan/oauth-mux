@@ -61,7 +61,9 @@ fn executeHttp(
     access_token: []const u8,
 ) ProbeError!ProbeResult {
     const method = methodFromString(plan.method) orelse return error.UnsupportedMethod;
-    const uri = std.Uri.parse(plan.url) catch return error.NetworkError;
+    const resolved_url = try expandUrlTemplate(allocator, plan.url);
+    defer allocator.free(resolved_url);
+    const uri = std.Uri.parse(resolved_url) catch return error.NetworkError;
 
     var bearer_value: ?[]u8 = null;
     defer if (bearer_value) |value| allocator.free(value);
@@ -127,6 +129,52 @@ fn executeHttp(
         else
             body_hint,
     };
+}
+
+fn expandUrlTemplate(allocator: std.mem.Allocator, template: []const u8) ProbeError![]const u8 {
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, template, offset, "{{")) |start| {
+        try out.appendSlice(template[offset..start]);
+        const name_start = start + 2;
+        const end = std.mem.indexOfPos(u8, template, name_start, "}}") orelse return error.UnsupportedTransport;
+        const name = template[name_start..end];
+        if (!isSafeTemplateName(name)) return error.UnsupportedTransport;
+
+        const value = std.process.getEnvVarOwned(allocator, name) catch |e| switch (e) {
+            error.EnvironmentVariableNotFound => return error.UnsupportedTransport,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.UnsupportedTransport,
+        };
+        defer allocator.free(value);
+        if (!isSafeTemplateValue(value)) return error.UnsupportedTransport;
+        try out.appendSlice(value);
+        offset = end + 2;
+    }
+
+    if (std.mem.indexOfPos(u8, template, offset, "}}") != null) return error.UnsupportedTransport;
+    try out.appendSlice(template[offset..]);
+    return try out.toOwnedSlice();
+}
+
+fn isSafeTemplateName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '_') continue;
+        return false;
+    }
+    return true;
+}
+
+fn isSafeTemplateValue(value: []const u8) bool {
+    if (value.len == 0) return false;
+    for (value) |c| {
+        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~') continue;
+        return false;
+    }
+    return true;
 }
 
 fn executeCommand(
@@ -392,6 +440,12 @@ test "classifyResult uses hint text" {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "expandUrlTemplate rejects malformed placeholder" {
+    try std.testing.expectError(error.UnsupportedTransport, expandUrlTemplate(std.testing.allocator, "https://example.invalid/{{BAD"));
+    try std.testing.expectError(error.UnsupportedTransport, expandUrlTemplate(std.testing.allocator, "https://example.invalid/BAD}}"));
+    try std.testing.expectError(error.UnsupportedTransport, expandUrlTemplate(std.testing.allocator, "https://example.invalid/{{BAD-NAME}}"));
 }
 
 test "classifyResult can downgrade successful GraphQL status from body hint" {

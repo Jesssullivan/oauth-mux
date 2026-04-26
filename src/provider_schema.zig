@@ -352,6 +352,10 @@ const figma_failure_rules = [_]FailureRule{
         .class = .{ .degraded = .scope_insufficient },
     },
     .{
+        .status = 404,
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
         .status_min = 500,
         .status_max = 599,
         .class = .provider_degraded,
@@ -374,6 +378,16 @@ const figma_capabilities = [_]CapabilityDefinition{
         .probe = .{
             .method = "GET",
             .url = "https://api.figma.com/v1/me",
+            .auth = .token_header,
+            .auth_header = "X-Figma-Token",
+        },
+    },
+    .{
+        .name = "file-metadata-plan",
+        .aliases = &.{ "plan-file-meta", "plan-file-metadata", "plan" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.figma.com/v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta",
             .auth = .token_header,
             .auth_header = "X-Figma-Token",
         },
@@ -1234,10 +1248,28 @@ test "figma pat identity capability uses explicit token header" {
     try std.testing.expectEqualStrings("X-Figma-Token", plan.auth_header.?);
 }
 
+test "figma plan capability uses resource scoped file metadata probe" {
+    const plan = probePlanForCapability(figma_def, "plan-file-meta").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("file-metadata-plan", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.figma.com/v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta", plan.url);
+    try std.testing.expectEqual(ProbeAuth.token_header, plan.auth);
+    try std.testing.expectEqualStrings("X-Figma-Token", plan.auth_header.?);
+}
+
 test "figma failure rules classify forbidden as scope degradation" {
     const classification = classifyHttp(figma_def, 403, null, null);
     switch (classification) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "figma failure rules classify missing resource as route degradation" {
+    const classification = classifyHttp(figma_def, 404, null, null);
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
         else => return error.TestUnexpectedResult,
     }
 }

@@ -69,6 +69,9 @@ Implemented:
 - Generic custom-token-header probe auth (`auth = token_header`) plus Figma
   PAT `identity-pat` support using `X-Figma-Token`. Plan access tokens are not
   mapped to `/v1/me` because Figma excludes that endpoint for plan tokens.
+- URL-template expansion for non-secret resource identifiers in probe URLs,
+  plus Figma plan-token `file-metadata-plan` support using
+  `GET /v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta`.
 
 ## Key Decisions
 
@@ -149,8 +152,9 @@ Decision record:
 1. Apply the provider admission gate to Claude, MCP, and FlakeHub before adding
    any direct HTTP probes.
 2. Convert the remaining `admitted_http` rows into schema fixtures and
-   failure-rule tests one provider at a time. Figma plan access tokens need a
-   resource-scoped probe because `/v1/me` is not supported for plan tokens.
+   failure-rule tests one provider at a time. Figma plan tokens now use a
+   resource-scoped metadata probe; live use requires
+   `OMUX_FIGMA_PLAN_FILE_KEY` to name a file allowed by the token.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -181,6 +185,9 @@ OMUX_CONFIG=$PWD/examples/figma.config.json ./zig-out/bin/oauth-mux config valid
 config: valid
 
 OMUX_CONFIG=$PWD/examples/figma-pat.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
+
+OMUX_CONFIG=$PWD/examples/figma-plan.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
 
 just check
