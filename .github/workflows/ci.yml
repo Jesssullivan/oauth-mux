@@ -15,8 +15,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
+        run: |
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GF_ACTIONS_TOKEN is unset; skipping private GloriousFlywheel action checkout"
+          fi
+
+      - name: Checkout GloriousFlywheel action
+        if: steps.gf.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
+
       - name: Run cache-first validation
-        uses: tinyland-inc/GloriousFlywheel/.github/actions/nix-job@main
+        if: steps.gf.outputs.enabled == 'true'
+        uses: ./.gloriousflywheel/.github/actions/nix-job
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
         with:
@@ -28,6 +52,12 @@ jobs:
             test -n "${ATTIC_CACHE:-}"
             test -n "${NIX_CONFIG:-}"
             nix develop --command just check-local
+
+      - name: Record skipped cache-first validation
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GloriousFlywheel cache-first validation skipped because GF_ACTIONS_TOKEN is unset." >> "$GITHUB_STEP_SUMMARY"
 
   test:
     runs-on: ubuntu-latest

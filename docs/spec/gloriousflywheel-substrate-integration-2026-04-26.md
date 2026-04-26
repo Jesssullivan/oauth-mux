@@ -39,20 +39,30 @@ GloriousFlywheel jobs enter the devshell once and run the local check directly.
 The CI workflow now has a cache-first lane:
 
 - runner: `tinyland-nix`
-- action: `tinyland-inc/GloriousFlywheel/.github/actions/nix-job@main`
+- action source: private checkout of
+  `tinyland-inc/GloriousFlywheel/.github/actions/nix-job`
 - required runtime evidence: `ATTIC_SERVER`, `ATTIC_CACHE`, and `NIX_CONFIG`
 - command: `nix develop --command just check-local`
+
+Because `GloriousFlywheel` is private, `oauth-mux` does not reference the
+cross-repo composite action directly. The workflow checks out the substrate repo
+into `.gloriousflywheel` with `GF_ACTIONS_TOKEN` and then uses the local
+composite action path. If `GF_ACTIONS_TOKEN` is not configured, the job records
+that the cache-first proof was skipped rather than failing before any useful
+diagnostics can run.
 
 The existing GitHub-hosted lane remains as a portability check. It still builds
 and tests with Zig directly, and now validates all example configs too.
 
 ## What This Proves
 
-This proves that `oauth-mux` can build and test on the shared
-GloriousFlywheel Nix runner substrate with Attic cache attachment.
+When `GF_ACTIONS_TOKEN` and the Attic settings are present, this proves that
+`oauth-mux` can build and test on the shared GloriousFlywheel Nix runner
+substrate with Attic cache attachment.
 
 It does not yet prove:
 
+- cache-first CI execution when the private action checkout token is absent;
 - full remote execution for every local developer action;
 - Bazel remote-cache behavior, because this repo has no Bazel targets;
 - package publication to npm, Homebrew, deb, rpm, or GitHub Releases;

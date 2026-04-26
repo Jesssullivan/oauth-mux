@@ -160,6 +160,9 @@ Decision record:
 - GloriousFlywheel cache-first CI proves shared Nix/Attic substrate attachment,
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
+- `GloriousFlywheel` is a private repo, so the cache-first CI lane requires
+  `GF_ACTIONS_TOKEN` to check out the composite action locally. Without that
+  secret, CI records the skipped proof instead of claiming substrate execution.
 - The live Codex route probes intentionally spend small subscription calls and
   should remain explicit operator actions or bounded fallback checks, not a
   background polling loop.
