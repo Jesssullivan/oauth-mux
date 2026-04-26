@@ -30,6 +30,9 @@ from an official or provider-owned source.
 Decision record:
 `docs/spec/codex-direct-http-probe-decision-2026-04-26.md`.
 
+Provider admission matrix:
+`docs/spec/provider-probe-admission-matrix-2026-04-26.md`.
+
 ## Standards Baseline
 
 Provider definitions must be consistent with the current OAuth and MCP floor:

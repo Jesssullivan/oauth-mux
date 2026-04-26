@@ -54,6 +54,8 @@ Implemented:
   impact.
 - `just check` now enters `nix develop` once and runs both `zig build test` and
   `zig build` inside that shell, avoiding duplicate Nix wrapper startup.
+- Provider probe admission matrix for Codex, Claude, Anthropic API, MCP,
+  GitHub, Linear, Figma, Vercel, and FlakeHub.
 
 ## Key Decisions
 
@@ -133,7 +135,10 @@ Decision record:
 
 1. Apply the provider admission gate to Claude, MCP, Figma, Vercel, GitHub,
    Linear, and FlakeHub before adding any direct HTTP probes.
-2. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+2. Convert the `admitted_http` rows into schema fixtures and failure-rule tests
+   one provider at a time, starting with GitHub or Linear because their identity
+   probes are narrow and well documented.
+3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation

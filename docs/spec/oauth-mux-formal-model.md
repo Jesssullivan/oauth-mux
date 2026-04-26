@@ -50,7 +50,7 @@ Primary references:
 
 - IETF OAuth WG: <https://datatracker.ietf.org/wg/oauth/about/>
 - OAuth WG document list: <https://datatracker.ietf.org/wg/oauth/>
-- OAuth 2.1 draft: <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13>
+- OAuth 2.1 draft: <https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/>
 - RFC 9700, OAuth 2.0 Security BCP: <https://www.rfc-editor.org/rfc/rfc9700>
 - RFC 8414, authorization server metadata: <https://www.rfc-editor.org/rfc/rfc8414>
 - RFC 8628, device authorization grant: <https://www.rfc-editor.org/rfc/rfc8628>
@@ -87,7 +87,8 @@ Vendor references:
 - OpenAI Codex CLI sign-in:
   <https://help.openai.com/en/articles/11381614>
 - Claude Code authentication:
-  <https://code.claude.com/docs/en/iam>
+  <https://docs.anthropic.com/en/docs/claude-code/getting-started>,
+  <https://docs.anthropic.com/en/docs/claude-code/team>
 
 ## Account Identity
 
