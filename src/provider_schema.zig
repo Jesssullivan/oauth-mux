@@ -278,6 +278,29 @@ const mcp_failure_rules = [_]FailureRule{
     },
 };
 
+const mcp_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "resource-metadata",
+        .aliases = &.{ "metadata", "protected-resource-metadata" },
+        .probe = .{
+            .method = "GET",
+            .url = "{{OMUX_MCP_RESOURCE_METADATA_URL}}",
+            .auth = .none,
+            .hint_body = true,
+        },
+    },
+    .{
+        .name = "resource",
+        .aliases = &.{ "resource-probe", "http" },
+        .probe = .{
+            .method = "GET",
+            .url = "{{OMUX_MCP_RESOURCE_PROBE_URL}}",
+            .auth = .bearer,
+            .hint_header = "www-authenticate",
+        },
+    },
+};
+
 const codex_failure_rules = [_]FailureRule{
     .{
         .status = 400,
@@ -701,6 +724,7 @@ pub const mcp_def = ProviderDefinition{
     .injection = .{
         .direct_env = &.{.{ "MCP_TOKEN", "access_token" }},
     },
+    .capabilities = &mcp_capabilities,
     .failure_rules = &mcp_failure_rules,
 };
 
@@ -1226,6 +1250,26 @@ test "classifyHttp MCP route failures" {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.schema_invalid, reason),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "mcp resource metadata capability uses unauthenticated metadata URL" {
+    const plan = probePlanForCapability(mcp_def, "metadata").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("resource-metadata", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("{{OMUX_MCP_RESOURCE_METADATA_URL}}", plan.url);
+    try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expect(plan.hint_body);
+}
+
+test "mcp resource capability uses bearer resource URL" {
+    const plan = probePlanForCapability(mcp_def, "resource-probe").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("resource", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("{{OMUX_MCP_RESOURCE_PROBE_URL}}", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
 }
 
 test "probePlanForCapability resolves aliases" {
