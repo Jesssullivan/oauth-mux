@@ -52,6 +52,8 @@ Implemented:
   is admitted until an official/provider-owned source documents endpoint
   semantics, token audience, typed failure classes, reset behavior, and quota
   impact.
+- `just check` now enters `nix develop` once and runs both `zig build test` and
+  `zig build` inside that shell, avoiding duplicate Nix wrapper startup.
 
 ## Key Decisions
 
@@ -123,15 +125,15 @@ Decision record:
 - The live Codex route probes intentionally spend small subscription calls and
   should remain explicit operator actions or bounded fallback checks, not a
   background polling loop.
+- Canonical `just check` passes through one Nix shell entry. Direct
+  `zig build test` / `zig build` remains faster for tight local iteration, but
+  `just check` is still the operator-facing validation command.
 
 ## Next Arc
 
 1. Apply the provider admission gate to Claude, MCP, Figma, Vercel, GitHub,
    Linear, and FlakeHub before adding any direct HTTP probes.
-2. Repair or document the Nix/`just check` wrapper stall so canonical validation
-   is reliable again, while keeping direct Zig validation available for
-   iteration.
-3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+2. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation
@@ -147,6 +149,9 @@ passed
 
 OMUX_CONFIG=$PWD/examples/codex-max.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
+
+just check
+all checks passed
 
 just codex-max-login-status-all
 max-1 -> Logged in using ChatGPT

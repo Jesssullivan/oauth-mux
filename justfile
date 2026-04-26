@@ -110,7 +110,8 @@ nix-check:
 
 # ── Validation ──
 
-check: test build
+check:
+    nix develop --command sh -c 'zig build test && zig build'
     @echo "all checks passed"
 
 # ── Config ──
