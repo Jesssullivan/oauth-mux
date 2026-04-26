@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"redacted"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OMUX_CODEX_SPARK_PROBE"}}
+{"type":"turn.completed","usage":{"input_tokens":26656,"cached_input_tokens":3712,"output_tokens":57,"reasoning_output_tokens":43}}

@@ -225,6 +225,11 @@ pub const DegradedReason = enum {
     tier_insufficient,
     subscription_paused,
     provider_degraded,
+    scope_insufficient,
+    schema_invalid,
+    terms_required,
+    step_up_required,
+    pending_verification,
     unknown_4xx,
 };
 
@@ -258,6 +263,25 @@ pub const MuxDecision = enum {
     pub fn isRecoverable(self: MuxDecision) bool {
         return self != .give_up;
     }
+};
+
+pub const HttpClassification = union(enum) {
+    success,
+    rate_limited: RateLimitClassification,
+    quota_exhausted: QuotaClassification,
+    degraded: DegradedReason,
+    dead: DeadReason,
+    provider_degraded,
+    failure,
+
+    pub const RateLimitClassification = struct {
+        retry_after_s: u32,
+        window: RateLimitWindow,
+    };
+
+    pub const QuotaClassification = struct {
+        retry_after_s: u32,
+    };
 };
 
 // ── Health & Circuit Breaker ──

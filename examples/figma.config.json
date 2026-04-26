@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "defaults": {
+    "provider": "figma",
+    "strategy": "health-weighted",
+    "shell": "fish"
+  },
+  "providers": {
+    "figma": {
+      "kind": "figma",
+      "accounts": {
+        "work": {
+          "priority": 10,
+          "secret": {
+            "backend": "env",
+            "variable": "OMUX_FIGMA_WORK_TOKEN"
+          },
+          "tags": ["oauth", "figma"]
+        }
+      }
+    }
+  },
+  "profiles": {
+    "figma": {
+      "providers": ["figma:work#identity"],
+      "strategy": "health-weighted",
+      "affinity_ttl_minutes": 20
+    }
+  },
+  "strategies": {
+    "health-weighted": {
+      "kind": "health-weighted",
+      "rate_limit_penalty": -10,
+      "failure_penalty": -20,
+      "success_bonus": 1
+    }
+  }
+}

@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const paths = @import("paths.zig");
 const log = @import("log.zig");
 const age = @import("age.zig");
+const env = @import("env.zig");
 const builtin = @import("builtin");
 
 pub const ReadError = error{
@@ -28,11 +29,11 @@ pub fn read(backend: types.SecretBackend, allocator: std.mem.Allocator) ReadErro
 }
 
 fn readEnv(ref: types.SecretBackend.EnvRef, allocator: std.mem.Allocator) ReadError![]const u8 {
-    const val = std.posix.getenv(ref.variable) orelse {
+    const val = env.get(allocator, ref.variable) catch return error.OutOfMemory;
+    return val orelse {
         log.debug("env: {s} not set", .{ref.variable});
         return error.NotFound;
     };
-    return allocator.dupe(u8, val) catch return error.OutOfMemory;
 }
 
 fn readFile(ref: types.SecretBackend.FileRef, allocator: std.mem.Allocator) ReadError![]const u8 {

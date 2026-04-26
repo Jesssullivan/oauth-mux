@@ -9,6 +9,8 @@ const paths = @import("paths.zig");
 const log = @import("log.zig");
 const builtin = @import("builtin");
 
+const Pid = if (builtin.os.tag == .windows) u32 else std.posix.pid_t;
+
 pub const DaemonError = error{
     AlreadyRunning,
     SocketError,
@@ -18,6 +20,11 @@ pub const DaemonError = error{
 };
 
 pub fn start(allocator: std.mem.Allocator) DaemonError!void {
+    if (comptime builtin.os.tag == .windows) {
+        log.err("daemon: unsupported on windows", .{});
+        return error.SocketError;
+    }
+
     const sock_path = paths.socketPath(allocator) catch return error.OutOfMemory;
     defer allocator.free(sock_path);
 
@@ -63,6 +70,11 @@ pub fn start(allocator: std.mem.Allocator) DaemonError!void {
 }
 
 pub fn stop(allocator: std.mem.Allocator) !void {
+    if (comptime builtin.os.tag == .windows) {
+        log.err("daemon: unsupported on windows", .{});
+        return;
+    }
+
     const pid_path = try pidPath(allocator);
     defer allocator.free(pid_path);
 
@@ -97,6 +109,10 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 fn isRunning(allocator: std.mem.Allocator) bool {
+    if (comptime builtin.os.tag == .windows) {
+        return false;
+    }
+
     const pid_path = pidPath(allocator) catch return false;
     defer allocator.free(pid_path);
 
@@ -108,13 +124,16 @@ fn isRunning(allocator: std.mem.Allocator) bool {
 }
 
 fn runLoop(allocator: std.mem.Allocator, sock_path: []const u8) !void {
+    if (comptime builtin.os.tag == .windows) {
+        return error.Unsupported;
+    }
+
     // Remove stale socket
     std.fs.deleteFileAbsolute(sock_path) catch {};
 
     const addr = std.net.Address.initUnix(sock_path) catch return error.Unexpected;
     var server = addr.listen(.{ .reuse_address = true }) catch return error.Unexpected;
     defer server.deinit();
-
 
     log.info("daemon: listening on {s}", .{sock_path});
 
@@ -241,7 +260,7 @@ fn pidPath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ dir, "daemon.pid" });
 }
 
-fn writePidFile(path: []const u8, pid: std.posix.pid_t) !void {
+fn writePidFile(path: []const u8, pid: Pid) !void {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
             error.PathAlreadyExists => {},
@@ -253,14 +272,14 @@ fn writePidFile(path: []const u8, pid: std.posix.pid_t) !void {
     try file.writer().print("{d}", .{pid});
 }
 
-fn readPidFile(allocator: std.mem.Allocator, path: []const u8) !std.posix.pid_t {
+fn readPidFile(allocator: std.mem.Allocator, path: []const u8) !Pid {
     const file = try std.fs.openFileAbsolute(path, .{});
     defer file.close();
     var buf: [32]u8 = undefined;
     const n = try file.readAll(&buf);
     const pid_str = std.mem.trim(u8, buf[0..n], " \t\n\r");
     _ = allocator;
-    return std.fmt.parseInt(std.posix.pid_t, pid_str, 10) catch return error.InvalidCharacter;
+    return std.fmt.parseInt(Pid, pid_str, 10) catch return error.InvalidCharacter;
 }
 
 test "isRunning returns false when no daemon" {

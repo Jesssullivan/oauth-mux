@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "defaults": {
+    "provider": "vercel",
+    "strategy": "health-weighted",
+    "shell": "fish"
+  },
+  "providers": {
+    "vercel": {
+      "kind": "vercel",
+      "accounts": {
+        "work": {
+          "priority": 10,
+          "secret": {
+            "backend": "env",
+            "variable": "OMUX_VERCEL_WORK_TOKEN"
+          },
+          "tags": ["oauth", "vercel"]
+        }
+      }
+    }
+  },
+  "profiles": {
+    "vercel": {
+      "providers": ["vercel:work#identity"],
+      "strategy": "health-weighted",
+      "affinity_ttl_minutes": 20
+    }
+  },
+  "strategies": {
+    "health-weighted": {
+      "kind": "health-weighted",
+      "rate_limit_penalty": -10,
+      "failure_penalty": -20,
+      "success_bonus": 1
+    }
+  }
+}

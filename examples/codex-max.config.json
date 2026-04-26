@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "defaults": {
+    "provider": "codex",
+    "strategy": "health-weighted",
+    "shell": "fish"
+  },
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "config_dir_env": "CODEX_HOME",
+      "accounts": {
+        "max-1": {
+          "priority": 30,
+          "config_dir": "~/.local/share/oauth-mux/codex/max-1",
+          "secret": {
+            "backend": "file",
+            "path": "~/.local/share/oauth-mux/codex/max-1/auth.json"
+          },
+          "tags": ["subscription", "codex-max"]
+        },
+        "max-2": {
+          "priority": 20,
+          "config_dir": "~/.local/share/oauth-mux/codex/max-2",
+          "secret": {
+            "backend": "file",
+            "path": "~/.local/share/oauth-mux/codex/max-2/auth.json"
+          },
+          "tags": ["subscription", "codex-max"]
+        },
+        "max-3": {
+          "priority": 10,
+          "config_dir": "~/.local/share/oauth-mux/codex/max-3",
+          "secret": {
+            "backend": "file",
+            "path": "~/.local/share/oauth-mux/codex/max-3/auth.json"
+          },
+          "tags": ["subscription", "codex-max"]
+        }
+      }
+    }
+  },
+  "profiles": {
+    "codex-max": {
+      "providers": [
+        "codex:max-1#codex-max",
+        "codex:max-2#codex-max",
+        "codex:max-3#codex-max"
+      ],
+      "strategy": "health-weighted",
+      "affinity_ttl_minutes": 20
+    },
+    "codex-mini": {
+      "providers": [
+        "codex:max-1#codex-mini",
+        "codex:max-2#codex-mini",
+        "codex:max-3#codex-mini"
+      ],
+      "strategy": "health-weighted",
+      "affinity_ttl_minutes": 20
+    }
+  },
+  "strategies": {
+    "health-weighted": {
+      "kind": "health-weighted",
+      "rate_limit_penalty": -10,
+      "failure_penalty": -20,
+      "success_bonus": 1
+    }
+  }
+}

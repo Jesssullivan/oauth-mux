@@ -1,4 +1,5 @@
 const std = @import("std");
+const env = @import("env.zig");
 
 pub const Level = enum {
     debug,
@@ -39,10 +40,10 @@ pub fn setColor(enabled: bool) void {
 }
 
 pub fn init() void {
-    if (std.posix.getenv("OMUX_DEBUG")) |_| {
+    if (env.has("OMUX_DEBUG")) {
         min_level = .debug;
     }
-    if (std.posix.getenv("NO_COLOR")) |_| {
+    if (env.has("NO_COLOR")) {
         use_color = false;
     }
 }

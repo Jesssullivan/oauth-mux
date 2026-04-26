@@ -1,16 +1,21 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
+const env = @import("env.zig");
 
 pub fn detect() types.ShellKind {
-    if (std.posix.getenv("OMUX_SHELL")) |s| {
+    const allocator = std.heap.page_allocator;
+    if (env.get(allocator, "OMUX_SHELL") catch null) |s| {
+        defer allocator.free(s);
         return shellFromName(s);
     }
-    if (std.posix.getenv("FISH_VERSION")) |_| return .fish;
-    if (std.posix.getenv("ZSH_VERSION")) |_| return .zsh;
-    if (std.posix.getenv("BASH_VERSION")) |_| return .bash;
-    if (std.posix.getenv("KSH_VERSION")) |_| return .ksh;
+    if (env.has("FISH_VERSION")) return .fish;
+    if (env.has("ZSH_VERSION")) return .zsh;
+    if (env.has("BASH_VERSION")) return .bash;
+    if (env.has("KSH_VERSION")) return .ksh;
 
-    if (std.posix.getenv("SHELL")) |shell| {
+    if (env.get(allocator, "SHELL") catch null) |shell| {
+        defer allocator.free(shell);
         return shellFromPath(shell);
     }
     return .posix;
@@ -43,6 +48,16 @@ pub fn emitEnv(
 
 pub fn execTarget(argv: []const []const u8, env_map: *std.process.EnvMap) error{ExecFailed}!noreturn {
     if (argv.len == 0) return error.ExecFailed;
+
+    if (comptime builtin.os.tag == .windows) {
+        var child = std.process.Child.init(argv, std.heap.page_allocator);
+        child.env_map = env_map;
+        const term = child.spawnAndWait() catch return error.ExecFailed;
+        switch (term) {
+            .Exited => |code| std.process.exit(code),
+            else => std.process.exit(1),
+        }
+    }
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();

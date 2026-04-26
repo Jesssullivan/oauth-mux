@@ -19,7 +19,7 @@ const log = @import("log.zig");
 // The schema is informed by:
 //   RFC 8414 — OAuth Authorization Server Metadata
 //   RFC 9728 — Protected Resource Metadata
-//   MCP Auth Spec (2025-11-25) — CIMD + Enterprise-Managed Authorization
+//   MCP Auth Spec (2025-11-25) — HTTP auth, stdio env credentials, CIMD
 //   RFC 9449 — DPoP (sender-constrained tokens)
 //   RFC 8628 — Device Authorization Grant
 
@@ -47,9 +47,20 @@ pub const ProviderDefinition = struct {
     // How to auto-detect this provider from the target command.
     detection: DetectionConfig = .{},
 
-    // ─�� Rate Limit Interpretation ──
+    // ── Capability Probes ──
+    // Optional route/capability probes. These are declarative plans, not
+    // secrets: token material is added by the caller at execution time.
+    capabilities: []const CapabilityDefinition = &.{},
+
+    // ── Rate Limit Interpretation ──
     // How to parse rate limit signals from HTTP responses.
     rate_limits: RateLimitConfig = .{},
+
+    // ── Failure Classification ──
+    // Provider-specific HTTP/status/body hints that override generic OAuth
+    // fallback classification. No regex; only exact status/range and substring
+    // hints so the parser remains std-only.
+    failure_rules: []const FailureRule = &.{},
 };
 
 pub const AuthConfig = struct {
@@ -104,6 +115,56 @@ pub const DetectionConfig = struct {
     env_markers: []const []const u8 = &.{},
 };
 
+pub const CapabilityDefinition = struct {
+    name: []const u8,
+    aliases: []const []const u8 = &.{},
+    probe: ?ProbeDefinition = null,
+};
+
+pub const ProbeDefinition = struct {
+    transport: ProbeTransport = .http,
+    method: []const u8 = "GET",
+    url: []const u8 = "",
+    body: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
+    command: ?[]const []const u8 = null,
+    auth: ProbeAuth = .bearer,
+    auth_header: ?[]const u8 = null,
+    timeout_ms: u32 = 30_000,
+    success_status_min: u16 = 200,
+    success_status_max: u16 = 299,
+    hint_header: ?[]const u8 = null,
+    hint_body: bool = false,
+};
+
+pub const ProbeTransport = enum {
+    http,
+    command,
+};
+
+pub const ProbeAuth = enum {
+    bearer,
+    token_header,
+    none,
+};
+
+pub const ProbePlan = struct {
+    capability: []const u8,
+    transport: ProbeTransport,
+    method: []const u8,
+    url: []const u8,
+    body: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
+    command: ?[]const []const u8 = null,
+    auth: ProbeAuth,
+    auth_header: ?[]const u8 = null,
+    timeout_ms: u32,
+    success_status_min: u16,
+    success_status_max: u16,
+    hint_header: ?[]const u8 = null,
+    hint_body: bool = false,
+};
+
 pub const RateLimitConfig = struct {
     // HTTP header names for rate limit info
     retry_after_header: []const u8 = "retry-after",
@@ -112,6 +173,26 @@ pub const RateLimitConfig = struct {
     limit_header: ?[]const u8 = null,
     // Threshold: retry_after above this (seconds) = quota exhaustion, below = rate limit
     quota_threshold_seconds: u32 = 3600,
+};
+
+pub const FailureRule = struct {
+    status: ?u16 = null,
+    status_min: ?u16 = null,
+    status_max: ?u16 = null,
+    retry_after_gte: ?u32 = null,
+    retry_after_lt: ?u32 = null,
+    hint_contains: ?[]const u8 = null,
+    class: FailureClass,
+};
+
+pub const FailureClass = union(enum) {
+    success,
+    rate_limited,
+    quota_exhausted,
+    degraded: types.DegradedReason,
+    dead: types.DeadReason,
+    provider_degraded,
+    failure,
 };
 
 // ── Built-in Provider Definitions ──
@@ -123,7 +204,329 @@ pub const builtin_providers = [_]ProviderDefinition{
     gemini_def,
     vercel_def,
     github_def,
+    linear_def,
+    figma_def,
+    flakehub_def,
     mcp_def,
+};
+
+pub const generic_def = ProviderDefinition{
+    .name = "generic",
+    .display_name = "Generic OAuth Provider",
+};
+
+const claude_failure_rules = [_]FailureRule{
+    .{
+        .status = 400,
+        .hint_contains = "\"loggedIn\": false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "\"loggedIn\":false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const claude_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "auth-status",
+        .aliases = &.{ "status", "identity", "whoami" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .timeout_ms = 30_000,
+            .command = &.{ "claude", "auth", "status", "--json" },
+        },
+    },
+};
+
+const mcp_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .hint_contains = "insufficient_scope",
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "step_up",
+        .class = .{ .degraded = .step_up_required },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "pending",
+        .class = .{ .degraded = .pending_verification },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "schema",
+        .class = .{ .degraded = .schema_invalid },
+    },
+    .{
+        .status = 422,
+        .hint_contains = "schema",
+        .class = .{ .degraded = .schema_invalid },
+    },
+};
+
+const mcp_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "resource-metadata",
+        .aliases = &.{ "metadata", "protected-resource-metadata" },
+        .probe = .{
+            .method = "GET",
+            .url = "{{OMUX_MCP_RESOURCE_METADATA_URL}}",
+            .auth = .none,
+            .hint_body = true,
+        },
+    },
+    .{
+        .name = "resource",
+        .aliases = &.{ "resource-probe", "http" },
+        .probe = .{
+            .method = "GET",
+            .url = "{{OMUX_MCP_RESOURCE_PROBE_URL}}",
+            .auth = .bearer,
+            .hint_header = "www-authenticate",
+        },
+    },
+};
+
+const codex_failure_rules = [_]FailureRule{
+    .{
+        .status = 400,
+        .hint_contains = "not supported when using Codex with a ChatGPT account",
+        .class = .{ .degraded = .tier_insufficient },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "model is not supported",
+        .class = .{ .degraded = .tier_insufficient },
+    },
+};
+
+const github_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .hint_contains = "0",
+        .class = .rate_limited,
+    },
+    .{
+        .status = 403,
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const vercel_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .hint_contains = "scope",
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status = 403,
+        .class = .{ .degraded = .tier_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const vercel_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "user", "whoami" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.vercel.com/v2/user",
+            .auth = .bearer,
+        },
+    },
+};
+
+const github_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "user", "whoami" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.github.com/user",
+            .auth = .bearer,
+            .hint_header = "x-ratelimit-remaining",
+        },
+    },
+};
+
+const linear_failure_rules = [_]FailureRule{
+    .{
+        .status = 200,
+        .hint_contains = "\"errors\"",
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status = 403,
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const linear_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "viewer", "whoami" },
+        .probe = .{
+            .method = "POST",
+            .url = "https://api.linear.app/graphql",
+            .body = "{\"query\":\"query Me { viewer { id name email } }\"}",
+            .content_type = "application/json",
+            .auth = .bearer,
+            .hint_body = true,
+        },
+    },
+};
+
+const figma_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status = 404,
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const figma_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "me", "whoami" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.figma.com/v1/me",
+            .auth = .bearer,
+        },
+    },
+    .{
+        .name = "identity-pat",
+        .aliases = &.{ "me-pat", "pat" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.figma.com/v1/me",
+            .auth = .token_header,
+            .auth_header = "X-Figma-Token",
+        },
+    },
+    .{
+        .name = "file-metadata-plan",
+        .aliases = &.{ "plan-file-meta", "plan-file-metadata", "plan" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.figma.com/v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta",
+            .auth = .token_header,
+            .auth_header = "X-Figma-Token",
+        },
+    },
+};
+
+const flakehub_failure_rules = [_]FailureRule{
+    .{
+        .status = 200,
+        .hint_contains = "Logged in: false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .hint_contains = "Logged in: false",
+        .class = .{ .dead = .token_revoked },
+    },
+    .{
+        .status = 400,
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const flakehub_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "status",
+        .aliases = &.{ "identity", "whoami" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .timeout_ms = 30_000,
+            .command = &.{ "determinate-nixd", "status" },
+        },
+    },
+};
+
+const codex_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "codex-max",
+        .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .timeout_ms = 120_000,
+            .command = &.{
+                "codex",
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-rules",
+                "-m",
+                "gpt-5.3-codex",
+                "Reply exactly: OMUX_CODEX_MAX_PROBE",
+            },
+        },
+    },
+    .{
+        .name = "codex-mini",
+        .aliases = &.{ "mini", "spark", "gpt-5.3-codex-spark", "gpt-5.1-codex-mini" },
+        .probe = .{
+            .transport = .command,
+            .auth = .none,
+            .timeout_ms = 120_000,
+            .command = &.{
+                "codex",
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-rules",
+                "-m",
+                "gpt-5.3-codex-spark",
+                "Reply exactly: OMUX_CODEX_MINI_PROBE",
+            },
+        },
+    },
 };
 
 pub const claude_def = ProviderDefinition{
@@ -142,12 +545,14 @@ pub const claude_def = ProviderDefinition{
         .config_dir_env = "CLAUDE_CONFIG_DIR",
         .credential_filename = ".credentials.json",
         .credential_template =
-            \\{"claudeAiOauth":{"accessToken":"{{access_token}}","refreshToken":"{{refresh_token}}"}}
+        \\{"claudeAiOauth":{"accessToken":"{{access_token}}","refreshToken":"{{refresh_token}}"}}
         ,
     },
     .detection = .{
         .binary_names = &.{"claude"},
     },
+    .capabilities = &claude_capabilities,
+    .failure_rules = &claude_failure_rules,
     .rate_limits = .{
         .remaining_header = "x-ratelimit-remaining",
         .reset_header = "x-ratelimit-reset",
@@ -171,7 +576,7 @@ pub const codex_def = ProviderDefinition{
         .config_dir_env = "CODEX_HOME",
         .credential_filename = "auth.json",
         .credential_template =
-            \\{"auth_mode":"chatgpt","tokens":{"access_token":"{{access_token}}","refresh_token":"{{refresh_token}}"}}
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"{{access_token}}","refresh_token":"{{refresh_token}}"}}
         ,
     },
     .detection = .{
@@ -182,6 +587,8 @@ pub const codex_def = ProviderDefinition{
         .remaining_header = "x-ratelimit-remaining-requests",
         .reset_header = "x-ratelimit-reset-requests",
     },
+    .capabilities = &codex_capabilities,
+    .failure_rules = &codex_failure_rules,
 };
 
 pub const gemini_def = ProviderDefinition{
@@ -221,6 +628,8 @@ pub const vercel_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"vercel"},
     },
+    .capabilities = &vercel_capabilities,
+    .failure_rules = &vercel_failure_rules,
 };
 
 pub const github_def = ProviderDefinition{
@@ -239,6 +648,66 @@ pub const github_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"gh"},
     },
+    .capabilities = &github_capabilities,
+    .failure_rules = &github_failure_rules,
+};
+
+pub const linear_def = ProviderDefinition{
+    .name = "linear",
+    .display_name = "Linear",
+    .auth = .{
+        .authorization_endpoint = "https://linear.app/oauth/authorize",
+        .token_endpoint = "https://api.linear.app/oauth/token",
+    },
+    .credential = .{
+        .access_token_path = "access_token",
+        .refresh_token_path = "refresh_token",
+        .expires_in_path = "expires_in",
+    },
+    .injection = .{
+        .direct_env = &.{.{ "LINEAR_ACCESS_TOKEN", "access_token" }},
+    },
+    .detection = .{
+        .env_markers = &.{"LINEAR_ACCESS_TOKEN"},
+    },
+    .capabilities = &linear_capabilities,
+    .failure_rules = &linear_failure_rules,
+};
+
+pub const figma_def = ProviderDefinition{
+    .name = "figma",
+    .display_name = "Figma REST API",
+    .auth = .{
+        .authorization_endpoint = "https://www.figma.com/oauth",
+        .token_endpoint = "https://api.figma.com/v1/oauth/token",
+    },
+    .credential = .{
+        .access_token_path = "access_token",
+        .refresh_token_path = "refresh_token",
+        .expires_in_path = "expires_in",
+    },
+    .injection = .{
+        .direct_env = &.{.{ "FIGMA_ACCESS_TOKEN", "access_token" }},
+    },
+    .detection = .{
+        .env_markers = &.{"FIGMA_ACCESS_TOKEN"},
+    },
+    .capabilities = &figma_capabilities,
+    .failure_rules = &figma_failure_rules,
+};
+
+pub const flakehub_def = ProviderDefinition{
+    .name = "flakehub",
+    .display_name = "FlakeHub / Determinate Nix",
+    .credential = .{
+        .access_token_path = "token",
+        .token_type = "api_key",
+    },
+    .detection = .{
+        .binary_names = &.{ "determinate-nixd", "fh" },
+    },
+    .capabilities = &flakehub_capabilities,
+    .failure_rules = &flakehub_failure_rules,
 };
 
 pub const mcp_def = ProviderDefinition{
@@ -255,7 +724,200 @@ pub const mcp_def = ProviderDefinition{
     .injection = .{
         .direct_env = &.{.{ "MCP_TOKEN", "access_token" }},
     },
+    .capabilities = &mcp_capabilities,
+    .failure_rules = &mcp_failure_rules,
 };
+
+// ── HTTP Failure Classifier ──
+
+pub fn classifyHttp(
+    def: ProviderDefinition,
+    status: u16,
+    retry_after: ?u32,
+    hint: ?[]const u8,
+) types.HttpClassification {
+    for (def.failure_rules) |rule| {
+        if (!failureRuleMatches(rule, status, retry_after, hint)) continue;
+        return classificationFromRule(rule.class, retry_after);
+    }
+
+    if (status >= 200 and status <= 299) return .success;
+
+    if (status == 429) {
+        const wait = retry_after orelse 30;
+        if (wait > def.rate_limits.quota_threshold_seconds) {
+            return .{ .quota_exhausted = .{ .retry_after_s = wait } };
+        }
+        return .{ .rate_limited = .{
+            .retry_after_s = wait,
+            .window = windowFromRetryAfter(wait),
+        } };
+    }
+
+    if (status == 401) return .{ .dead = .token_revoked };
+
+    if (status == 403) {
+        if (hint) |h| {
+            if (containsIgnoreAsciiCase(h, "insufficient_scope") or containsIgnoreAsciiCase(h, "scope")) {
+                return .{ .degraded = .scope_insufficient };
+            }
+            if (containsIgnoreAsciiCase(h, "step_up")) {
+                return .{ .degraded = .step_up_required };
+            }
+            if (containsIgnoreAsciiCase(h, "pending") or containsIgnoreAsciiCase(h, "verification")) {
+                return .{ .degraded = .pending_verification };
+            }
+            if (containsIgnoreAsciiCase(h, "terms")) {
+                return .{ .degraded = .terms_required };
+            }
+        }
+        return .{ .degraded = .tier_insufficient };
+    }
+
+    if (status >= 500 and status <= 599) return .provider_degraded;
+
+    if (status >= 400 and status <= 499) return .{ .degraded = .unknown_4xx };
+
+    return .failure;
+}
+
+pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?ProbePlan {
+    for (def.capabilities) |cap| {
+        if (!capabilityMatches(cap, capability)) continue;
+        const probe = cap.probe orelse return null;
+        return .{
+            .capability = cap.name,
+            .transport = probe.transport,
+            .method = probe.method,
+            .url = probe.url,
+            .body = probe.body,
+            .content_type = probe.content_type,
+            .command = probe.command,
+            .auth = probe.auth,
+            .auth_header = probe.auth_header,
+            .timeout_ms = probe.timeout_ms,
+            .success_status_min = probe.success_status_min,
+            .success_status_max = probe.success_status_max,
+            .hint_header = probe.hint_header,
+            .hint_body = probe.hint_body,
+        };
+    }
+    return null;
+}
+
+pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?types.HttpClassification {
+    var lines = std.mem.splitScalar(u8, jsonl, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch continue;
+        defer parsed.deinit();
+
+        if (resolveJsonString(parsed.value, "type")) |event_type| {
+            if (std.mem.eql(u8, event_type, "turn.completed")) return .success;
+
+            if (std.mem.eql(u8, event_type, "error")) {
+                if (resolveJsonString(parsed.value, "message")) |message| {
+                    return classifyCodexErrorMessage(allocator, message);
+                }
+            }
+        }
+
+        if (classifyCodexErrorValue(parsed.value)) |classification| return classification;
+    }
+
+    return null;
+}
+
+fn classifyCodexErrorMessage(allocator: std.mem.Allocator, message: []const u8) types.HttpClassification {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, message, .{}) catch {
+        return classifyHttp(codex_def, 400, null, message);
+    };
+    defer parsed.deinit();
+    return classifyCodexErrorValue(parsed.value) orelse classifyHttp(codex_def, 400, null, message);
+}
+
+fn classifyCodexErrorValue(value: std.json.Value) ?types.HttpClassification {
+    const status_i = resolveJsonInt(value, "status") orelse return null;
+    if (status_i < 0 or status_i > 65535) return null;
+    const status: u16 = @intCast(status_i);
+    const hint = resolveJsonString(value, "error.message");
+    return classifyHttp(codex_def, status, null, hint);
+}
+
+fn capabilityMatches(cap: CapabilityDefinition, requested: []const u8) bool {
+    if (std.mem.eql(u8, cap.name, requested)) return true;
+    for (cap.aliases) |alias| {
+        if (std.mem.eql(u8, alias, requested)) return true;
+    }
+    return false;
+}
+
+fn failureRuleMatches(rule: FailureRule, status: u16, retry_after: ?u32, hint: ?[]const u8) bool {
+    if (rule.status) |exact| {
+        if (status != exact) return false;
+    }
+    if (rule.status_min) |min| {
+        if (status < min) return false;
+    }
+    if (rule.status_max) |max| {
+        if (status > max) return false;
+    }
+    if (rule.retry_after_gte) |min_wait| {
+        const wait = retry_after orelse return false;
+        if (wait < min_wait) return false;
+    }
+    if (rule.retry_after_lt) |max_wait| {
+        const wait = retry_after orelse return false;
+        if (wait >= max_wait) return false;
+    }
+    if (rule.hint_contains) |needle| {
+        const h = hint orelse return false;
+        if (!containsIgnoreAsciiCase(h, needle)) return false;
+    }
+    return true;
+}
+
+fn classificationFromRule(class: FailureClass, retry_after: ?u32) types.HttpClassification {
+    return switch (class) {
+        .success => .success,
+        .rate_limited => blk: {
+            const wait = retry_after orelse 30;
+            break :blk .{ .rate_limited = .{
+                .retry_after_s = wait,
+                .window = windowFromRetryAfter(wait),
+            } };
+        },
+        .quota_exhausted => .{ .quota_exhausted = .{ .retry_after_s = retry_after orelse 3600 } },
+        .degraded => |reason| .{ .degraded = reason },
+        .dead => |reason| .{ .dead = reason },
+        .provider_degraded => .provider_degraded,
+        .failure => .failure,
+    };
+}
+
+fn windowFromRetryAfter(wait: u32) types.RateLimitWindow {
+    return if (wait <= 60) .per_minute else if (wait <= 3600) .per_hour else .per_day;
+}
+
+fn containsIgnoreAsciiCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var matched = true;
+        for (needle, 0..) |needle_char, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle_char)) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
+    return false;
+}
 
 // ── JSON Path Resolver ──
 // Resolves dot-separated paths like "claudeAiOauth.accessToken" against parsed JSON.
@@ -551,4 +1213,273 @@ test "detectFromCommand" {
     try std.testing.expectEqualStrings("codex", detectFromCommand(&.{"codex"}).?.name);
     try std.testing.expectEqualStrings("github", detectFromCommand(&.{"gh"}).?.name);
     try std.testing.expect(detectFromCommand(&.{"unknown"}) == null);
+}
+
+test "classifyHttp generic rate limit and quota" {
+    const short = classifyHttp(generic_def, 429, 30, null);
+    switch (short) {
+        .rate_limited => |rl| {
+            try std.testing.expectEqual(@as(u32, 30), rl.retry_after_s);
+            try std.testing.expectEqual(types.RateLimitWindow.per_minute, rl.window);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const long = classifyHttp(generic_def, 429, 7200, null);
+    switch (long) {
+        .quota_exhausted => |q| try std.testing.expectEqual(@as(u32, 7200), q.retry_after_s),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyHttp MCP route failures" {
+    const scope = classifyHttp(mcp_def, 403, null, "Bearer error=\"insufficient_scope\"");
+    switch (scope) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const step_up = classifyHttp(mcp_def, 403, null, "mcp step_up required");
+    switch (step_up) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.step_up_required, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const schema = classifyHttp(mcp_def, 422, null, "tool schema invalid");
+    switch (schema) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.schema_invalid, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "mcp resource metadata capability uses unauthenticated metadata URL" {
+    const plan = probePlanForCapability(mcp_def, "metadata").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("resource-metadata", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("{{OMUX_MCP_RESOURCE_METADATA_URL}}", plan.url);
+    try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expect(plan.hint_body);
+}
+
+test "mcp resource capability uses bearer resource URL" {
+    const plan = probePlanForCapability(mcp_def, "resource-probe").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("resource", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("{{OMUX_MCP_RESOURCE_PROBE_URL}}", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
+}
+
+test "probePlanForCapability resolves aliases" {
+    const caps = [_]CapabilityDefinition{
+        .{
+            .name = "chat:max",
+            .aliases = &.{"gpt-5.1-codex-max"},
+            .probe = .{
+                .method = "POST",
+                .url = "https://example.invalid/v1/probe",
+                .hint_header = "www-authenticate",
+            },
+        },
+    };
+    const def = ProviderDefinition{
+        .name = "toy",
+        .capabilities = &caps,
+    };
+
+    const plan = probePlanForCapability(def, "gpt-5.1-codex-max").?;
+    try std.testing.expectEqualStrings("chat:max", plan.capability);
+    try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
+    try std.testing.expect(probePlanForCapability(def, "unknown") == null);
+}
+
+test "codex capabilities include semantic max and mini command probes" {
+    try std.testing.expectEqualStrings("codex-max", codex_def.capabilities[0].name);
+    const max_plan = probePlanForCapability(codex_def, "gpt-5.3-codex").?;
+    try std.testing.expectEqual(ProbeTransport.command, max_plan.transport);
+    try std.testing.expectEqualStrings("codex-max", max_plan.capability);
+    try std.testing.expectEqualStrings("codex", max_plan.command.?[0]);
+    try std.testing.expectEqualStrings("gpt-5.3-codex", max_plan.command.?[6]);
+    try std.testing.expectEqual(@as(u32, 120_000), max_plan.timeout_ms);
+    try std.testing.expectEqualStrings("codex-max", probePlanForCapability(codex_def, "max").?.capability);
+    try std.testing.expectEqualStrings("codex-mini", codex_def.capabilities[1].name);
+    const mini_plan = probePlanForCapability(codex_def, "gpt-5.3-codex-spark").?;
+    try std.testing.expectEqual(ProbeTransport.command, mini_plan.transport);
+    try std.testing.expectEqualStrings("codex-mini", mini_plan.capability);
+    try std.testing.expectEqualStrings("gpt-5.3-codex-spark", mini_plan.command.?[6]);
+}
+
+test "claude auth status capability uses admitted command probe" {
+    const plan = probePlanForCapability(claude_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.command, plan.transport);
+    try std.testing.expectEqualStrings("auth-status", plan.capability);
+    try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expectEqualStrings("claude", plan.command.?[0]);
+    try std.testing.expectEqualStrings("auth", plan.command.?[1]);
+    try std.testing.expectEqualStrings("status", plan.command.?[2]);
+    try std.testing.expectEqualStrings("--json", plan.command.?[3]);
+}
+
+test "claude failure rules classify logged out status as dead" {
+    const classification = classifyHttp(claude_def, 400, null, "{\"loggedIn\":false}");
+    switch (classification) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "github identity capability uses admitted user probe" {
+    const plan = probePlanForCapability(github_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.github.com/user", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("x-ratelimit-remaining", plan.hint_header.?);
+}
+
+test "vercel identity capability uses admitted user probe" {
+    const plan = probePlanForCapability(vercel_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.vercel.com/v2/user", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+}
+
+test "vercel failure rules classify forbidden as tier degradation" {
+    const classification = classifyHttp(vercel_def, 403, null, null);
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "linear identity capability uses GraphQL viewer probe" {
+    const plan = probePlanForCapability(linear_def, "viewer").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqualStrings("https://api.linear.app/graphql", plan.url);
+    try std.testing.expect(plan.body != null);
+    try std.testing.expect(std.mem.indexOf(u8, plan.body.?, "viewer") != null);
+    try std.testing.expectEqualStrings("application/json", plan.content_type.?);
+    try std.testing.expect(plan.hint_body);
+}
+
+test "linear failure rules classify GraphQL errors as degraded" {
+    const classification = classifyHttp(linear_def, 200, null, "{\"errors\":[{\"message\":\"Forbidden\"}]}");
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "figma identity capability uses OAuth me probe" {
+    const plan = probePlanForCapability(figma_def, "me").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.figma.com/v1/me", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+}
+
+test "figma pat identity capability uses explicit token header" {
+    const plan = probePlanForCapability(figma_def, "me-pat").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity-pat", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.figma.com/v1/me", plan.url);
+    try std.testing.expectEqual(ProbeAuth.token_header, plan.auth);
+    try std.testing.expectEqualStrings("X-Figma-Token", plan.auth_header.?);
+}
+
+test "figma plan capability uses resource scoped file metadata probe" {
+    const plan = probePlanForCapability(figma_def, "plan-file-meta").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("file-metadata-plan", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.figma.com/v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta", plan.url);
+    try std.testing.expectEqual(ProbeAuth.token_header, plan.auth);
+    try std.testing.expectEqualStrings("X-Figma-Token", plan.auth_header.?);
+}
+
+test "figma failure rules classify forbidden as scope degradation" {
+    const classification = classifyHttp(figma_def, 403, null, null);
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "figma failure rules classify missing resource as route degradation" {
+    const classification = classifyHttp(figma_def, 404, null, null);
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "flakehub status capability uses admitted command probe" {
+    const plan = probePlanForCapability(flakehub_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.command, plan.transport);
+    try std.testing.expectEqualStrings("status", plan.capability);
+    try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expectEqualStrings("determinate-nixd", plan.command.?[0]);
+    try std.testing.expectEqualStrings("status", plan.command.?[1]);
+}
+
+test "flakehub failure rules classify logged out status as dead" {
+    const classification = classifyHttp(flakehub_def, 200, null, "Logged in: false");
+    switch (classification) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "github failure rules distinguish rate limit from scope degradation" {
+    const limited = classifyHttp(github_def, 403, null, "0");
+    switch (limited) {
+        .rate_limited => |rl| try std.testing.expectEqual(@as(u32, 30), rl.retry_after_s),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const forbidden = classifyHttp(github_def, 403, null, "1");
+    switch (forbidden) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCodexExecJsonl success cassette" {
+    const jsonl =
+        \\{"type":"thread.started","thread_id":"redacted"}
+        \\{"type":"turn.started"}
+        \\{"type":"item.completed","item":{"type":"agent_message","text":"OMUX_CODEX_SPARK_PROBE"}}
+        \\{"type":"turn.completed","usage":{"input_tokens":26656,"cached_input_tokens":3712,"output_tokens":57,"reasoning_output_tokens":43}}
+        \\
+    ;
+    try std.testing.expectEqual(
+        types.HttpClassification.success,
+        classifyCodexExecJsonl(std.testing.allocator, jsonl).?,
+    );
+}
+
+test "classifyCodexExecJsonl unsupported model cassette" {
+    const jsonl =
+        \\{"type":"thread.started","thread_id":"redacted"}
+        \\{"type":"turn.started"}
+        \\{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.1-codex-max' model is not supported when using Codex with a ChatGPT account.\"}}"}
+        \\{"type":"turn.failed","error":{"message":"redacted"}}
+        \\
+    ;
+    const classification = classifyCodexExecJsonl(std.testing.allocator, jsonl).?;
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
