@@ -56,6 +56,9 @@ Implemented:
   `zig build` inside that shell, avoiding duplicate Nix wrapper startup.
 - Provider probe admission matrix for Codex, Claude, Anthropic API, MCP,
   GitHub, Linear, Figma, Vercel, and FlakeHub.
+- Built-in GitHub `identity` capability probe using the documented
+  `GET /user` endpoint, with GitHub-specific 403 rate-limit vs degraded
+  classification and an env-backed example config.
 
 ## Key Decisions
 
@@ -135,9 +138,9 @@ Decision record:
 
 1. Apply the provider admission gate to Claude, MCP, Figma, Vercel, GitHub,
    Linear, and FlakeHub before adding any direct HTTP probes.
-2. Convert the `admitted_http` rows into schema fixtures and failure-rule tests
-   one provider at a time, starting with GitHub or Linear because their identity
-   probes are narrow and well documented.
+2. Convert the remaining `admitted_http` rows into schema fixtures and
+   failure-rule tests one provider at a time, with Linear as the next smallest
+   GraphQL probe.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -153,6 +156,9 @@ zig build
 passed
 
 OMUX_CONFIG=$PWD/examples/codex-max.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
+
+OMUX_CONFIG=$PWD/examples/github.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
 
 just check

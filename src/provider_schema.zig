@@ -244,6 +244,36 @@ const codex_failure_rules = [_]FailureRule{
     },
 };
 
+const github_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .hint_contains = "0",
+        .class = .rate_limited,
+    },
+    .{
+        .status = 403,
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const github_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "user", "whoami" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.github.com/user",
+            .auth = .bearer,
+            .hint_header = "x-ratelimit-remaining",
+        },
+    },
+};
+
 const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-max",
@@ -400,6 +430,8 @@ pub const github_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"gh"},
     },
+    .capabilities = &github_capabilities,
+    .failure_rules = &github_failure_rules,
 };
 
 pub const mcp_def = ProviderDefinition{
@@ -978,6 +1010,30 @@ test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqual(ProbeTransport.command, mini_plan.transport);
     try std.testing.expectEqualStrings("codex-mini", mini_plan.capability);
     try std.testing.expectEqualStrings("gpt-5.3-codex-spark", mini_plan.command.?[6]);
+}
+
+test "github identity capability uses admitted user probe" {
+    const plan = probePlanForCapability(github_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.github.com/user", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("x-ratelimit-remaining", plan.hint_header.?);
+}
+
+test "github failure rules distinguish rate limit from scope degradation" {
+    const limited = classifyHttp(github_def, 403, null, "0");
+    switch (limited) {
+        .rate_limited => |rl| try std.testing.expectEqual(@as(u32, 30), rl.retry_after_s),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const forbidden = classifyHttp(github_def, 403, null, "1");
+    switch (forbidden) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "classifyCodexExecJsonl success cassette" {
