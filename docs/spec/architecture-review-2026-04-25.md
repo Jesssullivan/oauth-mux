@@ -82,6 +82,12 @@ Implemented:
 - Release entrypoint alignment: `just release` now aliases the full release
   build, Windows targets are included in `release-all`, and `just check`
   validates every example config after build.
+- GloriousFlywheel substrate integration plan and first CI lace-up:
+  `just check` now delegates to devshell-local `just check-local`, CI has a
+  `tinyland-nix` cache-first lane through the GloriousFlywheel `nix-job`
+  action, `just release` runs the single Zig release graph, and CI/release
+  matrices include all six documented targets. See
+  `docs/spec/gloriousflywheel-substrate-integration-2026-04-26.md`.
 
 ## Key Decisions
 
@@ -151,6 +157,9 @@ Decision record:
   beyond the current evidence fields is not yet documented.
 - Release packaging templates exist for curl installer, npm, Homebrew, and
   nfpm; checksum/artifact publication remains release-automation work.
+- GloriousFlywheel cache-first CI proves shared Nix/Attic substrate attachment,
+  not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
+  remains Zig-only, so Bazel should stay out until there is a real target graph.
 - The live Codex route probes intentionally spend small subscription calls and
   should remain explicit operator actions or bounded fallback checks, not a
   background polling loop.
@@ -165,7 +174,9 @@ Decision record:
 2. Turn the existing dist templates into a release automation path that emits
    tarballs, checksums, npm platform packages, Homebrew formula updates, and
    nfpm deb/rpm artifacts from one version input.
-3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+3. Add a GloriousFlywheel-backed release proof job for the release artifact
+   path once the one-version release recipe exists.
+4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation
@@ -221,5 +232,11 @@ just codex-max-probe-all
 codex-mini: max-1, max-2, max-3 -> 200/use_this/live/available
 
 just codex-max-probe-all codex-max
-codex-max: max-1, max-2, max-3 -> 200/use_this/live/available
+current review refresh:
+max-1#codex-max -> degraded/unknown_4xx/status 400
+max-2#codex-max -> degraded/unknown_4xx/status 400
+profile-level codex-max fallback -> selected max-3#codex-max with 200/use_this/live/available
+
+just release
+single Zig release graph builds all six documented targets
 ```

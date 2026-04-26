@@ -10,6 +10,7 @@ const paths = @import("paths.zig");
 const log = @import("log.zig");
 const oauth = @import("oauth.zig");
 const probe = @import("probe.zig");
+const env = @import("env.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -473,10 +474,10 @@ fn buildProbeEnv(
     def: provider_schema.ProviderDefinition,
     plan: provider_schema.ProbePlan,
 ) !ProbeEnv {
-    var env = ProbeEnv.init(ctx.allocator);
-    errdefer env.deinit();
+    var probe_env = ProbeEnv.init(ctx.allocator);
+    errdefer probe_env.deinit();
 
-    if (plan.transport != .command) return env;
+    if (plan.transport != .command) return probe_env;
 
     const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
     const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return error.AccountNotFound;
@@ -485,16 +486,16 @@ fn buildProbeEnv(
     if (acct_cfg.config_dir) |dir| {
         if (config_dir_env) |env_var| {
             const expanded = paths.expandTilde(ctx.allocator, dir) catch return error.OutOfMemory;
-            try env.addOwned(env_var, expanded);
+            try probe_env.addOwned(env_var, expanded);
         }
     }
 
-    try env.addBorrowed("OMUX_ACTIVE_PROVIDER", prov);
-    try env.addBorrowed("OMUX_ACTIVE_ACCOUNT", acct);
-    try env.addBorrowed("OMUX_ACTIVE_CAPABILITY", plan.capability);
-    if (ctx.profile_name) |profile| try env.addBorrowed("OMUX_ACTIVE_PROFILE", profile);
+    try probe_env.addBorrowed("OMUX_ACTIVE_PROVIDER", prov);
+    try probe_env.addBorrowed("OMUX_ACTIVE_ACCOUNT", acct);
+    try probe_env.addBorrowed("OMUX_ACTIVE_CAPABILITY", plan.capability);
+    if (ctx.profile_name) |profile| try probe_env.addBorrowed("OMUX_ACTIVE_PROFILE", profile);
 
-    return env;
+    return probe_env;
 }
 
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
@@ -605,7 +606,8 @@ fn tokenFieldValue(tok: provider.TokenFields, field: []const u8) ?[]const u8 {
 }
 
 fn createTmpCredDir(allocator: std.mem.Allocator, fname: []const u8, content: []const u8) ![]const u8 {
-    const tmp_base = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmp_base = (try env.get(allocator, "TMPDIR")) orelse try allocator.dupe(u8, "/tmp");
+    defer allocator.free(tmp_base);
     const dir_path = std.fmt.allocPrint(allocator, "{s}/oauth-mux-{d}", .{ tmp_base, std.time.timestamp() }) catch return error.OutOfMemory;
 
     std.fs.makeDirAbsolute(dir_path) catch |e| switch (e) {
@@ -818,6 +820,19 @@ test "runEnv routes around degraded capability without poisoning account" {
         std.testing.allocator,
         \\{{
         \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{
+        \\      "name": "codex",
+        \\      "display_name": "Synthetic Codex",
+        \\      "credential": {{
+        \\        "access_token_path": "tokens.access_token",
+        \\        "refresh_token_path": "tokens.refresh_token"
+        \\      }},
+        \\      "injection": {{
+        \\        "direct_env": [["OPENAI_API_KEY", "access_token"]]
+        \\      }}
+        \\    }}
+        \\  }},
         \\  "defaults": {{ "provider": "codex" }},
         \\  "providers": {{
         \\    "codex": {{

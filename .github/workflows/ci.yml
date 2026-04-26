@@ -2,11 +2,33 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, initial-implementation]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
+  cache-first:
+    name: GloriousFlywheel cache-first check
+    runs-on: tinyland-nix
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cache-first validation
+        uses: tinyland-inc/GloriousFlywheel/.github/actions/nix-job@main
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+            nix develop --command just check-local
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -21,6 +43,12 @@ jobs:
 
       - name: Test
         run: zig build test
+
+      - name: Validate examples
+        run: |
+          for cfg in examples/*.config.json; do
+            OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
+          done
 
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe
@@ -37,6 +65,8 @@ jobs:
           - aarch64-linux-musl
           - x86_64-macos
           - aarch64-macos
+          - x86_64-windows
+          - aarch64-windows
     steps:
       - uses: actions/checkout@v4
 
@@ -49,13 +79,13 @@ jobs:
 
       - name: Check binary
         run: |
-          ls -lh zig-out/bin/oauth-mux
-          file zig-out/bin/oauth-mux
+          ls -lh zig-out/bin/oauth-mux*
+          file zig-out/bin/oauth-mux*
 
       - uses: actions/upload-artifact@v4
         with:
           name: oauth-mux-${{ matrix.target }}
-          path: zig-out/bin/oauth-mux
+          path: zig-out/bin/oauth-mux*
 
   nix:
     runs-on: ubuntu-latest

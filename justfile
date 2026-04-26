@@ -87,7 +87,8 @@ codex-max-probe-all CAPABILITY="codex-mini": build
 
 release: release-all
 
-release-all: release-linux-amd64 release-linux-arm64 release-macos-amd64 release-macos-arm64 release-windows-amd64 release-windows-arm64
+release-all:
+    {{zig}} build release
     @echo "all release builds complete"
 
 release-linux-amd64:
@@ -119,7 +120,10 @@ nix-check:
 # ── Validation ──
 
 check:
-    nix develop --command sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done'
+    nix develop --command just check-local
+
+check-local:
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done'
     @echo "all checks passed"
 
 # ── Config ──
