@@ -48,6 +48,10 @@ Implemented:
 - Fixture redaction validation in `zig build test`: files under
   `test/fixtures` are scanned for common OAuth token, bearer header, cookie,
   and API-key markers.
+- Explicit Codex direct-HTTP probe decision record: no direct Codex HTTP probe
+  is admitted until an official/provider-owned source documents endpoint
+  semantics, token audience, typed failure classes, reset behavior, and quota
+  impact.
 
 ## Key Decisions
 
@@ -94,11 +98,21 @@ surface actually exposed by Codex CLI 0.125.0 on this workstation and lets the
 mux distinguish a live route from plan/model incompatibility by parsing JSONL
 events.
 
+### Direct Codex HTTP Probes Are Unadmitted
+
+As of 2026-04-26, no official Codex subscription-account HTTP health endpoint
+has been found with documented method, request shape, token audience, response
+schema, typed failure classes, retry/reset semantics, and quota impact. Treat
+direct Codex HTTP probing as blocked until that admission gate is satisfied.
+
+Decision record:
+`docs/spec/codex-direct-http-probe-decision-2026-04-26.md`.
+
 ## Current Risks
 
-- Direct provider probe endpoints are not yet pinned for Codex/Claude/MCP. The
-  schema can express HTTP and command probes, but direct HTTP endpoint semantics
-  still need provider verification.
+- Direct Codex HTTP probing is intentionally unadmitted pending official
+  endpoint documentation. Claude, MCP, Figma, Vercel, GitHub, and Linear still
+  need the same provider-by-provider probe admission review.
 - Probe execution is intentionally minimal: HTTP method, URL, bearer auth,
   success range, retry-after, one hint header, or argv plus account env and an
   explicit timeout. Request body templating and richer header extraction are
@@ -112,9 +126,12 @@ events.
 
 ## Next Arc
 
-1. Add live provider verification for the first safe non-quota-burning Codex
-   HTTP status endpoint, if one exists.
-2. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+1. Apply the provider admission gate to Claude, MCP, Figma, Vercel, GitHub,
+   Linear, and FlakeHub before adding any direct HTTP probes.
+2. Repair or document the Nix/`just check` wrapper stall so canonical validation
+   is reliable again, while keeping direct Zig validation available for
+   iteration.
+3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation
@@ -122,8 +139,14 @@ events.
 Latest validation at this checkpoint:
 
 ```text
-just check
-all checks passed
+zig build test
+passed
+
+zig build
+passed
+
+OMUX_CONFIG=$PWD/examples/codex-max.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
 
 just codex-max-login-status-all
 max-1 -> Logged in using ChatGPT

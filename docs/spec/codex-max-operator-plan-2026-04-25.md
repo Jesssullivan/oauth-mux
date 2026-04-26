@@ -250,3 +250,10 @@ verified:
 - which status/header/body fields distinguish rate limit, quota exhaustion,
   inactive subscription, and revoked auth
 - whether probing consumes meaningful user quota
+
+This is now an explicit architecture decision rather than an open next step.
+See:
+
+```text
+docs/spec/codex-direct-http-probe-decision-2026-04-26.md
+```

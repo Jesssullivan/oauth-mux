@@ -27,6 +27,9 @@ Do not add a direct Codex HTTP probe until the endpoint, method, request body,
 auth semantics, status/header/body classes, and quota impact are all verified
 from an official or provider-owned source.
 
+Decision record:
+`docs/spec/codex-direct-http-probe-decision-2026-04-26.md`.
+
 ## Standards Baseline
 
 Provider definitions must be consistent with the current OAuth and MCP floor:
