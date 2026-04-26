@@ -268,6 +268,35 @@ const github_failure_rules = [_]FailureRule{
     },
 };
 
+const vercel_failure_rules = [_]FailureRule{
+    .{
+        .status = 403,
+        .hint_contains = "scope",
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status = 403,
+        .class = .{ .degraded = .tier_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const vercel_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "user", "whoami" },
+        .probe = .{
+            .method = "GET",
+            .url = "https://api.vercel.com/v2/user",
+            .auth = .bearer,
+        },
+    },
+};
+
 const github_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity",
@@ -451,6 +480,8 @@ pub const vercel_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"vercel"},
     },
+    .capabilities = &vercel_capabilities,
+    .failure_rules = &vercel_failure_rules,
 };
 
 pub const github_def = ProviderDefinition{
@@ -1084,6 +1115,23 @@ test "github identity capability uses admitted user probe" {
     try std.testing.expectEqualStrings("https://api.github.com/user", plan.url);
     try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
     try std.testing.expectEqualStrings("x-ratelimit-remaining", plan.hint_header.?);
+}
+
+test "vercel identity capability uses admitted user probe" {
+    const plan = probePlanForCapability(vercel_def, "whoami").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("GET", plan.method);
+    try std.testing.expectEqualStrings("https://api.vercel.com/v2/user", plan.url);
+    try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+}
+
+test "vercel failure rules classify forbidden as tier degradation" {
+    const classification = classifyHttp(vercel_def, 403, null, null);
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "linear identity capability uses GraphQL viewer probe" {
