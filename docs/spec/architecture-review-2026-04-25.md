@@ -59,6 +59,9 @@ Implemented:
 - Built-in GitHub `identity` capability probe using the documented
   `GET /user` endpoint, with GitHub-specific 403 rate-limit vs degraded
   classification and an env-backed example config.
+- Narrow HTTP probe body support for GraphQL identity checks, plus built-in
+  Linear `identity` capability probing `viewer` through the documented GraphQL
+  endpoint.
 
 ## Key Decisions
 
@@ -139,8 +142,8 @@ Decision record:
 1. Apply the provider admission gate to Claude, MCP, Figma, Vercel, GitHub,
    Linear, and FlakeHub before adding any direct HTTP probes.
 2. Convert the remaining `admitted_http` rows into schema fixtures and
-   failure-rule tests one provider at a time, with Linear as the next smallest
-   GraphQL probe.
+   failure-rule tests one provider at a time, with Figma REST or Vercel as the
+   next narrow identity probe.
 3. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -159,6 +162,9 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json ./zig-out/bin/oauth-mux config v
 config: valid
 
 OMUX_CONFIG=$PWD/examples/github.config.json ./zig-out/bin/oauth-mux config validate
+config: valid
+
+OMUX_CONFIG=$PWD/examples/linear.config.json ./zig-out/bin/oauth-mux config validate
 config: valid
 
 just check

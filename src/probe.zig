@@ -36,10 +36,11 @@ pub fn classifyResult(
         }
     }
 
+    const classified = provider_schema.classifyHttp(def, result.status, result.retry_after_s, result.hint);
     if (result.status >= plan.success_status_min and result.status <= plan.success_status_max) {
-        return .success;
+        return if (classified == .success) .success else classified;
     }
-    return provider_schema.classifyHttp(def, result.status, result.retry_after_s, result.hint);
+    return classified;
 }
 
 pub fn execute(
@@ -65,7 +66,7 @@ fn executeHttp(
     var bearer_value: ?[]u8 = null;
     defer if (bearer_value) |value| allocator.free(value);
 
-    var headers_buf: [3]std.http.Header = undefined;
+    var headers_buf: [4]std.http.Header = undefined;
     var header_count: usize = 0;
     headers_buf[header_count] = .{ .name = "Accept", .value = "application/json" };
     header_count += 1;
@@ -73,6 +74,11 @@ fn executeHttp(
     if (plan.auth == .bearer) {
         bearer_value = std.fmt.allocPrint(allocator, "Bearer {s}", .{access_token}) catch return error.OutOfMemory;
         headers_buf[header_count] = .{ .name = "Authorization", .value = bearer_value.? };
+        header_count += 1;
+    }
+
+    if (plan.body != null) {
+        headers_buf[header_count] = .{ .name = "Content-Type", .value = plan.content_type orelse "application/json" };
         header_count += 1;
     }
 
@@ -86,12 +92,24 @@ fn executeHttp(
     }) catch return error.NetworkError;
     defer req.deinit();
 
+    if (plan.body) |body| {
+        req.transfer_encoding = .{ .content_length = body.len };
+    }
+
     req.send() catch return error.NetworkError;
+    if (plan.body) |body| {
+        req.writeAll(body) catch return error.NetworkError;
+    }
     req.finish() catch return error.NetworkError;
     req.wait() catch return error.NetworkError;
 
-    var drain_buf: [4096]u8 = undefined;
-    _ = req.readAll(&drain_buf) catch return error.NetworkError;
+    var response_buf: [64 * 1024]u8 = undefined;
+    const response_len = req.readAll(&response_buf) catch return error.NetworkError;
+    const body_hint = if (plan.hint_body and plan.hint_header == null)
+        allocator.dupe(u8, response_buf[0..response_len]) catch return error.OutOfMemory
+    else
+        null;
+    errdefer if (body_hint) |hint| allocator.free(hint);
 
     return .{
         .status = @intFromEnum(req.response.status),
@@ -99,7 +117,7 @@ fn executeHttp(
         .hint = if (plan.hint_header) |header_name|
             try dupeHeaderValue(allocator, req.response, header_name)
         else
-            null,
+            body_hint,
     };
 }
 
@@ -364,6 +382,32 @@ test "classifyResult uses hint text" {
     const classified = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, result);
     switch (classified) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyResult can downgrade successful GraphQL status from body hint" {
+    const plan = provider_schema.ProbePlan{
+        .capability = "identity",
+        .transport = .http,
+        .method = "POST",
+        .url = "https://api.linear.app/graphql",
+        .body = "{\"query\":\"query Me { viewer { id name email } }\"}",
+        .content_type = "application/json",
+        .auth = .bearer,
+        .timeout_ms = 30_000,
+        .success_status_min = 200,
+        .success_status_max = 299,
+        .hint_body = true,
+    };
+    const result = ProbeResult{
+        .status = 200,
+        .hint = "{\"errors\":[{\"message\":\"Forbidden\"}]}",
+    };
+
+    const classified = classifyResult(std.testing.allocator, provider_schema.linear_def, plan, result);
+    switch (classified) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
         else => return error.TestUnexpectedResult,
     }
 }

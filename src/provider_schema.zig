@@ -125,12 +125,15 @@ pub const ProbeDefinition = struct {
     transport: ProbeTransport = .http,
     method: []const u8 = "GET",
     url: []const u8 = "",
+    body: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
     command: ?[]const []const u8 = null,
     auth: ProbeAuth = .bearer,
     timeout_ms: u32 = 30_000,
     success_status_min: u16 = 200,
     success_status_max: u16 = 299,
     hint_header: ?[]const u8 = null,
+    hint_body: bool = false,
 };
 
 pub const ProbeTransport = enum {
@@ -148,12 +151,15 @@ pub const ProbePlan = struct {
     transport: ProbeTransport,
     method: []const u8,
     url: []const u8,
+    body: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
     command: ?[]const []const u8 = null,
     auth: ProbeAuth,
     timeout_ms: u32,
     success_status_min: u16,
     success_status_max: u16,
     hint_header: ?[]const u8 = null,
+    hint_body: bool = false,
 };
 
 pub const RateLimitConfig = struct {
@@ -195,6 +201,7 @@ pub const builtin_providers = [_]ProviderDefinition{
     gemini_def,
     vercel_def,
     github_def,
+    linear_def,
     mcp_def,
 };
 
@@ -270,6 +277,38 @@ const github_capabilities = [_]CapabilityDefinition{
             .url = "https://api.github.com/user",
             .auth = .bearer,
             .hint_header = "x-ratelimit-remaining",
+        },
+    },
+};
+
+const linear_failure_rules = [_]FailureRule{
+    .{
+        .status = 200,
+        .hint_contains = "\"errors\"",
+        .class = .{ .degraded = .unknown_4xx },
+    },
+    .{
+        .status = 403,
+        .class = .{ .degraded = .scope_insufficient },
+    },
+    .{
+        .status_min = 500,
+        .status_max = 599,
+        .class = .provider_degraded,
+    },
+};
+
+const linear_capabilities = [_]CapabilityDefinition{
+    .{
+        .name = "identity",
+        .aliases = &.{ "viewer", "whoami" },
+        .probe = .{
+            .method = "POST",
+            .url = "https://api.linear.app/graphql",
+            .body = "{\"query\":\"query Me { viewer { id name email } }\"}",
+            .content_type = "application/json",
+            .auth = .bearer,
+            .hint_body = true,
         },
     },
 };
@@ -434,6 +473,28 @@ pub const github_def = ProviderDefinition{
     .failure_rules = &github_failure_rules,
 };
 
+pub const linear_def = ProviderDefinition{
+    .name = "linear",
+    .display_name = "Linear",
+    .auth = .{
+        .authorization_endpoint = "https://linear.app/oauth/authorize",
+        .token_endpoint = "https://api.linear.app/oauth/token",
+    },
+    .credential = .{
+        .access_token_path = "access_token",
+        .refresh_token_path = "refresh_token",
+        .expires_in_path = "expires_in",
+    },
+    .injection = .{
+        .direct_env = &.{.{ "LINEAR_ACCESS_TOKEN", "access_token" }},
+    },
+    .detection = .{
+        .env_markers = &.{"LINEAR_ACCESS_TOKEN"},
+    },
+    .capabilities = &linear_capabilities,
+    .failure_rules = &linear_failure_rules,
+};
+
 pub const mcp_def = ProviderDefinition{
     .name = "mcp",
     .display_name = "MCP Server",
@@ -513,12 +574,15 @@ pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?
             .transport = probe.transport,
             .method = probe.method,
             .url = probe.url,
+            .body = probe.body,
+            .content_type = probe.content_type,
             .command = probe.command,
             .auth = probe.auth,
             .timeout_ms = probe.timeout_ms,
             .success_status_min = probe.success_status_min,
             .success_status_max = probe.success_status_max,
             .hint_header = probe.hint_header,
+            .hint_body = probe.hint_body,
         };
     }
     return null;
@@ -1020,6 +1084,26 @@ test "github identity capability uses admitted user probe" {
     try std.testing.expectEqualStrings("https://api.github.com/user", plan.url);
     try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
     try std.testing.expectEqualStrings("x-ratelimit-remaining", plan.hint_header.?);
+}
+
+test "linear identity capability uses GraphQL viewer probe" {
+    const plan = probePlanForCapability(linear_def, "viewer").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity", plan.capability);
+    try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqualStrings("https://api.linear.app/graphql", plan.url);
+    try std.testing.expect(plan.body != null);
+    try std.testing.expect(std.mem.indexOf(u8, plan.body.?, "viewer") != null);
+    try std.testing.expectEqualStrings("application/json", plan.content_type.?);
+    try std.testing.expect(plan.hint_body);
+}
+
+test "linear failure rules classify GraphQL errors as degraded" {
+    const classification = classifyHttp(linear_def, 200, null, "{\"errors\":[{\"message\":\"Forbidden\"}]}");
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "github failure rules distinguish rate limit from scope degradation" {

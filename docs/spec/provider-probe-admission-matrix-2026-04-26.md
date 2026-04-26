@@ -31,7 +31,7 @@ implemented yet.
 | MCP HTTP server | `mcp_profile` | First request or metadata discovery via RFC 9728 protected resource metadata, then resource-bound bearer token requests | 401 auth required/dead, 403 insufficient_scope or step-up, malformed metadata, provider degraded |
 | MCP stdio server | `admitted_command` / injection | Environment or config injection; MCP HTTP OAuth flow does not apply | missing secret, malformed env/config, child-process failure |
 | GitHub | `admitted_http`; built-in `identity` probe | `GET https://api.github.com/user` with bearer token | 200 live, 401 dead, 403 forbidden/rate-limited, rate-limit headers |
-| Linear | `admitted_http` | `POST https://api.linear.app/graphql` with `query { viewer { id name email } }` and OAuth bearer token | 200 plus GraphQL errors, 401 dead, 403/scope, 429/rate, 5xx degraded |
+| Linear | `admitted_http`; built-in `identity` probe | `POST https://api.linear.app/graphql` with `query { viewer { id name email } }` and OAuth bearer token | 200 plus GraphQL errors, 401 dead, 403/scope, 429/rate, 5xx degraded |
 | Figma REST | `admitted_http` | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs use `X-Figma-Token` | 200 live, 401 dead, 403 scope/tier, 429/rate, 5xx degraded |
 | Figma Remote MCP | `mcp_profile` | Treat as MCP HTTP resource, not as Figma REST | MCP metadata, scope challenge, tool/schema errors |
 | Vercel | `admitted_http` | `GET https://api.vercel.com/v2/user`; token metadata endpoint is a later optional refinement | 200 live, 401 dead, 403 forbidden/team/scope, softBlock or billing flags as degraded, 429/rate |

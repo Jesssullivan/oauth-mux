@@ -378,6 +378,26 @@ fn validateProbeDefinition(
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.url must not contain token material\n", .{ def_key, capability_idx });
                 ok.* = false;
             }
+            if (probe.body) |body| {
+                if (!std.mem.eql(u8, probe.method, "POST")) {
+                    try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.body requires method POST\n", .{ def_key, capability_idx });
+                    ok.* = false;
+                }
+                if (body.len == 0) {
+                    try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.body must not be empty\n", .{ def_key, capability_idx });
+                    ok.* = false;
+                }
+                if (containsSecretLikeProbeMaterial(body)) {
+                    try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.body must not contain token material\n", .{ def_key, capability_idx });
+                    ok.* = false;
+                }
+            }
+            if (probe.content_type) |content_type| {
+                if (content_type.len == 0) {
+                    try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.content_type must not be empty\n", .{ def_key, capability_idx });
+                    ok.* = false;
+                }
+            }
         },
         .command => {
             if (probe.command == null or probe.command.?.len == 0) {
@@ -405,6 +425,9 @@ fn containsSecretLikeProbeMaterial(value: []const u8) bool {
         "authorization:",
         "bearer ",
         "bearer%20",
+        "\"access_token\"",
+        "\"refresh_token\"",
+        "\"id_token\"",
         "{{access_token}}",
         "{{refresh_token}}",
         "{{id_token}}",
@@ -884,6 +907,95 @@ test "validate rejects token material in http probe url" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.url must not contain token material") != null);
+}
+
+test "validate rejects token material in http probe body" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "POST",
+        \\            "url": "https://example.invalid/v1/probe",
+        \\            "body": "{\"access_token\":\"secret\"}"
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.body must not contain token material") != null);
+}
+
+test "validate rejects http probe body without post" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/probe",
+        \\            "body": "{}"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 401, "class": { "dead": "token_revoked" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.body requires method POST") != null);
 }
 
 test "validate rejects token material in command probe argv" {
