@@ -81,6 +81,12 @@ generic degradation or auth death.
   require `spend-real-calls`; `scripts/registry-dry-run.sh` and
   `.github/workflows/registry-dry-run.yml` require `registry-dry-run`.
 
+- CI-only npm publication
+  `.github/workflows/npm-publish.yml` publishes only generated release
+  tarballs, with npm provenance, after `just release-proof-local <version>`.
+  Auth can come from Actions secrets, token files, or SOPS at runtime; token
+  material is never committed or printed.
+
 - Codex canary and secret-scoped live QA
   `just codex-max-canary` captures no-spend config/discovery/status/health and
   per-account `codex login status` artifacts, then delegates to live QA only
@@ -107,7 +113,7 @@ Ready now:
 Not ready yet:
 
 - unattended automatic live-provider probing;
-- public npm/Homebrew/deb/rpm publication;
+- public Homebrew/deb/rpm publication;
 - required self-hosted release gate;
 - background daemon token refresh as an operational dependency;
 - documented rollback for each registry lane;

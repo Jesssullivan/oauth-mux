@@ -2,8 +2,12 @@
 
 Registry publication is intentionally separate from release artifact proof.
 `just release-proof <version>` proves the release tree and handoff without
-publication credentials. Authenticated registry dry-runs are manual and
-non-publishing.
+publication credentials. Authenticated registry dry-runs are CI/operator gates
+and non-publishing.
+
+npm publication is CI-only. Do not run `npm publish` from a workstation. The
+publish workflow stages the same release derivation, then publishes the
+generated tarballs with npm provenance.
 
 ## Dry-Run
 
@@ -26,10 +30,15 @@ Run authenticated lanes:
 ```bash
 OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run \
 OMUX_REGISTRY_LANES=github,npm,homebrew,system \
-NPM_TOKEN=... \
+NPM_TOKEN_FILE=/path/to/npm-token \
 OMUX_HOMEBREW_TAP_DIR=/path/to/homebrew-tap \
 just registry-dry-run 0.1.0
 ```
+
+The npm dry-run lane resolves auth in this order: `NPM_TOKEN`,
+`NODE_AUTH_TOKEN`, `NPM_TOKEN_FILE`, `NODE_AUTH_TOKEN_FILE`, then
+`OMUX_NPM_TOKEN_SOPS_FILE` with `OMUX_NPM_TOKEN_SOPS_KEY`. The default SOPS key
+candidate is `.api.npm_token`.
 
 The script writes `dist/out/v<version>/handoff/registry-dry-run.md`.
 
@@ -41,10 +50,35 @@ The script writes `dist/out/v<version>/handoff/registry-dry-run.md`.
 
 Required secret and variable surfaces:
 
-- `NPM_TOKEN` for the npm lane.
+- `NPM_TOKEN` for the npm lane, or SOPS inputs:
+  `OMUX_GLOBAL_SOPS_B64` plus `SOPS_AGE_KEY`, or
+  `OMUX_GLOBAL_SOPS_REPOSITORY` plus `OMUX_GLOBAL_SOPS_FILE` and `SOPS_AGE_KEY`.
+- `OMUX_NPM_TOKEN_SOPS_KEY` repository variable when the npm token is not at
+  `.api.npm_token`.
 - `OMUX_HOMEBREW_TAP_DIR` repository variable for the Homebrew lane when a tap
   checkout is available in the runner environment.
 - The default workflow `GITHUB_TOKEN` for the GitHub lane.
+
+## npm Publish
+
+`.github/workflows/npm-publish.yml` is the only supported npm mutation path. It
+requires `confirm=publish-npm`, stages `just release-proof-local <version>`, and
+then publishes the generated tarballs in this order:
+
+1. `@oauth-mux/linux-x64`
+2. `@oauth-mux/linux-arm64`
+3. `@oauth-mux/darwin-x64`
+4. `@oauth-mux/darwin-arm64`
+5. `@oauth-mux/win32-x64`
+6. `@oauth-mux/win32-arm64`
+7. `oauth-mux`
+
+The workflow requests `id-token: write` so `npm publish --provenance` can attach
+GitHub Actions provenance. Keep `dry_run=true` for the first authenticated
+execution. Set `dry_run=false` only for the actual release publication.
+
+The publish script is idempotent by default: if `package@version` already exists
+on npm, it records a skip instead of overwriting or republishing.
 
 ## Rollback
 

@@ -108,6 +108,7 @@ Release attachments, npm publish order, Homebrew tap input, deb/rpm files, and
 full checksums.
 
 See `docs/release-runbook.md` for release and CI details.
+See `docs/adoption.md` for installation and external-user adoption goals.
 See `docs/onboarding.md` for human and agent onboarding.
 See `docs/live-provider-qa.md` for manual secret-scoped provider probes.
 See `docs/registry-dry-runs-and-rollback.md` for publication dry-runs and
