@@ -84,15 +84,17 @@ CI and release target matrices now match the repo contract:
 input:
 
 - binary tarballs and `SHA256SUMS`
+- checksum-verifying `install.sh` for `curl | sh`
 - rendered Homebrew formula
 - npm package workspace and npm tarballs
 - nfpm configs and deb/rpm artifacts
 
 `just release-proof <version>` runs the same staging command and then validates
-the artifact tree, checksums, archive payloads, Homebrew rendering, and local npm
-install path. `.github/workflows/release-proof.yml` exposes this as a manual
-GloriousFlywheel proof on `tinyland-nix` through the private `nix-job` action.
-It is intentionally manual while runner capacity is expected to be noisy.
+the artifact tree, checksums, archive payloads, Homebrew rendering, local npm
+install path, and local installer path. `.github/workflows/release-proof.yml`
+exposes this as a manual GloriousFlywheel proof on `tinyland-nix` through the
+private `nix-job` action. It is intentionally manual while runner capacity is
+expected to be noisy.
 
 `just release` runs the single Zig release graph (`zig build release`) rather
 than entering the Nix devshell once per target. Per-target Just recipes remain

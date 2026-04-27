@@ -62,6 +62,7 @@ just release-local 0.1.0
 Outputs are written under `dist/out/v0.1.0/`:
 
 - `artifacts/` for binary tarballs and `SHA256SUMS`
+- `artifacts/install.sh` for checksum-verified `curl | sh` installs
 - `homebrew/oauth-mux.rb`
 - `npm/` package workspace
 - `npm-tarballs/`

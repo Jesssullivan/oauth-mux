@@ -90,10 +90,11 @@ Implemented:
   `docs/spec/gloriousflywheel-substrate-integration-2026-04-26.md`.
 - Local release staging: `just release-local <version>` emits six binary
   tarballs, checksums, a rendered Homebrew formula, npm package workspace and
-  tarballs, plus nfpm configs and deb/rpm artifacts through the Nix dev shell.
+  tarballs, a checksum-verifying curl installer, plus nfpm configs and deb/rpm
+  artifacts through the Nix dev shell.
 - Local release proof: `just release-proof <version>` stages the release and
   smoke-checks required artifacts, checksums, archive payloads, Homebrew
-  rendering, and local npm installation.
+  rendering, local npm installation, and local installer execution.
 - Manual GloriousFlywheel release proof: `.github/workflows/release-proof.yml`
   runs the same proof through the private cache-first `nix-job` action on
   `tinyland-nix` when runner capacity and `GF_ACTIONS_TOKEN` are available.
@@ -260,5 +261,5 @@ npm tarballs, nfpm configs, and deb/rpm output
 
 just release-proof 0.1.0
 stages the release and verifies required artifacts, checksums, archive payloads,
-Homebrew rendering, and local npm installation
+Homebrew rendering, local npm installation, and installer execution
 ```

@@ -22,6 +22,7 @@ Expected output:
 - `artifacts/oauth-mux-x86_64-windows.tar.gz`
 - `artifacts/oauth-mux-aarch64-windows.tar.gz`
 - `artifacts/SHA256SUMS`
+- `artifacts/install.sh`
 - `homebrew/oauth-mux.rb`
 - `npm/` package workspace
 - `npm-tarballs/*.tgz`
@@ -45,6 +46,7 @@ This runs `release-local` and then checks:
 - tarball payload names for Unix and Windows targets
 - rendered Homebrew formula placeholders and Ruby syntax when Ruby is present
 - local npm install of the matching platform package plus root shim
+- local installer execution against the staged artifact directory
 
 ## Release Workflow
 
@@ -62,6 +64,10 @@ release:
 - `v*/artifacts/*`
 - `v*/npm-tarballs/*.tgz`
 - `v*/homebrew/oauth-mux.rb`
+
+The staged `install.sh` verifies the selected tarball against `SHA256SUMS`
+before installing. For local proof, `OMUX_RELEASE_BASE_URL=file://...` points it
+at the staged artifact directory instead of GitHub Releases.
 
 ## GloriousFlywheel Release Proof
 

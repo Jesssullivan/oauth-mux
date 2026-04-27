@@ -26,6 +26,15 @@ hash_file() {
   fi
 }
 
+write_artifact_checksums() {
+  : >"$artifacts_dir/SHA256SUMS"
+  for artifact in "$artifacts_dir"/*; do
+    [ -f "$artifact" ] || continue
+    [ "$(basename "$artifact")" = "SHA256SUMS" ] && continue
+    printf '%s  %s\n' "$(hash_file "$artifact")" "$(basename "$artifact")" >>"$artifacts_dir/SHA256SUMS"
+  done
+}
+
 package_binary() {
   local build_dir="$1"
   local artifact="$2"
@@ -75,10 +84,7 @@ package_binary "x86_64-windows" "oauth-mux-x86_64-windows" "@oauth-mux/win32-x64
 package_binary "aarch64-windows" "oauth-mux-aarch64-windows" "@oauth-mux/win32-arm64" "win32" "arm64" "oauth-mux.exe"
 
 printf 'writing SHA256SUMS...\n'
-: >"$artifacts_dir/SHA256SUMS"
-for archive in "$artifacts_dir"/*.tar.gz; do
-  printf '%s  %s\n' "$(hash_file "$archive")" "$(basename "$archive")" >>"$artifacts_dir/SHA256SUMS"
-done
+write_artifact_checksums
 
 sha_linux_x64="$(hash_file "$artifacts_dir/oauth-mux-x86_64-linux.tar.gz")"
 sha_linux_arm64="$(hash_file "$artifacts_dir/oauth-mux-aarch64-linux.tar.gz")"
@@ -141,15 +147,14 @@ if command -v nfpm >/dev/null 2>&1; then
     nfpm package -f "$nfpm_dir/oauth-mux-${arch}.yaml" -p deb -t "$artifacts_dir" >/dev/null
     nfpm package -f "$nfpm_dir/oauth-mux-${arch}.yaml" -p rpm -t "$artifacts_dir" >/dev/null
   done
-  : >"$artifacts_dir/SHA256SUMS"
-  for artifact in "$artifacts_dir"/*; do
-    [ -f "$artifact" ] || continue
-    [ "$(basename "$artifact")" = "SHA256SUMS" ] && continue
-    printf '%s  %s\n' "$(hash_file "$artifact")" "$(basename "$artifact")" >>"$artifacts_dir/SHA256SUMS"
-  done
 else
   printf 'warning: nfpm not found; deb/rpm artifacts skipped, configs written to %s\n' "$nfpm_dir" >&2
 fi
+
+printf 'staging curl installer...\n'
+cp dist/install.sh "$artifacts_dir/install.sh"
+chmod 0755 "$artifacts_dir/install.sh"
+write_artifact_checksums
 
 printf '\nrelease output: %s\n' "$out_dir"
 printf 'artifacts:      %s\n' "$artifacts_dir"
