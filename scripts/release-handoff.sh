@@ -131,7 +131,8 @@ publish after \`just release-proof ${version}\` has passed.
 
 - Local proof: \`just release-proof ${version}\`
 - Hosted tag proof: \`.github/workflows/release.yml\`
-- Optional self-hosted proof: \`gh workflow run release-proof.yml -f version=${version}\`
+- Optional self-hosted proof after the workflow exists on \`main\`:
+  \`gh workflow run release-proof.yml -f version=${version}\`
 
 During runner or lab outages, treat a queued self-hosted proof as deferred
 evidence. Do not claim GloriousFlywheel cache-first proof unless the

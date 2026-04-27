@@ -13,8 +13,8 @@ for public unattended production use.
 
 The remaining production gap is no longer the core selection model. The gap is
 operational hardening: live-provider QA, authenticated package publication dry
-runs, documented rollback, and real GloriousFlywheel private-action proof once
-`GF_ACTIONS_TOKEN` is configured.
+runs, documented rollback, and post-merge GloriousFlywheel release-proof
+execution before public tags.
 
 ## Completed Arc
 
@@ -59,8 +59,10 @@ runs, documented rollback, and real GloriousFlywheel private-action proof once
   proof, and handoff generation.
 
 - GloriousFlywheel cache-first lane
-  Present but token-gated. A green skip is useful diagnostic evidence, not a
-  cache-first proof. Count it only when the private action checks out and runs.
+  Proven on PR run `25009779392`, job `73266579091`: the private
+  `GloriousFlywheel` action checked out, `nix-job` ran on `tinyland-nix`, and
+  `nix develop --command just check-local` passed. Cache push is intentionally
+  disabled on PR events.
 
 ## Production Readiness
 
@@ -91,9 +93,9 @@ Not ready yet:
    npm provenance dry run, Homebrew formula audit in the tap, and deb/rpm
    repository staging checks.
 
-3. Configure `GF_ACTIONS_TOKEN` or otherwise expose the private
-   GloriousFlywheel action so cache-first CI can prove the same E2E gate on
-   `tinyland-nix`.
+3. After merge, run the manual GloriousFlywheel release-proof workflow from
+   `main` before publishing tags. GitHub cannot dispatch PR-local workflow
+   files until they exist on the default branch.
 
 4. Add a small canary script for the three real Codex Max accounts that reports
    liveness and route decisions without changing auth state or leaking tokens.

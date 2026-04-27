@@ -131,6 +131,8 @@ nix develop --command just release-proof-local <version>
 
 That workflow does not publish release artifacts. It proves that the staged
 release graph can attach to the same Nix/Attic substrate as normal CI.
+Because this workflow is introduced by the initial implementation PR, GitHub
+can dispatch it only after the workflow file exists on `main`.
 
 ## GloriousFlywheel Boundary
 
@@ -151,6 +153,10 @@ During known lab or runner outages, do not block release staging on a queued
 
 Only claim GloriousFlywheel cache-first CI proof when the GF job actually runs
 the private action and completes.
+
+Current PR evidence: run `25009779392`, job `73266579091`, completed the real
+private-action cache-first lane and ran `nix develop --command just check-local`
+on `tinyland-nix`. Cache push was intentionally disabled for the PR event.
 
 ## Before Marking A PR Ready
 
