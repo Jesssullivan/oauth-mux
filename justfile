@@ -35,10 +35,78 @@ status: build
 health: build
     ./zig-out/bin/oauth-mux health
 
+probe *ARGS: build
+    ./zig-out/bin/oauth-mux probe {{ARGS}}
+
+# ── Codex Max operator helpers ──
+
+codex_max_config := "examples/codex-max.config.json"
+codex_max_state := "/tmp/oauth-mux-codex-max-health"
+
+codex-max-bootstrap-dirs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for account in max-1 max-2 max-3; do
+      dir="$HOME/.local/share/oauth-mux/codex/${account}"
+      mkdir -p "$dir"
+      echo "$dir"
+    done
+
+codex-max-validate: build
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux config validate
+
+codex-max-login ACCOUNT: codex-max-bootstrap-dirs
+    CODEX_HOME=$HOME/.local/share/oauth-mux/codex/{{ACCOUNT}} codex login
+
+codex-max-login-device ACCOUNT: codex-max-bootstrap-dirs
+    CODEX_HOME=$HOME/.local/share/oauth-mux/codex/{{ACCOUNT}} codex login --device-auth
+
+codex-max-login-status ACCOUNT:
+    CODEX_HOME=$HOME/.local/share/oauth-mux/codex/{{ACCOUNT}} codex login status
+
+codex-max-login-status-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for account in max-1 max-2 max-3; do
+      echo "=== ${account} ==="
+      CODEX_HOME="$HOME/.local/share/oauth-mux/codex/${account}" codex login status || true
+    done
+
+codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
+    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
+
+codex-max-probe-all CAPABILITY="codex-mini": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for account in max-1 max-2 max-3; do
+      echo "=== ${account} {{CAPABILITY}} ==="
+      OMUX_CONFIG="$PWD/{{codex_max_config}}" OMUX_STATE_DIR="{{codex_max_state}}" ./zig-out/bin/oauth-mux probe --provider codex --account "${account}" --capability "{{CAPABILITY}}" --json
+    done
+
 # ── Cross-compilation ──
 
-release-all: release-linux-amd64 release-linux-arm64 release-macos-amd64 release-macos-arm64
+release: release-all
+
+release-all:
+    {{zig}} build release
     @echo "all release builds complete"
+
+release-local VERSION="0.1.0":
+    nix develop --command ./scripts/release-local.sh {{VERSION}}
+
+release-smoke VERSION="0.1.0":
+    nix develop --command ./scripts/release-smoke.sh {{VERSION}}
+
+release-handoff VERSION="0.1.0":
+    nix develop --command ./scripts/release-handoff.sh {{VERSION}}
+
+release-proof VERSION="0.1.0":
+    nix develop --command just release-proof-local {{VERSION}}
+
+release-proof-local VERSION="0.1.0":
+    ./scripts/release-local.sh {{VERSION}}
+    ./scripts/release-smoke.sh {{VERSION}}
+    ./scripts/release-handoff.sh {{VERSION}}
 
 release-linux-amd64:
     {{zig}} build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
@@ -52,6 +120,12 @@ release-macos-amd64:
 release-macos-arm64:
     {{zig}} build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
 
+release-windows-amd64:
+    {{zig}} build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+release-windows-arm64:
+    {{zig}} build -Dtarget=aarch64-windows -Doptimize=ReleaseSafe
+
 # ── Nix ──
 
 nix-build:
@@ -62,8 +136,19 @@ nix-check:
 
 # ── Validation ──
 
-check: test build
+check:
+    nix develop --command just check-local
+
+check-local:
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh'
     @echo "all checks passed"
+
+e2e:
+    nix develop --command just e2e-local
+
+e2e-local:
+    zig build
+    ./scripts/e2e-local.sh
 
 # ── Config ──
 

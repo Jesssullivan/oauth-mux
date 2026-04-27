@@ -4,8 +4,12 @@
   "description": "OAuth fallback muxing for AI harness subscriptions",
   "license": "MIT",
   "repository": "tinyland-inc/oauth-mux",
+  "files": [
+    "bin",
+    "install.js"
+  ],
   "bin": {
-    "oauth-mux": "bin/oauth-mux"
+    "oauth-mux": "bin/oauth-mux.js"
   },
   "scripts": {
     "postinstall": "node install.js"
@@ -14,6 +18,8 @@
     "@oauth-mux/darwin-arm64": "0.1.0",
     "@oauth-mux/darwin-x64": "0.1.0",
     "@oauth-mux/linux-arm64": "0.1.0",
-    "@oauth-mux/linux-x64": "0.1.0"
+    "@oauth-mux/linux-x64": "0.1.0",
+    "@oauth-mux/win32-arm64": "0.1.0",
+    "@oauth-mux/win32-x64": "0.1.0"
   }
 }

@@ -2,11 +2,63 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, initial-implementation]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
+  cache-first:
+    name: GloriousFlywheel cache-first check
+    runs-on: tinyland-nix
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
+        run: |
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GF_ACTIONS_TOKEN is unset; skipping private GloriousFlywheel action checkout"
+          fi
+
+      - name: Checkout GloriousFlywheel action
+        if: steps.gf.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
+
+      - name: Run cache-first validation
+        if: steps.gf.outputs.enabled == 'true'
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+            nix develop --command just check-local
+
+      - name: Record skipped cache-first validation
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GloriousFlywheel cache-first validation skipped because GF_ACTIONS_TOKEN is unset." >> "$GITHUB_STEP_SUMMARY"
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -21,6 +73,15 @@ jobs:
 
       - name: Test
         run: zig build test
+
+      - name: Validate examples
+        run: |
+          for cfg in examples/*.config.json; do
+            OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
+          done
+
+      - name: Local E2E
+        run: ./scripts/e2e-local.sh
 
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe
@@ -37,6 +98,8 @@ jobs:
           - aarch64-linux-musl
           - x86_64-macos
           - aarch64-macos
+          - x86_64-windows
+          - aarch64-windows
     steps:
       - uses: actions/checkout@v4
 
@@ -49,13 +112,13 @@ jobs:
 
       - name: Check binary
         run: |
-          ls -lh zig-out/bin/oauth-mux
-          file zig-out/bin/oauth-mux
+          ls -lh zig-out/bin/oauth-mux*
+          file zig-out/bin/oauth-mux*
 
       - uses: actions/upload-artifact@v4
         with:
           name: oauth-mux-${{ matrix.target }}
-          path: zig-out/bin/oauth-mux
+          path: zig-out/bin/oauth-mux*
 
   nix:
     runs-on: ubuntu-latest

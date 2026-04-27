@@ -36,6 +36,7 @@ bazel-*
 
 # Distribution artifacts
 dist/build/
+dist/out/
 *.tar.gz
 *.deb
 *.rpm

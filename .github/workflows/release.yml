@@ -10,37 +10,22 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-linux-musl
-            artifact: oauth-mux-x86_64-linux
-          - target: aarch64-linux-musl
-            artifact: oauth-mux-aarch64-linux
-          - target: x86_64-macos
-            artifact: oauth-mux-x86_64-macos
-          - target: aarch64-macos
-            artifact: oauth-mux-aarch64-macos
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
+      - uses: cachix/install-nix-action@v30
         with:
-          version: 0.14.1
+          nix_path: nixpkgs=channel:nixos-unstable
 
-      - name: Build
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
-
-      - name: Package
+      - name: Build and smoke-test release artifacts
         run: |
-          cd zig-out/bin
-          tar czf /tmp/${{ matrix.artifact }}.tar.gz oauth-mux
-          sha256sum /tmp/${{ matrix.artifact }}.tar.gz > /tmp/${{ matrix.artifact }}.tar.gz.sha256
+          nix develop --command just release-proof-local "${GITHUB_REF_NAME#v}"
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload release staging
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: /tmp/${{ matrix.artifact }}.tar.gz*
+          name: oauth-mux-release-${{ github.ref_name }}
+          path: dist/out/
 
   release:
     needs: build
@@ -50,12 +35,11 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Generate checksums
-        run: cat *.sha256 > SHA256SUMS
-
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            *.tar.gz
-            SHA256SUMS
+            v*/artifacts/*
+            v*/npm-tarballs/*.tgz
+            v*/homebrew/oauth-mux.rb
+            v*/handoff/*
           generate_release_notes: true

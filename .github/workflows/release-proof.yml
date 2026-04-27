@@ -1,0 +1,65 @@
+name: Release Proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to stage and smoke-test"
+        required: false
+        default: "0.1.0"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cache-first-release-proof:
+    name: GloriousFlywheel release proof
+    runs-on: tinyland-nix
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
+        run: |
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GF_ACTIONS_TOKEN is unset; skipping private GloriousFlywheel action checkout"
+          fi
+
+      - name: Checkout GloriousFlywheel action
+        if: steps.gf.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
+
+      - name: Run cache-first release proof
+        if: steps.gf.outputs.enabled == 'true'
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: "false"
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+            nix develop --command just release-proof-local "${{ inputs.version }}"
+
+      - name: Record skipped release proof
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GloriousFlywheel release proof skipped because GF_ACTIONS_TOKEN is unset." >> "$GITHUB_STEP_SUMMARY"

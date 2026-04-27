@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "defaults": {
+    "provider": "flakehub",
+    "strategy": "health-weighted",
+    "shell": "fish"
+  },
+  "providers": {
+    "flakehub": {
+      "kind": "flakehub",
+      "accounts": {
+        "work": {
+          "priority": 10,
+          "secret": {
+            "backend": "env",
+            "variable": "OMUX_FLAKEHUB_TOKEN"
+          },
+          "tags": ["api-key", "flakehub", "determinate"]
+        }
+      }
+    }
+  },
+  "profiles": {
+    "flakehub": {
+      "providers": ["flakehub:work#status"],
+      "strategy": "health-weighted",
+      "affinity_ttl_minutes": 20
+    }
+  },
+  "strategies": {
+    "health-weighted": {
+      "kind": "health-weighted",
+      "rate_limit_penalty": -10,
+      "failure_penalty": -20,
+      "success_bonus": 1
+    }
+  }
+}
