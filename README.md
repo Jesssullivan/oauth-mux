@@ -58,6 +58,12 @@ Probe a configured account:
 ./zig-out/bin/oauth-mux probe --provider codex --account max-1 --capability codex-mini --json
 ```
 
+Run the no-spend Codex Max canary:
+
+```bash
+just codex-max-canary
+```
+
 Run the deterministic no-secret E2E harness:
 
 ```bash

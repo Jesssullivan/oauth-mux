@@ -40,6 +40,18 @@ OMUX_LIVE_QA_CAPABILITIES=codex-max \
 just live-qa
 ```
 
+For the Codex Max three-account path, prefer the canary before any spending
+run:
+
+```bash
+just codex-max-canary
+```
+
+That command validates config, captures discovery/status/health, and checks
+`codex login status` for each account without running probes. Set
+`OMUX_CODEX_CANARY_CONFIRM=spend-real-calls` only when the canary should also
+invoke this live QA matrix.
+
 Artifacts are written under `dist/live-qa/<timestamp>/`:
 
 - `config-validate.txt`

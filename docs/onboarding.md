@@ -44,6 +44,7 @@ Codex Max three-account starter:
 ```bash
 oauth-mux init --codex-max
 just codex-max-onboard
+just codex-max-canary
 ```
 
 `just codex-max-onboard` creates the expected isolated `CODEX_HOME` directories,
@@ -65,6 +66,21 @@ For status-only inspection:
 
 ```bash
 OMUX_CODEX_LOGIN_MODE=status-only just codex-max-onboard
+```
+
+For a no-spend canary after onboarding:
+
+```bash
+just codex-max-canary
+```
+
+The canary validates config, writes redacted `discover`, `status`, and `health`
+JSON artifacts, checks `codex login status` for each expected account, and
+summarizes whether route health has already been recorded. It does not run live
+probes by default. To include bounded route probes:
+
+```bash
+OMUX_CODEX_CANARY_CONFIRM=spend-real-calls just codex-max-canary
 ```
 
 ## Agent Discovery Contract
