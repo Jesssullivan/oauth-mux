@@ -47,6 +47,22 @@ Artifacts are written under `dist/live-qa/<timestamp>/`:
 - one JSON file per probe
 - `health.json`
 
+By default, live QA passes when a probe returns a typed, redacted liveness
+result, even if the route is currently unavailable as `rate_limited`,
+`quota_exhausted`, or `degraded`. That makes quota exhaustion useful evidence
+rather than a false infrastructure failure. Set
+`OMUX_LIVE_QA_REQUIRE_AVAILABLE=1` when the run must fail unless every probed
+route is immediately selectable. Dead credentials fail by default; set
+`OMUX_LIVE_QA_ALLOW_DEAD=1` only for negative test fixtures.
+
+Current Codex behavior observed on 2026-04-27:
+
+- `max-1`, `max-2`, and `max-3` are all logged in and remain
+  `live/available` on `codex-mini`.
+- `max-1#codex-max`, `max-2#codex-max`, and `max-3#codex-max` currently return
+  `live/quota_exhausted` with distinct reset windows. The accounts are not
+  auth-dead; only the max route is exhausted.
+
 ## GitHub Workflow
 
 `.github/workflows/live-provider-qa.yml` is manual-only. It requires the

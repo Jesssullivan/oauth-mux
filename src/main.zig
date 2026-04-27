@@ -388,7 +388,10 @@ fn runEnv(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnvAr
         break :blk map.get(s) orelse shell.detect();
     } else shell.detect();
 
-    pipeline.runEnv(&ctx) catch |e| return e;
+    pipeline.runEnv(&ctx) catch |e| {
+        store.persist();
+        return e;
+    };
 
     try shell.emitEnv(writer, ctx.shell, ctx.env_pairs.items);
 
@@ -412,7 +415,7 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     ctx.account_name = args.account;
     ctx.capability_name = args.capability;
 
-    try pipeline.runProbe(&ctx);
+    const result = pipeline.runProbe(&ctx);
     store.persist();
 
     if (args.json) {
@@ -420,6 +423,7 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     } else {
         try writeProbeText(writer, &store, &ctx);
     }
+    try result;
 }
 
 fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
@@ -444,7 +448,10 @@ fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
     ctx.capability_name = args.capability;
     ctx.target_argv = args.target_argv;
 
-    pipeline.runExec(&ctx) catch |e| return e;
+    pipeline.runExec(&ctx) catch |e| {
+        store.persist();
+        return e;
+    };
 
     // Build env map from current env + pipeline injections
     var env_map = try std.process.getEnvMap(allocator);

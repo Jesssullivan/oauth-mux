@@ -51,8 +51,21 @@ run_probe() {
   shift
   local safe_label
   safe_label="$(printf '%s' "$label" | tr '#:/ ' '____')"
+  local output_file="$out_dir/${safe_label}.json"
   printf '=== %s ===\n' "$label"
-  if "$bin" probe "$@" --json 2>&1 | redact | tee "$out_dir/${safe_label}.json"; then
+  if "$bin" probe "$@" --json 2>&1 | redact | tee "$output_file"; then
+    return 0
+  fi
+  if grep -q '"liveness":' "$output_file" && ! grep -q '"liveness":null' "$output_file"; then
+    if grep -q '"state":"dead"' "$output_file" && [ "${OMUX_LIVE_QA_ALLOW_DEAD:-0}" != "1" ]; then
+      printf 'probe classified dead credential: %s\n' "$label" >&2
+      return 1
+    fi
+    if [ "${OMUX_LIVE_QA_REQUIRE_AVAILABLE:-0}" = "1" ] && ! grep -q '"decision":"use_this"' "$output_file"; then
+      printf 'probe classified unavailable route: %s\n' "$label" >&2
+      return 1
+    fi
+    printf 'probe classified non-selected route: %s\n' "$label" >&2
     return 0
   fi
   printf 'probe failed: %s\n' "$label" >&2

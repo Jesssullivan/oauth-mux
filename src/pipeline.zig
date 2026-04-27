@@ -428,7 +428,7 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     ctx.health.recordProbeEvidence(
         evidence_key.slice(),
         .capability_probe,
-        result.retry_after_s,
+        result.retry_after_s orelse health_mod.retryAfterFromClassification(classification),
         health_mod.hintClassFromClassification(classification),
         decision,
     );

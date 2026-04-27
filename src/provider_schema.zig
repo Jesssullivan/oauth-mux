@@ -831,6 +831,8 @@ pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?
 }
 
 fn classifyCodexErrorMessage(allocator: std.mem.Allocator, message: []const u8) types.HttpClassification {
+    if (classifyCodexPlainErrorMessage(message)) |classification| return classification;
+
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, message, .{}) catch {
         return classifyHttp(codex_def, 400, null, message);
     };
@@ -843,7 +845,125 @@ fn classifyCodexErrorValue(value: std.json.Value) ?types.HttpClassification {
     if (status_i < 0 or status_i > 65535) return null;
     const status: u16 = @intCast(status_i);
     const hint = resolveJsonString(value, "error.message");
+    if (hint) |message| {
+        if (classifyCodexPlainErrorMessage(message)) |classification| return classification;
+    }
     return classifyHttp(codex_def, status, null, hint);
+}
+
+fn classifyCodexPlainErrorMessage(message: []const u8) ?types.HttpClassification {
+    if (!(containsIgnoreAsciiCase(message, "usage limit") or
+        containsIgnoreAsciiCase(message, "purchase more credits") or
+        containsIgnoreAsciiCase(message, "try again at")))
+    {
+        return null;
+    }
+
+    return .{ .quota_exhausted = .{
+        .retry_after_s = parseCodexUsageRetryAfter(message) orelse 86_400,
+    } };
+}
+
+fn parseCodexUsageRetryAfter(message: []const u8) ?u32 {
+    const marker = "try again at ";
+    const start = std.ascii.indexOfIgnoreCase(message, marker) orelse return null;
+    var rest = std.mem.trim(u8, message[start + marker.len ..], " \t\r\n.");
+
+    const month = parseCodexMonth(rest[0..@min(rest.len, 9)]) orelse return null;
+    rest = rest[3..];
+    rest = std.mem.trimLeft(u8, rest, " \t");
+
+    const day_digits = leadingDigitCount(rest);
+    if (day_digits == 0) return null;
+    const day = std.fmt.parseInt(u8, rest[0..day_digits], 10) catch return null;
+    rest = rest[day_digits..];
+    if (std.ascii.startsWithIgnoreCase(rest, "st") or
+        std.ascii.startsWithIgnoreCase(rest, "nd") or
+        std.ascii.startsWithIgnoreCase(rest, "rd") or
+        std.ascii.startsWithIgnoreCase(rest, "th"))
+    {
+        rest = rest[2..];
+    }
+    rest = std.mem.trimLeft(u8, rest, " \t,");
+
+    const year_digits = leadingDigitCount(rest);
+    if (year_digits != 4) return null;
+    const year = std.fmt.parseInt(u16, rest[0..year_digits], 10) catch return null;
+    rest = rest[year_digits..];
+    rest = std.mem.trimLeft(u8, rest, " \t");
+
+    const hour_digits = leadingDigitCount(rest);
+    if (hour_digits == 0 or hour_digits > 2) return null;
+    var hour = std.fmt.parseInt(u8, rest[0..hour_digits], 10) catch return null;
+    rest = rest[hour_digits..];
+    if (rest.len == 0 or rest[0] != ':') return null;
+    rest = rest[1..];
+
+    const minute_digits = leadingDigitCount(rest);
+    if (minute_digits == 0 or minute_digits > 2) return null;
+    const minute = std.fmt.parseInt(u8, rest[0..minute_digits], 10) catch return null;
+    rest = rest[minute_digits..];
+    rest = std.mem.trimLeft(u8, rest, " \t");
+
+    if (std.ascii.startsWithIgnoreCase(rest, "PM")) {
+        if (hour < 12) hour += 12;
+    } else if (std.ascii.startsWithIgnoreCase(rest, "AM")) {
+        if (hour == 12) hour = 0;
+    } else {
+        return null;
+    }
+
+    const target = epochSecondsUtc(year, month, day, hour, minute) orelse return null;
+    const now = std.time.timestamp();
+    if (target <= now) return null;
+    const diff: u64 = @intCast(target - now);
+    return @intCast(@min(diff, std.math.maxInt(u32)));
+}
+
+fn parseCodexMonth(value: []const u8) ?u8 {
+    if (value.len < 3) return null;
+    const prefix = value[0..3];
+    if (std.ascii.eqlIgnoreCase(prefix, "Jan")) return 1;
+    if (std.ascii.eqlIgnoreCase(prefix, "Feb")) return 2;
+    if (std.ascii.eqlIgnoreCase(prefix, "Mar")) return 3;
+    if (std.ascii.eqlIgnoreCase(prefix, "Apr")) return 4;
+    if (std.ascii.eqlIgnoreCase(prefix, "May")) return 5;
+    if (std.ascii.eqlIgnoreCase(prefix, "Jun")) return 6;
+    if (std.ascii.eqlIgnoreCase(prefix, "Jul")) return 7;
+    if (std.ascii.eqlIgnoreCase(prefix, "Aug")) return 8;
+    if (std.ascii.eqlIgnoreCase(prefix, "Sep")) return 9;
+    if (std.ascii.eqlIgnoreCase(prefix, "Oct")) return 10;
+    if (std.ascii.eqlIgnoreCase(prefix, "Nov")) return 11;
+    if (std.ascii.eqlIgnoreCase(prefix, "Dec")) return 12;
+    return null;
+}
+
+fn leadingDigitCount(value: []const u8) usize {
+    var count: usize = 0;
+    while (count < value.len and std.ascii.isDigit(value[count])) : (count += 1) {}
+    return count;
+}
+
+fn epochSecondsUtc(year: u16, month: u8, day: u8, hour: u8, minute: u8) ?i64 {
+    if (year < std.time.epoch.epoch_year or month < 1 or month > 12 or day < 1 or hour > 23 or minute > 59) return null;
+
+    const leap_kind: std.time.epoch.YearLeapKind = if (std.time.epoch.isLeapYear(year)) .leap else .not_leap;
+    const month_enum: std.time.epoch.Month = @enumFromInt(month);
+    if (day > std.time.epoch.getDaysInMonth(leap_kind, month_enum)) return null;
+
+    var days: u64 = 0;
+    var y: u16 = std.time.epoch.epoch_year;
+    while (y < year) : (y += 1) {
+        days += std.time.epoch.getDaysInYear(y);
+    }
+    var m: u8 = 1;
+    while (m < month) : (m += 1) {
+        const current: std.time.epoch.Month = @enumFromInt(m);
+        days += std.time.epoch.getDaysInMonth(leap_kind, current);
+    }
+    days += day - 1;
+
+    return @intCast(days * std.time.epoch.secs_per_day + @as(u64, hour) * 3600 + @as(u64, minute) * 60);
 }
 
 fn capabilityMatches(cap: CapabilityDefinition, requested: []const u8) bool {
@@ -1480,6 +1600,33 @@ test "classifyCodexExecJsonl unsupported model cassette" {
     const classification = classifyCodexExecJsonl(std.testing.allocator, jsonl).?;
     switch (classification) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.tier_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCodexExecJsonl usage limit as quota exhaustion" {
+    const jsonl =
+        \\{"type":"thread.started","thread_id":"redacted"}
+        \\{"type":"turn.started"}
+        \\{"type":"error","message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Apr 28th, 2099 2:19 PM."}
+        \\{"type":"turn.failed","error":{"message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Apr 28th, 2099 2:19 PM."}}
+        \\
+    ;
+    const classification = classifyCodexExecJsonl(std.testing.allocator, jsonl).?;
+    switch (classification) {
+        .quota_exhausted => |quota| try std.testing.expect(quota.retry_after_s > 0),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCodexExecJsonl usage limit without reset as quota exhaustion" {
+    const jsonl =
+        \\{"type":"error","message":"You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits."}
+        \\
+    ;
+    const classification = classifyCodexExecJsonl(std.testing.allocator, jsonl).?;
+    switch (classification) {
+        .quota_exhausted => |quota| try std.testing.expectEqual(@as(u32, 86_400), quota.retry_after_s),
         else => return error.TestUnexpectedResult,
     }
 }
