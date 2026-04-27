@@ -94,6 +94,16 @@ release-all:
 release-local VERSION="0.1.0":
     nix develop --command ./scripts/release-local.sh {{VERSION}}
 
+release-smoke VERSION="0.1.0":
+    nix develop --command ./scripts/release-smoke.sh {{VERSION}}
+
+release-proof VERSION="0.1.0":
+    nix develop --command just release-proof-local {{VERSION}}
+
+release-proof-local VERSION="0.1.0":
+    ./scripts/release-local.sh {{VERSION}}
+    ./scripts/release-smoke.sh {{VERSION}}
+
 release-linux-amd64:
     {{zig}} build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
 
