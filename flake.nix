@@ -49,7 +49,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [ zig pkgs.just ];
+          packages = [ zig pkgs.just pkgs.nodejs pkgs.nfpm ];
 
           shellHook = ''
             echo "oauth-mux dev shell — zig $(zig version)"

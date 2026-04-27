@@ -9,6 +9,8 @@ const PLATFORM_MAP = {
   "darwin-x64": "@oauth-mux/darwin-x64",
   "linux-arm64": "@oauth-mux/linux-arm64",
   "linux-x64": "@oauth-mux/linux-x64",
+  "win32-arm64": "@oauth-mux/win32-arm64",
+  "win32-x64": "@oauth-mux/win32-x64",
 };
 
 const key = `${os.platform()}-${os.arch()}`;
@@ -21,8 +23,9 @@ if (!pkg) {
 
 try {
   const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
-  const src = path.join(pkgDir, "bin", "oauth-mux");
-  const dest = path.join(__dirname, "bin", "oauth-mux");
+  const binary = os.platform() === "win32" ? "oauth-mux.exe" : "oauth-mux";
+  const src = path.join(pkgDir, "bin", binary);
+  const dest = path.join(__dirname, "bin", binary);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.copyFileSync(src, dest);
   fs.chmodSync(dest, 0o755);

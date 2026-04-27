@@ -1,0 +1,70 @@
+# oauth-mux
+
+`oauth-mux` is a compiled OAuth fallback mux for AI harness subscriptions and
+connector auth. It selects among configured provider accounts, records typed
+credential liveness, and falls through without poisoning an entire account when
+only one route or capability is unavailable.
+
+The implementation is pure Zig with no external Zig dependencies.
+
+## Current Shape
+
+- Typed liveness model: `live`, `degraded`, `dead`.
+- Route-scoped health keys: `provider:account#capability`.
+- Provider definitions for credential parsing, env/config injection, failure
+  rules, and HTTP or command probes.
+- Built-in examples for Codex, Claude, GitHub, Linear, Vercel, Figma, FlakeHub,
+  and MCP HTTP resource-server probes.
+- Release graph for six targets:
+  - `x86_64-linux-musl`
+  - `aarch64-linux-musl`
+  - `x86_64-macos`
+  - `aarch64-macos`
+  - `x86_64-windows`
+  - `aarch64-windows`
+
+## Development
+
+Use `just` as the operator entrypoint:
+
+```bash
+just build
+just test
+just check
+just release
+```
+
+`just check` enters the Nix dev shell and then runs `just check-local`, which
+runs Zig tests, builds the binary, and validates every example config.
+
+## Quick Checks
+
+Validate an example:
+
+```bash
+OMUX_CONFIG=$PWD/examples/codex-max.config.json ./zig-out/bin/oauth-mux config validate
+```
+
+Probe a configured account:
+
+```bash
+./zig-out/bin/oauth-mux probe --provider codex --account max-1 --capability codex-mini --json
+```
+
+## Release Staging
+
+Build local release artifacts from one version:
+
+```bash
+just release-local 0.1.0
+```
+
+Outputs are written under `dist/out/v0.1.0/`:
+
+- `artifacts/` for binary tarballs and `SHA256SUMS`
+- `homebrew/oauth-mux.rb`
+- `npm/` package workspace
+- `npm-tarballs/`
+- `nfpm/` configs plus deb/rpm artifacts
+
+See `docs/release-runbook.md` for release and CI details.

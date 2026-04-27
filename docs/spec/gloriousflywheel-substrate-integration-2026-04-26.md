@@ -80,9 +80,13 @@ CI and release target matrices now match the repo contract:
 - `x86_64-windows`
 - `aarch64-windows`
 
-This is still artifact-build plumbing. The next release arc is to generate
-tarballs, checksums, npm platform packages, Homebrew formula updates, and
-nfpm deb/rpm packages from one version input.
+`just release-local <version>` now stages release artifacts from one version
+input:
+
+- binary tarballs and `SHA256SUMS`
+- rendered Homebrew formula
+- npm package workspace and npm tarballs
+- nfpm configs and deb/rpm artifacts
 
 `just release` runs the single Zig release graph (`zig build release`) rather
 than entering the Nix devshell once per target. Per-target Just recipes remain
@@ -90,12 +94,10 @@ available for focused iteration.
 
 ## Next Integration Gates
 
-1. Add a `release-local` recipe that emits all release archives and checksums
-   from one version input.
-2. Add a GloriousFlywheel-backed release proof job that runs on `tinyland-nix`
+1. Add a GloriousFlywheel-backed release proof job that runs on `tinyland-nix`
    before tag publication.
-3. Keep Bazel out until there is a real target graph or downstream adoption
+2. Keep Bazel out until there is a real target graph or downstream adoption
    reason; if added later, copy the GloriousFlywheel shape:
    `cache-contract-strict` before any cache-backed Bazel command.
-4. Add a scheduled or manual live-provider QA workflow only after secret
+3. Add a scheduled or manual live-provider QA workflow only after secret
    scoping is explicit; route probes spend real subscription calls.
