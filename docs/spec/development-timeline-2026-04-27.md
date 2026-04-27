@@ -16,6 +16,12 @@ operational hardening: live-provider QA execution with real secrets,
 authenticated package publication dry-runs, rollback rehearsal, and
 post-merge GloriousFlywheel release-proof execution before public tags.
 
+Live Codex QA on 2026-04-27 confirmed the expected subscription permutation:
+all three accounts remain authenticated and selectable on `codex-mini`, while
+all three currently report route-scoped `live/quota_exhausted` on `codex-max`
+with distinct reset windows. That is now represented as route availability, not
+generic degradation or auth death.
+
 ## Completed Arc
 
 1. Research and formal model.
@@ -74,6 +80,14 @@ post-merge GloriousFlywheel release-proof execution before public tags.
   require `spend-real-calls`; `scripts/registry-dry-run.sh` and
   `.github/workflows/registry-dry-run.yml` require `registry-dry-run`.
 
+- Secret-scoped Codex live QA
+  Local account-matrix QA classified `max-1#codex-max` and
+  `max-2#codex-max`, and `max-3#codex-max` as `live/quota_exhausted` with
+  reset evidence, while `codex-mini` remains `live/available` for all three
+  accounts. The QA script now treats typed quota/rate/degraded outcomes as
+  valid evidence unless
+  `OMUX_LIVE_QA_REQUIRE_AVAILABLE=1` is set.
+
 ## Production Readiness
 
 Ready now:
@@ -95,8 +109,9 @@ Not ready yet:
 
 ## Next Arc
 
-1. Run the live-provider QA workflow with scoped secrets. Start with
-   `codex-mini`, then higher-cost routes only when explicitly requested.
+1. Run the live-provider QA workflow with scoped secrets from `main` so the
+   hosted artifact path proves the same Codex matrix that has now passed
+   locally.
 
 2. Run authenticated registry dry-run lanes:
    npm dry run, Homebrew formula audit in the tap, GitHub release auth check,

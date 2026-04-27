@@ -151,6 +151,14 @@ pub fn hintClassFromClassification(classification: types.HttpClassification) Pro
     };
 }
 
+pub fn retryAfterFromClassification(classification: types.HttpClassification) ?u32 {
+    return switch (classification) {
+        .rate_limited => |rl| rl.retry_after_s,
+        .quota_exhausted => |quota| quota.retry_after_s,
+        else => null,
+    };
+}
+
 pub fn decisionFromClassification(classification: types.HttpClassification) types.MuxDecision {
     return switch (classification) {
         .success => .use_this,

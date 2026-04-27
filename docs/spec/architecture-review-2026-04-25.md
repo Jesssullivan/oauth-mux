@@ -270,10 +270,21 @@ just codex-max-probe-all
 codex-mini: max-1, max-2, max-3 -> 200/use_this/live/available
 
 just codex-max-probe-all codex-max
-current review refresh:
-max-1#codex-max -> degraded/unknown_4xx/status 400
-max-2#codex-max -> degraded/unknown_4xx/status 400
-profile-level codex-max fallback -> selected max-3#codex-max with 200/use_this/live/available
+2026-04-27 review refresh:
+max-1#codex-max -> live/quota_exhausted/status 400/try_next_account
+max-2#codex-max -> live/quota_exhausted/status 400/try_next_account
+max-3#codex-max -> live/quota_exhausted/status 400/try_next_account
+
+just codex-max-probe-all codex-mini
+2026-04-27 review refresh:
+max-1#codex-mini -> 200/use_this/live/available
+max-2#codex-mini -> 200/use_this/live/available
+max-3#codex-mini -> 200/use_this/live/available
+
+latest implication:
+all three accounts are authenticated and usable for cheaper Codex routes, while
+the max route is currently exhausted on each account with distinct reset
+windows. This is route availability, not auth death.
 
 just release
 single Zig release graph builds all six documented targets
