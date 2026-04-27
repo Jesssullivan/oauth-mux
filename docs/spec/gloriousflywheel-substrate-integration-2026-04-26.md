@@ -61,6 +61,12 @@ When `GF_ACTIONS_TOKEN` and the Attic settings are present, this proves that
 `oauth-mux` can build and test on the shared GloriousFlywheel Nix runner
 substrate with Attic cache attachment.
 
+Current evidence: PR run `25009779392`, job `73266579091`, checked out
+`tinyland-inc/GloriousFlywheel`, ran the private `nix-job` action on
+`tinyland-nix`, executed `nix develop --command just check-local`, and passed
+the deterministic no-secret E2E gate. Cache push was intentionally skipped
+because PR events set `push-cache` to `false`.
+
 It does not yet prove:
 
 - cache-first CI execution when the private action checkout token is absent;
@@ -103,7 +109,9 @@ Homebrew tap input, deb/rpm files, and full checksums under
 
 `.github/workflows/release-proof.yml` exposes this as a manual GloriousFlywheel
 proof on `tinyland-nix` through the private `nix-job` action. It is
-intentionally manual while runner capacity is expected to be noisy.
+intentionally manual while runner capacity is expected to be noisy. GitHub can
+dispatch it only after the workflow file exists on `main`; run it after this PR
+lands and before publishing tags.
 
 The tag release workflow also runs `just release-proof-local` before uploading
 the staged artifact tree, so GitHub Release publication is gated by the same

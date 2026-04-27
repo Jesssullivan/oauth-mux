@@ -191,8 +191,11 @@ Decision record:
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
 - `GloriousFlywheel` is a private repo, so the cache-first CI lane requires
-  `GF_ACTIONS_TOKEN` to check out the composite action locally. Without that
-  secret, CI records the skipped proof instead of claiming substrate execution.
+  `GF_ACTIONS_TOKEN` to check out the composite action locally. This is now
+  configured for `oauth-mux`; PR run `25009779392`, job `73266579091`, checked
+  out the private action and ran `nix develop --command just check-local` on
+  `tinyland-nix`. Without that secret, CI records the skipped proof instead of
+  claiming substrate execution.
 - The live Codex route probes intentionally spend small subscription calls and
   should remain explicit operator actions or bounded fallback checks, not a
   background polling loop.
