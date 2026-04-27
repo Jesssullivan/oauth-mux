@@ -35,7 +35,8 @@ just release
 ```
 
 `just check` enters the Nix dev shell and then runs `just check-local`, which
-runs Zig tests, builds the binary, and validates every example config.
+runs Zig tests, builds the binary, validates every example config, and runs the
+synthetic local E2E harness.
 
 ## Quick Checks
 
@@ -50,6 +51,16 @@ Probe a configured account:
 ```bash
 ./zig-out/bin/oauth-mux probe --provider codex --account max-1 --capability codex-mini --json
 ```
+
+Run the deterministic no-secret E2E harness:
+
+```bash
+just e2e
+```
+
+That harness creates a temporary provider config and proves env injection,
+command probes, route-scoped quota fallback, health persistence, and `exec`
+target injection without contacting live OAuth providers.
 
 ## Release Staging
 
@@ -85,3 +96,5 @@ Release attachments, npm publish order, Homebrew tap input, deb/rpm files, and
 full checksums.
 
 See `docs/release-runbook.md` for release and CI details.
+See `docs/spec/development-timeline-2026-04-27.md` for the current
+production-readiness timeline.

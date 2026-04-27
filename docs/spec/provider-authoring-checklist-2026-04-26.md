@@ -203,9 +203,9 @@ Every provider should define the smallest useful `failure_rules` set:
 [
   { "status": 401, "class": { "dead": "token_revoked" } },
   { "status": 403, "class": { "degraded": "scope_insufficient" } },
-  { "status": 429, "retry_after_lt": 3601, "class": "rate_limited" },
-  { "status": 429, "retry_after_gte": 3601, "class": "quota_exhausted" },
-  { "status_min": 500, "status_max": 599, "class": "provider_degraded" }
+  { "status": 429, "retry_after_lt": 3601, "class": { "rate_limited": {} } },
+  { "status": 429, "retry_after_gte": 3601, "class": { "quota_exhausted": {} } },
+  { "status_min": 500, "status_max": 599, "class": { "provider_degraded": {} } }
 ]
 ```
 
@@ -214,6 +214,12 @@ include failure rules. It also rejects catch-all failure rules: every rule must
 include at least one matcher such as `status`, `status_min`, `status_max`,
 `retry_after_gte`, `retry_after_lt`, or `hint_contains`. Empty
 `hint_contains` values are invalid.
+
+Failure classes use Zig tagged-union JSON shape: payload variants use
+`{ "dead": "token_revoked" }` or `{ "degraded": "scope_insufficient" }`;
+no-payload variants use `{ "rate_limited": {} }`,
+`{ "quota_exhausted": {} }`, `{ "provider_degraded": {} }`,
+`{ "success": {} }`, or `{ "failure": {} }`.
 
 Routing semantics:
 

@@ -140,8 +140,15 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh'
     @echo "all checks passed"
+
+e2e:
+    nix develop --command just e2e-local
+
+e2e-local:
+    zig build
+    ./scripts/e2e-local.sh
 
 # ── Config ──
 

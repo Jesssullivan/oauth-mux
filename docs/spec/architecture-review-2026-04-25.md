@@ -101,6 +101,10 @@ Implemented:
   `handoff/publish-files.txt`, and `handoff/SHA256SUMS.full` with GitHub
   Release attachments, npm publish order, Homebrew tap input, deb/rpm files,
   and full checksums.
+- Deterministic local E2E proof: `just e2e` creates a temporary provider
+  definition, command probe, config, and state directory to prove env
+  injection, command probes, route-scoped quota fallback, health persistence,
+  and `exec` target injection without contacting live OAuth providers.
 - Manual GloriousFlywheel release proof: `.github/workflows/release-proof.yml`
   runs the same proof through the private cache-first `nix-job` action on
   `tinyland-nix` when runner capacity and `GF_ACTIONS_TOKEN` are available.
@@ -179,6 +183,10 @@ Decision record:
   handoff command. GitHub release publication uses that proof before attaching
   artifacts, but real npm/Homebrew/deb/rpm registry publication is still future
   work.
+- The deterministic E2E harness proves the mux core without live credentials,
+  but it is not a substitute for bounded live-provider QA. Codex, Claude,
+  GitHub, Linear, Figma, Vercel, FlakeHub, and MCP live probes still need
+  explicit secret scoping and call budgets.
 - GloriousFlywheel cache-first CI proves shared Nix/Attic substrate attachment,
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
@@ -196,12 +204,14 @@ Decision record:
 
 1. Add provider-specific MCP examples only when the resource server URL and
    token audience are explicit.
-2. Turn the generated registry handoff into authenticated dry-run lanes for npm,
+2. Add a bounded live-provider QA lane that consumes real calls only when
+   explicitly triggered with scoped secrets.
+3. Turn the generated registry handoff into authenticated dry-run lanes for npm,
    Homebrew tap updates, and deb/rpm repositories.
-3. Promote the manual GloriousFlywheel release proof into a required
+4. Promote the manual GloriousFlywheel release proof into a required
    pre-publication self-hosted gate once runner capacity is stable enough for
    release blocking.
-4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
+5. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
 ## Validation
