@@ -97,6 +97,11 @@ The handoff lists GitHub Release attachments, npm publish order, Homebrew tap
 input, deb/rpm files, and full checksums. It does not use registry credentials
 or publish anything.
 
+npm publication is intentionally separate and CI-only. Use
+`.github/workflows/npm-publish.yml`; it reuses the release derivation, resolves
+auth at runtime, and publishes only the generated tarballs with npm provenance.
+Do not publish npm packages from a workstation.
+
 ## Release Workflow
 
 Tags matching `v*` run `.github/workflows/release.yml`.
@@ -114,6 +119,10 @@ and handoff generation pass. It then attaches these files to the GitHub release:
 - `v*/npm-tarballs/*.tgz`
 - `v*/homebrew/oauth-mux.rb`
 - `v*/handoff/*`
+
+This tag workflow does not publish npm packages. npm publication is handled by
+the manual `NPM Publish` workflow after the release artifacts and registry
+dry-run are reviewed.
 
 The staged `install.sh` verifies the selected tarball against `SHA256SUMS`
 before installing. For local proof, `OMUX_RELEASE_BASE_URL=file://...` points it

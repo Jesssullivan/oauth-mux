@@ -222,8 +222,9 @@ cat >>"$handoff_file" <<EOF
 ## Boundary
 
 This step does not use npm, Homebrew, package-repository, or GitHub release
-write credentials. Publication should remain manual until each registry lane has
-its own authenticated dry run and rollback runbook.
+write credentials. npm publication is CI-only via `.github/workflows/npm-publish.yml`
+and must publish the tarballs listed above, never locally rebuilt or hand-edited
+package contents.
 EOF
 
 printf 'release handoff written:\n'

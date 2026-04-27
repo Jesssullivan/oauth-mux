@@ -92,28 +92,20 @@ for lane in "${lanes[@]}"; do
 
     npm)
       require_command npm
-      npm_token="${NPM_TOKEN:-${NODE_AUTH_TOKEN:-}}"
-      if [ -z "$npm_token" ]; then
-        printf 'npm lane requires NPM_TOKEN or NODE_AUTH_TOKEN\n' >&2
-        exit 1
-      fi
       npmrc="$(mktemp)"
       tmp_files+=("$npmrc")
-      {
-        printf 'registry=https://registry.npmjs.org/\n'
-        printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n'
-      } >"$npmrc"
+      "$repo_root/scripts/resolve-npm-token.sh" --npmrc "$npmrc" >/dev/null
       append "## npm"
       append
-      NPM_CONFIG_USERCONFIG="$npmrc" NPM_TOKEN="$npm_token" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
+      NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
       for tarball in "$out_dir"/npm-tarballs/*.tgz; do
         name="$(basename "$tarball")"
         case "$name" in
           oauth-mux-darwin-*|oauth-mux-linux-*|oauth-mux-win32-*)
-            NPM_CONFIG_USERCONFIG="$npmrc" NPM_TOKEN="$npm_token" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
+            NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
             ;;
           *)
-            NPM_CONFIG_USERCONFIG="$npmrc" NPM_TOKEN="$npm_token" npm publish "$tarball" --dry-run ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
+            NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
             ;;
         esac
         append "- dry-run OK: \`npm-tarballs/${name}\`"
