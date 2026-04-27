@@ -52,14 +52,14 @@ This runs `release-local` and then checks:
 
 Tags matching `v*` run `.github/workflows/release.yml`.
 
-The workflow calls:
+The workflow calls the same build-plus-smoke proof used locally:
 
 ```bash
-nix develop --command ./scripts/release-local.sh "${GITHUB_REF_NAME#v}"
+nix develop --command just release-proof-local "${GITHUB_REF_NAME#v}"
 ```
 
-It uploads the staged `dist/out/` tree, then attaches these files to the GitHub
-release:
+The release job only uploads the staged `dist/out/` tree after the smoke proof
+passes. It then attaches these files to the GitHub release:
 
 - `v*/artifacts/*`
 - `v*/npm-tarballs/*.tgz`
@@ -96,7 +96,7 @@ During known lab or runner outages, do not block release staging on a queued
 
 - local `just check`
 - local `nix flake check`
-- local `just release-local <version>`
+- local `just release-proof <version>`
 - hosted CI `test`, `nix`, and six cross-compile jobs
 
 Only claim GloriousFlywheel cache-first CI proof when the GF job actually runs

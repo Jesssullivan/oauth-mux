@@ -96,15 +96,19 @@ exposes this as a manual GloriousFlywheel proof on `tinyland-nix` through the
 private `nix-job` action. It is intentionally manual while runner capacity is
 expected to be noisy.
 
+The tag release workflow also runs `just release-proof-local` before uploading
+the staged artifact tree, so GitHub Release publication is gated by the same
+artifact smoke checks even when the manual self-hosted proof is deferred.
+
 `just release` runs the single Zig release graph (`zig build release`) rather
 than entering the Nix devshell once per target. Per-target Just recipes remain
 available for focused iteration.
 
 ## Next Integration Gates
 
-1. Promote the manual GloriousFlywheel release proof into a required pre-tag
-   publication gate once `tinyland-nix` capacity is stable enough to block
-   releases on it.
+1. Promote the manual GloriousFlywheel release proof into a required
+   pre-publication self-hosted gate once `tinyland-nix` capacity is stable
+   enough to block releases on it.
 2. Keep Bazel out until there is a real target graph or downstream adoption
    reason; if added later, copy the GloriousFlywheel shape:
    `cache-contract-strict` before any cache-backed Bazel command.

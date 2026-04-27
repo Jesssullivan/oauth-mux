@@ -98,6 +98,8 @@ Implemented:
 - Manual GloriousFlywheel release proof: `.github/workflows/release-proof.yml`
   runs the same proof through the private cache-first `nix-job` action on
   `tinyland-nix` when runner capacity and `GF_ACTIONS_TOKEN` are available.
+- Tag release publication now runs the same Nix-backed release proof before
+  uploading staged artifacts to GitHub Releases.
 - Root README and release runbook covering local validation, release staging,
   GitHub release behavior, and the GloriousFlywheel runner/token boundary.
 
@@ -167,9 +169,9 @@ Decision record:
   timeout. Request body templating and richer header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
-- Release packaging now has a local staging command. GitHub release publication
-  uses that command, but real npm/Homebrew/deb/rpm registry publication is still
-  future work.
+- Release packaging now has a local staging and smoke-proof command. GitHub
+  release publication uses that proof before attaching artifacts, but real
+  npm/Homebrew/deb/rpm registry publication is still future work.
 - GloriousFlywheel cache-first CI proves shared Nix/Attic substrate attachment,
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
@@ -189,8 +191,9 @@ Decision record:
    token audience are explicit.
 2. Add registry publication handoffs for npm, Homebrew tap updates, and deb/rpm
    repositories once artifact staging is accepted.
-3. Promote the manual GloriousFlywheel release proof into a required pre-tag
-   publication gate once runner capacity is stable enough for release blocking.
+3. Promote the manual GloriousFlywheel release proof into a required
+   pre-publication self-hosted gate once runner capacity is stable enough for
+   release blocking.
 4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
