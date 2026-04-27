@@ -94,7 +94,13 @@ Implemented:
   artifacts through the Nix dev shell.
 - Local release proof: `just release-proof <version>` stages the release and
   smoke-checks required artifacts, checksums, archive payloads, Homebrew
-  rendering, local npm installation, and local installer execution.
+  rendering, local npm installation, local installer execution, and
+  non-publishing release handoff generation.
+- Release handoff proof: `just release-handoff <version>` validates an already
+  staged tree and writes `handoff/release-handoff.md`,
+  `handoff/publish-files.txt`, and `handoff/SHA256SUMS.full` with GitHub
+  Release attachments, npm publish order, Homebrew tap input, deb/rpm files,
+  and full checksums.
 - Manual GloriousFlywheel release proof: `.github/workflows/release-proof.yml`
   runs the same proof through the private cache-first `nix-job` action on
   `tinyland-nix` when runner capacity and `GF_ACTIONS_TOKEN` are available.
@@ -169,9 +175,10 @@ Decision record:
   timeout. Request body templating and richer header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
-- Release packaging now has a local staging and smoke-proof command. GitHub
-  release publication uses that proof before attaching artifacts, but real
-  npm/Homebrew/deb/rpm registry publication is still future work.
+- Release packaging now has a local staging, smoke-proof, and non-publishing
+  handoff command. GitHub release publication uses that proof before attaching
+  artifacts, but real npm/Homebrew/deb/rpm registry publication is still future
+  work.
 - GloriousFlywheel cache-first CI proves shared Nix/Attic substrate attachment,
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
@@ -189,8 +196,8 @@ Decision record:
 
 1. Add provider-specific MCP examples only when the resource server URL and
    token audience are explicit.
-2. Add registry publication handoffs for npm, Homebrew tap updates, and deb/rpm
-   repositories once artifact staging is accepted.
+2. Turn the generated registry handoff into authenticated dry-run lanes for npm,
+   Homebrew tap updates, and deb/rpm repositories.
 3. Promote the manual GloriousFlywheel release proof into a required
    pre-publication self-hosted gate once runner capacity is stable enough for
    release blocking.

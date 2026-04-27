@@ -91,14 +91,19 @@ input:
 
 `just release-proof <version>` runs the same staging command and then validates
 the artifact tree, checksums, archive payloads, Homebrew rendering, local npm
-install path, and local installer path. `.github/workflows/release-proof.yml`
-exposes this as a manual GloriousFlywheel proof on `tinyland-nix` through the
-private `nix-job` action. It is intentionally manual while runner capacity is
-expected to be noisy.
+install path, local installer path, and non-publishing release handoff
+generation. The handoff captures GitHub Release attachments, npm publish order,
+Homebrew tap input, deb/rpm files, and full checksums under
+`dist/out/v<version>/handoff/`.
+
+`.github/workflows/release-proof.yml` exposes this as a manual GloriousFlywheel
+proof on `tinyland-nix` through the private `nix-job` action. It is
+intentionally manual while runner capacity is expected to be noisy.
 
 The tag release workflow also runs `just release-proof-local` before uploading
 the staged artifact tree, so GitHub Release publication is gated by the same
-artifact smoke checks even when the manual self-hosted proof is deferred.
+artifact smoke and handoff checks even when the manual self-hosted proof is
+deferred.
 
 `just release` runs the single Zig release graph (`zig build release`) rather
 than entering the Nix devshell once per target. Per-target Just recipes remain
@@ -106,11 +111,13 @@ available for focused iteration.
 
 ## Next Integration Gates
 
-1. Promote the manual GloriousFlywheel release proof into a required
+1. Turn the generated release handoff into authenticated dry-run lanes for npm,
+   Homebrew tap updates, and deb/rpm repository publication.
+2. Promote the manual GloriousFlywheel release proof into a required
    pre-publication self-hosted gate once `tinyland-nix` capacity is stable
    enough to block releases on it.
-2. Keep Bazel out until there is a real target graph or downstream adoption
+3. Keep Bazel out until there is a real target graph or downstream adoption
    reason; if added later, copy the GloriousFlywheel shape:
    `cache-contract-strict` before any cache-backed Bazel command.
-3. Add a scheduled or manual live-provider QA workflow only after secret
+4. Add a scheduled or manual live-provider QA workflow only after secret
    scoping is explicit; route probes spend real subscription calls.

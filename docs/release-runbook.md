@@ -47,6 +47,23 @@ This runs `release-local` and then checks:
 - rendered Homebrew formula placeholders and Ruby syntax when Ruby is present
 - local npm install of the matching platform package plus root shim
 - local installer execution against the staged artifact directory
+- non-publishing release handoff generation
+
+Generate only the handoff for an already staged tree:
+
+```bash
+just release-handoff 0.1.0
+```
+
+This validates the staged publication inputs and writes:
+
+- `dist/out/v0.1.0/handoff/release-handoff.md`
+- `dist/out/v0.1.0/handoff/publish-files.txt`
+- `dist/out/v0.1.0/handoff/SHA256SUMS.full`
+
+The handoff lists GitHub Release attachments, npm publish order, Homebrew tap
+input, deb/rpm files, and full checksums. It does not use registry credentials
+or publish anything.
 
 ## Release Workflow
 
@@ -59,11 +76,12 @@ nix develop --command just release-proof-local "${GITHUB_REF_NAME#v}"
 ```
 
 The release job only uploads the staged `dist/out/` tree after the smoke proof
-passes. It then attaches these files to the GitHub release:
+and handoff generation pass. It then attaches these files to the GitHub release:
 
 - `v*/artifacts/*`
 - `v*/npm-tarballs/*.tgz`
 - `v*/homebrew/oauth-mux.rb`
+- `v*/handoff/*`
 
 The staged `install.sh` verifies the selected tarball against `SHA256SUMS`
 before installing. For local proof, `OMUX_RELEASE_BASE_URL=file://...` points it
