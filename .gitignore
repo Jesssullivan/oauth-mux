@@ -38,6 +38,7 @@ bazel-*
 dist/build/
 dist/out/
 dist/live-qa/
+dist/codex-canary/
 *.tar.gz
 *.deb
 *.rpm

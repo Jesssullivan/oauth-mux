@@ -53,8 +53,9 @@ generic degradation or auth death.
 
 7. Onboarding and discovery surface.
    `oauth-mux discover --json`, `docs/onboarding.md`, `just codex-max-onboard`,
-   manual live-provider QA, registry dry-run, rollback, and daemon-boundary
-   runbooks now define the operator and agent path.
+   `just codex-max-canary`, manual live-provider QA, registry dry-run,
+   rollback, and daemon-boundary runbooks now define the operator and agent
+   path.
 
 ## Current Gates
 
@@ -79,6 +80,11 @@ generic degradation or auth death.
   `scripts/live-provider-qa.sh` and `.github/workflows/live-provider-qa.yml`
   require `spend-real-calls`; `scripts/registry-dry-run.sh` and
   `.github/workflows/registry-dry-run.yml` require `registry-dry-run`.
+
+- Codex canary and secret-scoped live QA
+  `just codex-max-canary` captures no-spend config/discovery/status/health and
+  per-account `codex login status` artifacts, then delegates to live QA only
+  when explicitly confirmed.
 
 - Secret-scoped Codex live QA
   Local account-matrix QA classified `max-1#codex-max` and
@@ -121,8 +127,5 @@ Not ready yet:
    `main` before publishing tags. GitHub cannot dispatch PR-local workflow
    files until they exist on the default branch.
 
-4. Add a small canary script for the three real Codex Max accounts that reports
-   liveness and route decisions without changing auth state or leaking tokens.
-
-5. Revisit the daemon boundary only after live-provider QA covers refresh,
+4. Revisit the daemon boundary only after live-provider QA covers refresh,
    timeout, quota, and provider-owned CLI session behavior.

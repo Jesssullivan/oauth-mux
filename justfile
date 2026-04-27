@@ -75,6 +75,9 @@ codex-max-login-status-all:
 codex-max-onboard: build
     ./scripts/onboard-codex-max.sh
 
+codex-max-canary: build
+    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./scripts/codex-max-canary.sh
+
 codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
 
