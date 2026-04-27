@@ -32,6 +32,20 @@ The Nix dev shell supplies Zig, Just, Node/npm, and nfpm, so `just release-local
 is the reproducible proof path. Running `scripts/release-local.sh` directly will
 still skip npm or deb/rpm output if those host tools are absent.
 
+Run the full build-plus-smoke proof:
+
+```bash
+just release-proof 0.1.0
+```
+
+This runs `release-local` and then checks:
+
+- required binary tarballs, debs, rpms, npm tarballs, and Homebrew formula
+- `SHA256SUMS` against the artifact directory
+- tarball payload names for Unix and Windows targets
+- rendered Homebrew formula placeholders and Ruby syntax when Ruby is present
+- local npm install of the matching platform package plus root shim
+
 ## Release Workflow
 
 Tags matching `v*` run `.github/workflows/release.yml`.
@@ -48,6 +62,19 @@ release:
 - `v*/artifacts/*`
 - `v*/npm-tarballs/*.tgz`
 - `v*/homebrew/oauth-mux.rb`
+
+## GloriousFlywheel Release Proof
+
+`.github/workflows/release-proof.yml` is a manual cache-first proof surface for
+the release path. It runs on `tinyland-nix`, checks out the private
+GloriousFlywheel action when `GF_ACTIONS_TOKEN` is available, and executes:
+
+```bash
+nix develop --command just release-proof-local <version>
+```
+
+That workflow does not publish release artifacts. It proves that the staged
+release graph can attach to the same Nix/Attic substrate as normal CI.
 
 ## GloriousFlywheel Boundary
 
@@ -72,7 +99,7 @@ the private action and completes.
 ## Before Marking A PR Ready
 
 - `just check` passes.
-- `just release-local <version>` produces all six binary tarballs and checksums.
+- `just release-proof <version>` produces and smoke-checks the release tree.
 - Hosted PR CI passes.
 - GF lane either passes or is explicitly deferred because of runner/token state.
 - Release notes mention any skipped GF proof.

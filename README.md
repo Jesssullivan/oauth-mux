@@ -67,4 +67,10 @@ Outputs are written under `dist/out/v0.1.0/`:
 - `npm-tarballs/`
 - `nfpm/` configs plus deb/rpm artifacts
 
+Build and smoke-test the same release tree:
+
+```bash
+just release-proof 0.1.0
+```
+
 See `docs/release-runbook.md` for release and CI details.

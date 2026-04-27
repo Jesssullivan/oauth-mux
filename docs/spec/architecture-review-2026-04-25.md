@@ -91,6 +91,12 @@ Implemented:
 - Local release staging: `just release-local <version>` emits six binary
   tarballs, checksums, a rendered Homebrew formula, npm package workspace and
   tarballs, plus nfpm configs and deb/rpm artifacts through the Nix dev shell.
+- Local release proof: `just release-proof <version>` stages the release and
+  smoke-checks required artifacts, checksums, archive payloads, Homebrew
+  rendering, and local npm installation.
+- Manual GloriousFlywheel release proof: `.github/workflows/release-proof.yml`
+  runs the same proof through the private cache-first `nix-job` action on
+  `tinyland-nix` when runner capacity and `GF_ACTIONS_TOKEN` are available.
 - Root README and release runbook covering local validation, release staging,
   GitHub release behavior, and the GloriousFlywheel runner/token boundary.
 
@@ -182,8 +188,8 @@ Decision record:
    token audience are explicit.
 2. Add registry publication handoffs for npm, Homebrew tap updates, and deb/rpm
    repositories once artifact staging is accepted.
-3. Add a GloriousFlywheel-backed release proof job for the release artifact
-   path once the one-version release recipe exists.
+3. Promote the manual GloriousFlywheel release proof into a required pre-tag
+   publication gate once runner capacity is stable enough for release blocking.
 4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
    provider-verification work.
 
@@ -251,4 +257,8 @@ single Zig release graph builds all six documented targets
 just release-local 0.1.0
 emits six binary tarballs, SHA256SUMS, Homebrew formula, npm package workspace,
 npm tarballs, nfpm configs, and deb/rpm output
+
+just release-proof 0.1.0
+stages the release and verifies required artifacts, checksums, archive payloads,
+Homebrew rendering, and local npm installation
 ```
