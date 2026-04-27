@@ -82,6 +82,10 @@ pub fn main() !void {
             try runHealth(allocator, stdout, health_args);
         },
 
+        .discover => |discover_args| {
+            try runDiscover(allocator, stdout, discover_args);
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -160,6 +164,203 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
             }
         }
     }
+}
+
+fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DiscoverArgs) !void {
+    const config_path = try paths.configFilePath(allocator);
+    defer allocator.free(config_path);
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+
+    const parsed = config.load(allocator) catch {
+        if (args.json) {
+            try writer.writeAll("{\"version\":");
+            try std.json.stringify(cli.version, .{}, writer);
+            try writer.writeAll(",\"configured\":false,\"config_path\":");
+            try std.json.stringify(config_path, .{}, writer);
+            try writer.writeAll(",\"state_dir\":");
+            try std.json.stringify(state_dir, .{}, writer);
+            try writer.writeAll(",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux init");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux init --codex-max");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux discover\n\n");
+            try writer.print("  config: missing at {s}\n", .{config_path});
+            try writer.print("  state:  {s}\n\n", .{state_dir});
+            try writer.writeAll("  next:\n");
+            try writer.writeAll("    oauth-mux init\n");
+            try writer.writeAll("    oauth-mux init --codex-max\n");
+            try writer.writeAll("    oauth-mux config validate\n");
+        }
+        return;
+    };
+    defer parsed.deinit();
+
+    if (args.json) {
+        try writeDiscoverJson(writer, parsed.value, config_path, state_dir);
+    } else {
+        try writeDiscoverText(writer, parsed.value, config_path, state_dir);
+    }
+}
+
+fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u8, state_dir: []const u8) !void {
+    try writer.writeAll("oauth-mux discover\n\n");
+    try writer.print("  config: {s}\n", .{config_path});
+    try writer.print("  state:  {s}\n\n", .{state_dir});
+
+    try writer.writeAll("  providers:\n");
+    if (cfg.providers.map.count() == 0) {
+        try writer.writeAll("    none configured\n");
+    } else {
+        var provider_it = cfg.providers.map.iterator();
+        while (provider_it.next()) |entry| {
+            const provider_name = entry.key_ptr.*;
+            const prov = entry.value_ptr.*;
+            try writer.print("    {s} ({s})\n", .{ provider_name, prov.kind });
+            var account_it = prov.accounts.map.iterator();
+            while (account_it.next()) |acct_entry| {
+                const account_name = acct_entry.key_ptr.*;
+                const account = acct_entry.value_ptr.*;
+                try writer.print("      {s} priority={d} secret={s}", .{
+                    account_name,
+                    account.priority,
+                    account.secret.backend,
+                });
+                if (account.config_dir != null) try writer.writeAll(" config_dir=yes");
+                if (account.tags) |tags| {
+                    try writer.writeAll(" tags=");
+                    for (tags, 0..) |tag, idx| {
+                        if (idx > 0) try writer.writeByte(',');
+                        try writer.writeAll(tag);
+                    }
+                }
+                try writer.writeByte('\n');
+            }
+        }
+    }
+
+    try writer.writeAll("\n  profiles:\n");
+    if (cfg.profiles.map.count() == 0) {
+        try writer.writeAll("    none configured\n");
+    } else {
+        var profile_it = cfg.profiles.map.iterator();
+        while (profile_it.next()) |entry| {
+            const profile_name = entry.key_ptr.*;
+            const profile = entry.value_ptr.*;
+            try writer.print("    {s}", .{profile_name});
+            if (profile.strategy) |strategy| try writer.print(" strategy={s}", .{strategy});
+            try writer.writeByte('\n');
+            for (profile.providers) |provider_ref| {
+                try writer.print("      {s}\n", .{provider_ref});
+            }
+        }
+    }
+
+    try writer.writeAll("\n  agent-safe commands:\n");
+    try writer.writeAll("    oauth-mux config validate\n");
+    try writer.writeAll("    oauth-mux status --json\n");
+    try writer.writeAll("    oauth-mux health --json\n");
+    try writer.writeAll("    oauth-mux probe --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux env --profile <profile> --capability <capability> --shell <shell>\n");
+    try writer.writeAll("    oauth-mux exec --profile <profile> --capability <capability> -- <command>\n");
+}
+
+fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u8, state_dir: []const u8) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"configured\":true,\"config_path\":");
+    try std.json.stringify(config_path, .{}, writer);
+    try writer.writeAll(",\"state_dir\":");
+    try std.json.stringify(state_dir, .{}, writer);
+    try writer.writeAll(",\"providers\":[");
+
+    var provider_first = true;
+    var provider_it = cfg.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        if (!provider_first) try writer.writeByte(',');
+        provider_first = false;
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        try writer.writeAll("{\"name\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"kind\":");
+        try std.json.stringify(prov.kind, .{}, writer);
+        try writer.writeAll(",\"config_dir_env\":");
+        if (prov.config_dir_env) |config_dir_env| {
+            try std.json.stringify(config_dir_env, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"accounts\":[");
+        var account_first = true;
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |acct_entry| {
+            if (!account_first) try writer.writeByte(',');
+            account_first = false;
+            const account_name = acct_entry.key_ptr.*;
+            const account = acct_entry.value_ptr.*;
+            try writer.writeAll("{\"name\":");
+            try std.json.stringify(account_name, .{}, writer);
+            try writer.print(",\"priority\":{d},\"secret_backend\":", .{account.priority});
+            try std.json.stringify(account.secret.backend, .{}, writer);
+            try writer.writeAll(",\"config_dir_set\":");
+            try writer.writeAll(if (account.config_dir != null) "true" else "false");
+            try writer.writeAll(",\"tags\":[");
+            if (account.tags) |tags| {
+                for (tags, 0..) |tag, idx| {
+                    if (idx > 0) try writer.writeByte(',');
+                    try std.json.stringify(tag, .{}, writer);
+                }
+            }
+            try writer.writeAll("]}");
+        }
+        try writer.writeAll("]}");
+    }
+
+    try writer.writeAll("],\"profiles\":[");
+    var profile_first = true;
+    var profile_it = cfg.profiles.map.iterator();
+    while (profile_it.next()) |entry| {
+        if (!profile_first) try writer.writeByte(',');
+        profile_first = false;
+        const profile_name = entry.key_ptr.*;
+        const profile = entry.value_ptr.*;
+        try writer.writeAll("{\"name\":");
+        try std.json.stringify(profile_name, .{}, writer);
+        try writer.writeAll(",\"strategy\":");
+        if (profile.strategy) |strategy| {
+            try std.json.stringify(strategy, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.print(",\"affinity_ttl_minutes\":{d},\"providers\":[", .{profile.affinity_ttl_minutes});
+        for (profile.providers, 0..) |provider_ref, idx| {
+            if (idx > 0) try writer.writeByte(',');
+            try std.json.stringify(provider_ref, .{}, writer);
+        }
+        try writer.writeAll("]}");
+    }
+
+    try writer.writeAll("],\"agent_safe_commands\":[");
+    const commands = [_][]const u8{
+        "oauth-mux config validate",
+        "oauth-mux status --json",
+        "oauth-mux health --json",
+        "oauth-mux probe --profile <profile> --capability <capability> --json",
+        "oauth-mux env --profile <profile> --capability <capability> --shell <shell>",
+        "oauth-mux exec --profile <profile> --capability <capability> -- <command>",
+    };
+    for (commands, 0..) |command, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writeCommandJson(writer, command);
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeCommandJson(writer: anytype, command: []const u8) !void {
+    try std.json.stringify(command, .{}, writer);
 }
 
 fn runEnv(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnvArgs) !void {

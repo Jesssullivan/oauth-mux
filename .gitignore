@@ -37,6 +37,7 @@ bazel-*
 # Distribution artifacts
 dist/build/
 dist/out/
+dist/live-qa/
 *.tar.gz
 *.deb
 *.rpm

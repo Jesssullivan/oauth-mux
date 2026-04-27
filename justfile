@@ -72,6 +72,9 @@ codex-max-login-status-all:
       CODEX_HOME="$HOME/.local/share/oauth-mux/codex/${account}" codex login status || true
     done
 
+codex-max-onboard: build
+    ./scripts/onboard-codex-max.sh
+
 codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
 
@@ -99,6 +102,9 @@ release-smoke VERSION="0.1.0":
 
 release-handoff VERSION="0.1.0":
     nix develop --command ./scripts/release-handoff.sh {{VERSION}}
+
+registry-dry-run VERSION="0.1.0":
+    nix develop --command ./scripts/registry-dry-run.sh {{VERSION}}
 
 release-proof VERSION="0.1.0":
     nix develop --command just release-proof-local {{VERSION}}
@@ -149,6 +155,9 @@ e2e:
 e2e-local:
     zig build
     ./scripts/e2e-local.sh
+
+live-qa:
+    nix develop --command ./scripts/live-provider-qa.sh
 
 # ── Config ──
 
