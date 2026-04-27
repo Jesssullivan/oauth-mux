@@ -88,6 +88,11 @@ Implemented:
   action, `just release` runs the single Zig release graph, and CI/release
   matrices include all six documented targets. See
   `docs/spec/gloriousflywheel-substrate-integration-2026-04-26.md`.
+- Local release staging: `just release-local <version>` emits six binary
+  tarballs, checksums, a rendered Homebrew formula, npm package workspace and
+  tarballs, plus nfpm configs and deb/rpm artifacts through the Nix dev shell.
+- Root README and release runbook covering local validation, release staging,
+  GitHub release behavior, and the GloriousFlywheel runner/token boundary.
 
 ## Key Decisions
 
@@ -155,8 +160,9 @@ Decision record:
   timeout. Request body templating and richer header extraction are future work.
 - Health persistence is versioned and backward-compatible, but migration policy
   beyond the current evidence fields is not yet documented.
-- Release packaging templates exist for curl installer, npm, Homebrew, and
-  nfpm; checksum/artifact publication remains release-automation work.
+- Release packaging now has a local staging command. GitHub release publication
+  uses that command, but real npm/Homebrew/deb/rpm registry publication is still
+  future work.
 - GloriousFlywheel cache-first CI proves shared Nix/Attic substrate attachment,
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
@@ -174,9 +180,8 @@ Decision record:
 
 1. Add provider-specific MCP examples only when the resource server URL and
    token audience are explicit.
-2. Turn the existing dist templates into a release automation path that emits
-   tarballs, checksums, npm platform packages, Homebrew formula updates, and
-   nfpm deb/rpm artifacts from one version input.
+2. Add registry publication handoffs for npm, Homebrew tap updates, and deb/rpm
+   repositories once artifact staging is accepted.
 3. Add a GloriousFlywheel-backed release proof job for the release artifact
    path once the one-version release recipe exists.
 4. Update TIN-491 and GitHub issue #197 with this checkpoint and the remaining
@@ -242,4 +247,8 @@ profile-level codex-max fallback -> selected max-3#codex-max with 200/use_this/l
 
 just release
 single Zig release graph builds all six documented targets
+
+just release-local 0.1.0
+emits six binary tarballs, SHA256SUMS, Homebrew formula, npm package workspace,
+npm tarballs, nfpm configs, and deb/rpm output
 ```

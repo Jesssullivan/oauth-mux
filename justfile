@@ -91,6 +91,9 @@ release-all:
     {{zig}} build release
     @echo "all release builds complete"
 
+release-local VERSION="0.1.0":
+    nix develop --command ./scripts/release-local.sh {{VERSION}}
+
 release-linux-amd64:
     {{zig}} build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
 
