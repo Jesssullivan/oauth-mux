@@ -1,0 +1,75 @@
+name: Live Provider QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type spend-real-calls to run live provider probes"
+        required: true
+        type: string
+      profile:
+        description: "Optional oauth-mux profile to probe"
+        required: false
+        type: string
+      provider:
+        description: "Provider for account matrix probes"
+        required: false
+        type: string
+      accounts:
+        description: "Comma-separated account names for account matrix probes"
+        required: false
+        type: string
+      capabilities:
+        description: "Comma-separated capabilities to probe"
+        required: false
+        default: "codex-mini"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  live-provider-qa:
+    name: Live provider QA
+    if: inputs.confirm == 'spend-real-calls'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Decode secret-scoped config
+        shell: bash
+        env:
+          OMUX_LIVE_QA_CONFIG_B64: ${{ secrets.OMUX_LIVE_QA_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OMUX_LIVE_QA_CONFIG_B64:-}" ]; then
+            echo "OMUX_LIVE_QA_CONFIG_B64 is unset; using repository/default config path"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/oauth-mux"
+          printf '%s' "$OMUX_LIVE_QA_CONFIG_B64" | base64 -d > "$RUNNER_TEMP/oauth-mux/config.json"
+          echo "OMUX_CONFIG=$RUNNER_TEMP/oauth-mux/config.json" >> "$GITHUB_ENV"
+
+      - name: Build oauth-mux
+        run: zig build
+
+      - name: Run live provider QA
+        shell: bash
+        env:
+          OMUX_LIVE_QA_CONFIRM: spend-real-calls
+          OMUX_LIVE_QA_PROFILE: ${{ inputs.profile }}
+          OMUX_LIVE_QA_PROVIDER: ${{ inputs.provider }}
+          OMUX_LIVE_QA_ACCOUNTS: ${{ inputs.accounts }}
+          OMUX_LIVE_QA_CAPABILITIES: ${{ inputs.capabilities }}
+        run: ./scripts/live-provider-qa.sh
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-provider-qa
+          path: dist/live-qa/
+          if-no-files-found: ignore

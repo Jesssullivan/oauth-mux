@@ -9,6 +9,7 @@ pub const Command = union(enum) {
     probe: ProbeArgs,
     status: StatusArgs,
     health: HealthArgs,
+    discover: DiscoverArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -53,6 +54,10 @@ pub const Command = union(enum) {
         reset: ?[]const u8 = null,
     };
 
+    pub const DiscoverArgs = struct {
+        json: bool = false,
+    };
+
     pub const InitArgs = struct {
         interactive: bool = false,
         codex_max: bool = false,
@@ -74,6 +79,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "probe")) return parseProbe(rest);
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
+    if (eql(cmd, "discover")) return parseDiscover(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
@@ -190,6 +196,14 @@ fn parseHealth(args: []const []const u8) Command {
     return .{ .health = result };
 }
 
+fn parseDiscover(args: []const []const u8) Command {
+    var result = Command.DiscoverArgs{};
+    for (args) |arg| {
+        if (eql(arg, "--json")) result.json = true;
+    }
+    return .{ .discover = result };
+}
+
 fn parseConfig(args: []const []const u8) Command {
     if (args.len == 0) return .config_path;
     if (eql(args[0], "validate")) return .config_validate;
@@ -231,6 +245,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  health [--json] [--reset <account>] [--provider <name>]
         \\      Show or reset redacted health and liveness tracking data.
+        \\
+        \\  discover [--json]
+        \\      Print redacted provider/profile inventory and agent-safe next commands.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -332,6 +349,15 @@ test "parse health json provider" {
     }
 }
 
+test "parse discover json" {
+    const args = [_][]const u8{ "discover", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .discover => |discover| try std.testing.expect(discover.json),
+        else => return error.Unexpected,
+    }
+}
+
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
@@ -341,6 +367,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a probe -d 'Probe account liveness'
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
@@ -352,6 +379,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
             \\
@@ -367,6 +395,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'probe:Probe account liveness'
             \\    'status:Show status'
             \\    'health:Show health data'
+            \\    'discover:Show agent-safe inventory'
             \\    'config:Config operations'
             \\    'init:Generate config'
             \\    'version:Print version'
@@ -381,7 +410,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe status health config init version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe status health discover config init version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

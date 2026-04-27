@@ -12,9 +12,9 @@ implemented. It is ready for controlled operator use and PR review, but not yet
 for public unattended production use.
 
 The remaining production gap is no longer the core selection model. The gap is
-operational hardening: live-provider QA, authenticated package publication dry
-runs, documented rollback, and post-merge GloriousFlywheel release-proof
-execution before public tags.
+operational hardening: live-provider QA execution with real secrets,
+authenticated package publication dry-runs, rollback rehearsal, and
+post-merge GloriousFlywheel release-proof execution before public tags.
 
 ## Completed Arc
 
@@ -45,6 +45,11 @@ execution before public tags.
    injection, command probes, route-scoped quota fallback, persisted health,
    and `exec` injection without live credentials or network calls.
 
+7. Onboarding and discovery surface.
+   `oauth-mux discover --json`, `docs/onboarding.md`, `just codex-max-onboard`,
+   manual live-provider QA, registry dry-run, rollback, and daemon-boundary
+   runbooks now define the operator and agent path.
+
 ## Current Gates
 
 - `just check`
@@ -63,6 +68,11 @@ execution before public tags.
   `GloriousFlywheel` action checked out, `nix-job` ran on `tinyland-nix`, and
   `nix develop --command just check-local` passed. Cache push is intentionally
   disabled on PR events.
+
+- Manual productization lanes
+  `scripts/live-provider-qa.sh` and `.github/workflows/live-provider-qa.yml`
+  require `spend-real-calls`; `scripts/registry-dry-run.sh` and
+  `.github/workflows/registry-dry-run.yml` require `registry-dry-run`.
 
 ## Production Readiness
 
@@ -85,13 +95,12 @@ Not ready yet:
 
 ## Next Arc
 
-1. Add a live-provider QA workflow that is manual-only, secret-scoped, and
-   budget-aware. It should run `codex-mini` first, then higher-cost routes only
-   when explicitly requested.
+1. Run the live-provider QA workflow with scoped secrets. Start with
+   `codex-mini`, then higher-cost routes only when explicitly requested.
 
-2. Convert the release handoff into authenticated dry-run lanes:
-   npm provenance dry run, Homebrew formula audit in the tap, and deb/rpm
-   repository staging checks.
+2. Run authenticated registry dry-run lanes:
+   npm dry run, Homebrew formula audit in the tap, GitHub release auth check,
+   and deb/rpm metadata checks.
 
 3. After merge, run the manual GloriousFlywheel release-proof workflow from
    `main` before publishing tags. GitHub cannot dispatch PR-local workflow
@@ -100,6 +109,5 @@ Not ready yet:
 4. Add a small canary script for the three real Codex Max accounts that reports
    liveness and route decisions without changing auth state or leaking tokens.
 
-5. Decide the daemon boundary: keep it optional until token refresh semantics
-   and provider-specific refresh safety are proven for each OAuth-backed
-   harness.
+5. Revisit the daemon boundary only after live-provider QA covers refresh,
+   timeout, quota, and provider-owned CLI session behavior.
