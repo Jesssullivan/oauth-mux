@@ -80,6 +80,9 @@ jobs:
             OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
           done
 
+      - name: Local E2E
+        run: ./scripts/e2e-local.sh
+
       - name: Build release
         run: zig build -Doptimize=ReleaseSafe
 

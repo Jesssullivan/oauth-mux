@@ -1,6 +1,38 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-04-26
+Updated: 2026-04-27
+
+## Local Quality Gates
+
+Run the canonical repo check:
+
+```bash
+just check
+```
+
+This enters the Nix dev shell and runs:
+
+- Zig unit tests
+- binary build
+- every `examples/*.config.json` through `config validate`
+- synthetic local E2E via `scripts/e2e-local.sh`
+
+The E2E harness is intentionally no-secret and no-network. It creates a
+temporary provider definition, command probe, config, and state directory, then
+proves:
+
+- shell env injection for a selected account
+- command-transport capability probes
+- route-scoped quota fallback from `toy:a1#expensive` to `toy:a2#expensive`
+- unrelated route survival for `toy:a1#cheap`
+- persisted typed health evidence
+- `exec` target process env injection
+
+Run only that harness with:
+
+```bash
+just e2e
+```
 
 ## Local Release Proof
 

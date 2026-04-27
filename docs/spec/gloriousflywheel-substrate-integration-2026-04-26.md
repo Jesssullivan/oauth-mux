@@ -32,6 +32,7 @@ and delegates the validation body to `just check-local`.
 1. `zig build test`
 2. `zig build`
 3. validate every `examples/*.config.json`
+4. `scripts/e2e-local.sh`
 
 This split gives local operators and remote CI the same test body while letting
 GloriousFlywheel jobs enter the devshell once and run the local check directly.
@@ -68,6 +69,10 @@ It does not yet prove:
 - package publication to npm, Homebrew, deb, rpm, or GitHub Releases;
 - live OAuth provider route health, except when explicit operator probe jobs
   are run with real credentials.
+
+It does prove the deterministic no-secret mux E2E path: env injection, command
+probe classification, route-scoped fallback, persisted health evidence, and
+`exec` target env injection.
 
 ## Release Tie-In
 

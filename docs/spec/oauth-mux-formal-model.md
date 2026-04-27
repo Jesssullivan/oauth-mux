@@ -312,9 +312,9 @@ Provider support is data first:
   "failure_rules": [
     { "status": 401, "class": { "dead": "token_revoked" } },
     { "status": 403, "class": { "degraded": "tier_insufficient" } },
-    { "status": 429, "retry_after_lt": 3601, "class": "rate_limited" },
-    { "status": 429, "retry_after_gte": 3601, "class": "quota_exhausted" },
-    { "status_min": 500, "status_max": 599, "class": "provider_degraded" }
+    { "status": 429, "retry_after_lt": 3601, "class": { "rate_limited": {} } },
+    { "status": 429, "retry_after_gte": 3601, "class": { "quota_exhausted": {} } },
+    { "status_min": 500, "status_max": 599, "class": { "provider_degraded": {} } }
   ]
 }
 ```
