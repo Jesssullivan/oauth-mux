@@ -23,6 +23,7 @@ required_artifacts=(
   "oauth-mux_0.1.0_arm64.deb"
   "oauth-mux-0.1.0-1.x86_64.rpm"
   "oauth-mux-0.1.0-1.aarch64.rpm"
+  "install.sh"
 )
 
 required_npm_tarballs=(
@@ -128,6 +129,7 @@ esac
 if [ -n "${platform_tgz:-}" ]; then
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
+
   export npm_config_cache="$tmp/npm-cache"
   export npm_config_update_notifier=false
   npm install \
@@ -138,6 +140,14 @@ if [ -n "${platform_tgz:-}" ]; then
     --no-audit \
     --no-fund >/dev/null
   "$tmp/app/node_modules/.bin/oauth-mux" version | grep -qx "oauth-mux ${version}"
+
+  printf 'checking curl installer...\n'
+  install_dir="$tmp/install-bin"
+  VERSION="$version" \
+    OMUX_RELEASE_BASE_URL="file://$artifacts_dir" \
+    INSTALL_DIR="$install_dir" \
+    sh "$artifacts_dir/install.sh" >/dev/null
+  "$install_dir/oauth-mux" version | grep -qx "oauth-mux ${version}"
 fi
 
 printf 'release smoke passed for v%s\n' "$version"
