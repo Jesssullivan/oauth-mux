@@ -17,9 +17,9 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
 
-      - name: Build release artifacts
+      - name: Build and smoke-test release artifacts
         run: |
-          nix develop --command ./scripts/release-local.sh "${GITHUB_REF_NAME#v}"
+          nix develop --command just release-proof-local "${GITHUB_REF_NAME#v}"
 
       - name: Upload release staging
         uses: actions/upload-artifact@v4
