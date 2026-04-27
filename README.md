@@ -74,4 +74,14 @@ Build and smoke-test the same release tree:
 just release-proof 0.1.0
 ```
 
+Generate the non-publishing operator handoff for the staged tree:
+
+```bash
+just release-handoff 0.1.0
+```
+
+The handoff is written under `dist/out/v0.1.0/handoff/` and lists GitHub
+Release attachments, npm publish order, Homebrew tap input, deb/rpm files, and
+full checksums.
+
 See `docs/release-runbook.md` for release and CI details.

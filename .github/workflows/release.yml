@@ -41,4 +41,5 @@ jobs:
             v*/artifacts/*
             v*/npm-tarballs/*.tgz
             v*/homebrew/oauth-mux.rb
+            v*/handoff/*
           generate_release_notes: true
