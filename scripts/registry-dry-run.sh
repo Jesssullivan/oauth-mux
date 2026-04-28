@@ -125,11 +125,19 @@ for lane in "${lanes[@]}"; do
       mkdir -p "$(dirname "$tap_formula")"
       cp "$formula" "$tap_formula"
       git -C "$OMUX_HOMEBREW_TAP_DIR" diff --check -- Formula/oauth-mux.rb
+      audit_log="$(mktemp)"
+      tmp_files+=("$audit_log")
       if [ -n "${OMUX_HOMEBREW_TAP_NAME:-}" ]; then
         "$brew_cmd" tap "$OMUX_HOMEBREW_TAP_NAME" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
-        "$brew_cmd" audit --formula --strict --online --tap="$OMUX_HOMEBREW_TAP_NAME" oauth-mux >/dev/null
+        if ! "$brew_cmd" audit --formula --strict --online --tap="$OMUX_HOMEBREW_TAP_NAME" oauth-mux >"$audit_log" 2>&1; then
+          cat "$audit_log" >&2
+          exit 1
+        fi
       else
-        "$brew_cmd" audit --formula --strict --online "$tap_formula" >/dev/null
+        if ! "$brew_cmd" audit --formula --strict --online "$tap_formula" >"$audit_log" 2>&1; then
+          cat "$audit_log" >&2
+          exit 1
+        fi
       fi
       append "## homebrew"
       append
