@@ -22,8 +22,9 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 - GloriousFlywheel cache-first proof is currently runner-gated; the most recent
   real proof predates the newest `main` commit.
 - Hosted live-provider QA has workflow support for secret-scoped config,
-  Codex CLI bootstrap, and a minimal hosted credential-store bundle. It still
-  needs a dispatched run with `confirm=spend-real-calls` before release.
+  Codex CLI bootstrap, and a minimal hosted credential-store bundle. Run
+  `25029923810` completed the Codex three-account matrix with
+  `confirm=spend-real-calls`.
 
 ## Sprint Objective
 
@@ -85,6 +86,17 @@ Credential materialization:
 - `OMUX_LIVE_QA_STORE_TGZ_B64` carries a minimal `$HOME`-relative credential
   bundle, excluding caches and logs;
 - the workflow rejects absolute paths and parent traversal before extraction.
+
+Evidence:
+
+- live QA `25029923810` installed `@openai/codex@0.125.0`, decoded the
+  secret-scoped config and store bundle, and uploaded valid per-probe JSON plus
+  redacted logs;
+- `codex-mini`: `max-1`, `max-2`, and `max-3` all returned
+  `live/available` with `decision=use_this`;
+- `codex-max`: `max-1` and `max-2` returned `live/quota_exhausted` with
+  `decision=try_next_account`; `max-3` returned `live/available` with
+  `decision=use_this`.
 
 ### 3. Registry Dry-Runs
 

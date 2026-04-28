@@ -74,6 +74,16 @@ Operator-provided Codex state on 2026-04-28:
 - These are not auth-dead accounts; the useful proof is preserving the
   distinction between weekly quota exhaustion and usable fallback routes.
 
+Hosted evidence from run `25029923810`:
+
+- `codex-mini`: all three accounts returned `live/available` and
+  `decision=use_this`.
+- `codex-max`: `max-1` and `max-2` returned `live/quota_exhausted` and
+  `decision=try_next_account`; `max-3` returned `live/available` and
+  `decision=use_this`.
+- The uploaded artifact contains valid per-probe JSON files and separate
+  redacted probe logs.
+
 ## GitHub Workflow
 
 `.github/workflows/live-provider-qa.yml` is manual-only. It requires the
