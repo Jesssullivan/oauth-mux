@@ -35,6 +35,9 @@ Evidence:
   npm rejects `npm publish --dry-run` for an already-published version. The
   dry-run lane now treats that as OK only when `npm view package@version`
   confirms the exact published artifact.
+- The next npm hygiene step is a CI-only deprecation workflow for the orphaned
+  partial `0.1.1` platform packages. It must default to plan-only and use the
+  org/global SOPS npm token path for any mutation.
 
 ## Current Baseline
 
