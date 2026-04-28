@@ -167,6 +167,10 @@ printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance --access public\n'
 cat >>"$handoff_file" <<EOF
 \`\`\`
 
+npm provenance requires a public GitHub source repository. If the repository is
+still private at publication time, use the CI-only npm workflow with
+\`provenance=false\` after explicitly accepting a no-provenance npm release.
+
 ## Homebrew Tap
 
 Copy the rendered formula into the tap and review the four platform checksums:

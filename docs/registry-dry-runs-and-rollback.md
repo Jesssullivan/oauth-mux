@@ -7,7 +7,8 @@ and non-publishing.
 
 npm publication is CI-only. Do not run `npm publish` from a workstation. The
 publish workflow stages the same release derivation, then publishes the
-generated tarballs with npm provenance.
+generated tarballs. npm provenance is enabled by default and requires a public
+source repository.
 
 ## Dry-Run
 
@@ -84,8 +85,12 @@ then publishes the generated tarballs in this order:
 
 The workflow requests `id-token: write` so
 `npm publish --provenance --access public` can attach GitHub Actions
-provenance. Keep `dry_run=true` for the first authenticated execution. Set
-`dry_run=false` only for the actual release publication.
+provenance. npm only accepts GitHub Actions provenance from public source
+repositories. If the repository is still private at publication time, either
+make the source repository public before publishing or set `provenance=false`
+after explicitly accepting a no-provenance npm release. Keep `dry_run=true` for
+the first authenticated execution. Set `dry_run=false` only for the actual
+release publication.
 
 The publish script is idempotent by default: if `package@version` already exists
 on npm, it records a skip instead of overwriting or republishing.

@@ -99,8 +99,10 @@ or publish anything.
 
 npm publication is intentionally separate and CI-only. Use
 `.github/workflows/npm-publish.yml`; it reuses the release derivation, resolves
-auth at runtime, and publishes only the generated tarballs with npm provenance.
-Do not publish npm packages from a workstation.
+auth at runtime, and publishes only the generated tarballs. Keep npm provenance
+enabled when the source repository is public; npm rejects GitHub Actions
+provenance from private repositories. Do not publish npm packages from a
+workstation.
 
 ## Release Workflow
 
