@@ -96,6 +96,7 @@ Deliver `oauth-mux codex ...` commands for the Codex Max path:
 - `oauth-mux codex login-status-all`
 - `oauth-mux codex onboard [--device|--status-only] [--accounts a,b,c]`
 - `oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]`
+- `oauth-mux codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]`
 
 The source-checkout `just codex-max-*` recipes should remain as aliases, not the
 primary public interface.

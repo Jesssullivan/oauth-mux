@@ -51,6 +51,13 @@ That command validates config, prints discovery/status evidence, and checks
 `codex login status` for each account without running probes. Add `--live` only
 when the canary should also invoke this live QA matrix.
 
+For a focused account matrix on one route class:
+
+```bash
+OMUX_CONFIG=$PWD/examples/codex-max.config.json \
+  oauth-mux codex probe-all --capability codex-mini --json
+```
+
 Artifacts are written under `dist/live-qa/<timestamp>/`:
 
 - `config-validate.txt`

@@ -72,6 +72,7 @@ pub const Command = union(enum) {
         login_status_all,
         onboard,
         canary,
+        probe_all,
     };
 
     pub const CodexArgs = struct {
@@ -265,6 +266,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .onboard;
         } else if (eql(args[0], "canary")) {
             result.action = .canary;
+        } else if (eql(args[0], "probe-all")) {
+            result.action = .probe_all;
         } else {
             result.action = .canary;
             option_start = 0;
@@ -279,7 +282,7 @@ fn parseCodex(args: []const []const u8) Command {
         } else if (eql(args[i], "--accounts")) {
             i += 1;
             if (i < args.len) result.accounts = args[i];
-        } else if (eql(args[i], "--capabilities")) {
+        } else if (eql(args[i], "--capabilities") or eql(args[i], "--capability")) {
             i += 1;
             if (i < args.len) result.capabilities = args[i];
         } else if (eql(args[i], "--store-root")) {
@@ -346,6 +349,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
         \\      Run a no-spend Codex Max readiness check; --live runs probes.
+        \\
+        \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
+        \\      Probe every selected Codex account/capability route.
         \\
         \\  codex login <account> | login-device <account> | login-status [account] | login-status-all
         \\      Codex account login/status helpers using isolated CODEX_HOME dirs.
@@ -442,6 +448,20 @@ test "parse codex canary" {
     }
 }
 
+test "parse codex probe-all with capability alias" {
+    const args = [_][]const u8{ "codex", "probe-all", "--accounts", "max-1,max-3", "--capability", "codex-mini", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .probe_all);
+            try std.testing.expectEqualStrings("max-1,max-3", codex.accounts);
+            try std.testing.expectEqualStrings("codex-mini", codex.capabilities);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse codex login account" {
     const args = [_][]const u8{ "codex", "login-device", "max-2" };
     const cmd = parse(&args);
@@ -501,7 +521,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'onboard canary bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'onboard canary probe-all bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\
         );
     } else if (eql(shell_name, "zsh")) {

@@ -45,6 +45,7 @@ Live probes remain explicit because they can spend subscription calls:
 
 ```bash
 oauth-mux codex canary --live
+oauth-mux codex probe-all --capability codex-mini --json
 ```
 
 ## Provider Author Experience
