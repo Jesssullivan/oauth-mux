@@ -41,6 +41,11 @@ The npm dry-run lane resolves auth in this order: `NPM_TOKEN`,
 `OMUX_NPM_TOKEN_SOPS_FILE` with `OMUX_NPM_TOKEN_SOPS_KEY`. The default SOPS key
 candidate is `.api.npm_token`.
 
+Before publication, the npm lane expects `npm publish --dry-run` to succeed for
+each staged tarball. After publication, npm rejects dry-runs for an existing
+`package@version`; the lane treats that as OK only when `npm view` confirms the
+exact published version.
+
 The script writes `dist/out/v<version>/handoff/registry-dry-run.md`.
 
 ## GitHub Workflow
