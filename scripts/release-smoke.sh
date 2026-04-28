@@ -32,8 +32,8 @@ required_npm_tarballs=(
   "oauth-mux-darwin-x64-0.1.0.tgz"
   "oauth-mux-linux-arm64-0.1.0.tgz"
   "oauth-mux-linux-x64-0.1.0.tgz"
-  "oauth-mux-win32-arm64-0.1.0.tgz"
-  "oauth-mux-win32-x64-0.1.0.tgz"
+  "oauth-mux-windows-arm64-0.1.0.tgz"
+  "oauth-mux-windows-x64-0.1.0.tgz"
 )
 
 hash_file() {

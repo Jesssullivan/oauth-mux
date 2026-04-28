@@ -16,8 +16,8 @@ platform_tarballs=(
   "oauth-mux-linux-arm64-${version}.tgz"
   "oauth-mux-darwin-x64-${version}.tgz"
   "oauth-mux-darwin-arm64-${version}.tgz"
-  "oauth-mux-win32-x64-${version}.tgz"
-  "oauth-mux-win32-arm64-${version}.tgz"
+  "oauth-mux-windows-x64-${version}.tgz"
+  "oauth-mux-windows-arm64-${version}.tgz"
 )
 root_tarball="oauth-mux-${version}.tgz"
 npm_provenance="${OMUX_NPM_PUBLISH_PROVENANCE:-1}"

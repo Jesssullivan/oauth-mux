@@ -9,8 +9,8 @@ const PLATFORM_MAP = {
   "darwin-x64": "oauth-mux-darwin-x64",
   "linux-arm64": "oauth-mux-linux-arm64",
   "linux-x64": "oauth-mux-linux-x64",
-  "win32-arm64": "oauth-mux-win32-arm64",
-  "win32-x64": "oauth-mux-win32-x64",
+  "win32-arm64": "oauth-mux-windows-arm64",
+  "win32-x64": "oauth-mux-windows-x64",
 };
 
 const key = `${os.platform()}-${os.arch()}`;

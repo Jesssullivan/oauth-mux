@@ -79,8 +79,8 @@ then publishes the generated tarballs in this order:
 2. `oauth-mux-linux-arm64`
 3. `oauth-mux-darwin-x64`
 4. `oauth-mux-darwin-arm64`
-5. `oauth-mux-win32-x64`
-6. `oauth-mux-win32-arm64`
+5. `oauth-mux-windows-x64`
+6. `oauth-mux-windows-arm64`
 7. `oauth-mux`
 
 The workflow requests `id-token: write` so
