@@ -425,8 +425,13 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     const result = pipeline.runProbe(&ctx);
     store.persist();
 
+    var probe_error: ?types.PipelineError = null;
+    if (result) |_| {} else |e| {
+        probe_error = e;
+    }
+
     if (args.json) {
-        try writeProbeJson(writer, &store, &ctx);
+        try writeProbeJson(writer, &store, &ctx, probe_error);
     } else {
         try writeProbeText(writer, &store, &ctx);
     }
@@ -486,6 +491,14 @@ const HealthSelection = struct {
 fn selectedHealth(store: *health_mod.HealthStore, ctx: *const pipeline.Context) HealthSelection {
     const prov = ctx.provider_name orelse "";
     const acct = ctx.account_name orelse "";
+    const account_key = health_mod.accountKey(prov, acct);
+    const account_health = store.accounts.get(account_key.slice());
+    if (account_health) |health| {
+        if (accountLivenessBlocksRoute(health.liveness)) {
+            return .{ .key = account_key, .health = health };
+        }
+    }
+
     if (ctx.capability_name) |capability| {
         const route_key = health_mod.capabilityKey(prov, acct, capability);
         if (store.accounts.get(route_key.slice())) |health| {
@@ -493,8 +506,28 @@ fn selectedHealth(store: *health_mod.HealthStore, ctx: *const pipeline.Context) 
         }
     }
 
-    const account_key = health_mod.accountKey(prov, acct);
-    return .{ .key = account_key, .health = store.accounts.get(account_key.slice()) };
+    return .{ .key = account_key, .health = account_health };
+}
+
+fn accountLivenessBlocksRoute(liveness: types.CredentialLiveness) bool {
+    return switch (liveness) {
+        .dead, .degraded => true,
+        .live => |live| switch (live.availability) {
+            .available => false,
+            .rate_limited, .quota_exhausted, .cooldown => true,
+        },
+    };
+}
+
+fn probeDecision(ctx: *const pipeline.Context, probe_error: ?types.PipelineError) types.MuxDecision {
+    if (probe_error) |err| {
+        return switch (err) {
+            error.NetworkError => .try_next_provider,
+            error.AllAccountsExhausted => ctx.last_probe_decision orelse .give_up,
+            else => .try_next_account,
+        };
+    }
+    return ctx.last_probe_decision orelse .use_this;
 }
 
 fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context) !void {
@@ -549,8 +582,9 @@ fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
     try writer.writeByte('\n');
 }
 
-fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context) !void {
+fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context, probe_error: ?types.PipelineError) !void {
     const selection = selectedHealth(store, ctx);
+    const decision = probeDecision(ctx, probe_error);
     try writer.writeByte('{');
     try writer.writeAll("\"provider\":");
     try std.json.stringify(ctx.provider_name orelse "", .{}, writer);
@@ -559,6 +593,20 @@ fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
     try writer.writeAll(",\"capability\":");
     if (ctx.capability_name) |capability| {
         try std.json.stringify(capability, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (probe_error == null) "true" else "false");
+    try writer.writeAll(",\"error\":");
+    if (probe_error) |err| {
+        try std.json.stringify(@errorName(err), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"exit_code\":");
+    if (probe_error) |err| {
+        try writer.print("{d}", .{exitCodeFromPipelineError(err)});
     } else {
         try writer.writeAll("null");
     }
@@ -571,7 +619,7 @@ fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
         try writer.writeAll("null");
     }
     try writer.writeAll(",\"decision\":");
-    try std.json.stringify(@tagName(ctx.last_probe_decision orelse .use_this), .{}, writer);
+    try std.json.stringify(@tagName(decision), .{}, writer);
     try writer.writeAll(",\"health_key\":");
     try std.json.stringify(selection.key.slice(), .{}, writer);
     try writer.writeAll(",\"liveness\":");
@@ -1303,6 +1351,32 @@ test "writeHealthJson includes capability routes" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"key\":\"codex:max-1#codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability\":\"codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"quota_exhausted\"") != null);
+}
+
+test "writeProbeJson includes terminal pipeline error" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    store.recordFailure("codex:max-1", .auth_failure);
+    _ = try store.getOrCreate("codex:max-1#codex-mini");
+
+    var ctx = pipeline.Context.init(std.testing.allocator, .{}, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "max-1";
+    ctx.capability_name = "codex-mini";
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeProbeJson(buf.writer(), &store, &ctx, error.SecretReadFailed);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"error\":\"SecretReadFailed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"exit_code\":202") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"decision\":\"try_next_account\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"health_key\":\"codex:max-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"dead\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hint_class\":\"auth_dead\"") != null);
 }
 
 // Pull in all module tests

@@ -134,19 +134,21 @@ fn selectWithFallback(ctx: *Context) PipelineError!void {
 
         // Try the read → validate path
         readSecret(ctx) catch |e| {
-            ctx.health.recordFailure(key.slice(), .auth_failure);
+            recordCandidateFailure(ctx, key.slice(), e);
             last_err = e;
             freeCurrentToken(ctx);
             continue;
         };
 
         validateToken(ctx) catch |e| {
+            recordCandidateFailure(ctx, key.slice(), e);
             last_err = e;
             freeCurrentToken(ctx);
             continue;
         };
 
         const post_probe_decision = probeCapability(ctx) catch |e| {
+            recordCandidateFailure(ctx, key.slice(), e);
             last_err = e;
             freeCurrentToken(ctx);
             continue;
@@ -187,6 +189,25 @@ fn freeCurrentToken(ctx: *Context) void {
         ctx.allocator.free(tok.access_token);
         if (tok.refresh_token) |rt| ctx.allocator.free(rt);
         ctx.token = null;
+    }
+}
+
+fn recordCandidateFailure(ctx: *Context, key: []const u8, err: PipelineError) void {
+    switch (err) {
+        error.SecretReadFailed,
+        error.SecretDecryptFailed,
+        error.TokenParseFailed,
+        error.TokenExpired,
+        error.TokenRefreshFailed,
+        error.TokenRevoked,
+        => ctx.health.recordFailure(key, .auth_failure),
+        error.RateLimited => ctx.health.recordFailure(key, .rate_limited),
+        error.NetworkError => ctx.health.recordFailure(key, .timeout),
+        error.ConfigNotFound,
+        error.ConfigParseError,
+        error.ConfigValidationError,
+        => {},
+        else => ctx.health.recordFailure(key, .error_response),
     }
 }
 
@@ -330,8 +351,6 @@ fn readSecret(ctx: *Context) PipelineError!void {
 
     const raw = secret.read(backend, ctx.allocator) catch |e| {
         log.err("secret: {s}:{s}: {s}", .{ prov_name, acct_name, @errorName(e) });
-        const key = health_mod.accountKey(prov_name, acct_name);
-        ctx.health.recordFailure(key.slice(), .auth_failure);
         return error.SecretReadFailed;
     };
     defer ctx.allocator.free(raw);
@@ -508,9 +527,6 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
 
     const result = oauth.refreshToken(ctx.allocator, url, rt, def.auth.client_id) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
-        const acct = ctx.account_name orelse return error.AccountNotFound;
-        const key = health_mod.accountKey(prov, acct);
-        ctx.health.recordFailure(key.slice(), .auth_failure);
         return error.TokenRefreshFailed;
     };
 

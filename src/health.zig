@@ -278,6 +278,20 @@ pub const HealthStore = struct {
             },
             else => {},
         }
+
+        if (kind == .auth_failure) {
+            health.rate_limited_until = null;
+            health.quota_exhausted_until = null;
+            health.liveness = .{ .dead = .{
+                .reason = .auth_permanently_failed,
+                .since = now,
+            } };
+            health.last_probe_source = .credential_validation;
+            health.last_probe_observed_at = now;
+            health.last_probe_retry_after_s = null;
+            health.last_probe_hint_class = .auth_dead;
+            health.last_probe_decision = .try_next_account;
+        }
     }
 
     pub fn isAvailable(self: *HealthStore, key: []const u8) bool {
@@ -1110,4 +1124,19 @@ test "HealthStore rate limit penalty" {
     const health = store.accounts.get("gemini:default").?;
     try std.testing.expectEqual(@as(i32, 40), health.score.score); // 50 + (-10)
     try std.testing.expectEqual(@as(u32, 1), health.score.rate_limits);
+}
+
+test "HealthStore auth failure marks credential dead" {
+    var store = HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    store.recordFailure("codex:max-1", .auth_failure);
+
+    const health = store.accounts.get("codex:max-1").?;
+    switch (health.liveness) {
+        .dead => |dead| try std.testing.expectEqual(types.DeadReason.auth_permanently_failed, dead.reason),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(ProbeHintClass.auth_dead, health.last_probe_hint_class.?);
+    try std.testing.expectEqual(types.MuxDecision.try_next_account, store.muxDecision("codex:max-1"));
 }
