@@ -80,8 +80,8 @@ package_binary "x86_64-linux" "oauth-mux-x86_64-linux" "oauth-mux-linux-x64" "li
 package_binary "aarch64-linux" "oauth-mux-aarch64-linux" "oauth-mux-linux-arm64" "linux" "arm64" "oauth-mux"
 package_binary "x86_64-macos" "oauth-mux-x86_64-macos" "oauth-mux-darwin-x64" "darwin" "x64" "oauth-mux"
 package_binary "aarch64-macos" "oauth-mux-aarch64-macos" "oauth-mux-darwin-arm64" "darwin" "arm64" "oauth-mux"
-package_binary "x86_64-windows" "oauth-mux-x86_64-windows" "oauth-mux-win32-x64" "win32" "x64" "oauth-mux.exe"
-package_binary "aarch64-windows" "oauth-mux-aarch64-windows" "oauth-mux-win32-arm64" "win32" "arm64" "oauth-mux.exe"
+package_binary "x86_64-windows" "oauth-mux-x86_64-windows" "oauth-mux-windows-x64" "win32" "x64" "oauth-mux.exe"
+package_binary "aarch64-windows" "oauth-mux-aarch64-windows" "oauth-mux-windows-arm64" "win32" "arm64" "oauth-mux.exe"
 
 printf 'writing SHA256SUMS...\n'
 write_artifact_checksums
@@ -110,7 +110,7 @@ chmod 0755 "$root_pkg_dir/bin/oauth-mux.js"
 
 if command -v npm >/dev/null 2>&1; then
   printf 'packing npm tarballs...\n'
-  for pkg_json in "$npm_dir"/oauth-mux-{darwin,linux,win32}-*/package.json; do
+  for pkg_json in "$npm_dir"/oauth-mux-{darwin,linux,windows}-*/package.json; do
     npm pack "$(dirname "$pkg_json")" --pack-destination "$npm_tgz_dir" >/dev/null
   done
   npm pack "$root_pkg_dir" --pack-destination "$npm_tgz_dir" >/dev/null

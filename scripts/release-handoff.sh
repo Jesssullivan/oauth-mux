@@ -37,8 +37,8 @@ npm_platform_tarballs=(
   "oauth-mux-darwin-x64-${version}.tgz"
   "oauth-mux-linux-arm64-${version}.tgz"
   "oauth-mux-linux-x64-${version}.tgz"
-  "oauth-mux-win32-arm64-${version}.tgz"
-  "oauth-mux-win32-x64-${version}.tgz"
+  "oauth-mux-windows-arm64-${version}.tgz"
+  "oauth-mux-windows-x64-${version}.tgz"
 )
 
 npm_root_tarball="oauth-mux-${version}.tgz"

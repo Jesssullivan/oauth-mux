@@ -214,6 +214,14 @@ Execution evidence:
   npm with `--access public`, then failed before publication because npm
   provenance rejects private GitHub source repositories. Registry checks after
   the failure still returned 404 for the checked `0.1.1` package names.
+- Fourth npm publish run `25068115332` used the explicit private-source
+  `provenance=false` path. It published `oauth-mux-linux-x64`,
+  `oauth-mux-linux-arm64`, `oauth-mux-darwin-x64`, and
+  `oauth-mux-darwin-arm64` at `0.1.1`, then failed on
+  `oauth-mux-win32-x64` because npm spam detection rejected that package name.
+- Patch path: publish `0.1.2` with Windows platform packages renamed to
+  `oauth-mux-windows-x64` and `oauth-mux-windows-arm64`, then leave the partial
+  `0.1.1` platform packages unused by the root shim.
 
 ## Explicit Non-Goals
 

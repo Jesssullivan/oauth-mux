@@ -19,7 +19,7 @@
     "oauth-mux-darwin-x64": "0.1.0",
     "oauth-mux-linux-arm64": "0.1.0",
     "oauth-mux-linux-x64": "0.1.0",
-    "oauth-mux-win32-arm64": "0.1.0",
-    "oauth-mux-win32-x64": "0.1.0"
+    "oauth-mux-windows-arm64": "0.1.0",
+    "oauth-mux-windows-x64": "0.1.0"
   }
 }
