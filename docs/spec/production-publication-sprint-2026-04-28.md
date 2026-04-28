@@ -16,8 +16,9 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 - Hosted CI has passed Zig tests, Nix validation, and all six cross-compiles for
   the recent PR arc.
 - The CI npm publish workflow has packed and dry-runed all seven generated
-  tarballs. The stricter registry dry-run still needs a valid npm auth proof:
-  run `25028294061` failed `npm whoami` with 401 Unauthorized.
+  tarballs. The stricter registry dry-run is now green after rotating the npm
+  automation token: run `25029047263` passed `plan,github,npm,system` and
+  dry-ran all seven npm tarballs.
 - GloriousFlywheel cache-first proof is currently runner-gated; the most recent
   real proof predates the newest `main` commit.
 - Hosted live-provider QA is blocked until a secret-scoped
@@ -90,6 +91,13 @@ Acceptance:
 - GitHub release auth check does not create a public release;
 - system package metadata checks complete or record missing host tooling;
 - rollback instructions stay linked from release notes.
+
+Evidence:
+
+- registry dry-run `25029047263` completed successfully on `main` with
+  `plan,github,npm,system`;
+- artifact `registry-dry-run-0.1.0` records GitHub auth OK, no existing
+  `v0.1.0` release, all seven npm tarballs dry-run OK, and deb/rpm metadata OK.
 
 ### 4. GloriousFlywheel Release Proof
 
