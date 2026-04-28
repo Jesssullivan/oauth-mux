@@ -100,6 +100,30 @@ release publication.
 The publish script is idempotent by default: if `package@version` already exists
 on npm, it records a skip instead of overwriting or republishing.
 
+## npm Deprecation
+
+`.github/workflows/npm-deprecate.yml` is the only supported npm deprecation
+mutation path. It requires `confirm=deprecate-npm` and defaults to
+`plan_only=true`.
+
+The default target is the orphaned partial `0.1.1` platform package set from the
+failed first publication attempt:
+
+1. `oauth-mux-linux-x64@0.1.1`
+2. `oauth-mux-linux-arm64@0.1.1`
+3. `oauth-mux-darwin-x64@0.1.1`
+4. `oauth-mux-darwin-arm64@0.1.1`
+
+Run the plan locally or in CI before mutating npm:
+
+```bash
+just npm-deprecate-plan 0.1.1
+```
+
+The workflow resolves npm auth through the same SOPS/token surfaces as the
+publish workflow. Set `plan_only=false` only after the uploaded
+`npm-ci-deprecate.md` plan names exactly the versions to deprecate.
+
 ## Rollback
 
 GitHub Release:

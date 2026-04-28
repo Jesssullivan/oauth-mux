@@ -1,0 +1,99 @@
+name: NPM Deprecate
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type deprecate-npm to deprecate npm package versions"
+        required: true
+        type: string
+      version:
+        description: "Package version to deprecate"
+        required: false
+        default: "0.1.1"
+        type: string
+      packages:
+        description: "Comma-separated package names"
+        required: false
+        default: "oauth-mux-linux-x64,oauth-mux-linux-arm64,oauth-mux-darwin-x64,oauth-mux-darwin-arm64"
+        type: string
+      message:
+        description: "Deprecation message"
+        required: false
+        default: "oauth-mux 0.1.1 platform package was orphaned by a failed release. Use oauth-mux@0.1.2 or newer."
+        type: string
+      plan_only:
+        description: "Write the deprecation plan without mutating npm"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  npm-deprecate:
+    name: npm deprecate package versions
+    if: inputs.confirm == 'deprecate-npm'
+    runs-on: ubuntu-latest
+    environment: npm-production
+    env:
+      OMUX_GLOBAL_SOPS_B64_PRESENT: ${{ secrets.OMUX_GLOBAL_SOPS_B64 != '' }}
+      OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT: ${{ vars.OMUX_GLOBAL_SOPS_REPOSITORY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Decode global SOPS file
+        if: env.OMUX_GLOBAL_SOPS_B64_PRESENT == 'true'
+        shell: bash
+        env:
+          OMUX_GLOBAL_SOPS_B64: ${{ secrets.OMUX_GLOBAL_SOPS_B64 }}
+        run: |
+          set -euo pipefail
+          global_sops="$RUNNER_TEMP/omux-global.sops.yaml"
+          printf '%s' "$OMUX_GLOBAL_SOPS_B64" | base64 -d > "$global_sops"
+          chmod 0600 "$global_sops"
+          echo "OMUX_NPM_TOKEN_SOPS_FILE=$global_sops" >> "$GITHUB_ENV"
+
+      - name: Checkout global SOPS repo
+        if: env.OMUX_GLOBAL_SOPS_B64_PRESENT != 'true' && env.OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.OMUX_GLOBAL_SOPS_REPOSITORY }}
+          ref: ${{ vars.OMUX_GLOBAL_SOPS_REF || 'main' }}
+          path: .global-sops
+          token: ${{ secrets.GF_ACTIONS_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Configure checked-out SOPS file
+        if: env.OMUX_GLOBAL_SOPS_B64_PRESENT != 'true' && env.OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT == 'true'
+        shell: bash
+        env:
+          OMUX_GLOBAL_SOPS_FILE: ${{ vars.OMUX_GLOBAL_SOPS_FILE || 'nix/secrets/common.yaml' }}
+        run: |
+          set -euo pipefail
+          echo "OMUX_NPM_TOKEN_SOPS_FILE=$PWD/.global-sops/$OMUX_GLOBAL_SOPS_FILE" >> "$GITHUB_ENV"
+
+      - name: Run npm deprecation plan or mutation
+        shell: bash
+        env:
+          OMUX_NPM_DEPRECATE_CONFIRM: deprecate-npm
+          OMUX_NPM_DEPRECATE_PACKAGES: ${{ inputs.packages }}
+          OMUX_NPM_DEPRECATE_MESSAGE: ${{ inputs.message }}
+          OMUX_NPM_DEPRECATE_PLAN_ONLY: ${{ inputs.plan_only && '1' || '0' }}
+          OMUX_NPM_TOKEN_SOPS_KEY: ${{ vars.OMUX_NPM_TOKEN_SOPS_KEY || '.api.npm_token' }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN || '' }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || '' }}
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY || '' }}
+        run: nix develop --command ./scripts/npm-ci-deprecate.sh "${{ inputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-deprecate-${{ inputs.version }}
+          path: dist/out/**/handoff/
+          if-no-files-found: ignore

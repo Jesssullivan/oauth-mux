@@ -98,6 +98,9 @@ release-handoff VERSION="0.1.0":
 registry-dry-run VERSION="0.1.0":
     nix develop --command ./scripts/registry-dry-run.sh {{VERSION}}
 
+npm-deprecate-plan VERSION="0.1.1":
+    OMUX_NPM_DEPRECATE_PLAN_ONLY=1 nix develop --command ./scripts/npm-ci-deprecate.sh {{VERSION}}
+
 release-proof VERSION="0.1.0":
     nix develop --command just release-proof-local {{VERSION}}
 
