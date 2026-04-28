@@ -13,14 +13,17 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 - `origin/main` contains the merged core mux, typed liveness, Codex three-account
   path, onboarding docs, live QA harness, registry dry-run scaffolding, and
   CI-only npm publish path.
-- Hosted CI has passed Zig tests, Nix validation, and all six cross-compiles for
-  the recent PR arc.
+- Hosted CI has passed Zig tests, Nix validation, all six cross-compiles, and a
+  real GloriousFlywheel cache-first job for the current PR arc.
 - The CI npm publish workflow has packed and dry-runed all seven generated
   tarballs. The stricter registry dry-run is now green after rotating the npm
   automation token: run `25029047263` passed `plan,github,npm,system` and
   dry-ran all seven npm tarballs.
-- GloriousFlywheel cache-first proof is currently runner-gated; the most recent
-  real proof predates the newest `main` commit.
+- Full hosted registry dry-run `25031405495` passed the PR-head
+  `plan,github,npm,homebrew,system` matrix.
+- GloriousFlywheel cache-first proof is fresh on PR #6: run `25031401075`
+  checked out `tinyland-inc/GloriousFlywheel` on `tinyland-nix`, ran
+  cache-first validation, and completed successfully.
 - Hosted live-provider QA has workflow support for secret-scoped config,
   Codex CLI bootstrap, and a minimal hosted credential-store bundle. Run
   `25029923810` completed the Codex three-account matrix with
@@ -122,11 +125,16 @@ Evidence:
   curl installer smoke, and handoff regeneration;
 - local Homebrew tap dry-run passed after updating the lane for Homebrew 5.1's
   tap/name audit path with `OMUX_HOMEBREW_TAP_NAME=tinyland-inc/tools`.
+- full hosted registry dry-run `25031405495` completed successfully on PR #6
+  with `plan,github,npm,homebrew,system`; artifact evidence records GitHub auth
+  OK, no existing `v0.1.0` release, all seven npm tarballs dry-run OK,
+  Homebrew formula copy plus strict audit OK, and deb/rpm metadata OK.
 
 ### 4. GloriousFlywheel Release Proof
 
-Re-run the cache-first release proof after the `tinyland-nix` runner is healthy.
-Do not claim this gate while jobs are only queued.
+The `tinyland-nix` runner is healthy again for PR validation. Keep the stricter
+release-proof distinction: PR #6 has fresh cache-first `check-local` evidence,
+while the tag/release proof still belongs to the release workflow.
 
 Acceptance:
 
@@ -134,6 +142,15 @@ Acceptance:
   `nix develop --command just release-proof-local 0.1.0`;
 - if deferred, the release notes explicitly say which hosted and local gates
   substituted for it.
+
+Evidence:
+
+- PR #6 CI run `25031401075` checked out the private GloriousFlywheel action on
+  `tinyland-nix`, ran cache-first validation, completed `just check-local`, and
+  reported `all checks passed`.
+- The current GF PR proof is a check/local validation proof, not a tag-release
+  publication proof. The tag workflow should still attach release artifacts
+  before any public `v0.1.0` publish.
 
 ### 5. v0.1.0 Cut
 
