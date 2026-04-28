@@ -15,8 +15,9 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
   CI-only npm publish path.
 - Hosted CI has passed Zig tests, Nix validation, and all six cross-compiles for
   the recent PR arc.
-- NPM dry-run has passed through CI with the org-level secret and provenance for
-  all seven generated tarballs.
+- The CI npm publish workflow has packed and dry-runed all seven generated
+  tarballs. The stricter registry dry-run still needs a valid npm auth proof:
+  run `25028294061` failed `npm whoami` with 401 Unauthorized.
 - GloriousFlywheel cache-first proof is currently runner-gated; the most recent
   real proof predates the newest `main` commit.
 - Hosted live-provider QA is blocked until a secret-scoped
