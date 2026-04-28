@@ -106,6 +106,8 @@ Acceptance:
 - `zig build test` passes.
 - `just check` passes.
 - Docs point public users at installed commands.
+- Probe JSON carries `ok`, `error`, `exit_code`, and typed `liveness` so AX
+  agents can route quota, rate-limit, degraded, and dead states distinctly.
 
 ### 2. Secret-Scoped Live QA
 

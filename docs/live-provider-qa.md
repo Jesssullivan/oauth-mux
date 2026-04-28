@@ -73,6 +73,11 @@ rather than a false infrastructure failure. Set
 route is immediately selectable. Dead credentials fail by default; set
 `OMUX_LIVE_QA_ALLOW_DEAD=1` only for negative test fixtures.
 
+Probe artifacts include `ok`, `error`, and `exit_code` fields. A nonzero probe
+exit with typed non-dead `liveness` is still accepted unless
+`OMUX_LIVE_QA_REQUIRE_AVAILABLE=1`; missing or unreadable credentials classify
+as `dead` and fail the run by default.
+
 Operator-provided Codex state on 2026-04-28:
 
 - `max-1#codex-max` and `max-2#codex-max` are expected to classify as

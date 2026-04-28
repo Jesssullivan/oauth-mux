@@ -112,6 +112,11 @@ oauth-mux env --profile <profile> --capability <capability> --shell <shell>
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```
 
+Probe JSON includes `ok`, `error`, and `exit_code` alongside typed
+`liveness`. Agents should use `liveness` to distinguish `rate_limited`,
+`quota_exhausted`, `degraded`, and `dead` instead of treating every nonzero
+probe exit as the same failure class.
+
 Agents must not:
 
 - read files referenced by `secret.path`;
