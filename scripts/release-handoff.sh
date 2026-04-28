@@ -222,7 +222,7 @@ cat >>"$handoff_file" <<EOF
 ## Boundary
 
 This step does not use npm, Homebrew, package-repository, or GitHub release
-write credentials. npm publication is CI-only via `.github/workflows/npm-publish.yml`
+write credentials. npm publication is CI-only via \`.github/workflows/npm-publish.yml\`
 and must publish the tarballs listed above, never locally rebuilt or hand-edited
 package contents.
 EOF

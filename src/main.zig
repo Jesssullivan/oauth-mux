@@ -78,6 +78,13 @@ pub fn main() !void {
             try runInit(allocator, stdout, init_args);
         },
 
+        .codex => |codex_args| {
+            runCodex(allocator, stdout, codex_args) catch |e| {
+                log.err("codex: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .health => |health_args| {
             try runHealth(allocator, stdout, health_args);
         },
@@ -989,6 +996,257 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
     try file.writeAll(starter_config);
 
     try writer.print("created {s}\n", .{path});
+}
+
+fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const root = try codexStoreRoot(allocator, args);
+    defer allocator.free(root);
+
+    switch (args.action) {
+        .bootstrap_dirs => try bootstrapCodexDirs(allocator, writer, args, root),
+        .login => {
+            const account = singleCodexAccount(args) orelse return error.MissingAccount;
+            try bootstrapOneCodexDir(allocator, writer, root, account);
+            const dir = try codexAccountDir(allocator, root, account);
+            defer allocator.free(dir);
+            if (!try runCodexCli(allocator, dir, &.{ "codex", "login" })) return error.CodexCommandFailed;
+        },
+        .login_device => {
+            const account = singleCodexAccount(args) orelse return error.MissingAccount;
+            try bootstrapOneCodexDir(allocator, writer, root, account);
+            const dir = try codexAccountDir(allocator, root, account);
+            defer allocator.free(dir);
+            if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "--device-auth" })) return error.CodexCommandFailed;
+        },
+        .login_status => {
+            const account = singleCodexAccount(args) orelse return error.MissingAccount;
+            const dir = try codexAccountDir(allocator, root, account);
+            defer allocator.free(dir);
+            try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
+            if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) return error.CodexCommandFailed;
+        },
+        .login_status_all => try runCodexLoginStatusAll(allocator, writer, args, root),
+        .onboard => try runCodexOnboard(allocator, writer, args, root),
+        .canary => try runCodexCanary(allocator, writer, args, root),
+    }
+}
+
+fn runCodexOnboard(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
+    try writer.writeAll("oauth-mux Codex Max onboarding\n\n");
+    try writer.print("store root: {s}\n", .{root});
+    try writer.print("accounts:   {s}\n", .{args.accounts});
+    try writer.print("mode:       {s}\n\n", .{if (args.status_only) "status-only" else if (args.device) "device" else "browser"});
+
+    try bootstrapCodexDirs(allocator, writer, args, root);
+    try validateCurrentConfig(allocator, writer);
+
+    var failures: usize = 0;
+    var it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len == 0) continue;
+        const dir = try codexAccountDir(allocator, root, account);
+        defer allocator.free(dir);
+
+        try writer.print("\n=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
+        if (try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) continue;
+        if (args.status_only) {
+            failures += 1;
+            continue;
+        }
+
+        const login_argv = if (args.device)
+            &[_][]const u8{ "codex", "login", "--device-auth" }
+        else
+            &[_][]const u8{ "codex", "login" };
+        if (!try runCodexCli(allocator, dir, login_argv)) {
+            failures += 1;
+            continue;
+        }
+        if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) failures += 1;
+    }
+
+    try writer.writeAll("\n=== oauth-mux discovery ===\n");
+    try runDiscover(allocator, writer, .{ .json = false });
+
+    if (args.live) {
+        try runCodexLiveProbes(allocator, writer, args);
+    } else {
+        try writer.writeAll("\nLive probes not run. Add --live only when real provider calls are intended.\n");
+    }
+
+    if (failures != 0) return error.CodexCommandFailed;
+}
+
+fn runCodexCanary(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
+    try writer.writeAll("oauth-mux Codex Max canary\n\n");
+    try writer.print("store root:   {s}\n", .{root});
+    try writer.print("accounts:     {s}\n", .{args.accounts});
+    try writer.print("capabilities: {s}\n\n", .{args.capabilities});
+
+    try bootstrapCodexDirs(allocator, writer, args, root);
+
+    try writer.writeAll("\n=== config validate ===\n");
+    try validateCurrentConfig(allocator, writer);
+
+    try writer.writeAll("\n=== agent discovery ===\n");
+    try runDiscover(allocator, writer, .{ .json = args.json });
+
+    try writer.writeAll("\n=== codex login status ===\n");
+    try runCodexLoginStatusAll(allocator, writer, args, root);
+
+    try writer.writeAll("\n=== route liveness snapshot ===\n");
+    try writer.writeAll("Existing oauth-mux health state; add --live to refresh with real provider probes.\n");
+    try writeCodexRouteSnapshot(allocator, writer, args);
+
+    if (args.live) {
+        try writer.writeAll("\n=== live probes ===\n");
+        try runCodexLiveProbes(allocator, writer, args);
+    } else {
+        try writer.writeAll("\nLive probes not run. Add --live only when real provider calls are intended.\n");
+    }
+}
+
+fn validateCurrentConfig(allocator: std.mem.Allocator, writer: anytype) !void {
+    const parsed = config.load(allocator) catch return error.ConfigNotFound;
+    defer parsed.deinit();
+    try config.validate(parsed.value, writer);
+    try writer.writeAll("config: valid\n");
+}
+
+fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
+    var failures: usize = 0;
+    var it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len == 0) continue;
+        const dir = try codexAccountDir(allocator, root, account);
+        defer allocator.free(dir);
+        try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
+        if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) failures += 1;
+    }
+    if (failures != 0) return error.CodexCommandFailed;
+}
+
+fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    var account_it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (account_it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len == 0) continue;
+        var capability_it = std.mem.splitScalar(u8, args.capabilities, ',');
+        while (capability_it.next()) |raw_capability| {
+            const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
+            if (capability.len == 0) continue;
+            try writer.print("\n--- codex:{s}#{s} ---\n", .{ account, capability });
+            runProbe(allocator, writer, .{
+                .provider = "codex",
+                .account = account,
+                .capability = capability,
+                .json = args.json,
+            }) catch |e| switch (e) {
+                error.AllAccountsExhausted => {},
+                else => return e,
+            };
+        }
+    }
+}
+
+fn writeCodexRouteSnapshot(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var account_it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (account_it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len == 0) continue;
+        var capability_it = std.mem.splitScalar(u8, args.capabilities, ',');
+        while (capability_it.next()) |raw_capability| {
+            const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
+            if (capability.len == 0) continue;
+            const key = try std.fmt.allocPrint(allocator, "codex:{s}#{s}", .{ account, capability });
+            defer allocator.free(key);
+            try writer.print("{s}: ", .{key});
+            if (store.accounts.get(key)) |health| {
+                try health_mod.writeLivenessSummary(writer, health.liveness);
+                if (health.last_http_status) |status| try writer.print(" http={d}", .{status});
+                if (health.last_probe_decision) |decision| try writer.print(" decision={s}", .{@tagName(decision)});
+                if (health.last_probe_observed_at) |observed_at| try writer.print(" observed_at={d}", .{observed_at});
+            } else {
+                try writer.writeAll("no recorded health yet");
+            }
+            try writer.writeByte('\n');
+        }
+    }
+}
+
+fn bootstrapCodexDirs(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
+    var it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len == 0) continue;
+        try bootstrapOneCodexDir(allocator, writer, root, account);
+    }
+}
+
+fn bootstrapOneCodexDir(allocator: std.mem.Allocator, writer: anytype, root: []const u8, account: []const u8) !void {
+    const dir = try codexAccountDir(allocator, root, account);
+    defer allocator.free(dir);
+    try std.fs.cwd().makePath(dir);
+    try writer.print("created/verified {s}\n", .{dir});
+}
+
+fn codexStoreRoot(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) ![]const u8 {
+    if (args.store_root) |root| return try paths.expandTilde(allocator, root);
+    if (try getEnvOwnedOrNull(allocator, "OMUX_CODEX_STORE_ROOT")) |root| {
+        defer allocator.free(root);
+        return try paths.expandTilde(allocator, root);
+    }
+    if (try getEnvOwnedOrNull(allocator, "XDG_DATA_HOME")) |xdg| {
+        defer allocator.free(xdg);
+        return try std.fs.path.join(allocator, &.{ xdg, "oauth-mux", "codex" });
+    }
+    const home = (try getEnvOwnedOrNull(allocator, "HOME")) orelse return error.ConfigNotFound;
+    defer allocator.free(home);
+    return try std.fs.path.join(allocator, &.{ home, ".local", "share", "oauth-mux", "codex" });
+}
+
+fn codexAccountDir(allocator: std.mem.Allocator, root: []const u8, account: []const u8) ![]const u8 {
+    return try std.fs.path.join(allocator, &.{ root, account });
+}
+
+fn singleCodexAccount(args: cli.Command.CodexArgs) ?[]const u8 {
+    if (args.account) |account| return account;
+    var it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len != 0) return account;
+    }
+    return null;
+}
+
+fn getEnvOwnedOrNull(allocator: std.mem.Allocator, name: []const u8) !?[]const u8 {
+    return std.process.getEnvVarOwned(allocator, name) catch |e| switch (e) {
+        error.EnvironmentVariableNotFound => null,
+        else => return e,
+    };
+}
+
+fn runCodexCli(allocator: std.mem.Allocator, account_dir: []const u8, argv: []const []const u8) !bool {
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("CODEX_HOME", account_dir);
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    child.env_map = &env_map;
+
+    const term = child.spawnAndWait() catch return error.CodexCommandFailed;
+    return switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
 }
 
 test "matchesProvider filters account keys" {

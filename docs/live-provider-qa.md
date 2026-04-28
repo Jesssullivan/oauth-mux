@@ -44,13 +44,12 @@ For the Codex Max three-account path, prefer the canary before any spending
 run:
 
 ```bash
-just codex-max-canary
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
 ```
 
-That command validates config, captures discovery/status/health, and checks
-`codex login status` for each account without running probes. Set
-`OMUX_CODEX_CANARY_CONFIRM=spend-real-calls` only when the canary should also
-invoke this live QA matrix.
+That command validates config, prints discovery/status evidence, and checks
+`codex login status` for each account without running probes. Add `--live` only
+when the canary should also invoke this live QA matrix.
 
 Artifacts are written under `dist/live-qa/<timestamp>/`:
 
@@ -67,13 +66,13 @@ rather than a false infrastructure failure. Set
 route is immediately selectable. Dead credentials fail by default; set
 `OMUX_LIVE_QA_ALLOW_DEAD=1` only for negative test fixtures.
 
-Current Codex behavior observed on 2026-04-27:
+Operator-provided Codex state on 2026-04-28:
 
-- `max-1`, `max-2`, and `max-3` are all logged in and remain
-  `live/available` on `codex-mini`.
-- `max-1#codex-max`, `max-2#codex-max`, and `max-3#codex-max` currently return
-  `live/quota_exhausted` with distinct reset windows. The accounts are not
-  auth-dead; only the max route is exhausted.
+- `max-1#codex-max` and `max-2#codex-max` are expected to classify as
+  `live/quota_exhausted` until weekly limits refresh.
+- `max-3` is expected to remain active for API-backed usage.
+- These are not auth-dead accounts; the useful proof is preserving the
+  distinction between weekly quota exhaustion and usable fallback routes.
 
 ## GitHub Workflow
 
@@ -85,6 +84,11 @@ For private configs, store a base64-encoded config in the repository secret
 `OMUX_CONFIG` for the job. Keep the config secret-scoped and prefer secret
 backends such as command, keychain, sops, age, or env references. Do not put raw
 tokens in the workflow file or repository.
+
+For command-probe providers such as Codex, the hosted runner also needs the
+provider CLI and account credential stores available at the paths named by the
+secret-scoped config. A config secret alone is not enough if it points at
+machine-local `CODEX_HOME` directories that only exist on a workstation.
 
 ## Policy
 
