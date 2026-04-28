@@ -100,14 +100,7 @@ for lane in "${lanes[@]}"; do
       NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
       for tarball in "$out_dir"/npm-tarballs/*.tgz; do
         name="$(basename "$tarball")"
-        case "$name" in
-          oauth-mux-darwin-*|oauth-mux-linux-*|oauth-mux-win32-*)
-            NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
-            ;;
-          *)
-            NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
-            ;;
-        esac
+        NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
         append "- dry-run OK: \`npm-tarballs/${name}\`"
       done
       append

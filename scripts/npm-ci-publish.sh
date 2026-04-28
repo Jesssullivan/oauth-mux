@@ -105,11 +105,6 @@ publish_one() {
   fi
 
   local args=(publish "$tarball" --provenance)
-  case "$name" in
-    @oauth-mux/*)
-      args+=(--access public)
-      ;;
-  esac
   if [ "${OMUX_NPM_PUBLISH_DRY_RUN:-0}" = "1" ]; then
     args+=(--dry-run)
   fi
