@@ -127,14 +127,23 @@ for lane in "${lanes[@]}"; do
       git -C "$OMUX_HOMEBREW_TAP_DIR" diff --check -- Formula/oauth-mux.rb
       audit_log="$(mktemp)"
       tmp_files+=("$audit_log")
+      audit_args=(audit --formula --strict)
+      audit_label="brew audit --strict"
+      if [ "${OMUX_HOMEBREW_AUDIT_ONLINE:-0}" = "1" ]; then
+        audit_args+=(--online)
+        audit_label="brew audit --strict --online"
+      fi
       if [ -n "${OMUX_HOMEBREW_TAP_NAME:-}" ]; then
         "$brew_cmd" tap "$OMUX_HOMEBREW_TAP_NAME" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
-        if ! "$brew_cmd" audit --formula --strict --online --tap="$OMUX_HOMEBREW_TAP_NAME" oauth-mux >"$audit_log" 2>&1; then
+        tapped_repo="$("$brew_cmd" --repository "$OMUX_HOMEBREW_TAP_NAME")"
+        mkdir -p "$tapped_repo/Formula"
+        cp "$formula" "$tapped_repo/Formula/oauth-mux.rb"
+        if ! "$brew_cmd" "${audit_args[@]}" oauth-mux >"$audit_log" 2>&1; then
           cat "$audit_log" >&2
           exit 1
         fi
       else
-        if ! "$brew_cmd" audit --formula --strict --online "$tap_formula" >"$audit_log" 2>&1; then
+        if ! "$brew_cmd" "${audit_args[@]}" "$tap_formula" >"$audit_log" 2>&1; then
           cat "$audit_log" >&2
           exit 1
         fi
@@ -143,7 +152,7 @@ for lane in "${lanes[@]}"; do
       append
       append "- formula copied to tap checkout"
       append "- git diff --check OK"
-      append "- brew audit OK"
+      append "- ${audit_label} OK"
       append
       ;;
 

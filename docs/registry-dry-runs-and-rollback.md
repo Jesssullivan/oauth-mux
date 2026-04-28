@@ -63,6 +63,9 @@ Required secret and variable surfaces:
   instead of by formula path, for example `tinyland-inc/tools`.
 - `OMUX_BREW_BIN` when the Homebrew executable is not available as `brew`.
   The GitHub workflow installs Homebrew on Ubuntu and sets this automatically.
+- `OMUX_HOMEBREW_AUDIT_ONLINE=1` only after the homepage and release URLs are
+  publicly reachable. Pre-release dry-runs use strict offline audit because the
+  release artifacts are intentionally not published yet.
 - The default workflow `GITHUB_TOKEN` for the GitHub lane.
 
 ## npm Publish
