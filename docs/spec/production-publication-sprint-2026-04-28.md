@@ -35,9 +35,16 @@ Evidence:
   npm rejects `npm publish --dry-run` for an already-published version. The
   dry-run lane now treats that as OK only when `npm view package@version`
   confirms the exact published artifact.
-- The next npm hygiene step is a CI-only deprecation workflow for the orphaned
-  partial `0.1.1` platform packages. It must default to plan-only and use the
-  org/global SOPS npm token path for any mutation.
+- PR #14 merged as `09b89f4`, adding a manual CI-only npm deprecation workflow
+  for the orphaned partial `0.1.1` platform packages.
+- Post-merge main CI run `25074426114` passed test, nix, all six
+  cross-compiles, and GloriousFlywheel cache-first validation.
+- NPM deprecation plan run `25074614756` targeted only the four orphaned
+  `0.1.1` platform packages.
+- NPM deprecation mutation run `25074691124` deprecated those four packages
+  through the org/global SOPS npm token path. Public registry checks confirmed
+  the deprecation message on all four packages, and confirmed `oauth-mux@0.1.1`
+  remains unpublished.
 
 ## Current Baseline
 
@@ -253,6 +260,11 @@ Execution evidence:
 - Patch path: publish `0.1.2` with Windows platform packages renamed to
   `oauth-mux-windows-x64` and `oauth-mux-windows-arm64`, then leave the partial
   `0.1.1` platform packages unused by the root shim.
+- Cleanup path: PR #14 added the CI-only npm deprecation workflow and
+  deprecated the orphaned `0.1.1` platform packages. Plan run `25074614756`
+  showed only `oauth-mux-linux-x64`, `oauth-mux-linux-arm64`,
+  `oauth-mux-darwin-x64`, and `oauth-mux-darwin-arm64` at `0.1.1`; mutation
+  run `25074691124` applied the deprecation message through CI.
 
 ## Explicit Non-Goals
 

@@ -124,6 +124,16 @@ The workflow resolves npm auth through the same SOPS/token surfaces as the
 publish workflow. Set `plan_only=false` only after the uploaded
 `npm-ci-deprecate.md` plan names exactly the versions to deprecate.
 
+Evidence for the `0.1.1` cleanup:
+
+- Plan-only workflow run `25074614756` targeted only the four orphaned
+  `0.1.1` platform packages listed above.
+- Mutation workflow run `25074691124` deprecated those four package versions
+  with the message:
+  `oauth-mux 0.1.1 platform package was orphaned by a failed release. Use oauth-mux@0.1.2 or newer.`
+- Public npm metadata checks confirmed the deprecation message on all four
+  package versions and confirmed `oauth-mux@0.1.1` remains unpublished.
+
 ## Rollback
 
 GitHub Release:
