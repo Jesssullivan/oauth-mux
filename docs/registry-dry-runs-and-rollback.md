@@ -57,6 +57,10 @@ Required secret and variable surfaces:
   `.api.npm_token`.
 - `OMUX_HOMEBREW_TAP_DIR` repository variable for the Homebrew lane when a tap
   checkout is available in the runner environment.
+- `OMUX_HOMEBREW_TAP_REPOSITORY` plus optional `OMUX_HOMEBREW_TAP_REF` when
+  the workflow should check out the tap before the Homebrew lane.
+- `OMUX_HOMEBREW_TAP_NAME` when Homebrew requires auditing by tap/formula name
+  instead of by formula path, for example `tinyland-inc/tools`.
 - The default workflow `GITHUB_TOKEN` for the GitHub lane.
 
 ## npm Publish

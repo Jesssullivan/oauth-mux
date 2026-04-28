@@ -117,6 +117,11 @@ Evidence:
   `plan,github,npm,system`;
 - artifact `registry-dry-run-0.1.0` records GitHub auth OK, no existing
   `v0.1.0` release, all seven npm tarballs dry-run OK, and deb/rpm metadata OK.
+- local release proof on this branch passed `just release-proof 0.1.0`,
+  including Homebrew formula syntax, npm tarball packing, deb/rpm generation,
+  curl installer smoke, and handoff regeneration;
+- local Homebrew tap dry-run passed after updating the lane for Homebrew 5.1's
+  tap/name audit path with `OMUX_HOMEBREW_TAP_NAME=tinyland-inc/tools`.
 
 ### 4. GloriousFlywheel Release Proof
 
