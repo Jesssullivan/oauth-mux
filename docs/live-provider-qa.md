@@ -55,7 +55,7 @@ Artifacts are written under `dist/live-qa/<timestamp>/`:
 
 - `config-validate.txt`
 - `discover.json`
-- one JSON file per probe
+- one valid JSON file plus one redacted log file per probe
 - `health.json`
 
 By default, live QA passes when a probe returns a typed, redacted liveness
