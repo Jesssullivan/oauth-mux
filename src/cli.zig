@@ -1,7 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 
-pub const version = "0.1.0";
+pub const version = "0.1.1";
 
 pub const Command = union(enum) {
     exec: ExecArgs,

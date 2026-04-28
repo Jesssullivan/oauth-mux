@@ -5,12 +5,12 @@ const path = require("path");
 const os = require("os");
 
 const PLATFORM_MAP = {
-  "darwin-arm64": "@oauth-mux/darwin-arm64",
-  "darwin-x64": "@oauth-mux/darwin-x64",
-  "linux-arm64": "@oauth-mux/linux-arm64",
-  "linux-x64": "@oauth-mux/linux-x64",
-  "win32-arm64": "@oauth-mux/win32-arm64",
-  "win32-x64": "@oauth-mux/win32-x64",
+  "darwin-arm64": "oauth-mux-darwin-arm64",
+  "darwin-x64": "oauth-mux-darwin-x64",
+  "linux-arm64": "oauth-mux-linux-arm64",
+  "linux-x64": "oauth-mux-linux-x64",
+  "win32-arm64": "oauth-mux-win32-arm64",
+  "win32-x64": "oauth-mux-win32-x64",
 };
 
 const key = `${os.platform()}-${os.arch()}`;

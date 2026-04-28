@@ -190,6 +190,24 @@ Only after the gates above and explicit operator confirmation:
    `dry_run=false`;
 5. publish or defer Homebrew/deb/rpm/curl lanes according to dry-run evidence.
 
+Execution evidence:
+
+- `v0.1.0` was tagged from `a11236d` and the GitHub Release workflow
+  `25061910479` attached the public release artifacts successfully.
+- Downloaded release assets verified against `SHA256SUMS`; flattened GitHub
+  Release asset names also verified against `handoff/SHA256SUMS.full`.
+- Real npm publish run `25062286236` staged release proof successfully, then
+  failed on the first platform package with npm `E404 Scope not found` for
+  `@oauth-mux/linux-x64`.
+- Registry checks after the failure showed no `0.1.0` npm packages were
+  published. The failure was namespace/scope shape, not token extraction.
+- Patch path: publish `0.1.1` with unscoped platform packages
+  (`oauth-mux-linux-x64`, etc.) so CI can publish through the current npm
+  account without requiring a new npm organization.
+- Patch proof: PR #9 CI run `25064315336` passed `test`, `nix`,
+  GloriousFlywheel cache-first validation, and all six cross-compiles; registry
+  dry-run `25064352699` passed `plan,npm` for all seven `0.1.1` npm tarballs.
+
 ## Explicit Non-Goals
 
 - no background daemon as a required product surface;

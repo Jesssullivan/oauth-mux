@@ -74,12 +74,12 @@ Required secret and variable surfaces:
 requires `confirm=publish-npm`, stages `just release-proof-local <version>`, and
 then publishes the generated tarballs in this order:
 
-1. `@oauth-mux/linux-x64`
-2. `@oauth-mux/linux-arm64`
-3. `@oauth-mux/darwin-x64`
-4. `@oauth-mux/darwin-arm64`
-5. `@oauth-mux/win32-x64`
-6. `@oauth-mux/win32-arm64`
+1. `oauth-mux-linux-x64`
+2. `oauth-mux-linux-arm64`
+3. `oauth-mux-darwin-x64`
+4. `oauth-mux-darwin-arm64`
+5. `oauth-mux-win32-x64`
+6. `oauth-mux-win32-arm64`
 7. `oauth-mux`
 
 The workflow requests `id-token: write` so `npm publish --provenance` can attach

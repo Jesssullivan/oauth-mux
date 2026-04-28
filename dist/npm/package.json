@@ -15,11 +15,11 @@
     "postinstall": "node install.js"
   },
   "optionalDependencies": {
-    "@oauth-mux/darwin-arm64": "0.1.0",
-    "@oauth-mux/darwin-x64": "0.1.0",
-    "@oauth-mux/linux-arm64": "0.1.0",
-    "@oauth-mux/linux-x64": "0.1.0",
-    "@oauth-mux/win32-arm64": "0.1.0",
-    "@oauth-mux/win32-x64": "0.1.0"
+    "oauth-mux-darwin-arm64": "0.1.0",
+    "oauth-mux-darwin-x64": "0.1.0",
+    "oauth-mux-linux-arm64": "0.1.0",
+    "oauth-mux-linux-x64": "0.1.0",
+    "oauth-mux-win32-arm64": "0.1.0",
+    "oauth-mux-win32-x64": "0.1.0"
   }
 }
