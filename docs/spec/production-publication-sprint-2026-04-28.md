@@ -27,6 +27,9 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 - Post-merge release gates on `main` are green: GloriousFlywheel release proof
   `25032112196`, registry dry-run `25032112178`, and npm publish dry-run
   `25032112186`.
+- Evidence doc PR #7 merged as `f12e6b7`; post-merge CI run `25032478278`
+  passed `test`, `nix`, all six cross-compiles, and real GloriousFlywheel
+  cache-first validation.
 - Hosted live-provider QA has workflow support for secret-scoped config,
   Codex CLI bootstrap, and a minimal hosted credential-store bundle. Run
   `25029923810` completed the Codex three-account matrix with
@@ -168,13 +171,13 @@ Evidence:
 - the tag release workflow should still attach public release artifacts before
   any real npm publication.
 
-### 4.1 Main CI Caveat
+### 4.1 Main CI Resolution
 
-Post-merge push CI run `25031725871` is green for `test`, `nix`,
-GloriousFlywheel cache-first validation, and five of six cross-compiles. The
-`x86_64-linux-musl` cross-compile job is still in `mlugg/setup-zig@v2`; the
-same target passed in final PR-head CI run `25031620446` and in the release
-proof artifact graph above.
+Post-merge push CI run `25032478278` passed `test`, `nix`, GloriousFlywheel
+cache-first validation, and all six cross-compiles from `main` after PR #7
+merged. The earlier superseded push run `25031725871` had one stale
+`x86_64-linux-musl` setup-zig job and was cancelled after the newer `main` run
+went green.
 
 ### 5. v0.1.0 Cut
 
