@@ -84,9 +84,10 @@ degradation or auth death.
 
 - CI-only npm publication
   `.github/workflows/npm-publish.yml` publishes only generated release
-  tarballs, with npm provenance, after `just release-proof-local <version>`.
-  Auth can come from Actions secrets, token files, or SOPS at runtime; token
-  material is never committed or printed.
+  tarballs after `just release-proof-local <version>`. npm provenance stays
+  enabled for public source repositories and can be explicitly disabled for a
+  private-source release. Auth can come from Actions secrets, token files, or
+  SOPS at runtime; token material is never committed or printed.
 
 - Codex canary and secret-scoped live QA
   `oauth-mux codex canary` captures no-spend config/discovery/status/health and

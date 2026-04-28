@@ -20,6 +20,16 @@ platform_tarballs=(
   "oauth-mux-win32-arm64-${version}.tgz"
 )
 root_tarball="oauth-mux-${version}.tgz"
+npm_provenance="${OMUX_NPM_PUBLISH_PROVENANCE:-1}"
+
+case "$npm_provenance" in
+  1|true|yes|on) npm_provenance="1" ;;
+  0|false|no|off) npm_provenance="0" ;;
+  *)
+    printf 'invalid OMUX_NPM_PUBLISH_PROVENANCE: %s\n' "$npm_provenance" >&2
+    exit 2
+    ;;
+esac
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -104,7 +114,10 @@ publish_one() {
     return
   fi
 
-  local args=(publish "$tarball" --provenance --access public)
+  local args=(publish "$tarball" --access public)
+  if [ "$npm_provenance" = "1" ]; then
+    args+=(--provenance)
+  fi
   if [ "${OMUX_NPM_PUBLISH_DRY_RUN:-0}" = "1" ]; then
     args+=(--dry-run)
   fi
@@ -165,7 +178,11 @@ else
   else
     append "- mode: publish"
   fi
-  append "- provenance: enabled"
+  if [ "$npm_provenance" = "1" ]; then
+    append "- provenance: enabled"
+  else
+    append "- provenance: disabled"
+  fi
   append
   append "## packages"
   append

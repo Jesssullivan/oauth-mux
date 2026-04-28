@@ -15,8 +15,8 @@ Target install surfaces:
 - raw release tarballs for air-gapped or policy-managed systems
 
 Each release artifact should be derived from the same CI release tree. npm is
-published only from CI tarballs with provenance; workstation `npm publish` is
-not supported.
+published only from CI tarballs; workstation `npm publish` is not supported.
+Use npm provenance when the GitHub source repository is public.
 
 ## First User Experience
 

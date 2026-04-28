@@ -210,6 +210,10 @@ Execution evidence:
 - Second npm publish run `25065841690` staged `0.1.1` successfully and reached
   npm with unscoped names, then failed before publication because npm requires
   `--access public` when generating provenance for a new public package.
+- Third npm publish run `25067064757` staged `0.1.1` successfully and reached
+  npm with `--access public`, then failed before publication because npm
+  provenance rejects private GitHub source repositories. Registry checks after
+  the failure still returned 404 for the checked `0.1.1` package names.
 
 ## Explicit Non-Goals
 

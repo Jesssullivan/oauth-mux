@@ -17,6 +17,11 @@ on:
         required: false
         default: true
         type: boolean
+      provenance:
+        description: "Attach npm provenance; requires a public GitHub source repository"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -84,6 +89,9 @@ jobs:
           set -euo pipefail
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             export OMUX_NPM_PUBLISH_DRY_RUN=1
+          fi
+          if [ "${{ inputs.provenance }}" != "true" ]; then
+            export OMUX_NPM_PUBLISH_PROVENANCE=0
           fi
           nix develop --command ./scripts/npm-ci-publish.sh "${{ inputs.version }}"
 
