@@ -1028,6 +1028,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .login_status_all => try runCodexLoginStatusAll(allocator, writer, args, root),
         .onboard => try runCodexOnboard(allocator, writer, args, root),
         .canary => try runCodexCanary(allocator, writer, args, root),
+        .probe_all => try runCodexProbeAll(allocator, writer, args),
     }
 }
 
@@ -1070,7 +1071,7 @@ fn runCodexOnboard(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
     try runDiscover(allocator, writer, .{ .json = false });
 
     if (args.live) {
-        try runCodexLiveProbes(allocator, writer, args);
+        try runCodexLiveProbes(allocator, writer, args, true);
     } else {
         try writer.writeAll("\nLive probes not run. Add --live only when real provider calls are intended.\n");
     }
@@ -1101,10 +1102,22 @@ fn runCodexCanary(allocator: std.mem.Allocator, writer: anytype, args: cli.Comma
 
     if (args.live) {
         try writer.writeAll("\n=== live probes ===\n");
-        try runCodexLiveProbes(allocator, writer, args);
+        try runCodexLiveProbes(allocator, writer, args, true);
     } else {
         try writer.writeAll("\nLive probes not run. Add --live only when real provider calls are intended.\n");
     }
+}
+
+fn runCodexProbeAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    if (!args.json) {
+        try writer.writeAll("oauth-mux Codex probe-all\n\n");
+        try writer.print("accounts:     {s}\n", .{args.accounts});
+        try writer.print("capabilities: {s}\n\n", .{args.capabilities});
+        try writer.writeAll("=== config validate ===\n");
+        try validateCurrentConfig(allocator, writer);
+        try writer.writeAll("\n=== live probes ===\n");
+    }
+    try runCodexLiveProbes(allocator, writer, args, !args.json);
 }
 
 fn validateCurrentConfig(allocator: std.mem.Allocator, writer: anytype) !void {
@@ -1128,7 +1141,7 @@ fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: c
     if (failures != 0) return error.CodexCommandFailed;
 }
 
-fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, emit_headers: bool) !void {
     var account_it = std.mem.splitScalar(u8, args.accounts, ',');
     while (account_it.next()) |raw_account| {
         const account = std.mem.trim(u8, raw_account, " \t\r\n");
@@ -1137,7 +1150,7 @@ fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.C
         while (capability_it.next()) |raw_capability| {
             const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
             if (capability.len == 0) continue;
-            try writer.print("\n--- codex:{s}#{s} ---\n", .{ account, capability });
+            if (emit_headers) try writer.print("\n--- codex:{s}#{s} ---\n", .{ account, capability });
             runProbe(allocator, writer, .{
                 .provider = "codex",
                 .account = account,

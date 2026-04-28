@@ -83,8 +83,15 @@ include bounded route probes:
 oauth-mux codex canary --live
 ```
 
+To probe one route class across every expected Codex account:
+
+```bash
+oauth-mux codex probe-all --capability codex-mini --json
+```
+
 Source checkouts keep `just codex-max-onboard` and `just codex-max-canary` as
-thin aliases for those installed commands.
+thin aliases for installed commands. `just codex-max-probe-all` is likewise a
+thin alias for `oauth-mux codex probe-all`.
 
 ## Agent Discovery Contract
 
@@ -100,6 +107,7 @@ Agents may run:
 
 ```bash
 oauth-mux probe --profile <profile> --capability <capability> --json
+oauth-mux codex probe-all --capability <capability> --json
 oauth-mux env --profile <profile> --capability <capability> --shell <shell>
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```

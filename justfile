@@ -71,12 +71,7 @@ codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
 
 codex-max-probe-all CAPABILITY="codex-mini": build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for account in max-1 max-2 max-3; do
-      echo "=== ${account} {{CAPABILITY}} ==="
-      OMUX_CONFIG="$PWD/{{codex_max_config}}" OMUX_STATE_DIR="{{codex_max_state}}" ./zig-out/bin/oauth-mux probe --provider codex --account "${account}" --capability "{{CAPABILITY}}" --json
-    done
+    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex probe-all --capability {{CAPABILITY}} --json
 
 # ── Cross-compilation ──
 
