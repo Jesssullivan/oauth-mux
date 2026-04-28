@@ -104,7 +104,7 @@ publish_one() {
     return
   fi
 
-  local args=(publish "$tarball" --provenance)
+  local args=(publish "$tarball" --provenance --access public)
   if [ "${OMUX_NPM_PUBLISH_DRY_RUN:-0}" = "1" ]; then
     args+=(--dry-run)
   fi

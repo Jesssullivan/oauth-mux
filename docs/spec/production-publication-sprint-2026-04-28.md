@@ -207,6 +207,9 @@ Execution evidence:
 - Patch proof: PR #9 CI run `25064315336` passed `test`, `nix`,
   GloriousFlywheel cache-first validation, and all six cross-compiles; registry
   dry-run `25064352699` passed `plan,npm` for all seven `0.1.1` npm tarballs.
+- Second npm publish run `25065841690` staged `0.1.1` successfully and reached
+  npm with unscoped names, then failed before publication because npm requires
+  `--access public` when generating provenance for a new public package.
 
 ## Explicit Non-Goals
 
