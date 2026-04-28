@@ -114,7 +114,8 @@ for lane in "${lanes[@]}"; do
       ;;
 
     homebrew)
-      require_command brew
+      brew_cmd="${OMUX_BREW_BIN:-brew}"
+      require_command "$brew_cmd"
       if [ -z "${OMUX_HOMEBREW_TAP_DIR:-}" ]; then
         printf 'homebrew lane requires OMUX_HOMEBREW_TAP_DIR\n' >&2
         exit 1
@@ -125,10 +126,10 @@ for lane in "${lanes[@]}"; do
       cp "$formula" "$tap_formula"
       git -C "$OMUX_HOMEBREW_TAP_DIR" diff --check -- Formula/oauth-mux.rb
       if [ -n "${OMUX_HOMEBREW_TAP_NAME:-}" ]; then
-        brew tap "$OMUX_HOMEBREW_TAP_NAME" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
-        brew audit --formula --strict --online --tap="$OMUX_HOMEBREW_TAP_NAME" oauth-mux >/dev/null
+        "$brew_cmd" tap "$OMUX_HOMEBREW_TAP_NAME" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
+        "$brew_cmd" audit --formula --strict --online --tap="$OMUX_HOMEBREW_TAP_NAME" oauth-mux >/dev/null
       else
-        brew audit --formula --strict --online "$tap_formula" >/dev/null
+        "$brew_cmd" audit --formula --strict --online "$tap_formula" >/dev/null
       fi
       append "## homebrew"
       append

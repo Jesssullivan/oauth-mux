@@ -95,6 +95,20 @@ jobs:
           set -euo pipefail
           echo "OMUX_HOMEBREW_TAP_DIR=$OMUX_HOMEBREW_TAP_DIR_VAR" >> "$GITHUB_ENV"
 
+      - name: Install Homebrew
+        if: contains(inputs.lanes, 'homebrew')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v brew >/dev/null 2>&1; then
+            brew_path="$(command -v brew)"
+          else
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            brew_path="/home/linuxbrew/.linuxbrew/bin/brew"
+          fi
+          echo "$(dirname "$brew_path")" >> "$GITHUB_PATH"
+          echo "OMUX_BREW_BIN=$brew_path" >> "$GITHUB_ENV"
+
       - name: Stage release proof
         run: nix develop --command just release-proof-local "${{ inputs.version }}"
 
@@ -109,6 +123,8 @@ jobs:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           OMUX_HOMEBREW_TAP_NAME: ${{ vars.OMUX_HOMEBREW_TAP_NAME || '' }}
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
         run: nix develop --command ./scripts/registry-dry-run.sh "${{ inputs.version }}"
 
       - uses: actions/upload-artifact@v4

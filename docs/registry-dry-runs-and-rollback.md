@@ -61,6 +61,8 @@ Required secret and variable surfaces:
   the workflow should check out the tap before the Homebrew lane.
 - `OMUX_HOMEBREW_TAP_NAME` when Homebrew requires auditing by tap/formula name
   instead of by formula path, for example `tinyland-inc/tools`.
+- `OMUX_BREW_BIN` when the Homebrew executable is not available as `brew`.
+  The GitHub workflow installs Homebrew on Ubuntu and sets this automatically.
 - The default workflow `GITHUB_TOKEN` for the GitHub lane.
 
 ## npm Publish
