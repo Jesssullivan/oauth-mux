@@ -87,8 +87,30 @@ tokens in the workflow file or repository.
 
 For command-probe providers such as Codex, the hosted runner also needs the
 provider CLI and account credential stores available at the paths named by the
-secret-scoped config. A config secret alone is not enough if it points at
-machine-local `CODEX_HOME` directories that only exist on a workstation.
+secret-scoped config. The workflow can install the Codex CLI from
+`@openai/codex` before probes. Pin the version with the `codex_cli_version`
+dispatch input.
+
+Hosted Codex credential stores are materialized from
+`OMUX_LIVE_QA_STORE_TGZ_B64`, a base64-encoded `tar.gz` whose paths are relative
+to `$HOME`. For the standard Codex Max config, include only the minimal files
+needed by each account store:
+
+```text
+.local/share/oauth-mux/codex/max-1/auth.json
+.local/share/oauth-mux/codex/max-1/config.toml        # when present
+.local/share/oauth-mux/codex/max-1/installation_id
+.local/share/oauth-mux/codex/max-2/auth.json
+.local/share/oauth-mux/codex/max-2/config.toml        # when present
+.local/share/oauth-mux/codex/max-2/installation_id
+.local/share/oauth-mux/codex/max-3/auth.json
+.local/share/oauth-mux/codex/max-3/config.toml        # when present
+.local/share/oauth-mux/codex/max-3/installation_id
+```
+
+Omit caches and logs such as `models_cache.json` and `log/`. The workflow
+rejects absolute paths and parent traversal entries before extraction, then
+tightens permissions under `$HOME/.local/share/oauth-mux`.
 
 ## Policy
 

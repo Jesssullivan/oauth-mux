@@ -21,9 +21,9 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
   dry-ran all seven npm tarballs.
 - GloriousFlywheel cache-first proof is currently runner-gated; the most recent
   real proof predates the newest `main` commit.
-- Hosted live-provider QA is blocked until a secret-scoped
-  `OMUX_LIVE_QA_CONFIG_B64`, provider CLI bootstrap, and hosted credential-store
-  materialization are available for the workflow.
+- Hosted live-provider QA has workflow support for secret-scoped config,
+  Codex CLI bootstrap, and a minimal hosted credential-store bundle. It still
+  needs a dispatched run with `confirm=spend-real-calls` before release.
 
 ## Sprint Objective
 
@@ -78,6 +78,13 @@ Acceptance:
   before the probe step;
 - dead credentials fail unless the run explicitly opts into negative testing;
 - quota exhaustion is evidence, not a false CI infrastructure failure.
+
+Credential materialization:
+
+- `OMUX_LIVE_QA_CONFIG_B64` carries the mux config;
+- `OMUX_LIVE_QA_STORE_TGZ_B64` carries a minimal `$HOME`-relative credential
+  bundle, excluding caches and logs;
+- the workflow rejects absolute paths and parent traversal before extraction.
 
 ### 3. Registry Dry-Runs
 

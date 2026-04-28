@@ -24,6 +24,26 @@ on:
         required: false
         default: "codex-mini"
         type: string
+      install_codex:
+        description: "Install the Codex CLI before command probes"
+        required: false
+        default: true
+        type: boolean
+      codex_cli_version:
+        description: "Codex CLI npm package version"
+        required: false
+        default: "0.125.0"
+        type: string
+      require_available:
+        description: "Fail if probed routes are typed but unavailable"
+        required: false
+        default: false
+        type: boolean
+      allow_dead:
+        description: "Allow dead credentials for negative fixtures"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -40,6 +60,21 @@ jobs:
         with:
           version: 0.14.1
 
+      - uses: actions/setup-node@v4
+        if: inputs.install_codex
+        with:
+          node-version: 24
+
+      - name: Install Codex CLI
+        if: inputs.install_codex
+        shell: bash
+        env:
+          CODEX_CLI_VERSION: ${{ inputs.codex_cli_version }}
+        run: |
+          set -euo pipefail
+          npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
+          codex --version
+
       - name: Decode secret-scoped config
         shell: bash
         env:
@@ -54,6 +89,29 @@ jobs:
           printf '%s' "$OMUX_LIVE_QA_CONFIG_B64" | base64 -d > "$RUNNER_TEMP/oauth-mux/config.json"
           echo "OMUX_CONFIG=$RUNNER_TEMP/oauth-mux/config.json" >> "$GITHUB_ENV"
 
+      - name: Decode secret-scoped credential stores
+        shell: bash
+        env:
+          OMUX_LIVE_QA_STORE_TGZ_B64: ${{ secrets.OMUX_LIVE_QA_STORE_TGZ_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OMUX_LIVE_QA_STORE_TGZ_B64:-}" ]; then
+            echo "OMUX_LIVE_QA_STORE_TGZ_B64 is unset; no hosted credential stores materialized"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/oauth-mux"
+          store_tgz="$RUNNER_TEMP/oauth-mux/store.tgz"
+          printf '%s' "$OMUX_LIVE_QA_STORE_TGZ_B64" | base64 -d > "$store_tgz"
+          tar -tzf "$store_tgz" | awk '
+            /^\/|(^|\/)\.\.($|\/)/ {
+              print "unsafe credential bundle path: " $0 > "/dev/stderr"
+              bad = 1
+            }
+            END { exit bad }
+          '
+          tar -xzf "$store_tgz" -C "$HOME"
+          chmod -R go-rwx "$HOME/.local/share/oauth-mux" 2>/dev/null || true
+
       - name: Build oauth-mux
         run: zig build
 
@@ -65,6 +123,8 @@ jobs:
           OMUX_LIVE_QA_PROVIDER: ${{ inputs.provider }}
           OMUX_LIVE_QA_ACCOUNTS: ${{ inputs.accounts }}
           OMUX_LIVE_QA_CAPABILITIES: ${{ inputs.capabilities }}
+          OMUX_LIVE_QA_REQUIRE_AVAILABLE: ${{ inputs.require_available && '1' || '0' }}
+          OMUX_LIVE_QA_ALLOW_DEAD: ${{ inputs.allow_dead && '1' || '0' }}
         run: ./scripts/live-provider-qa.sh
 
       - uses: actions/upload-artifact@v4
