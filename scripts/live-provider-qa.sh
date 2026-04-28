@@ -52,8 +52,22 @@ run_probe() {
   local safe_label
   safe_label="$(printf '%s' "$label" | tr '#:/ ' '____')"
   local output_file="$out_dir/${safe_label}.json"
+  local log_file="$out_dir/${safe_label}.log"
   printf '=== %s ===\n' "$label"
-  if "$bin" probe "$@" --json 2>&1 | redact | tee "$output_file"; then
+  set +e
+  "$bin" probe "$@" --json 2>&1 | redact | tee "$log_file"
+  local probe_status="${PIPESTATUS[0]}"
+  set -e
+
+  local json_line
+  json_line="$(grep -E '^\{' "$log_file" | tail -n 1 || true)"
+  if [ -n "$json_line" ]; then
+    printf '%s\n' "$json_line" >"$output_file"
+  else
+    : >"$output_file"
+  fi
+
+  if [ "$probe_status" -eq 0 ]; then
     return 0
   fi
   if grep -q '"liveness":' "$output_file" && ! grep -q '"liveness":null' "$output_file"; then

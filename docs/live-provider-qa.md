@@ -44,19 +44,18 @@ For the Codex Max three-account path, prefer the canary before any spending
 run:
 
 ```bash
-just codex-max-canary
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
 ```
 
-That command validates config, captures discovery/status/health, and checks
-`codex login status` for each account without running probes. Set
-`OMUX_CODEX_CANARY_CONFIRM=spend-real-calls` only when the canary should also
-invoke this live QA matrix.
+That command validates config, prints discovery/status evidence, and checks
+`codex login status` for each account without running probes. Add `--live` only
+when the canary should also invoke this live QA matrix.
 
 Artifacts are written under `dist/live-qa/<timestamp>/`:
 
 - `config-validate.txt`
 - `discover.json`
-- one JSON file per probe
+- one valid JSON file plus one redacted log file per probe
 - `health.json`
 
 By default, live QA passes when a probe returns a typed, redacted liveness
@@ -67,13 +66,23 @@ rather than a false infrastructure failure. Set
 route is immediately selectable. Dead credentials fail by default; set
 `OMUX_LIVE_QA_ALLOW_DEAD=1` only for negative test fixtures.
 
-Current Codex behavior observed on 2026-04-27:
+Operator-provided Codex state on 2026-04-28:
 
-- `max-1`, `max-2`, and `max-3` are all logged in and remain
-  `live/available` on `codex-mini`.
-- `max-1#codex-max`, `max-2#codex-max`, and `max-3#codex-max` currently return
-  `live/quota_exhausted` with distinct reset windows. The accounts are not
-  auth-dead; only the max route is exhausted.
+- `max-1#codex-max` and `max-2#codex-max` are expected to classify as
+  `live/quota_exhausted` until weekly limits refresh.
+- `max-3` is expected to remain active for API-backed usage.
+- These are not auth-dead accounts; the useful proof is preserving the
+  distinction between weekly quota exhaustion and usable fallback routes.
+
+Hosted evidence from run `25029923810`:
+
+- `codex-mini`: all three accounts returned `live/available` and
+  `decision=use_this`.
+- `codex-max`: `max-1` and `max-2` returned `live/quota_exhausted` and
+  `decision=try_next_account`; `max-3` returned `live/available` and
+  `decision=use_this`.
+- The uploaded artifact contains valid per-probe JSON files and separate
+  redacted probe logs.
 
 ## GitHub Workflow
 
@@ -85,6 +94,33 @@ For private configs, store a base64-encoded config in the repository secret
 `OMUX_CONFIG` for the job. Keep the config secret-scoped and prefer secret
 backends such as command, keychain, sops, age, or env references. Do not put raw
 tokens in the workflow file or repository.
+
+For command-probe providers such as Codex, the hosted runner also needs the
+provider CLI and account credential stores available at the paths named by the
+secret-scoped config. The workflow can install the Codex CLI from
+`@openai/codex` before probes. Pin the version with the `codex_cli_version`
+dispatch input.
+
+Hosted Codex credential stores are materialized from
+`OMUX_LIVE_QA_STORE_TGZ_B64`, a base64-encoded `tar.gz` whose paths are relative
+to `$HOME`. For the standard Codex Max config, include only the minimal files
+needed by each account store:
+
+```text
+.local/share/oauth-mux/codex/max-1/auth.json
+.local/share/oauth-mux/codex/max-1/config.toml        # when present
+.local/share/oauth-mux/codex/max-1/installation_id
+.local/share/oauth-mux/codex/max-2/auth.json
+.local/share/oauth-mux/codex/max-2/config.toml        # when present
+.local/share/oauth-mux/codex/max-2/installation_id
+.local/share/oauth-mux/codex/max-3/auth.json
+.local/share/oauth-mux/codex/max-3/config.toml        # when present
+.local/share/oauth-mux/codex/max-3/installation_id
+```
+
+Omit caches and logs such as `models_cache.json` and `log/`. The workflow
+rejects absolute paths and parent traversal entries before extraction, then
+tightens permissions under `$HOME/.local/share/oauth-mux`.
 
 ## Policy
 

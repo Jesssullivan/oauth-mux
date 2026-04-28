@@ -39,6 +39,7 @@ Until then, user and agent onboarding should use one-shot commands:
 
 ```bash
 oauth-mux discover --json
+oauth-mux codex canary
 oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```

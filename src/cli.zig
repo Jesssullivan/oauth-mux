@@ -13,6 +13,7 @@ pub const Command = union(enum) {
     config_validate,
     config_path,
     init: InitArgs,
+    codex: CodexArgs,
     completions: CompletionsArgs,
     daemon_start,
     daemon_stop,
@@ -63,6 +64,28 @@ pub const Command = union(enum) {
         codex_max: bool = false,
     };
 
+    pub const CodexAction = enum {
+        bootstrap_dirs,
+        login,
+        login_device,
+        login_status,
+        login_status_all,
+        onboard,
+        canary,
+    };
+
+    pub const CodexArgs = struct {
+        action: CodexAction = .canary,
+        account: ?[]const u8 = null,
+        accounts: []const u8 = "max-1,max-2,max-3",
+        capabilities: []const u8 = "codex-mini,codex-max",
+        store_root: ?[]const u8 = null,
+        device: bool = false,
+        status_only: bool = false,
+        live: bool = false,
+        json: bool = false,
+    };
+
     pub const CompletionsArgs = struct {
         shell: []const u8 = "fish",
     };
@@ -82,6 +105,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "discover")) return parseDiscover(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
+    if (eql(cmd, "codex")) return parseCodex(rest);
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
     if (eql(cmd, "daemon")) {
         if (rest.len > 0) {
@@ -220,6 +244,64 @@ fn parseInit(args: []const []const u8) Command {
     return .{ .init = result };
 }
 
+fn parseCodex(args: []const []const u8) Command {
+    var result = Command.CodexArgs{};
+    var option_start: usize = 0;
+
+    if (args.len > 0 and !std.mem.startsWith(u8, args[0], "-")) {
+        option_start = 1;
+        if (eql(args[0], "bootstrap-dirs")) {
+            result.action = .bootstrap_dirs;
+        } else if (eql(args[0], "login")) {
+            result.action = .login;
+        } else if (eql(args[0], "login-device")) {
+            result.action = .login_device;
+            result.device = true;
+        } else if (eql(args[0], "login-status")) {
+            result.action = .login_status;
+        } else if (eql(args[0], "login-status-all")) {
+            result.action = .login_status_all;
+        } else if (eql(args[0], "onboard")) {
+            result.action = .onboard;
+        } else if (eql(args[0], "canary")) {
+            result.action = .canary;
+        } else {
+            result.action = .canary;
+            option_start = 0;
+        }
+    }
+
+    var i = option_start;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--accounts")) {
+            i += 1;
+            if (i < args.len) result.accounts = args[i];
+        } else if (eql(args[i], "--capabilities")) {
+            i += 1;
+            if (i < args.len) result.capabilities = args[i];
+        } else if (eql(args[i], "--store-root")) {
+            i += 1;
+            if (i < args.len) result.store_root = args[i];
+        } else if (eql(args[i], "--device")) {
+            result.device = true;
+        } else if (eql(args[i], "--status-only")) {
+            result.status_only = true;
+        } else if (eql(args[i], "--live")) {
+            result.live = true;
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (result.account == null and !std.mem.startsWith(u8, args[i], "-")) {
+            result.account = args[i];
+        }
+    }
+
+    if (result.action == .login_device) result.device = true;
+    return .{ .codex = result };
+}
+
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -258,6 +340,15 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
+        \\
+        \\  codex onboard [--accounts a,b,c] [--device|--status-only] [--live]
+        \\      Bootstrap isolated Codex account stores and login flow.
+        \\
+        \\  codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
+        \\      Run a no-spend Codex Max readiness check; --live runs probes.
+        \\
+        \\  codex login <account> | login-device <account> | login-status [account] | login-status-all
+        \\      Codex account login/status helpers using isolated CODEX_HOME dirs.
         \\
         \\  completions <shell> Generate shell completions (fish|zsh|bash).
         \\
@@ -337,6 +428,33 @@ test "parse init codex max" {
     }
 }
 
+test "parse codex canary" {
+    const args = [_][]const u8{ "codex", "canary", "--accounts", "max-1,max-2", "--capabilities", "codex-mini", "--live" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .canary);
+            try std.testing.expectEqualStrings("max-1,max-2", codex.accounts);
+            try std.testing.expectEqualStrings("codex-mini", codex.capabilities);
+            try std.testing.expect(codex.live);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex login account" {
+    const args = [_][]const u8{ "codex", "login-device", "max-2" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .login_device);
+            try std.testing.expectEqualStrings("max-2", codex.account.?);
+            try std.testing.expect(codex.device);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse health json provider" {
     const args = [_][]const u8{ "health", "--json", "--provider", "codex" };
     const cmd = parse(&args);
@@ -370,6 +488,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a codex -d 'Codex account onboarding'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l profile -s p -d 'Profile name' -r
@@ -382,6 +501,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'onboard canary bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\
         );
     } else if (eql(shell_name, "zsh")) {
@@ -398,6 +518,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'discover:Show agent-safe inventory'
             \\    'config:Config operations'
             \\    'init:Generate config'
+            \\    'codex:Codex account onboarding'
             \\    'version:Print version'
             \\    'completions:Generate completions'
             \\  )
@@ -410,7 +531,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe status health discover config init version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe status health discover config init codex version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

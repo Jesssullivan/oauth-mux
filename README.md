@@ -61,7 +61,7 @@ Probe a configured account:
 Run the no-spend Codex Max canary:
 
 ```bash
-just codex-max-canary
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
 ```
 
 Run the deterministic no-secret E2E harness:
@@ -116,3 +116,5 @@ rollback.
 See `docs/daemon-boundary.md` for the current daemon decision.
 See `docs/spec/development-timeline-2026-04-27.md` for the current
 production-readiness timeline.
+See `docs/spec/production-publication-sprint-2026-04-28.md` for the current
+v0.1.0 sprint gates.

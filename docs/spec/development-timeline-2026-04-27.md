@@ -1,6 +1,6 @@
 # oauth-mux Development Timeline
 
-Updated: 2026-04-27
+Updated: 2026-04-28
 
 Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 
@@ -16,11 +16,11 @@ operational hardening: live-provider QA execution with real secrets,
 authenticated package publication dry-runs, rollback rehearsal, and
 post-merge GloriousFlywheel release-proof execution before public tags.
 
-Live Codex QA on 2026-04-27 confirmed the expected subscription permutation:
-all three accounts remain authenticated and selectable on `codex-mini`, while
-all three currently report route-scoped `live/quota_exhausted` on `codex-max`
-with distinct reset windows. That is now represented as route availability, not
-generic degradation or auth death.
+The current Codex operator state is the expected subscription permutation:
+two Codex Max routes are waiting on weekly-limit refresh and should classify as
+route-scoped `live/quota_exhausted`, while a third account remains active for
+API-backed usage. That is represented as route availability, not generic
+degradation or auth death.
 
 ## Completed Arc
 
@@ -52,10 +52,11 @@ generic degradation or auth death.
    and `exec` injection without live credentials or network calls.
 
 7. Onboarding and discovery surface.
-   `oauth-mux discover --json`, `docs/onboarding.md`, `just codex-max-onboard`,
-   `just codex-max-canary`, manual live-provider QA, registry dry-run,
-   rollback, and daemon-boundary runbooks now define the operator and agent
-   path.
+   `oauth-mux discover --json`, `oauth-mux codex onboard`,
+   `oauth-mux codex canary`, `docs/onboarding.md`, manual live-provider QA,
+   registry dry-run, rollback, and daemon-boundary runbooks now define the
+   operator and agent path. Source-checkout `just codex-max-*` recipes are thin
+   aliases over the installed CLI surface.
 
 ## Current Gates
 
@@ -88,16 +89,15 @@ generic degradation or auth death.
   material is never committed or printed.
 
 - Codex canary and secret-scoped live QA
-  `just codex-max-canary` captures no-spend config/discovery/status/health and
-  per-account `codex login status` artifacts, then delegates to live QA only
-  when explicitly confirmed.
+  `oauth-mux codex canary` captures no-spend config/discovery/status/health and
+  per-account `codex login status` evidence, then delegates to live probes only
+  when `--live` is explicitly supplied.
 
 - Secret-scoped Codex live QA
-  Local account-matrix QA classified `max-1#codex-max` and
-  `max-2#codex-max`, and `max-3#codex-max` as `live/quota_exhausted` with
-  reset evidence, while `codex-mini` remains `live/available` for all three
-  accounts. The QA script now treats typed quota/rate/degraded outcomes as
-  valid evidence unless
+  The target hosted run should classify `max-1#codex-max` and
+  `max-2#codex-max` as `live/quota_exhausted` with reset evidence, while
+  keeping the third account available for fallback/API-backed usage. The QA
+  script treats typed quota/rate/degraded outcomes as valid evidence unless
   `OMUX_LIVE_QA_REQUIRE_AVAILABLE=1` is set.
 
 ## Production Readiness
@@ -116,7 +116,6 @@ Not ready yet:
 - public Homebrew/deb/rpm publication;
 - required self-hosted release gate;
 - background daemon token refresh as an operational dependency;
-- documented rollback for each registry lane;
 - formal security review of secret backends and generated config dirs.
 
 ## Next Arc

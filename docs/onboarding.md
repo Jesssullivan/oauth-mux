@@ -43,45 +43,48 @@ Codex Max three-account starter:
 
 ```bash
 oauth-mux init --codex-max
-just codex-max-onboard
-just codex-max-canary
+oauth-mux codex onboard
+oauth-mux codex canary
 ```
 
-`just codex-max-onboard` creates the expected isolated `CODEX_HOME` directories,
+`oauth-mux codex onboard` creates the expected isolated `CODEX_HOME` directories,
 runs `codex login` for accounts that are not logged in, prints login status, and
 then prints `oauth-mux discover`. It does not run live route probes unless the
-operator explicitly sets:
+operator explicitly opts in:
 
 ```bash
-OMUX_LIVE_QA_CONFIRM=spend-real-calls just codex-max-onboard
+oauth-mux codex onboard --live
 ```
 
 For device-code login instead of browser login:
 
 ```bash
-OMUX_CODEX_LOGIN_MODE=device just codex-max-onboard
+oauth-mux codex onboard --device
 ```
 
 For status-only inspection:
 
 ```bash
-OMUX_CODEX_LOGIN_MODE=status-only just codex-max-onboard
+oauth-mux codex onboard --status-only
 ```
 
 For a no-spend canary after onboarding:
 
 ```bash
-just codex-max-canary
+oauth-mux codex canary
 ```
 
-The canary validates config, writes redacted `discover`, `status`, and `health`
-JSON artifacts, checks `codex login status` for each expected account, and
-summarizes whether route health has already been recorded. It does not run live
-probes by default. To include bounded route probes:
+The canary validates config, prints redacted discovery, checks
+`codex login status` for each expected account, and summarizes whether route
+health has already been recorded. It does not run live probes by default. To
+include bounded route probes:
 
 ```bash
-OMUX_CODEX_CANARY_CONFIRM=spend-real-calls just codex-max-canary
+oauth-mux codex canary --live
 ```
+
+Source checkouts keep `just codex-max-onboard` and `just codex-max-canary` as
+thin aliases for those installed commands.
 
 ## Agent Discovery Contract
 

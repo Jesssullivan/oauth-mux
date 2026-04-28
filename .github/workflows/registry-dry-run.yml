@@ -29,6 +29,8 @@ jobs:
     env:
       OMUX_GLOBAL_SOPS_B64_PRESENT: ${{ secrets.OMUX_GLOBAL_SOPS_B64 != '' }}
       OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT: ${{ vars.OMUX_GLOBAL_SOPS_REPOSITORY != '' }}
+      OMUX_HOMEBREW_TAP_REPOSITORY_PRESENT: ${{ vars.OMUX_HOMEBREW_TAP_REPOSITORY != '' }}
+      OMUX_HOMEBREW_TAP_DIR_PRESENT: ${{ vars.OMUX_HOMEBREW_TAP_DIR != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +69,46 @@ jobs:
           set -euo pipefail
           echo "OMUX_NPM_TOKEN_SOPS_FILE=$PWD/.global-sops/$OMUX_GLOBAL_SOPS_FILE" >> "$GITHUB_ENV"
 
+      - name: Checkout Homebrew tap
+        if: contains(inputs.lanes, 'homebrew') && env.OMUX_HOMEBREW_TAP_REPOSITORY_PRESENT == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.OMUX_HOMEBREW_TAP_REPOSITORY }}
+          ref: ${{ vars.OMUX_HOMEBREW_TAP_REF || 'main' }}
+          path: .homebrew-tap
+          token: ${{ secrets.GF_ACTIONS_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Configure Homebrew tap checkout
+        if: contains(inputs.lanes, 'homebrew') && env.OMUX_HOMEBREW_TAP_REPOSITORY_PRESENT == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "OMUX_HOMEBREW_TAP_DIR=$PWD/.homebrew-tap" >> "$GITHUB_ENV"
+
+      - name: Configure existing Homebrew tap path
+        if: contains(inputs.lanes, 'homebrew') && env.OMUX_HOMEBREW_TAP_REPOSITORY_PRESENT != 'true' && env.OMUX_HOMEBREW_TAP_DIR_PRESENT == 'true'
+        shell: bash
+        env:
+          OMUX_HOMEBREW_TAP_DIR_VAR: ${{ vars.OMUX_HOMEBREW_TAP_DIR }}
+        run: |
+          set -euo pipefail
+          echo "OMUX_HOMEBREW_TAP_DIR=$OMUX_HOMEBREW_TAP_DIR_VAR" >> "$GITHUB_ENV"
+
+      - name: Install Homebrew
+        if: contains(inputs.lanes, 'homebrew')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v brew >/dev/null 2>&1; then
+            brew_path="$(command -v brew)"
+          else
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            brew_path="/home/linuxbrew/.linuxbrew/bin/brew"
+          fi
+          echo "$(dirname "$brew_path")" >> "$GITHUB_PATH"
+          echo "OMUX_BREW_BIN=$brew_path" >> "$GITHUB_ENV"
+
       - name: Stage release proof
         run: nix develop --command just release-proof-local "${{ inputs.version }}"
 
@@ -80,7 +122,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || '' }}
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY || '' }}
           GITHUB_TOKEN: ${{ github.token }}
-          OMUX_HOMEBREW_TAP_DIR: ${{ vars.OMUX_HOMEBREW_TAP_DIR || '' }}
+          OMUX_HOMEBREW_TAP_NAME: ${{ vars.OMUX_HOMEBREW_TAP_NAME || '' }}
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
         run: nix develop --command ./scripts/registry-dry-run.sh "${{ inputs.version }}"
 
       - uses: actions/upload-artifact@v4

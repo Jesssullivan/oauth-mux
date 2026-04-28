@@ -114,7 +114,8 @@ for lane in "${lanes[@]}"; do
       ;;
 
     homebrew)
-      require_command brew
+      brew_cmd="${OMUX_BREW_BIN:-brew}"
+      require_command "$brew_cmd"
       if [ -z "${OMUX_HOMEBREW_TAP_DIR:-}" ]; then
         printf 'homebrew lane requires OMUX_HOMEBREW_TAP_DIR\n' >&2
         exit 1
@@ -124,12 +125,34 @@ for lane in "${lanes[@]}"; do
       mkdir -p "$(dirname "$tap_formula")"
       cp "$formula" "$tap_formula"
       git -C "$OMUX_HOMEBREW_TAP_DIR" diff --check -- Formula/oauth-mux.rb
-      brew audit --formula --strict --online "$tap_formula" >/dev/null
+      audit_log="$(mktemp)"
+      tmp_files+=("$audit_log")
+      audit_args=(audit --formula --strict)
+      audit_label="brew audit --strict"
+      if [ "${OMUX_HOMEBREW_AUDIT_ONLINE:-0}" = "1" ]; then
+        audit_args+=(--online)
+        audit_label="brew audit --strict --online"
+      fi
+      if [ -n "${OMUX_HOMEBREW_TAP_NAME:-}" ]; then
+        "$brew_cmd" tap "$OMUX_HOMEBREW_TAP_NAME" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
+        tapped_repo="$("$brew_cmd" --repository "$OMUX_HOMEBREW_TAP_NAME")"
+        mkdir -p "$tapped_repo/Formula"
+        cp "$formula" "$tapped_repo/Formula/oauth-mux.rb"
+        if ! "$brew_cmd" "${audit_args[@]}" oauth-mux >"$audit_log" 2>&1; then
+          cat "$audit_log" >&2
+          exit 1
+        fi
+      else
+        if ! "$brew_cmd" "${audit_args[@]}" "$tap_formula" >"$audit_log" 2>&1; then
+          cat "$audit_log" >&2
+          exit 1
+        fi
+      fi
       append "## homebrew"
       append
       append "- formula copied to tap checkout"
       append "- git diff --check OK"
-      append "- brew audit OK"
+      append "- ${audit_label} OK"
       append
       ;;
 

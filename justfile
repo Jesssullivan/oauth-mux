@@ -43,40 +43,29 @@ probe *ARGS: build
 codex_max_config := "examples/codex-max.config.json"
 codex_max_state := "/tmp/oauth-mux-codex-max-health"
 
-codex-max-bootstrap-dirs:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for account in max-1 max-2 max-3; do
-      dir="$HOME/.local/share/oauth-mux/codex/${account}"
-      mkdir -p "$dir"
-      echo "$dir"
-    done
+codex-max-bootstrap-dirs: build
+    ./zig-out/bin/oauth-mux codex bootstrap-dirs
 
 codex-max-validate: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux config validate
 
-codex-max-login ACCOUNT: codex-max-bootstrap-dirs
-    CODEX_HOME=$HOME/.local/share/oauth-mux/codex/{{ACCOUNT}} codex login
+codex-max-login ACCOUNT: build
+    ./zig-out/bin/oauth-mux codex login {{ACCOUNT}}
 
-codex-max-login-device ACCOUNT: codex-max-bootstrap-dirs
-    CODEX_HOME=$HOME/.local/share/oauth-mux/codex/{{ACCOUNT}} codex login --device-auth
+codex-max-login-device ACCOUNT: build
+    ./zig-out/bin/oauth-mux codex login-device {{ACCOUNT}}
 
-codex-max-login-status ACCOUNT:
-    CODEX_HOME=$HOME/.local/share/oauth-mux/codex/{{ACCOUNT}} codex login status
+codex-max-login-status ACCOUNT: build
+    ./zig-out/bin/oauth-mux codex login-status {{ACCOUNT}}
 
-codex-max-login-status-all:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for account in max-1 max-2 max-3; do
-      echo "=== ${account} ==="
-      CODEX_HOME="$HOME/.local/share/oauth-mux/codex/${account}" codex login status || true
-    done
+codex-max-login-status-all: build
+    ./zig-out/bin/oauth-mux codex login-status-all
 
 codex-max-onboard: build
-    ./scripts/onboard-codex-max.sh
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex onboard
 
 codex-max-canary: build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./scripts/codex-max-canary.sh
+    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex canary
 
 codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json

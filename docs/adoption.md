@@ -9,7 +9,7 @@ they must not become requirements for ordinary users.
 Target install surfaces:
 
 - npm: `npm install -g oauth-mux`
-- Homebrew: `brew install tinyland-inc/tap/oauth-mux`
+- Homebrew: `brew install tinyland-inc/tools/oauth-mux`
 - curl installer: `curl -fsSL ... | sh`
 - deb/rpm packages for Linux hosts
 - raw release tarballs for air-gapped or policy-managed systems
@@ -32,19 +32,19 @@ For Codex subscription users working from a source checkout today:
 
 ```bash
 oauth-mux init --codex-max
-just codex-max-onboard
-just codex-max-canary
+oauth-mux codex onboard
+oauth-mux codex canary
 ```
 
-Before broad npm-facing documentation, the repo-local `just` helpers should be
-promoted into installed `oauth-mux codex ...` commands or packaged helper
-scripts. Public users should not need a source checkout for routine account
-onboarding.
+Those commands are installed CLI surface, not source-checkout-only helpers.
+Users can override the default three-account shape with
+`--accounts work,personal,team` and can point account stores somewhere explicit
+with `--store-root <path>`.
 
 Live probes remain explicit because they can spend subscription calls:
 
 ```bash
-OMUX_LIVE_QA_CONFIRM=spend-real-calls just live-qa
+oauth-mux codex canary --live
 ```
 
 ## Provider Author Experience
