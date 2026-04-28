@@ -82,9 +82,10 @@ then publishes the generated tarballs in this order:
 6. `oauth-mux-win32-arm64`
 7. `oauth-mux`
 
-The workflow requests `id-token: write` so `npm publish --provenance` can attach
-GitHub Actions provenance. Keep `dry_run=true` for the first authenticated
-execution. Set `dry_run=false` only for the actual release publication.
+The workflow requests `id-token: write` so
+`npm publish --provenance --access public` can attach GitHub Actions
+provenance. Keep `dry_run=true` for the first authenticated execution. Set
+`dry_run=false` only for the actual release publication.
 
 The publish script is idempotent by default: if `package@version` already exists
 on npm, it records a skip instead of overwriting or republishing.

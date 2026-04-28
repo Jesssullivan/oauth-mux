@@ -160,9 +160,9 @@ Publish platform packages first, then the root shim:
 EOF
 
 for tarball in "${npm_platform_tarballs[@]}"; do
-  printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance\n' "$version" "$tarball" >>"$handoff_file"
+  printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance --access public\n' "$version" "$tarball" >>"$handoff_file"
 done
-printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance\n' "$version" "$npm_root_tarball" >>"$handoff_file"
+printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance --access public\n' "$version" "$npm_root_tarball" >>"$handoff_file"
 
 cat >>"$handoff_file" <<EOF
 \`\`\`
