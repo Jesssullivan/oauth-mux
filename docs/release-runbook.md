@@ -174,6 +174,9 @@ Current release evidence:
   `plan,github,npm,homebrew,system` from `main` without publishing.
 - NPM publish workflow run `25032112186` completed from `main` with
   `dry_run=true`; no npm package was published.
+- Main CI run `25032478278` completed `test`, `nix`, all six cross-compiles,
+  and real GloriousFlywheel cache-first validation after the evidence docs
+  merged.
 
 ## Before Marking A PR Ready
 
