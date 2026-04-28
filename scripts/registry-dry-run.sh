@@ -100,8 +100,22 @@ for lane in "${lanes[@]}"; do
       NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
       for tarball in "$out_dir"/npm-tarballs/*.tgz; do
         name="$(basename "$tarball")"
-        NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >/dev/null
-        append "- dry-run OK: \`npm-tarballs/${name}\`"
+        publish_log="$(mktemp)"
+        tmp_files+=("$publish_log")
+        if NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >"$publish_log" 2>&1; then
+          append "- dry-run OK: \`npm-tarballs/${name}\`"
+          continue
+        fi
+
+        package_name="${name%-${version}.tgz}"
+        if grep -qi 'previously published versions' "$publish_log" &&
+          NPM_CONFIG_USERCONFIG="$npmrc" npm view "${package_name}@${version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+          append "- already published OK: \`${package_name}@${version}\`"
+          continue
+        fi
+
+        cat "$publish_log" >&2
+        exit 1
       done
       append
       ;;

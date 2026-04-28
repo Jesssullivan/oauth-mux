@@ -8,6 +8,34 @@ state.
 
 Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 
+## v0.1.2 Publication Status
+
+`v0.1.2` is the first usable public npm release. The earlier `v0.1.1` npm
+attempt published partial platform artifacts but never published the root
+`oauth-mux` shim.
+
+Evidence:
+
+- PR #12 merged as `2f853b6`, renaming Windows npm packages to
+  `oauth-mux-windows-x64` and `oauth-mux-windows-arm64` while preserving npm
+  `os: ["win32"]` metadata.
+- Main CI run `25069588597` passed test, nix, all six cross-compiles, and
+  GloriousFlywheel cache-first validation.
+- GitHub Release `v0.1.2` published successfully on run `25069814477`.
+- CI-only npm publish run `25070103079` published all seven packages with
+  provenance disabled because the source repository is private.
+- Public npm install smoke passed from a fresh temp project:
+  `npm install oauth-mux@0.1.2` followed by `oauth-mux --version` returned
+  `oauth-mux 0.1.2`.
+- Hosted live-provider QA run `25070624314` passed from `main` with
+  secret-scoped Codex stores. `codex-mini` was available for all three
+  accounts. `codex-max` was available for `max-1` and `max-2`; `max-3`
+  returned `live/quota_exhausted` with reset `2026-04-29T18:30:30Z`.
+- Post-publication registry dry-run `25070517243` exposed an idempotence gap:
+  npm rejects `npm publish --dry-run` for an already-published version. The
+  dry-run lane now treats that as OK only when `npm view package@version`
+  confirms the exact published artifact.
+
 ## Current Baseline
 
 - `origin/main` contains the merged core mux, typed liveness, Codex three-account
