@@ -24,6 +24,9 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 - GloriousFlywheel cache-first proof is fresh on PR #6: run `25031401075`
   checked out `tinyland-inc/GloriousFlywheel` on `tinyland-nix`, ran
   cache-first validation, and completed successfully.
+- Post-merge release gates on `main` are green: GloriousFlywheel release proof
+  `25032112196`, registry dry-run `25032112178`, and npm publish dry-run
+  `25032112186`.
 - Hosted live-provider QA has workflow support for secret-scoped config,
   Codex CLI bootstrap, and a minimal hosted credential-store bundle. Run
   `25029923810` completed the Codex three-account matrix with
@@ -129,12 +132,21 @@ Evidence:
   with `plan,github,npm,homebrew,system`; artifact evidence records GitHub auth
   OK, no existing `v0.1.0` release, all seven npm tarballs dry-run OK,
   Homebrew formula copy plus strict audit OK, and deb/rpm metadata OK.
+- post-merge hosted registry dry-run `25032112178` completed successfully on
+  `main` with `plan,github,npm,homebrew,system`; artifact evidence again
+  records GitHub auth OK, no existing `v0.1.0` release, all seven npm tarballs
+  dry-run OK, Homebrew tap copy plus strict audit OK, and deb/rpm metadata OK.
+- post-merge npm publish workflow dry-run `25032112186` completed successfully
+  on `main`; artifact `npm-publish-0.1.0` records authenticated npm identity,
+  `mode: dry-run`, provenance enabled, and dry-run OK for all six platform
+  packages plus `oauth-mux@0.1.0`.
 
 ### 4. GloriousFlywheel Release Proof
 
 The `tinyland-nix` runner is healthy again for PR validation. Keep the stricter
 release-proof distinction: PR #6 has fresh cache-first `check-local` evidence,
-while the tag/release proof still belongs to the release workflow.
+and the post-merge manual release-proof workflow has now proved the release
+artifact graph from `main`.
 
 Acceptance:
 
@@ -148,13 +160,25 @@ Evidence:
 - PR #6 CI run `25031401075` checked out the private GloriousFlywheel action on
   `tinyland-nix`, ran cache-first validation, completed `just check-local`, and
   reported `all checks passed`.
-- The current GF PR proof is a check/local validation proof, not a tag-release
-  publication proof. The tag workflow should still attach release artifacts
-  before any public `v0.1.0` publish.
+- manual release-proof run `25032112196` checked out the private
+  GloriousFlywheel action from `main`, ran cache-first
+  `nix develop --command just release-proof-local 0.1.0`, packed npm tarballs,
+  built deb/rpm packages, smoke-tested checksums, archives, Homebrew, npm, and
+  the curl installer, and wrote the release handoff.
+- the tag release workflow should still attach public release artifacts before
+  any real npm publication.
+
+### 4.1 Main CI Caveat
+
+Post-merge push CI run `25031725871` is green for `test`, `nix`,
+GloriousFlywheel cache-first validation, and five of six cross-compiles. The
+`x86_64-linux-musl` cross-compile job is still in `mlugg/setup-zig@v2`; the
+same target passed in final PR-head CI run `25031620446` and in the release
+proof artifact graph above.
 
 ### 5. v0.1.0 Cut
 
-Only after the gates above:
+Only after the gates above and explicit operator confirmation:
 
 1. tag `v0.1.0`;
 2. let release workflow attach artifacts;

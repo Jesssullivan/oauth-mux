@@ -163,9 +163,17 @@ During known lab or runner outages, do not block release staging on a queued
 Only claim GloriousFlywheel cache-first CI proof when the GF job actually runs
 the private action and completes.
 
-Current PR evidence: run `25009779392`, job `73266579091`, completed the real
-private-action cache-first lane and ran `nix develop --command just check-local`
-on `tinyland-nix`. Cache push was intentionally disabled for the PR event.
+Current release evidence:
+
+- PR-head CI run `25031620446` completed `test`, `nix`, all six
+  cross-compiles, and real GloriousFlywheel cache-first validation.
+- Manual release-proof run `25032112196` completed the real private-action
+  cache-first lane from `main` and ran
+  `nix develop --command just release-proof-local 0.1.0` on `tinyland-nix`.
+- Registry dry-run run `25032112178` completed
+  `plan,github,npm,homebrew,system` from `main` without publishing.
+- NPM publish workflow run `25032112186` completed from `main` with
+  `dry_run=true`; no npm package was published.
 
 ## Before Marking A PR Ready
 
