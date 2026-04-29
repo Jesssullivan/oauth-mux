@@ -1866,10 +1866,7 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
     } else |_| {}
 
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        try std.fs.cwd().makePath(dir);
     }
 
     const generic_starter_config =
