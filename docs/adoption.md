@@ -75,3 +75,14 @@ External users may use any secret backend that fits their environment:
 
 No adoption flow should require the lab repo, Tinyland SOPS keys,
 GloriousFlywheel, or Codex Max accounts.
+
+## Product Adoption Sprint
+
+The current adoption plan is tracked in
+`docs/spec/product-adoption-sprint-2026-04-28.md`. It covers:
+
+- website structure and public positioning;
+- `v0.1.3` onboarding/doctor/report scope;
+- launch sequencing and outreach;
+- provider-author feedback loops;
+- follow-up Linear split from `TIN-491`.

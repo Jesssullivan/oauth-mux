@@ -6,20 +6,19 @@ Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 
 ## Current Stage
 
-`oauth-mux` is in internal alpha: the core mux, typed liveness model, provider
-schema, Codex Max operator flow, release staging, and no-secret E2E proof are
-implemented. It is ready for controlled operator use and PR review, but not yet
-for public unattended production use.
+`oauth-mux` is now published as a controlled public tool for the first concrete
+use case. `v0.1.2` is the first usable public npm release, the Codex
+three-account path is live-proven through hosted secret-scoped QA, and the full
+registry dry-run path has passed for the current release.
 
-The remaining production gap is no longer the core selection model. The gap is
-operational hardening: live-provider QA execution with real secrets,
-authenticated package publication dry-runs, rollback rehearsal, and
-post-merge GloriousFlywheel release-proof execution before public tags.
+The remaining product gap is no longer core selection or publication mechanics.
+The gap is adoption: first-run clarity, website narrative, provider-author
+contribution paths, community feedback, and precise provider-support language.
 
-The current Codex operator state is the expected subscription permutation:
-two Codex Max routes are waiting on weekly-limit refresh and should classify as
-route-scoped `live/quota_exhausted`, while a third account remains active for
-API-backed usage. That is represented as route availability, not generic
+The current Codex operator state is that all three configured Codex accounts are
+active and classify as `live.available` for both `codex-mini` and `codex-max`.
+Earlier quota-exhaustion permutations remain valuable fixture and QA scenarios:
+they should continue to classify as route-scoped availability, not generic
 degradation or auth death.
 
 ## Completed Arc
@@ -58,6 +57,16 @@ degradation or auth death.
    operator and agent path. Source-checkout `just codex-max-*` recipes are thin
    aliases over the installed CLI surface.
 
+8. Public package and registry proof.
+   `v0.1.2` is published on npm, the orphaned partial `0.1.1` platform packages
+   are deprecated through CI, and registry dry-run lanes now treat
+   already-published package versions as valid only after registry
+   confirmation.
+
+9. Current adoption planning.
+   `docs/spec/product-adoption-sprint-2026-04-28.md` defines the website,
+   launch, outreach, and `v0.1.3` onboarding arc.
+
 ## Current Gates
 
 - `just check`
@@ -95,43 +104,46 @@ degradation or auth death.
   when `--live` is explicitly supplied.
 
 - Secret-scoped Codex live QA
-  The target hosted run should classify `max-1#codex-max` and
-  `max-2#codex-max` as `live/quota_exhausted` with reset evidence, while
-  keeping the third account available for fallback/API-backed usage. The QA
-  script treats typed quota/rate/degraded outcomes as valid evidence unless
-  `OMUX_LIVE_QA_REQUIRE_AVAILABLE=1` is set.
+  The latest hosted run on `main` classifies all three Codex accounts as
+  `live.available` for both `codex-mini` and `codex-max`. The QA script still
+  treats typed quota/rate/degraded outcomes as valid evidence unless
+  `OMUX_LIVE_QA_REQUIRE_AVAILABLE=1` is set, so future quota-reset permutations
+  remain modeled without turning into infrastructure failures.
 
-## Production Readiness
+## Product Readiness
 
 Ready now:
 
 - internal operator experimentation;
 - local three-account Codex Max setup and explicit probe runs;
 - schema-only provider authoring against no-secret fixtures;
-- draft release artifact review;
-- PR review with hosted CI evidence.
+- public npm install of `v0.1.2`;
+- hosted live QA for the Codex account matrix;
+- release artifact review and registry dry-runs;
+- PR review with hosted CI and GloriousFlywheel evidence.
 
 Not ready yet:
 
 - unattended automatic live-provider probing;
-- public Homebrew/deb/rpm publication;
-- required self-hosted release gate;
+- broad public claims that every provider is live-proven;
+- public Homebrew/deb/rpm publication mutation;
 - background daemon token refresh as an operational dependency;
-- formal security review of secret backends and generated config dirs.
+- formal security review of secret backends and generated config dirs;
+- website and launch surfaces.
 
 ## Next Arc
 
-1. Run the live-provider QA workflow with scoped secrets from `main` so the
-   hosted artifact path proves the same Codex matrix that has now passed
-   locally.
+1. Land the product adoption sprint plan and split `TIN-491` into focused
+   follow-up Linear tickets.
 
-2. Run authenticated registry dry-run lanes:
-   npm dry run, Homebrew formula audit in the tap, GitHub release auth check,
-   and deb/rpm metadata checks.
+2. Implement `v0.1.3` onboarding improvements: `doctor`, redacted report bundle,
+   friendlier setup aliases, and provider status listing.
 
-3. After merge, run the manual GloriousFlywheel release-proof workflow from
-   `main` before publishing tags. GitHub cannot dispatch PR-local workflow
-   files until they exist on the default branch.
+3. Build the website around installed CLI flows, typed liveness, redacted JSON,
+   and the provider support matrix.
 
-4. Revisit the daemon boundary only after live-provider QA covers refresh,
+4. Rerun hosted live QA and registry dry-run lanes for the next version before
+   CI-only publication.
+
+5. Revisit the daemon boundary only after live-provider QA covers refresh,
    timeout, quota, and provider-owned CLI session behavior.

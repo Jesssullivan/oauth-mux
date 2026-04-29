@@ -118,3 +118,5 @@ See `docs/spec/development-timeline-2026-04-27.md` for the current
 production-readiness timeline.
 See `docs/spec/production-publication-sprint-2026-04-28.md` for the current
 v0.1.0 sprint gates.
+See `docs/spec/product-adoption-sprint-2026-04-28.md` for the current website,
+onboarding, launch, and provider-adoption plan.
