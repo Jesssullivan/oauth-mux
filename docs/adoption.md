@@ -9,7 +9,7 @@ they must not become requirements for ordinary users.
 Target install surfaces:
 
 - npm: `npm install -g oauth-mux`
-- Homebrew: `brew install tinyland-inc/tools/oauth-mux`
+- Homebrew: `brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git && brew install tinyland/tools/oauth-mux`
 - curl installer: `curl -fsSL ... | sh`
 - deb/rpm packages for Linux hosts
 - raw release tarballs for air-gapped or policy-managed systems

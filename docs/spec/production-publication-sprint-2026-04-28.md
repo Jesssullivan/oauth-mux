@@ -171,7 +171,7 @@ Evidence:
   including Homebrew formula syntax, npm tarball packing, deb/rpm generation,
   curl installer smoke, and handoff regeneration;
 - local Homebrew tap dry-run passed after updating the lane for Homebrew 5.1's
-  tap/name audit path with `OMUX_HOMEBREW_TAP_NAME=tinyland-inc/tools`.
+  tap/name audit path with `OMUX_HOMEBREW_TAP_NAME=tinyland/tools`.
 - full hosted registry dry-run `25031405495` completed successfully on PR #6
   with `plan,github,npm,homebrew,system`; artifact evidence records GitHub auth
   OK, no existing `v0.1.0` release, all seven npm tarballs dry-run OK,
