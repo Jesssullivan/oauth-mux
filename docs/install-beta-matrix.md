@@ -15,8 +15,8 @@ files, SOPS plaintext, or token-shaped values here.
 | GitHub release tarball | 0.1.3 | macOS arm64 | public `Jesssullivan/oauth-mux` release asset | Pass | Repo visibility must remain public for unauthenticated downloads. |
 | `curl | sh` installer | 0.1.3 | macOS arm64 and `../lab` | public `Jesssullivan/oauth-mux` `install.sh` asset | Pass | Default installer repo is now canonical; no `REPO=...` override needed. |
 | Homebrew formula | 0.1.3 | macOS arm64 | `tinyland/tools` tap | Pass | Tap install and rollback passed after `tinyland-inc/homebrew-tools#2`; tap repo is still private. |
-| deb package | 0.1.3 | Linux amd64 container | public GitHub Release `.deb` asset | Pending hosted proof | Use `System Package Install QA` after this workflow lands. |
-| rpm package | 0.1.3 | Linux x86_64 container | public GitHub Release `.rpm` asset | Pending hosted proof | Use `System Package Install QA` after this workflow lands. |
+| deb package | 0.1.3 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25137031548` installed package and ran `/usr/bin/oauth-mux version`. |
+| rpm package | 0.1.3 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25137031548` installed package and ran `/usr/bin/oauth-mux version`. |
 | lab dogfood | 0.1.3 | `../lab` on macOS arm64 | installed `oauth-mux` CLI | Pass | Installed `oauth-mux doctor --json` reports `ok: true` against local config/state. |
 
 ## Evidence Commands
@@ -99,6 +99,13 @@ System package install QA after GitHub Release publication:
 gh workflow run system-package-install-qa.yml -f version=0.1.3
 ```
 
+Latest hosted proof:
+
+```text
+System Package Install QA run 25137031548: pass
+job 73677864724: deb/rpm install from published release assets
+```
+
 Local reproduction on a host with healthy Docker:
 
 ```bash
@@ -107,8 +114,7 @@ just system-package-qa 0.1.3
 
 ## Next Proof
 
-1. Merge the hosted system-package install QA workflow.
-2. Run it for v0.1.3 and record the run ID for deb/rpm proof.
-3. If the hosted proof passes, mark the deb/rpm lanes as pass.
-4. If it fails, fix the package contents or release metadata before widening
-   public install copy.
+1. Keep the hosted system-package install QA workflow in the release checklist.
+2. For each release that changes deb/rpm packaging, run the workflow after the
+   GitHub Release assets exist.
+3. Treat registry metadata checks as insufficient without this install proof.
