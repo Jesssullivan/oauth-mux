@@ -84,6 +84,9 @@ External users may use any secret backend that fits their environment:
 No adoption flow should require the lab repo, Tinyland SOPS keys,
 GloriousFlywheel, or Codex Max accounts.
 
+Clean-install proof is tracked in `docs/install-beta-matrix.md`. Keep that
+matrix current whenever a published or staged install lane changes state.
+
 ## Product Adoption Sprint
 
 The current adoption plan is tracked in

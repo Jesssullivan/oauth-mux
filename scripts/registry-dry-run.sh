@@ -23,11 +23,17 @@ out_dir="$repo_root/dist/out/v${version}"
 handoff_dir="$out_dir/handoff"
 report="$handoff_dir/registry-dry-run.md"
 tmp_files=()
+tmp_taps=()
 
 cleanup() {
   for file in "${tmp_files[@]}"; do
     rm -f "$file"
   done
+  if command -v brew >/dev/null 2>&1; then
+    for tap in "${tmp_taps[@]}"; do
+      brew untap "$tap" >/dev/null 2>&1 || true
+    done
+  fi
 }
 trap cleanup EXIT
 
@@ -140,26 +146,24 @@ for lane in "${lanes[@]}"; do
         audit_args+=(--online)
         audit_label="brew audit --strict --online"
       fi
-      if [ -n "${OMUX_HOMEBREW_TAP_NAME:-}" ]; then
-        "$brew_cmd" tap "$OMUX_HOMEBREW_TAP_NAME" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
-        tapped_repo="$("$brew_cmd" --repository "$OMUX_HOMEBREW_TAP_NAME")"
-        mkdir -p "$tapped_repo/Formula"
-        cp "$formula" "$tapped_repo/Formula/oauth-mux.rb"
-        if ! "$brew_cmd" "${audit_args[@]}" oauth-mux >"$audit_log" 2>&1; then
-          cat "$audit_log" >&2
-          exit 1
-        fi
-      else
-        if ! "$brew_cmd" "${audit_args[@]}" "$tap_formula" >"$audit_log" 2>&1; then
-          cat "$audit_log" >&2
-          exit 1
-        fi
+      tap_name="${OMUX_HOMEBREW_TAP_NAME:-}"
+      if [ -z "$tap_name" ]; then
+        tap_name="tinyland-inc/oauth-mux-dry-run-$$"
+        tmp_taps+=("$tap_name")
+      fi
+      "$brew_cmd" tap "$tap_name" "$OMUX_HOMEBREW_TAP_DIR" >/dev/null
+      tapped_repo="$("$brew_cmd" --repository "$tap_name")"
+      mkdir -p "$tapped_repo/Formula"
+      cp "$formula" "$tapped_repo/Formula/oauth-mux.rb"
+      if ! "$brew_cmd" "${audit_args[@]}" "${tap_name}/oauth-mux" >"$audit_log" 2>&1; then
+        cat "$audit_log" >&2
+        exit 1
       fi
       append "## homebrew"
       append
       append "- formula copied to tap checkout"
       append "- git diff --check OK"
-      append "- ${audit_label} OK"
+      append "- ${audit_label} OK via \`${tap_name}/oauth-mux\`"
       append
       ;;
 
