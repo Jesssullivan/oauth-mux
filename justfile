@@ -108,6 +108,9 @@ registry-dry-run VERSION="0.1.0":
 system-package-qa VERSION="0.1.3":
     ./scripts/system-package-install-qa.sh {{VERSION}}
 
+homebrew-qa VERSION="0.1.3":
+    ./scripts/homebrew-install-qa.sh {{VERSION}}
+
 npm-deprecate-plan VERSION="0.1.1":
     OMUX_NPM_DEPRECATE_PLAN_ONLY=1 nix develop --command ./scripts/npm-ci-deprecate.sh {{VERSION}}
 
