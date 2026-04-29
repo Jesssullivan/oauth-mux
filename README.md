@@ -47,6 +47,8 @@ Discover the redacted, agent-safe inventory:
 
 ```bash
 oauth-mux doctor
+oauth-mux report --redacted
+oauth-mux providers list
 oauth-mux discover --json
 ```
 

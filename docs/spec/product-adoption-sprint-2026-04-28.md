@@ -192,14 +192,22 @@ Initial implementation status:
   health state presence, and safe next commands.
 - `oauth-mux setup codex` and `oauth-mux codex setup` both route to the Codex
   onboarding flow.
-- `discover --json` now advertises `doctor --json` as an agent-safe command.
-- Redacted support bundles and provider status listing remain follow-up scope.
+- `oauth-mux report --redacted [--json]` now produces a support bundle with
+  version, platform, config shape, redacted provider/account labels, command
+  availability, health summaries, and recent probe evidence. Credential values
+  are never read, and credential paths are omitted unless `--include-paths` is
+  supplied.
+- `oauth-mux providers list [--json]` now reports built-in providers, custom
+  schema-modeled providers, configured account counts, capabilities, probes,
+  command detection, and separate proof status.
+- `discover --json` now advertises `doctor --json`, `report --redacted --json`,
+  and `providers list --json` as agent-safe commands.
 
 Acceptance:
 
 - `just check` passes.
-- no-secret E2E covers `doctor`; redacted report output is covered when
-  `report --redacted` lands.
+- no-secret E2E covers `doctor`, `report --redacted --json`, and
+  `providers list --json`.
 - docs and website first-run examples use installed commands only.
 - hosted live QA reruns for the Codex matrix before publication.
 - full registry dry-run reruns for the bumped version before CI-only publish.

@@ -8,6 +8,8 @@ pub const Command = union(enum) {
     env: EnvArgs,
     probe: ProbeArgs,
     doctor: DoctorArgs,
+    report: ReportArgs,
+    providers: ProvidersArgs,
     status: StatusArgs,
     health: HealthArgs,
     discover: DiscoverArgs,
@@ -46,6 +48,21 @@ pub const Command = union(enum) {
     };
 
     pub const DoctorArgs = struct {
+        json: bool = false,
+    };
+
+    pub const ReportArgs = struct {
+        json: bool = false,
+        redacted: bool = true,
+        include_paths: bool = false,
+    };
+
+    pub const ProvidersAction = enum {
+        list,
+    };
+
+    pub const ProvidersArgs = struct {
+        action: ProvidersAction = .list,
         json: bool = false,
     };
 
@@ -107,6 +124,8 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "env")) return parseEnv(rest);
     if (eql(cmd, "probe")) return parseProbe(rest);
     if (eql(cmd, "doctor")) return parseDoctor(rest);
+    if (eql(cmd, "report")) return parseReport(rest);
+    if (eql(cmd, "providers")) return parseProviders(rest);
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
@@ -209,6 +228,33 @@ fn parseDoctor(args: []const []const u8) Command {
         if (eql(arg, "--json")) result.json = true;
     }
     return .{ .doctor = result };
+}
+
+fn parseReport(args: []const []const u8) Command {
+    var result = Command.ReportArgs{};
+    for (args) |arg| {
+        if (eql(arg, "--json")) {
+            result.json = true;
+        } else if (eql(arg, "--redacted")) {
+            result.redacted = true;
+        } else if (eql(arg, "--include-paths")) {
+            result.include_paths = true;
+        }
+    }
+    return .{ .report = result };
+}
+
+fn parseProviders(args: []const []const u8) Command {
+    var result = Command.ProvidersArgs{};
+    var i: usize = 0;
+    if (args.len > 0 and eql(args[0], "list")) {
+        result.action = .list;
+        i = 1;
+    }
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--json")) result.json = true;
+    }
+    return .{ .providers = result };
 }
 
 fn parseStatus(args: []const []const u8) Command {
@@ -359,6 +405,12 @@ pub fn printUsage(writer: anytype) !void {
         \\  doctor [--json]
         \\      Run no-spend readiness checks and print first-run next commands.
         \\
+        \\  report [--redacted] [--json] [--include-paths]
+        \\      Print a redacted support bundle without reading credential values.
+        \\
+        \\  providers list [--json]
+        \\      Show built-in and configured provider support status.
+        \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
         \\
@@ -471,6 +523,31 @@ test "parse doctor json" {
     }
 }
 
+test "parse report redacted json include paths" {
+    const args = [_][]const u8{ "report", "--redacted", "--json", "--include-paths" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .report => |report| {
+            try std.testing.expect(report.redacted);
+            try std.testing.expect(report.json);
+            try std.testing.expect(report.include_paths);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse providers list json" {
+    const args = [_][]const u8{ "providers", "list", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .providers => |providers| {
+            try std.testing.expect(providers.action == .list);
+            try std.testing.expect(providers.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse init codex max" {
     const args = [_][]const u8{ "init", "--codex-max" };
     const cmd = parse(&args);
@@ -575,6 +652,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a env -d 'Print shell exports'
             \\complete -c oauth-mux -n __fish_use_subcommand -a probe -d 'Probe account liveness'
             \\complete -c oauth-mux -n __fish_use_subcommand -a doctor -d 'Run readiness checks'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a report -d 'Print redacted support report'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a providers -d 'List provider support'
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
@@ -590,6 +669,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from report providers' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l redacted -d 'Redact credential paths and values'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l include-paths -d 'Include non-token paths'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from providers' -a 'list' -d 'Provider subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
@@ -609,6 +692,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'env:Print shell exports'
             \\    'probe:Probe account liveness'
             \\    'doctor:Run readiness checks'
+            \\    'report:Print redacted support report'
+            \\    'providers:List provider support'
             \\    'status:Show status'
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
@@ -628,7 +713,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor status health discover config init setup codex version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover config init setup codex version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

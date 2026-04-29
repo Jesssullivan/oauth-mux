@@ -35,6 +35,12 @@ status: build
 doctor: build
     ./zig-out/bin/oauth-mux doctor
 
+report: build
+    ./zig-out/bin/oauth-mux report --redacted
+
+providers: build
+    ./zig-out/bin/oauth-mux providers list
+
 health: build
     ./zig-out/bin/oauth-mux health
 

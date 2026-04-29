@@ -108,6 +108,8 @@ Agents should start with:
 
 ```bash
 oauth-mux doctor --json
+oauth-mux report --redacted --json
+oauth-mux providers list --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
@@ -138,13 +140,24 @@ Agents must not:
 providers, account names, secret backend names, tags, profiles, and safe command
 templates. It does not include token material.
 
+`report --redacted --json` is the support-bundle surface. It adds platform,
+config shape, provider/account labels, command availability, health summaries,
+and recent probe evidence. It never reads credential values and omits credential
+paths unless the user explicitly passes `--include-paths`.
+
+`providers list --json` separates support status from proof status. `codex` is
+`live_proven`; shipped schemas are `built_in`; user JSON providers are
+`schema_modeled`; non-Codex providers still carry `needs_operator_proof` until
+live provider QA proves them.
+
 ## Provider Onboarding Checklist
 
 1. Add or select a provider definition.
 2. Add named accounts and secret backends.
 3. Add profiles that encode provider/account/capability fallback order.
 4. Run `oauth-mux config validate`.
-5. Run `oauth-mux doctor --json` and `oauth-mux discover --json`.
+5. Run `oauth-mux doctor --json`, `oauth-mux report --redacted --json`, and
+   `oauth-mux discover --json`.
 6. Run no-spend checks first: `status`, `health`, and credential parse probes.
 7. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.
@@ -153,6 +166,9 @@ templates. It does not include token material.
 
 - Config validates.
 - `discover --json` is usable by agents.
+- `report --redacted --json` is usable for a support bundle without token
+  material.
+- `providers list --json` states provider support and proof status precisely.
 - `status --json` shows expected providers and accounts.
 - `health --json` is redacted.
 - First live QA run is captured under `dist/live-qa/`.

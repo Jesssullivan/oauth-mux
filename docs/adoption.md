@@ -25,6 +25,8 @@ The happy path should stay small:
 ```bash
 oauth-mux init
 oauth-mux doctor
+oauth-mux report --redacted
+oauth-mux providers list
 oauth-mux config validate
 oauth-mux discover --json
 ```
@@ -63,6 +65,10 @@ A new provider should usually start as data, not Zig:
 
 Compiled Zig changes should be reserved for new transports, parser primitives,
 or core liveness algebra changes.
+
+Provider authors should use `oauth-mux providers list --json` to verify whether
+their provider is currently `built_in`, `schema_modeled`, `live_proven`, or still
+waiting on `needs_operator_proof`.
 
 ## Non-Tinyland Deployments
 
