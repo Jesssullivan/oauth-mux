@@ -96,6 +96,19 @@ Hosted evidence from run `25029923810`:
 - The uploaded artifact contains valid per-probe JSON files and separate
   redacted probe logs.
 
+Hosted evidence from PR-branch run `25134175687` on 2026-04-29:
+
+- Branch `codex/v013-doctor-onboarding` at `06e1ab0`.
+- `codex-mini`: `max-1`, `max-2`, and `max-3` returned
+  `live/available`, HTTP 200, and `decision=use_this`.
+- `codex-max`: `max-1`, `max-2`, and `max-3` returned
+  `live/available`, HTTP 200, and `decision=use_this`.
+- The first rerun failed before provider probing because
+  `OMUX_LIVE_QA_CONFIG_B64` was missing after the repository transfer. The fix
+  was to refresh `OMUX_LIVE_QA_CONFIG_B64` and set
+  `OMUX_LIVE_QA_STORE_TGZ_B64` from a minimized credential bundle containing
+  only `auth.json`, `installation_id`, and per-account `config.toml` files.
+
 ## GitHub Workflow
 
 `.github/workflows/live-provider-qa.yml` is manual-only. It requires the
