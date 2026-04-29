@@ -65,7 +65,7 @@ package_binary() {
   "version": "${version}",
   "description": "Platform binary for oauth-mux",
   "license": "MIT",
-  "repository": "tinyland-inc/oauth-mux",
+  "repository": "Jesssullivan/oauth-mux",
   "os": ["${npm_os}"],
   "cpu": ["${npm_cpu}"],
   "files": ["bin"]
@@ -128,7 +128,7 @@ arch: "${arch}"
 version: "${version}"
 maintainer: "Jess Sullivan <jess@sulliwood.org>"
 description: "OAuth fallback muxing for AI harness subscriptions"
-homepage: "https://github.com/tinyland-inc/oauth-mux"
+homepage: "https://github.com/Jesssullivan/oauth-mux"
 license: MIT
 contents:
   - src: ${src}

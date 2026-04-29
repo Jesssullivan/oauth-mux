@@ -5,6 +5,9 @@ connector auth. It selects among configured provider accounts, records typed
 credential liveness, and falls through without poisoning an entire account when
 only one route or capability is unavailable.
 
+`oauth-mux` is a Jess Sullivan FOSS project built with Tinyland release
+infrastructure.
+
 The implementation is pure Zig with no external Zig dependencies.
 
 ## Current Shape
@@ -120,3 +123,5 @@ See `docs/spec/production-publication-sprint-2026-04-28.md` for the current
 v0.1.0 sprint gates.
 See `docs/spec/product-adoption-sprint-2026-04-28.md` for the current website,
 onboarding, launch, and provider-adoption plan.
+See `docs/spec/repository-ownership-and-url-2026-04-28.md` for the repository
+ownership and canonical website URL decision.

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "OAuth fallback muxing for AI harness subscriptions",
   "license": "MIT",
-  "repository": "tinyland-inc/oauth-mux",
+  "repository": "Jesssullivan/oauth-mux",
   "files": [
     "bin",
     "install.js"
