@@ -32,6 +32,15 @@ version: build
 status: build
     ./zig-out/bin/oauth-mux status --json
 
+doctor: build
+    ./zig-out/bin/oauth-mux doctor
+
+report: build
+    ./zig-out/bin/oauth-mux report --redacted
+
+providers: build
+    ./zig-out/bin/oauth-mux providers list
+
 health: build
     ./zig-out/bin/oauth-mux health
 
@@ -63,6 +72,9 @@ codex-max-login-status-all: build
 
 codex-max-onboard: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex onboard
+
+codex-max-setup: build
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux setup codex
 
 codex-max-canary: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex canary

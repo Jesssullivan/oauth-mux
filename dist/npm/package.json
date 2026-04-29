@@ -4,6 +4,7 @@
   "description": "OAuth fallback muxing for AI harness subscriptions",
   "license": "MIT",
   "repository": "Jesssullivan/oauth-mux",
+  "homepage": "https://omux.xoxd.ai",
   "files": [
     "bin",
     "install.js"

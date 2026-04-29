@@ -66,6 +66,7 @@ package_binary() {
   "description": "Platform binary for oauth-mux",
   "license": "MIT",
   "repository": "Jesssullivan/oauth-mux",
+  "homepage": "https://omux.xoxd.ai",
   "os": ["${npm_os}"],
   "cpu": ["${npm_cpu}"],
   "files": ["bin"]
@@ -128,7 +129,7 @@ arch: "${arch}"
 version: "${version}"
 maintainer: "Jess Sullivan <jess@sulliwood.org>"
 description: "OAuth fallback muxing for AI harness subscriptions"
-homepage: "https://github.com/Jesssullivan/oauth-mux"
+homepage: "https://omux.xoxd.ai"
 license: MIT
 contents:
   - src: ${src}

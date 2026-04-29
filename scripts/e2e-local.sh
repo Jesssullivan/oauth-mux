@@ -190,6 +190,28 @@ expect_contains() {
 printf 'e2e: validate generated config\n'
 omux config validate >/dev/null
 
+printf 'e2e: doctor reports configured readiness\n'
+doctor_json="$(omux doctor --json)"
+expect_contains "$doctor_json" '"ok":true' "doctor reports ready config"
+expect_contains "$doctor_json" '"providers":1' "doctor counts configured provider"
+expect_contains "$doctor_json" '"accounts":2' "doctor counts configured accounts"
+expect_contains "$doctor_json" '"oauth-mux discover --json"' "doctor recommends agent discovery"
+expect_contains "$doctor_json" '"oauth-mux report --redacted --json"' "doctor recommends redacted report"
+
+printf 'e2e: redacted report does not expose secret values\n'
+report_json="$(omux report --redacted --json)"
+expect_contains "$report_json" '"redacted":true' "report is redacted"
+expect_contains "$report_json" '"secret_backend":"env"' "report includes secret backend class"
+expect_contains "$report_json" '"secret_location":"redacted"' "report redacts secret location by default"
+expect_contains "$report_json" '"health":[]' "report includes empty health array before probes"
+
+printf 'e2e: providers list reports schema-modeled custom provider\n'
+providers_json="$(omux providers list --json)"
+expect_contains "$providers_json" '"name":"toy"' "providers list includes custom toy provider"
+expect_contains "$providers_json" '"support_status":"schema_modeled"' "providers list classifies custom provider"
+expect_contains "$providers_json" '"proof_status":"needs_operator_proof"' "providers list marks custom provider proof state"
+expect_contains "$providers_json" '"configured_accounts":2' "providers list counts custom provider accounts"
+
 printf 'e2e: cheap route selects first healthy account\n'
 cheap_env="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_env" "export TOY_TOKEN='omux-e2e-a1'" "cheap env injects account a1 token"

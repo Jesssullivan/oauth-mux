@@ -24,6 +24,9 @@ The happy path should stay small:
 
 ```bash
 oauth-mux init
+oauth-mux doctor
+oauth-mux report --redacted
+oauth-mux providers list
 oauth-mux config validate
 oauth-mux discover --json
 ```
@@ -32,7 +35,8 @@ For Codex subscription users working from a source checkout today:
 
 ```bash
 oauth-mux init --codex-max
-oauth-mux codex onboard
+oauth-mux doctor
+oauth-mux setup codex
 oauth-mux codex canary
 ```
 
@@ -62,6 +66,10 @@ A new provider should usually start as data, not Zig:
 Compiled Zig changes should be reserved for new transports, parser primitives,
 or core liveness algebra changes.
 
+Provider authors should use `oauth-mux providers list --json` to verify whether
+their provider is currently `built_in`, `schema_modeled`, `live_proven`, or still
+waiting on `needs_operator_proof`.
+
 ## Non-Tinyland Deployments
 
 External users may use any secret backend that fits their environment:
@@ -75,6 +83,9 @@ External users may use any secret backend that fits their environment:
 
 No adoption flow should require the lab repo, Tinyland SOPS keys,
 GloriousFlywheel, or Codex Max accounts.
+
+Clean-install proof is tracked in `docs/install-beta-matrix.md`. Keep that
+matrix current whenever a published or staged install lane changes state.
 
 ## Product Adoption Sprint
 

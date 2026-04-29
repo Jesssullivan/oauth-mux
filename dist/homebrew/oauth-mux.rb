@@ -1,6 +1,6 @@
 class OauthMux < Formula
   desc "OAuth fallback muxing for AI harness subscriptions"
-  homepage "https://github.com/Jesssullivan/oauth-mux"
+  homepage "https://omux.xoxd.ai"
   license "MIT"
 
   on_macos do

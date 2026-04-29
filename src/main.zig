@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const paths = @import("paths.zig");
@@ -65,6 +66,18 @@ pub fn main() !void {
                 log.err("probe: {s}", .{@errorName(e)});
                 std.process.exit(exitCodeFromPipelineError(e));
             };
+        },
+
+        .doctor => |doctor_args| {
+            try runDoctor(allocator, stdout, doctor_args);
+        },
+
+        .report => |report_args| {
+            try runReport(allocator, stdout, report_args);
+        },
+
+        .providers => |providers_args| {
+            try runProviders(allocator, stdout, providers_args);
         },
 
         .exec => |exec_args| {
@@ -191,6 +204,12 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writeCommandJson(writer, "oauth-mux init");
             try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux init --codex-max");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux doctor");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux providers list");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux report --redacted");
             try writer.writeAll("]}\n");
         } else {
             try writer.writeAll("oauth-mux discover\n\n");
@@ -199,6 +218,9 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writer.writeAll("  next:\n");
             try writer.writeAll("    oauth-mux init\n");
             try writer.writeAll("    oauth-mux init --codex-max\n");
+            try writer.writeAll("    oauth-mux doctor\n");
+            try writer.writeAll("    oauth-mux providers list\n");
+            try writer.writeAll("    oauth-mux report --redacted\n");
             try writer.writeAll("    oauth-mux config validate\n");
         }
         return;
@@ -267,6 +289,9 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
 
     try writer.writeAll("\n  agent-safe commands:\n");
     try writer.writeAll("    oauth-mux config validate\n");
+    try writer.writeAll("    oauth-mux doctor --json\n");
+    try writer.writeAll("    oauth-mux report --redacted --json\n");
+    try writer.writeAll("    oauth-mux providers list --json\n");
     try writer.writeAll("    oauth-mux status --json\n");
     try writer.writeAll("    oauth-mux health --json\n");
     try writer.writeAll("    oauth-mux probe --profile <profile> --capability <capability> --json\n");
@@ -353,6 +378,9 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("],\"agent_safe_commands\":[");
     const commands = [_][]const u8{
         "oauth-mux config validate",
+        "oauth-mux doctor --json",
+        "oauth-mux report --redacted --json",
+        "oauth-mux providers list --json",
         "oauth-mux status --json",
         "oauth-mux health --json",
         "oauth-mux probe --profile <profile> --capability <capability> --json",
@@ -368,6 +396,988 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
 
 fn writeCommandJson(writer: anytype, command: []const u8) !void {
     try std.json.stringify(command, .{}, writer);
+}
+
+const DoctorStats = struct {
+    configured: bool = false,
+    config_valid: bool = false,
+    config_error: ?[]const u8 = null,
+    provider_count: usize = 0,
+    account_count: usize = 0,
+    profile_count: usize = 0,
+    strategy_count: usize = 0,
+    codex_configured: bool = false,
+    health_file_exists: bool = false,
+    health_entries: usize = 0,
+
+    fn ok(self: DoctorStats) bool {
+        return self.configured and self.config_valid and self.provider_count > 0 and self.account_count > 0;
+    }
+};
+
+fn runDoctor(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DoctorArgs) !void {
+    const config_path = try paths.configFilePath(allocator);
+    defer allocator.free(config_path);
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+    const health_path = try paths.healthFilePath(allocator);
+    defer allocator.free(health_path);
+
+    var stats = DoctorStats{
+        .health_file_exists = fileExistsAbsolute(health_path),
+    };
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+
+    if (config.load(allocator)) |parsed| {
+        defer parsed.deinit();
+        stats.configured = true;
+        stats.provider_count = parsed.value.providers.map.count();
+        stats.account_count = countConfiguredAccounts(parsed.value);
+        stats.profile_count = parsed.value.profiles.map.count();
+        stats.strategy_count = parsed.value.strategies.map.count();
+        stats.codex_configured = parsed.value.providers.map.get("codex") != null;
+
+        config.validate(parsed.value, validation_messages.writer()) catch |e| {
+            stats.config_error = @errorName(e);
+        };
+        stats.config_valid = stats.config_error == null;
+    } else |e| {
+        stats.config_error = @errorName(e);
+    }
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+    stats.health_entries = store.accounts.count();
+
+    if (args.json) {
+        try writeDoctorJson(writer, stats, config_path, state_dir, health_path, validation_messages.items);
+    } else {
+        try writeDoctorText(writer, stats, config_path, state_dir, health_path, validation_messages.items);
+    }
+}
+
+fn writeDoctorText(
+    writer: anytype,
+    stats: DoctorStats,
+    config_path: []const u8,
+    state_dir: []const u8,
+    health_path: []const u8,
+    validation_messages: []const u8,
+) !void {
+    try writer.writeAll("oauth-mux doctor\n\n");
+    try writer.print("  config: {s}\n", .{config_path});
+    if (!stats.configured) {
+        try writer.print("    status: missing ({s})\n", .{stats.config_error orelse "not_found"});
+    } else if (!stats.config_valid) {
+        try writer.print("    status: invalid ({s})\n", .{stats.config_error orelse "validation_failed"});
+    } else {
+        try writer.writeAll("    status: valid\n");
+    }
+    try writer.print("    providers={d} accounts={d} profiles={d} strategies={d}\n", .{
+        stats.provider_count,
+        stats.account_count,
+        stats.profile_count,
+        stats.strategy_count,
+    });
+    try writer.print("  state:  {s}\n", .{state_dir});
+    try writer.print("  health: {s} ({s}, entries={d})\n", .{
+        health_path,
+        if (stats.health_file_exists) "present" else "not recorded",
+        stats.health_entries,
+    });
+    try writer.print("  readiness: {s}\n", .{if (stats.ok()) "ready" else "action_needed"});
+
+    if (validation_messages.len != 0) {
+        try writer.writeAll("\n  validation:\n");
+        var lines = std.mem.splitScalar(u8, validation_messages, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            try writer.print("    {s}\n", .{line});
+        }
+    }
+
+    try writer.writeAll("\n  next:\n");
+    try writeDoctorNextCommandsText(writer, stats);
+}
+
+fn writeDoctorJson(
+    writer: anytype,
+    stats: DoctorStats,
+    config_path: []const u8,
+    state_dir: []const u8,
+    health_path: []const u8,
+    validation_messages: []const u8,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (stats.ok()) "true" else "false");
+    try writer.writeAll(",\"configured\":");
+    try writer.writeAll(if (stats.configured) "true" else "false");
+    try writer.writeAll(",\"config_path\":");
+    try std.json.stringify(config_path, .{}, writer);
+    try writer.writeAll(",\"state_dir\":");
+    try std.json.stringify(state_dir, .{}, writer);
+    try writer.writeAll(",\"health_path\":");
+    try std.json.stringify(health_path, .{}, writer);
+    try writer.writeAll(",\"config_valid\":");
+    try writer.writeAll(if (stats.config_valid) "true" else "false");
+    try writer.writeAll(",\"config_error\":");
+    if (stats.config_error) |err| {
+        try std.json.stringify(err, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.print(
+        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s}",
+        .{
+            stats.provider_count,
+            stats.account_count,
+            stats.profile_count,
+            stats.strategy_count,
+            if (stats.health_file_exists) "true" else "false",
+            stats.health_entries,
+            if (stats.codex_configured) "true" else "false",
+        },
+    );
+    try writer.writeAll(",\"checks\":[");
+    try writeDoctorChecksJson(writer, stats, validation_messages);
+    try writer.writeAll("],\"next_commands\":[");
+    try writeDoctorNextCommandsJson(writer, stats);
+    try writer.writeAll("]}\n");
+}
+
+fn writeDoctorChecksJson(writer: anytype, stats: DoctorStats, validation_messages: []const u8) !void {
+    var first = true;
+    try writeDoctorCheckJson(writer, &first, "config_found", stats.configured, if (stats.configured) "ok" else "error", if (stats.configured) "config file found" else "config file missing");
+    const valid_message = if (validation_messages.len == 0)
+        if (stats.config_valid) "config validates" else "config could not be loaded"
+    else
+        validation_messages;
+    try writeDoctorCheckJson(writer, &first, "config_valid", stats.config_valid, if (stats.config_valid) "ok" else "error", valid_message);
+    try writeDoctorCheckJson(writer, &first, "accounts_configured", stats.account_count > 0, if (stats.account_count > 0) "ok" else "error", if (stats.account_count > 0) "one or more accounts configured" else "no muxable accounts configured");
+    try writeDoctorCheckJson(writer, &first, "profiles_configured", stats.profile_count > 0, if (stats.profile_count > 0) "ok" else "warning", if (stats.profile_count > 0) "one or more profiles configured" else "no profiles configured");
+    try writeDoctorCheckJson(writer, &first, "health_recorded", stats.health_entries > 0, if (stats.health_entries > 0) "ok" else "info", if (stats.health_entries > 0) "health state recorded" else "no health state recorded yet");
+}
+
+fn writeDoctorCheckJson(
+    writer: anytype,
+    first: *bool,
+    name: []const u8,
+    ok: bool,
+    severity: []const u8,
+    message: []const u8,
+) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writer.writeAll("{\"name\":");
+    try std.json.stringify(name, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"severity\":");
+    try std.json.stringify(severity, .{}, writer);
+    try writer.writeAll(",\"message\":");
+    try std.json.stringify(message, .{}, writer);
+    try writer.writeByte('}');
+}
+
+fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
+    if (!stats.configured) {
+        try writer.writeAll("    oauth-mux init\n");
+        try writer.writeAll("    oauth-mux init --codex-max\n");
+        try writer.writeAll("    oauth-mux doctor\n");
+        return;
+    }
+
+    if (!stats.config_valid) {
+        try writer.writeAll("    oauth-mux config validate\n");
+        try writer.writeAll("    oauth-mux doctor\n");
+        return;
+    }
+
+    try writer.writeAll("    oauth-mux discover --json\n");
+    try writer.writeAll("    oauth-mux report --redacted --json\n");
+    try writer.writeAll("    oauth-mux providers list --json\n");
+    try writer.writeAll("    oauth-mux status --json\n");
+    try writer.writeAll("    oauth-mux health --json\n");
+    if (stats.codex_configured) {
+        try writer.writeAll("    oauth-mux setup codex\n");
+        try writer.writeAll("    oauth-mux codex canary\n");
+        try writer.writeAll("    oauth-mux codex canary --live\n");
+    }
+}
+
+fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
+    var first = true;
+    if (!stats.configured) {
+        try writeDoctorCommandJson(writer, &first, "oauth-mux init");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux init --codex-max");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux doctor");
+        return;
+    }
+
+    if (!stats.config_valid) {
+        try writeDoctorCommandJson(writer, &first, "oauth-mux config validate");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux doctor");
+        return;
+    }
+
+    try writeDoctorCommandJson(writer, &first, "oauth-mux discover --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux report --redacted --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux providers list --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux status --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux health --json");
+    if (stats.codex_configured) {
+        try writeDoctorCommandJson(writer, &first, "oauth-mux setup codex");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary --live");
+    }
+}
+
+fn writeDoctorCommandJson(writer: anytype, first: *bool, command: []const u8) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writeCommandJson(writer, command);
+}
+
+fn runReport(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ReportArgs) !void {
+    const config_path = try paths.configFilePath(allocator);
+    defer allocator.free(config_path);
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+    const health_path = try paths.healthFilePath(allocator);
+    defer allocator.free(health_path);
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    if (config.load(allocator)) |parsed| {
+        defer parsed.deinit();
+        var config_error: ?[]const u8 = null;
+        config.validate(parsed.value, validation_messages.writer()) catch |e| {
+            config_error = @errorName(e);
+        };
+        const config_valid = config_error == null;
+        if (args.json) {
+            try writeReportJson(writer, allocator, args, config_path, state_dir, health_path, parsed.value, true, config_valid, config_error, validation_messages.items, &store);
+        } else {
+            try writeReportText(writer, allocator, args, config_path, state_dir, health_path, parsed.value, true, config_valid, config_error, validation_messages.items, &store);
+        }
+    } else |e| {
+        const config_error = @errorName(e);
+        if (args.json) {
+            try writeReportJson(writer, allocator, args, config_path, state_dir, health_path, null, false, false, config_error, validation_messages.items, &store);
+        } else {
+            try writeReportText(writer, allocator, args, config_path, state_dir, health_path, null, false, false, config_error, validation_messages.items, &store);
+        }
+    }
+}
+
+fn writeReportText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    args: cli.Command.ReportArgs,
+    config_path: []const u8,
+    state_dir: []const u8,
+    health_path: []const u8,
+    cfg: ?config.Config,
+    configured: bool,
+    config_valid: bool,
+    config_error: ?[]const u8,
+    validation_messages: []const u8,
+    store: *health_mod.HealthStore,
+) !void {
+    try writer.writeAll("oauth-mux report\n\n");
+    try writer.print("  version:  {s}\n", .{cli.version});
+    try writer.print("  platform: {s}/{s}\n", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
+    try writer.print("  redacted: {s}\n", .{if (args.redacted) "true" else "false"});
+    try writer.print("  config:   {s}\n", .{config_path});
+    try writer.print("  state:    {s}\n", .{state_dir});
+    try writer.print("  health:   {s}\n", .{health_path});
+
+    try writer.writeAll("\n  config status:\n");
+    if (!configured) {
+        try writer.print("    missing ({s})\n", .{config_error orelse "not_found"});
+    } else if (!config_valid) {
+        try writer.print("    invalid ({s})\n", .{config_error orelse "validation_failed"});
+    } else {
+        try writer.writeAll("    valid\n");
+    }
+
+    if (cfg) |loaded| {
+        try writer.print("    providers={d} accounts={d} profiles={d} strategies={d} provider_definitions={d}\n", .{
+            loaded.providers.map.count(),
+            countConfiguredAccounts(loaded),
+            loaded.profiles.map.count(),
+            loaded.strategies.map.count(),
+            loaded.provider_definitions.map.count(),
+        });
+    }
+
+    if (validation_messages.len != 0) {
+        try writer.writeAll("\n  validation:\n");
+        try writeIndentedLines(writer, validation_messages, "    ");
+    }
+
+    try writer.writeAll("\n  providers:\n");
+    if (cfg) |loaded| {
+        if (loaded.providers.map.count() == 0) {
+            try writer.writeAll("    none configured\n");
+        } else {
+            var provider_it = loaded.providers.map.iterator();
+            while (provider_it.next()) |entry| {
+                const provider_name = entry.key_ptr.*;
+                const prov = entry.value_ptr.*;
+                try writer.print("    {s} kind={s} accounts={d}\n", .{ provider_name, prov.kind, prov.accounts.map.count() });
+                var account_it = prov.accounts.map.iterator();
+                while (account_it.next()) |acct_entry| {
+                    const account_name = acct_entry.key_ptr.*;
+                    const account = acct_entry.value_ptr.*;
+                    try writer.print("      {s} priority={d} secret={s}", .{ account_name, account.priority, account.secret.backend });
+                    if (account.config_dir != null) try writer.writeAll(" config_dir=set");
+                    if (args.include_paths) try writeAccountPathHintsText(writer, account);
+                    if (account.tags) |tags| {
+                        try writer.writeAll(" tags=");
+                        for (tags, 0..) |tag, idx| {
+                            if (idx > 0) try writer.writeByte(',');
+                            try writer.writeAll(tag);
+                        }
+                    }
+                    try writer.writeByte('\n');
+                }
+            }
+        }
+    } else {
+        try writer.writeAll("    unavailable until config loads\n");
+    }
+
+    try writer.writeAll("\n  health:\n");
+    if (store.accounts.count() == 0) {
+        try writer.writeAll("    no health data recorded yet\n");
+    } else {
+        var health_it = store.accounts.iterator();
+        while (health_it.next()) |entry| {
+            const health = entry.value_ptr.*;
+            try writer.print("    {s} score={d} circuit={s} http=", .{
+                entry.key_ptr.*,
+                health.score.score,
+                circuitName(health.circuit),
+            });
+            if (health.last_http_status) |status| {
+                try writer.print("{d}", .{status});
+            } else {
+                try writer.writeByte('-');
+            }
+            try writer.writeAll(" liveness=");
+            try health_mod.writeLivenessSummary(writer, health.liveness);
+            try writer.writeByte('\n');
+        }
+    }
+
+    try writer.writeAll("\n  command availability:\n");
+    try writeCommandAvailabilityText(writer, allocator);
+
+    try writer.writeAll("\n  next:\n");
+    try writer.writeAll("    oauth-mux doctor --json\n");
+    try writer.writeAll("    oauth-mux providers list --json\n");
+    try writer.writeAll("    oauth-mux health --json\n");
+}
+
+fn writeReportJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    args: cli.Command.ReportArgs,
+    config_path: []const u8,
+    state_dir: []const u8,
+    health_path: []const u8,
+    cfg: ?config.Config,
+    configured: bool,
+    config_valid: bool,
+    config_error: ?[]const u8,
+    validation_messages: []const u8,
+    store: *health_mod.HealthStore,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"os\":");
+    try std.json.stringify(@tagName(builtin.os.tag), .{}, writer);
+    try writer.writeAll(",\"arch\":");
+    try std.json.stringify(@tagName(builtin.cpu.arch), .{}, writer);
+    try writer.writeAll(",\"redacted\":");
+    try writer.writeAll(if (args.redacted) "true" else "false");
+    try writer.writeAll(",\"include_paths\":");
+    try writer.writeAll(if (args.include_paths) "true" else "false");
+    try writer.writeAll(",\"paths\":{\"config\":");
+    try std.json.stringify(config_path, .{}, writer);
+    try writer.writeAll(",\"state\":");
+    try std.json.stringify(state_dir, .{}, writer);
+    try writer.writeAll(",\"health\":");
+    try std.json.stringify(health_path, .{}, writer);
+    try writer.writeAll("},\"config\":{\"configured\":");
+    try writer.writeAll(if (configured) "true" else "false");
+    try writer.writeAll(",\"valid\":");
+    try writer.writeAll(if (config_valid) "true" else "false");
+    try writer.writeAll(",\"error\":");
+    if (config_error) |err| {
+        try std.json.stringify(err, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    if (cfg) |loaded| {
+        try writer.print(",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"provider_definitions\":{d}", .{
+            loaded.providers.map.count(),
+            countConfiguredAccounts(loaded),
+            loaded.profiles.map.count(),
+            loaded.strategies.map.count(),
+            loaded.provider_definitions.map.count(),
+        });
+    } else {
+        try writer.writeAll(",\"providers\":0,\"accounts\":0,\"profiles\":0,\"strategies\":0,\"provider_definitions\":0");
+    }
+    try writer.writeAll(",\"validation_messages\":");
+    try writeLineArrayJson(writer, validation_messages);
+    try writer.writeAll("},\"providers\":");
+    if (cfg) |loaded| {
+        try writeConfiguredProvidersReportJson(writer, args, loaded);
+    } else {
+        try writer.writeAll("[]");
+    }
+    try writer.writeAll(",\"health\":");
+    try writeHealthEntriesJson(writer, store);
+    try writer.writeAll(",\"command_availability\":");
+    try writeCommandAvailabilityJson(writer, allocator);
+    try writer.writeAll(",\"next_commands\":[");
+    try writeCommandJson(writer, "oauth-mux doctor --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux providers list --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux health --json");
+    try writer.writeAll("]}\n");
+}
+
+fn runProviders(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ProvidersArgs) !void {
+    switch (args.action) {
+        .list => {},
+    }
+
+    if (config.load(allocator)) |parsed| {
+        defer parsed.deinit();
+        if (args.json) {
+            try writeProvidersListJson(writer, allocator, parsed.value, true, null);
+        } else {
+            try writeProvidersListText(writer, allocator, parsed.value, true, null);
+        }
+    } else |e| {
+        if (args.json) {
+            try writeProvidersListJson(writer, allocator, null, false, @errorName(e));
+        } else {
+            try writeProvidersListText(writer, allocator, null, false, @errorName(e));
+        }
+    }
+}
+
+fn writeProvidersListText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: ?config.Config,
+    config_loaded: bool,
+    config_error: ?[]const u8,
+) !void {
+    try writer.writeAll("oauth-mux providers\n\n");
+    if (!config_loaded) {
+        try writer.print("  config: unavailable ({s}); showing built-ins\n\n", .{config_error orelse "not_found"});
+    }
+
+    try writer.print("  {s:<12} {s:<14} {s:<20} {s:>8} {s:>5} {s:>6}\n", .{
+        "Provider", "Support", "Proof", "Accounts", "Caps", "Probes",
+    });
+    try writer.print("  {s:-<12} {s:-<14} {s:-<20} {s:->8} {s:->5} {s:->6}\n", .{ "", "", "", "", "", "" });
+
+    for (provider_schema.builtin_providers) |def| {
+        try writeProviderListTextRow(writer, cfg, def.name, def, true);
+    }
+
+    if (cfg) |loaded| {
+        var def_it = loaded.provider_definitions.map.iterator();
+        while (def_it.next()) |entry| {
+            const def_key = entry.key_ptr.*;
+            const def = entry.value_ptr.*;
+            if (isBuiltinDefinition(def_key, def.name)) continue;
+            try writeProviderListTextRow(writer, cfg, def_key, def, false);
+        }
+    }
+
+    try writer.writeAll("\n  support: live_proven means hosted secret-scoped QA has proved a real route.\n");
+    try writer.writeAll("  proof: needs_operator_proof means the schema exists but needs live provider evidence.\n");
+    _ = allocator;
+}
+
+fn writeProviderListTextRow(writer: anytype, cfg: ?config.Config, def_key: []const u8, def: provider_schema.ProviderDefinition, built_in: bool) !void {
+    const accounts = configuredAccountCountForDefinition(cfg, def_key, def.name);
+    try writer.print("  {s:<12} {s:<14} {s:<20} {d:>8} {d:>5} {d:>6}\n", .{
+        def.name,
+        supportStatus(def.name, built_in),
+        proofStatus(def.name),
+        accounts,
+        def.capabilities.len,
+        countProviderProbes(def),
+    });
+}
+
+fn writeProvidersListJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: ?config.Config,
+    config_loaded: bool,
+    config_error: ?[]const u8,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"config_loaded\":");
+    try writer.writeAll(if (config_loaded) "true" else "false");
+    try writer.writeAll(",\"config_error\":");
+    if (config_error) |err| {
+        try std.json.stringify(err, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"providers\":[");
+
+    var first = true;
+    for (provider_schema.builtin_providers) |def| {
+        try writeProviderListJsonEntry(writer, allocator, &first, cfg, def.name, def, true);
+    }
+
+    if (cfg) |loaded| {
+        var def_it = loaded.provider_definitions.map.iterator();
+        while (def_it.next()) |entry| {
+            const def_key = entry.key_ptr.*;
+            const def = entry.value_ptr.*;
+            if (isBuiltinDefinition(def_key, def.name)) continue;
+            try writeProviderListJsonEntry(writer, allocator, &first, cfg, def_key, def, false);
+        }
+    }
+
+    try writer.writeAll("]}\n");
+}
+
+fn writeProviderListJsonEntry(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    first: *bool,
+    cfg: ?config.Config,
+    def_key: []const u8,
+    def: provider_schema.ProviderDefinition,
+    built_in: bool,
+) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+
+    const accounts = configuredAccountCountForDefinition(cfg, def_key, def.name);
+    try writer.writeByte('{');
+    try writer.writeAll("\"definition_key\":");
+    try std.json.stringify(def_key, .{}, writer);
+    try writer.writeByte(',');
+    try writer.writeAll("\"name\":");
+    try std.json.stringify(def.name, .{}, writer);
+    try writer.writeAll(",\"display_name\":");
+    try std.json.stringify(providerDisplayName(def), .{}, writer);
+    try writer.writeAll(",\"support_status\":");
+    try std.json.stringify(supportStatus(def.name, built_in), .{}, writer);
+    try writer.writeAll(",\"proof_status\":");
+    try std.json.stringify(proofStatus(def.name), .{}, writer);
+    try writer.writeAll(",\"built_in\":");
+    try writer.writeAll(if (built_in) "true" else "false");
+    try writer.writeAll(",\"configured\":");
+    try writer.writeAll(if (accounts > 0) "true" else "false");
+    try writer.print(",\"configured_accounts\":{d},\"capabilities\":{d},\"probes\":{d},\"failure_rules\":{d}", .{
+        accounts,
+        def.capabilities.len,
+        countProviderProbes(def),
+        def.failure_rules.len,
+    });
+    try writer.writeAll(",\"detection_binaries\":");
+    try writeStringArrayJson(writer, def.detection.binary_names);
+    try writer.writeAll(",\"env_markers\":");
+    try writeStringArrayJson(writer, def.detection.env_markers);
+    try writer.writeAll(",\"command_availability\":[");
+    for (def.detection.binary_names, 0..) |binary_name, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writer.writeAll("{\"name\":");
+        try std.json.stringify(binary_name, .{}, writer);
+        try writer.writeAll(",\"available\":");
+        try writer.writeAll(if (try commandAvailable(allocator, binary_name)) "true" else "false");
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+    try writer.writeByte('}');
+}
+
+fn writeConfiguredProvidersReportJson(writer: anytype, args: cli.Command.ReportArgs, cfg: config.Config) !void {
+    try writer.writeByte('[');
+    var provider_first = true;
+    var provider_it = cfg.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        if (!provider_first) try writer.writeByte(',');
+        provider_first = false;
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        try writer.writeByte('{');
+        try writer.writeAll("\"name\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"kind\":");
+        try std.json.stringify(prov.kind, .{}, writer);
+        try writer.writeAll(",\"support_status\":");
+        try std.json.stringify(supportStatusForConfig(cfg, provider_name, prov.kind), .{}, writer);
+        try writer.writeAll(",\"proof_status\":");
+        try std.json.stringify(proofStatus(prov.kind), .{}, writer);
+        try writer.writeAll(",\"config_dir_env\":");
+        if (prov.config_dir_env) |config_dir_env| {
+            try std.json.stringify(config_dir_env, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"accounts\":[");
+        var account_first = true;
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |acct_entry| {
+            if (!account_first) try writer.writeByte(',');
+            account_first = false;
+            try writeAccountReportJson(writer, args, acct_entry.key_ptr.*, acct_entry.value_ptr.*);
+        }
+        try writer.writeAll("]}");
+    }
+    try writer.writeByte(']');
+}
+
+fn writeAccountReportJson(writer: anytype, args: cli.Command.ReportArgs, account_name: []const u8, account: config.AccountConfig) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"name\":");
+    try std.json.stringify(account_name, .{}, writer);
+    try writer.print(",\"priority\":{d},\"secret_backend\":", .{account.priority});
+    try std.json.stringify(account.secret.backend, .{}, writer);
+    try writer.writeAll(",\"secret_location\":");
+    if (args.include_paths) {
+        try writeSecretLocationJson(writer, account.secret);
+    } else {
+        try std.json.stringify("redacted", .{}, writer);
+    }
+    try writer.writeAll(",\"config_dir_set\":");
+    try writer.writeAll(if (account.config_dir != null) "true" else "false");
+    try writer.writeAll(",\"config_dir\":");
+    if (args.include_paths) {
+        if (account.config_dir) |config_dir| {
+            try std.json.stringify(config_dir, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"tags\":[");
+    if (account.tags) |tags| {
+        for (tags, 0..) |tag, idx| {
+            if (idx > 0) try writer.writeByte(',');
+            try std.json.stringify(tag, .{}, writer);
+        }
+    }
+    try writer.writeAll("]}");
+}
+
+fn writeSecretLocationJson(writer: anytype, secret: config.SecretConfig) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"backend\":");
+    try std.json.stringify(secret.backend, .{}, writer);
+
+    if (std.mem.eql(u8, secret.backend, "env")) {
+        try writer.writeAll(",\"variable\":");
+        if (secret.variable) |variable| try std.json.stringify(variable, .{}, writer) else try writer.writeAll("null");
+    } else if (std.mem.eql(u8, secret.backend, "file") or std.mem.eql(u8, secret.backend, "sops")) {
+        try writer.writeAll(",\"path\":");
+        if (secret.path) |path_value| try std.json.stringify(path_value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"key_path\":");
+        if (secret.key_path) |key_path| try std.json.stringify(key_path, .{}, writer) else try writer.writeAll("null");
+    } else if (std.mem.eql(u8, secret.backend, "age")) {
+        try writer.writeAll(",\"path\":");
+        if (secret.path) |path_value| try std.json.stringify(path_value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"identity_set\":");
+        try writer.writeAll(if (secret.identity != null) "true" else "false");
+    } else if (std.mem.eql(u8, secret.backend, "keychain")) {
+        try writer.writeAll(",\"service\":");
+        if (secret.service) |service| try std.json.stringify(service, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"account\":");
+        if (secret.account) |account| try std.json.stringify(account, .{}, writer) else try writer.writeAll("null");
+    } else if (std.mem.eql(u8, secret.backend, "command")) {
+        try writer.writeAll(",\"command\":");
+        if (secret.command) |argv| {
+            if (argv.len > 0) {
+                try std.json.stringify(argv[0], .{}, writer);
+            } else {
+                try writer.writeAll("null");
+            }
+            try writer.print(",\"arg_count\":{d}", .{argv.len});
+        } else {
+            try writer.writeAll("null,\"arg_count\":0");
+        }
+    }
+    try writer.writeByte('}');
+}
+
+fn writeHealthEntriesJson(writer: anytype, store: *health_mod.HealthStore) !void {
+    try writer.writeByte('[');
+    var first = true;
+    var it = store.accounts.iterator();
+    while (it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        const h = entry.value_ptr.*;
+        try writer.writeByte('{');
+        try writer.writeAll("\"key\":");
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        if (health_mod.parseHealthKey(entry.key_ptr.*)) |parts| {
+            try writer.writeAll(",\"provider\":");
+            try std.json.stringify(parts.provider, .{}, writer);
+            try writer.writeAll(",\"account\":");
+            try std.json.stringify(parts.account, .{}, writer);
+            try writer.writeAll(",\"capability\":");
+            if (parts.capability) |capability| {
+                try std.json.stringify(capability, .{}, writer);
+            } else {
+                try writer.writeAll("null");
+            }
+        }
+        try writer.print(",\"score\":{d},\"successes\":{d},\"failures\":{d},\"rate_limits\":{d},\"circuit\":", .{
+            h.score.score,
+            h.score.successes,
+            h.score.failures,
+            h.score.rate_limits,
+        });
+        try std.json.stringify(circuitName(h.circuit), .{}, writer);
+        try writer.writeAll(",\"last_http_status\":");
+        if (h.last_http_status) |status| {
+            try writer.print("{d}", .{status});
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"liveness\":");
+        try writeLivenessJson(writer, h.liveness);
+        try writer.writeAll(",\"last_probe\":");
+        try writeProbeEvidenceJson(writer, h);
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCommandAvailabilityText(writer: anytype, allocator: std.mem.Allocator) !void {
+    var any = false;
+    for (provider_schema.builtin_providers) |def| {
+        for (def.detection.binary_names) |binary_name| {
+            any = true;
+            try writer.print("    {s}:{s} {s}\n", .{
+                def.name,
+                binary_name,
+                if (try commandAvailable(allocator, binary_name)) "available" else "missing",
+            });
+        }
+    }
+    if (!any) try writer.writeAll("    no command detectors declared\n");
+}
+
+fn writeCommandAvailabilityJson(writer: anytype, allocator: std.mem.Allocator) !void {
+    try writer.writeByte('[');
+    var first = true;
+    for (provider_schema.builtin_providers) |def| {
+        for (def.detection.binary_names) |binary_name| {
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try writer.writeAll("{\"provider\":");
+            try std.json.stringify(def.name, .{}, writer);
+            try writer.writeAll(",\"command\":");
+            try std.json.stringify(binary_name, .{}, writer);
+            try writer.writeAll(",\"available\":");
+            try writer.writeAll(if (try commandAvailable(allocator, binary_name)) "true" else "false");
+            try writer.writeByte('}');
+        }
+    }
+    try writer.writeByte(']');
+}
+
+fn writeAccountPathHintsText(writer: anytype, account: config.AccountConfig) !void {
+    if (account.config_dir) |config_dir| try writer.print(" config_dir={s}", .{config_dir});
+
+    const secret = account.secret;
+    if (std.mem.eql(u8, secret.backend, "env")) {
+        if (secret.variable) |variable| try writer.print(" env={s}", .{variable});
+    } else if (std.mem.eql(u8, secret.backend, "file") or std.mem.eql(u8, secret.backend, "sops") or std.mem.eql(u8, secret.backend, "age")) {
+        if (secret.path) |path_value| try writer.print(" path={s}", .{path_value});
+    } else if (std.mem.eql(u8, secret.backend, "keychain")) {
+        if (secret.service) |service| try writer.print(" keychain_service={s}", .{service});
+        if (secret.account) |account_name| try writer.print(" keychain_account={s}", .{account_name});
+    } else if (std.mem.eql(u8, secret.backend, "command")) {
+        if (secret.command) |argv| {
+            if (argv.len > 0) try writer.print(" command={s} argc={d}", .{ argv[0], argv.len });
+        }
+    }
+}
+
+fn writeIndentedLines(writer: anytype, value: []const u8, indent: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, value, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        try writer.print("{s}{s}\n", .{ indent, line });
+    }
+}
+
+fn writeLineArrayJson(writer: anytype, value: []const u8) !void {
+    try writer.writeByte('[');
+    var first = true;
+    var lines = std.mem.splitScalar(u8, value, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(line, .{}, writer);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeStringArrayJson(writer: anytype, values: []const []const u8) !void {
+    try writer.writeByte('[');
+    for (values, 0..) |value, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try std.json.stringify(value, .{}, writer);
+    }
+    try writer.writeByte(']');
+}
+
+fn configuredAccountCountForDefinition(cfg: ?config.Config, def_key: []const u8, def_name: []const u8) usize {
+    const loaded = cfg orelse return 0;
+    var count: usize = 0;
+    var provider_it = loaded.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        if (std.mem.eql(u8, provider_name, def_key) or
+            std.mem.eql(u8, provider_name, def_name) or
+            std.mem.eql(u8, prov.kind, def_key) or
+            std.mem.eql(u8, prov.kind, def_name))
+        {
+            count += prov.accounts.map.count();
+        }
+    }
+    return count;
+}
+
+fn supportStatusForConfig(cfg: config.Config, provider_name: []const u8, provider_kind: []const u8) []const u8 {
+    if (provider_schema.findBuiltin(provider_kind) != null) {
+        return supportStatus(provider_kind, true);
+    }
+    if (provider_schema.findBuiltin(provider_name) != null) {
+        return supportStatus(provider_name, true);
+    }
+    if (cfg.provider_definitions.map.get(provider_kind) != null or cfg.provider_definitions.map.get(provider_name) != null) {
+        return "schema_modeled";
+    }
+    return "needs_operator_proof";
+}
+
+fn supportStatus(def_name: []const u8, built_in: bool) []const u8 {
+    if (std.mem.eql(u8, def_name, "codex")) return "live_proven";
+    if (built_in) return "built_in";
+    return "schema_modeled";
+}
+
+fn proofStatus(def_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, def_name, "codex")) return "live_proven";
+    return "needs_operator_proof";
+}
+
+fn providerDisplayName(def: provider_schema.ProviderDefinition) []const u8 {
+    if (def.display_name.len != 0) return def.display_name;
+    return def.name;
+}
+
+fn countProviderProbes(def: provider_schema.ProviderDefinition) usize {
+    var count: usize = 0;
+    for (def.capabilities) |capability| {
+        if (capability.probe != null) count += 1;
+    }
+    return count;
+}
+
+fn isBuiltinDefinition(def_key: []const u8, def_name: []const u8) bool {
+    return provider_schema.findBuiltin(def_key) != null or provider_schema.findBuiltin(def_name) != null;
+}
+
+fn circuitName(circuit: types.CircuitState) []const u8 {
+    return switch (circuit) {
+        .closed => "closed",
+        .open => "open",
+        .half_open => "half_open",
+    };
+}
+
+fn commandAvailable(allocator: std.mem.Allocator, binary_name: []const u8) !bool {
+    if (binary_name.len == 0) return false;
+
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+    defer allocator.free(path_env);
+
+    var dirs = std.mem.splitScalar(u8, path_env, pathDelimiter());
+    while (dirs.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ dir, binary_name });
+        defer allocator.free(candidate);
+        if (fileExists(candidate)) return true;
+
+        if (comptime builtin.os.tag == .windows) {
+            if (!std.ascii.endsWithIgnoreCase(binary_name, ".exe")) {
+                const exe_name = try std.fmt.allocPrint(allocator, "{s}.exe", .{binary_name});
+                defer allocator.free(exe_name);
+                const exe_candidate = try std.fs.path.join(allocator, &.{ dir, exe_name });
+                defer allocator.free(exe_candidate);
+                if (fileExists(exe_candidate)) return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+fn pathDelimiter() u8 {
+    return if (builtin.os.tag == .windows) ';' else ':';
+}
+
+fn fileExists(path_value: []const u8) bool {
+    const file = if (std.fs.path.isAbsolute(path_value))
+        std.fs.openFileAbsolute(path_value, .{}) catch return false
+    else
+        std.fs.cwd().openFile(path_value, .{}) catch return false;
+    file.close();
+    return true;
+}
+
+fn countConfiguredAccounts(cfg: config.Config) usize {
+    var count: usize = 0;
+    var it = cfg.providers.map.iterator();
+    while (it.next()) |entry| {
+        count += entry.value_ptr.accounts.map.count();
+    }
+    return count;
+}
+
+fn fileExistsAbsolute(path: []const u8) bool {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
+    file.close();
+    return true;
 }
 
 fn runEnv(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnvArgs) !void {
@@ -856,10 +1866,7 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
     } else |_| {}
 
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        try std.fs.cwd().makePath(dir);
     }
 
     const generic_starter_config =

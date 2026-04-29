@@ -46,6 +46,9 @@ synthetic local E2E harness.
 Discover the redacted, agent-safe inventory:
 
 ```bash
+oauth-mux doctor
+oauth-mux report --redacted
+oauth-mux providers list
 oauth-mux discover --json
 ```
 
@@ -65,6 +68,15 @@ Run the no-spend Codex Max canary:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
+```
+
+First-run Codex subscription path:
+
+```bash
+oauth-mux init --codex-max
+oauth-mux doctor
+oauth-mux setup codex
+oauth-mux codex canary
 ```
 
 Run the deterministic no-secret E2E harness:
@@ -112,6 +124,7 @@ full checksums.
 
 See `docs/release-runbook.md` for release and CI details.
 See `docs/adoption.md` for installation and external-user adoption goals.
+See `docs/install-beta-matrix.md` for current clean-install dogfood evidence.
 See `docs/onboarding.md` for human and agent onboarding.
 See `docs/live-provider-qa.md` for manual secret-scoped provider probes.
 See `docs/registry-dry-runs-and-rollback.md` for publication dry-runs and
