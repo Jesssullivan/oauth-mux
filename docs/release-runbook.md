@@ -1,6 +1,6 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-04-28
+Updated: 2026-04-29
 
 ## Local Quality Gates
 
@@ -130,6 +130,28 @@ The staged `install.sh` verifies the selected tarball against `SHA256SUMS`
 before installing. For local proof, `OMUX_RELEASE_BASE_URL=file://...` points it
 at the staged artifact directory instead of GitHub Releases.
 
+## System Package Install QA
+
+After the GitHub Release exists, run the hosted system-package install proof:
+
+```bash
+gh workflow run system-package-install-qa.yml -f version=0.1.3
+```
+
+This workflow downloads the published `.deb` and `.rpm` release assets, verifies
+them against the published `SHA256SUMS`, installs them in clean Debian and Rocky
+Linux containers on `ubuntu-latest`, and runs `/usr/bin/oauth-mux version`.
+
+For local reproduction on a healthy Docker-compatible host:
+
+```bash
+just system-package-qa 0.1.3
+```
+
+This is stricter than the registry `system` dry-run lane. The dry-run lane
+checks package metadata and release staging; this install QA proves that the
+published packages can be installed and execute from the system path.
+
 ## GloriousFlywheel Release Proof
 
 `.github/workflows/release-proof.yml` is a manual cache-first proof surface for
@@ -184,6 +206,8 @@ Current release evidence:
 
 - `just check` passes.
 - `just release-proof <version>` produces and smoke-checks the release tree.
+- Hosted `System Package Install QA` passes after release assets exist when the
+  release changes deb/rpm packaging.
 - Hosted PR CI passes.
 - GF lane either passes or is explicitly deferred because of runner/token state.
 - Release notes mention any skipped GF proof.
