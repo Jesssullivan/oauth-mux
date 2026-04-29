@@ -24,6 +24,7 @@ The happy path should stay small:
 
 ```bash
 oauth-mux init
+oauth-mux doctor
 oauth-mux config validate
 oauth-mux discover --json
 ```
@@ -32,7 +33,8 @@ For Codex subscription users working from a source checkout today:
 
 ```bash
 oauth-mux init --codex-max
-oauth-mux codex onboard
+oauth-mux doctor
+oauth-mux setup codex
 oauth-mux codex canary
 ```
 

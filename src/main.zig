@@ -67,6 +67,10 @@ pub fn main() !void {
             };
         },
 
+        .doctor => |doctor_args| {
+            try runDoctor(allocator, stdout, doctor_args);
+        },
+
         .exec => |exec_args| {
             runExec(allocator, exec_args) catch |e| {
                 log.err("exec: {s}", .{@errorName(e)});
@@ -191,6 +195,8 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writeCommandJson(writer, "oauth-mux init");
             try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux init --codex-max");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux doctor");
             try writer.writeAll("]}\n");
         } else {
             try writer.writeAll("oauth-mux discover\n\n");
@@ -199,6 +205,7 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writer.writeAll("  next:\n");
             try writer.writeAll("    oauth-mux init\n");
             try writer.writeAll("    oauth-mux init --codex-max\n");
+            try writer.writeAll("    oauth-mux doctor\n");
             try writer.writeAll("    oauth-mux config validate\n");
         }
         return;
@@ -267,6 +274,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
 
     try writer.writeAll("\n  agent-safe commands:\n");
     try writer.writeAll("    oauth-mux config validate\n");
+    try writer.writeAll("    oauth-mux doctor --json\n");
     try writer.writeAll("    oauth-mux status --json\n");
     try writer.writeAll("    oauth-mux health --json\n");
     try writer.writeAll("    oauth-mux probe --profile <profile> --capability <capability> --json\n");
@@ -353,6 +361,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("],\"agent_safe_commands\":[");
     const commands = [_][]const u8{
         "oauth-mux config validate",
+        "oauth-mux doctor --json",
         "oauth-mux status --json",
         "oauth-mux health --json",
         "oauth-mux probe --profile <profile> --capability <capability> --json",
@@ -368,6 +377,262 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
 
 fn writeCommandJson(writer: anytype, command: []const u8) !void {
     try std.json.stringify(command, .{}, writer);
+}
+
+const DoctorStats = struct {
+    configured: bool = false,
+    config_valid: bool = false,
+    config_error: ?[]const u8 = null,
+    provider_count: usize = 0,
+    account_count: usize = 0,
+    profile_count: usize = 0,
+    strategy_count: usize = 0,
+    codex_configured: bool = false,
+    health_file_exists: bool = false,
+    health_entries: usize = 0,
+
+    fn ok(self: DoctorStats) bool {
+        return self.configured and self.config_valid and self.provider_count > 0 and self.account_count > 0;
+    }
+};
+
+fn runDoctor(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DoctorArgs) !void {
+    const config_path = try paths.configFilePath(allocator);
+    defer allocator.free(config_path);
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+    const health_path = try paths.healthFilePath(allocator);
+    defer allocator.free(health_path);
+
+    var stats = DoctorStats{
+        .health_file_exists = fileExistsAbsolute(health_path),
+    };
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+
+    if (config.load(allocator)) |parsed| {
+        defer parsed.deinit();
+        stats.configured = true;
+        stats.provider_count = parsed.value.providers.map.count();
+        stats.account_count = countConfiguredAccounts(parsed.value);
+        stats.profile_count = parsed.value.profiles.map.count();
+        stats.strategy_count = parsed.value.strategies.map.count();
+        stats.codex_configured = parsed.value.providers.map.get("codex") != null;
+
+        config.validate(parsed.value, validation_messages.writer()) catch |e| {
+            stats.config_error = @errorName(e);
+        };
+        stats.config_valid = stats.config_error == null;
+    } else |e| {
+        stats.config_error = @errorName(e);
+    }
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+    stats.health_entries = store.accounts.count();
+
+    if (args.json) {
+        try writeDoctorJson(writer, stats, config_path, state_dir, health_path, validation_messages.items);
+    } else {
+        try writeDoctorText(writer, stats, config_path, state_dir, health_path, validation_messages.items);
+    }
+}
+
+fn writeDoctorText(
+    writer: anytype,
+    stats: DoctorStats,
+    config_path: []const u8,
+    state_dir: []const u8,
+    health_path: []const u8,
+    validation_messages: []const u8,
+) !void {
+    try writer.writeAll("oauth-mux doctor\n\n");
+    try writer.print("  config: {s}\n", .{config_path});
+    if (!stats.configured) {
+        try writer.print("    status: missing ({s})\n", .{stats.config_error orelse "not_found"});
+    } else if (!stats.config_valid) {
+        try writer.print("    status: invalid ({s})\n", .{stats.config_error orelse "validation_failed"});
+    } else {
+        try writer.writeAll("    status: valid\n");
+    }
+    try writer.print("    providers={d} accounts={d} profiles={d} strategies={d}\n", .{
+        stats.provider_count,
+        stats.account_count,
+        stats.profile_count,
+        stats.strategy_count,
+    });
+    try writer.print("  state:  {s}\n", .{state_dir});
+    try writer.print("  health: {s} ({s}, entries={d})\n", .{
+        health_path,
+        if (stats.health_file_exists) "present" else "not recorded",
+        stats.health_entries,
+    });
+    try writer.print("  readiness: {s}\n", .{if (stats.ok()) "ready" else "action_needed"});
+
+    if (validation_messages.len != 0) {
+        try writer.writeAll("\n  validation:\n");
+        var lines = std.mem.splitScalar(u8, validation_messages, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            try writer.print("    {s}\n", .{line});
+        }
+    }
+
+    try writer.writeAll("\n  next:\n");
+    try writeDoctorNextCommandsText(writer, stats);
+}
+
+fn writeDoctorJson(
+    writer: anytype,
+    stats: DoctorStats,
+    config_path: []const u8,
+    state_dir: []const u8,
+    health_path: []const u8,
+    validation_messages: []const u8,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (stats.ok()) "true" else "false");
+    try writer.writeAll(",\"configured\":");
+    try writer.writeAll(if (stats.configured) "true" else "false");
+    try writer.writeAll(",\"config_path\":");
+    try std.json.stringify(config_path, .{}, writer);
+    try writer.writeAll(",\"state_dir\":");
+    try std.json.stringify(state_dir, .{}, writer);
+    try writer.writeAll(",\"health_path\":");
+    try std.json.stringify(health_path, .{}, writer);
+    try writer.writeAll(",\"config_valid\":");
+    try writer.writeAll(if (stats.config_valid) "true" else "false");
+    try writer.writeAll(",\"config_error\":");
+    if (stats.config_error) |err| {
+        try std.json.stringify(err, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.print(
+        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s}",
+        .{
+            stats.provider_count,
+            stats.account_count,
+            stats.profile_count,
+            stats.strategy_count,
+            if (stats.health_file_exists) "true" else "false",
+            stats.health_entries,
+            if (stats.codex_configured) "true" else "false",
+        },
+    );
+    try writer.writeAll(",\"checks\":[");
+    try writeDoctorChecksJson(writer, stats, validation_messages);
+    try writer.writeAll("],\"next_commands\":[");
+    try writeDoctorNextCommandsJson(writer, stats);
+    try writer.writeAll("]}\n");
+}
+
+fn writeDoctorChecksJson(writer: anytype, stats: DoctorStats, validation_messages: []const u8) !void {
+    var first = true;
+    try writeDoctorCheckJson(writer, &first, "config_found", stats.configured, if (stats.configured) "ok" else "error", if (stats.configured) "config file found" else "config file missing");
+    const valid_message = if (validation_messages.len == 0)
+        if (stats.config_valid) "config validates" else "config could not be loaded"
+    else
+        validation_messages;
+    try writeDoctorCheckJson(writer, &first, "config_valid", stats.config_valid, if (stats.config_valid) "ok" else "error", valid_message);
+    try writeDoctorCheckJson(writer, &first, "accounts_configured", stats.account_count > 0, if (stats.account_count > 0) "ok" else "error", if (stats.account_count > 0) "one or more accounts configured" else "no muxable accounts configured");
+    try writeDoctorCheckJson(writer, &first, "profiles_configured", stats.profile_count > 0, if (stats.profile_count > 0) "ok" else "warning", if (stats.profile_count > 0) "one or more profiles configured" else "no profiles configured");
+    try writeDoctorCheckJson(writer, &first, "health_recorded", stats.health_entries > 0, if (stats.health_entries > 0) "ok" else "info", if (stats.health_entries > 0) "health state recorded" else "no health state recorded yet");
+}
+
+fn writeDoctorCheckJson(
+    writer: anytype,
+    first: *bool,
+    name: []const u8,
+    ok: bool,
+    severity: []const u8,
+    message: []const u8,
+) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writer.writeAll("{\"name\":");
+    try std.json.stringify(name, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"severity\":");
+    try std.json.stringify(severity, .{}, writer);
+    try writer.writeAll(",\"message\":");
+    try std.json.stringify(message, .{}, writer);
+    try writer.writeByte('}');
+}
+
+fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
+    if (!stats.configured) {
+        try writer.writeAll("    oauth-mux init\n");
+        try writer.writeAll("    oauth-mux init --codex-max\n");
+        try writer.writeAll("    oauth-mux doctor\n");
+        return;
+    }
+
+    if (!stats.config_valid) {
+        try writer.writeAll("    oauth-mux config validate\n");
+        try writer.writeAll("    oauth-mux doctor\n");
+        return;
+    }
+
+    try writer.writeAll("    oauth-mux discover --json\n");
+    try writer.writeAll("    oauth-mux status --json\n");
+    try writer.writeAll("    oauth-mux health --json\n");
+    if (stats.codex_configured) {
+        try writer.writeAll("    oauth-mux setup codex\n");
+        try writer.writeAll("    oauth-mux codex canary\n");
+        try writer.writeAll("    oauth-mux codex canary --live\n");
+    }
+}
+
+fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
+    var first = true;
+    if (!stats.configured) {
+        try writeDoctorCommandJson(writer, &first, "oauth-mux init");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux init --codex-max");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux doctor");
+        return;
+    }
+
+    if (!stats.config_valid) {
+        try writeDoctorCommandJson(writer, &first, "oauth-mux config validate");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux doctor");
+        return;
+    }
+
+    try writeDoctorCommandJson(writer, &first, "oauth-mux discover --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux status --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux health --json");
+    if (stats.codex_configured) {
+        try writeDoctorCommandJson(writer, &first, "oauth-mux setup codex");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary --live");
+    }
+}
+
+fn writeDoctorCommandJson(writer: anytype, first: *bool, command: []const u8) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writeCommandJson(writer, command);
+}
+
+fn countConfiguredAccounts(cfg: config.Config) usize {
+    var count: usize = 0;
+    var it = cfg.providers.map.iterator();
+    while (it.next()) |entry| {
+        count += entry.value_ptr.accounts.map.count();
+    }
+    return count;
+}
+
+fn fileExistsAbsolute(path: []const u8) bool {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
+    file.close();
+    return true;
 }
 
 fn runEnv(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnvArgs) !void {

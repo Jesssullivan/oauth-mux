@@ -46,6 +46,7 @@ synthetic local E2E harness.
 Discover the redacted, agent-safe inventory:
 
 ```bash
+oauth-mux doctor
 oauth-mux discover --json
 ```
 
@@ -65,6 +66,15 @@ Run the no-spend Codex Max canary:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
+```
+
+First-run Codex subscription path:
+
+```bash
+oauth-mux init --codex-max
+oauth-mux doctor
+oauth-mux setup codex
+oauth-mux codex canary
 ```
 
 Run the deterministic no-secret E2E harness:

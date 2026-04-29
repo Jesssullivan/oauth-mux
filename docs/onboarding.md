@@ -35,6 +35,7 @@ Generic starter:
 
 ```bash
 oauth-mux init
+oauth-mux doctor
 oauth-mux config validate
 oauth-mux discover
 ```
@@ -43,29 +44,36 @@ Codex Max three-account starter:
 
 ```bash
 oauth-mux init --codex-max
-oauth-mux codex onboard
+oauth-mux doctor
+oauth-mux setup codex
 oauth-mux codex canary
 ```
 
-`oauth-mux codex onboard` creates the expected isolated `CODEX_HOME` directories,
-runs `codex login` for accounts that are not logged in, prints login status, and
-then prints `oauth-mux discover`. It does not run live route probes unless the
-operator explicitly opts in:
+`oauth-mux doctor` is the no-spend readiness report. It checks whether config is
+present and valid, counts configured providers/accounts/profiles, reports
+whether health state exists, and prints the next safe commands for the current
+state.
+
+`oauth-mux setup codex` is the user-facing alias for
+`oauth-mux codex onboard` / `oauth-mux codex setup`. It creates the expected
+isolated `CODEX_HOME` directories, runs `codex login` for accounts that are not
+logged in, prints login status, and then prints `oauth-mux discover`. It does
+not run live route probes unless the operator explicitly opts in:
 
 ```bash
-oauth-mux codex onboard --live
+oauth-mux setup codex --live
 ```
 
 For device-code login instead of browser login:
 
 ```bash
-oauth-mux codex onboard --device
+oauth-mux setup codex --device
 ```
 
 For status-only inspection:
 
 ```bash
-oauth-mux codex onboard --status-only
+oauth-mux setup codex --status-only
 ```
 
 For a no-spend canary after onboarding:
@@ -90,14 +98,16 @@ oauth-mux codex probe-all --capability codex-mini --json
 ```
 
 Source checkouts keep `just codex-max-onboard` and `just codex-max-canary` as
-thin aliases for installed commands. `just codex-max-probe-all` is likewise a
-thin alias for `oauth-mux codex probe-all`.
+thin aliases for installed commands. `just codex-max-setup` is a thin alias for
+`oauth-mux setup codex`, and `just codex-max-probe-all` is likewise a thin alias
+for `oauth-mux codex probe-all`.
 
 ## Agent Discovery Contract
 
 Agents should start with:
 
 ```bash
+oauth-mux doctor --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
@@ -134,7 +144,7 @@ templates. It does not include token material.
 2. Add named accounts and secret backends.
 3. Add profiles that encode provider/account/capability fallback order.
 4. Run `oauth-mux config validate`.
-5. Run `oauth-mux discover --json`.
+5. Run `oauth-mux doctor --json` and `oauth-mux discover --json`.
 6. Run no-spend checks first: `status`, `health`, and credential parse probes.
 7. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.

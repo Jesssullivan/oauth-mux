@@ -185,10 +185,21 @@ Candidate CLI additions:
   - reports provider status as `built_in`, `schema_modeled`, `live_proven`, or
     `needs_operator_proof`.
 
+Initial implementation status:
+
+- `oauth-mux doctor [--json]` now provides a no-spend readiness report covering
+  config path, state path, config validation, provider/account/profile counts,
+  health state presence, and safe next commands.
+- `oauth-mux setup codex` and `oauth-mux codex setup` both route to the Codex
+  onboarding flow.
+- `discover --json` now advertises `doctor --json` as an agent-safe command.
+- Redacted support bundles and provider status listing remain follow-up scope.
+
 Acceptance:
 
 - `just check` passes.
-- no-secret E2E covers `doctor` and redacted report output.
+- no-secret E2E covers `doctor`; redacted report output is covered when
+  `report --redacted` lands.
 - docs and website first-run examples use installed commands only.
 - hosted live QA reruns for the Codex matrix before publication.
 - full registry dry-run reruns for the bumped version before CI-only publish.
