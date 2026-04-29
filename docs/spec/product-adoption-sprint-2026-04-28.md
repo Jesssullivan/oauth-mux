@@ -4,6 +4,10 @@ Date: 2026-04-28
 
 Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 
+Repository context: the canonical public source repo is
+`Jesssullivan/oauth-mux`; Tinyland remains the release-infrastructure and launch
+partner.
+
 ## Baseline
 
 `oauth-mux` has crossed the line from architecture experiment to usable public
@@ -294,7 +298,7 @@ Write three concise pieces:
 Each post should link to:
 
 - website;
-- GitHub repo;
+- GitHub repo: `https://github.com/Jesssullivan/oauth-mux`;
 - npm package;
 - provider authoring checklist;
 - daemon boundary;

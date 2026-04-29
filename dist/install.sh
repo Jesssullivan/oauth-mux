@@ -2,7 +2,7 @@
 # oauth-mux installer - detects OS/arch, verifies checksums, installs the binary
 set -eu
 
-REPO="${REPO:-tinyland-inc/oauth-mux}"
+REPO="${REPO:-Jesssullivan/oauth-mux}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-latest}"
 OMUX_RELEASE_BASE_URL="${OMUX_RELEASE_BASE_URL:-}"

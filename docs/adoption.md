@@ -86,3 +86,10 @@ The current adoption plan is tracked in
 - launch sequencing and outreach;
 - provider-author feedback loops;
 - follow-up Linear split from `TIN-491`.
+
+## Ownership And URL
+
+The canonical public source repo is `Jesssullivan/oauth-mux`. The preferred
+project URL is `https://omux.xoxd.ai`, with Tinyland remaining the development
+and release-infrastructure partner. See
+`docs/spec/repository-ownership-and-url-2026-04-28.md`.
