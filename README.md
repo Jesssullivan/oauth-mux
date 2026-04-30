@@ -126,6 +126,11 @@ readiness instead of racing an upstream CLI login flow. Inspect recent events
 with `oauth-mux daemon events --json`; this does not require the daemon to be
 running.
 
+Refresh attempts use the same local event stream. `token_refresh` events record
+only route identity, writeback capability, admission, outcome, and redacted
+reason. They do not include access tokens, refresh tokens, credential paths, or
+provider response bodies.
+
 Daemon admission is policy-gated. By default, background/daemon planning admits
 only `free_local` and `free_command` work; `cheap_provider`, `spend_provider`,
 `interactive`, and `mutating` actions are reported as refused until the config

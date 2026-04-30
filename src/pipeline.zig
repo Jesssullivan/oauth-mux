@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const config_mod = @import("config.zig");
 const secret = @import("secret.zig");
@@ -11,6 +12,7 @@ const log = @import("log.zig");
 const oauth = @import("oauth.zig");
 const probe = @import("probe.zig");
 const env = @import("env.zig");
+const repair_state = @import("repair_state.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -520,14 +522,16 @@ fn buildProbeEnv(
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
-    const backend = try refreshWritebackBackend(ctx, def);
+    const writeback = try refreshWritebackBackend(ctx, def);
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
+        recordRefreshEvent(ctx, writeback.plan, "no_token_endpoint", "token_endpoint_missing", false, false);
         return error.TokenRefreshFailed;
     };
 
     const result = oauth.refreshToken(ctx.allocator, url, rt, def.auth.client_id) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
+        recordRefreshEvent(ctx, writeback.plan, "token_endpoint_failed", @errorName(e), false, true);
         return error.TokenRefreshFailed;
     };
     errdefer ctx.allocator.free(result.access_token);
@@ -554,11 +558,15 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
             .expires_at = expires_at,
         },
         ctx.allocator,
-    ) catch return error.TokenRefreshFailed;
+    ) catch {
+        recordRefreshEvent(ctx, writeback.plan, "credential_build_failed", "credential_template_failed", false, true);
+        return error.TokenRefreshFailed;
+    };
     defer ctx.allocator.free(credential);
 
-    secret.writeReplace(backend, credential, ctx.allocator) catch |e| {
+    secret.writeReplace(writeback.backend, credential, ctx.allocator) catch |e| {
         log.err("token: refresh writeback failed for {s}: {s}", .{ prov, @errorName(e) });
+        recordRefreshEvent(ctx, writeback.plan, "writeback_failed", @errorName(e), false, true);
         return error.TokenRefreshFailed;
     };
 
@@ -573,13 +581,19 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
         .expires_at = expires_at,
     };
 
+    recordRefreshEvent(ctx, writeback.plan, "persisted", writeback.plan.reason, true, true);
     log.info("token: refreshed successfully", .{});
 }
+
+const RefreshWriteback = struct {
+    backend: types.SecretBackend,
+    plan: secret.WritebackPlan,
+};
 
 fn refreshWritebackBackend(
     ctx: *Context,
     def: provider_schema.ProviderDefinition,
-) PipelineError!types.SecretBackend {
+) PipelineError!RefreshWriteback {
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
     const acct = ctx.account_name orelse return error.AccountNotFound;
     const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
@@ -588,9 +602,40 @@ fn refreshWritebackBackend(
     const plan = secret.writebackPlan(backend, def.repair.owner);
     if (!plan.automatic_refresh_admitted) {
         log.warn("token: refresh writeback not admitted for {s}:{s}: {s}", .{ prov, acct, plan.reason });
+        recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
         return error.TokenRefreshFailed;
     }
-    return backend;
+    return .{
+        .backend = backend,
+        .plan = plan,
+    };
+}
+
+fn recordRefreshEvent(
+    ctx: *Context,
+    plan: secret.WritebackPlan,
+    outcome: []const u8,
+    reason: ?[]const u8,
+    ok: bool,
+    executed: bool,
+) void {
+    if (comptime builtin.is_test) return;
+    repair_state.appendEvent(ctx.allocator, .{
+        .kind = "token_refresh",
+        .profile = ctx.profile_name,
+        .provider = ctx.provider_name,
+        .account = ctx.account_name,
+        .capability = ctx.capability_name,
+        .action = "refresh",
+        .writeback_capability = @tagName(plan.capability),
+        .automatic_refresh_admitted = plan.automatic_refresh_admitted,
+        .outcome = outcome,
+        .reason = reason,
+        .ok = ok,
+        .executed = executed,
+        .interactive = false,
+        .mutating = true,
+    }) catch {};
 }
 
 fn fallbackRefreshUrl(ctx: *Context) ?[]const u8 {
@@ -829,8 +874,9 @@ test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
     defer admitted_ctx.deinit();
     admitted_ctx.provider_name = "toy";
     admitted_ctx.account_name = "default";
-    const admitted_backend = try refreshWritebackBackend(&admitted_ctx, config_mod.resolveProviderDefinition(admitted.value, "toy"));
-    switch (admitted_backend) {
+    const admitted_writeback = try refreshWritebackBackend(&admitted_ctx, config_mod.resolveProviderDefinition(admitted.value, "toy"));
+    try std.testing.expect(admitted_writeback.plan.automatic_refresh_admitted);
+    switch (admitted_writeback.backend) {
         .file => |ref| try std.testing.expectEqualStrings(auth_path, ref.path),
         else => return error.TestUnexpectedResult,
     }

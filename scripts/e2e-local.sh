@@ -371,6 +371,64 @@ expect_contains "$repair_events" '"profile":"needs-reauth"' "repair events recor
 expect_contains "$repair_events" '"provider":"codex"' "repair events record provider"
 expect_contains "$repair_events" '"account":"max-1"' "repair events record account"
 
+printf 'e2e: refresh admission refusal records redacted token_refresh event\n'
+refresh_config="$tmp/refresh-config.json"
+refresh_auth="$tmp/refresh-auth.json"
+cat >"$refresh_auth" <<'EOF'
+{"tokens":{"access_token":"expired-access-token","refresh_token":"expired-refresh-token","expires_at":1}}
+EOF
+cat >"$refresh_config" <<EOF
+{
+  "version": 1,
+  "provider_definitions": {
+    "toy": {
+      "name": "toy",
+      "repair": {
+        "owner": "upstream_cli_login"
+      },
+      "credential": {
+        "access_token_path": "tokens.access_token",
+        "refresh_token_path": "tokens.refresh_token",
+        "expires_at_path": "tokens.expires_at"
+      },
+      "injection": {
+        "direct_env": [["TOY_TOKEN", "access_token"]]
+      }
+    }
+  },
+  "providers": {
+    "toy": {
+      "kind": "toy",
+      "accounts": {
+        "expired": {
+          "secret": {
+            "backend": "file",
+            "path": "$refresh_auth"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "refresh-refused": {
+      "providers": ["toy:expired"]
+    }
+  },
+  "strategies": {}
+}
+EOF
+refresh_refused_json="$tmp/refresh-refused.json"
+if OMUX_CONFIG="$refresh_config" OMUX_STATE_DIR="$state_dir" "$bin" env --profile refresh-refused --shell bash >"$refresh_refused_json" 2>"$tmp/refresh-refused.stderr"; then
+  printf 'e2e assertion failed: expired refresh route should fail closed before token endpoint\n' >&2
+  exit 1
+fi
+refresh_events="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon events --json)"
+expect_contains "$refresh_events" '"kind":"token_refresh"' "refresh event records event kind"
+expect_contains "$refresh_events" '"outcome":"not_admitted"' "refresh event records admission refusal"
+expect_contains "$refresh_events" '"writeback_capability":"replace_file"' "refresh event records writeback capability"
+expect_contains "$refresh_events" '"automatic_refresh_admitted":false' "refresh event records admission boolean"
+expect_contains "$refresh_events" '"reason":"provider_repair_owned_by_upstream_cli"' "refresh event records redacted refusal reason"
+
 printf 'e2e: route health does not poison unrelated capability\n'
 cheap_after_quota="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_after_quota" "export OMUX_ACTIVE_ACCOUNT='a1'" "cheap route still uses a1 after expensive quota"
