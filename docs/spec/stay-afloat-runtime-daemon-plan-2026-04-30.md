@@ -412,6 +412,18 @@ providers, open browsers, run repair commands, or mutate secret stores.
 Unrecorded routes surface as `probe_needed`; `route select` exits nonzero when
 there is no `live.available` route with ready runtime state.
 
+Implementation note, 2026-04-30: `doctor runtime --json` now checks local
+runtime prerequisites without provider calls. It reports missing upstream
+binaries, configured account store presence, local write access via a temporary
+marker file, and expected session-file presence. It does not read token values
+or create missing account stores.
+
+Dogfood note, 2026-04-30: running the runtime doctor from the current Codex
+sandbox classified configured Codex account stores as not writable from this
+process while their session files were present. `route explain` now consumes the
+same account runtime readiness, so an otherwise `live.available` Codex account
+is not selected when the current process cannot write its account store.
+
 ### M2: Repair Plan
 
 - Add `needs_reauth` state.

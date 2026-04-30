@@ -51,7 +51,13 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    pub const DoctorMode = enum {
+        summary,
+        runtime,
+    };
+
     pub const DoctorArgs = struct {
+        mode: DoctorMode = .summary,
         json: bool = false,
     };
 
@@ -262,7 +268,11 @@ fn parseProbe(args: []const []const u8) Command {
 fn parseDoctor(args: []const []const u8) Command {
     var result = Command.DoctorArgs{};
     for (args) |arg| {
-        if (eql(arg, "--json")) result.json = true;
+        if (eql(arg, "runtime")) {
+            result.mode = .runtime;
+        } else if (eql(arg, "--json")) {
+            result.json = true;
+        }
     }
     return .{ .doctor = result };
 }
@@ -522,7 +532,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  probe [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Validate a selected account and run its capability probe when configured.
         \\
-        \\  doctor [--json]
+        \\  doctor [runtime] [--json]
         \\      Run no-spend readiness checks and print first-run next commands.
         \\
         \\  report [--redacted] [--json] [--include-paths]
@@ -686,7 +696,22 @@ test "parse doctor json" {
     const args = [_][]const u8{ "doctor", "--json" };
     const cmd = parse(&args);
     switch (cmd) {
-        .doctor => |doctor| try std.testing.expect(doctor.json),
+        .doctor => |doctor| {
+            try std.testing.expect(doctor.mode == .summary);
+            try std.testing.expect(doctor.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse doctor runtime json" {
+    const args = [_][]const u8{ "doctor", "runtime", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .doctor => |doctor| {
+            try std.testing.expect(doctor.mode == .runtime);
+            try std.testing.expect(doctor.json);
+        },
         else => return error.Unexpected,
     }
 }
@@ -936,6 +961,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe route' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -a runtime -d 'Runtime readiness checks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report providers' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l redacted -d 'Redact credential paths and values'

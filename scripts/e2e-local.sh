@@ -196,7 +196,14 @@ expect_contains "$doctor_json" '"ok":true' "doctor reports ready config"
 expect_contains "$doctor_json" '"providers":1' "doctor counts configured provider"
 expect_contains "$doctor_json" '"accounts":2' "doctor counts configured accounts"
 expect_contains "$doctor_json" '"oauth-mux discover --json"' "doctor recommends agent discovery"
+expect_contains "$doctor_json" '"oauth-mux doctor runtime --json"' "doctor recommends runtime diagnostics"
 expect_contains "$doctor_json" '"oauth-mux report --redacted --json"' "doctor recommends redacted report"
+
+printf 'e2e: runtime doctor reports local account stores ready\n'
+runtime_json="$(omux doctor runtime --json)"
+expect_contains "$runtime_json" '"ok":true' "runtime doctor reports ready"
+expect_contains "$runtime_json" '"ready_accounts":2' "runtime doctor counts ready accounts"
+expect_contains "$runtime_json" '"config_dir_writable":true' "runtime doctor verifies writable config dirs"
 
 printf 'e2e: redacted report does not expose secret values\n'
 report_json="$(omux report --redacted --json)"

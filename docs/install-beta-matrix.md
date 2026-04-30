@@ -19,7 +19,7 @@ files, SOPS plaintext, or token-shaped values here.
 | rpm package | 0.1.5 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25172711458` installed package and ran `/usr/bin/oauth-mux version`. |
 | Codex live dogfood | 0.1.5 | macOS arm64 | public npm one-shot | Pass with degraded route | Published npm binary reported `max-1#codex-max` quota exhausted while `max-2` and `max-3` covered `codex-max`; `codex-mini` remained covered. |
 | lab dogfood | 0.1.5 | macOS arm64 | public npm one-shot | Pass | Installed `oauth-mux doctor --json` reports `ok: true` against local config/state. |
-| first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, redacted report, no-spend route explanation/select refusal, and non-mutating Codex help. |
+| first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, runtime diagnostics, redacted report, no-spend route explanation/select refusal, and non-mutating Codex help. |
 
 ## Evidence Commands
 
@@ -101,6 +101,7 @@ Expected output includes:
 ```text
 first-run e2e: route explain reports no recorded health without mutation
 first-run e2e: route select refuses unrecorded health evidence
+first-run e2e: runtime doctor classifies unbootstrapped stores without mutation
 first-run e2e passed
 ```
 
