@@ -50,7 +50,6 @@ probe *ARGS: build
 # ── Codex Max operator helpers ──
 
 codex_max_config := "examples/codex-max.config.json"
-codex_max_state := "/tmp/oauth-mux-codex-max-health"
 
 codex-max-bootstrap-dirs: build
     ./zig-out/bin/oauth-mux codex bootstrap-dirs
@@ -77,16 +76,16 @@ codex-max-setup: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux setup codex
 
 codex-max-canary: build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex canary
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex canary
 
 codex-max-live-qa: build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex live-qa
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex live-qa
 
 codex-max-live-qa-confirmed: build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex live-qa --confirm-spend
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex live-qa --confirm-spend
 
 codex-max-repair-plan CAPABILITY="codex-max": build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux repair-plan --profile {{CAPABILITY}} --capability {{CAPABILITY}} --json
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux repair-plan --profile {{CAPABILITY}} --capability {{CAPABILITY}} --json
 
 codex-max-config-candidate OUTPUT="/tmp/oauth-mux-codex-max.config.json": build
     ./zig-out/bin/oauth-mux codex config-candidate --output {{OUTPUT}}
@@ -95,10 +94,10 @@ codex-max-config-merge CANDIDATE="/tmp/oauth-mux-codex-max.config.json": build
     ./zig-out/bin/oauth-mux codex config-merge --candidate {{CANDIDATE}}
 
 codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
 
 codex-max-probe-all CAPABILITY="codex-mini": build
-    OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux codex probe-all --capability {{CAPABILITY}} --json
+    OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex probe-all --capability {{CAPABILITY}} --json
 
 # ── Cross-compilation ──
 

@@ -183,12 +183,16 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json \
   oauth-mux probe --provider codex --account max-2 --capability codex-max --json
 ```
 
-Safer first-pass matrix probe, using the cheaper `codex-mini` route and a
-temporary health store:
+Safer first-pass matrix probe, using the cheaper `codex-mini` route and the
+default oauth-mux state store so later route selection can use the evidence:
 
 ```bash
 just codex-max-probe-all
 ```
+
+Use an explicit `OMUX_STATE_DIR=/tmp/<dir>` only when the probe evidence should
+be isolated from dogfood route selection, such as CI artifact collection or
+negative tests.
 
 Probe one account and route:
 
