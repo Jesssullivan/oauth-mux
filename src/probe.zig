@@ -388,6 +388,7 @@ test "classifyResult honors probe success range" {
         .timeout_ms = 30_000,
         .success_status_min = 202,
         .success_status_max = 204,
+        .budget = .cheap_provider,
     };
 
     try std.testing.expectEqual(
@@ -406,6 +407,7 @@ test "classifyResult falls back to provider failure rules" {
         .timeout_ms = 30_000,
         .success_status_min = 200,
         .success_status_max = 299,
+        .budget = .cheap_provider,
     };
     const result = ProbeResult{
         .status = 429,
@@ -429,6 +431,7 @@ test "classifyResult uses hint text" {
         .timeout_ms = 30_000,
         .success_status_min = 200,
         .success_status_max = 299,
+        .budget = .cheap_provider,
     };
     const result = ProbeResult{
         .status = 403,
@@ -461,6 +464,7 @@ test "classifyResult can downgrade successful GraphQL status from body hint" {
         .success_status_min = 200,
         .success_status_max = 299,
         .hint_body = true,
+        .budget = .cheap_provider,
     };
     const result = ProbeResult{
         .status = 200,
@@ -485,6 +489,7 @@ test "classifyResult decodes codex command jsonl" {
         .timeout_ms = 30_000,
         .success_status_min = 200,
         .success_status_max = 299,
+        .budget = .spend_provider,
     };
     const result = ProbeResult{
         .status = 400,
@@ -513,6 +518,7 @@ test "execute command probe enforces timeout" {
         .timeout_ms = 1,
         .success_status_min = 200,
         .success_status_max = 299,
+        .budget = .free_command,
     };
 
     const result = try execute(std.testing.allocator, plan, "", &.{});

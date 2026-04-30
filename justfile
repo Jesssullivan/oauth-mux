@@ -187,6 +187,9 @@ config-validate: build
 
 # ── Daemon ──
 
+daemon-run: build
+    ./zig-out/bin/oauth-mux daemon run
+
 daemon-start: build
     ./zig-out/bin/oauth-mux daemon start
 

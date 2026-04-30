@@ -111,6 +111,12 @@ pub fn main() !void {
             try cli.printCompletions(stdout, comp_args.shell);
         },
 
+        .daemon_run => {
+            daemon.run(allocator) catch |e| {
+                log.err("daemon: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
         .daemon_start => {
             daemon.start(allocator) catch |e| {
                 log.err("daemon: {s}", .{@errorName(e)});
@@ -930,6 +936,7 @@ fn writeProviderListTextRow(writer: anytype, cfg: ?config.Config, def_key: []con
         def.capabilities.len,
         countProviderProbes(def),
     });
+    try writer.print("    mode={s} repair={s}\n", .{ @tagName(def.extension_mode), @tagName(def.repair.owner) });
 }
 
 fn writeProvidersListJson(
@@ -995,6 +1002,10 @@ fn writeProviderListJsonEntry(
     try std.json.stringify(supportStatus(def.name, built_in), .{}, writer);
     try writer.writeAll(",\"proof_status\":");
     try std.json.stringify(proofStatus(def.name), .{}, writer);
+    try writer.writeAll(",\"extension_mode\":");
+    try std.json.stringify(@tagName(def.extension_mode), .{}, writer);
+    try writer.writeAll(",\"repair_owner\":");
+    try std.json.stringify(@tagName(def.repair.owner), .{}, writer);
     try writer.writeAll(",\"built_in\":");
     try writer.writeAll(if (built_in) "true" else "false");
     try writer.writeAll(",\"configured\":");
@@ -1009,6 +1020,10 @@ fn writeProviderListJsonEntry(
     try writeStringArrayJson(writer, def.detection.binary_names);
     try writer.writeAll(",\"env_markers\":");
     try writeStringArrayJson(writer, def.detection.env_markers);
+    try writer.writeAll(",\"runtime\":");
+    try writeProviderRuntimeJson(writer, allocator, def, null);
+    try writer.writeAll(",\"capability_budgets\":");
+    try writeCapabilityBudgetsJson(writer, def);
     try writer.writeAll(",\"command_availability\":[");
     for (def.detection.binary_names, 0..) |binary_name, idx| {
         if (idx > 0) try writer.writeByte(',');
@@ -1020,6 +1035,45 @@ fn writeProviderListJsonEntry(
     }
     try writer.writeByte(']');
     try writer.writeByte('}');
+}
+
+fn writeProviderRuntimeJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    def: provider_schema.ProviderDefinition,
+    capability: ?[]const u8,
+) !void {
+    const readiness = try providerRuntimeReadiness(allocator, def, capability);
+    try writer.writeByte('{');
+    try writer.writeAll("\"readiness\":");
+    try writeRuntimeReadinessJson(writer, readiness);
+    try writer.writeAll(",\"required_binaries\":");
+    try writeStringArrayJson(writer, def.runtime.required_binaries);
+    try writer.writeAll(",\"env_vars\":");
+    try writeStringArrayJson(writer, def.runtime.env_vars);
+    try writer.writeAll(",\"writable_paths\":");
+    try writeStringArrayJson(writer, def.runtime.writable_paths);
+    try writer.writeAll(",\"session_paths\":");
+    try writeStringArrayJson(writer, def.runtime.session_paths);
+    try writer.writeByte('}');
+}
+
+fn writeCapabilityBudgetsJson(writer: anytype, def: provider_schema.ProviderDefinition) !void {
+    try writer.writeByte('[');
+    for (def.capabilities, 0..) |capability, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writer.writeByte('{');
+        try writer.writeAll("\"name\":");
+        try std.json.stringify(capability.name, .{}, writer);
+        try writer.writeAll(",\"budget\":");
+        if (capability.probe) |probe_def| {
+            try std.json.stringify(@tagName(probe_def.budget orelse provider_schema.defaultProbeBudget(probe_def.transport)), .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
 }
 
 fn writeConfiguredProvidersReportJson(writer: anytype, args: cli.Command.ReportArgs, cfg: config.Config) !void {
@@ -1314,6 +1368,80 @@ fn countProviderProbes(def: provider_schema.ProviderDefinition) usize {
     return count;
 }
 
+fn providerRuntimeReadiness(
+    allocator: std.mem.Allocator,
+    def: provider_schema.ProviderDefinition,
+    capability: ?[]const u8,
+) !types.RuntimeReadiness {
+    for (def.runtime.required_binaries) |binary_name| {
+        if (!try commandAvailable(allocator, binary_name)) {
+            return .{ .missing_binary = binary_name };
+        }
+    }
+
+    if (capability) |capability_name| {
+        if (provider_schema.probePlanForCapability(def, capability_name)) |plan| {
+            if (plan.transport == .command) {
+                const argv = plan.command orelse return .{ .session_unavailable = "probe command missing" };
+                if (argv.len == 0) return .{ .session_unavailable = "probe command empty" };
+                if (!try commandAvailable(allocator, argv[0])) {
+                    return .{ .missing_binary = argv[0] };
+                }
+            }
+        }
+    }
+
+    return .ready;
+}
+
+fn runtimeReadinessSummary(readiness: types.RuntimeReadiness) []const u8 {
+    return switch (readiness) {
+        .ready => "ready",
+        .missing_binary => "missing_binary",
+        .permission_denied => "permission_denied",
+        .unwritable_store => "unwritable_store",
+        .session_unavailable => "session_unavailable",
+        .sandbox_blocked => "sandbox_blocked",
+        .needs_reauth => "needs_reauth",
+        .repair_in_progress => "repair_in_progress",
+    };
+}
+
+fn writeRuntimeReadinessJson(writer: anytype, readiness: types.RuntimeReadiness) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"state\":");
+    try std.json.stringify(runtimeReadinessSummary(readiness), .{}, writer);
+    switch (readiness) {
+        .ready => {},
+        .missing_binary => |binary| {
+            try writer.writeAll(",\"binary\":");
+            try std.json.stringify(binary, .{}, writer);
+        },
+        .permission_denied => |info| {
+            try writer.writeAll(",\"path\":");
+            try std.json.stringify(info.path, .{}, writer);
+            try writer.writeAll(",\"operation\":");
+            try std.json.stringify(info.operation, .{}, writer);
+        },
+        .unwritable_store, .session_unavailable, .sandbox_blocked => |value| {
+            try writer.writeAll(",\"detail\":");
+            try std.json.stringify(value, .{}, writer);
+        },
+        .needs_reauth => |info| {
+            try writer.writeAll(",\"methods\":");
+            try writeStringArrayJson(writer, info.methods);
+            try writer.writeAll(",\"reason\":");
+            try std.json.stringify(info.reason, .{}, writer);
+        },
+        .repair_in_progress => |info| {
+            try writer.writeAll(",\"account\":");
+            try std.json.stringify(info.account, .{}, writer);
+            try writer.print(",\"started_at\":{d}", .{info.started_at});
+        },
+    }
+    try writer.writeByte('}');
+}
+
 fn isBuiltinDefinition(def_key: []const u8, def_name: []const u8) bool {
     return provider_schema.findBuiltin(def_key) != null or provider_schema.findBuiltin(def_name) != null;
 }
@@ -1442,9 +1570,9 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     }
 
     if (args.json) {
-        try writeProbeJson(writer, &store, &ctx, probe_error);
+        try writeProbeJson(writer, allocator, &store, &ctx, probe_error);
     } else {
-        try writeProbeText(writer, &store, &ctx);
+        try writeProbeText(writer, allocator, &store, &ctx);
     }
     try result;
 }
@@ -1541,7 +1669,7 @@ fn probeDecision(ctx: *const pipeline.Context, probe_error: ?types.PipelineError
     return ctx.last_probe_decision orelse .use_this;
 }
 
-fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context) !void {
+fn writeProbeText(writer: anytype, allocator: std.mem.Allocator, store: *health_mod.HealthStore, ctx: *const pipeline.Context) !void {
     const provider_name = ctx.provider_name orelse "-";
     const account_name = ctx.account_name orelse "-";
     try writer.writeAll("oauth-mux probe\n\n");
@@ -1563,6 +1691,12 @@ fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
         try writer.writeAll("  probe:    no configured probe plan for capability\n");
     } else {
         try writer.writeAll("  probe:    no capability requested; credential parse/expiry validation only\n");
+    }
+
+    if (ctx.provider_name) |selected_provider| {
+        const def = config.resolveProviderDefinition(ctx.cfg, selected_provider);
+        const readiness = try providerRuntimeReadiness(allocator, def, ctx.capability_name);
+        try writer.print("  runtime:  {s}\n", .{runtimeReadinessSummary(readiness)});
     }
 
     const selection = selectedHealth(store, ctx);
@@ -1593,7 +1727,7 @@ fn writeProbeText(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
     try writer.writeByte('\n');
 }
 
-fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const pipeline.Context, probe_error: ?types.PipelineError) !void {
+fn writeProbeJson(writer: anytype, allocator: std.mem.Allocator, store: *health_mod.HealthStore, ctx: *const pipeline.Context, probe_error: ?types.PipelineError) !void {
     const selection = selectedHealth(store, ctx);
     const decision = probeDecision(ctx, probe_error);
     try writer.writeByte('{');
@@ -1631,6 +1765,13 @@ fn writeProbeJson(writer: anytype, store: *health_mod.HealthStore, ctx: *const p
     }
     try writer.writeAll(",\"decision\":");
     try std.json.stringify(@tagName(decision), .{}, writer);
+    try writer.writeAll(",\"runtime\":");
+    if (ctx.provider_name) |provider_name| {
+        const def = config.resolveProviderDefinition(ctx.cfg, provider_name);
+        try writeProviderRuntimeJson(writer, allocator, def, ctx.capability_name);
+    } else {
+        try writer.writeAll("null");
+    }
     try writer.writeAll(",\"health_key\":");
     try std.json.stringify(selection.key.slice(), .{}, writer);
     try writer.writeAll(",\"liveness\":");
@@ -2396,6 +2537,18 @@ test "writeHealthJson includes capability routes" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"quota_exhausted\"") != null);
 }
 
+test "writeProvidersListJson exposes extension and budget metadata" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeProvidersListJson(buf.writer(), std.testing.allocator, null, false, "FileNotFound");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"extension_mode\":\"command_adapter\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability_budgets\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"budget\":\"spend_provider\"") != null);
+}
+
 test "writeProbeJson includes terminal pipeline error" {
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
@@ -2412,11 +2565,12 @@ test "writeProbeJson includes terminal pipeline error" {
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 
-    try writeProbeJson(buf.writer(), &store, &ctx, error.SecretReadFailed);
+    try writeProbeJson(buf.writer(), std.testing.allocator, &store, &ctx, error.SecretReadFailed);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ok\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"error\":\"SecretReadFailed\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"exit_code\":202") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"decision\":\"try_next_account\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"runtime\":{\"readiness\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"health_key\":\"codex:max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"dead\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hint_class\":\"auth_dead\"") != null);

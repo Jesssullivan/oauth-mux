@@ -19,6 +19,31 @@ pub const DaemonError = error{
     OutOfMemory,
 };
 
+pub fn run(allocator: std.mem.Allocator) DaemonError!void {
+    if (comptime builtin.os.tag == .windows) {
+        log.err("daemon: foreground socket transport is not implemented on windows", .{});
+        return error.SocketError;
+    }
+
+    const sock_path = paths.socketPath(allocator) catch return error.OutOfMemory;
+    defer allocator.free(sock_path);
+
+    const pid_path = pidPath(allocator) catch return error.OutOfMemory;
+    defer allocator.free(pid_path);
+
+    if (isRunning(allocator)) {
+        log.err("daemon: already running", .{});
+        return error.AlreadyRunning;
+    }
+
+    ensureRuntimeDir(sock_path) catch return error.SocketError;
+
+    writePidFile(pid_path, currentPid()) catch return error.SocketError;
+    defer std.fs.deleteFileAbsolute(pid_path) catch {};
+
+    runLoop(allocator, sock_path) catch return error.SocketError;
+}
+
 pub fn start(allocator: std.mem.Allocator) DaemonError!void {
     if (comptime builtin.os.tag == .windows) {
         log.err("daemon: unsupported on windows", .{});
@@ -37,13 +62,7 @@ pub fn start(allocator: std.mem.Allocator) DaemonError!void {
         return error.AlreadyRunning;
     }
 
-    // Ensure runtime dir exists
-    if (std.fs.path.dirname(sock_path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return error.SocketError,
-        };
-    }
+    ensureRuntimeDir(sock_path) catch return error.SocketError;
 
     // Fork into background
     if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) {
@@ -67,6 +86,15 @@ pub fn start(allocator: std.mem.Allocator) DaemonError!void {
     // Cleanup
     std.fs.deleteFileAbsolute(sock_path) catch {};
     std.fs.deleteFileAbsolute(pid_path) catch {};
+}
+
+fn ensureRuntimeDir(sock_path: []const u8) !void {
+    if (std.fs.path.dirname(sock_path)) |dir| {
+        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
+            error.PathAlreadyExists => {},
+            else => return e,
+        };
+    }
 }
 
 pub fn stop(allocator: std.mem.Allocator) !void {
@@ -258,6 +286,14 @@ fn pidPath(allocator: std.mem.Allocator) ![]const u8 {
     const dir = paths.runtimeDir(allocator) catch return error.OutOfMemory;
     defer allocator.free(dir);
     return std.fs.path.join(allocator, &.{ dir, "daemon.pid" });
+}
+
+fn currentPid() Pid {
+    return switch (builtin.os.tag) {
+        .linux => std.os.linux.getpid(),
+        .macos => std.c.getpid(),
+        else => 0,
+    };
 }
 
 fn writePidFile(path: []const u8, pid: Pid) !void {
