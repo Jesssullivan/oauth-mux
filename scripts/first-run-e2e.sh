@@ -128,6 +128,7 @@ jq -e '
   and .providers == 1
   and .accounts == 3
   and (.next_commands | index("oauth-mux setup codex") != null)
+  and (.next_commands | index("oauth-mux repair-plan --json") != null)
 ' "$doctor_after" >/dev/null
 
 printf 'first-run e2e: discovery is redacted and agent-usable\n'
@@ -137,7 +138,18 @@ jq -e '
   .configured == true
   and (.providers[] | select(.name == "codex") | .accounts | length) == 3
   and (.agent_safe_commands | index("oauth-mux report --redacted --json") != null)
+  and (.agent_safe_commands | index("oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null)
 ' "$discover_json" >/dev/null
+
+printf 'first-run e2e: repair-plan explains generated Codex Max routes without mutation\n'
+repair_plan_json="$tmp/repair-plan-codex-max.json"
+run_json "$repair_plan_json" repair-plan --profile codex-max --capability codex-max --json
+jq -e '
+  .profile == "codex-max"
+  and (.routes | length) == 3
+  and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
+  and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
+' "$repair_plan_json" >/dev/null
 
 printf 'first-run e2e: support report is redacted JSON\n'
 report_json="$tmp/report.json"

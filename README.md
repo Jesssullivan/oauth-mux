@@ -70,6 +70,13 @@ Run the no-spend Codex Max canary:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
 ```
 
+Explain current Codex Max stay-afloat actions without running probes or
+mutating auth state:
+
+```bash
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
+```
+
 First-run Codex subscription path:
 
 ```bash
@@ -77,6 +84,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
+oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 
 Run the deterministic no-secret E2E harness:
