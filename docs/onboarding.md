@@ -194,6 +194,11 @@ Codex and Claude-style CLI-owned stores: a file-backed credential can be
 readable and writable by the current user, while oauth-mux still refuses to
 rewrite it because upstream login owns the session.
 
+The refresh path now uses that same admission gate. File-backed credentials can
+be replaced atomically, but automatic refresh only runs for providers whose
+definition declares `repair.owner = "oauth_mux_refresh"` and whose backend
+reports `automatic_refresh_admitted: true`. Codex remains upstream-CLI-owned.
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a
