@@ -100,6 +100,7 @@ oauth-mux doctor runtime --json
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux discover --json
 oauth-mux report --redacted --json
+oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
 oauth-mux codex canary --help

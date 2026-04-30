@@ -100,12 +100,13 @@ oauth-mux codex canary
 ```
 
 The canary validates config, prints redacted discovery, checks
-`codex login status` for each expected account, and summarizes whether route
-health has already been recorded. It also prints the current non-mutating
-repair plan for the configured Codex route profiles, so a user or agent can see
-whether the next action is to fix runtime setup, run an explicit probe, wait for
-quota, or reauthenticate through the upstream Codex CLI. It does not run live
-probes by default.
+`codex login status` for each expected account, reports scoped runtime
+readiness for each Codex route profile, and summarizes whether route health has
+already been recorded. It also prints the current non-mutating repair plan for
+the configured Codex route profiles, so a user or agent can see whether the next
+action is to fix runtime setup, run an explicit probe, wait for quota, or
+reauthenticate through the upstream Codex CLI. It does not run live probes by
+default.
 
 For guarded live route QA, start with:
 
