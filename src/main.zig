@@ -3838,6 +3838,10 @@ fn runCodexCanary(allocator: std.mem.Allocator, writer: anytype, args: cli.Comma
     try writer.writeAll("\n=== codex login status ===\n");
     try runCodexLoginStatusAll(allocator, writer, args, root);
 
+    try writer.writeAll("\n=== scoped runtime readiness ===\n");
+    try writer.writeAll("Local profile readiness without reading token values or probing providers.\n");
+    try writeCodexRuntimeDoctorSnapshot(allocator, writer, args);
+
     try writer.writeAll("\n=== route liveness snapshot ===\n");
     try writer.writeAll("Existing oauth-mux health state; add --live to refresh with real provider probes.\n");
     try writeCodexRouteSnapshot(allocator, writer, args);
@@ -4546,6 +4550,33 @@ fn writeCodexRouteSnapshot(allocator: std.mem.Allocator, writer: anytype, args: 
             }
             try writer.writeByte('\n');
         }
+    }
+}
+
+fn writeCodexRuntimeDoctorSnapshot(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    var capability_it = std.mem.splitScalar(u8, args.capabilities, ',');
+    while (capability_it.next()) |raw_capability| {
+        const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
+        if (capability.len == 0) continue;
+
+        if (!args.json) try writer.print("\n--- profile {s} ---\n", .{capability});
+        runDoctorRuntime(allocator, writer, .{
+            .mode = .runtime,
+            .profile = capability,
+            .capability = capability,
+            .json = args.json,
+        }) catch |e| switch (e) {
+            error.ConfigValidationError => {
+                if (args.json) {
+                    try writer.writeAll("{\"profile\":");
+                    try std.json.stringify(capability, .{}, writer);
+                    try writer.writeAll(",\"skipped\":true,\"error\":\"ConfigValidationError\"}\n");
+                } else {
+                    try writer.print("runtime doctor skipped for profile {s}: current config does not define that Codex profile\n", .{capability});
+                }
+            },
+            else => return e,
+        };
     }
 }
 
