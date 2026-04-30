@@ -47,6 +47,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
+oauth-mux codex live-qa
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 
@@ -89,10 +90,20 @@ health has already been recorded. It also prints the current non-mutating
 repair plan for the configured Codex route profiles, so a user or agent can see
 whether the next action is to fix runtime setup, run an explicit probe, wait for
 quota, or reauthenticate through the upstream Codex CLI. It does not run live
-probes by default. To include bounded route probes:
+probes by default.
+
+For guarded live route QA, start with:
 
 ```bash
-oauth-mux codex canary --live
+oauth-mux codex live-qa
+```
+
+That command explains the quota-spending confirmation requirement and exits
+before creating stores or running provider calls. When real Codex calls are
+intended, confirm explicitly:
+
+```bash
+oauth-mux codex live-qa --confirm-spend
 ```
 
 To probe one route class across every expected Codex account:
@@ -143,6 +154,7 @@ creating `CODEX_HOME` directories, checking login status, or running probes:
 
 ```bash
 oauth-mux codex canary --help
+oauth-mux codex live-qa --help
 oauth-mux codex probe-all --help
 oauth-mux setup codex --help
 ```
@@ -151,8 +163,9 @@ Source checkouts keep `just codex-max-onboard` and `just codex-max-canary` as
 thin aliases for installed commands. `just codex-max-setup` is a thin alias for
 `oauth-mux setup codex`, `just codex-max-repair-plan` is a thin alias for
 `oauth-mux repair-plan --profile codex-max --capability codex-max --json`, and
-`just codex-max-probe-all` is likewise a thin alias for
-`oauth-mux codex probe-all`.
+`just codex-max-live-qa` / `just codex-max-live-qa-confirmed` wrap the guarded
+installed live QA command. `just codex-max-probe-all` is likewise a thin alias
+for `oauth-mux codex probe-all`.
 
 The clean no-config first-run path is covered by:
 
@@ -164,7 +177,8 @@ That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
 and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
 diagnostics, redacted support output, repair-plan route explanation,
 non-clobbering config-candidate generation, config-merge backup behavior, and
-non-mutating Codex help without touching the operator's real OAuth stores.
+non-mutating Codex help plus the unconfirmed live-QA spend gate without touching
+the operator's real OAuth stores.
 
 ## Agent Discovery Contract
 
@@ -183,22 +197,26 @@ Agents may run:
 
 ```bash
 oauth-mux probe --profile <profile> --capability <capability> --json
+oauth-mux codex live-qa --json
 oauth-mux codex probe-all --capability <capability> --json
 oauth-mux env --profile <profile> --capability <capability> --shell <shell>
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```
 
 Probe JSON includes `ok`, `error`, and `exit_code` alongside typed
-`liveness`. Agents should use `liveness` to distinguish `rate_limited`,
-`quota_exhausted`, `degraded`, and `dead` instead of treating every nonzero
-probe exit as the same failure class.
+`liveness`. `codex live-qa --json` is safe without confirmation: it exits
+nonzero with `confirmation_required` and `spends_provider_calls: true` before
+running provider calls. Agents should use `liveness` to distinguish
+`rate_limited`, `quota_exhausted`, `degraded`, and `dead` instead of treating
+every nonzero probe exit as the same failure class.
 
 Agents must not:
 
 - read files referenced by `secret.path`;
 - print token-shaped values;
 - copy OAuth stores between accounts;
-- run live probes unless the user explicitly authorized spend.
+- run live probes or pass `--confirm-spend` unless the user explicitly
+  authorized spend.
 
 `discover --json` is intentionally redacted. It reports config path, state path,
 providers, account names, secret backend names, tags, profiles, and safe command

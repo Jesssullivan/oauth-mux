@@ -128,7 +128,7 @@ brew install tinyland/tools/oauth-mux: pass
 brew audit --formula --strict tinyland/tools/oauth-mux: pass
 brew test tinyland/tools/oauth-mux: pass
 /opt/homebrew/bin/oauth-mux doctor --json: ok
-Homebrew-installed oauth-mux codex canary --live with examples/codex-max.config.json:
+Homebrew-installed oauth-mux codex live-qa --confirm-spend with examples/codex-max.config.json:
   max-1, max-2, max-3 available for codex-mini and codex-max
 ```
 

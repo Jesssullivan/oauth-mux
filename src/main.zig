@@ -1110,7 +1110,7 @@ fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
         }
         try writer.writeAll("    oauth-mux setup codex\n");
         try writer.writeAll("    oauth-mux codex canary\n");
-        try writer.writeAll("    oauth-mux codex canary --live\n");
+        try writer.writeAll("    oauth-mux codex live-qa\n");
     }
 }
 
@@ -1141,7 +1141,7 @@ fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
         }
         try writeDoctorCommandJson(writer, &first, "oauth-mux setup codex");
         try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary");
-        try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary --live");
+        try writeDoctorCommandJson(writer, &first, "oauth-mux codex live-qa");
     }
 }
 
@@ -2775,6 +2775,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .login_status_all => try runCodexLoginStatusAll(allocator, writer, args, root),
         .onboard => try runCodexOnboard(allocator, writer, args, root),
         .canary => try runCodexCanary(allocator, writer, args, root),
+        .live_qa => try runCodexLiveQa(allocator, writer, args, root),
         .probe_all => try runCodexProbeAll(allocator, writer, args),
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
@@ -2871,6 +2872,131 @@ fn runCodexProbeAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Com
         try writer.writeAll("\n=== live probes ===\n");
     }
     try runCodexLiveProbes(allocator, writer, args, !args.json);
+}
+
+fn runCodexLiveQa(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
+    if (!codexLiveQaConfirmed(args)) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"confirmation_required\",\"required\":\"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls\",\"spends_provider_calls\":true}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex live QA is disabled.\n\n");
+            try writer.writeAll("This command runs real Codex provider probes and can spend subscription quota.\n");
+            try writer.writeAll("Re-run with --confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls.\n");
+        }
+        return error.CodexLiveQaConfirmationRequired;
+    }
+
+    if (args.json) {
+        try bootstrapCodexDirs(allocator, std.io.null_writer, args, root);
+    } else {
+        try bootstrapCodexDirs(allocator, writer, args, root);
+    }
+
+    if (args.json) {
+        try writer.writeAll("{\"version\":");
+        try std.json.stringify(cli.version, .{}, writer);
+        try writer.writeAll(",\"ok\":");
+
+        var route_buf = std.ArrayList(u8).init(allocator);
+        defer route_buf.deinit();
+        var failures: usize = 0;
+        var total: usize = 0;
+        try collectCodexLiveQaRoutesJson(allocator, &route_buf, args, &total, &failures);
+
+        try writer.writeAll(if (failures == 0) "true" else "false");
+        try writer.writeAll(",\"spends_provider_calls\":true,\"accounts\":");
+        try std.json.stringify(args.accounts, .{}, writer);
+        try writer.writeAll(",\"capabilities\":");
+        try std.json.stringify(args.capabilities, .{}, writer);
+        try writer.print(",\"routes_total\":{d},\"failures\":{d},\"routes\":[", .{ total, failures });
+        try writer.writeAll(route_buf.items);
+        try writer.writeAll("]}\n");
+        if (failures != 0) return error.CodexRouteProbeFailed;
+        return;
+    }
+
+    try writer.writeAll("oauth-mux Codex live QA\n\n");
+    try writer.print("store root:   {s}\n", .{root});
+    try writer.print("accounts:     {s}\n", .{args.accounts});
+    try writer.print("capabilities: {s}\n", .{args.capabilities});
+    try writer.writeAll("confirmed:    yes, real provider probes may spend quota\n\n");
+
+    try writer.writeAll("=== config validate ===\n");
+    try validateCurrentConfig(allocator, writer);
+
+    try writer.writeAll("\n=== codex login status ===\n");
+    try runCodexLoginStatusAll(allocator, writer, args, root);
+
+    try writer.writeAll("\n=== live probes ===\n");
+    const failures = try runCodexLiveProbesCount(allocator, writer, args, true);
+
+    try writer.writeAll("\n=== route liveness snapshot ===\n");
+    try writeCodexRouteSnapshot(allocator, writer, args);
+
+    try writer.writeAll("\n=== repair plan ===\n");
+    try writeCodexRepairPlanSnapshot(allocator, writer, args);
+
+    if (failures != 0) return error.CodexRouteProbeFailed;
+}
+
+fn codexLiveQaConfirmed(args: cli.Command.CodexArgs) bool {
+    if (args.confirm_spend) return true;
+    const confirm = std.process.getEnvVarOwned(std.heap.page_allocator, "OMUX_LIVE_QA_CONFIRM") catch return false;
+    defer std.heap.page_allocator.free(confirm);
+    return std.mem.eql(u8, confirm, "spend-real-calls");
+}
+
+fn collectCodexLiveQaRoutesJson(
+    allocator: std.mem.Allocator,
+    routes: *std.ArrayList(u8),
+    args: cli.Command.CodexArgs,
+    total: *usize,
+    failures: *usize,
+) !void {
+    var first = true;
+    var account_it = std.mem.splitScalar(u8, args.accounts, ',');
+    while (account_it.next()) |raw_account| {
+        const account = std.mem.trim(u8, raw_account, " \t\r\n");
+        if (account.len == 0) continue;
+        var capability_it = std.mem.splitScalar(u8, args.capabilities, ',');
+        while (capability_it.next()) |raw_capability| {
+            const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
+            if (capability.len == 0) continue;
+            total.* += 1;
+
+            var probe_buf = std.ArrayList(u8).init(allocator);
+            defer probe_buf.deinit();
+            const probe_error = runProbe(allocator, probe_buf.writer(), .{
+                .provider = "codex",
+                .account = account,
+                .capability = capability,
+                .json = true,
+            });
+
+            const route_failed = if (probe_error) |_| false else |e| !liveQaErrorIsRecordedEvidence(e);
+            if (route_failed) failures.* += 1;
+
+            if (!first) try routes.append(',');
+            first = false;
+            const route_json = std.mem.trim(u8, probe_buf.items, " \t\r\n");
+            if (route_json.len == 0) {
+                try routes.appendSlice("{\"provider\":\"codex\",\"account\":");
+                try std.json.stringify(account, .{}, routes.writer());
+                try routes.appendSlice(",\"capability\":");
+                try std.json.stringify(capability, .{}, routes.writer());
+                try routes.appendSlice(",\"ok\":false,\"error\":\"ProbeDidNotProduceJson\"}");
+            } else {
+                try routes.appendSlice(route_json);
+            }
+        }
+    }
+}
+
+fn liveQaErrorIsRecordedEvidence(e: anyerror) bool {
+    return switch (e) {
+        error.AllAccountsExhausted => true,
+        else => false,
+    };
 }
 
 fn runCodexConfigCandidate(
@@ -3291,6 +3417,12 @@ fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: c
 }
 
 fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, emit_headers: bool) !void {
+    const failures = try runCodexLiveProbesCount(allocator, writer, args, emit_headers);
+    if (failures != 0) return error.CodexRouteProbeFailed;
+}
+
+fn runCodexLiveProbesCount(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, emit_headers: bool) !usize {
+    var failures: usize = 0;
     var account_it = std.mem.splitScalar(u8, args.accounts, ',');
     while (account_it.next()) |raw_account| {
         const account = std.mem.trim(u8, raw_account, " \t\r\n");
@@ -3307,10 +3439,11 @@ fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.C
                 .json = args.json,
             }) catch |e| switch (e) {
                 error.AllAccountsExhausted => {},
-                else => return e,
+                else => failures += 1,
             };
         }
     }
+    return failures;
 }
 
 fn writeCodexRouteSnapshot(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
