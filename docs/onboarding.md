@@ -117,6 +117,12 @@ safe sidecar candidate without modifying the active config:
 oauth-mux codex config-candidate
 ```
 
+`oauth-mux doctor --json` and `oauth-mux discover --json` also report
+`codex_max_configured`. When Codex is present but that value is `false`, they
+include `oauth-mux codex config-candidate --json` as the next action so agents
+can surface the safe migration path instead of repeatedly probing a shape that
+cannot stay afloat.
+
 The command writes `codex-max.config.json` next to the active config, refuses to
 overwrite an existing candidate, validates the generated JSON before writing,
 and prints exact `OMUX_CONFIG=...` commands for `config validate`,

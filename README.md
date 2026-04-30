@@ -94,6 +94,10 @@ sidecar Codex Max candidate without overwriting it:
 oauth-mux codex config-candidate
 ```
 
+`oauth-mux doctor --json` and `oauth-mux discover --json` expose
+`codex_max_configured`; when it is false for a Codex config, they recommend that
+same candidate command.
+
 Run the deterministic no-secret E2E harness:
 
 ```bash
