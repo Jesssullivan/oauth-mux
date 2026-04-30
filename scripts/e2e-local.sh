@@ -340,6 +340,16 @@ expect_contains "$repair_reauth_confirmed" '"error":"interactive_json_unsupporte
 expect_contains "$repair_reauth_confirmed" '"executed":false' "repair run json does not execute interactive repair"
 test ! -e "$tmp/reauth-home/auth.json"
 
+printf 'e2e: daemon events exposes redacted repair run audit trail\n'
+repair_events="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon events --json)"
+expect_contains "$repair_events" '"events":[' "daemon events returns json event list"
+expect_contains "$repair_events" '"outcome":"noop"' "repair events record selectable no-op"
+expect_contains "$repair_events" '"outcome":"confirmation_required"' "repair events record confirmation gate"
+expect_contains "$repair_events" '"outcome":"interactive_json_unsupported"' "repair events record json boundary refusal"
+expect_contains "$repair_events" '"profile":"needs-reauth"' "repair events record profile"
+expect_contains "$repair_events" '"provider":"codex"' "repair events record provider"
+expect_contains "$repair_events" '"account":"max-1"' "repair events record account"
+
 printf 'e2e: route health does not poison unrelated capability\n'
 cheap_after_quota="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_after_quota" "export OMUX_ACTIVE_ACCOUNT='a1'" "cheap route still uses a1 after expensive quota"

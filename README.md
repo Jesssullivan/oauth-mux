@@ -93,6 +93,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
+oauth-mux daemon events --json
 ```
 
 `route select` and `route explain` are no-spend stay-afloat commands. They use
@@ -112,6 +113,13 @@ whether a route is already selectable, whether no admitted repair exists, or
 which command would require confirmation. Confirmed interactive repairs should
 be run without `--json` so upstream CLI login output cannot corrupt machine
 readable output.
+
+Every `repair run` invocation appends a redacted local event under the
+oauth-mux state directory. Confirmed repair uses an account-scoped advisory
+lock so concurrent repair attempts surface as `repair_in_progress` in runtime
+readiness instead of racing an upstream CLI login flow. Inspect recent events
+with `oauth-mux daemon events --json`; this does not require the daemon to be
+running.
 
 First-run Codex subscription path:
 

@@ -117,7 +117,7 @@ pub fn stop(allocator: std.mem.Allocator) !void {
     std.fs.deleteFileAbsolute(pid_path) catch {};
 }
 
-pub fn status(allocator: std.mem.Allocator, writer: anytype) !void {
+pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
     const pid_path = try pidPath(allocator);
     defer allocator.free(pid_path);
 
@@ -125,9 +125,19 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype) !void {
         const pid = readPidFile(allocator, pid_path) catch 0;
         const sock = try paths.socketPath(allocator);
         defer allocator.free(sock);
-        try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
+        if (json) {
+            try writer.print("{{\"status\":\"running\",\"pid\":{d},\"socket\":", .{pid});
+            try std.json.stringify(sock, .{}, writer);
+            try writer.writeAll("}\n");
+        } else {
+            try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
+        }
     } else {
-        try writer.writeAll("daemon: not running\n");
+        if (json) {
+            try writer.writeAll("{\"status\":\"not_running\"}\n");
+        } else {
+            try writer.writeAll("daemon: not running\n");
+        }
     }
 }
 

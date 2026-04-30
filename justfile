@@ -212,7 +212,10 @@ daemon-stop: build
     ./zig-out/bin/oauth-mux daemon stop
 
 daemon-status: build
-    ./zig-out/bin/oauth-mux daemon status
+    ./zig-out/bin/oauth-mux daemon status --json
+
+daemon-events: build
+    ./zig-out/bin/oauth-mux daemon events --json
 
 # ── Shell integration ──
 
