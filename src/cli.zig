@@ -185,6 +185,7 @@ pub const Command = union(enum) {
         once: bool = true,
         iterations: u32 = 1,
         interval_ms: u64 = 60_000,
+        execute: bool = false,
         json: bool = false,
     };
 };
@@ -518,6 +519,8 @@ fn parseDaemonTick(args: []const []const u8) Command {
             if (i < args.len) result.capability = args[i];
         } else if (eql(args[i], "--json")) {
             result.json = true;
+        } else if (eql(args[i], "--execute")) {
+            result.execute = true;
         } else if (eql(args[i], "--once")) {
             result.once = true;
             result.iterations = 1;
@@ -721,8 +724,8 @@ pub fn printUsage(writer: anytype) !void {
         \\  daemon events [--json] [--limit <n>]
         \\      Show recent redacted repair events.
         \\
-        \\  daemon tick [--once|--loop] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
-        \\      Plan one or more policy-gated daemon ticks without executing probes or repair.
+        \\  daemon tick [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Plan daemon ticks; --execute runs at most one admitted non-interactive action per tick.
         \\
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
@@ -1149,11 +1152,12 @@ test "parse daemon tick once json selector" {
 }
 
 test "parse daemon tick bounded loop" {
-    const args = [_][]const u8{ "daemon", "tick", "--loop", "--iterations", "3", "--interval-ms", "250", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const args = [_][]const u8{ "daemon", "tick", "--loop", "--execute", "--iterations", "3", "--interval-ms", "250", "--profile", "codex-max", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
     switch (cmd) {
         .daemon_tick => |tick| {
             try std.testing.expect(!tick.once);
+            try std.testing.expect(tick.execute);
             try std.testing.expectEqual(@as(u32, 3), tick.iterations);
             try std.testing.expectEqual(@as(u64, 250), tick.interval_ms);
             try std.testing.expect(tick.json);
@@ -1228,6 +1232,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l limit -d 'Limit event count' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l once -d 'Run one planning tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l loop -d 'Run bounded foreground planning ticks'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l execute -d 'Execute one admitted non-interactive tick action'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l iterations -d 'Number of planning ticks' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l interval-ms -d 'Milliseconds between ticks' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l profile -s p -d 'Profile name' -r

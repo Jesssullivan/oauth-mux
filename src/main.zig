@@ -1493,7 +1493,11 @@ fn runDaemonTick(allocator: std.mem.Allocator, writer: anytype, args: cli.Comman
     if (args.json and iterations > 1) {
         try writer.writeAll("{\"version\":");
         try std.json.stringify(cli.version, .{}, writer);
-        try writer.writeAll(",\"mode\":\"loop\",\"executed\":false,\"message\":\"bounded foreground planning loop; no probes or repair commands executed\",\"iterations_requested\":");
+        try writer.writeAll(",\"mode\":\"loop\",\"execution_mode\":");
+        try std.json.stringify(if (args.execute) "execute" else "plan", .{}, writer);
+        try writer.writeAll(",\"executed\":false,\"message\":");
+        try std.json.stringify(daemonTickMessage(args), .{}, writer);
+        try writer.writeAll(",\"iterations_requested\":");
         try writer.print("{d}", .{iterations});
         try writer.writeAll(",\"interval_ms\":");
         try writer.print("{d}", .{args.interval_ms});
@@ -1509,20 +1513,34 @@ fn runDaemonTick(allocator: std.mem.Allocator, writer: anytype, args: cli.Comman
         defer evaluations.deinit();
         try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
-        const selected_index = firstSelectableRoute(evaluations.items);
+        var selected_index = firstSelectableRoute(evaluations.items);
         const observed_at = std.time.timestamp();
+        var executions = std.ArrayList(DaemonTickExecution).init(allocator);
+        defer executions.deinit();
+
+        const state_changed = if (args.execute)
+            try executeDaemonTickActions(allocator, parsed.value, args, evaluations.items, selected_index, &executions)
+        else
+            false;
+        if (state_changed) {
+            store.deinit();
+            store = health_mod.HealthStore.load(allocator, .{});
+            evaluations.clearRetainingCapacity();
+            try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+            selected_index = firstSelectableRoute(evaluations.items);
+        }
 
         if (args.json) {
             if (iterations > 1) {
                 if (idx > 0) try writer.writeByte(',');
-                try writeDaemonTickJsonObject(writer, allocator, parsed.value, evaluations.items, selected_index, args, idx, observed_at, false);
+                try writeDaemonTickJsonObject(writer, allocator, parsed.value, evaluations.items, selected_index, executions.items, args, idx, observed_at, false);
             } else {
-                try writeDaemonTickJsonObject(writer, allocator, parsed.value, evaluations.items, selected_index, args, idx, observed_at, true);
+                try writeDaemonTickJsonObject(writer, allocator, parsed.value, evaluations.items, selected_index, executions.items, args, idx, observed_at, true);
                 try writer.writeByte('\n');
             }
         } else {
             if (iterations > 1) try writer.print("tick {d}/{d}\n", .{ idx + 1, iterations });
-            try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+            try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, executions.items, args, observed_at);
             if (iterations > 1 and idx + 1 < iterations) try writer.writeByte('\n');
         }
 
@@ -1555,6 +1573,180 @@ fn sleepBetweenDaemonTicks(args: cli.Command.DaemonTickArgs, idx: u32, iteration
     const max_ms = std.math.maxInt(u64) / std.time.ns_per_ms;
     const bounded_ms = @min(args.interval_ms, max_ms);
     std.time.sleep(bounded_ms * std.time.ns_per_ms);
+}
+
+fn daemonTickMessage(args: cli.Command.DaemonTickArgs) []const u8 {
+    return if (args.execute)
+        "execute mode; at most one admitted non-interactive action runs per tick"
+    else
+        "planning only; no probes or repair commands executed";
+}
+
+fn executeDaemonTickActions(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    args: cli.Command.DaemonTickArgs,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    executions: *std.ArrayList(DaemonTickExecution),
+) !bool {
+    if (selected_index != null) return false;
+
+    for (evaluations) |evaluation| {
+        const decision = daemonTickDecision(cfg.policy.daemon, evaluation, std.time.timestamp());
+        if (std.mem.eql(u8, decision.phase, "repair") and evaluation.action.interactive) {
+            try queueDaemonHandoff(allocator, args, evaluation, decision, executions);
+            return false;
+        }
+        if (!decision.admitted) continue;
+
+        if (std.mem.eql(u8, decision.phase, "probe")) {
+            return try executeDaemonProbe(allocator, args, evaluation, decision, executions);
+        }
+
+        if (std.mem.eql(u8, decision.phase, "repair") and
+            evaluation.action.command != .none and
+            !evaluation.action.interactive)
+        {
+            return try executeDaemonRepairCommand(allocator, cfg, args, evaluation, decision, executions);
+        }
+    }
+
+    return false;
+}
+
+fn executeDaemonProbe(
+    allocator: std.mem.Allocator,
+    args: cli.Command.DaemonTickArgs,
+    evaluation: RouteEvaluation,
+    decision: DaemonTickDecision,
+    executions: *std.ArrayList(DaemonTickExecution),
+) !bool {
+    var scratch = std.ArrayList(u8).init(allocator);
+    defer scratch.deinit();
+
+    var ok = true;
+    var reason: []const u8 = "probe_completed";
+    runProbe(allocator, scratch.writer(), .{
+        .provider = evaluation.route.provider,
+        .account = evaluation.route.account,
+        .capability = evaluation.route.capability,
+        .json = true,
+    }) catch |e| {
+        ok = false;
+        reason = @errorName(e);
+    };
+
+    try executions.append(.{
+        .route = evaluation.route,
+        .phase = "probe",
+        .action = "probe",
+        .admitted = true,
+        .executed = true,
+        .ok = ok,
+        .reason = reason,
+        .budget = decision.budget,
+        .command = .probe,
+    });
+    recordDaemonActionEvent(allocator, args, evaluation, .probe, "probe", if (ok) "executed" else "failed", reason, ok, true, false);
+    return true;
+}
+
+fn executeDaemonRepairCommand(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    args: cli.Command.DaemonTickArgs,
+    evaluation: RouteEvaluation,
+    decision: DaemonTickDecision,
+    executions: *std.ArrayList(DaemonTickExecution),
+) !bool {
+    var lock = repair_state.acquireRepairLock(allocator, evaluation.route.provider, evaluation.route.account) catch |e| switch (e) {
+        error.RepairInProgress => {
+            try executions.append(.{
+                .route = evaluation.route,
+                .phase = "repair",
+                .action = evaluation.action.kind,
+                .admitted = true,
+                .executed = false,
+                .ok = false,
+                .reason = "repair_in_progress",
+                .budget = decision.budget,
+                .command = evaluation.action.command,
+            });
+            recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, evaluation.action.kind, "repair_in_progress", "lock_busy", false, false, false);
+            return false;
+        },
+        else => return e,
+    };
+    defer lock.release();
+
+    const ok = try executeRepairCommand(allocator, cfg, evaluation);
+    try executions.append(.{
+        .route = evaluation.route,
+        .phase = "repair",
+        .action = evaluation.action.kind,
+        .admitted = true,
+        .executed = true,
+        .ok = ok,
+        .reason = if (ok) "command_success" else "command_failed",
+        .budget = decision.budget,
+        .command = evaluation.action.command,
+    });
+    recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, evaluation.action.kind, if (ok) "executed" else "failed", if (ok) "command_success" else "command_failed", ok, true, false);
+    return ok;
+}
+
+fn queueDaemonHandoff(
+    allocator: std.mem.Allocator,
+    args: cli.Command.DaemonTickArgs,
+    evaluation: RouteEvaluation,
+    decision: DaemonTickDecision,
+    executions: *std.ArrayList(DaemonTickExecution),
+) !void {
+    try executions.append(.{
+        .route = evaluation.route,
+        .phase = "handoff",
+        .action = evaluation.action.kind,
+        .admitted = decision.admitted,
+        .executed = false,
+        .ok = false,
+        .handoff = true,
+        .reason = "interactive_user_handoff",
+        .budget = decision.budget,
+        .command = evaluation.action.command,
+    });
+    recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, evaluation.action.kind, "handoff_queued", "interactive_user_handoff", false, false, true);
+}
+
+fn recordDaemonActionEvent(
+    allocator: std.mem.Allocator,
+    args: cli.Command.DaemonTickArgs,
+    evaluation: RouteEvaluation,
+    command_kind: RepairCommandKind,
+    action: []const u8,
+    outcome: []const u8,
+    reason: []const u8,
+    ok: bool,
+    executed: bool,
+    handoff: bool,
+) void {
+    const command = repairCommandAlloc(allocator, command_kind, evaluation.route) catch null;
+    defer if (command) |value| allocator.free(value);
+    repair_state.appendEvent(allocator, .{
+        .kind = if (handoff) "daemon_handoff" else "daemon_action",
+        .profile = args.profile,
+        .provider = evaluation.route.provider,
+        .account = evaluation.route.account,
+        .capability = evaluation.route.capability,
+        .action = action,
+        .command = command,
+        .outcome = outcome,
+        .reason = reason,
+        .ok = ok,
+        .executed = executed,
+        .interactive = evaluation.action.interactive,
+        .mutating = evaluation.action.mutating,
+    }) catch {};
 }
 
 fn collectRouteEvaluations(
@@ -1764,6 +1956,21 @@ const DaemonTickDecision = struct {
     reason: []const u8,
     budget: ?types.ActionBudget = null,
     executed: bool = false,
+    handoff: bool = false,
+    next_tick_after: ?i64 = null,
+};
+
+const DaemonTickExecution = struct {
+    route: RepairPlanRoute,
+    phase: []const u8,
+    action: []const u8,
+    admitted: bool,
+    executed: bool,
+    ok: bool,
+    handoff: bool = false,
+    reason: []const u8,
+    budget: ?types.ActionBudget = null,
+    command: RepairCommandKind = .none,
 };
 
 const DaemonTickStats = struct {
@@ -1774,6 +1981,7 @@ const DaemonTickStats = struct {
     admitted_repairs: usize = 0,
     blocked_repairs: usize = 0,
     no_action: usize = 0,
+    next_tick_after: ?i64 = null,
 };
 
 fn writeDaemonTickText(
@@ -1782,12 +1990,15 @@ fn writeDaemonTickText(
     cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
+    executions: []const DaemonTickExecution,
     args: cli.Command.DaemonTickArgs,
+    observed_at: i64,
 ) !void {
     try writer.writeAll("oauth-mux daemon tick\n\n");
     try writer.print("  mode: {s}\n", .{if (args.once) "once" else "loop"});
-    try writer.writeAll("  executed: no\n");
-    try writer.writeAll("  boundary: planning only; no probes or repair commands executed\n");
+    try writer.print("  execution_mode: {s}\n", .{if (args.execute) "execute" else "plan"});
+    try writer.print("  executed: {s}\n", .{if (daemonTickExecutionsRan(executions)) "yes" else "no"});
+    try writer.print("  boundary: {s}\n", .{daemonTickMessage(args)});
     if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
     if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
     if (selected_index) |idx| {
@@ -1806,7 +2017,7 @@ fn writeDaemonTickText(
 
     try writer.writeAll("\n  routes:\n");
     for (evaluations) |evaluation| {
-        const decision = daemonTickDecision(cfg.policy.daemon, evaluation);
+        const decision = daemonTickDecision(cfg.policy.daemon, evaluation, observed_at);
         try writer.print("    {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
         if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.print(" selectable={s} runtime={s} tick={s} admitted={s} reason={s}", .{
@@ -1823,6 +2034,23 @@ fn writeDaemonTickText(
         }
         try writer.writeByte('\n');
     }
+
+    if (executions.len != 0) {
+        try writer.writeAll("\n  executions:\n");
+        for (executions) |execution| {
+            try writer.print("    {s}:{s}", .{ execution.route.provider, execution.route.account });
+            if (execution.route.capability) |capability| try writer.print("#{s}", .{capability});
+            try writer.print(" phase={s} action={s} executed={s} ok={s} reason={s}", .{
+                execution.phase,
+                execution.action,
+                if (execution.executed) "true" else "false",
+                if (execution.ok) "true" else "false",
+                execution.reason,
+            });
+            if (execution.handoff) try writer.writeAll(" handoff=true");
+            try writer.writeByte('\n');
+        }
+    }
 }
 
 fn writeDaemonTickJsonObject(
@@ -1831,12 +2059,13 @@ fn writeDaemonTickJsonObject(
     cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
+    executions: []const DaemonTickExecution,
     args: cli.Command.DaemonTickArgs,
     tick_index: u32,
     observed_at: i64,
     include_version: bool,
 ) !void {
-    const stats = daemonTickStats(cfg.policy.daemon, evaluations);
+    const stats = daemonTickStats(cfg.policy.daemon, evaluations, observed_at);
 
     try writer.writeByte('{');
     if (include_version) {
@@ -1850,8 +2079,14 @@ fn writeDaemonTickJsonObject(
     try writer.print("{d}", .{observed_at});
     try writer.writeAll(",\"mode\":");
     try std.json.stringify(if (args.once) "once" else "loop", .{}, writer);
-    try writer.writeAll(",\"executed\":false");
-    try writer.writeAll(",\"message\":\"planning only; no probes or repair commands executed\"");
+    try writer.writeAll(",\"execution_mode\":");
+    try std.json.stringify(if (args.execute) "execute" else "plan", .{}, writer);
+    try writer.writeAll(",\"executed\":");
+    try writer.writeAll(if (daemonTickExecutionsRan(executions)) "true" else "false");
+    try writer.writeAll(",\"handoff_queued\":");
+    try writer.writeAll(if (daemonTickHandoffQueued(executions)) "true" else "false");
+    try writer.writeAll(",\"message\":");
+    try std.json.stringify(daemonTickMessage(args), .{}, writer);
     try writer.writeAll(",\"policy\":");
     try writePolicyJson(writer, cfg.policy);
     try writer.writeAll(",\"profile\":");
@@ -1868,6 +2103,8 @@ fn writeDaemonTickJsonObject(
     }
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
+    try writer.writeAll(",\"executions\":");
+    try writeDaemonTickExecutionsJson(writer, allocator, executions);
     try writer.writeAll(",\"routes\":[");
     for (evaluations, 0..) |evaluation, idx| {
         if (idx > 0) try writer.writeByte(',');
@@ -1876,7 +2113,7 @@ fn writeDaemonTickJsonObject(
         try writer.writeAll("\"route\":");
         try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, selected);
         try writer.writeAll(",\"tick\":");
-        try writeDaemonTickDecisionJson(writer, daemonTickDecision(cfg.policy.daemon, evaluation));
+        try writeDaemonTickDecisionJson(writer, daemonTickDecision(cfg.policy.daemon, evaluation, observed_at));
         try writer.writeByte('}');
     }
     try writer.writeAll("]}");
@@ -1884,7 +2121,7 @@ fn writeDaemonTickJsonObject(
 
 fn writeDaemonTickStatsJson(writer: anytype, stats: DaemonTickStats) !void {
     try writer.print(
-        "{{\"routes\":{d},\"selectable\":{d},\"admitted_probes\":{d},\"blocked_probes\":{d},\"admitted_repairs\":{d},\"blocked_repairs\":{d},\"no_action\":{d}}}",
+        "{{\"routes\":{d},\"selectable\":{d},\"admitted_probes\":{d},\"blocked_probes\":{d},\"admitted_repairs\":{d},\"blocked_repairs\":{d},\"no_action\":{d},\"next_tick_after\":",
         .{
             stats.routes,
             stats.selectable,
@@ -1895,6 +2132,69 @@ fn writeDaemonTickStatsJson(writer: anytype, stats: DaemonTickStats) !void {
             stats.no_action,
         },
     );
+    if (stats.next_tick_after) |next| {
+        try writer.print("{d}", .{next});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeByte('}');
+}
+
+fn writeDaemonTickExecutionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    executions: []const DaemonTickExecution,
+) !void {
+    try writer.writeByte('[');
+    for (executions, 0..) |execution, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writer.writeByte('{');
+        try writer.writeAll("\"provider\":");
+        try std.json.stringify(execution.route.provider, .{}, writer);
+        try writer.writeAll(",\"account\":");
+        try std.json.stringify(execution.route.account, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        if (execution.route.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"phase\":");
+        try std.json.stringify(execution.phase, .{}, writer);
+        try writer.writeAll(",\"action\":");
+        try std.json.stringify(execution.action, .{}, writer);
+        try writer.writeAll(",\"admitted\":");
+        try writer.writeAll(if (execution.admitted) "true" else "false");
+        try writer.writeAll(",\"executed\":");
+        try writer.writeAll(if (execution.executed) "true" else "false");
+        try writer.writeAll(",\"ok\":");
+        try writer.writeAll(if (execution.ok) "true" else "false");
+        try writer.writeAll(",\"handoff\":");
+        try writer.writeAll(if (execution.handoff) "true" else "false");
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(execution.reason, .{}, writer);
+        try writer.writeAll(",\"budget\":");
+        if (execution.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"command\":");
+        if (try repairCommandAlloc(allocator, execution.command, execution.route)) |command| {
+            defer allocator.free(command);
+            try std.json.stringify(command, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+}
+
+fn daemonTickExecutionsRan(executions: []const DaemonTickExecution) bool {
+    for (executions) |execution| {
+        if (execution.executed) return true;
+    }
+    return false;
+}
+
+fn daemonTickHandoffQueued(executions: []const DaemonTickExecution) bool {
+    for (executions) |execution| {
+        if (execution.handoff) return true;
+    }
+    return false;
 }
 
 fn writeDaemonTickDecisionJson(writer: anytype, decision: DaemonTickDecision) !void {
@@ -1911,14 +2211,18 @@ fn writeDaemonTickDecisionJson(writer: anytype, decision: DaemonTickDecision) !v
     if (decision.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"executed\":");
     try writer.writeAll(if (decision.executed) "true" else "false");
+    try writer.writeAll(",\"handoff\":");
+    try writer.writeAll(if (decision.handoff) "true" else "false");
+    try writer.writeAll(",\"next_tick_after\":");
+    if (decision.next_tick_after) |next| try writer.print("{d}", .{next}) else try writer.writeAll("null");
     try writer.writeByte('}');
 }
 
-fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const RouteEvaluation) DaemonTickStats {
+fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const RouteEvaluation, observed_at: i64) DaemonTickStats {
     var stats = DaemonTickStats{ .routes = evaluations.len };
     for (evaluations) |evaluation| {
         if (evaluation.selectable) stats.selectable += 1;
-        const decision = daemonTickDecision(policy, evaluation);
+        const decision = daemonTickDecision(policy, evaluation, observed_at);
         if (std.mem.eql(u8, decision.phase, "probe")) {
             if (decision.admitted) stats.admitted_probes += 1 else stats.blocked_probes += 1;
         } else if (std.mem.eql(u8, decision.phase, "repair")) {
@@ -1926,11 +2230,14 @@ fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const Route
         } else if (std.mem.eql(u8, decision.phase, "none") or std.mem.eql(u8, decision.phase, "observe")) {
             stats.no_action += 1;
         }
+        if (decision.next_tick_after) |next| {
+            if (stats.next_tick_after == null or next < stats.next_tick_after.?) stats.next_tick_after = next;
+        }
     }
     return stats;
 }
 
-fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvaluation) DaemonTickDecision {
+fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvaluation, observed_at: i64) DaemonTickDecision {
     if (evaluation.selectable) {
         return .{
             .phase = "none",
@@ -1948,6 +2255,7 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
             .admitted = admission.admitted,
             .reason = admission.reason,
             .budget = admission.budget,
+            .next_tick_after = daemonTickNextAfter(evaluation.action, observed_at),
         };
     }
 
@@ -1959,6 +2267,8 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
             .admitted = admission.admitted,
             .reason = admission.reason,
             .budget = admission.budget,
+            .handoff = evaluation.action.interactive,
+            .next_tick_after = daemonTickNextAfter(evaluation.action, observed_at),
         };
     }
 
@@ -1969,7 +2279,17 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
         .admitted = admission.admitted,
         .reason = if (admission.admitted) "observe_only" else admission.reason,
         .budget = admission.budget,
+        .next_tick_after = daemonTickNextAfter(evaluation.action, observed_at),
     };
+}
+
+fn daemonTickNextAfter(action: RepairAction, observed_at: i64) ?i64 {
+    if (action.retry_after_s) |retry_after| return observed_at + @as(i64, retry_after);
+    if (action.wait_until) |wait_until| return wait_until;
+    if (std.mem.eql(u8, action.kind, "wait_for_repair")) return observed_at + 30;
+    if (std.mem.eql(u8, action.kind, "probe_needed")) return observed_at;
+    if (std.mem.eql(u8, action.kind, "reauth")) return observed_at;
+    return null;
 }
 
 const DoctorStats = struct {
@@ -6009,13 +6329,14 @@ test "daemon tick refuses spend provider probe by default" {
         },
         .selectable = false,
         .skip_reason = "unrecorded",
-    });
+    }, 1000);
 
     try std.testing.expectEqualStrings("probe", decision.phase);
     try std.testing.expect(!decision.admitted);
     try std.testing.expectEqualStrings("budget_not_allowed", decision.reason);
     try std.testing.expectEqual(types.ActionBudget.spend_provider, decision.budget.?);
     try std.testing.expect(!decision.executed);
+    try std.testing.expectEqual(@as(?i64, 1000), decision.next_tick_after);
 }
 
 test "daemon tick reports selectable route as no-op" {
@@ -6034,12 +6355,13 @@ test "daemon tick reports selectable route as no-op" {
         },
         .selectable = true,
         .skip_reason = "available",
-    });
+    }, 1000);
 
     try std.testing.expectEqualStrings("none", decision.phase);
     try std.testing.expect(decision.admitted);
     try std.testing.expectEqualStrings("route_selectable", decision.reason);
     try std.testing.expect(!decision.executed);
+    try std.testing.expect(decision.next_tick_after == null);
 }
 
 test "repairActionFor classifies quota exhaustion as wait action" {

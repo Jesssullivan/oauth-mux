@@ -276,6 +276,18 @@ expect_contains "$daemon_loop" '"tick_index":0' "daemon tick loop includes first
 expect_contains "$daemon_loop" '"tick_index":1' "daemon tick loop includes second tick"
 expect_contains "$daemon_loop" '"executed":false' "daemon tick loop remains planning-only"
 
+printf 'e2e: daemon tick execute runs one admitted command probe\n'
+omux health --reset toy:a1 >/dev/null
+omux health --reset toy:a2 >/dev/null
+omux health --reset toy:a1#cheap >/dev/null
+omux health --reset toy:a2#cheap >/dev/null
+daemon_execute="$(omux daemon tick --once --execute --profile cheap --capability cheap --json)"
+expect_contains "$daemon_execute" '"execution_mode":"execute"' "daemon tick reports execute mode"
+expect_contains "$daemon_execute" '"executed":true' "daemon tick execute runs an admitted action"
+expect_contains "$daemon_execute" '"phase":"probe"' "daemon tick execute records probe phase"
+expect_contains "$daemon_execute" '"command":"oauth-mux probe --provider toy --account a1 --capability cheap --json"' "daemon tick execute reports redacted probe command"
+expect_contains "$daemon_execute" '"selected":{"provider":"toy","account":"a1"' "daemon tick execute reselects after probe"
+
 printf 'e2e: repair run no-ops when fallback route is selectable\n'
 repair_run="$(omux repair run --profile expensive --capability expensive --json)"
 expect_contains "$repair_run" '"ok":true' "repair run reports ok when afloat"
@@ -344,6 +356,15 @@ expect_contains "$repair_reauth" '"daemon_repair":{"admitted":false,"reason":"in
 expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"provider_repair_owned_by_upstream_cli"}' "repair run reports upstream-owned file writeback boundary"
 test ! -e "$tmp/reauth-home/auth.json"
 
+printf 'e2e: daemon tick execute queues interactive reauth handoff\n'
+daemon_handoff="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" daemon tick --once --execute --profile needs-reauth --capability codex-max --json)"
+expect_contains "$daemon_handoff" '"execution_mode":"execute"' "daemon handoff reports execute mode"
+expect_contains "$daemon_handoff" '"handoff_queued":true' "daemon handoff queues user action"
+expect_contains "$daemon_handoff" '"phase":"handoff"' "daemon handoff reports handoff phase"
+expect_contains "$daemon_handoff" '"admitted":false' "daemon handoff preserves daemon policy refusal"
+expect_contains "$daemon_handoff" '"command":"oauth-mux codex login-device max-1"' "daemon handoff reports upstream login command"
+test ! -e "$tmp/reauth-home/auth.json"
+
 repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"
 set +e
 OMUX_CONFIG="$reauth_config" \
@@ -370,6 +391,8 @@ expect_contains "$repair_events" '"outcome":"interactive_json_unsupported"' "rep
 expect_contains "$repair_events" '"profile":"needs-reauth"' "repair events record profile"
 expect_contains "$repair_events" '"provider":"codex"' "repair events record provider"
 expect_contains "$repair_events" '"account":"max-1"' "repair events record account"
+expect_contains "$repair_events" '"kind":"daemon_handoff"' "repair events record daemon handoff"
+expect_contains "$repair_events" '"outcome":"handoff_queued"' "repair events record daemon handoff outcome"
 
 printf 'e2e: refresh admission refusal records redacted token_refresh event\n'
 refresh_config="$tmp/refresh-config.json"
