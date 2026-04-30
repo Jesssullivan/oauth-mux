@@ -131,6 +131,8 @@ jq -e '
   and .accounts == 3
   and (.next_commands | index("oauth-mux setup codex") != null)
   and (.next_commands | index("oauth-mux codex config-candidate --json") == null)
+  and (.next_commands | index("oauth-mux route explain --profile <profile> --capability <capability> --json") != null)
+  and (.next_commands | index("oauth-mux route select --profile <profile> --capability <capability> --json") != null)
   and (.next_commands | index("oauth-mux repair-plan --json") != null)
 ' "$doctor_after" >/dev/null
 
@@ -142,6 +144,8 @@ jq -e '
   and .codex_max_configured == true
   and (.providers[] | select(.name == "codex") | .accounts | length) == 3
   and (.agent_safe_commands | index("oauth-mux report --redacted --json") != null)
+  and (.agent_safe_commands | index("oauth-mux route explain --profile <profile> --capability <capability> --json") != null)
+  and (.agent_safe_commands | index("oauth-mux route select --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux codex config-candidate --json") == null)
 ' "$discover_json" >/dev/null
@@ -155,6 +159,37 @@ jq -e '
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
   and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
 ' "$repair_plan_json" >/dev/null
+
+printf 'first-run e2e: route explain reports no recorded health without mutation\n'
+route_explain_json="$tmp/route-explain-codex-max.json"
+run_json "$route_explain_json" route explain --profile codex-max --capability codex-max --json
+jq -e '
+  .action == "explain"
+  and .profile == "codex-max"
+  and .capability == "codex-max"
+  and .ok == false
+  and .selected == null
+  and (.routes | length) == 3
+  and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
+  and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed")
+' "$route_explain_json" >/dev/null
+
+printf 'first-run e2e: route select refuses unrecorded health evidence\n'
+route_select_json="$tmp/route-select-codex-max.json"
+set +e
+omux route select --profile codex-max --capability codex-max --json >"$route_select_json" 2>"$tmp/route-select-codex-max.stderr"
+route_select_status=$?
+set -e
+if [ "$route_select_status" -eq 0 ]; then
+  printf 'first-run e2e assertion failed: route select should fail before health is recorded\n' >&2
+  exit 1
+fi
+jq -e '
+  .action == "select"
+  and .ok == false
+  and .selected == null
+  and (.routes | length) == 3
+' "$route_select_json" >/dev/null
 
 printf 'first-run e2e: config-candidate writes sidecar without clobbering active config\n'
 config_before="$(cat "$config_path")"

@@ -48,6 +48,7 @@ oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
+oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 
@@ -115,9 +116,16 @@ oauth-mux codex probe-all --capability codex-mini --json
 To inspect the stay-afloat decision loop without running a canary:
 
 ```bash
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux route select --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-mini --capability codex-mini --json
 ```
+
+`route explain` and `route select` are no-spend commands. They read runtime
+readiness plus recorded route liveness and do not probe providers or mutate auth
+state. Unrecorded routes are reported as `probe_needed`, and `route select`
+exits nonzero when no route has enough evidence to be selected.
 
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
@@ -165,7 +173,13 @@ thin aliases for installed commands. `just codex-max-setup` is a thin alias for
 `oauth-mux repair-plan --profile codex-max --capability codex-max --json`, and
 `just codex-max-live-qa` / `just codex-max-live-qa-confirmed` wrap the guarded
 installed live QA command. `just codex-max-probe-all` is likewise a thin alias
-for `oauth-mux codex probe-all`.
+for `oauth-mux codex probe-all`. Route selection and explanation should be run
+through the installed CLI directly:
+
+```bash
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux route select --profile codex-max --capability codex-max --json
+```
 
 The clean no-config first-run path is covered by:
 
@@ -176,6 +190,7 @@ just first-run-e2e
 That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
 and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
 diagnostics, redacted support output, repair-plan route explanation,
+no-spend route explanation and route-select refusal without health evidence,
 non-clobbering config-candidate generation, config-merge backup behavior, and
 non-mutating Codex help plus the unconfirmed live-QA spend gate without touching
 the operator's real OAuth stores.
@@ -191,11 +206,13 @@ oauth-mux providers list --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
+oauth-mux route explain --profile <profile> --capability <capability> --json
 ```
 
 Agents may run:
 
 ```bash
+oauth-mux route select --profile <profile> --capability <capability> --json
 oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux codex live-qa --json
 oauth-mux codex probe-all --capability <capability> --json
@@ -204,7 +221,9 @@ oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```
 
 Probe JSON includes `ok`, `error`, and `exit_code` alongside typed
-`liveness`. `codex live-qa --json` is safe without confirmation: it exits
+`liveness`. Route JSON includes `ok`, `selected`, `selectable`, `skip_reason`,
+runtime readiness, liveness, probe evidence, and the same action object used by
+`repair-plan`. `codex live-qa --json` is safe without confirmation: it exits
 nonzero with `confirmation_required` and `spends_provider_calls: true` before
 running provider calls. Once confirmed, its top-level `ok` means every
 requested capability has at least one available account, not that every account

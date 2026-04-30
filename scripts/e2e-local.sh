@@ -229,6 +229,20 @@ expect_contains "$health_json" '"key":"toy:a1#expensive"' "health includes faile
 expect_contains "$health_json" '"availability":"quota_exhausted"' "health records quota exhausted route availability"
 expect_contains "$health_json" '"decision":"try_next_account"' "health records fallback decision"
 
+printf 'e2e: route explain reports selected fallback without probing\n'
+route_explain="$(omux route explain --profile expensive --capability expensive --json)"
+expect_contains "$route_explain" '"action":"explain"' "route explain reports action"
+expect_contains "$route_explain" '"ok":true' "route explain reports available selection"
+expect_contains "$route_explain" '"selected":{"provider":"toy","account":"a2"' "route explain selects fallback account a2"
+expect_contains "$route_explain" '"skip_reason":"quota_exhausted"' "route explain keeps exhausted reason"
+expect_contains "$route_explain" '"skip_reason":"available"' "route explain marks available selected route"
+
+printf 'e2e: route select chooses selected fallback without probing\n'
+route_select="$(omux route select --profile expensive --capability expensive --json)"
+expect_contains "$route_select" '"action":"select"' "route select reports action"
+expect_contains "$route_select" '"ok":true' "route select reports available selection"
+expect_contains "$route_select" '"selected":{"provider":"toy","account":"a2"' "route select selects fallback account a2"
+
 printf 'e2e: route health does not poison unrelated capability\n'
 cheap_after_quota="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_after_quota" "export OMUX_ACTIVE_ACCOUNT='a1'" "cheap route still uses a1 after expensive quota"

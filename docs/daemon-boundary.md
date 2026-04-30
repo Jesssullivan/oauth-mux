@@ -14,18 +14,22 @@ exhaustion to `codex:max-2#codex-max`, but it also exposed that runtime
 permission/session ownership and automatic reauth are not solved by the current
 daemon.
 
-`oauth-mux repair-plan` is the current bridge between dogfooding evidence and
-future daemon work. It reads runtime readiness and recorded liveness, then
-prints the next non-mutating repair actions. `oauth-mux daemon repair-plan` is
-only a namespace alias for that same one-shot planner; it does not start a
-background service, run probes, open browsers, refresh credentials, or rewrite
-secret stores.
+`oauth-mux route explain`, `oauth-mux route select`, and `oauth-mux
+repair-plan` are the current bridge between dogfooding evidence and future
+daemon work. They read runtime readiness and recorded liveness, then either
+explain the route set, select the first currently usable route, or print the
+next non-mutating repair actions. `oauth-mux daemon repair-plan` is only a
+namespace alias for that same one-shot planner; it does not start a background
+service, run probes, open browsers, refresh credentials, or rewrite secret
+stores.
 
 See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 
 ## Allowed Now
 
 - `oauth-mux daemon run` as the foreground primitive for any future wrapper.
+- `oauth-mux route explain` for no-spend route-state explanation.
+- `oauth-mux route select` for no-spend route choice from recorded evidence.
 - `oauth-mux repair-plan` for non-mutating stay-afloat action planning.
 - `oauth-mux daemon repair-plan` as a compatibility alias for the same
   one-shot planner.
@@ -65,6 +69,8 @@ Until then, user and agent onboarding should use one-shot commands:
 ```bash
 oauth-mux discover --json
 oauth-mux codex canary
+oauth-mux route explain --profile <profile> --capability <capability> --json
+oauth-mux route select --profile <profile> --capability <capability> --json
 oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux repair-plan --profile <profile> --capability <capability> --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>

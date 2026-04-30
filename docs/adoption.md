@@ -29,6 +29,7 @@ oauth-mux report --redacted
 oauth-mux providers list
 oauth-mux config validate
 oauth-mux discover --json
+oauth-mux route explain --profile <profile> --capability <capability> --json
 ```
 
 Source checkouts prove this path without touching real operator state:
@@ -44,6 +45,8 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux route select --profile codex-max --capability codex-max --json
 ```
 
 Those commands are installed CLI surface, not source-checkout-only helpers.
@@ -58,6 +61,10 @@ oauth-mux codex live-qa
 oauth-mux codex live-qa --confirm-spend
 oauth-mux codex probe-all --capability codex-mini --json
 ```
+
+`route explain` and `route select` are no-spend surfaces. They only use
+recorded liveness and runtime readiness, so they are safe for agents to run
+before deciding whether a live probe or user-driven reauth is warranted.
 
 ## Provider Author Experience
 
