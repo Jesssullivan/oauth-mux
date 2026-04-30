@@ -151,6 +151,17 @@ need user approval. Confirmed interactive repair is a human foreground flow and
 should be run without `--json`; JSON mode refuses interactive repair execution
 so upstream CLI output cannot corrupt machine-readable output.
 
+Each `repair run` call records a redacted event. Confirmed repair also takes an
+account-scoped advisory lock before it launches an upstream repair command. A
+second process sees that lock as `repair_in_progress` through `doctor runtime`,
+`route explain`, `route select`, and `repair-plan`, so agents can back off
+without guessing whether OAuth, quota, or local runtime state failed. Inspect
+the audit trail with:
+
+```bash
+oauth-mux daemon events --json
+```
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a

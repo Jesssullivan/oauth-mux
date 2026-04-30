@@ -38,7 +38,11 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux repair run` for one explicit, confirmed repair command.
 - `oauth-mux daemon repair-plan` as a compatibility alias for the same
   one-shot planner.
-- `oauth-mux daemon status` for local inspection.
+- `oauth-mux daemon status --json` for local inspection.
+- `oauth-mux daemon events --json` for the redacted repair-run event log. This
+  reads local state and does not require a daemon process.
+- Account-scoped advisory locks during confirmed `repair run`, reported back as
+  `repair_in_progress` by runtime-aware route planning.
 - Local experimentation with daemon socket/status behavior.
 - Future manual QA where daemon activity is bounded and visible.
 
@@ -82,5 +86,6 @@ oauth-mux route select --profile <profile> --capability <capability> --json
 oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux repair-plan --profile <profile> --capability <capability> --json
 oauth-mux repair run --profile <profile> --capability <capability> --json
+oauth-mux daemon events --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```

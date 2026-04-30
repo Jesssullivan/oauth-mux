@@ -11,6 +11,7 @@ const health_mod = @import("health.zig");
 const provider = @import("provider.zig");
 const provider_schema = @import("provider_schema.zig");
 const daemon = @import("daemon.zig");
+const repair_state = @import("repair_state.zig");
 
 pub fn main() !void {
     log.init();
@@ -154,8 +155,11 @@ pub fn main() !void {
                 std.process.exit(types.ExitCode.general_error.int());
             };
         },
-        .daemon_status => {
-            try daemon.status(allocator, stdout);
+        .daemon_status => |daemon_args| {
+            try daemon.status(allocator, stdout, daemon_args.json);
+        },
+        .daemon_events => |events_args| {
+            try repair_state.writeEvents(allocator, stdout, events_args.json, events_args.limit);
         },
     }
 }
@@ -530,6 +534,11 @@ fn runRepairRun(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
     const candidate_index = repairRunCandidate(evaluations.items, selected_index, args);
 
     if (candidate_index == null) {
+        if (selected_index) |idx| {
+            recordRepairRunEvent(allocator, args, evaluations.items[idx], "noop", "route_selectable", true, false);
+        } else {
+            recordRepairRunEvent(allocator, args, null, "no_admitted_repair", "no_admitted_repair", true, false);
+        }
         if (args.json) {
             try writeRepairRunNoopJson(writer, evaluations.items, selected_index, args);
         } else {
@@ -540,6 +549,7 @@ fn runRepairRun(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
 
     const evaluation = evaluations.items[candidate_index.?];
     if (!args.confirm_repair) {
+        recordRepairRunEvent(allocator, args, evaluation, "confirmation_required", "missing_confirm_repair", false, false);
         if (args.json) {
             try writeRepairRunConfirmationJson(writer, allocator, parsed.value, evaluation, args);
         } else {
@@ -549,14 +559,31 @@ fn runRepairRun(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
     }
 
     if (args.json and evaluation.action.interactive) {
+        recordRepairRunEvent(allocator, args, evaluation, "interactive_json_unsupported", "json_mode", false, false);
         try writeRepairRunJsonInteractiveUnsupported(writer, allocator, parsed.value, evaluation, args);
         return error.RepairConfirmationRequired;
     }
 
+    var lock = repair_state.acquireRepairLock(allocator, evaluation.route.provider, evaluation.route.account) catch |e| switch (e) {
+        error.RepairInProgress => {
+            recordRepairRunEvent(allocator, args, evaluation, "repair_in_progress", "lock_busy", false, false);
+            if (args.json) {
+                try writeRepairRunLockBusyJson(writer, allocator, parsed.value, evaluation, args);
+            } else {
+                try writeRepairRunLockBusyText(writer, evaluation);
+            }
+            return error.RepairAlreadyInProgress;
+        },
+        else => return e,
+    };
+    defer lock.release();
+
     const command = try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route);
     defer if (command) |value| allocator.free(value);
 
+    try repair_state.appendEvent(allocator, repairRunEvent(evaluation, args.profile, "started", "confirmed_repair", false, false));
     const ok = try executeRepairCommand(allocator, parsed.value, evaluation);
+    recordRepairRunEvent(allocator, args, evaluation, if (ok) "executed" else "failed", if (ok) "command_success" else "command_failed", ok, true);
     if (args.json) {
         try writeRepairRunExecutedJson(writer, allocator, parsed.value, evaluation, command, ok);
     } else {
@@ -586,6 +613,52 @@ fn repairRunCandidate(
         if (evaluation.action.mutating and evaluation.action.command != .none) return idx;
     }
     return null;
+}
+
+fn recordRepairRunEvent(
+    allocator: std.mem.Allocator,
+    args: cli.Command.RepairRunArgs,
+    evaluation: ?RouteEvaluation,
+    outcome: []const u8,
+    reason: []const u8,
+    ok: bool,
+    executed: bool,
+) void {
+    const event = if (evaluation) |value|
+        repairRunEvent(value, args.profile, outcome, reason, ok, executed)
+    else
+        repair_state.RepairEvent{
+            .profile = args.profile,
+            .capability = args.capability,
+            .outcome = outcome,
+            .reason = reason,
+            .ok = ok,
+            .executed = executed,
+        };
+    repair_state.appendEvent(allocator, event) catch {};
+}
+
+fn repairRunEvent(
+    evaluation: RouteEvaluation,
+    profile: ?[]const u8,
+    outcome: []const u8,
+    reason: []const u8,
+    ok: bool,
+    executed: bool,
+) repair_state.RepairEvent {
+    return .{
+        .profile = profile,
+        .provider = evaluation.route.provider,
+        .account = evaluation.route.account,
+        .capability = evaluation.route.capability,
+        .action = evaluation.action.kind,
+        .outcome = outcome,
+        .reason = reason,
+        .ok = ok,
+        .executed = executed,
+        .interactive = evaluation.action.interactive,
+        .mutating = evaluation.action.mutating,
+    };
 }
 
 fn writeRepairRunNoopText(
@@ -679,6 +752,36 @@ fn writeRepairRunJsonInteractiveUnsupported(
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"ok\":false,\"executed\":false,\"confirmation_required\":false,\"error\":\"interactive_json_unsupported\",\"message\":\"interactive repair may write upstream CLI output; rerun without --json after reviewing repair-plan\",\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"route\":");
+    try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, false);
+    try writer.writeAll("}\n");
+}
+
+fn writeRepairRunLockBusyText(
+    writer: anytype,
+    evaluation: RouteEvaluation,
+) !void {
+    try writer.writeAll("oauth-mux repair run\n\n");
+    try writer.writeAll("  executed: no\n");
+    try writer.writeAll("  reason: repair already in progress for this account\n");
+    try writer.print("  route: {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
+    if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
+    try writer.writeByte('\n');
+}
+
+fn writeRepairRunLockBusyJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+    args: cli.Command.RepairRunArgs,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":false,\"executed\":false,\"confirmation_required\":false,\"error\":\"repair_in_progress\",\"message\":\"another oauth-mux repair process holds this account lock\",\"profile\":");
     if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
     if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
@@ -3155,6 +3258,9 @@ fn routeRuntimeReadiness(
 
     const prov = cfg.providers.map.get(route.provider) orelse return .{ .session_unavailable = "provider_config_missing" };
     const account = prov.accounts.map.get(route.account) orelse return .{ .session_unavailable = "account_config_missing" };
+    if (try repair_state.probeRepairLock(allocator, route.provider, route.account)) |progress| {
+        return .{ .repair_in_progress = progress };
+    }
     const account_runtime = try runtimeAccountInfo(allocator, prov, account, def, config.resolveProviderKind(cfg, route.provider));
     return account_runtime.readiness;
 }
@@ -5688,4 +5794,5 @@ comptime {
     _ = @import("daemon.zig");
     _ = @import("provider_schema.zig");
     _ = @import("fixture_redaction.zig");
+    _ = @import("repair_state.zig");
 }

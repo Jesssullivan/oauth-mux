@@ -24,7 +24,8 @@ pub const Command = union(enum) {
     daemon_run,
     daemon_start,
     daemon_stop,
-    daemon_status,
+    daemon_status: DaemonStatusArgs,
+    daemon_events: DaemonEventsArgs,
     version_cmd,
     help,
     codex_help,
@@ -165,6 +166,15 @@ pub const Command = union(enum) {
     pub const CompletionsArgs = struct {
         shell: []const u8 = "fish",
     };
+
+    pub const DaemonStatusArgs = struct {
+        json: bool = false,
+    };
+
+    pub const DaemonEventsArgs = struct {
+        json: bool = false,
+        limit: usize = 50,
+    };
 };
 
 pub fn parse(args: []const []const u8) Command {
@@ -196,9 +206,10 @@ pub fn parse(args: []const []const u8) Command {
             if (eql(rest[0], "repair-plan")) return parseRepairPlan(rest[1..]);
             if (eql(rest[0], "start")) return .daemon_start;
             if (eql(rest[0], "stop")) return .daemon_stop;
-            if (eql(rest[0], "status")) return .daemon_status;
+            if (eql(rest[0], "status")) return parseDaemonStatus(rest[1..]);
+            if (eql(rest[0], "events")) return parseDaemonEvents(rest[1..]);
         }
-        return .daemon_status;
+        return .{ .daemon_status = .{} };
     }
     if (eql(cmd, "completions")) {
         if (rest.len > 0) return .{ .completions = .{ .shell = rest[0] } };
@@ -452,6 +463,30 @@ fn parseRoute(args: []const []const u8) Command {
     return .{ .route = result };
 }
 
+fn parseDaemonStatus(args: []const []const u8) Command {
+    var result = Command.DaemonStatusArgs{};
+    for (args) |arg| {
+        if (eql(arg, "--json")) result.json = true;
+    }
+    return .{ .daemon_status = result };
+}
+
+fn parseDaemonEvents(args: []const []const u8) Command {
+    var result = Command.DaemonEventsArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (eql(args[i], "--limit")) {
+            i += 1;
+            if (i < args.len) {
+                result.limit = std.fmt.parseInt(usize, args[i], 10) catch result.limit;
+            }
+        }
+    }
+    return .{ .daemon_events = result };
+}
+
 fn parseConfig(args: []const []const u8) Command {
     if (args.len == 0) return .config_path;
     if (eql(args[0], "validate")) return .config_validate;
@@ -628,7 +663,11 @@ pub fn printUsage(writer: anytype) !void {
         \\  daemon run         Run the daemon in the foreground.
         \\  daemon start       Start experimental daemon stub; no automatic repair.
         \\  daemon stop        Stop the daemon.
-        \\  daemon status      Show daemon status.
+        \\  daemon status [--json]
+        \\      Show daemon status.
+        \\
+        \\  daemon events [--json] [--limit <n>]
+        \\      Show recent redacted repair events.
         \\
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
@@ -1028,6 +1067,18 @@ test "parse daemon run" {
     try std.testing.expect(parse(&args) == .daemon_run);
 }
 
+test "parse daemon events json limit" {
+    const args = [_][]const u8{ "daemon", "events", "--json", "--limit", "5" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .daemon_events => |events| {
+            try std.testing.expect(events.json);
+            try std.testing.expectEqual(@as(usize, 5), events.limit);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
@@ -1087,7 +1138,9 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status' -d 'Daemon subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status events' -d 'Daemon subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l limit -d 'Limit event count' -r
             \\
         );
     } else if (eql(shell_name, "zsh")) {
@@ -1106,6 +1159,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
             \\    'repair-plan:Show non-mutating repair plan'
+            \\    'repair:Run admitted repair actions'
             \\    'route:Select or explain routes'
             \\    'config:Config operations'
             \\    'init:Generate config'
@@ -1124,7 +1178,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan route config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan repair route config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

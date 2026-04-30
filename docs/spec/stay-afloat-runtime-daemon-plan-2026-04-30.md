@@ -451,6 +451,14 @@ provider-owned repair commands that are represented as first-class actions.
 Confirmed interactive repair is intentionally rejected in `--json` mode because
 upstream CLIs can write browser/device auth output to stdout or stderr.
 
+Implementation note, 2026-04-30: repair execution now has the first daemon-safe
+substrate. `repair run` appends redacted JSONL events, confirmed repair takes
+an account-scoped advisory lock, and route/runtime planning reports an active
+lock as `repair_in_progress`. `oauth-mux daemon events --json` reads the event
+log without requiring the daemon to be running. This is still one-shot
+foreground repair; it is the audit and concurrency layer needed before any
+background loop.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.
@@ -462,7 +470,8 @@ upstream CLIs can write browser/device auth output to stdout or stderr.
 ### M4: Daemon Beta
 
 - Promote daemon to opt-in beta.
-- Add budgets, event log, lock files, and status JSON.
+- Add configurable budgets and status JSON beyond the current repair-run event
+  log and advisory lock substrate.
 - Keep live probes disabled by default.
 - Add Homebrew/systemd/launchd packaging notes only after stop/status behavior
   is proven.
