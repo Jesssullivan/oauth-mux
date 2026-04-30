@@ -163,7 +163,7 @@ pub fn main() !void {
             try repair_state.writeEvents(allocator, stdout, events_args.json, events_args.limit);
         },
         .daemon_handoffs => |events_args| {
-            try repair_state.writeHandoffs(allocator, stdout, events_args.json, events_args.limit);
+            try repair_state.writeHandoffs(allocator, stdout, events_args.json, events_args.limit, events_args.all);
         },
         .daemon_tick => |tick_args| {
             runDaemonTick(allocator, stdout, tick_args) catch |e| {
@@ -1593,7 +1593,10 @@ fn executeDaemonTickActions(
     selected_index: ?usize,
     executions: *std.ArrayList(DaemonTickExecution),
 ) !bool {
-    if (selected_index != null) return false;
+    if (selected_index) |idx| {
+        recordDaemonActionEvent(allocator, args, evaluations[idx], .none, "none", "route_selectable", "route_selectable", true, false, false);
+        return false;
+    }
 
     for (evaluations) |evaluation| {
         const decision = daemonTickDecision(cfg.policy.daemon, evaluation, std.time.timestamp());

@@ -19,6 +19,7 @@ config="$tmp/config.json"
 state_dir="$tmp/state"
 exec_out="$tmp/exec.out"
 probe_cmd="$tmp/probe-harness.sh"
+reauth_probe_cmd="$tmp/reauth-probe-harness.sh"
 
 mkdir -p "$state_dir" "$tmp/a1-home" "$tmp/a2-home"
 
@@ -49,6 +50,26 @@ case "${capability}:${OMUX_ACTIVE_ACCOUNT:-}" in
 esac
 EOF
 chmod 0755 "$probe_cmd"
+
+cat >"$reauth_probe_cmd" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+
+if [ "${OMUX_ACTIVE_PROVIDER:-}" = "codex" ] && [ "${OMUX_ACTIVE_ACCOUNT:-}" = "max-1" ]; then
+  printf 'ok provider=%s account=%s capability=%s\n' \
+    "${OMUX_ACTIVE_PROVIDER:-}" \
+    "${OMUX_ACTIVE_ACCOUNT:-}" \
+    "${OMUX_ACTIVE_CAPABILITY:-}"
+  exit 0
+fi
+
+printf 'unexpected reauth probe route: provider=%s account=%s capability=%s\n' \
+  "${OMUX_ACTIVE_PROVIDER:-}" \
+  "${OMUX_ACTIVE_ACCOUNT:-}" \
+  "${OMUX_ACTIVE_CAPABILITY:-}" >&2
+exit 1
+EOF
+chmod 0755 "$reauth_probe_cmd"
 
 cat >"$config" <<EOF
 {
@@ -310,7 +331,27 @@ cat >"$reauth_config" <<EOF
       "runtime": {
         "writable_paths": ["CODEX_HOME"],
         "session_paths": ["CODEX_HOME/auth.json"]
-      }
+      },
+      "capabilities": [
+        {
+          "name": "codex-max",
+          "probe": {
+            "transport": "command",
+            "auth": "none",
+            "timeout_ms": 5000,
+            "budget": "free_command",
+            "command": ["$reauth_probe_cmd"]
+          }
+        }
+      ],
+      "failure_rules": [
+        {
+          "status": 400,
+          "class": {
+            "degraded": "unknown_4xx"
+          }
+        }
+      ]
     }
   },
   "providers": {
@@ -388,6 +429,16 @@ repair_reauth_confirmed="$(cat "$repair_reauth_confirmed_json")"
 expect_contains "$repair_reauth_confirmed" '"error":"interactive_json_unsupported"' "repair run json refuses interactive execution"
 expect_contains "$repair_reauth_confirmed" '"executed":false' "repair run json does not execute interactive repair"
 test ! -e "$tmp/reauth-home/auth.json"
+
+printf 'e2e: daemon handoffs clears after route evidence refresh\n'
+printf '%s\n' '{"access_token":"reauth-e2e"}' >"$tmp/reauth-home/auth.json"
+daemon_repaired="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" daemon tick --once --execute --profile needs-reauth --capability codex-max --json)"
+expect_contains "$daemon_repaired" '"executed":true' "daemon repaired tick runs probe after user-mediated login"
+expect_contains "$daemon_repaired" '"phase":"probe"' "daemon repaired tick records probe phase"
+daemon_handoffs_cleared="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json)"
+expect_contains "$daemon_handoffs_cleared" '"handoffs":[]' "daemon handoffs clears resolved handoff"
+daemon_handoffs_all="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json --all)"
+expect_contains "$daemon_handoffs_all" '"kind":"daemon_handoff"' "daemon handoffs --all preserves historical handoff events"
 
 printf 'e2e: daemon events exposes redacted repair run audit trail\n'
 repair_events="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon events --json)"
