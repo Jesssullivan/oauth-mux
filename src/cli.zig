@@ -26,7 +26,7 @@ pub const Command = union(enum) {
     daemon_stop,
     daemon_status: DaemonStatusArgs,
     daemon_events: DaemonEventsArgs,
-    daemon_handoffs: DaemonEventsArgs,
+    daemon_handoffs: DaemonHandoffsArgs,
     daemon_tick: DaemonTickArgs,
     version_cmd,
     help,
@@ -176,6 +176,12 @@ pub const Command = union(enum) {
     pub const DaemonEventsArgs = struct {
         json: bool = false,
         limit: usize = 50,
+    };
+
+    pub const DaemonHandoffsArgs = struct {
+        json: bool = false,
+        limit: usize = 50,
+        all: bool = false,
     };
 
     pub const DaemonTickArgs = struct {
@@ -504,11 +510,13 @@ fn parseDaemonEvents(args: []const []const u8) Command {
 }
 
 fn parseDaemonHandoffs(args: []const []const u8) Command {
-    var result = Command.DaemonEventsArgs{};
+    var result = Command.DaemonHandoffsArgs{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (eql(args[i], "--json")) {
             result.json = true;
+        } else if (eql(args[i], "--all")) {
+            result.all = true;
         } else if (eql(args[i], "--limit")) {
             i += 1;
             if (i < args.len) {
@@ -742,8 +750,8 @@ pub fn printUsage(writer: anytype) !void {
         \\  daemon events [--json] [--limit <n>]
         \\      Show recent redacted repair events.
         \\
-        \\  daemon handoffs [--json] [--limit <n>]
-        \\      Show queued user-mediated daemon handoffs.
+        \\  daemon handoffs [--json] [--limit <n>] [--all]
+        \\      Show pending user-mediated daemon handoffs; --all includes history.
         \\
         \\  daemon tick [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Plan daemon ticks; --execute runs at most one admitted non-interactive action per tick.
@@ -1159,12 +1167,13 @@ test "parse daemon events json limit" {
 }
 
 test "parse daemon handoffs json limit" {
-    const args = [_][]const u8{ "daemon", "handoffs", "--json", "--limit", "3" };
+    const args = [_][]const u8{ "daemon", "handoffs", "--json", "--limit", "3", "--all" };
     const cmd = parse(&args);
     switch (cmd) {
         .daemon_handoffs => |events| {
             try std.testing.expect(events.json);
             try std.testing.expectEqual(@as(usize, 3), events.limit);
+            try std.testing.expect(events.all);
         },
         else => return error.Unexpected,
     }
@@ -1263,6 +1272,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l limit -d 'Limit event count' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l all -d 'Include historical handoff events'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l once -d 'Run one planning tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l loop -d 'Run bounded foreground planning ticks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l execute -d 'Execute one admitted non-interactive tick action'

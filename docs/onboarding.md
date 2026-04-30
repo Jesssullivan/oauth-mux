@@ -198,6 +198,12 @@ reviewable user command. Agents and users can list those pending handoffs with:
 oauth-mux daemon handoffs --json
 ```
 
+The default handoff view is pending as of the daemon's last route evidence. Use
+`oauth-mux daemon handoffs --json --all` when you need the historical audit
+trail instead. After a user completes an upstream CLI login, another
+`daemon tick --once --execute ... --json` can refresh route evidence and clear
+the pending prompt.
+
 For a bounded foreground loop, use:
 
 ```bash

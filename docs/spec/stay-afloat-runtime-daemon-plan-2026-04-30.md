@@ -485,9 +485,11 @@ Tick JSON now includes `execution_mode`, `executions`, `handoff_queued`, and
 `next_tick_after` scheduling hints.
 
 Implementation note, 2026-04-30: `oauth-mux daemon handoffs --json` now exposes
-the filtered handoff queue from the same redacted local event stream. This gives
-users, wrappers, and agents a stable way to discover pending user-mediated
-repairs without scraping the full audit log.
+the filtered pending handoff queue from the same redacted local event stream.
+Later route-selectable or successful execution events clear matching pending
+handoffs; `--all` keeps the historical handoff events visible for audit. This
+gives users, wrappers, and agents a stable way to discover user-mediated repairs
+without scraping the full audit log.
 
 Implementation note, 2026-04-30: bounded foreground loop mode now exists through
 `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`. This

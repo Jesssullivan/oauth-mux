@@ -54,8 +54,12 @@ pub fn writeEvents(allocator: std.mem.Allocator, writer: anytype, json: bool, li
     try writeEventView(allocator, writer, json, limit, "events", null, "no repair events recorded");
 }
 
-pub fn writeHandoffs(allocator: std.mem.Allocator, writer: anytype, json: bool, limit: usize) !void {
-    try writeEventView(allocator, writer, json, limit, "handoffs", "daemon_handoff", "no daemon handoffs recorded");
+pub fn writeHandoffs(allocator: std.mem.Allocator, writer: anytype, json: bool, limit: usize, all: bool) !void {
+    if (all) {
+        try writeEventView(allocator, writer, json, limit, "handoffs", "daemon_handoff", "no daemon handoffs recorded");
+        return;
+    }
+    try writePendingHandoffView(allocator, writer, json, limit);
 }
 
 fn writeEventView(
@@ -118,6 +122,63 @@ fn writeEmptyJsonView(writer: anytype, root_key: []const u8) !void {
     try writer.print("{{\"{s}\":[]}}\n", .{root_key});
 }
 
+fn writePendingHandoffView(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    json: bool,
+    limit: usize,
+) !void {
+    const path = try eventsPath(allocator);
+    defer allocator.free(path);
+
+    const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
+        error.FileNotFound => {
+            if (json) {
+                try writeEmptyJsonView(writer, "handoffs");
+            } else {
+                try writer.writeAll("no pending daemon handoffs recorded\n");
+            }
+            return;
+        },
+        else => return e,
+    };
+    defer file.close();
+
+    const bytes = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(bytes);
+
+    var pending = std.ArrayList([]const u8).init(allocator);
+    defer pending.deinit();
+    var it = std.mem.splitScalar(u8, bytes, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        if (isQueuedHandoffEvent(trimmed)) {
+            try upsertPendingHandoff(&pending, trimmed);
+        } else {
+            removeResolvedHandoffs(&pending, trimmed);
+        }
+    }
+
+    if (pending.items.len == 0 and !json) {
+        try writer.writeAll("no pending daemon handoffs recorded\n");
+        return;
+    }
+
+    const start = if (limit != 0 and pending.items.len > limit) pending.items.len - limit else 0;
+    if (!json) {
+        try writeTextLines(writer, pending.items[start..]);
+        return;
+    }
+
+    try writer.writeAll("{\"handoffs\":[");
+    for (pending.items[start..], 0..) |line, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writer.writeAll(line);
+    }
+    try writer.writeAll("]}\n");
+}
+
 fn eventLineMatchesKind(line: []const u8, filter_kind: ?[]const u8) bool {
     const kind = filter_kind orelse return true;
     const marker = "\"kind\":\"";
@@ -125,6 +186,101 @@ fn eventLineMatchesKind(line: []const u8, filter_kind: ?[]const u8) bool {
     const value_start = pos + marker.len;
     const value_end_delta = std.mem.indexOfScalar(u8, line[value_start..], '"') orelse return false;
     return std.mem.eql(u8, line[value_start .. value_start + value_end_delta], kind);
+}
+
+fn isQueuedHandoffEvent(line: []const u8) bool {
+    return eventLineMatchesKind(line, "daemon_handoff") and eventFieldEquals(line, "outcome", "handoff_queued");
+}
+
+fn upsertPendingHandoff(pending: *std.ArrayList([]const u8), line: []const u8) !void {
+    var idx: usize = 0;
+    while (idx < pending.items.len) {
+        if (eventRouteKeyMatches(pending.items[idx], line)) {
+            _ = pending.orderedRemove(idx);
+            continue;
+        }
+        idx += 1;
+    }
+    try pending.append(line);
+}
+
+fn removeResolvedHandoffs(pending: *std.ArrayList([]const u8), event_line: []const u8) void {
+    if (!eventResolvesHandoff(event_line)) return;
+    var idx: usize = 0;
+    while (idx < pending.items.len) {
+        if (eventRouteKeyMatches(pending.items[idx], event_line)) {
+            _ = pending.orderedRemove(idx);
+            continue;
+        }
+        idx += 1;
+    }
+}
+
+fn eventResolvesHandoff(line: []const u8) bool {
+    if (eventFieldEquals(line, "outcome", "route_selectable")) return true;
+    if (eventFieldBool(line, "ok") == true and eventFieldEquals(line, "outcome", "executed")) return true;
+    if (eventFieldBool(line, "ok") == true and eventFieldEquals(line, "outcome", "noop")) return true;
+    return false;
+}
+
+fn eventRouteKeyMatches(a: []const u8, b: []const u8) bool {
+    return eventOptionalFieldEquals(a, b, "profile") and
+        eventOptionalFieldEquals(a, b, "provider") and
+        eventOptionalFieldEquals(a, b, "account") and
+        eventOptionalFieldEquals(a, b, "capability");
+}
+
+fn eventOptionalFieldEquals(a: []const u8, b: []const u8, field: []const u8) bool {
+    const av = eventFieldString(a, field);
+    const bv = eventFieldString(b, field);
+    if (av == null and bv == null) return true;
+    if (av == null or bv == null) return false;
+    return std.mem.eql(u8, av.?, bv.?);
+}
+
+fn eventFieldEquals(line: []const u8, field: []const u8, expected: []const u8) bool {
+    const value = eventFieldString(line, field) orelse return false;
+    return std.mem.eql(u8, value, expected);
+}
+
+fn eventFieldBool(line: []const u8, field: []const u8) ?bool {
+    const start = eventFieldValueStart(line, field) orelse return null;
+    if (std.mem.startsWith(u8, line[start..], "true")) return true;
+    if (std.mem.startsWith(u8, line[start..], "false")) return false;
+    return null;
+}
+
+fn eventFieldString(line: []const u8, field: []const u8) ?[]const u8 {
+    var idx = eventFieldValueStart(line, field) orelse return null;
+    if (std.mem.startsWith(u8, line[idx..], "null")) return null;
+    if (idx >= line.len or line[idx] != '"') return null;
+    idx += 1;
+    const start = idx;
+    while (idx < line.len) : (idx += 1) {
+        if (line[idx] == '\\') {
+            idx += 1;
+            continue;
+        }
+        if (line[idx] == '"') return line[start..idx];
+    }
+    return null;
+}
+
+fn eventFieldValueStart(line: []const u8, field: []const u8) ?usize {
+    var search_start: usize = 0;
+    while (search_start < line.len) {
+        const quote_delta = std.mem.indexOfScalar(u8, line[search_start..], '"') orelse return null;
+        const key_start = search_start + quote_delta + 1;
+        if (key_start + field.len + 2 <= line.len and
+            std.mem.eql(u8, line[key_start .. key_start + field.len], field) and
+            line[key_start + field.len] == '"' and
+            line[key_start + field.len + 1] == ':')
+        {
+            return key_start + field.len + 2;
+        }
+        search_start = key_start;
+    }
+    return null;
 }
 
 pub fn acquireRepairLock(
@@ -345,6 +501,25 @@ test "event kind filtering keeps daemon handoffs only" {
     try std.testing.expect(!eventLineMatchesKind("{\"kind\":\"repair_run\"}", "daemon_handoff"));
     try std.testing.expect(!eventLineMatchesKind("{\"kind\":\"repair_run\",\"reason\":\"daemon_handoff\"}", "daemon_handoff"));
     try std.testing.expect(eventLineMatchesKind("{\"kind\":\"repair_run\"}", null));
+}
+
+test "pending handoff queue resolves by later route event" {
+    var pending = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer pending.deinit();
+
+    const handoff =
+        "{\"kind\":\"daemon_handoff\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-1\",\"capability\":\"codex-max\",\"outcome\":\"handoff_queued\",\"ok\":false}";
+    const unrelated =
+        "{\"kind\":\"daemon_action\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-2\",\"capability\":\"codex-max\",\"outcome\":\"route_selectable\",\"ok\":true}";
+    const resolved =
+        "{\"kind\":\"daemon_action\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-1\",\"capability\":\"codex-max\",\"outcome\":\"route_selectable\",\"ok\":true}";
+
+    try upsertPendingHandoff(&pending, handoff);
+    try std.testing.expectEqual(@as(usize, 1), pending.items.len);
+    removeResolvedHandoffs(&pending, unrelated);
+    try std.testing.expectEqual(@as(usize, 1), pending.items.len);
+    removeResolvedHandoffs(&pending, resolved);
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
 }
 
 test "refresh event json carries redacted writeback evidence" {
