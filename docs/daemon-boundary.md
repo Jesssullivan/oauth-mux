@@ -41,6 +41,9 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux daemon status --json` for local inspection.
 - `oauth-mux daemon events --json` for the redacted repair-run event log. This
   reads local state and does not require a daemon process.
+- `oauth-mux daemon tick --once --json` for one portable, policy-gated
+  daemon-shaped planning pass. It reports `executed:false` and does not run
+  probes, repair commands, or mutation.
 - Account-scoped advisory locks during confirmed `repair run`, reported back as
   `repair_in_progress` by runtime-aware route planning.
 - Config-level daemon admission policy for route planning. The default admits

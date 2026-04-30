@@ -257,6 +257,15 @@ expect_contains "$route_select" '"action":"select"' "route select reports action
 expect_contains "$route_select" '"ok":true' "route select reports available selection"
 expect_contains "$route_select" '"selected":{"provider":"toy","account":"a2"' "route select selects fallback account a2"
 
+printf 'e2e: daemon tick plans stay-afloat without executing work\n'
+daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"
+expect_contains "$daemon_tick" '"mode":"once"' "daemon tick reports one-shot mode"
+expect_contains "$daemon_tick" '"executed":false' "daemon tick does not execute probes or repair"
+expect_contains "$daemon_tick" '"afloat":true' "daemon tick reports profile afloat"
+expect_contains "$daemon_tick" '"selected":{"provider":"toy","account":"a2"' "daemon tick selects fallback account a2"
+expect_contains "$daemon_tick" '"action":"wait_for_quota"' "daemon tick includes wait action for exhausted route"
+expect_contains "$daemon_tick" '"reason":"route_selectable"' "daemon tick marks selectable route as no-op"
+
 printf 'e2e: repair run no-ops when fallback route is selectable\n'
 repair_run="$(omux repair run --profile expensive --capability expensive --json)"
 expect_contains "$repair_run" '"ok":true' "repair run reports ok when afloat"

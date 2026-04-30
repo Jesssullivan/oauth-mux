@@ -169,6 +169,12 @@ are refused in the admission report unless `policy.daemon` explicitly allows
 them. `repair-plan --json` and `route explain --json` include both the effective
 policy and per-route `daemon_probe` / `daemon_repair` decisions.
 
+`oauth-mux daemon tick --once --json` is the portable daemon dogfood surface. It
+loads the same route/runtime/liveness state, applies the daemon policy, and
+prints what a future background loop would be allowed to do. It always reports
+`executed:false` today: no provider probes, browser/device auth, repair
+commands, or secret mutation are run by the tick.
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a

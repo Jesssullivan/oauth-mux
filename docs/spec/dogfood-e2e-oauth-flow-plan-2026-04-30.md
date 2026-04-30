@@ -38,7 +38,7 @@ OAuth and muxing surfaces:
 | Codex three-account stores | `max-1`, `max-2`, and `max-3` are isolated by `CODEX_HOME` and report logged-in ChatGPT status. |
 | Codex route liveness | Hosted and local installed-binary live canaries have proven all three accounts across `codex-mini` and `codex-max`. Earlier proof also preserved the distinction between quota exhaustion and auth death. |
 | Typed liveness | Unit and e2e tests cover `live`, `degraded`, `dead`, route-scoped `provider:account#capability`, and fallback decisions. |
-| Agent-safe discovery | `doctor --json`, `doctor runtime --json`, scoped `doctor runtime`, `report --redacted --json`, `providers list --json`, `discover --json`, `status --json`, `health --json`, `route explain --json`, and `route select --json` exist and are documented. |
+| Agent-safe discovery | `doctor --json`, `doctor runtime --json`, scoped `doctor runtime`, `report --redacted --json`, `providers list --json`, `discover --json`, `status --json`, `health --json`, `route explain --json`, `route select --json`, and `daemon tick --once --json` exist and are documented. |
 | Non-mutating help | `oauth-mux codex canary --help`, `oauth-mux codex probe-all --help`, and `oauth-mux setup codex --help` print help without creating stores or probing. |
 
 ## Not Yet Proven

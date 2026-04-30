@@ -161,6 +161,12 @@ pub fn main() !void {
         .daemon_events => |events_args| {
             try repair_state.writeEvents(allocator, stdout, events_args.json, events_args.limit);
         },
+        .daemon_tick => |tick_args| {
+            runDaemonTick(allocator, stdout, tick_args) catch |e| {
+                log.err("daemon tick: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
     }
 }
 
@@ -346,6 +352,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux route explain --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux route select --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair-plan --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux daemon tick --once --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair run --profile <profile> --capability <capability> --json\n");
     if (codex_configured and !codex_max_configured) {
         try writer.writeAll("    oauth-mux codex config-candidate --json\n");
@@ -451,6 +458,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux route explain --profile <profile> --capability <capability> --json",
         "oauth-mux route select --profile <profile> --capability <capability> --json",
         "oauth-mux repair-plan --profile <profile> --capability <capability> --json",
+        "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json",
         "oauth-mux repair run --profile <profile> --capability <capability> --json",
         "oauth-mux env --profile <profile> --capability <capability> --shell <shell>",
         "oauth-mux exec --profile <profile> --capability <capability> -- <command>",
@@ -1427,6 +1435,42 @@ fn runRoute(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Rou
     if (args.action == .select and selected_index == null) return error.AllAccountsExhausted;
 }
 
+fn runDaemonTick(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DaemonTickArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, daemonTickArgsToPlanArgs(args));
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+    if (args.json) {
+        try writeDaemonTickJson(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+    } else {
+        try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+    }
+}
+
+fn daemonTickArgsToPlanArgs(args: cli.Command.DaemonTickArgs) cli.Command.RepairPlanArgs {
+    return .{
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+        .json = args.json,
+    };
+}
+
 fn collectRouteEvaluations(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -1623,6 +1667,210 @@ fn writeRouteEvaluationJson(
     try writer.writeAll(",\"action\":");
     try writeRepairActionJson(writer, allocator, evaluation.action, evaluation.route);
     try writer.writeByte('}');
+}
+
+const DaemonTickDecision = struct {
+    phase: []const u8,
+    action: []const u8,
+    admitted: bool,
+    reason: []const u8,
+    budget: ?types.ActionBudget = null,
+    executed: bool = false,
+};
+
+const DaemonTickStats = struct {
+    routes: usize = 0,
+    selectable: usize = 0,
+    admitted_probes: usize = 0,
+    blocked_probes: usize = 0,
+    admitted_repairs: usize = 0,
+    blocked_repairs: usize = 0,
+    no_action: usize = 0,
+};
+
+fn writeDaemonTickText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    args: cli.Command.DaemonTickArgs,
+) !void {
+    try writer.writeAll("oauth-mux daemon tick\n\n");
+    try writer.print("  mode: {s}\n", .{if (args.once) "once" else "loop"});
+    try writer.writeAll("  executed: no\n");
+    try writer.writeAll("  boundary: planning only; no probes or repair commands executed\n");
+    if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
+    if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
+    if (selected_index) |idx| {
+        const selected = evaluations[idx].route;
+        try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
+        if (selected.capability) |capability| try writer.print("#{s}", .{capability});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("  selected: none\n");
+    }
+
+    if (evaluations.len == 0) {
+        try writer.writeAll("  no matching configured routes\n");
+        return;
+    }
+
+    try writer.writeAll("\n  routes:\n");
+    for (evaluations) |evaluation| {
+        const decision = daemonTickDecision(cfg.policy.daemon, evaluation);
+        try writer.print("    {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
+        if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
+        try writer.print(" selectable={s} runtime={s} tick={s} admitted={s} reason={s}", .{
+            if (evaluation.selectable) "true" else "false",
+            runtimeReadinessSummary(evaluation.runtime),
+            decision.action,
+            if (decision.admitted) "true" else "false",
+            decision.reason,
+        });
+        if (decision.budget) |budget| try writer.print(" budget={s}", .{@tagName(budget)});
+        if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
+            defer allocator.free(command);
+            try writer.print(" command={s}", .{command});
+        }
+        try writer.writeByte('\n');
+    }
+}
+
+fn writeDaemonTickJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    args: cli.Command.DaemonTickArgs,
+) !void {
+    const stats = daemonTickStats(cfg.policy.daemon, evaluations);
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":");
+    try std.json.stringify(if (args.once) "once" else "loop", .{}, writer);
+    try writer.writeAll(",\"executed\":false");
+    try writer.writeAll(",\"message\":\"planning only; no probes or repair commands executed\"");
+    try writer.writeAll(",\"policy\":");
+    try writePolicyJson(writer, cfg.policy);
+    try writer.writeAll(",\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"afloat\":");
+    try writer.writeAll(if (selected_index != null) "true" else "false");
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| {
+        try writeRouteSelectionJson(writer, evaluations[idx].route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"summary\":");
+    try writeDaemonTickStatsJson(writer, stats);
+    try writer.writeAll(",\"routes\":[");
+    for (evaluations, 0..) |evaluation, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        const selected = if (selected_index) |selected| idx == selected else false;
+        try writer.writeByte('{');
+        try writer.writeAll("\"route\":");
+        try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, selected);
+        try writer.writeAll(",\"tick\":");
+        try writeDaemonTickDecisionJson(writer, daemonTickDecision(cfg.policy.daemon, evaluation));
+        try writer.writeByte('}');
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeDaemonTickStatsJson(writer: anytype, stats: DaemonTickStats) !void {
+    try writer.print(
+        "{{\"routes\":{d},\"selectable\":{d},\"admitted_probes\":{d},\"blocked_probes\":{d},\"admitted_repairs\":{d},\"blocked_repairs\":{d},\"no_action\":{d}}}",
+        .{
+            stats.routes,
+            stats.selectable,
+            stats.admitted_probes,
+            stats.blocked_probes,
+            stats.admitted_repairs,
+            stats.blocked_repairs,
+            stats.no_action,
+        },
+    );
+}
+
+fn writeDaemonTickDecisionJson(writer: anytype, decision: DaemonTickDecision) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"phase\":");
+    try std.json.stringify(decision.phase, .{}, writer);
+    try writer.writeAll(",\"action\":");
+    try std.json.stringify(decision.action, .{}, writer);
+    try writer.writeAll(",\"admitted\":");
+    try writer.writeAll(if (decision.admitted) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(decision.reason, .{}, writer);
+    try writer.writeAll(",\"budget\":");
+    if (decision.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"executed\":");
+    try writer.writeAll(if (decision.executed) "true" else "false");
+    try writer.writeByte('}');
+}
+
+fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const RouteEvaluation) DaemonTickStats {
+    var stats = DaemonTickStats{ .routes = evaluations.len };
+    for (evaluations) |evaluation| {
+        if (evaluation.selectable) stats.selectable += 1;
+        const decision = daemonTickDecision(policy, evaluation);
+        if (std.mem.eql(u8, decision.phase, "probe")) {
+            if (decision.admitted) stats.admitted_probes += 1 else stats.blocked_probes += 1;
+        } else if (std.mem.eql(u8, decision.phase, "repair")) {
+            if (decision.admitted) stats.admitted_repairs += 1 else stats.blocked_repairs += 1;
+        } else if (std.mem.eql(u8, decision.phase, "none") or std.mem.eql(u8, decision.phase, "observe")) {
+            stats.no_action += 1;
+        }
+    }
+    return stats;
+}
+
+fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvaluation) DaemonTickDecision {
+    if (evaluation.selectable) {
+        return .{
+            .phase = "none",
+            .action = "none",
+            .admitted = true,
+            .reason = "route_selectable",
+        };
+    }
+
+    if (evaluation.action.command == .probe) {
+        const admission = daemonProbeAdmission(policy, evaluation.budget);
+        return .{
+            .phase = "probe",
+            .action = "probe",
+            .admitted = admission.admitted,
+            .reason = admission.reason,
+            .budget = admission.budget,
+        };
+    }
+
+    if (evaluation.action.command != .none or evaluation.action.mutating or evaluation.action.interactive) {
+        const admission = daemonRepairAdmission(policy, evaluation.action);
+        return .{
+            .phase = "repair",
+            .action = evaluation.action.kind,
+            .admitted = admission.admitted,
+            .reason = admission.reason,
+            .budget = admission.budget,
+        };
+    }
+
+    const admission = daemonRepairAdmission(policy, evaluation.action);
+    return .{
+        .phase = "observe",
+        .action = evaluation.action.kind,
+        .admitted = admission.admitted,
+        .reason = if (admission.admitted) "observe_only" else admission.reason,
+        .budget = admission.budget,
+    };
 }
 
 const DoctorStats = struct {
@@ -1849,6 +2097,7 @@ fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
     try writer.writeAll("    oauth-mux doctor runtime --json\n");
     try writer.writeAll("    oauth-mux route explain --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux route select --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux daemon tick --once --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair run --profile <profile> --capability <capability> --json\n");
     if (stats.codex_configured) {
         if (!stats.codex_max_configured) {
@@ -1884,6 +2133,7 @@ fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
     try writeDoctorCommandJson(writer, &first, "oauth-mux route explain --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux route select --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux repair-plan --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux repair run --profile <profile> --capability <capability> --json");
     if (stats.codex_configured) {
         if (!stats.codex_max_configured) {
@@ -2216,6 +2466,8 @@ fn writeDoctorRuntimeJson(
     try writeCommandJson(writer, "oauth-mux route explain --profile <profile> --capability <capability> --json");
     try writer.writeByte(',');
     try writeCommandJson(writer, "oauth-mux repair-plan --profile <profile> --capability <capability> --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json");
     try writer.writeAll("]}\n");
 }
 
@@ -2258,6 +2510,8 @@ fn writeDoctorRuntimeScopedJson(
     try writeCommandJson(writer, "oauth-mux route explain --profile <profile> --capability <capability> --json");
     try writer.writeByte(',');
     try writeCommandJson(writer, "oauth-mux repair-plan --profile <profile> --capability <capability> --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json");
     try writer.writeAll("]}\n");
 }
 
@@ -5400,6 +5654,7 @@ test "writeDiscoverJson includes stay-afloat agent-safe commands" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux route explain --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux route select --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair run --profile <profile> --capability <capability> --json") != null);
 }
 
@@ -5608,6 +5863,54 @@ test "writePolicyJson exposes effective daemon admission policy" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allowed_budgets\":[\"free_local\",\"free_command\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allow_interactive\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allow_mutating\":false") != null);
+}
+
+test "daemon tick refuses spend provider probe by default" {
+    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+        .route = .{ .provider = "codex", .account = "max-1", .capability = "codex-max" },
+        .runtime = .ready,
+        .health = null,
+        .budget = .spend_provider,
+        .action = .{
+            .kind = "probe_needed",
+            .severity = "warning",
+            .message = "probe would spend",
+            .command = .probe,
+            .budget = .spend_provider,
+        },
+        .selectable = false,
+        .skip_reason = "unrecorded",
+    });
+
+    try std.testing.expectEqualStrings("probe", decision.phase);
+    try std.testing.expect(!decision.admitted);
+    try std.testing.expectEqualStrings("budget_not_allowed", decision.reason);
+    try std.testing.expectEqual(types.ActionBudget.spend_provider, decision.budget.?);
+    try std.testing.expect(!decision.executed);
+}
+
+test "daemon tick reports selectable route as no-op" {
+    const health = health_mod.AccountHealth{
+        .liveness = .{ .live = .{ .availability = .available } },
+    };
+    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+        .route = .{ .provider = "codex", .account = "max-2", .capability = "codex-max" },
+        .runtime = .ready,
+        .health = health,
+        .budget = .spend_provider,
+        .action = .{
+            .kind = "none",
+            .severity = "ok",
+            .message = "route is selectable",
+        },
+        .selectable = true,
+        .skip_reason = "available",
+    });
+
+    try std.testing.expectEqualStrings("none", decision.phase);
+    try std.testing.expect(decision.admitted);
+    try std.testing.expectEqualStrings("route_selectable", decision.reason);
+    try std.testing.expect(!decision.executed);
 }
 
 test "repairActionFor classifies quota exhaustion as wait action" {

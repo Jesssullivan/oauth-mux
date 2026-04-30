@@ -468,6 +468,13 @@ daemon loop policy-driven while preserving the current product boundary: no
 provider calls, quota-spending probes, browser/device auth, or credential
 mutation in background mode unless an operator opts in explicitly.
 
+Implementation note, 2026-04-30: `oauth-mux daemon tick --once --json` now
+provides the first daemon-shaped dogfood primitive. It loads route runtime,
+recorded liveness, repair actions, and daemon admission policy, then reports
+what a future daemon loop would be allowed to consider. The tick is explicitly
+planning-only and emits `executed:false`; it does not run provider probes,
+repair commands, browser/device auth, or secret mutation.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.
