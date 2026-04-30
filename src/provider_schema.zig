@@ -27,6 +27,7 @@ pub const ProviderDefinition = struct {
     // ── Identity ──
     name: []const u8,
     display_name: []const u8 = "",
+    extension_mode: types.ProviderExtensionMode = .schema_only,
 
     // ── OAuth Server ──
     // If discovery_url is set, metadata is fetched at runtime (RFC 8414).
@@ -46,6 +47,13 @@ pub const ProviderDefinition = struct {
     // ── Detection ──
     // How to auto-detect this provider from the target command.
     detection: DetectionConfig = .{},
+
+    // ── Runtime ──
+    // Platform-neutral harness runtime requirements. Service-manager wrappers
+    // live outside this schema; the core only models commands, env, paths, and
+    // repair ownership.
+    runtime: RuntimeConfig = .{},
+    repair: RepairConfig = .{},
 
     // ── Capability Probes ──
     // Optional route/capability probes. These are declarative plans, not
@@ -115,6 +123,17 @@ pub const DetectionConfig = struct {
     env_markers: []const []const u8 = &.{},
 };
 
+pub const RuntimeConfig = struct {
+    required_binaries: []const []const u8 = &.{},
+    env_vars: []const []const u8 = &.{},
+    writable_paths: []const []const u8 = &.{},
+    session_paths: []const []const u8 = &.{},
+};
+
+pub const RepairConfig = struct {
+    owner: types.RepairOwner = .manual_only,
+};
+
 pub const CapabilityDefinition = struct {
     name: []const u8,
     aliases: []const []const u8 = &.{},
@@ -135,6 +154,7 @@ pub const ProbeDefinition = struct {
     success_status_max: u16 = 299,
     hint_header: ?[]const u8 = null,
     hint_body: bool = false,
+    budget: ?types.ActionBudget = null,
 };
 
 pub const ProbeTransport = enum {
@@ -163,6 +183,7 @@ pub const ProbePlan = struct {
     success_status_max: u16,
     hint_header: ?[]const u8 = null,
     hint_body: bool = false,
+    budget: types.ActionBudget,
 };
 
 pub const RateLimitConfig = struct {
@@ -246,6 +267,7 @@ const claude_capabilities = [_]CapabilityDefinition{
             .auth = .none,
             .timeout_ms = 30_000,
             .command = &.{ "claude", "auth", "status", "--json" },
+            .budget = .free_command,
         },
     },
 };
@@ -287,6 +309,7 @@ const mcp_capabilities = [_]CapabilityDefinition{
             .url = "{{OMUX_MCP_RESOURCE_METADATA_URL}}",
             .auth = .none,
             .hint_body = true,
+            .budget = .cheap_provider,
         },
     },
     .{
@@ -297,6 +320,7 @@ const mcp_capabilities = [_]CapabilityDefinition{
             .url = "{{OMUX_MCP_RESOURCE_PROBE_URL}}",
             .auth = .bearer,
             .hint_header = "www-authenticate",
+            .budget = .cheap_provider,
         },
     },
 };
@@ -484,6 +508,7 @@ const flakehub_capabilities = [_]CapabilityDefinition{
             .auth = .none,
             .timeout_ms = 30_000,
             .command = &.{ "determinate-nixd", "status" },
+            .budget = .free_command,
         },
     },
 };
@@ -506,6 +531,7 @@ const codex_capabilities = [_]CapabilityDefinition{
                 "gpt-5.3-codex",
                 "Reply exactly: OMUX_CODEX_MAX_PROBE",
             },
+            .budget = .spend_provider,
         },
     },
     .{
@@ -525,6 +551,7 @@ const codex_capabilities = [_]CapabilityDefinition{
                 "gpt-5.3-codex-spark",
                 "Reply exactly: OMUX_CODEX_MINI_PROBE",
             },
+            .budget = .spend_provider,
         },
     },
 };
@@ -532,6 +559,7 @@ const codex_capabilities = [_]CapabilityDefinition{
 pub const claude_def = ProviderDefinition{
     .name = "claude",
     .display_name = "Claude Code",
+    .extension_mode = .command_adapter,
     .auth = .{
         .token_endpoint = "https://claude.ai/api/auth/oauth/token",
     },
@@ -551,6 +579,13 @@ pub const claude_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"claude"},
     },
+    .runtime = .{
+        .required_binaries = &.{"claude"},
+        .env_vars = &.{"CLAUDE_CONFIG_DIR"},
+    },
+    .repair = .{
+        .owner = .upstream_cli_login,
+    },
     .capabilities = &claude_capabilities,
     .failure_rules = &claude_failure_rules,
     .rate_limits = .{
@@ -562,6 +597,7 @@ pub const claude_def = ProviderDefinition{
 pub const codex_def = ProviderDefinition{
     .name = "codex",
     .display_name = "Codex CLI",
+    .extension_mode = .command_adapter,
     .auth = .{
         .token_endpoint = "https://auth0.openai.com/oauth/token",
         .device_authorization_endpoint = "https://auth.openai.com/deviceauth/usercode",
@@ -582,6 +618,15 @@ pub const codex_def = ProviderDefinition{
     .detection = .{
         .binary_names = &.{"codex"},
         .env_markers = &.{"CODEX_HOME"},
+    },
+    .runtime = .{
+        .required_binaries = &.{"codex"},
+        .env_vars = &.{"CODEX_HOME"},
+        .writable_paths = &.{"CODEX_HOME"},
+        .session_paths = &.{"CODEX_HOME/auth.json"},
+    },
+    .repair = .{
+        .owner = .upstream_cli_login,
     },
     .rate_limits = .{
         .remaining_header = "x-ratelimit-remaining-requests",
@@ -699,12 +744,19 @@ pub const figma_def = ProviderDefinition{
 pub const flakehub_def = ProviderDefinition{
     .name = "flakehub",
     .display_name = "FlakeHub / Determinate Nix",
+    .extension_mode = .command_adapter,
     .credential = .{
         .access_token_path = "token",
         .token_type = "api_key",
     },
     .detection = .{
         .binary_names = &.{ "determinate-nixd", "fh" },
+    },
+    .runtime = .{
+        .required_binaries = &.{"determinate-nixd"},
+    },
+    .repair = .{
+        .owner = .upstream_cli_login,
     },
     .capabilities = &flakehub_capabilities,
     .failure_rules = &flakehub_failure_rules,
@@ -800,9 +852,17 @@ pub fn probePlanForCapability(def: ProviderDefinition, capability: []const u8) ?
             .success_status_max = probe.success_status_max,
             .hint_header = probe.hint_header,
             .hint_body = probe.hint_body,
+            .budget = probe.budget orelse defaultProbeBudget(probe.transport),
         };
     }
     return null;
+}
+
+pub fn defaultProbeBudget(transport: ProbeTransport) types.ActionBudget {
+    return switch (transport) {
+        .http => .cheap_provider,
+        .command => .free_command,
+    };
 }
 
 pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?types.HttpClassification {
@@ -1413,11 +1473,16 @@ test "probePlanForCapability resolves aliases" {
     try std.testing.expectEqualStrings("chat:max", plan.capability);
     try std.testing.expectEqualStrings("POST", plan.method);
     try std.testing.expectEqual(ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqual(types.ActionBudget.cheap_provider, plan.budget);
     try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
     try std.testing.expect(probePlanForCapability(def, "unknown") == null);
 }
 
 test "codex capabilities include semantic max and mini command probes" {
+    try std.testing.expectEqual(types.ProviderExtensionMode.command_adapter, codex_def.extension_mode);
+    try std.testing.expectEqual(types.RepairOwner.upstream_cli_login, codex_def.repair.owner);
+    try std.testing.expectEqualStrings("codex", codex_def.runtime.required_binaries[0]);
+
     try std.testing.expectEqualStrings("codex-max", codex_def.capabilities[0].name);
     const max_plan = probePlanForCapability(codex_def, "gpt-5.3-codex").?;
     try std.testing.expectEqual(ProbeTransport.command, max_plan.transport);
@@ -1425,12 +1490,14 @@ test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqualStrings("codex", max_plan.command.?[0]);
     try std.testing.expectEqualStrings("gpt-5.3-codex", max_plan.command.?[6]);
     try std.testing.expectEqual(@as(u32, 120_000), max_plan.timeout_ms);
+    try std.testing.expectEqual(types.ActionBudget.spend_provider, max_plan.budget);
     try std.testing.expectEqualStrings("codex-max", probePlanForCapability(codex_def, "max").?.capability);
     try std.testing.expectEqualStrings("codex-mini", codex_def.capabilities[1].name);
     const mini_plan = probePlanForCapability(codex_def, "gpt-5.3-codex-spark").?;
     try std.testing.expectEqual(ProbeTransport.command, mini_plan.transport);
     try std.testing.expectEqualStrings("codex-mini", mini_plan.capability);
     try std.testing.expectEqualStrings("gpt-5.3-codex-spark", mini_plan.command.?[6]);
+    try std.testing.expectEqual(types.ActionBudget.spend_provider, mini_plan.budget);
 }
 
 test "claude auth status capability uses admitted command probe" {
@@ -1438,6 +1505,7 @@ test "claude auth status capability uses admitted command probe" {
     try std.testing.expectEqual(ProbeTransport.command, plan.transport);
     try std.testing.expectEqualStrings("auth-status", plan.capability);
     try std.testing.expectEqual(ProbeAuth.none, plan.auth);
+    try std.testing.expectEqual(types.ActionBudget.free_command, plan.budget);
     try std.testing.expectEqualStrings("claude", plan.command.?[0]);
     try std.testing.expectEqualStrings("auth", plan.command.?[1]);
     try std.testing.expectEqualStrings("status", plan.command.?[2]);

@@ -18,6 +18,7 @@ pub const Command = union(enum) {
     init: InitArgs,
     codex: CodexArgs,
     completions: CompletionsArgs,
+    daemon_run,
     daemon_start,
     daemon_stop,
     daemon_status,
@@ -137,6 +138,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
     if (eql(cmd, "daemon")) {
         if (rest.len > 0) {
+            if (eql(rest[0], "run")) return .daemon_run;
             if (eql(rest[0], "start")) return .daemon_start;
             if (eql(rest[0], "stop")) return .daemon_stop;
             if (eql(rest[0], "status")) return .daemon_status;
@@ -435,6 +437,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
         \\
+        \\  daemon run         Run the daemon in the foreground.
         \\  daemon start       Start background token refresh daemon.
         \\  daemon stop        Stop the daemon.
         \\  daemon status      Show daemon status.
@@ -695,6 +698,11 @@ test "parse discover json" {
     }
 }
 
+test "parse daemon run" {
+    const args = [_][]const u8{ "daemon", "run" };
+    try std.testing.expect(parse(&args) == .daemon_run);
+}
+
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
@@ -712,6 +720,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a setup -d 'First-run setup'
             \\complete -c oauth-mux -n __fish_use_subcommand -a codex -d 'Codex account onboarding'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a daemon -d 'Daemon operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l profile -s p -d 'Profile name' -r
@@ -731,6 +740,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary probe-all bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status' -d 'Daemon subcommand'
             \\
         );
     } else if (eql(shell_name, "zsh")) {
@@ -752,6 +762,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'init:Generate config'
             \\    'setup:First-run setup'
             \\    'codex:Codex account onboarding'
+            \\    'daemon:Daemon operations'
             \\    'version:Print version'
             \\    'completions:Generate completions'
             \\  )
@@ -764,7 +775,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover config init setup codex version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

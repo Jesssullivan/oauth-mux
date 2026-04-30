@@ -239,6 +239,88 @@ pub const DeadReason = enum {
     auth_permanently_failed,
 };
 
+// ── Provider Extensibility ──
+//
+// These enums mirror the public provider-authoring contract. They are deliberately
+// provider-neutral so future harnesses can enter through data and bounded commands
+// before needing new compiled Zig code.
+
+pub const ProviderExtensionMode = enum {
+    schema_only,
+    command_adapter,
+    secret_backend_adapter,
+    transport_adapter,
+    compiled_provider_adapter,
+};
+
+pub const ActionBudget = enum {
+    free_local,
+    free_command,
+    cheap_provider,
+    spend_provider,
+    interactive,
+    mutating,
+
+    pub fn allowedInDaemonDefault(self: ActionBudget) bool {
+        return switch (self) {
+            .free_local, .free_command => true,
+            .cheap_provider, .spend_provider, .interactive, .mutating => false,
+        };
+    }
+
+    pub fn allowedForProbe(self: ActionBudget) bool {
+        return switch (self) {
+            .free_local, .free_command, .cheap_provider, .spend_provider => true,
+            .interactive, .mutating => false,
+        };
+    }
+};
+
+pub const RepairOwner = enum {
+    oauth_mux_refresh,
+    upstream_cli_login,
+    external_secret_owner,
+    manual_only,
+};
+
+pub const RuntimeReadiness = union(enum) {
+    ready,
+    missing_binary: []const u8,
+    permission_denied: PathOperation,
+    unwritable_store: []const u8,
+    session_unavailable: []const u8,
+    sandbox_blocked: []const u8,
+    needs_reauth: ReauthInfo,
+    repair_in_progress: RepairProgress,
+
+    pub const PathOperation = struct {
+        path: []const u8,
+        operation: []const u8,
+    };
+
+    pub const ReauthInfo = struct {
+        methods: []const []const u8 = &.{},
+        reason: []const u8,
+    };
+
+    pub const RepairProgress = struct {
+        account: []const u8,
+        started_at: i64,
+    };
+
+    pub fn isReady(self: RuntimeReadiness) bool {
+        return self == .ready;
+    }
+};
+
+pub fn selectable(liveness: CredentialLiveness, runtime: RuntimeReadiness) bool {
+    if (!runtime.isReady()) return false;
+    return switch (liveness) {
+        .live => |live| live.availability == .available,
+        .degraded, .dead => false,
+    };
+}
+
 // ── Mux Decision ──
 // What the pipeline should do after probing a credential.
 
@@ -348,6 +430,30 @@ pub const TokenBucket = struct {
         self.last_refill_ns = now_ns;
     }
 };
+
+test "runtime readiness gates selectable credentials" {
+    const live_available = CredentialLiveness{ .live = .{ .availability = .available } };
+    const live_limited = CredentialLiveness{ .live = .{ .availability = .{
+        .rate_limited = .{
+            .retry_after_s = 30,
+            .limited_at = 1,
+            .window = .per_minute,
+        },
+    } } };
+
+    try std.testing.expect(selectable(live_available, .ready));
+    try std.testing.expect(!selectable(live_available, .{ .missing_binary = "codex" }));
+    try std.testing.expect(!selectable(live_limited, .ready));
+}
+
+test "daemon default budget excludes provider spend and mutation" {
+    try std.testing.expect(ActionBudget.free_local.allowedInDaemonDefault());
+    try std.testing.expect(ActionBudget.free_command.allowedInDaemonDefault());
+    try std.testing.expect(!ActionBudget.cheap_provider.allowedInDaemonDefault());
+    try std.testing.expect(!ActionBudget.spend_provider.allowedInDaemonDefault());
+    try std.testing.expect(!ActionBudget.interactive.allowedForProbe());
+    try std.testing.expect(!ActionBudget.mutating.allowedForProbe());
+}
 
 // ── Account Selection ──
 

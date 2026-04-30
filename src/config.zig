@@ -280,6 +280,8 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
         }
     }
 
+    try validateRuntimeConfig(def_key, def.runtime, writer, ok);
+
     var has_capability_probe = false;
     for (def.capabilities, 0..) |capability, idx| {
         if (capability.name.len == 0) {
@@ -297,6 +299,12 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
                 try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe success status range is invalid\n", .{ def_key, idx });
                 ok.* = false;
             }
+            if (probe.budget) |budget| {
+                if (!budget.allowedForProbe()) {
+                    try writer.print("config error: provider_definitions.{s}.capabilities[{d}].probe.budget '{s}' is not valid for probes\n", .{ def_key, idx, @tagName(budget) });
+                    ok.* = false;
+                }
+            }
         }
     }
 
@@ -307,6 +315,33 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
 
     for (def.failure_rules, 0..) |rule, idx| {
         try validateFailureRule(def_key, idx, rule, writer, ok);
+    }
+}
+
+fn validateRuntimeConfig(
+    def_key: []const u8,
+    runtime: provider_schema.RuntimeConfig,
+    writer: anytype,
+    ok: *bool,
+) !void {
+    try validateNonEmptyStringList(def_key, "runtime.required_binaries", runtime.required_binaries, writer, ok);
+    try validateNonEmptyStringList(def_key, "runtime.env_vars", runtime.env_vars, writer, ok);
+    try validateNonEmptyStringList(def_key, "runtime.writable_paths", runtime.writable_paths, writer, ok);
+    try validateNonEmptyStringList(def_key, "runtime.session_paths", runtime.session_paths, writer, ok);
+}
+
+fn validateNonEmptyStringList(
+    def_key: []const u8,
+    field_name: []const u8,
+    values: []const []const u8,
+    writer: anytype,
+    ok: *bool,
+) !void {
+    for (values, 0..) |value, idx| {
+        if (value.len == 0) {
+            try writer.print("config error: provider_definitions.{s}.{s}[{d}] must not be empty\n", .{ def_key, field_name, idx });
+            ok.* = false;
+        }
     }
 }
 
@@ -602,6 +637,14 @@ test "loadFromBytes provider definition override" {
         \\    "toy": {
         \\      "name": "toy",
         \\      "display_name": "Toy CLI",
+        \\      "extension_mode": "command_adapter",
+        \\      "runtime": {
+        \\        "required_binaries": ["toy"],
+        \\        "env_vars": ["TOY_HOME"]
+        \\      },
+        \\      "repair": {
+        \\        "owner": "upstream_cli_login"
+        \\      },
         \\      "credential": {
         \\        "access_token_path": "tokens.access",
         \\        "refresh_token_path": "tokens.refresh"
@@ -616,7 +659,8 @@ test "loadFromBytes provider definition override" {
         \\          "probe": {
         \\            "method": "POST",
         \\            "url": "https://example.invalid/v1/probe",
-        \\            "hint_header": "www-authenticate"
+        \\            "hint_header": "www-authenticate",
+        \\            "budget": "spend_provider"
         \\          }
         \\        }
         \\      ],
@@ -648,11 +692,16 @@ test "loadFromBytes provider definition override" {
 
     const def = resolveProviderDefinition(parsed.value, "toy");
     try std.testing.expectEqualStrings("Toy CLI", def.display_name);
+    try std.testing.expectEqual(types.ProviderExtensionMode.command_adapter, def.extension_mode);
+    try std.testing.expectEqual(types.RepairOwner.upstream_cli_login, def.repair.owner);
+    try std.testing.expectEqualStrings("toy", def.runtime.required_binaries[0]);
+    try std.testing.expectEqualStrings("TOY_HOME", def.runtime.env_vars[0]);
     try std.testing.expectEqualStrings("tokens.access", def.credential.access_token_path);
     try std.testing.expectEqual(@as(usize, 1), def.capabilities.len);
     const plan = provider_schema.probePlanForCapability(def, "codex-max").?;
     try std.testing.expectEqualStrings("chat:max", plan.capability);
     try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqual(types.ActionBudget.spend_provider, plan.budget);
     try std.testing.expectEqual(@as(usize, 1), def.failure_rules.len);
     const classified = provider_schema.classifyHttp(def, 403, null, "missing scope");
     switch (classified) {
@@ -912,6 +961,52 @@ test "validate rejects zero capability probe timeout" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.timeout_ms must be greater than zero") != null);
+}
+
+test "validate rejects interactive probe budget" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "chat:max",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/probe",
+        \\            "budget": "interactive"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 401, "class": { "dead": "token_revoked" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.budget 'interactive' is not valid for probes") != null);
 }
 
 test "validate rejects token material in http probe url" {

@@ -16,6 +16,7 @@ daemon. See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 
 ## Allowed Now
 
+- `oauth-mux daemon run` as the foreground primitive for any future wrapper.
 - `oauth-mux daemon status` for local inspection.
 - Local experimentation with refresh behavior.
 - Future manual QA where daemon activity is bounded and visible.
@@ -27,6 +28,8 @@ daemon. See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - Silent token refresh for providers whose refresh semantics are owned by an
   upstream CLI.
 - Any release gate that depends on a long-running daemon.
+- Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows
+  Services as part of the core product contract.
 
 ## Promotion Criteria
 
