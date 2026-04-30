@@ -135,7 +135,7 @@ at the staged artifact directory instead of GitHub Releases.
 After the GitHub Release exists, run the hosted system-package install proof:
 
 ```bash
-gh workflow run system-package-install-qa.yml -f version=0.1.3
+gh workflow run system-package-install-qa.yml -f version=0.1.5
 ```
 
 This workflow downloads the published `.deb` and `.rpm` release assets, verifies
@@ -145,7 +145,7 @@ Linux containers on `ubuntu-latest`, and runs `/usr/bin/oauth-mux version`.
 For local reproduction on a healthy Docker-compatible host:
 
 ```bash
-just system-package-qa 0.1.3
+just system-package-qa 0.1.5
 ```
 
 This is stricter than the registry `system` dry-run lane. The dry-run lane
@@ -201,9 +201,11 @@ Current release evidence:
 - Main CI run `25032478278` completed `test`, `nix`, all six cross-compiles,
   and real GloriousFlywheel cache-first validation after the evidence docs
   merged.
-- System Package Install QA run `25137323710` completed for v0.1.3 and proved
+- System Package Install QA run `25172711458` completed for v0.1.5 and proved
   published `.deb` and `.rpm` assets install in hosted Debian/Rocky containers
   and execute `/usr/bin/oauth-mux version`.
+- Homebrew tap PR `tinyland-inc/homebrew-tools#3` updated `tinyland/tools` to
+  v0.1.5; `just homebrew-qa 0.1.5` passed against the production tap.
 
 ## Before Marking A PR Ready
 

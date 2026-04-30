@@ -14,7 +14,7 @@ files, SOPS plaintext, or token-shaped values here.
 | npm one-shot | 0.1.5 | macOS arm64 | public npm registry | Pass | `npx -y oauth-mux@0.1.5 version` returns `oauth-mux 0.1.5`. |
 | GitHub release tarball | 0.1.5 | macOS arm64 | public `Jesssullivan/oauth-mux` release asset | Pass | Release workflow `25171997189` published all tarballs, packages, checksums, formula, and installer. |
 | `curl | sh` installer | 0.1.5 | macOS arm64 and `../lab` | public `Jesssullivan/oauth-mux` `install.sh` asset | Pass | Default installer repo is canonical; no `REPO=...` override needed. |
-| Homebrew formula | 0.1.3 | macOS arm64 | `tinyland/tools` tap | Pass | `just homebrew-qa 0.1.3` installs from the private `tinyland-inc/homebrew-tools` tap, runs `brew audit`, `brew test`, `oauth-mux version`, and `oauth-mux doctor --json`. |
+| Homebrew formula | 0.1.5 | macOS arm64 | `tinyland/tools` tap | Pass | `just homebrew-qa 0.1.5` installs from the private `tinyland-inc/homebrew-tools` tap, runs `brew audit`, `brew test`, `oauth-mux version`, and `oauth-mux doctor --json`. |
 | deb package | 0.1.5 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25172711458` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.5 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25172711458` installed package and ran `/usr/bin/oauth-mux version`. |
 | Codex live dogfood | 0.1.5 | macOS arm64 | public npm one-shot | Pass with degraded route | Published npm binary reported `max-1#codex-max` quota exhausted while `max-2` and `max-3` covered `codex-max`; `codex-mini` remained covered. |
@@ -81,13 +81,13 @@ oauth-mux 0.1.5
 Homebrew tap install:
 
 ```bash
-just homebrew-qa 0.1.3
+just homebrew-qa 0.1.5
 ```
 
 Expected output includes:
 
 ```text
-Homebrew install QA passed for oauth-mux 0.1.3 via tinyland/tools/oauth-mux
+Homebrew install QA passed for oauth-mux 0.1.5 via tinyland/tools/oauth-mux
 ```
 
 First-run source e2e:
@@ -108,7 +108,7 @@ first-run e2e passed
 To keep the formula installed after dogfood QA:
 
 ```bash
-OMUX_HOMEBREW_KEEP_INSTALLED=1 OMUX_HOMEBREW_KEEP_TAP=1 just homebrew-qa 0.1.3
+OMUX_HOMEBREW_KEEP_INSTALLED=1 OMUX_HOMEBREW_KEEP_TAP=1 just homebrew-qa 0.1.5
 ```
 
 To include the three-account Codex canary from the installed Homebrew binary:
@@ -121,7 +121,7 @@ OMUX_HOMEBREW_KEEP_TAP=1 \
 OMUX_HOMEBREW_CODEX_CANARY=1 \
 OMUX_HOMEBREW_CODEX_LIVE=1 \
 OMUX_LIVE_QA_CONFIRM=spend-real-calls \
-  just homebrew-qa 0.1.3
+  just homebrew-qa 0.1.5
 ```
 
 Latest local Homebrew dogfood proof:
@@ -131,6 +131,7 @@ brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git: pass
 brew install tinyland/tools/oauth-mux: pass
 brew audit --formula --strict tinyland/tools/oauth-mux: pass
 brew test tinyland/tools/oauth-mux: pass
+/opt/homebrew/bin/oauth-mux version: oauth-mux 0.1.5
 /opt/homebrew/bin/oauth-mux doctor --json: ok
 Homebrew-installed oauth-mux codex live-qa --confirm-spend with examples/codex-max.config.json:
   max-1, max-2, max-3 available for codex-mini and codex-max
