@@ -2701,6 +2701,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .onboard => try runCodexOnboard(allocator, writer, args, root),
         .canary => try runCodexCanary(allocator, writer, args, root),
         .probe_all => try runCodexProbeAll(allocator, writer, args),
+        .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
     }
 }
 
@@ -2794,6 +2795,127 @@ fn runCodexProbeAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Com
         try writer.writeAll("\n=== live probes ===\n");
     }
     try runCodexLiveProbes(allocator, writer, args, !args.json);
+}
+
+fn runCodexConfigCandidate(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.CodexArgs,
+    root: []const u8,
+) !void {
+    const active_config_path = try paths.configFilePath(allocator);
+    defer allocator.free(active_config_path);
+
+    const candidate_path = if (args.output) |output|
+        try paths.expandTilde(allocator, output)
+    else
+        try defaultCodexConfigCandidatePath(allocator, active_config_path);
+    defer allocator.free(candidate_path);
+
+    var config_buf = std.ArrayList(u8).init(allocator);
+    defer config_buf.deinit();
+    try writeCodexMaxStarterConfig(allocator, config_buf.writer(), root);
+
+    const parsed = try config.loadFromBytes(allocator, config_buf.items);
+    defer parsed.deinit();
+    try config.validate(parsed.value, std.io.null_writer);
+
+    if (std.fs.openFileAbsolute(candidate_path, .{})) |file| {
+        file.close();
+        try writeCodexConfigCandidateResult(writer, allocator, active_config_path, candidate_path, false, args.json);
+        return;
+    } else |e| switch (e) {
+        error.FileNotFound => {},
+        else => return e,
+    }
+
+    if (std.fs.path.dirname(candidate_path)) |dir| try std.fs.cwd().makePath(dir);
+
+    const file = std.fs.createFileAbsolute(candidate_path, .{ .exclusive = true, .mode = 0o600 }) catch |e| switch (e) {
+        error.PathAlreadyExists => {
+            try writeCodexConfigCandidateResult(writer, allocator, active_config_path, candidate_path, false, args.json);
+            return;
+        },
+        else => return e,
+    };
+    defer file.close();
+    try file.writeAll(config_buf.items);
+
+    try writeCodexConfigCandidateResult(writer, allocator, active_config_path, candidate_path, true, args.json);
+}
+
+fn defaultCodexConfigCandidatePath(allocator: std.mem.Allocator, active_config_path: []const u8) ![]const u8 {
+    if (std.fs.path.dirname(active_config_path)) |dir| {
+        return try std.fs.path.join(allocator, &.{ dir, "codex-max.config.json" });
+    }
+    return try allocator.dupe(u8, "codex-max.config.json");
+}
+
+fn writeCodexConfigCandidateResult(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    active_config_path: []const u8,
+    candidate_path: []const u8,
+    created: bool,
+    json: bool,
+) !void {
+    const quoted_candidate_path = try shellQuoteAlloc(allocator, candidate_path);
+    defer allocator.free(quoted_candidate_path);
+
+    const validate_cmd = try std.fmt.allocPrint(allocator, "OMUX_CONFIG={s} oauth-mux config validate", .{quoted_candidate_path});
+    defer allocator.free(validate_cmd);
+    const status_cmd = try std.fmt.allocPrint(allocator, "OMUX_CONFIG={s} oauth-mux setup codex --status-only", .{quoted_candidate_path});
+    defer allocator.free(status_cmd);
+    const repair_cmd = try std.fmt.allocPrint(allocator, "OMUX_CONFIG={s} oauth-mux repair-plan --profile codex-max --capability codex-max --json", .{quoted_candidate_path});
+    defer allocator.free(repair_cmd);
+    const canary_cmd = try std.fmt.allocPrint(allocator, "OMUX_CONFIG={s} oauth-mux codex canary", .{quoted_candidate_path});
+    defer allocator.free(canary_cmd);
+
+    if (json) {
+        try writer.writeAll("{\"created\":");
+        try writer.writeAll(if (created) "true" else "false");
+        try writer.writeAll(",\"active_config\":");
+        try std.json.stringify(active_config_path, .{}, writer);
+        try writer.writeAll(",\"candidate_config\":");
+        try std.json.stringify(candidate_path, .{}, writer);
+        try writer.writeAll(",\"next_commands\":[");
+        try writeCommandJson(writer, validate_cmd);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, status_cmd);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, repair_cmd);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, canary_cmd);
+        try writer.writeAll("]}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux Codex Max config candidate\n\n");
+    try writer.print("active config:    {s}\n", .{active_config_path});
+    try writer.print("candidate config: {s}\n", .{candidate_path});
+    try writer.print("created:          {s}\n\n", .{if (created) "yes" else "no, already exists"});
+    try writer.writeAll("The active config was not modified.\n\n");
+    try writer.writeAll("next:\n");
+    try writer.print("  {s}\n", .{validate_cmd});
+    try writer.print("  {s}\n", .{status_cmd});
+    try writer.print("  {s}\n", .{repair_cmd});
+    try writer.print("  {s}\n", .{canary_cmd});
+}
+
+fn shellQuoteAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+
+    try out.append('\'');
+    for (value) |c| {
+        if (c == '\'') {
+            try out.appendSlice("'\\''");
+        } else {
+            try out.append(c);
+        }
+    }
+    try out.append('\'');
+    return out.toOwnedSlice();
 }
 
 fn validateCurrentConfig(allocator: std.mem.Allocator, writer: anytype) !void {
@@ -3165,6 +3287,16 @@ test "writeRepairActionJson emits codex reauth command without running it" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+}
+
+test "shellQuoteAlloc protects config paths with spaces" {
+    const quoted = try shellQuoteAlloc(std.testing.allocator, "/Users/me/Library/Application Support/oauth-mux/codex-max.config.json");
+    defer std.testing.allocator.free(quoted);
+    try std.testing.expectEqualStrings("'/Users/me/Library/Application Support/oauth-mux/codex-max.config.json'", quoted);
+
+    const with_quote = try shellQuoteAlloc(std.testing.allocator, "/tmp/it's-here.json");
+    defer std.testing.allocator.free(with_quote);
+    try std.testing.expectEqualStrings("'/tmp/it'\\''s-here.json'", with_quote);
 }
 
 test "writeProbeJson includes terminal pipeline error" {

@@ -31,6 +31,7 @@ mkdir -p "$home" "$xdg_config" "$xdg_state" "$xdg_data" "$xdg_runtime"
 chmod 0700 "$xdg_runtime"
 
 config_path="$xdg_config/oauth-mux/config.json"
+candidate_config_path="$xdg_config/oauth-mux/codex-max.config.json"
 store_root="$xdg_data/oauth-mux/codex"
 legacy_store_root="$home/.local/share/oauth-mux/codex"
 
@@ -150,6 +151,28 @@ jq -e '
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
   and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
 ' "$repair_plan_json" >/dev/null
+
+printf 'first-run e2e: config-candidate writes sidecar without clobbering active config\n'
+config_before="$(cat "$config_path")"
+candidate_json="$tmp/config-candidate.json"
+run_json "$candidate_json" codex config-candidate --json
+jq -e --arg path "$candidate_config_path" '
+  .created == true
+  and .candidate_config == $path
+  and (.next_commands | index("OMUX_CONFIG='\''" + $path + "'\'' oauth-mux repair-plan --profile codex-max --capability codex-max --json") != null)
+' "$candidate_json" >/dev/null
+test -f "$candidate_config_path"
+candidate_config_json="$(cat "$candidate_config_path")"
+expect_contains "$candidate_config_json" "$store_root/max-1/auth.json" "candidate config uses XDG auth path"
+candidate_again_json="$tmp/config-candidate-again.json"
+run_json "$candidate_again_json" codex config-candidate --json
+jq -e '
+  .created == false
+' "$candidate_again_json" >/dev/null
+if [ "$(cat "$config_path")" != "$config_before" ]; then
+  printf 'first-run e2e assertion failed: config-candidate modified active config\n' >&2
+  exit 1
+fi
 
 printf 'first-run e2e: support report is redacted JSON\n'
 report_json="$tmp/report.json"

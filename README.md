@@ -87,6 +87,13 @@ oauth-mux codex canary
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 
+If an existing config only has a single `codex:default` account, create a safe
+sidecar Codex Max candidate without overwriting it:
+
+```bash
+oauth-mux codex config-candidate
+```
+
 Run the deterministic no-secret E2E harness:
 
 ```bash
