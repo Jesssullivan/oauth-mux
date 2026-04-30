@@ -72,6 +72,10 @@ warranted. Prefer scoped runtime checks such as
 when dogfooding a specific stay-afloat route; global runtime doctor is still
 useful for support bundles and full-machine cleanup.
 
+`oauth-mux repair run --profile <profile> --capability <capability> --json` is
+also safe without confirmation. It will not open a browser, run `codex login`,
+or mutate credential stores unless the user supplies `--confirm-repair`.
+
 ## Provider Author Experience
 
 A new provider should usually start as data, not Zig:

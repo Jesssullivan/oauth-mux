@@ -14,6 +14,7 @@ pub const Command = union(enum) {
     health: HealthArgs,
     discover: DiscoverArgs,
     repair_plan: RepairPlanArgs,
+    repair_run: RepairRunArgs,
     route: RouteArgs,
     config_validate,
     config_path,
@@ -103,6 +104,15 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    pub const RepairRunArgs = struct {
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+        json: bool = false,
+        confirm_repair: bool = false,
+    };
+
     pub const RouteAction = enum {
         select,
         explain,
@@ -172,6 +182,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
+    if (eql(cmd, "repair")) return parseRepair(rest);
     if (eql(cmd, "repair-plan")) return parseRepairPlan(rest);
     if (eql(cmd, "route")) return parseRoute(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
@@ -377,6 +388,38 @@ fn parseRepairPlan(args: []const []const u8) Command {
     return .{ .repair_plan = result };
 }
 
+fn parseRepair(args: []const []const u8) Command {
+    if (args.len > 0 and eql(args[0], "run")) {
+        return parseRepairRun(args[1..]);
+    }
+    return .help;
+}
+
+fn parseRepairRun(args: []const []const u8) Command {
+    var result = Command.RepairRunArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (eql(args[i], "--confirm-repair")) {
+            result.confirm_repair = true;
+        }
+    }
+    return .{ .repair_run = result };
+}
+
 fn parseRoute(args: []const []const u8) Command {
     var result = Command.RouteArgs{};
     var i: usize = 0;
@@ -572,6 +615,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  repair-plan [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Explain non-mutating repair actions from runtime and liveness state.
+        \\
+        \\  repair run [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--confirm-repair] [--json]
+        \\      Run one admitted repair action; refuses mutation without confirmation.
         \\
         \\  route select|explain [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Select or explain a route from recorded liveness without probing.
@@ -936,6 +982,20 @@ test "parse runtime doctor with route scope" {
     }
 }
 
+test "parse repair run requires explicit confirmation flag" {
+    const args = [_][]const u8{ "repair", "run", "--profile", "codex-max", "--capability", "codex-max", "--confirm-repair", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .repair_run => |repair| {
+            try std.testing.expectEqualStrings("codex-max", repair.profile.?);
+            try std.testing.expectEqualStrings("codex-max", repair.capability.?);
+            try std.testing.expect(repair.confirm_repair);
+            try std.testing.expect(repair.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon repair plan alias" {
     const args = [_][]const u8{ "daemon", "repair-plan", "--provider", "codex", "--account", "max-1", "--capability", "codex-max" };
     const cmd = parse(&args);
@@ -982,6 +1042,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
             \\complete -c oauth-mux -n __fish_use_subcommand -a repair-plan -d 'Show non-mutating repair plan'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a repair -d 'Run admitted repair actions'
             \\complete -c oauth-mux -n __fish_use_subcommand -a route -d 'Select or explain routes'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
@@ -1013,6 +1074,13 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -a 'run' -d 'Repair subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l confirm-repair -d 'Confirm mutating repair'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'

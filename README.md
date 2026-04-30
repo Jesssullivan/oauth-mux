@@ -92,6 +92,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route explain --profil
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
 ```
 
 `route select` and `route explain` are no-spend stay-afloat commands. They use
@@ -105,6 +106,11 @@ Use `doctor runtime --profile <name> --capability <name> --json` when a user or
 agent needs profile-level truth without letting a stale unrelated account poison
 the stay-afloat decision.
 
+`repair run` is the explicit mutation boundary. Without `--confirm-repair`, it
+will not open auth flows or run upstream CLI repair commands; it only reports
+whether a route is already selectable, whether no admitted repair exists, or
+which command would require confirmation.
+
 First-run Codex subscription path:
 
 ```bash
@@ -117,6 +123,7 @@ oauth-mux codex live-qa
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
+oauth-mux repair run --profile codex-max --capability codex-max --json
 ```
 
 If an existing config only has a single `codex:default` account, create a safe

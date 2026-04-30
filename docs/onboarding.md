@@ -53,6 +53,7 @@ oauth-mux codex live-qa
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
+oauth-mux repair run --profile codex-max --capability codex-max --json
 ```
 
 `oauth-mux doctor` is the no-spend readiness report. It checks whether config is
@@ -142,6 +143,12 @@ readiness plus recorded route liveness and do not probe providers or mutate auth
 state. Unrecorded routes are reported as `probe_needed`, and `route select`
 exits nonzero when no route has enough evidence to be selected.
 
+`oauth-mux repair run` is the explicit repair execution gate. It refuses
+mutation unless `--confirm-repair` is present. Without confirmation, it is safe
+for agents to run because it only reports that a route is already selectable,
+that no admitted repair exists, or that a specific upstream CLI command would
+need user approval.
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a
@@ -225,6 +232,7 @@ oauth-mux health --json
 oauth-mux doctor runtime --json
 oauth-mux doctor runtime --profile <profile> --capability <capability> --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
+oauth-mux repair run --profile <profile> --capability <capability> --json
 ```
 
 Agents may run:
