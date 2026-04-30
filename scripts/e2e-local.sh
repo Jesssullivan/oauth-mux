@@ -250,6 +250,7 @@ expect_contains "$route_explain" '"ok":true' "route explain reports available se
 expect_contains "$route_explain" '"selected":{"provider":"toy","account":"a2"' "route explain selects fallback account a2"
 expect_contains "$route_explain" '"skip_reason":"quota_exhausted"' "route explain keeps exhausted reason"
 expect_contains "$route_explain" '"skip_reason":"available"' "route explain marks available selected route"
+expect_contains "$route_explain" '"writeback":{"capability":"readonly","automatic_refresh_admitted":false,"reason":"provider_repair_is_manual_only"}' "route explain reports readonly writeback boundary"
 
 printf 'e2e: route select chooses selected fallback without probing\n'
 route_select="$(omux route select --profile expensive --capability expensive --json)"
@@ -308,8 +309,8 @@ cat >"$reauth_config" <<EOF
         "max-1": {
           "config_dir": "$tmp/reauth-home",
           "secret": {
-            "backend": "env",
-            "variable": "OMUX_E2E_REAUTH"
+            "backend": "file",
+            "path": "$tmp/reauth-home/auth.json"
           }
         }
       }
@@ -340,6 +341,7 @@ expect_contains "$repair_reauth" '"confirmation_required":true' "repair run requ
 expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run reports required flag"
 expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
 expect_contains "$repair_reauth" '"daemon_repair":{"admitted":false,"reason":"interactive_not_allowed","budget":"interactive"}' "repair run reports daemon policy refusal"
+expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"provider_repair_owned_by_upstream_cli"}' "repair run reports upstream-owned file writeback boundary"
 test ! -e "$tmp/reauth-home/auth.json"
 
 repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"

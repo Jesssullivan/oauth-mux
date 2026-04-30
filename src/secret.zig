@@ -16,6 +16,12 @@ pub const ReadError = error{
     IoError,
 };
 
+pub const WritebackPlan = struct {
+    capability: types.SecretWriteCapability,
+    automatic_refresh_admitted: bool,
+    reason: []const u8,
+};
+
 pub fn read(backend: types.SecretBackend, allocator: std.mem.Allocator) ReadError![]const u8 {
     return switch (backend) {
         .keychain => |ref| readKeychain(ref, allocator),
@@ -25,6 +31,66 @@ pub fn read(backend: types.SecretBackend, allocator: std.mem.Allocator) ReadErro
         .sops => |ref| readSops(ref, allocator),
         .age => |ref| readAge(ref, allocator),
         .stdin => readStdin(allocator),
+    };
+}
+
+pub fn writeCapability(backend: types.SecretBackend) types.SecretWriteCapability {
+    return switch (backend) {
+        .file => .replace_file,
+        .command => .command_write,
+        .keychain => .keychain_write,
+        .sops => .sops_write,
+        .env, .stdin => .readonly,
+        .age => .unsupported,
+    };
+}
+
+pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) WritebackPlan {
+    const capability = writeCapability(backend);
+    if (owner != .oauth_mux_refresh) {
+        return .{
+            .capability = capability,
+            .automatic_refresh_admitted = false,
+            .reason = switch (owner) {
+                .upstream_cli_login => "provider_repair_owned_by_upstream_cli",
+                .external_secret_owner => "provider_repair_owned_by_external_secret",
+                .manual_only => "provider_repair_is_manual_only",
+                .oauth_mux_refresh => unreachable,
+            },
+        };
+    }
+
+    return switch (capability) {
+        .replace_file => .{
+            .capability = capability,
+            .automatic_refresh_admitted = true,
+            .reason = "replace_file_writeback_available",
+        },
+        .readonly => .{
+            .capability = capability,
+            .automatic_refresh_admitted = false,
+            .reason = "secret_backend_is_readonly",
+        },
+        .command_write => .{
+            .capability = capability,
+            .automatic_refresh_admitted = false,
+            .reason = "command_write_contract_missing",
+        },
+        .keychain_write => .{
+            .capability = capability,
+            .automatic_refresh_admitted = false,
+            .reason = "keychain_write_not_implemented",
+        },
+        .sops_write => .{
+            .capability = capability,
+            .automatic_refresh_admitted = false,
+            .reason = "sops_write_not_implemented",
+        },
+        .unsupported => .{
+            .capability = capability,
+            .automatic_refresh_admitted = false,
+            .reason = "secret_backend_writeback_unsupported",
+        },
     };
 }
 
@@ -266,4 +332,32 @@ test "readEnv not found" {
 test "readFile not found" {
     const result = readFile(.{ .path = "/tmp/omux-test-nonexistent-file" }, std.testing.allocator);
     try std.testing.expectError(error.NotFound, result);
+}
+
+test "writeCapability classifies secret backend write surfaces" {
+    try std.testing.expect(writeCapability(.{ .file = .{ .path = "/tmp/omux-auth.json" } }) == .replace_file);
+    try std.testing.expect(writeCapability(.{ .env = .{ .variable = "OMUX_AUTH" } }) == .readonly);
+    try std.testing.expect(writeCapability(.{ .command = .{ .argv = &.{"omux-secret"} } }) == .command_write);
+    try std.testing.expect(writeCapability(.{ .keychain = .{ .service = "oauth-mux", .account = "work" } }) == .keychain_write);
+    try std.testing.expect(writeCapability(.{ .sops = .{ .path = "/tmp/secrets.yaml" } }) == .sops_write);
+    try std.testing.expect(writeCapability(.{ .age = .{ .path = "/tmp/secret.age", .identity = "/tmp/key.txt" } }) == .unsupported);
+    try std.testing.expect(writeCapability(.stdin) == .readonly);
+}
+
+test "writebackPlan requires oauth-mux refresh ownership" {
+    const file_backend = types.SecretBackend{ .file = .{ .path = "/tmp/omux-auth.json" } };
+    const admitted = writebackPlan(file_backend, .oauth_mux_refresh);
+    try std.testing.expect(admitted.automatic_refresh_admitted);
+    try std.testing.expect(admitted.capability == .replace_file);
+    try std.testing.expectEqualStrings("replace_file_writeback_available", admitted.reason);
+
+    const upstream_owned = writebackPlan(file_backend, .upstream_cli_login);
+    try std.testing.expect(!upstream_owned.automatic_refresh_admitted);
+    try std.testing.expect(upstream_owned.capability == .replace_file);
+    try std.testing.expectEqualStrings("provider_repair_owned_by_upstream_cli", upstream_owned.reason);
+
+    const env_owned = writebackPlan(.{ .env = .{ .variable = "OMUX_AUTH" } }, .oauth_mux_refresh);
+    try std.testing.expect(!env_owned.automatic_refresh_admitted);
+    try std.testing.expect(env_owned.capability == .readonly);
+    try std.testing.expectEqualStrings("secret_backend_is_readonly", env_owned.reason);
 }

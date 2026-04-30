@@ -12,6 +12,7 @@ const provider = @import("provider.zig");
 const provider_schema = @import("provider_schema.zig");
 const daemon = @import("daemon.zig");
 const repair_state = @import("repair_state.zig");
+const secret_mod = @import("secret.zig");
 
 pub fn main() !void {
     log.init();
@@ -1040,6 +1041,8 @@ fn writeRepairPlanRouteJson(
     try std.json.stringify(@tagName(def.extension_mode), .{}, writer);
     try writer.writeAll(",\"repair_owner\":");
     try std.json.stringify(@tagName(def.repair.owner), .{}, writer);
+    try writer.writeAll(",\"writeback\":");
+    try writeRouteWritebackJson(writer, cfg, route, def);
     try writer.writeAll(",\"probe_budget\":");
     if (budget) |probe_budget| {
         try std.json.stringify(@tagName(probe_budget), .{}, writer);
@@ -1154,6 +1157,46 @@ fn writeAdmissionDecisionJson(writer: anytype, decision: AdmissionDecision) !voi
     try writer.writeAll(",\"budget\":");
     if (decision.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
     try writer.writeByte('}');
+}
+
+fn writeRouteWritebackJson(
+    writer: anytype,
+    cfg: config.Config,
+    route: RepairPlanRoute,
+    def: provider_schema.ProviderDefinition,
+) !void {
+    const plan = routeWritebackPlan(cfg, route, def);
+    try writer.writeByte('{');
+    try writer.writeAll("\"capability\":");
+    try std.json.stringify(@tagName(plan.capability), .{}, writer);
+    try writer.writeAll(",\"automatic_refresh_admitted\":");
+    try writer.writeAll(if (plan.automatic_refresh_admitted) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(plan.reason, .{}, writer);
+    try writer.writeByte('}');
+}
+
+fn routeWritebackPlan(
+    cfg: config.Config,
+    route: RepairPlanRoute,
+    def: provider_schema.ProviderDefinition,
+) secret_mod.WritebackPlan {
+    const prov = cfg.providers.map.get(route.provider) orelse return .{
+        .capability = .unsupported,
+        .automatic_refresh_admitted = false,
+        .reason = "provider_not_configured",
+    };
+    const account = prov.accounts.map.get(route.account) orelse return .{
+        .capability = .unsupported,
+        .automatic_refresh_admitted = false,
+        .reason = "account_not_configured",
+    };
+    const backend = config.resolveSecretBackend(account.secret) catch return .{
+        .capability = .unsupported,
+        .automatic_refresh_admitted = false,
+        .reason = "secret_backend_invalid",
+    };
+    return secret_mod.writebackPlan(backend, def.repair.owner);
 }
 
 fn daemonProbeAdmission(policy: config.DaemonPolicyConfig, budget: ?types.ActionBudget) AdmissionDecision {
@@ -1697,6 +1740,8 @@ fn writeRouteEvaluationJson(
     try std.json.stringify(@tagName(def.extension_mode), .{}, writer);
     try writer.writeAll(",\"repair_owner\":");
     try std.json.stringify(@tagName(def.repair.owner), .{}, writer);
+    try writer.writeAll(",\"writeback\":");
+    try writeRouteWritebackJson(writer, cfg, evaluation.route, def);
     try writer.writeAll(",\"probe_budget\":");
     if (evaluation.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"admission\":");
@@ -2660,6 +2705,8 @@ fn writeRuntimeAccountJson(
     try writer.writeAll(if (info.ready()) "true" else "false");
     try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessRedactedJson(writer, info.readiness);
+    try writer.writeAll(",\"writeback\":");
+    try writeAccountWritebackJson(writer, account, def);
     try writer.writeAll(",\"config_dir_env\":");
     if (env_var) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"config_dir_set\":");
@@ -2721,6 +2768,34 @@ fn writeRuntimeReadinessRedactedJson(writer: anytype, readiness: types.RuntimeRe
         },
     }
     try writer.writeByte('}');
+}
+
+fn writeAccountWritebackJson(
+    writer: anytype,
+    account: config.AccountConfig,
+    def: provider_schema.ProviderDefinition,
+) !void {
+    const plan = accountWritebackPlan(account, def);
+    try writer.writeByte('{');
+    try writer.writeAll("\"capability\":");
+    try std.json.stringify(@tagName(plan.capability), .{}, writer);
+    try writer.writeAll(",\"automatic_refresh_admitted\":");
+    try writer.writeAll(if (plan.automatic_refresh_admitted) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(plan.reason, .{}, writer);
+    try writer.writeByte('}');
+}
+
+fn accountWritebackPlan(
+    account: config.AccountConfig,
+    def: provider_schema.ProviderDefinition,
+) secret_mod.WritebackPlan {
+    const backend = config.resolveSecretBackend(account.secret) catch return .{
+        .capability = .unsupported,
+        .automatic_refresh_admitted = false,
+        .reason = "secret_backend_invalid",
+    };
+    return secret_mod.writebackPlan(backend, def.repair.owner);
 }
 
 fn runtimeAccountInfo(

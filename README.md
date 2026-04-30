@@ -140,6 +140,12 @@ wrappers. It re-reads health/runtime state each iteration, still emits
 `executed:false`, and remains portable: no `systemctl`, `launchctl`, service
 manager, browser auth, provider spend, or secret mutation is assumed.
 
+Secret read and writeback are also separate. Route and runtime JSON expose a
+`writeback` object with the secret backend capability and whether automatic
+refresh writeback is admitted. CLI-owned stores such as Codex can be readable
+file stores while still refusing oauth-mux refresh mutation because repair is
+owned by the upstream CLI.
+
 First-run Codex subscription path:
 
 ```bash

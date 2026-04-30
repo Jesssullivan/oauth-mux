@@ -283,6 +283,22 @@ pub const RepairOwner = enum {
     manual_only,
 };
 
+pub const SecretWriteCapability = enum {
+    readonly,
+    replace_file,
+    command_write,
+    keychain_write,
+    sops_write,
+    unsupported,
+
+    pub fn providerNeutralWriteback(self: SecretWriteCapability) bool {
+        return switch (self) {
+            .replace_file => true,
+            .readonly, .command_write, .keychain_write, .sops_write, .unsupported => false,
+        };
+    }
+};
+
 pub const RuntimeReadiness = union(enum) {
     ready,
     missing_binary: []const u8,

@@ -81,6 +81,12 @@ useful for support bundles and full-machine cleanup.
 also safe without confirmation. It will not open a browser, run `codex login`,
 or mutate credential stores unless the user supplies `--confirm-repair`.
 
+Route, runtime, repair-plan, and daemon tick JSON also report `writeback`. Use
+that field when deciding whether a future repair loop can refresh in place:
+`replace_file` means the backend has a provider-neutral file write surface, but
+`automatic_refresh_admitted` can still be false when the provider owns repair
+through its upstream CLI.
+
 ## Provider Author Experience
 
 A new provider should usually start as data, not Zig:
