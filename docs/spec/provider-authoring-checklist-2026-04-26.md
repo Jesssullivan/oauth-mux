@@ -75,6 +75,17 @@ SOPS path, env var, command output, or another secret backend. Do not rely on a
 provider's global default auth path unless the tool is intentionally
 single-account.
 
+Stay-afloat adapters should follow this extension ladder:
+
+1. data-only `provider_definitions`;
+2. bounded command probes for harness-owned login/session behavior;
+3. new secret backend capability when storage is the missing abstraction;
+4. new transport primitive when OAuth/MCP behavior cannot be represented;
+5. compiled provider adapter only as a last resort.
+
+This ladder keeps new harnesses from requiring changes to the mux selection
+core.
+
 2. Choose the secret backend.
 
 Allowed backends map to `src/types.zig` and `src/config.zig`:
@@ -189,6 +200,11 @@ Use `command` when the harness already owns OAuth refresh/session semantics or
 when no safe public HTTP probe is documented. Command probes must be bounded by
 `timeout_ms`, must not log secrets, and should have cassettes for success and
 typed failure cases.
+
+Command probes must also declare their runtime assumptions in docs or schema:
+required binary, config/session/cache roots, writable paths, and whether the
+command is expected to spend provider quota. A missing binary or unwritable
+session directory is runtime readiness, not OAuth liveness.
 
 `config validate` rejects probe URLs or command argv entries that embed obvious
 token material such as bearer authorization headers, access tokens, refresh

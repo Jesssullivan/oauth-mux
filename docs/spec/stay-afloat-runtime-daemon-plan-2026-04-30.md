@@ -192,6 +192,195 @@ oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux doctor runtime --json
 ```
 
+## Extensibility Contract
+
+Stay-afloat must be easy to extend without teaching every new harness about
+every platform. The core product should expose a small runtime protocol; each
+harness adapter should describe only the facts it owns.
+
+### Adapter ladder
+
+New harnesses should enter through the cheapest sufficient layer:
+
+1. `schema_only`
+   A JSON provider definition describes credential parse paths, injection,
+   command/http probes, and failure rules. This should cover many harnesses
+   whose auth state is a token file, environment variable, command output, or
+   HTTP OAuth resource.
+
+2. `command_adapter`
+   The harness owns login/session/refresh behavior, so `oauth-mux` calls its
+   CLI through bounded commands and classifies stdout/stderr/status. Codex and
+   Claude-like tools belong here until their direct OAuth repair semantics are
+   officially documented and tested.
+
+3. `secret_backend_adapter`
+   The existing secret backends are insufficient, so the core gains a new
+   read/write backend capability. This is still provider-neutral.
+
+4. `transport_adapter`
+   The provider needs a protocol primitive the core does not have, such as a
+   new sender-constrained token mechanism, dynamic client metadata document
+   behavior, or MCP-specific protected-resource discovery that cannot be
+   expressed with existing schema fields.
+
+5. `compiled_provider_adapter`
+   Last resort. Use only when provider behavior cannot be expressed by data,
+   command probes, secret backends, or transport primitives.
+
+This ladder keeps future harnesses such as OpenCode, Pi, Air, or private
+on-prem tools from turning into separate forks of the mux loop.
+
+### Harness descriptor
+
+Each harness should be modeled as a descriptor with these stable sections:
+
+```text
+identity:
+  provider name, account names, capability names
+
+storage:
+  secret backend, config/session/cache roots, writeback capability
+
+runtime:
+  required binaries, environment variables, writable paths, lock scope
+
+auth:
+  token endpoint, refresh ownership, reauth methods, user-interaction mode
+
+probes:
+  no-spend checks, live checks, timeout, budget class, output parser
+
+classification:
+  status/body/header/exit-code rules into liveness and runtime states
+
+repair:
+  automatic actions, manual actions, commands to print, commands to run
+```
+
+The descriptor should be serializable as JSON for external authors, and the
+compiled Zig structs should mirror it closely enough that examples can be moved
+into built-ins without redesign.
+
+### Runtime states
+
+The current liveness algebra should gain a sibling runtime algebra rather than
+overloading OAuth liveness:
+
+```text
+CredentialLiveness =
+    live(availability)
+  | degraded(reason)
+  | dead(reason)
+
+RuntimeReadiness =
+    ready
+  | missing_binary(binary)
+  | permission_denied(path, operation)
+  | unwritable_store(path)
+  | session_unavailable(path)
+  | sandbox_blocked(operation)
+  | needs_reauth(methods, reason)
+  | repair_in_progress(account, started_at)
+```
+
+Selection should require both `CredentialLiveness` and `RuntimeReadiness`:
+
+```text
+SelectableRoute = live_or_degraded_auth_state + ready_runtime_state
+```
+
+A denied session directory should not be reported as provider quota or OAuth
+death. A revoked token should not be reported as a sandbox problem.
+
+### Capability budgeting
+
+Every probe or repair action needs a budget class:
+
+```text
+free_local          local file/stat/JSON parse
+free_command        upstream CLI status that should not call the provider
+cheap_provider      identity/status endpoint or documented no-spend probe
+spend_provider      model/tool call or any route that may consume quota
+interactive         opens browser, device auth, TTY prompt, or upstream login
+mutating            writes credentials, revokes tokens, creates API keys
+```
+
+Defaults:
+
+- daemon may run `free_local` and admitted `free_command` checks;
+- daemon may run `cheap_provider` only when the provider descriptor marks the
+  route no-spend and a user policy enables it;
+- daemon never runs `spend_provider`, `interactive`, or `mutating` without an
+  explicit operator policy and redacted event log entry.
+
+### Repair ownership
+
+Each provider/account must declare one repair owner:
+
+```text
+oauth_mux_refresh       mux refreshes and writes credentials
+upstream_cli_login      mux calls or prints upstream login commands
+external_secret_owner   vault/SOPS/keychain owner rotates outside mux
+manual_only             mux can diagnose but not repair
+```
+
+The repair owner decides what the daemon may do. For example, a Codex-like
+subscription harness should initially be `upstream_cli_login`: `oauth-mux` can
+verify the isolated home, print `oauth-mux codex login-device max-1`, and
+optionally run it in interactive mode, but it should not silently rewrite the
+store from a guessed token endpoint.
+
+### Cross-platform service boundary
+
+The core daemon should not depend on `systemctl`, `launchctl`, cron, Homebrew
+services, Windows Services, or a particular init system.
+
+Core behavior:
+
+- foreground daemon mode;
+- pid/socket paths from XDG/runtime abstractions or platform-neutral fallbacks;
+- JSON status/events over local socket or stdio;
+- no shell-specific behavior inside the daemon;
+- advisory lock files implemented with `std.fs` primitives where possible;
+- all timeouts and budgets in config, not service-manager units.
+
+Packaging wrappers are separate:
+
+- `oauth-mux daemon run` is the portable primitive;
+- Homebrew may wrap it with `brew services`;
+- Linux packages may ship optional systemd user units;
+- macOS packages may ship optional launchd plists;
+- Windows may later ship a service wrapper or scheduled-task recipe;
+- curl/npm installs should still work without any service manager.
+
+This keeps daemon support useful on developer laptops, CI sandboxes, SSH hosts,
+containers, Nix shells, and on-prem workstations.
+
+### Functional DX
+
+A new harness author should be able to start with one file and one loop:
+
+```bash
+oauth-mux provider scaffold opencode > opencode.provider.json
+oauth-mux provider validate opencode.provider.json
+oauth-mux provider fixture add opencode --case auth-dead
+oauth-mux route explain --profile work --capability code --json
+oauth-mux repair-plan --profile work --json
+```
+
+The authoring loop should produce useful errors:
+
+- missing binary;
+- secret backend unreadable;
+- configured account store not writable;
+- probe classified as unknown because no failure rule matched;
+- live probe refused because budget policy disallows spend;
+- repair refused because owner is `manual_only`.
+
+The goal is not to hide complexity. The goal is to make the next correct action
+obvious and copy-pastable for humans and agents.
+
 ## Admission Matrix
 
 | Provider class | Auto-refresh | Auto-reauth | Live probe | Notes |
