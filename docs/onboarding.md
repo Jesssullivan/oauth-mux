@@ -36,6 +36,7 @@ Generic starter:
 ```bash
 oauth-mux init
 oauth-mux doctor
+oauth-mux doctor runtime --json
 oauth-mux config validate
 oauth-mux discover
 ```
@@ -45,6 +46,7 @@ Codex Max three-account starter:
 ```bash
 oauth-mux init --codex-max
 oauth-mux doctor
+oauth-mux doctor runtime --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
@@ -56,6 +58,12 @@ oauth-mux repair-plan --profile codex-max --capability codex-max --json
 present and valid, counts configured providers/accounts/profiles, reports
 whether health state exists, and prints the next safe commands for the current
 state.
+
+`oauth-mux doctor runtime --json` is the no-spend runtime report. It checks
+upstream binary availability, configured account store directories, local write
+access via a temporary marker file, and expected session-file presence. It does
+not read token values, run live probes, open auth flows, or create missing
+account stores.
 
 `oauth-mux setup codex` is the user-facing alias for
 `oauth-mux codex onboard` / `oauth-mux codex setup`. It creates the expected
@@ -190,7 +198,8 @@ just first-run-e2e
 That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
 and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
 diagnostics, redacted support output, repair-plan route explanation,
-no-spend route explanation and route-select refusal without health evidence,
+runtime diagnostics, no-spend route explanation and route-select refusal without
+health evidence,
 non-clobbering config-candidate generation, config-merge backup behavior, and
 non-mutating Codex help plus the unconfirmed live-QA spend gate without touching
 the operator's real OAuth stores.
@@ -206,6 +215,7 @@ oauth-mux providers list --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
+oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 ```
 

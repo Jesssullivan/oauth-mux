@@ -29,6 +29,7 @@ oauth-mux report --redacted
 oauth-mux providers list
 oauth-mux config validate
 oauth-mux discover --json
+oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 ```
 
@@ -43,6 +44,7 @@ For Codex subscription users working from a source checkout today:
 ```bash
 oauth-mux init --codex-max
 oauth-mux doctor
+oauth-mux doctor runtime --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -62,9 +64,10 @@ oauth-mux codex live-qa --confirm-spend
 oauth-mux codex probe-all --capability codex-mini --json
 ```
 
-`route explain` and `route select` are no-spend surfaces. They only use
-recorded liveness and runtime readiness, so they are safe for agents to run
-before deciding whether a live probe or user-driven reauth is warranted.
+`doctor runtime`, `route explain`, and `route select` are no-spend surfaces.
+They only use local runtime checks plus recorded liveness, so they are safe for
+agents to run before deciding whether a live probe or user-driven reauth is
+warranted.
 
 ## Provider Author Experience
 

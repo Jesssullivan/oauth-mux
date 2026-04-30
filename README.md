@@ -50,6 +50,7 @@ oauth-mux doctor
 oauth-mux report --redacted
 oauth-mux providers list
 oauth-mux discover --json
+oauth-mux doctor runtime --json
 ```
 
 Validate an example:
@@ -96,11 +97,16 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile 
 recorded route liveness plus runtime readiness; unrecorded routes are reported
 as `probe_needed` instead of being treated as available.
 
+`doctor runtime --json` is also no-spend. It checks local runtime prerequisites
+such as upstream binaries, configured account store directories, write access,
+and expected session files without reading token values or contacting providers.
+
 First-run Codex subscription path:
 
 ```bash
 oauth-mux init --codex-max
 oauth-mux doctor
+oauth-mux doctor runtime --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa

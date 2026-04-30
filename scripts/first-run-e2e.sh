@@ -131,10 +131,27 @@ jq -e '
   and .accounts == 3
   and (.next_commands | index("oauth-mux setup codex") != null)
   and (.next_commands | index("oauth-mux codex config-candidate --json") == null)
+  and (.next_commands | index("oauth-mux doctor runtime --json") != null)
   and (.next_commands | index("oauth-mux route explain --profile <profile> --capability <capability> --json") != null)
   and (.next_commands | index("oauth-mux route select --profile <profile> --capability <capability> --json") != null)
   and (.next_commands | index("oauth-mux repair-plan --json") != null)
 ' "$doctor_after" >/dev/null
+
+printf 'first-run e2e: runtime doctor classifies unbootstrapped stores without mutation\n'
+runtime_doctor="$tmp/doctor-runtime.json"
+run_json "$runtime_doctor" doctor runtime --json
+jq -e '
+  .configured == true
+  and .config_valid == true
+  and .ok == false
+  and .accounts == 3
+  and .action_needed_accounts == 3
+  and (.provider_reports[] | select(.name == "codex") | .accounts | length) == 3
+  and all(.provider_reports[] | select(.name == "codex") | .accounts[]; .ready == false)
+' "$runtime_doctor" >/dev/null
+expect_not_contains "$(cat "$runtime_doctor")" "$store_root/max-1" "runtime doctor does not print concrete Codex store paths"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
 
 printf 'first-run e2e: discovery is redacted and agent-usable\n'
 discover_json="$tmp/discover.json"
@@ -144,6 +161,7 @@ jq -e '
   and .codex_max_configured == true
   and (.providers[] | select(.name == "codex") | .accounts | length) == 3
   and (.agent_safe_commands | index("oauth-mux report --redacted --json") != null)
+  and (.agent_safe_commands | index("oauth-mux doctor runtime --json") != null)
   and (.agent_safe_commands | index("oauth-mux route explain --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux route select --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null)

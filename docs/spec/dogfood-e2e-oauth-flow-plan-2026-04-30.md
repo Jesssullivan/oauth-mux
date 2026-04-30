@@ -38,7 +38,7 @@ OAuth and muxing surfaces:
 | Codex three-account stores | `max-1`, `max-2`, and `max-3` are isolated by `CODEX_HOME` and report logged-in ChatGPT status. |
 | Codex route liveness | Hosted and local installed-binary live canaries have proven all three accounts across `codex-mini` and `codex-max`. Earlier proof also preserved the distinction between quota exhaustion and auth death. |
 | Typed liveness | Unit and e2e tests cover `live`, `degraded`, `dead`, route-scoped `provider:account#capability`, and fallback decisions. |
-| Agent-safe discovery | `doctor --json`, `report --redacted --json`, `providers list --json`, `discover --json`, `status --json`, `health --json`, `route explain --json`, and `route select --json` exist and are documented. |
+| Agent-safe discovery | `doctor --json`, `doctor runtime --json`, `report --redacted --json`, `providers list --json`, `discover --json`, `status --json`, `health --json`, `route explain --json`, and `route select --json` exist and are documented. |
 | Non-mutating help | `oauth-mux codex canary --help`, `oauth-mux codex probe-all --help`, and `oauth-mux setup codex --help` print help without creating stores or probing. |
 
 ## Not Yet Proven
@@ -96,6 +96,7 @@ oauth-mux version
 oauth-mux doctor --json
 oauth-mux init --codex-max
 oauth-mux config validate
+oauth-mux doctor runtime --json
 oauth-mux discover --json
 oauth-mux report --redacted --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -108,6 +109,8 @@ Acceptance:
 - no credential values are read or printed;
 - help is non-mutating;
 - diagnostics point to the next safe command;
+- runtime diagnostics classify unbootstrapped account stores without creating
+  them;
 - route explanation does not probe or mutate;
 - route selection refuses to select unrecorded health optimistically;
 - generated config validates from a clean state.
@@ -174,6 +177,7 @@ oauth-mux providers list --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
+oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux route select --profile <profile> --capability <capability> --json
 ```
@@ -272,8 +276,8 @@ Do not call a provider "supported" without also exposing whether it is
 
 1. Land M1 one-shot stay-afloat route selection and explanation.
 2. Keep the clean first-run e2e script proving Story A without touching
-   existing credentials, including route explanation and route-select refusal
-   before health evidence exists.
+   existing credentials, including runtime diagnostics, route explanation, and
+   route-select refusal before health evidence exists.
 3. Extend the live-provider QA harness to accept provider-specific lanes for
    GitHub, Vercel, and Claude.
 4. Run and record Wave 1 live proof, then update provider proof status only for
