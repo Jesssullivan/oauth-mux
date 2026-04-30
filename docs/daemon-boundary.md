@@ -55,7 +55,8 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux stay-afloat --once --execute --json` as the beta execution
   boundary. It runs at most one admitted non-interactive action per tick,
   re-reads route state afterward, and queues interactive reauth as a redacted
-  `daemon_handoff` event instead of running it silently.
+  `daemon_handoff` event instead of running it silently. Repeated ticks report
+  an existing handoff as pending rather than appending duplicate events.
 - `oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --json`
   for a bounded foreground loop. It re-reads local health/runtime state each
   tick and remains service-manager agnostic.

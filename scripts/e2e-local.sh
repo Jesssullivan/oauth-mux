@@ -413,6 +413,13 @@ expect_contains "$daemon_handoff" '"admitted":false' "daemon handoff preserves d
 expect_contains "$daemon_handoff" '"command":"oauth-mux codex login-device max-1"' "daemon handoff reports upstream login command"
 test ! -e "$tmp/reauth-home/auth.json"
 
+printf 'e2e: stay-afloat execute reports existing handoff without duplicating it\n'
+stay_afloat_handoff_pending="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat --once --execute --profile needs-reauth --capability codex-max --json)"
+expect_contains "$stay_afloat_handoff_pending" '"handoff_queued":false' "stay-afloat pending handoff does not queue a duplicate"
+expect_contains "$stay_afloat_handoff_pending" '"handoff_pending":true' "stay-afloat reports pending handoff"
+expect_contains "$stay_afloat_handoff_pending" '"reason":"handoff_pending"' "stay-afloat reports pending handoff reason"
+test ! -e "$tmp/reauth-home/auth.json"
+
 printf 'e2e: daemon handoffs exposes queued user-mediated repair actions\n'
 daemon_handoffs="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json)"
 expect_contains "$daemon_handoffs" '"handoffs":[' "daemon handoffs returns json handoff list"

@@ -192,7 +192,9 @@ recorded route state without requiring a service manager. Provider-spending
 probes, interactive browser/device auth, and credential mutation remain refused
 unless policy explicitly admits them. Interactive reauth is not run in the
 background; execute mode records a redacted `daemon_handoff` event with the
-reviewable user command. Agents and users can list those pending handoffs with:
+reviewable user command. Repeated execute ticks report an existing handoff as
+pending instead of appending duplicate events. Agents and users can list those
+pending handoffs with:
 
 ```bash
 oauth-mux stay-afloat handoffs --json
