@@ -497,6 +497,11 @@ keeps the daemon beta portable and wrapper-friendly: no system service manager
 is assumed, each iteration re-reads local health/runtime state, and the default
 policy still refuses provider spend, interactive auth, and mutation.
 
+Implementation note, 2026-04-30: `oauth-mux stay-afloat` is now the
+operator-facing alias for the same portable tick engine. `daemon tick` remains
+available as the lower-level implementation surface, but docs and onboarding
+should lead with `stay-afloat --once` and `stay-afloat --loop`.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.

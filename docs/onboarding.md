@@ -175,7 +175,7 @@ are refused in the admission report unless `policy.daemon` explicitly allows
 them. `repair-plan --json` and `route explain --json` include both the effective
 policy and per-route `daemon_probe` / `daemon_repair` decisions.
 
-`oauth-mux daemon tick --once --json` is the portable daemon dogfood surface. It
+`oauth-mux stay-afloat --once --json` is the portable stay-afloat dogfood surface. It
 loads the same route/runtime/liveness state, applies the daemon policy, and
 prints what a future background loop would be allowed to do. Without
 `--execute` it remains planning-only and reports `executed:false`.
@@ -183,7 +183,7 @@ prints what a future background loop would be allowed to do. Without
 Opt-in beta execution is explicit:
 
 ```bash
-oauth-mux daemon tick --once --execute --profile codex-max --capability codex-max --json
+oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json
 ```
 
 Execute mode runs at most one admitted non-interactive action per tick. The
@@ -201,13 +201,13 @@ oauth-mux daemon handoffs --json
 The default handoff view is pending as of the daemon's last route evidence. Use
 `oauth-mux daemon handoffs --json --all` when you need the historical audit
 trail instead. After a user completes an upstream CLI login, another
-`daemon tick --once --execute ... --json` can refresh route evidence and clear
+`stay-afloat --once --execute ... --json` can refresh route evidence and clear
 the pending prompt.
 
 For a bounded foreground loop, use:
 
 ```bash
-oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
+oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
 
 Loop mode emits one JSON envelope containing repeated tick snapshots. Each tick
@@ -215,7 +215,7 @@ re-reads local health and runtime state and does not require launchd, systemd,
 Homebrew services, cron, or a platform-specific
 daemon manager.
 
-Route, runtime, repair-plan, and daemon tick JSON include a `writeback` object.
+Route, runtime, repair-plan, and stay-afloat JSON include a `writeback` object.
 That object separates the secret backend surface (`readonly`, `replace_file`,
 `command_write`, `keychain_write`, `sops_write`, or `unsupported`) from whether
 automatic refresh writeback is admitted for this provider. This matters for

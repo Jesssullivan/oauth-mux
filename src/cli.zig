@@ -16,6 +16,7 @@ pub const Command = union(enum) {
     repair_plan: RepairPlanArgs,
     repair_run: RepairRunArgs,
     route: RouteArgs,
+    stay_afloat: DaemonTickArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -215,6 +216,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "repair")) return parseRepair(rest);
     if (eql(cmd, "repair-plan")) return parseRepairPlan(rest);
     if (eql(cmd, "route")) return parseRoute(rest);
+    if (eql(cmd, "stay-afloat")) return parseStayAfloat(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
@@ -528,6 +530,14 @@ fn parseDaemonHandoffs(args: []const []const u8) Command {
 }
 
 fn parseDaemonTick(args: []const []const u8) Command {
+    return .{ .daemon_tick = parseDaemonTickArgs(args) };
+}
+
+fn parseStayAfloat(args: []const []const u8) Command {
+    return .{ .stay_afloat = parseDaemonTickArgs(args) };
+}
+
+fn parseDaemonTickArgs(args: []const []const u8) Command.DaemonTickArgs {
     var result = Command.DaemonTickArgs{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -565,7 +575,7 @@ fn parseDaemonTick(args: []const []const u8) Command {
             }
         }
     }
-    return .{ .daemon_tick = result };
+    return result;
 }
 
 fn parseConfig(args: []const []const u8) Command {
@@ -737,6 +747,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  route select|explain [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Select or explain a route from recorded liveness without probing.
+        \\
+        \\  stay-afloat [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Run the portable stay-afloat planner/executor without service-manager assumptions.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -1193,6 +1206,20 @@ test "parse daemon tick once json selector" {
     }
 }
 
+test "parse stay-afloat once json selector" {
+    const args = [_][]const u8{ "stay-afloat", "--once", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat => |tick| {
+            try std.testing.expect(tick.once);
+            try std.testing.expect(tick.json);
+            try std.testing.expectEqualStrings("codex-max", tick.profile.?);
+            try std.testing.expectEqualStrings("codex-max", tick.capability.?);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon tick bounded loop" {
     const args = [_][]const u8{ "daemon", "tick", "--loop", "--execute", "--iterations", "3", "--interval-ms", "250", "--profile", "codex-max", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1226,6 +1253,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a repair-plan -d 'Show non-mutating repair plan'
             \\complete -c oauth-mux -n __fish_use_subcommand -a repair -d 'Run admitted repair actions'
             \\complete -c oauth-mux -n __fish_use_subcommand -a route -d 'Select or explain routes'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a stay-afloat -d 'Run stay-afloat planner'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a setup -d 'First-run setup'
@@ -1233,10 +1261,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a daemon -d 'Daemon operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe route' -l account -d 'Account name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe route stay-afloat' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -a runtime -d 'Runtime readiness checks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l json -d 'JSON output'
@@ -1265,6 +1293,12 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l confirm-repair -d 'Confirm mutating repair'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l execute -d 'Execute one admitted non-interactive action'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l iterations -d 'Number of stay-afloat ticks' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l interval-ms -d 'Milliseconds between ticks' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
@@ -1302,6 +1336,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'repair-plan:Show non-mutating repair plan'
             \\    'repair:Run admitted repair actions'
             \\    'route:Select or explain routes'
+            \\    'stay-afloat:Run stay-afloat planner'
             \\    'config:Config operations'
             \\    'init:Generate config'
             \\    'setup:First-run setup'
@@ -1319,7 +1354,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan repair route config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan repair route stay-afloat config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\
