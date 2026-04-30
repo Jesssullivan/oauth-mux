@@ -412,6 +412,12 @@ obvious and copy-pastable for humans and agents.
 - For Codex, output exact `oauth-mux codex login[-device] <account>` commands
   and verify `CODEX_HOME` writability before suggesting live auth.
 
+Implementation note, 2026-04-30: the first repair-plan surface is intentionally
+non-mutating. It expands profiles and explicit provider/account routes, reads
+runtime readiness plus recorded liveness, emits typed action JSON, and suggests
+copy-pastable commands. The `daemon repair-plan` spelling is an alias for that
+one-shot planner, not daemon automation.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.

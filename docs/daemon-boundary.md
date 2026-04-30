@@ -12,11 +12,23 @@ The 2026-04-30 stay-afloat review keeps this boundary in place. Real Codex
 dogfood proved route-scoped fallback from `codex:max-1#codex-max` quota
 exhaustion to `codex:max-2#codex-max`, but it also exposed that runtime
 permission/session ownership and automatic reauth are not solved by the current
-daemon. See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
+daemon.
+
+`oauth-mux repair-plan` is the current bridge between dogfooding evidence and
+future daemon work. It reads runtime readiness and recorded liveness, then
+prints the next non-mutating repair actions. `oauth-mux daemon repair-plan` is
+only a namespace alias for that same one-shot planner; it does not start a
+background service, run probes, open browsers, refresh credentials, or rewrite
+secret stores.
+
+See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 
 ## Allowed Now
 
 - `oauth-mux daemon run` as the foreground primitive for any future wrapper.
+- `oauth-mux repair-plan` for non-mutating stay-afloat action planning.
+- `oauth-mux daemon repair-plan` as a compatibility alias for the same
+  one-shot planner.
 - `oauth-mux daemon status` for local inspection.
 - Local experimentation with refresh behavior.
 - Future manual QA where daemon activity is bounded and visible.
@@ -27,6 +39,7 @@ daemon. See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - Automatic subscription-spending checks.
 - Silent token refresh for providers whose refresh semantics are owned by an
   upstream CLI.
+- Automatic execution of repair-plan commands.
 - Any release gate that depends on a long-running daemon.
 - Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows
   Services as part of the core product contract.
@@ -53,5 +66,6 @@ Until then, user and agent onboarding should use one-shot commands:
 oauth-mux discover --json
 oauth-mux codex canary
 oauth-mux probe --profile <profile> --capability <capability> --json
+oauth-mux repair-plan --profile <profile> --capability <capability> --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```
