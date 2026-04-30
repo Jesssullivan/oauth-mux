@@ -1,5 +1,8 @@
 # oauth-mux
 
+**Site:** https://omux.xoxd.ai — typed-fallback model, install paths, and the live provider matrix.  
+**Source:** github.com/Jesssullivan/oauth-mux
+
 `oauth-mux` is a compiled OAuth fallback mux for AI harness subscriptions and
 connector auth. It selects among configured provider accounts, records typed
 credential liveness, and falls through without poisoning an entire account when
