@@ -1443,21 +1443,51 @@ fn runDaemonTick(allocator: std.mem.Allocator, writer: anytype, args: cli.Comman
     defer validation_messages.deinit();
     try config.validate(parsed.value, validation_messages.writer());
 
-    var store = health_mod.HealthStore.load(allocator, .{});
-    defer store.deinit();
-
     var routes = try collectRepairPlanRoutes(allocator, parsed.value, daemonTickArgsToPlanArgs(args));
     defer routes.deinit();
 
-    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
-    defer evaluations.deinit();
-    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+    const iterations = normalizedDaemonTickIterations(args);
+    if (args.json and iterations > 1) {
+        try writer.writeAll("{\"version\":");
+        try std.json.stringify(cli.version, .{}, writer);
+        try writer.writeAll(",\"mode\":\"loop\",\"executed\":false,\"message\":\"bounded foreground planning loop; no probes or repair commands executed\",\"iterations_requested\":");
+        try writer.print("{d}", .{iterations});
+        try writer.writeAll(",\"interval_ms\":");
+        try writer.print("{d}", .{args.interval_ms});
+        try writer.writeAll(",\"ticks\":[");
+    }
 
-    const selected_index = firstSelectableRoute(evaluations.items);
-    if (args.json) {
-        try writeDaemonTickJson(writer, allocator, parsed.value, evaluations.items, selected_index, args);
-    } else {
-        try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+    var idx: u32 = 0;
+    while (idx < iterations) : (idx += 1) {
+        var store = health_mod.HealthStore.load(allocator, .{});
+        defer store.deinit();
+
+        var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+        defer evaluations.deinit();
+        try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+        const selected_index = firstSelectableRoute(evaluations.items);
+        const observed_at = std.time.timestamp();
+
+        if (args.json) {
+            if (iterations > 1) {
+                if (idx > 0) try writer.writeByte(',');
+                try writeDaemonTickJsonObject(writer, allocator, parsed.value, evaluations.items, selected_index, args, idx, observed_at, false);
+            } else {
+                try writeDaemonTickJsonObject(writer, allocator, parsed.value, evaluations.items, selected_index, args, idx, observed_at, true);
+                try writer.writeByte('\n');
+            }
+        } else {
+            if (iterations > 1) try writer.print("tick {d}/{d}\n", .{ idx + 1, iterations });
+            try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+            if (iterations > 1 and idx + 1 < iterations) try writer.writeByte('\n');
+        }
+
+        sleepBetweenDaemonTicks(args, idx, iterations);
+    }
+
+    if (args.json and iterations > 1) {
+        try writer.writeAll("]}\n");
     }
 }
 
@@ -1469,6 +1499,19 @@ fn daemonTickArgsToPlanArgs(args: cli.Command.DaemonTickArgs) cli.Command.Repair
         .capability = args.capability,
         .json = args.json,
     };
+}
+
+fn normalizedDaemonTickIterations(args: cli.Command.DaemonTickArgs) u32 {
+    if (args.once) return 1;
+    return @max(args.iterations, 1);
+}
+
+fn sleepBetweenDaemonTicks(args: cli.Command.DaemonTickArgs, idx: u32, iterations: u32) void {
+    if (idx + 1 >= iterations) return;
+    if (args.interval_ms == 0) return;
+    const max_ms = std.math.maxInt(u64) / std.time.ns_per_ms;
+    const bounded_ms = @min(args.interval_ms, max_ms);
+    std.time.sleep(bounded_ms * std.time.ns_per_ms);
 }
 
 fn collectRouteEvaluations(
@@ -1737,18 +1780,29 @@ fn writeDaemonTickText(
     }
 }
 
-fn writeDaemonTickJson(
+fn writeDaemonTickJsonObject(
     writer: anytype,
     allocator: std.mem.Allocator,
     cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     args: cli.Command.DaemonTickArgs,
+    tick_index: u32,
+    observed_at: i64,
+    include_version: bool,
 ) !void {
     const stats = daemonTickStats(cfg.policy.daemon, evaluations);
 
-    try writer.writeAll("{\"version\":");
-    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeByte('{');
+    if (include_version) {
+        try writer.writeAll("\"version\":");
+        try std.json.stringify(cli.version, .{}, writer);
+        try writer.writeByte(',');
+    }
+    try writer.writeAll("\"tick_index\":");
+    try writer.print("{d}", .{tick_index});
+    try writer.writeAll(",\"observed_at\":");
+    try writer.print("{d}", .{observed_at});
     try writer.writeAll(",\"mode\":");
     try std.json.stringify(if (args.once) "once" else "loop", .{}, writer);
     try writer.writeAll(",\"executed\":false");
@@ -1780,7 +1834,7 @@ fn writeDaemonTickJson(
         try writeDaemonTickDecisionJson(writer, daemonTickDecision(cfg.policy.daemon, evaluation));
         try writer.writeByte('}');
     }
-    try writer.writeAll("]}\n");
+    try writer.writeAll("]}");
 }
 
 fn writeDaemonTickStatsJson(writer: anytype, stats: DaemonTickStats) !void {

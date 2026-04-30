@@ -266,6 +266,15 @@ expect_contains "$daemon_tick" '"selected":{"provider":"toy","account":"a2"' "da
 expect_contains "$daemon_tick" '"action":"wait_for_quota"' "daemon tick includes wait action for exhausted route"
 expect_contains "$daemon_tick" '"reason":"route_selectable"' "daemon tick marks selectable route as no-op"
 
+printf 'e2e: bounded daemon tick loop emits repeated planning snapshots\n'
+daemon_loop="$(omux daemon tick --loop --iterations 2 --interval-ms 0 --profile expensive --capability expensive --json)"
+expect_contains "$daemon_loop" '"mode":"loop"' "daemon tick loop reports loop mode"
+expect_contains "$daemon_loop" '"iterations_requested":2' "daemon tick loop reports requested iterations"
+expect_contains "$daemon_loop" '"ticks":[' "daemon tick loop returns tick array"
+expect_contains "$daemon_loop" '"tick_index":0' "daemon tick loop includes first tick"
+expect_contains "$daemon_loop" '"tick_index":1' "daemon tick loop includes second tick"
+expect_contains "$daemon_loop" '"executed":false' "daemon tick loop remains planning-only"
+
 printf 'e2e: repair run no-ops when fallback route is selectable\n'
 repair_run="$(omux repair run --profile expensive --capability expensive --json)"
 expect_contains "$repair_run" '"ok":true' "repair run reports ok when afloat"

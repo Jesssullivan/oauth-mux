@@ -44,6 +44,9 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux daemon tick --once --json` for one portable, policy-gated
   daemon-shaped planning pass. It reports `executed:false` and does not run
   probes, repair commands, or mutation.
+- `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
+  for a bounded foreground planning loop. It re-reads local health/runtime
+  state each tick and remains service-manager agnostic.
 - Account-scoped advisory locks during confirmed `repair run`, reported back as
   `repair_in_progress` by runtime-aware route planning.
 - Config-level daemon admission policy for route planning. The default admits
@@ -92,6 +95,7 @@ oauth-mux route select --profile <profile> --capability <capability> --json
 oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux repair-plan --profile <profile> --capability <capability> --json
 oauth-mux repair run --profile <profile> --capability <capability> --json
+oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile <profile> --capability <capability> --json
 oauth-mux daemon events --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```
