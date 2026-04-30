@@ -143,7 +143,7 @@ runs at most one admitted non-interactive action per tick, such as a
 `free_command` probe, then re-reads route state. Interactive reauth is never run
 silently; execute mode records a redacted `daemon_handoff` event with the user
 command to run. Inspect those queued user-mediated repairs with `oauth-mux
-daemon handoffs --json`; add `--all` to include historical handoff events after
+stay-afloat handoffs --json`; add `--all` to include historical handoff events after
 a later stay-afloat tick has refreshed route evidence. `stay-afloat --loop
 --iterations <n> --interval-ms <ms> --json` repeats the same portable
 foreground tick for dogfood and wrappers. No `systemctl`, `launchctl`, service

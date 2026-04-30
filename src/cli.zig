@@ -534,6 +534,7 @@ fn parseDaemonTick(args: []const []const u8) Command {
 }
 
 fn parseStayAfloat(args: []const []const u8) Command {
+    if (args.len > 0 and eql(args[0], "handoffs")) return parseDaemonHandoffs(args[1..]);
     return .{ .stay_afloat = parseDaemonTickArgs(args) };
 }
 
@@ -750,6 +751,8 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  stay-afloat [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run the portable stay-afloat planner/executor without service-manager assumptions.
+        \\  stay-afloat handoffs [--json] [--limit <n>] [--all]
+        \\      Show pending user-mediated stay-afloat handoffs; --all includes history.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -1220,6 +1223,19 @@ test "parse stay-afloat once json selector" {
     }
 }
 
+test "parse stay-afloat handoffs json limit" {
+    const args = [_][]const u8{ "stay-afloat", "handoffs", "--json", "--limit", "2", "--all" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .daemon_handoffs => |events| {
+            try std.testing.expect(events.json);
+            try std.testing.expectEqual(@as(usize, 2), events.limit);
+            try std.testing.expect(events.all);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon tick bounded loop" {
     const args = [_][]const u8{ "daemon", "tick", "--loop", "--execute", "--iterations", "3", "--interval-ms", "250", "--profile", "codex-max", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1294,11 +1310,14 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a handoffs -d 'Show pending handoffs'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l execute -d 'Execute one admitted non-interactive action'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l iterations -d 'Number of stay-afloat ticks' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l interval-ms -d 'Milliseconds between ticks' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l limit -d 'Limit handoff count' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l all -d 'Include historical handoff events'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'

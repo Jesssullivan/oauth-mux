@@ -419,6 +419,8 @@ expect_contains "$daemon_handoffs" '"handoffs":[' "daemon handoffs returns json 
 expect_contains "$daemon_handoffs" '"kind":"daemon_handoff"' "daemon handoffs includes handoff events"
 expect_contains "$daemon_handoffs" '"outcome":"handoff_queued"' "daemon handoffs includes queued outcome"
 expect_contains "$daemon_handoffs" '"command":"oauth-mux codex login-device max-1"' "daemon handoffs includes upstream command"
+stay_afloat_handoffs="$(OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat handoffs --json)"
+expect_contains "$stay_afloat_handoffs" '"kind":"daemon_handoff"' "stay-afloat handoffs aliases pending handoff queue"
 
 repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"
 set +e

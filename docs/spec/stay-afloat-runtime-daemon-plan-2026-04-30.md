@@ -502,6 +502,11 @@ operator-facing alias for the same portable tick engine. `daemon tick` remains
 available as the lower-level implementation surface, but docs and onboarding
 should lead with `stay-afloat --once` and `stay-afloat --loop`.
 
+Implementation note, 2026-04-30: `oauth-mux stay-afloat handoffs --json` now
+aliases the pending handoff queue. This keeps user-facing recovery flows under
+the same product command while leaving `daemon handoffs` available for lower
+level debugging.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.
