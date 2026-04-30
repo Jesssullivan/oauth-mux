@@ -217,6 +217,9 @@ daemon-status: build
 daemon-events: build
     ./zig-out/bin/oauth-mux daemon events --json
 
+daemon-tick PROFILE="codex-max" CAPABILITY="codex-max": build
+    ./zig-out/bin/oauth-mux daemon tick --once --profile {{PROFILE}} --capability {{CAPABILITY}} --json
+
 # ── Shell integration ──
 
 completions-fish: build

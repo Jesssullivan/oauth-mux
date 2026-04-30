@@ -31,6 +31,7 @@ oauth-mux config validate
 oauth-mux discover --json
 oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
+oauth-mux daemon tick --once --profile <profile> --capability <capability> --json
 ```
 
 Source checkouts prove this path without touching real operator state:
@@ -49,6 +50,7 @@ oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
+oauth-mux daemon tick --once --profile codex-max --capability codex-max --json
 ```
 
 Those commands are installed CLI surface, not source-checkout-only helpers.
@@ -64,10 +66,10 @@ oauth-mux codex live-qa --confirm-spend
 oauth-mux codex probe-all --capability codex-mini --json
 ```
 
-`doctor runtime`, `route explain`, and `route select` are no-spend surfaces.
-They only use local runtime checks plus recorded liveness, so they are safe for
-agents to run before deciding whether a live probe or user-driven reauth is
-warranted. Prefer scoped runtime checks such as
+`doctor runtime`, `route explain`, `route select`, and `daemon tick --once` are
+no-spend surfaces. They only use local runtime checks plus recorded liveness, so
+they are safe for agents to run before deciding whether a live probe or
+user-driven reauth is warranted. Prefer scoped runtime checks such as
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
 when dogfooding a specific stay-afloat route; global runtime doctor is still
 useful for support bundles and full-machine cleanup.

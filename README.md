@@ -93,6 +93,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux daemon tick --once --profile codex-max --capability codex-max --json
 oauth-mux daemon events --json
 ```
 
@@ -126,7 +127,10 @@ only `free_local` and `free_command` work; `cheap_provider`, `spend_provider`,
 `interactive`, and `mutating` actions are reported as refused until the config
 explicitly allows them. `route explain --json` and `repair-plan --json` include
 the effective policy plus per-route admission decisions so agents can back off
-without guessing.
+without guessing. `daemon tick --once --json` is the first daemon-shaped
+dogfood primitive: it evaluates the same routes under that policy and reports
+`executed:false`; it does not run live probes, repair commands, or background
+mutation.
 
 First-run Codex subscription path:
 
