@@ -1721,6 +1721,29 @@ fn queueDaemonHandoff(
     decision: DaemonTickDecision,
     executions: *std.ArrayList(DaemonTickExecution),
 ) !void {
+    const pending = try repair_state.hasPendingHandoff(allocator, .{
+        .profile = args.profile,
+        .provider = evaluation.route.provider,
+        .account = evaluation.route.account,
+        .capability = evaluation.route.capability,
+    });
+    if (pending) {
+        try executions.append(.{
+            .route = evaluation.route,
+            .phase = "handoff",
+            .action = evaluation.action.kind,
+            .admitted = decision.admitted,
+            .executed = false,
+            .ok = false,
+            .handoff = true,
+            .handoff_queued = false,
+            .reason = "handoff_pending",
+            .budget = decision.budget,
+            .command = evaluation.action.command,
+        });
+        return;
+    }
+
     try executions.append(.{
         .route = evaluation.route,
         .phase = "handoff",
@@ -1729,6 +1752,7 @@ fn queueDaemonHandoff(
         .executed = false,
         .ok = false,
         .handoff = true,
+        .handoff_queued = true,
         .reason = "interactive_user_handoff",
         .budget = decision.budget,
         .command = evaluation.action.command,
@@ -1986,6 +2010,7 @@ const DaemonTickExecution = struct {
     executed: bool,
     ok: bool,
     handoff: bool = false,
+    handoff_queued: bool = false,
     reason: []const u8,
     budget: ?types.ActionBudget = null,
     command: RepairCommandKind = .none,
@@ -2066,7 +2091,10 @@ fn writeDaemonTickText(
                 if (execution.ok) "true" else "false",
                 execution.reason,
             });
-            if (execution.handoff) try writer.writeAll(" handoff=true");
+            if (execution.handoff) {
+                try writer.writeAll(" handoff=true");
+                try writer.print(" handoff_queued={s}", .{if (execution.handoff_queued) "true" else "false"});
+            }
             try writer.writeByte('\n');
         }
     }
@@ -2104,6 +2132,8 @@ fn writeDaemonTickJsonObject(
     try writer.writeAll(if (daemonTickExecutionsRan(executions)) "true" else "false");
     try writer.writeAll(",\"handoff_queued\":");
     try writer.writeAll(if (daemonTickHandoffQueued(executions)) "true" else "false");
+    try writer.writeAll(",\"handoff_pending\":");
+    try writer.writeAll(if (daemonTickHandoffPending(executions)) "true" else "false");
     try writer.writeAll(",\"message\":");
     try std.json.stringify(daemonTickMessage(args), .{}, writer);
     try writer.writeAll(",\"policy\":");
@@ -2186,6 +2216,8 @@ fn writeDaemonTickExecutionsJson(
         try writer.writeAll(if (execution.ok) "true" else "false");
         try writer.writeAll(",\"handoff\":");
         try writer.writeAll(if (execution.handoff) "true" else "false");
+        try writer.writeAll(",\"handoff_queued\":");
+        try writer.writeAll(if (execution.handoff_queued) "true" else "false");
         try writer.writeAll(",\"reason\":");
         try std.json.stringify(execution.reason, .{}, writer);
         try writer.writeAll(",\"budget\":");
@@ -2210,6 +2242,13 @@ fn daemonTickExecutionsRan(executions: []const DaemonTickExecution) bool {
 }
 
 fn daemonTickHandoffQueued(executions: []const DaemonTickExecution) bool {
+    for (executions) |execution| {
+        if (execution.handoff_queued) return true;
+    }
+    return false;
+}
+
+fn daemonTickHandoffPending(executions: []const DaemonTickExecution) bool {
     for (executions) |execution| {
         if (execution.handoff) return true;
     }

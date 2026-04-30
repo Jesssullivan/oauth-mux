@@ -507,6 +507,12 @@ aliases the pending handoff queue. This keeps user-facing recovery flows under
 the same product command while leaving `daemon handoffs` available for lower
 level debugging.
 
+Implementation note, 2026-04-30: execute-mode stay-afloat ticks now check the
+pending handoff queue before recording an interactive reauth handoff. If the
+same route already has a pending handoff, tick JSON reports
+`handoff_pending:true` and `handoff_queued:false` instead of appending duplicate
+events.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.

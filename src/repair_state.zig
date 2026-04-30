@@ -21,6 +21,13 @@ pub const RepairEvent = struct {
     mutating: bool = false,
 };
 
+pub const HandoffKey = struct {
+    profile: ?[]const u8 = null,
+    provider: []const u8,
+    account: []const u8,
+    capability: ?[]const u8 = null,
+};
+
 pub const RepairLock = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -60,6 +67,34 @@ pub fn writeHandoffs(allocator: std.mem.Allocator, writer: anytype, json: bool, 
         return;
     }
     try writePendingHandoffView(allocator, writer, json, limit);
+}
+
+pub fn hasPendingHandoff(allocator: std.mem.Allocator, key: HandoffKey) !bool {
+    const path = try eventsPath(allocator);
+    defer allocator.free(path);
+
+    const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
+        error.FileNotFound => return false,
+        else => return e,
+    };
+    defer file.close();
+
+    const bytes = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(bytes);
+
+    var pending = false;
+    var it = std.mem.splitScalar(u8, bytes, '\n');
+    while (it.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or !eventRouteKeyMatchesHandoffKey(trimmed, key)) continue;
+        if (isQueuedHandoffEvent(trimmed)) {
+            pending = true;
+        } else if (eventResolvesHandoff(trimmed)) {
+            pending = false;
+        }
+    }
+
+    return pending;
 }
 
 fn writeEventView(
@@ -230,12 +265,26 @@ fn eventRouteKeyMatches(a: []const u8, b: []const u8) bool {
         eventOptionalFieldEquals(a, b, "capability");
 }
 
+fn eventRouteKeyMatchesHandoffKey(line: []const u8, key: HandoffKey) bool {
+    return eventOptionalFieldMatches(line, "profile", key.profile) and
+        eventFieldEquals(line, "provider", key.provider) and
+        eventFieldEquals(line, "account", key.account) and
+        eventOptionalFieldMatches(line, "capability", key.capability);
+}
+
 fn eventOptionalFieldEquals(a: []const u8, b: []const u8, field: []const u8) bool {
     const av = eventFieldString(a, field);
     const bv = eventFieldString(b, field);
     if (av == null and bv == null) return true;
     if (av == null or bv == null) return false;
     return std.mem.eql(u8, av.?, bv.?);
+}
+
+fn eventOptionalFieldMatches(line: []const u8, field: []const u8, expected: ?[]const u8) bool {
+    const actual = eventFieldString(line, field);
+    if (actual == null and expected == null) return true;
+    if (actual == null or expected == null) return false;
+    return std.mem.eql(u8, actual.?, expected.?);
 }
 
 fn eventFieldEquals(line: []const u8, field: []const u8, expected: []const u8) bool {
@@ -520,6 +569,30 @@ test "pending handoff queue resolves by later route event" {
     try std.testing.expectEqual(@as(usize, 1), pending.items.len);
     removeResolvedHandoffs(&pending, resolved);
     try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+}
+
+test "handoff key matching distinguishes pending route" {
+    const handoff =
+        "{\"kind\":\"daemon_handoff\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-1\",\"capability\":\"codex-max\",\"outcome\":\"handoff_queued\",\"ok\":false}";
+
+    try std.testing.expect(eventRouteKeyMatchesHandoffKey(handoff, .{
+        .profile = "codex-max",
+        .provider = "codex",
+        .account = "max-1",
+        .capability = "codex-max",
+    }));
+    try std.testing.expect(!eventRouteKeyMatchesHandoffKey(handoff, .{
+        .profile = "codex-max",
+        .provider = "codex",
+        .account = "max-2",
+        .capability = "codex-max",
+    }));
+    try std.testing.expect(!eventRouteKeyMatchesHandoffKey(handoff, .{
+        .profile = "codex-max",
+        .provider = "codex",
+        .account = "max-1",
+        .capability = "codex-mini",
+    }));
 }
 
 test "refresh event json carries redacted writeback evidence" {
