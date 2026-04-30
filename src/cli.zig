@@ -105,6 +105,7 @@ pub const Command = union(enum) {
         login_status_all,
         onboard,
         canary,
+        live_qa,
         probe_all,
         config_candidate,
         config_merge,
@@ -119,6 +120,7 @@ pub const Command = union(enum) {
         device: bool = false,
         status_only: bool = false,
         live: bool = false,
+        confirm_spend: bool = false,
         json: bool = false,
         output: ?[]const u8 = null,
         candidate: ?[]const u8 = null,
@@ -385,6 +387,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .onboard;
         } else if (eql(args[0], "canary")) {
             result.action = .canary;
+        } else if (eql(args[0], "live-qa")) {
+            result.action = .live_qa;
         } else if (eql(args[0], "probe-all")) {
             result.action = .probe_all;
         } else if (eql(args[0], "config-candidate")) {
@@ -433,6 +437,8 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
             result.status_only = true;
         } else if (eql(args[i], "--live")) {
             result.live = true;
+        } else if (eql(args[i], "--confirm-spend")) {
+            result.confirm_spend = true;
         } else if (eql(args[i], "--json")) {
             result.json = true;
         } else if (result.account == null and !std.mem.startsWith(u8, args[i], "-")) {
@@ -509,6 +515,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
         \\      Run a no-spend Codex Max readiness check; --live runs probes.
         \\
+        \\  codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
+        \\      Run confirmed Codex route probes and record route evidence.
+        \\
         \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
         \\      Probe every selected Codex account/capability route.
         \\
@@ -548,6 +557,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux setup codex [--accounts a,b,c] [--device|--status-only] [--live]
         \\  oauth-mux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
         \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
+        \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
         \\  oauth-mux codex config-candidate [--output path] [--store-root path] [--json]
         \\  oauth-mux codex config-merge [--candidate path] [--backup path] [--json]
@@ -559,7 +569,8 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\
         \\Safety:
         \\  canary is no-spend unless --live is provided.
-        \\  probe-all and canary --live run real provider probes.
+        \\  live-qa, probe-all, and canary --live run real provider probes.
+        \\  live-qa requires --confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls.
         \\  --help and -h are non-mutating for every Codex subcommand.
         \\
         \\Defaults:
@@ -672,6 +683,21 @@ test "parse codex canary" {
             try std.testing.expectEqualStrings("max-1,max-2", codex.accounts);
             try std.testing.expectEqualStrings("codex-mini", codex.capabilities);
             try std.testing.expect(codex.live);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex live qa confirmation" {
+    const args = [_][]const u8{ "codex", "live-qa", "--accounts", "max-1,max-3", "--capabilities", "codex-mini", "--confirm-spend", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .live_qa);
+            try std.testing.expectEqualStrings("max-1,max-3", codex.accounts);
+            try std.testing.expectEqualStrings("codex-mini", codex.capabilities);
+            try std.testing.expect(codex.confirm_spend);
+            try std.testing.expect(codex.json);
         },
         else => return error.Unexpected,
     }
@@ -860,7 +886,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status' -d 'Daemon subcommand'
             \\
         );

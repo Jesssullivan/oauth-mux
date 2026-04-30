@@ -48,8 +48,13 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
 ```
 
 That command validates config, prints discovery/status evidence, and checks
-`codex login status` for each account without running probes. Add `--live` only
-when the canary should also invoke this live QA matrix.
+`codex login status` for each account without running probes. Use the guarded
+live QA command when the installed CLI should also invoke this live matrix:
+
+```bash
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa --confirm-spend
+```
 
 For a focused account matrix on one route class:
 

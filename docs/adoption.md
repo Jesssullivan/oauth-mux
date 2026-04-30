@@ -54,7 +54,8 @@ with `--store-root <path>`.
 Live probes remain explicit because they can spend subscription calls:
 
 ```bash
-oauth-mux codex canary --live
+oauth-mux codex live-qa
+oauth-mux codex live-qa --confirm-spend
 oauth-mux codex probe-all --capability codex-mini --json
 ```
 

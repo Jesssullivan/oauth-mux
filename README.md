@@ -70,6 +70,13 @@ Run the no-spend Codex Max canary:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
 ```
 
+Run guarded live route QA only when real Codex calls are intended:
+
+```bash
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa --confirm-spend
+```
+
 Explain current Codex Max stay-afloat actions without running probes or
 mutating auth state:
 
@@ -84,6 +91,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
+oauth-mux codex live-qa
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 

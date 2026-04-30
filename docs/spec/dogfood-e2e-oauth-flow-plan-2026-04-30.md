@@ -128,7 +128,8 @@ Required path:
 ```bash
 oauth-mux setup codex
 oauth-mux codex canary
-OMUX_LIVE_QA_CONFIRM=spend-real-calls oauth-mux codex canary --live
+oauth-mux codex live-qa
+OMUX_LIVE_QA_CONFIRM=spend-real-calls oauth-mux codex live-qa
 oauth-mux codex probe-all --capability codex-mini --json
 oauth-mux codex probe-all --capability codex-max --json
 oauth-mux health --json

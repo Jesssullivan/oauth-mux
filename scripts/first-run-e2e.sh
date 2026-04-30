@@ -276,6 +276,22 @@ jq -e '
 expect_not_contains "$(cat "$report_json")" "auth.json" "redacted report omits credential file paths"
 expect_not_contains "$(cat "$report_json")" "$operator_home" "redacted report does not reference operator home"
 
+printf 'first-run e2e: Codex live-qa requires explicit spend confirmation\n'
+live_qa_json="$tmp/live-qa-unconfirmed.json"
+set +e
+omux codex live-qa --json >"$live_qa_json" 2>"$tmp/live-qa-unconfirmed.stderr"
+live_qa_status=$?
+set -e
+if [ "$live_qa_status" -eq 0 ]; then
+  printf 'first-run e2e assertion failed: live-qa without confirmation should fail\n' >&2
+  exit 1
+fi
+jq -e '
+  .ok == false
+  and .error == "confirmation_required"
+  and .spends_provider_calls == true
+' "$live_qa_json" >/dev/null
+
 printf 'first-run e2e: Codex help remains non-mutating\n'
 help_out="$(omux codex canary --help)"
 expect_contains "$help_out" "non-mutating" "Codex help declares non-mutating behavior"
