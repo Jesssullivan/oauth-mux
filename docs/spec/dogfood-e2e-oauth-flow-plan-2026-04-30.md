@@ -38,7 +38,7 @@ OAuth and muxing surfaces:
 | Codex three-account stores | `max-1`, `max-2`, and `max-3` are isolated by `CODEX_HOME` and report logged-in ChatGPT status. |
 | Codex route liveness | Hosted and local installed-binary live canaries have proven all three accounts across `codex-mini` and `codex-max`. Earlier proof also preserved the distinction between quota exhaustion and auth death. |
 | Typed liveness | Unit and e2e tests cover `live`, `degraded`, `dead`, route-scoped `provider:account#capability`, and fallback decisions. |
-| Agent-safe discovery | `doctor --json`, `report --redacted --json`, `providers list --json`, `discover --json`, `status --json`, and `health --json` exist and are documented. |
+| Agent-safe discovery | `doctor --json`, `report --redacted --json`, `providers list --json`, `discover --json`, `status --json`, `health --json`, `route explain --json`, and `route select --json` exist and are documented. |
 | Non-mutating help | `oauth-mux codex canary --help`, `oauth-mux codex probe-all --help`, and `oauth-mux setup codex --help` print help without creating stores or probing. |
 
 ## Not Yet Proven
@@ -98,6 +98,8 @@ oauth-mux init --codex-max
 oauth-mux config validate
 oauth-mux discover --json
 oauth-mux report --redacted --json
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux route select --profile codex-max --capability codex-max --json
 oauth-mux codex canary --help
 ```
 
@@ -106,6 +108,8 @@ Acceptance:
 - no credential values are read or printed;
 - help is non-mutating;
 - diagnostics point to the next safe command;
+- route explanation does not probe or mutate;
+- route selection refuses to select unrecorded health optimistically;
 - generated config validates from a clean state.
 
 Automated source-checkout proof:
@@ -133,6 +137,8 @@ OMUX_LIVE_QA_CONFIRM=spend-real-calls oauth-mux codex live-qa
 oauth-mux codex probe-all --capability codex-mini --json
 oauth-mux codex probe-all --capability codex-max --json
 oauth-mux health --json
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux route select --profile codex-max --capability codex-max --json
 ```
 
 Acceptance:
@@ -168,6 +174,8 @@ oauth-mux providers list --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
+oauth-mux route explain --profile <profile> --capability <capability> --json
+oauth-mux route select --profile <profile> --capability <capability> --json
 ```
 
 Acceptance:
@@ -222,6 +230,7 @@ Acceptance:
 - every route has a no-secret validation path;
 - each live route produces typed liveness evidence;
 - unavailable routes fall through without hiding the reason;
+- `route explain` reports skipped routes without spending provider calls;
 - command availability and missing upstream CLIs are reported as diagnostics,
   not silent failures.
 
@@ -261,9 +270,10 @@ Do not call a provider "supported" without also exposing whether it is
 
 ## Next Execution Order
 
-1. Keep `main` green and publish the non-mutating help fix in the next patch.
-2. Add a clean first-run e2e script that uses a temp home/config/state and
-   proves Story A without touching existing credentials.
+1. Land M1 one-shot stay-afloat route selection and explanation.
+2. Keep the clean first-run e2e script proving Story A without touching
+   existing credentials, including route explanation and route-select refusal
+   before health evidence exists.
 3. Extend the live-provider QA harness to accept provider-specific lanes for
    GitHub, Vercel, and Claude.
 4. Run and record Wave 1 live proof, then update provider proof status only for

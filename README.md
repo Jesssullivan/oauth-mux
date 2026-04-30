@@ -87,8 +87,14 @@ Explain current Codex Max stay-afloat actions without running probes or
 mutating auth state:
 
 ```bash
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route explain --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
+
+`route select` and `route explain` are no-spend stay-afloat commands. They use
+recorded route liveness plus runtime readiness; unrecorded routes are reported
+as `probe_needed` instead of being treated as available.
 
 First-run Codex subscription path:
 
@@ -98,6 +104,7 @@ oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
+oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 

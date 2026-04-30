@@ -284,10 +284,11 @@ RuntimeReadiness =
   | repair_in_progress(account, started_at)
 ```
 
-Selection should require both `CredentialLiveness` and `RuntimeReadiness`:
+Selection should require both `CredentialLiveness` and `RuntimeReadiness`.
+The current conservative product rule is:
 
 ```text
-SelectableRoute = live_or_degraded_auth_state + ready_runtime_state
+SelectableRoute = live.available + ready_runtime_state
 ```
 
 A denied session directory should not be reported as provider quota or OAuth
@@ -404,6 +405,12 @@ obvious and copy-pastable for humans and agents.
   - `max-1#codex-mini` available;
   - `max-1#codex-max` quota exhausted;
   - `max-2#codex-max` selected as fallback.
+
+Implementation note, 2026-04-30: `route select` and `route explain` now exist
+as one-shot, no-spend commands over recorded liveness. They do not probe live
+providers, open browsers, run repair commands, or mutate secret stores.
+Unrecorded routes surface as `probe_needed`; `route select` exits nonzero when
+there is no `live.available` route with ready runtime state.
 
 ### M2: Repair Plan
 

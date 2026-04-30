@@ -14,6 +14,7 @@ pub const Command = union(enum) {
     health: HealthArgs,
     discover: DiscoverArgs,
     repair_plan: RepairPlanArgs,
+    route: RouteArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -92,6 +93,20 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    pub const RouteAction = enum {
+        select,
+        explain,
+    };
+
+    pub const RouteArgs = struct {
+        action: RouteAction = .select,
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+        json: bool = false,
+    };
+
     pub const InitArgs = struct {
         interactive: bool = false,
         codex_max: bool = false,
@@ -148,6 +163,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
     if (eql(cmd, "repair-plan")) return parseRepairPlan(rest);
+    if (eql(cmd, "route")) return parseRoute(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
@@ -334,6 +350,38 @@ fn parseRepairPlan(args: []const []const u8) Command {
     return .{ .repair_plan = result };
 }
 
+fn parseRoute(args: []const []const u8) Command {
+    var result = Command.RouteArgs{};
+    var i: usize = 0;
+    if (args.len > 0) {
+        if (eql(args[0], "select")) {
+            result.action = .select;
+            i = 1;
+        } else if (eql(args[0], "explain")) {
+            result.action = .explain;
+            i = 1;
+        }
+    }
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .route = result };
+}
+
 fn parseConfig(args: []const []const u8) Command {
     if (args.len == 0) return .config_path;
     if (eql(args[0], "validate")) return .config_validate;
@@ -494,6 +542,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  repair-plan [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Explain non-mutating repair actions from runtime and liveness state.
+        \\
+        \\  route select|explain [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Select or explain a route from recorded liveness without probing.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -839,6 +890,20 @@ test "parse daemon repair plan alias" {
     }
 }
 
+test "parse route explain with profile" {
+    const args = [_][]const u8{ "route", "explain", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .route => |route| {
+            try std.testing.expect(route.action == .explain);
+            try std.testing.expectEqualStrings("codex-max", route.profile.?);
+            try std.testing.expectEqualStrings("codex-max", route.capability.?);
+            try std.testing.expect(route.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon run" {
     const args = [_][]const u8{ "daemon", "run" };
     try std.testing.expect(parse(&args) == .daemon_run);
@@ -858,6 +923,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
             \\complete -c oauth-mux -n __fish_use_subcommand -a repair-plan -d 'Show non-mutating repair plan'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a route -d 'Select or explain routes'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a setup -d 'First-run setup'
@@ -865,10 +931,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a daemon -d 'Daemon operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l account -d 'Account name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe route' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report providers' -l json -d 'JSON output'
@@ -883,6 +949,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
@@ -906,6 +974,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
             \\    'repair-plan:Show non-mutating repair plan'
+            \\    'route:Select or explain routes'
             \\    'config:Config operations'
             \\    'init:Generate config'
             \\    'setup:First-run setup'
@@ -923,7 +992,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan route config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\
