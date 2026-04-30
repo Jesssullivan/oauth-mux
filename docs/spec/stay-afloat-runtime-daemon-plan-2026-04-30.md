@@ -484,6 +484,11 @@ probes require explicit policy, and interactive reauth becomes a redacted
 Tick JSON now includes `execution_mode`, `executions`, `handoff_queued`, and
 `next_tick_after` scheduling hints.
 
+Implementation note, 2026-04-30: `oauth-mux daemon handoffs --json` now exposes
+the filtered handoff queue from the same redacted local event stream. This gives
+users, wrappers, and agents a stable way to discover pending user-mediated
+repairs without scraping the full audit log.
+
 Implementation note, 2026-04-30: bounded foreground loop mode now exists through
 `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`. This
 keeps the daemon beta portable and wrapper-friendly: no system service manager

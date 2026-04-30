@@ -26,6 +26,7 @@ pub const Command = union(enum) {
     daemon_stop,
     daemon_status: DaemonStatusArgs,
     daemon_events: DaemonEventsArgs,
+    daemon_handoffs: DaemonEventsArgs,
     daemon_tick: DaemonTickArgs,
     version_cmd,
     help,
@@ -221,6 +222,7 @@ pub fn parse(args: []const []const u8) Command {
             if (eql(rest[0], "stop")) return .daemon_stop;
             if (eql(rest[0], "status")) return parseDaemonStatus(rest[1..]);
             if (eql(rest[0], "events")) return parseDaemonEvents(rest[1..]);
+            if (eql(rest[0], "handoffs")) return parseDaemonHandoffs(rest[1..]);
             if (eql(rest[0], "tick")) return parseDaemonTick(rest[1..]);
         }
         return .{ .daemon_status = .{} };
@@ -501,6 +503,22 @@ fn parseDaemonEvents(args: []const []const u8) Command {
     return .{ .daemon_events = result };
 }
 
+fn parseDaemonHandoffs(args: []const []const u8) Command {
+    var result = Command.DaemonEventsArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (eql(args[i], "--limit")) {
+            i += 1;
+            if (i < args.len) {
+                result.limit = std.fmt.parseInt(usize, args[i], 10) catch result.limit;
+            }
+        }
+    }
+    return .{ .daemon_handoffs = result };
+}
+
 fn parseDaemonTick(args: []const []const u8) Command {
     var result = Command.DaemonTickArgs{};
     var i: usize = 0;
@@ -723,6 +741,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  daemon events [--json] [--limit <n>]
         \\      Show recent redacted repair events.
+        \\
+        \\  daemon handoffs [--json] [--limit <n>]
+        \\      Show queued user-mediated daemon handoffs.
         \\
         \\  daemon tick [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Plan daemon ticks; --execute runs at most one admitted non-interactive action per tick.
@@ -1137,6 +1158,18 @@ test "parse daemon events json limit" {
     }
 }
 
+test "parse daemon handoffs json limit" {
+    const args = [_][]const u8{ "daemon", "handoffs", "--json", "--limit", "3" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .daemon_handoffs => |events| {
+            try std.testing.expect(events.json);
+            try std.testing.expectEqual(@as(usize, 3), events.limit);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon tick once json selector" {
     const args = [_][]const u8{ "daemon", "tick", "--once", "--profile", "codex-max", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1227,7 +1260,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status events tick' -d 'Daemon subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l limit -d 'Limit event count' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l once -d 'Run one planning tick'
