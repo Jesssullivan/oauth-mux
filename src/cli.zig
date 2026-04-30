@@ -23,6 +23,7 @@ pub const Command = union(enum) {
     daemon_status,
     version_cmd,
     help,
+    codex_help,
 
     pub const ExecArgs = struct {
         profile: ?[]const u8 = null,
@@ -309,14 +310,18 @@ fn parseInit(args: []const []const u8) Command {
 fn parseSetup(args: []const []const u8) Command {
     if (args.len == 0) return .help;
     if (eql(args[0], "codex")) {
+        if (hasHelpFlag(args[1..])) return .codex_help;
         var result = Command.CodexArgs{ .action = .onboard };
         parseCodexOptions(&result, args, 1);
         return .{ .codex = result };
     }
+    if (eql(args[0], "help") or hasHelpFlag(args)) return .help;
     return .help;
 }
 
 fn parseCodex(args: []const []const u8) Command {
+    if (hasHelpFlag(args) or (args.len > 0 and eql(args[0], "help"))) return .codex_help;
+
     var result = Command.CodexArgs{};
     var option_start: usize = 0;
 
@@ -384,6 +389,13 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
 
 fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
+}
+
+fn hasHelpFlag(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (eql(arg, "--help") or eql(arg, "-h")) return true;
+    }
+    return false;
 }
 
 pub fn printUsage(writer: anytype) !void {
@@ -462,6 +474,34 @@ pub fn printUsage(writer: anytype) !void {
     );
     try writer.writeAll(version);
     try writer.writeAll("\n");
+}
+
+pub fn printCodexUsage(writer: anytype) !void {
+    try writer.writeAll(
+        \\oauth-mux codex — isolated Codex account setup and probes
+        \\
+        \\Usage:
+        \\  oauth-mux setup codex [--accounts a,b,c] [--device|--status-only] [--live]
+        \\  oauth-mux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
+        \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
+        \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
+        \\  oauth-mux codex bootstrap-dirs [--accounts a,b,c] [--store-root path]
+        \\  oauth-mux codex login <account> [--store-root path]
+        \\  oauth-mux codex login-device <account> [--store-root path]
+        \\  oauth-mux codex login-status [account] [--store-root path]
+        \\  oauth-mux codex login-status-all [--accounts a,b,c] [--store-root path]
+        \\
+        \\Safety:
+        \\  canary is no-spend unless --live is provided.
+        \\  probe-all and canary --live run real provider probes.
+        \\  --help and -h are non-mutating for every Codex subcommand.
+        \\
+        \\Defaults:
+        \\  accounts:     max-1,max-2,max-3
+        \\  capabilities: codex-mini,codex-max
+        \\  store root:   $XDG_DATA_HOME/oauth-mux/codex or ~/.local/share/oauth-mux/codex
+        \\
+    );
 }
 
 test "parse exec with profile and target" {
@@ -569,6 +609,17 @@ test "parse codex canary" {
         },
         else => return error.Unexpected,
     }
+}
+
+test "parse codex subcommand help as non-mutating help" {
+    const canary_args = [_][]const u8{ "codex", "canary", "--help" };
+    try std.testing.expect(parse(&canary_args) == .codex_help);
+
+    const probe_args = [_][]const u8{ "codex", "probe-all", "-h" };
+    try std.testing.expect(parse(&probe_args) == .codex_help);
+
+    const setup_args = [_][]const u8{ "setup", "codex", "--help" };
+    try std.testing.expect(parse(&setup_args) == .codex_help);
 }
 
 test "parse codex setup alias" {

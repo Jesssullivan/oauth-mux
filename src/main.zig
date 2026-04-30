@@ -30,6 +30,7 @@ pub fn main() !void {
     switch (cmd) {
         .version_cmd => try stdout.print("oauth-mux {s}\n", .{cli.version}),
         .help => try cli.printUsage(stdout),
+        .codex_help => try cli.printCodexUsage(stdout),
 
         .config_path => {
             const path = try paths.configFilePath(allocator);
