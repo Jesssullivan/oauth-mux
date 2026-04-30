@@ -489,6 +489,15 @@ policy still refuses provider spend, interactive auth, and mutation.
 - Refuse refresh when a backend is read-only or token age semantics are
   ambiguous.
 
+Implementation note, 2026-04-30: the first writeback matrix now exists, but it
+does not yet persist refreshed tokens. Route, runtime, repair-plan, and daemon
+tick JSON expose `writeback.capability`, `writeback.automatic_refresh_admitted`,
+and `writeback.reason` for each account. This deliberately separates "oauth-mux
+can read the local credential" from "oauth-mux is allowed to rewrite this
+credential during automatic refresh." CLI-owned stores such as Codex may resolve
+to a writable file backend while still refusing automatic oauth-mux mutation
+because repair ownership remains with the upstream CLI login flow.
+
 ### M4: Daemon Beta
 
 - Promote daemon to opt-in beta.

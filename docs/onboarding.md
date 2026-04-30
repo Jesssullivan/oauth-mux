@@ -186,6 +186,14 @@ re-reads local health and runtime state, but it remains planning-only and does
 not require launchd, systemd, Homebrew services, cron, or a platform-specific
 daemon manager.
 
+Route, runtime, repair-plan, and daemon tick JSON include a `writeback` object.
+That object separates the secret backend surface (`readonly`, `replace_file`,
+`command_write`, `keychain_write`, `sops_write`, or `unsupported`) from whether
+automatic refresh writeback is admitted for this provider. This matters for
+Codex and Claude-style CLI-owned stores: a file-backed credential can be
+readable and writable by the current user, while oauth-mux still refuses to
+rewrite it because upstream login owns the session.
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a

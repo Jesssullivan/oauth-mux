@@ -53,6 +53,10 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
   only `free_local` and `free_command` budgets; provider calls, provider-spend,
   interactive auth, and mutation remain refused unless explicitly configured.
 - Local experimentation with daemon socket/status behavior.
+- Secret-backend writeback classification in route/runtime/repair JSON. This
+  tells operators whether a route is `readonly`, `replace_file`,
+  `command_write`, `keychain_write`, `sops_write`, or `unsupported`, and whether
+  oauth-mux automatic refresh writeback is admitted for that provider/account.
 - Future manual QA where daemon activity is bounded and visible.
 
 ## Not Allowed Yet
