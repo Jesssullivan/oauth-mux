@@ -1465,12 +1465,38 @@ fn runDoctorRuntime(allocator: std.mem.Allocator, writer: anytype, args: cli.Com
         break :blk true;
     };
 
+    if (doctorRuntimeScoped(args)) {
+        var routes = try collectRepairPlanRoutes(allocator, parsed.value, doctorArgsToRepairPlanArgs(args));
+        defer routes.deinit();
+        const stats = try collectRuntimeDoctorRouteStats(allocator, parsed.value, config_valid, routes.items);
+        if (args.json) {
+            try writeDoctorRuntimeScopedJson(writer, allocator, parsed.value, stats, config_path, validation_messages.items, routes.items, args);
+        } else {
+            try writeDoctorRuntimeScopedText(writer, allocator, parsed.value, stats, config_path, validation_messages.items, routes.items, args);
+        }
+        return;
+    }
+
     const stats = try collectRuntimeDoctorStats(allocator, parsed.value, config_valid);
     if (args.json) {
         try writeDoctorRuntimeJson(writer, allocator, parsed.value, stats, config_path, validation_messages.items);
     } else {
         try writeDoctorRuntimeText(writer, allocator, parsed.value, stats, config_path, validation_messages.items);
     }
+}
+
+fn doctorRuntimeScoped(args: cli.Command.DoctorArgs) bool {
+    return args.profile != null or args.provider != null or args.account != null or args.capability != null;
+}
+
+fn doctorArgsToRepairPlanArgs(args: cli.Command.DoctorArgs) cli.Command.RepairPlanArgs {
+    return .{
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+        .json = args.json,
+    };
 }
 
 fn collectRuntimeDoctorStats(allocator: std.mem.Allocator, cfg: config.Config, config_valid: bool) !RuntimeDoctorStats {
@@ -1495,6 +1521,43 @@ fn collectRuntimeDoctorStats(allocator: std.mem.Allocator, cfg: config.Config, c
                 stats.ready_accounts += 1;
             } else {
                 stats.action_needed_accounts += 1;
+            }
+        }
+    }
+
+    return stats;
+}
+
+fn collectRuntimeDoctorRouteStats(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    config_valid: bool,
+    routes: []const RepairPlanRoute,
+) !RuntimeDoctorStats {
+    var stats = RuntimeDoctorStats{
+        .configured = true,
+        .config_valid = config_valid,
+    };
+
+    var seen_providers = std.StringHashMap(void).init(allocator);
+    defer seen_providers.deinit();
+
+    for (routes) |route| {
+        if (!seen_providers.contains(route.provider)) {
+            try seen_providers.put(route.provider, {});
+            stats.providers += 1;
+        }
+
+        stats.accounts += 1;
+        const def = config.resolveProviderDefinition(cfg, route.provider);
+        const readiness = try routeRuntimeReadiness(allocator, cfg, route, def);
+        if (readiness.isReady()) {
+            stats.ready_accounts += 1;
+        } else {
+            stats.action_needed_accounts += 1;
+            switch (readiness) {
+                .missing_binary => stats.missing_binaries += 1,
+                else => {},
             }
         }
     }
@@ -1583,6 +1646,49 @@ fn writeDoctorRuntimeText(
     }
 }
 
+fn writeDoctorRuntimeScopedText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    stats: RuntimeDoctorStats,
+    config_path: []const u8,
+    validation_messages: []const u8,
+    routes: []const RepairPlanRoute,
+    args: cli.Command.DoctorArgs,
+) !void {
+    try writer.writeAll("oauth-mux doctor runtime\n\n");
+    try writer.print("  config: {s}\n", .{config_path});
+    try writer.print("  readiness: {s}\n", .{if (stats.ok()) "ready" else "action_needed"});
+    try writer.print("  scope: {s}\n", .{if (doctorRuntimeScoped(args)) "route" else "all"});
+    if (args.profile) |profile_name| try writer.print("    profile: {s}\n", .{profile_name});
+    if (args.provider) |provider_name| try writer.print("    provider: {s}\n", .{provider_name});
+    if (args.account) |account_name| try writer.print("    account: {s}\n", .{account_name});
+    if (args.capability) |capability| try writer.print("    capability: {s}\n", .{capability});
+    try writer.print("  providers: {d}  routes: {d}  ready: {d}  action_needed: {d}\n", .{
+        stats.providers,
+        stats.accounts,
+        stats.ready_accounts,
+        stats.action_needed_accounts,
+    });
+    if (validation_messages.len != 0) {
+        try writer.writeAll("\n  validation:\n");
+        var lines = std.mem.splitScalar(u8, validation_messages, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            try writer.print("    {s}\n", .{line});
+        }
+    }
+
+    try writer.writeAll("\n  routes:\n");
+    for (routes) |route| {
+        const def = config.resolveProviderDefinition(cfg, route.provider);
+        const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
+        try writer.print("    {s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |capability| try writer.print("#{s}", .{capability});
+        try writer.print(" runtime={s}\n", .{runtimeReadinessSummary(runtime)});
+    }
+}
+
 fn writeDoctorRuntimeJson(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -1622,6 +1728,87 @@ fn writeDoctorRuntimeJson(
     try writer.writeByte(',');
     try writeCommandJson(writer, "oauth-mux repair-plan --profile <profile> --capability <capability> --json");
     try writer.writeAll("]}\n");
+}
+
+fn writeDoctorRuntimeScopedJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    stats: RuntimeDoctorStats,
+    config_path: []const u8,
+    validation_messages: []const u8,
+    routes: []const RepairPlanRoute,
+    args: cli.Command.DoctorArgs,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (stats.ok()) "true" else "false");
+    try writer.writeAll(",\"configured\":true,\"config_valid\":");
+    try writer.writeAll(if (stats.config_valid) "true" else "false");
+    try writer.writeAll(",\"config_path\":");
+    try std.json.stringify(config_path, .{}, writer);
+    try writer.writeAll(",\"scope\":");
+    try writeDoctorRuntimeScopeJson(writer, args);
+    try writer.writeAll(",\"validation_messages\":");
+    try std.json.stringify(validation_messages, .{}, writer);
+    try writer.print(",\"providers\":{d},\"accounts\":{d},\"ready_accounts\":{d},\"action_needed_accounts\":{d},\"missing_binaries\":{d}", .{
+        stats.providers,
+        stats.accounts,
+        stats.ready_accounts,
+        stats.action_needed_accounts,
+        stats.missing_binaries,
+    });
+    try writer.writeAll(",\"route_reports\":[");
+    for (routes, 0..) |route, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writeRuntimeRouteJson(writer, allocator, cfg, route);
+    }
+    try writer.writeAll("],\"provider_reports\":[],\"next_commands\":[");
+    try writeCommandJson(writer, "oauth-mux route explain --profile <profile> --capability <capability> --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux repair-plan --profile <profile> --capability <capability> --json");
+    try writer.writeAll("]}\n");
+}
+
+fn writeDoctorRuntimeScopeJson(writer: anytype, args: cli.Command.DoctorArgs) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"provider\":");
+    if (args.provider) |provider_name| try std.json.stringify(provider_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"account\":");
+    if (args.account) |account_name| try std.json.stringify(account_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeByte('}');
+}
+
+fn writeRuntimeRouteJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    route: RepairPlanRoute,
+) !void {
+    const def = config.resolveProviderDefinition(cfg, route.provider);
+    const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(route.provider, .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(route.account, .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (route.capability) |capability| {
+        try std.json.stringify(capability, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"ready\":");
+    try writer.writeAll(if (runtime.isReady()) "true" else "false");
+    try writer.writeAll(",\"runtime\":");
+    try writeRuntimeReadinessRedactedJson(writer, runtime);
+    try writer.writeByte('}');
 }
 
 fn writeRuntimeProviderJson(
@@ -4774,6 +4961,63 @@ test "collectRepairPlanRoutes expands profile capability routes" {
     try std.testing.expectEqualStrings("max-1", routes.items[0].account);
     try std.testing.expectEqualStrings("codex-max", routes.items[0].capability.?);
     try std.testing.expectEqualStrings("max-2", routes.items[1].account);
+}
+
+test "runtime doctor route scope reports only requested profile routes" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "a1": { "secret": { "backend": "env", "variable": "TOY_A1" } },
+        \\        "a2": { "secret": { "backend": "env", "variable": "TOY_A2" } }
+        \\      }
+        \\    },
+        \\    "stale": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "unused": { "secret": { "backend": "env", "variable": "TOY_UNUSED" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "work": {
+        \\      "providers": ["toy:a1#chat", "toy:a2#chat"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "work", .capability = "chat" });
+    defer routes.deinit();
+    const stats = try collectRuntimeDoctorRouteStats(std.testing.allocator, parsed.value, true, routes.items);
+
+    try std.testing.expect(stats.ok());
+    try std.testing.expectEqual(@as(usize, 1), stats.providers);
+    try std.testing.expectEqual(@as(usize, 2), stats.accounts);
+    try std.testing.expectEqual(@as(usize, 2), stats.ready_accounts);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeDoctorRuntimeScopedJson(buf.writer(), std.testing.allocator, parsed.value, stats, "/tmp/oauth-mux/config.json", "", routes.items, .{
+        .mode = .runtime,
+        .profile = "work",
+        .capability = "chat",
+        .json = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ok\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"scope\":{\"profile\":\"work\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"route_reports\":[{\"provider\":\"toy\",\"account\":\"a1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"provider\":\"stale\"") == null);
 }
 
 test "repairActionFor warns before spending provider quota without health evidence" {

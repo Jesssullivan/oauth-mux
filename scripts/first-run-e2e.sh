@@ -153,6 +153,24 @@ expect_not_contains "$(cat "$runtime_doctor")" "$store_root/max-1" "runtime doct
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
 
+printf 'first-run e2e: scoped runtime doctor reports Codex Max route readiness\n'
+runtime_doctor_scoped="$tmp/doctor-runtime-codex-max.json"
+run_json "$runtime_doctor_scoped" doctor runtime --profile codex-max --capability codex-max --json
+jq -e '
+  .configured == true
+  and .config_valid == true
+  and .ok == false
+  and .scope.profile == "codex-max"
+  and .scope.capability == "codex-max"
+  and .accounts == 3
+  and .action_needed_accounts == 3
+  and (.route_reports | length) == 3
+  and all(.route_reports[]; .provider == "codex" and .capability == "codex-max" and .ready == false)
+' "$runtime_doctor_scoped" >/dev/null
+expect_not_contains "$(cat "$runtime_doctor_scoped")" "$store_root/max-1" "scoped runtime doctor does not print concrete Codex store paths"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
+
 printf 'first-run e2e: discovery is redacted and agent-usable\n'
 discover_json="$tmp/discover.json"
 run_json "$discover_json" discover --json

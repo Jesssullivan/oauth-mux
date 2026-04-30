@@ -59,6 +59,10 @@ pub const Command = union(enum) {
     pub const DoctorArgs = struct {
         mode: DoctorMode = .summary,
         json: bool = false,
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
     };
 
     pub const ReportArgs = struct {
@@ -267,10 +271,23 @@ fn parseProbe(args: []const []const u8) Command {
 
 fn parseDoctor(args: []const []const u8) Command {
     var result = Command.DoctorArgs{};
-    for (args) |arg| {
-        if (eql(arg, "runtime")) {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "runtime")) {
             result.mode = .runtime;
-        } else if (eql(arg, "--json")) {
+        } else if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
             result.json = true;
         }
     }
@@ -532,8 +549,11 @@ pub fn printUsage(writer: anytype) !void {
         \\  probe [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Validate a selected account and run its capability probe when configured.
         \\
-        \\  doctor [runtime] [--json]
-        \\      Run no-spend readiness checks and print first-run next commands.
+        \\  doctor [--json]
+        \\      Run no-spend config readiness checks and print first-run next commands.
+        \\
+        \\  doctor runtime [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Check local runtime readiness without reading token values.
         \\
         \\  report [--redacted] [--json] [--include-paths]
         \\      Print a redacted support bundle without reading credential values.
@@ -902,6 +922,20 @@ test "parse repair plan with profile" {
     }
 }
 
+test "parse runtime doctor with route scope" {
+    const args = [_][]const u8{ "doctor", "runtime", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .doctor => |doctor| {
+            try std.testing.expect(doctor.mode == .runtime);
+            try std.testing.expectEqualStrings("codex-max", doctor.profile.?);
+            try std.testing.expectEqualStrings("codex-max", doctor.capability.?);
+            try std.testing.expect(doctor.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon repair plan alias" {
     const args = [_][]const u8{ "daemon", "repair-plan", "--provider", "codex", "--account", "max-1", "--capability", "codex-max" };
     const cmd = parse(&args);
@@ -963,6 +997,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -a runtime -d 'Runtime readiness checks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report providers' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l redacted -d 'Redact credential paths and values'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l include-paths -d 'Include non-token paths'

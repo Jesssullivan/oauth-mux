@@ -205,6 +205,13 @@ expect_contains "$runtime_json" '"ok":true' "runtime doctor reports ready"
 expect_contains "$runtime_json" '"ready_accounts":2' "runtime doctor counts ready accounts"
 expect_contains "$runtime_json" '"config_dir_writable":true' "runtime doctor verifies writable config dirs"
 
+printf 'e2e: scoped runtime doctor reports route readiness\n'
+runtime_scoped_json="$(omux doctor runtime --profile expensive --capability expensive --json)"
+expect_contains "$runtime_scoped_json" '"ok":true' "scoped runtime doctor reports ready profile"
+expect_contains "$runtime_scoped_json" '"scope":{"profile":"expensive"' "scoped runtime doctor reports profile scope"
+expect_contains "$runtime_scoped_json" '"route_reports":[' "scoped runtime doctor reports routes"
+expect_contains "$runtime_scoped_json" '"ready_accounts":2' "scoped runtime doctor counts profile routes"
+
 printf 'e2e: redacted report does not expose secret values\n'
 report_json="$(omux report --redacted --json)"
 expect_contains "$report_json" '"redacted":true' "report is redacted"
