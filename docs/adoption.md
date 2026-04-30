@@ -32,6 +32,7 @@ oauth-mux discover --json
 oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
+oauth-mux stay-afloat handoffs --json
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile <profile> --capability <capability> --json
 ```
 
@@ -52,6 +53,7 @@ oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
+oauth-mux stay-afloat handoffs --json
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
 

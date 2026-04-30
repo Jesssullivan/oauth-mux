@@ -43,10 +43,11 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
   reads local state and does not require a daemon process. The same stream also
   carries redacted `token_refresh` events for refresh admission/writeback
   outcomes.
-- `oauth-mux daemon handoffs --json` for the filtered pending queue of
+- `oauth-mux stay-afloat handoffs --json` for the filtered pending queue of
   user-mediated daemon handoffs, such as upstream CLI login commands that must
-  not run silently in the background. `--all` keeps the historical handoff
-  events visible after later route evidence clears a pending prompt.
+  not run silently in the background. `oauth-mux daemon handoffs --json` is the
+  lower-level alias. `--all` keeps the historical handoff events visible after
+  later route evidence clears a pending prompt.
 - `oauth-mux stay-afloat --once --json` for one portable, policy-gated
   daemon-shaped planning pass. `oauth-mux daemon tick --once --json` is the
   lower-level alias. Without `--execute`, it reports `executed:false` and does

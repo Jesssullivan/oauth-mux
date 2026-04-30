@@ -195,11 +195,11 @@ background; execute mode records a redacted `daemon_handoff` event with the
 reviewable user command. Agents and users can list those pending handoffs with:
 
 ```bash
-oauth-mux daemon handoffs --json
+oauth-mux stay-afloat handoffs --json
 ```
 
 The default handoff view is pending as of the daemon's last route evidence. Use
-`oauth-mux daemon handoffs --json --all` when you need the historical audit
+`oauth-mux stay-afloat handoffs --json --all` when you need the historical audit
 trail instead. After a user completes an upstream CLI login, another
 `stay-afloat --once --execute ... --json` can refresh route evidence and clear
 the pending prompt.
