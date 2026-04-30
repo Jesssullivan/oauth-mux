@@ -126,9 +126,11 @@ jq -e '
   .configured == true
   and .config_valid == true
   and .codex_configured == true
+  and .codex_max_configured == true
   and .providers == 1
   and .accounts == 3
   and (.next_commands | index("oauth-mux setup codex") != null)
+  and (.next_commands | index("oauth-mux codex config-candidate --json") == null)
   and (.next_commands | index("oauth-mux repair-plan --json") != null)
 ' "$doctor_after" >/dev/null
 
@@ -137,9 +139,11 @@ discover_json="$tmp/discover.json"
 run_json "$discover_json" discover --json
 jq -e '
   .configured == true
+  and .codex_max_configured == true
   and (.providers[] | select(.name == "codex") | .accounts | length) == 3
   and (.agent_safe_commands | index("oauth-mux report --redacted --json") != null)
   and (.agent_safe_commands | index("oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null)
+  and (.agent_safe_commands | index("oauth-mux codex config-candidate --json") == null)
 ' "$discover_json" >/dev/null
 
 printf 'first-run e2e: repair-plan explains generated Codex Max routes without mutation\n'

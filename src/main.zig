@@ -249,6 +249,9 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
 }
 
 fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u8, state_dir: []const u8) !void {
+    const codex_configured = codexConfigured(cfg);
+    const codex_max_configured = codexMaxShapeConfigured(cfg);
+
     try writer.writeAll("oauth-mux discover\n\n");
     try writer.print("  config: {s}\n", .{config_path});
     try writer.print("  state:  {s}\n\n", .{state_dir});
@@ -301,6 +304,14 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
         }
     }
 
+    if (codex_configured) {
+        try writer.writeAll("\n  codex:\n");
+        try writer.print("    codex-max shape: {s}\n", .{if (codex_max_configured) "configured" else "missing"});
+        if (!codex_max_configured) {
+            try writer.writeAll("    next: oauth-mux codex config-candidate\n");
+        }
+    }
+
     try writer.writeAll("\n  agent-safe commands:\n");
     try writer.writeAll("    oauth-mux config validate\n");
     try writer.writeAll("    oauth-mux doctor --json\n");
@@ -310,17 +321,27 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux health --json\n");
     try writer.writeAll("    oauth-mux probe --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair-plan --profile <profile> --capability <capability> --json\n");
+    if (codex_configured and !codex_max_configured) {
+        try writer.writeAll("    oauth-mux codex config-candidate --json\n");
+    }
     try writer.writeAll("    oauth-mux env --profile <profile> --capability <capability> --shell <shell>\n");
     try writer.writeAll("    oauth-mux exec --profile <profile> --capability <capability> -- <command>\n");
 }
 
 fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u8, state_dir: []const u8) !void {
+    const codex_configured = codexConfigured(cfg);
+    const codex_max_configured = codexMaxShapeConfigured(cfg);
+
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"configured\":true,\"config_path\":");
     try std.json.stringify(config_path, .{}, writer);
     try writer.writeAll(",\"state_dir\":");
     try std.json.stringify(state_dir, .{}, writer);
+    try writer.writeAll(",\"codex_configured\":");
+    try writer.writeAll(if (codex_configured) "true" else "false");
+    try writer.writeAll(",\"codex_max_configured\":");
+    try writer.writeAll(if (codex_max_configured) "true" else "false");
     try writer.writeAll(",\"providers\":[");
 
     var provider_first = true;
@@ -391,6 +412,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
     }
 
     try writer.writeAll("],\"agent_safe_commands\":[");
+    var command_first = true;
     const commands = [_][]const u8{
         "oauth-mux config validate",
         "oauth-mux doctor --json",
@@ -403,9 +425,11 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux env --profile <profile> --capability <capability> --shell <shell>",
         "oauth-mux exec --profile <profile> --capability <capability> -- <command>",
     };
-    for (commands, 0..) |command, idx| {
-        if (idx > 0) try writer.writeByte(',');
-        try writeCommandJson(writer, command);
+    for (commands) |command| {
+        try writeDoctorCommandJson(writer, &command_first, command);
+    }
+    if (codex_configured and !codex_max_configured) {
+        try writeDoctorCommandJson(writer, &command_first, "oauth-mux codex config-candidate --json");
     }
     try writer.writeAll("]}\n");
 }
@@ -868,6 +892,7 @@ const DoctorStats = struct {
     profile_count: usize = 0,
     strategy_count: usize = 0,
     codex_configured: bool = false,
+    codex_max_configured: bool = false,
     health_file_exists: bool = false,
     health_entries: usize = 0,
 
@@ -898,7 +923,8 @@ fn runDoctor(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Do
         stats.account_count = countConfiguredAccounts(parsed.value);
         stats.profile_count = parsed.value.profiles.map.count();
         stats.strategy_count = parsed.value.strategies.map.count();
-        stats.codex_configured = parsed.value.providers.map.get("codex") != null;
+        stats.codex_configured = codexConfigured(parsed.value);
+        stats.codex_max_configured = codexMaxShapeConfigured(parsed.value);
 
         config.validate(parsed.value, validation_messages.writer()) catch |e| {
             stats.config_error = @errorName(e);
@@ -993,7 +1019,7 @@ fn writeDoctorJson(
         try writer.writeAll("null");
     }
     try writer.print(
-        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s}",
+        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s},\"codex_max_configured\":{s}",
         .{
             stats.provider_count,
             stats.account_count,
@@ -1002,6 +1028,7 @@ fn writeDoctorJson(
             if (stats.health_file_exists) "true" else "false",
             stats.health_entries,
             if (stats.codex_configured) "true" else "false",
+            if (stats.codex_max_configured) "true" else "false",
         },
     );
     try writer.writeAll(",\"checks\":[");
@@ -1021,6 +1048,19 @@ fn writeDoctorChecksJson(writer: anytype, stats: DoctorStats, validation_message
     try writeDoctorCheckJson(writer, &first, "config_valid", stats.config_valid, if (stats.config_valid) "ok" else "error", valid_message);
     try writeDoctorCheckJson(writer, &first, "accounts_configured", stats.account_count > 0, if (stats.account_count > 0) "ok" else "error", if (stats.account_count > 0) "one or more accounts configured" else "no muxable accounts configured");
     try writeDoctorCheckJson(writer, &first, "profiles_configured", stats.profile_count > 0, if (stats.profile_count > 0) "ok" else "warning", if (stats.profile_count > 0) "one or more profiles configured" else "no profiles configured");
+    if (stats.codex_configured) {
+        try writeDoctorCheckJson(
+            writer,
+            &first,
+            "codex_max_configured",
+            stats.codex_max_configured,
+            if (stats.codex_max_configured) "ok" else "warning",
+            if (stats.codex_max_configured)
+                "three-account Codex Max mux shape configured"
+            else
+                "Codex is configured but the three-account Codex Max mux shape is missing; run oauth-mux codex config-candidate",
+        );
+    }
     try writeDoctorCheckJson(writer, &first, "health_recorded", stats.health_entries > 0, if (stats.health_entries > 0) "ok" else "info", if (stats.health_entries > 0) "health state recorded" else "no health state recorded yet");
 }
 
@@ -1065,6 +1105,9 @@ fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
     try writer.writeAll("    oauth-mux status --json\n");
     try writer.writeAll("    oauth-mux health --json\n");
     if (stats.codex_configured) {
+        if (!stats.codex_max_configured) {
+            try writer.writeAll("    oauth-mux codex config-candidate\n");
+        }
         try writer.writeAll("    oauth-mux setup codex\n");
         try writer.writeAll("    oauth-mux codex canary\n");
         try writer.writeAll("    oauth-mux codex canary --live\n");
@@ -1093,6 +1136,9 @@ fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
     try writeDoctorCommandJson(writer, &first, "oauth-mux health --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux repair-plan --json");
     if (stats.codex_configured) {
+        if (!stats.codex_max_configured) {
+            try writeDoctorCommandJson(writer, &first, "oauth-mux codex config-candidate --json");
+        }
         try writeDoctorCommandJson(writer, &first, "oauth-mux setup codex");
         try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary");
         try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary --live");
@@ -1103,6 +1149,35 @@ fn writeDoctorCommandJson(writer: anytype, first: *bool, command: []const u8) !v
     if (!first.*) try writer.writeByte(',');
     first.* = false;
     try writeCommandJson(writer, command);
+}
+
+fn codexConfigured(cfg: config.Config) bool {
+    return cfg.providers.map.get("codex") != null;
+}
+
+fn codexMaxShapeConfigured(cfg: config.Config) bool {
+    const prov = cfg.providers.map.get("codex") orelse return false;
+    if (!std.mem.eql(u8, prov.kind, "codex")) return false;
+
+    const expected_accounts = [_][]const u8{ "max-1", "max-2", "max-3" };
+    for (expected_accounts) |account| {
+        if (prov.accounts.map.get(account) == null) return false;
+    }
+
+    return profileContainsProviderRef(cfg, "codex-max", "codex:max-1#codex-max") and
+        profileContainsProviderRef(cfg, "codex-max", "codex:max-2#codex-max") and
+        profileContainsProviderRef(cfg, "codex-max", "codex:max-3#codex-max") and
+        profileContainsProviderRef(cfg, "codex-mini", "codex:max-1#codex-mini") and
+        profileContainsProviderRef(cfg, "codex-mini", "codex:max-2#codex-mini") and
+        profileContainsProviderRef(cfg, "codex-mini", "codex:max-3#codex-mini");
+}
+
+fn profileContainsProviderRef(cfg: config.Config, profile_name: []const u8, provider_ref: []const u8) bool {
+    const profile = cfg.profiles.map.get(profile_name) orelse return false;
+    for (profile.providers) |candidate| {
+        if (std.mem.eql(u8, candidate, provider_ref)) return true;
+    }
+    return false;
 }
 
 fn runReport(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ReportArgs) !void {
@@ -3107,6 +3182,64 @@ test "Codex Max starter config uses resolved store root" {
     const parsed = try config.loadFromBytes(std.testing.allocator, buf.items);
     defer parsed.deinit();
     try config.validate(parsed.value, std.io.null_writer);
+    try std.testing.expect(codexMaxShapeConfigured(parsed.value));
+}
+
+test "codexMaxShapeConfigured rejects single-account Codex config" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "default": {
+        \\      "providers": ["codex:default"],
+        \\      "strategy": "health-weighted"
+        \\    }
+        \\  },
+        \\  "strategies": {
+        \\    "health-weighted": {
+        \\      "kind": "health-weighted"
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expect(codexConfigured(parsed.value));
+    try std.testing.expect(!codexMaxShapeConfigured(parsed.value));
+}
+
+test "doctor json recommends Codex Max candidate for single-account drift" {
+    const stats = DoctorStats{
+        .configured = true,
+        .config_valid = true,
+        .provider_count = 1,
+        .account_count = 1,
+        .profile_count = 1,
+        .strategy_count = 1,
+        .codex_configured = true,
+        .codex_max_configured = false,
+    };
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeDoctorJson(buf.writer(), stats, "/tmp/config.json", "/tmp/state", "/tmp/health.json", "");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"codex_configured\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"codex_max_configured\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"codex_max_configured\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"severity\":\"warning\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux codex config-candidate --json") != null);
 }
 
 test "writeHealthJson includes redacted liveness" {
@@ -3170,6 +3303,40 @@ test "writeDiscoverJson includes repair-plan as agent-safe command" {
 
     try writeDiscoverJson(buf.writer(), parsed.value, "/tmp/config.json", "/tmp/state");
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null);
+}
+
+test "writeDiscoverJson exposes Codex Max drift command" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "default": {
+        \\      "providers": ["codex:default"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeDiscoverJson(buf.writer(), parsed.value, "/tmp/config.json", "/tmp/state");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"codex_configured\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"codex_max_configured\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux codex config-candidate --json") != null);
 }
 
 test "writeProvidersListJson exposes extension and budget metadata" {
