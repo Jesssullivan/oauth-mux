@@ -1,9 +1,4 @@
 const std = @import("std");
-const types = @import("types.zig");
-const config_mod = @import("config.zig");
-const secret = @import("secret.zig");
-const provider = @import("provider.zig");
-const oauth = @import("oauth.zig");
 const health_mod = @import("health.zig");
 const paths = @import("paths.zig");
 const log = @import("log.zig");
@@ -165,9 +160,6 @@ fn runLoop(allocator: std.mem.Allocator, sock_path: []const u8) !void {
 
     log.info("daemon: listening on {s}", .{sock_path});
 
-    // Initial token refresh
-    refreshAllTokens(allocator);
-
     // Main loop: accept connections and handle commands
     while (true) {
         if (server.accept()) |conn| {
@@ -218,68 +210,10 @@ fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void 
         _ = stream.write("stopping\n") catch {};
         std.process.exit(0);
     } else if (std.mem.startsWith(u8, cmd, "refresh ")) {
-        const target = cmd[8..];
-        _ = stream.write("refreshing ") catch {};
-        _ = stream.write(target) catch {};
-        _ = stream.write("\n") catch {};
-        refreshAllTokens(allocator);
+        _ = stream.write("refresh unsupported; use oauth-mux repair-plan\n") catch {};
     } else {
         _ = stream.write("unknown command\n") catch {};
     }
-}
-
-fn refreshAllTokens(allocator: std.mem.Allocator) void {
-    const parsed = config_mod.load(allocator) catch return;
-    defer parsed.deinit();
-
-    var store = health_mod.HealthStore.load(allocator, .{});
-    defer store.deinit();
-
-    var prov_it = parsed.value.providers.map.iterator();
-    while (prov_it.next()) |prov_entry| {
-        const prov_name = prov_entry.key_ptr.*;
-        const prov_cfg = prov_entry.value_ptr.*;
-        const kind = types.ProviderKind.fromString(prov_cfg.kind) orelse continue;
-
-        var acct_it = prov_cfg.accounts.map.iterator();
-        while (acct_it.next()) |acct_entry| {
-            const acct_name = acct_entry.key_ptr.*;
-            const acct_cfg = acct_entry.value_ptr.*;
-
-            const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch continue;
-            const raw = secret.read(backend, allocator) catch continue;
-            defer allocator.free(raw);
-
-            const token = provider.parseToken(kind, raw, allocator) catch continue;
-            defer allocator.free(token.access_token);
-            defer if (token.refresh_token) |rt| allocator.free(rt);
-
-            // Skip API keys and tokens without expiry
-            if (token.token_type == .api_key) continue;
-            if (token.expires_at == null) continue;
-
-            // Refresh if expiring within 10 minutes
-            if (token.expires_at.? - std.time.timestamp() < 600) {
-                if (token.refresh_token) |rt| {
-                    const url = oauth.refreshUrl(kind) orelse continue;
-                    const result = oauth.refreshToken(allocator, url, rt, null) catch |e| {
-                        log.warn("daemon: refresh {s}:{s} failed: {s}", .{ prov_name, acct_name, @errorName(e) });
-                        continue;
-                    };
-                    defer allocator.free(result.access_token);
-                    defer if (result.refresh_token) |nrt| allocator.free(nrt);
-
-                    log.info("daemon: refreshed {s}:{s}", .{ prov_name, acct_name });
-                    // Health tracking
-                    var key_buf: [128]u8 = undefined;
-                    const key = std.fmt.bufPrint(&key_buf, "{s}:{s}", .{ prov_name, acct_name }) catch continue;
-                    store.recordSuccess(key);
-                }
-            }
-        }
-    }
-
-    store.persist();
 }
 
 fn pidPath(allocator: std.mem.Allocator) ![]const u8 {

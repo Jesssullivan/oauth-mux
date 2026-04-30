@@ -30,7 +30,7 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux daemon repair-plan` as a compatibility alias for the same
   one-shot planner.
 - `oauth-mux daemon status` for local inspection.
-- Local experimentation with refresh behavior.
+- Local experimentation with daemon socket/status behavior.
 - Future manual QA where daemon activity is bounded and visible.
 
 ## Not Allowed Yet

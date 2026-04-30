@@ -13,8 +13,8 @@ keep a developer afloat automatically while accounts move through quota,
 rate-limit, logged-out, stale-token, permission-denied, and reauth states.
 
 That stronger promise needs a runtime layer. The current daemon is only a stub:
-it can start, stop, report status, and experiment with refresh. It is not yet a
-safe product surface for background repair.
+it can start, stop, and report status. It is not yet a safe product surface for
+background refresh or repair.
 
 ## Fresh Dogfood Evidence
 
