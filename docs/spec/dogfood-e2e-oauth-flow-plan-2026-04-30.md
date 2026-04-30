@@ -27,7 +27,7 @@ Install surfaces:
 | npm one-shot | `npx -y oauth-mux@0.1.5 version` passed from `../lab`. |
 | GitHub Release tarball | v0.1.5 macOS arm64 tarball verifies against `SHA256SUMS` and runs. |
 | curl installer | v0.1.5 installer downloads public release assets, verifies checksums, and runs on macOS and `../lab`. |
-| Homebrew | `just homebrew-qa 0.1.3` installs from `tinyland/tools`, runs `brew audit`, `brew test`, `version`, and `doctor --json`. The tap is still private. |
+| Homebrew | `just homebrew-qa 0.1.5` installs from `tinyland/tools`, runs `brew audit`, `brew test`, `version`, and `doctor --json`. The tap is still private. |
 | deb/rpm | Hosted System Package Install QA run `25172711458` installed published v0.1.5 `.deb` and `.rpm` assets in Debian/Rocky containers. |
 | lab dogfood | Public npm one-shot `oauth-mux@0.1.5` reports healthy `doctor --json` against the local config/state. |
 
@@ -66,8 +66,9 @@ These are the adoption blockers that should stay visible:
    they are equally dogfooded.
 
 5. Homebrew is private-tap proven, not public-tap proven.
-   This is fine for operator dogfood, but public website copy should either say
-   the tap is private/staged or wait for a public tap stance.
+   The private tap now tracks v0.1.5 and passes install QA, but public website
+   copy should still say the tap is private/staged or wait for a public tap
+   stance.
 
 6. The daemon remains deferred.
    Daemon start/stop/status exist, but background refresh/probe behavior is not
