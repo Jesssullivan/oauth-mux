@@ -144,7 +144,9 @@ Secret read and writeback are also separate. Route and runtime JSON expose a
 `writeback` object with the secret backend capability and whether automatic
 refresh writeback is admitted. CLI-owned stores such as Codex can be readable
 file stores while still refusing oauth-mux refresh mutation because repair is
-owned by the upstream CLI.
+owned by the upstream CLI. Automatic OAuth refresh is gated by that same
+admission plan: today only `oauth_mux_refresh` providers with `replace_file`
+secret backends can persist refreshed credentials.
 
 First-run Codex subscription path:
 

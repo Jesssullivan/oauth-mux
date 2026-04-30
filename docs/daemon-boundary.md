@@ -57,6 +57,9 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
   tells operators whether a route is `readonly`, `replace_file`,
   `command_write`, `keychain_write`, `sops_write`, or `unsupported`, and whether
   oauth-mux automatic refresh writeback is admitted for that provider/account.
+- Atomic file replacement for admitted `replace_file` OAuth refresh backends.
+  This is provider-ownership-gated and does not apply to Codex or other
+  upstream-CLI-owned stores.
 - Future manual QA where daemon activity is bounded and visible.
 
 ## Not Allowed Yet

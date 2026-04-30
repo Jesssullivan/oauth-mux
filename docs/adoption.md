@@ -85,7 +85,9 @@ Route, runtime, repair-plan, and daemon tick JSON also report `writeback`. Use
 that field when deciding whether a future repair loop can refresh in place:
 `replace_file` means the backend has a provider-neutral file write surface, but
 `automatic_refresh_admitted` can still be false when the provider owns repair
-through its upstream CLI.
+through its upstream CLI. Current automatic refresh follows that contract: it
+will not call a token endpoint unless writeback is admitted, and admitted file
+backends are replaced atomically.
 
 ## Provider Author Experience
 

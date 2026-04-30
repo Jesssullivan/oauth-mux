@@ -16,6 +16,13 @@ pub const ReadError = error{
     IoError,
 };
 
+pub const WriteError = error{
+    UnsupportedBackend,
+    AccessDenied,
+    IoError,
+    OutOfMemory,
+};
+
 pub const WritebackPlan = struct {
     capability: types.SecretWriteCapability,
     automatic_refresh_admitted: bool,
@@ -94,6 +101,13 @@ pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) Wri
     };
 }
 
+pub fn writeReplace(backend: types.SecretBackend, bytes: []const u8, allocator: std.mem.Allocator) WriteError!void {
+    return switch (backend) {
+        .file => |ref| writeFileReplace(ref, bytes, allocator),
+        .keychain, .sops, .age, .env, .command, .stdin => error.UnsupportedBackend,
+    };
+}
+
 fn readEnv(ref: types.SecretBackend.EnvRef, allocator: std.mem.Allocator) ReadError![]const u8 {
     const val = env.get(allocator, ref.variable) catch return error.OutOfMemory;
     return val orelse {
@@ -117,6 +131,38 @@ fn readFile(ref: types.SecretBackend.FileRef, allocator: std.mem.Allocator) Read
     defer file.close();
 
     return file.readToEndAlloc(allocator, 4 * 1024 * 1024) catch return error.IoError;
+}
+
+fn writeFileReplace(ref: types.SecretBackend.FileRef, bytes: []const u8, allocator: std.mem.Allocator) WriteError!void {
+    const expanded = paths.expandTilde(allocator, ref.path) catch return error.OutOfMemory;
+    defer allocator.free(expanded);
+
+    if (std.fs.path.dirname(expanded)) |dir| {
+        std.fs.cwd().makePath(dir) catch |e| switch (e) {
+            error.AccessDenied => return error.AccessDenied,
+            else => return error.IoError,
+        };
+    }
+
+    const tmp_path = std.fmt.allocPrint(allocator, "{s}.tmp-{x}", .{ expanded, std.crypto.random.int(u64) }) catch return error.OutOfMemory;
+    defer allocator.free(tmp_path);
+
+    const file = std.fs.createFileAbsolute(tmp_path, .{ .exclusive = true, .mode = 0o600 }) catch |e| switch (e) {
+        error.AccessDenied => return error.AccessDenied,
+        else => return error.IoError,
+    };
+    errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
+
+    {
+        defer file.close();
+        file.writeAll(bytes) catch return error.IoError;
+        file.sync() catch return error.IoError;
+    }
+
+    std.fs.renameAbsolute(tmp_path, expanded) catch |e| switch (e) {
+        error.AccessDenied => return error.AccessDenied,
+        else => return error.IoError,
+    };
 }
 
 fn readKeychain(ref: types.SecretBackend.KeychainRef, allocator: std.mem.Allocator) ReadError![]const u8 {
@@ -332,6 +378,31 @@ test "readEnv not found" {
 test "readFile not found" {
     const result = readFile(.{ .path = "/tmp/omux-test-nonexistent-file" }, std.testing.allocator);
     try std.testing.expectError(error.NotFound, result);
+}
+
+test "writeReplace atomically replaces file backend bytes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const target_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(target_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{target_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const backend = types.SecretBackend{ .file = .{ .path = auth_path } };
+    try writeReplace(backend, "first", std.testing.allocator);
+    {
+        const read_back = try readFile(.{ .path = auth_path }, std.testing.allocator);
+        defer std.testing.allocator.free(read_back);
+        try std.testing.expectEqualStrings("first", read_back);
+    }
+
+    try writeReplace(backend, "second", std.testing.allocator);
+    {
+        const read_back = try readFile(.{ .path = auth_path }, std.testing.allocator);
+        defer std.testing.allocator.free(read_back);
+        try std.testing.expectEqualStrings("second", read_back);
+    }
 }
 
 test "writeCapability classifies secret backend write surfaces" {

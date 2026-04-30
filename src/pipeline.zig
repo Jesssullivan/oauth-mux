@@ -520,6 +520,7 @@ fn buildProbeEnv(
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+    const backend = try refreshWritebackBackend(ctx, def);
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
         return error.TokenRefreshFailed;
@@ -527,6 +528,37 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
 
     const result = oauth.refreshToken(ctx.allocator, url, rt, def.auth.client_id) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
+        return error.TokenRefreshFailed;
+    };
+    errdefer ctx.allocator.free(result.access_token);
+    errdefer if (result.refresh_token) |new_rt| ctx.allocator.free(new_rt);
+
+    const expires_at = if (result.expires_in) |ei| std.time.timestamp() + ei else null;
+    var retained_refresh_token: ?[]const u8 = null;
+    var retained_refresh_token_from_old = false;
+    if (result.refresh_token) |new_rt| {
+        retained_refresh_token = new_rt;
+    } else {
+        retained_refresh_token = ctx.allocator.dupe(u8, rt) catch return error.OutOfMemory;
+        retained_refresh_token_from_old = true;
+    }
+    errdefer if (retained_refresh_token_from_old) {
+        if (retained_refresh_token) |old_rt| ctx.allocator.free(old_rt);
+    };
+
+    const credential = provider_schema.buildCredentialGeneric(
+        def,
+        .{
+            .access_token = result.access_token,
+            .refresh_token = retained_refresh_token,
+            .expires_at = expires_at,
+        },
+        ctx.allocator,
+    ) catch return error.TokenRefreshFailed;
+    defer ctx.allocator.free(credential);
+
+    secret.writeReplace(backend, credential, ctx.allocator) catch |e| {
+        log.err("token: refresh writeback failed for {s}: {s}", .{ prov, @errorName(e) });
         return error.TokenRefreshFailed;
     };
 
@@ -537,11 +569,28 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     }
     ctx.token = .{
         .access_token = result.access_token,
-        .refresh_token = result.refresh_token,
-        .expires_at = if (result.expires_in) |ei| std.time.timestamp() + ei else null,
+        .refresh_token = retained_refresh_token,
+        .expires_at = expires_at,
     };
 
     log.info("token: refreshed successfully", .{});
+}
+
+fn refreshWritebackBackend(
+    ctx: *Context,
+    def: provider_schema.ProviderDefinition,
+) PipelineError!types.SecretBackend {
+    const prov = ctx.provider_name orelse return error.ProviderNotFound;
+    const acct = ctx.account_name orelse return error.AccountNotFound;
+    const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
+    const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return error.AccountNotFound;
+    const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch return error.ConfigValidationError;
+    const plan = secret.writebackPlan(backend, def.repair.owner);
+    if (!plan.automatic_refresh_admitted) {
+        log.warn("token: refresh writeback not admitted for {s}:{s}: {s}", .{ prov, acct, plan.reason });
+        return error.TokenRefreshFailed;
+    }
+    return backend;
 }
 
 fn fallbackRefreshUrl(ctx: *Context) ?[]const u8 {
@@ -734,6 +783,130 @@ test "runEnv uses configured provider definition" {
     try expectEnvPair(ctx.env_pairs.items, "TOY_TOKEN", "toy-at");
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_PROVIDER", "toy");
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "default");
+}
+
+test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const admitted_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "https://example.invalid/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(admitted_json);
+
+    const admitted = try config_mod.loadFromBytes(std.testing.allocator, admitted_json);
+    defer admitted.deinit();
+    var admitted_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer admitted_store.deinit();
+    var admitted_ctx = Context.init(std.testing.allocator, admitted.value, &admitted_store);
+    defer admitted_ctx.deinit();
+    admitted_ctx.provider_name = "toy";
+    admitted_ctx.account_name = "default";
+    const admitted_backend = try refreshWritebackBackend(&admitted_ctx, config_mod.resolveProviderDefinition(admitted.value, "toy"));
+    switch (admitted_backend) {
+        .file => |ref| try std.testing.expectEqualStrings(auth_path, ref.path),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const upstream_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "upstream_cli_login" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(upstream_json);
+
+    const upstream = try config_mod.loadFromBytes(std.testing.allocator, upstream_json);
+    defer upstream.deinit();
+    var upstream_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer upstream_store.deinit();
+    var upstream_ctx = Context.init(std.testing.allocator, upstream.value, &upstream_store);
+    defer upstream_ctx.deinit();
+    upstream_ctx.provider_name = "toy";
+    upstream_ctx.account_name = "default";
+    try std.testing.expectError(
+        error.TokenRefreshFailed,
+        refreshWritebackBackend(&upstream_ctx, config_mod.resolveProviderDefinition(upstream.value, "toy")),
+    );
+
+    const readonly_json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "repair": { "owner": "oauth_mux_refresh" }
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": { "secret": { "backend": "env", "variable": "TOY_AUTH" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const readonly = try config_mod.loadFromBytes(std.testing.allocator, readonly_json);
+    defer readonly.deinit();
+    var readonly_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer readonly_store.deinit();
+    var readonly_ctx = Context.init(std.testing.allocator, readonly.value, &readonly_store);
+    defer readonly_ctx.deinit();
+    readonly_ctx.provider_name = "toy";
+    readonly_ctx.account_name = "default";
+    try std.testing.expectError(
+        error.TokenRefreshFailed,
+        refreshWritebackBackend(&readonly_ctx, config_mod.resolveProviderDefinition(readonly.value, "toy")),
+    );
 }
 
 test "runEnv honors capability route health from profile" {
