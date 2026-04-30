@@ -107,6 +107,13 @@ pub fn main() !void {
             try runDiscover(allocator, stdout, discover_args);
         },
 
+        .repair_plan => |repair_args| {
+            runRepairPlan(allocator, stdout, repair_args) catch |e| {
+                log.err("repair-plan: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -302,6 +309,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux status --json\n");
     try writer.writeAll("    oauth-mux health --json\n");
     try writer.writeAll("    oauth-mux probe --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux repair-plan --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux env --profile <profile> --capability <capability> --shell <shell>\n");
     try writer.writeAll("    oauth-mux exec --profile <profile> --capability <capability> -- <command>\n");
 }
@@ -391,6 +399,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux status --json",
         "oauth-mux health --json",
         "oauth-mux probe --profile <profile> --capability <capability> --json",
+        "oauth-mux repair-plan --profile <profile> --capability <capability> --json",
         "oauth-mux env --profile <profile> --capability <capability> --shell <shell>",
         "oauth-mux exec --profile <profile> --capability <capability> -- <command>",
     };
@@ -403,6 +412,451 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
 
 fn writeCommandJson(writer: anytype, command: []const u8) !void {
     try std.json.stringify(command, .{}, writer);
+}
+
+const RepairPlanRoute = struct {
+    provider: []const u8,
+    account: []const u8,
+    capability: ?[]const u8 = null,
+};
+
+const RepairCommandKind = enum {
+    none,
+    probe,
+    codex_login_device,
+};
+
+const RepairAction = struct {
+    kind: []const u8,
+    severity: []const u8,
+    message: []const u8,
+    command: RepairCommandKind = .none,
+    interactive: bool = false,
+    mutating: bool = false,
+    retry_after_s: ?u32 = null,
+    wait_until: ?i64 = null,
+};
+
+fn runRepairPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.RepairPlanArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, args);
+    defer routes.deinit();
+
+    if (args.json) {
+        try writeRepairPlanJson(writer, allocator, parsed.value, &store, routes.items, args);
+    } else {
+        try writeRepairPlanText(writer, allocator, parsed.value, &store, routes.items, args);
+    }
+}
+
+fn collectRepairPlanRoutes(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    args: cli.Command.RepairPlanArgs,
+) !std.ArrayList(RepairPlanRoute) {
+    var routes = std.ArrayList(RepairPlanRoute).init(allocator);
+    errdefer routes.deinit();
+
+    if (args.profile) |profile_name| {
+        const profile = cfg.profiles.map.get(profile_name) orelse return error.ConfigValidationError;
+        for (profile.providers) |provider_ref| {
+            const parsed = parseRepairRouteSpec(provider_ref) orelse return error.ConfigValidationError;
+            try routes.append(.{
+                .provider = parsed.provider,
+                .account = parsed.account,
+                .capability = args.capability orelse parsed.capability,
+            });
+        }
+        return routes;
+    }
+
+    if (args.provider) |provider_name| {
+        const prov = cfg.providers.map.get(provider_name) orelse return error.ConfigValidationError;
+        if (args.account) |account_name| {
+            if (prov.accounts.map.get(account_name) == null) return error.ConfigValidationError;
+            try routes.append(.{
+                .provider = provider_name,
+                .account = account_name,
+                .capability = args.capability,
+            });
+            return routes;
+        }
+
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |entry| {
+            try routes.append(.{
+                .provider = provider_name,
+                .account = entry.key_ptr.*,
+                .capability = args.capability,
+            });
+        }
+        return routes;
+    }
+
+    if (args.account != null) return error.ConfigValidationError;
+
+    var provider_it = cfg.providers.map.iterator();
+    while (provider_it.next()) |provider_entry| {
+        const provider_name = provider_entry.key_ptr.*;
+        var account_it = provider_entry.value_ptr.accounts.map.iterator();
+        while (account_it.next()) |account_entry| {
+            try routes.append(.{
+                .provider = provider_name,
+                .account = account_entry.key_ptr.*,
+                .capability = args.capability,
+            });
+        }
+    }
+    return routes;
+}
+
+fn parseRepairRouteSpec(spec: []const u8) ?RepairPlanRoute {
+    const colon = std.mem.indexOf(u8, spec, ":") orelse return null;
+    if (colon == 0 or colon + 1 >= spec.len) return null;
+
+    const rest = spec[colon + 1 ..];
+    if (std.mem.indexOf(u8, rest, "#")) |hash| {
+        if (hash == 0 or hash + 1 >= rest.len) return null;
+        return .{
+            .provider = spec[0..colon],
+            .account = rest[0..hash],
+            .capability = rest[hash + 1 ..],
+        };
+    }
+
+    return .{
+        .provider = spec[0..colon],
+        .account = rest,
+    };
+}
+
+fn writeRepairPlanText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    routes: []const RepairPlanRoute,
+    args: cli.Command.RepairPlanArgs,
+) !void {
+    try writer.writeAll("oauth-mux repair-plan\n\n");
+    if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
+    if (routes.len == 0) {
+        try writer.writeAll("  no matching configured accounts\n");
+        return;
+    }
+
+    for (routes) |route| {
+        const def = config.resolveProviderDefinition(cfg, route.provider);
+        const runtime = try providerRuntimeReadiness(allocator, def, route.capability);
+        const health = routeHealth(store, route);
+        const budget = routeProbeBudget(def, route.capability);
+        const action = repairActionFor(route, def, runtime, health, budget);
+
+        try writer.print("  {s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |capability| try writer.print("#{s}", .{capability});
+        try writer.print(" runtime={s} repair={s}", .{
+            runtimeReadinessSummary(runtime),
+            @tagName(def.repair.owner),
+        });
+        if (budget) |probe_budget| try writer.print(" probe_budget={s}", .{@tagName(probe_budget)});
+        try writer.writeAll(" liveness=");
+        if (health) |h| {
+            try health_mod.writeLivenessSummary(writer, h.liveness);
+        } else {
+            try writer.writeAll("unrecorded");
+        }
+        try writer.print("\n    action={s} severity={s} {s}\n", .{ action.kind, action.severity, action.message });
+        if (try repairCommandAlloc(allocator, action.command, route)) |command| {
+            defer allocator.free(command);
+            try writer.print("    command: {s}\n", .{command});
+        }
+    }
+}
+
+fn writeRepairPlanJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    routes: []const RepairPlanRoute,
+    args: cli.Command.RepairPlanArgs,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"profile\":");
+    if (args.profile) |profile_name| {
+        try std.json.stringify(profile_name, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"routes\":[");
+    for (routes, 0..) |route, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writeRepairPlanRouteJson(writer, allocator, cfg, store, route);
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeRepairPlanRouteJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    route: RepairPlanRoute,
+) !void {
+    const def = config.resolveProviderDefinition(cfg, route.provider);
+    const runtime = try providerRuntimeReadiness(allocator, def, route.capability);
+    const health = routeHealth(store, route);
+    const budget = routeProbeBudget(def, route.capability);
+    const action = repairActionFor(route, def, runtime, health, budget);
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(route.provider, .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(route.account, .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (route.capability) |capability| {
+        try std.json.stringify(capability, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"extension_mode\":");
+    try std.json.stringify(@tagName(def.extension_mode), .{}, writer);
+    try writer.writeAll(",\"repair_owner\":");
+    try std.json.stringify(@tagName(def.repair.owner), .{}, writer);
+    try writer.writeAll(",\"probe_budget\":");
+    if (budget) |probe_budget| {
+        try std.json.stringify(@tagName(probe_budget), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"runtime\":");
+    try writeRuntimeReadinessJson(writer, runtime);
+    try writer.writeAll(",\"liveness\":");
+    if (health) |h| {
+        try writeLivenessJson(writer, h.liveness);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"last_probe\":");
+    if (health) |h| {
+        try writeProbeEvidenceJson(writer, h);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"action\":");
+    try writeRepairActionJson(writer, allocator, action, route);
+    try writer.writeByte('}');
+}
+
+fn writeRepairActionJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    action: RepairAction,
+    route: RepairPlanRoute,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"kind\":");
+    try std.json.stringify(action.kind, .{}, writer);
+    try writer.writeAll(",\"severity\":");
+    try std.json.stringify(action.severity, .{}, writer);
+    try writer.writeAll(",\"message\":");
+    try std.json.stringify(action.message, .{}, writer);
+    try writer.writeAll(",\"interactive\":");
+    try writer.writeAll(if (action.interactive) "true" else "false");
+    try writer.writeAll(",\"mutating\":");
+    try writer.writeAll(if (action.mutating) "true" else "false");
+    try writer.writeAll(",\"retry_after_s\":");
+    if (action.retry_after_s) |retry_after| {
+        try writer.print("{d}", .{retry_after});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"wait_until\":");
+    if (action.wait_until) |wait_until| {
+        try writer.print("{d}", .{wait_until});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"command\":");
+    if (try repairCommandAlloc(allocator, action.command, route)) |command| {
+        defer allocator.free(command);
+        try std.json.stringify(command, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeByte('}');
+}
+
+fn routeHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) ?health_mod.AccountHealth {
+    const account_key = health_mod.accountKey(route.provider, route.account);
+    const account_health = store.accounts.get(account_key.slice());
+    if (account_health) |health| {
+        if (accountLivenessBlocksRoute(health.liveness)) return health;
+    }
+
+    if (route.capability) |capability| {
+        const capability_key = health_mod.capabilityKey(route.provider, route.account, capability);
+        if (store.accounts.get(capability_key.slice())) |health| return health;
+    }
+
+    return account_health;
+}
+
+fn routeProbeBudget(def: provider_schema.ProviderDefinition, capability: ?[]const u8) ?types.ActionBudget {
+    const capability_name = capability orelse return null;
+    const plan = provider_schema.probePlanForCapability(def, capability_name) orelse return null;
+    return plan.budget;
+}
+
+fn repairActionFor(
+    route: RepairPlanRoute,
+    def: provider_schema.ProviderDefinition,
+    runtime: types.RuntimeReadiness,
+    health: ?health_mod.AccountHealth,
+    budget: ?types.ActionBudget,
+) RepairAction {
+    switch (runtime) {
+        .ready => {},
+        .missing_binary => return .{
+            .kind = "fix_runtime",
+            .severity = "error",
+            .message = "required upstream CLI is missing",
+        },
+        .permission_denied, .unwritable_store, .session_unavailable, .sandbox_blocked => return .{
+            .kind = "fix_runtime",
+            .severity = "error",
+            .message = "runtime is not ready; fix local permissions, store, session, or sandbox access",
+        },
+        .needs_reauth => return reauthAction(route, def),
+        .repair_in_progress => return .{
+            .kind = "wait_for_repair",
+            .severity = "info",
+            .message = "repair is already in progress",
+        },
+    }
+
+    const current = health orelse return .{
+        .kind = "probe_needed",
+        .severity = if (budget == .spend_provider) "warning" else "info",
+        .message = if (budget == .spend_provider)
+            "no health evidence recorded; explicit live probe may spend provider quota"
+        else
+            "no health evidence recorded; run a probe to classify this route",
+        .command = .probe,
+    };
+
+    return switch (current.liveness) {
+        .live => |live| switch (live.availability) {
+            .available => .{
+                .kind = "none",
+                .severity = "ok",
+                .message = "route is selectable",
+            },
+            .rate_limited => |rl| .{
+                .kind = "wait_and_retry",
+                .severity = "warning",
+                .message = "short rate-limit window is active; try another route until retry",
+                .retry_after_s = rl.retry_after_s,
+            },
+            .quota_exhausted => |quota| .{
+                .kind = "wait_for_quota",
+                .severity = "warning",
+                .message = "quota window is exhausted; use another account until reset",
+                .wait_until = quota.window_resets_at,
+            },
+            .cooldown => |cooldown| .{
+                .kind = "wait_for_cooldown",
+                .severity = "warning",
+                .message = "local cooldown is active",
+                .wait_until = cooldown.until,
+            },
+        },
+        .degraded => |degraded| degradedAction(route, def, degraded.reason),
+        .dead => reauthAction(route, def),
+    };
+}
+
+fn degradedAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinition, reason: types.DegradedReason) RepairAction {
+    return switch (reason) {
+        .step_up_required, .pending_verification, .terms_required => reauthAction(route, def),
+        .scope_insufficient => .{
+            .kind = "scope_or_permission",
+            .severity = "warning",
+            .message = "credential is valid but lacks required scope or route permission",
+            .command = .probe,
+        },
+        .tier_insufficient, .subscription_paused => .{
+            .kind = "provider_plan",
+            .severity = "warning",
+            .message = "account is authenticated but not operable for this capability",
+        },
+        .provider_degraded => .{
+            .kind = "try_next_provider",
+            .severity = "warning",
+            .message = "provider appears degraded; try another provider route",
+        },
+        .schema_invalid, .unknown_4xx => .{
+            .kind = "inspect_provider_schema",
+            .severity = "warning",
+            .message = "provider returned a route/schema error; inspect provider definition and probe evidence",
+            .command = .probe,
+        },
+    };
+}
+
+fn reauthAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinition) RepairAction {
+    return switch (def.repair.owner) {
+        .upstream_cli_login => .{
+            .kind = "reauth",
+            .severity = "error",
+            .message = "reauth is owned by the upstream CLI",
+            .command = if (std.mem.eql(u8, route.provider, "codex")) .codex_login_device else .none,
+            .interactive = true,
+            .mutating = true,
+        },
+        .oauth_mux_refresh => .{
+            .kind = "refresh",
+            .severity = "warning",
+            .message = "oauth-mux owns refresh for this provider; automatic repair is not enabled by repair-plan",
+            .mutating = true,
+        },
+        .external_secret_owner => .{
+            .kind = "external_secret_rotation",
+            .severity = "error",
+            .message = "credential repair is owned by an external secret backend",
+        },
+        .manual_only => .{
+            .kind = "manual_repair",
+            .severity = "error",
+            .message = "manual operator repair is required for this provider",
+        },
+    };
+}
+
+fn repairCommandAlloc(
+    allocator: std.mem.Allocator,
+    command: RepairCommandKind,
+    route: RepairPlanRoute,
+) !?[]const u8 {
+    return switch (command) {
+        .none => null,
+        .probe => if (route.capability) |capability|
+            try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --capability {s} --json", .{ route.provider, route.account, capability })
+        else
+            try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --json", .{ route.provider, route.account }),
+        .codex_login_device => try std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{route.account}),
+    };
 }
 
 const DoctorStats = struct {
@@ -637,6 +1091,7 @@ fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
     try writeDoctorCommandJson(writer, &first, "oauth-mux providers list --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux status --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux health --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux repair-plan --json");
     if (stats.codex_configured) {
         try writeDoctorCommandJson(writer, &first, "oauth-mux setup codex");
         try writeDoctorCommandJson(writer, &first, "oauth-mux codex canary");
@@ -2537,6 +2992,34 @@ test "writeHealthJson includes capability routes" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"quota_exhausted\"") != null);
 }
 
+test "writeDiscoverJson includes repair-plan as agent-safe command" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeDiscoverJson(buf.writer(), parsed.value, "/tmp/config.json", "/tmp/state");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null);
+}
+
 test "writeProvidersListJson exposes extension and budget metadata" {
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
@@ -2547,6 +3030,111 @@ test "writeProvidersListJson exposes extension and budget metadata" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"runtime\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability_budgets\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"budget\":\"spend_provider\"") != null);
+}
+
+test "collectRepairPlanRoutes expands profile capability routes" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "file", "path": "/tmp/omux/max-1/auth.json" }
+        \\        },
+        \\        "max-2": {
+        \\          "secret": { "backend": "file", "path": "/tmp/omux/max-2/auth.json" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "codex-max" });
+    defer routes.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), routes.items.len);
+    try std.testing.expectEqualStrings("codex", routes.items[0].provider);
+    try std.testing.expectEqualStrings("max-1", routes.items[0].account);
+    try std.testing.expectEqualStrings("codex-max", routes.items[0].capability.?);
+    try std.testing.expectEqualStrings("max-2", routes.items[1].account);
+}
+
+test "repairActionFor warns before spending provider quota without health evidence" {
+    const def = provider_schema.ProviderDefinition{
+        .name = "toy",
+        .display_name = "Toy Provider",
+        .repair = .{ .owner = .manual_only },
+    };
+    const action = repairActionFor(
+        .{ .provider = "toy", .account = "default", .capability = "expensive" },
+        def,
+        .ready,
+        null,
+        .spend_provider,
+    );
+
+    try std.testing.expectEqualStrings("probe_needed", action.kind);
+    try std.testing.expectEqualStrings("warning", action.severity);
+    try std.testing.expect(action.command == .probe);
+    try std.testing.expect(std.mem.indexOf(u8, action.message, "spend provider quota") != null);
+}
+
+test "repairActionFor classifies quota exhaustion as wait action" {
+    const def = provider_schema.ProviderDefinition{
+        .name = "toy",
+        .display_name = "Toy Provider",
+        .repair = .{ .owner = .manual_only },
+    };
+    const health = health_mod.AccountHealth{
+        .liveness = .{ .live = .{
+            .availability = .{ .quota_exhausted = .{
+                .window_resets_at = 1_777_777,
+                .exhausted_at = 1_700_000,
+            } },
+        } },
+    };
+    const action = repairActionFor(
+        .{ .provider = "toy", .account = "default", .capability = "chat" },
+        def,
+        .ready,
+        health,
+        .spend_provider,
+    );
+
+    try std.testing.expectEqualStrings("wait_for_quota", action.kind);
+    try std.testing.expectEqualStrings("warning", action.severity);
+    try std.testing.expectEqual(@as(?i64, 1_777_777), action.wait_until);
+    try std.testing.expect(action.command == .none);
+}
+
+test "writeRepairActionJson emits codex reauth command without running it" {
+    const def = provider_schema.ProviderDefinition{
+        .name = "codex",
+        .display_name = "Codex",
+        .repair = .{ .owner = .upstream_cli_login },
+    };
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const action = reauthAction(route, def);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeRepairActionJson(buf.writer(), std.testing.allocator, action, route);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
 }
 
 test "writeProbeJson includes terminal pipeline error" {

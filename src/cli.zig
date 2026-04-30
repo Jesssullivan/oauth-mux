@@ -13,6 +13,7 @@ pub const Command = union(enum) {
     status: StatusArgs,
     health: HealthArgs,
     discover: DiscoverArgs,
+    repair_plan: RepairPlanArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -83,6 +84,14 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    pub const RepairPlanArgs = struct {
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+        json: bool = false,
+    };
+
     pub const InitArgs = struct {
         interactive: bool = false,
         codex_max: bool = false,
@@ -131,6 +140,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
+    if (eql(cmd, "repair-plan")) return parseRepairPlan(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
@@ -139,6 +149,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "daemon")) {
         if (rest.len > 0) {
             if (eql(rest[0], "run")) return .daemon_run;
+            if (eql(rest[0], "repair-plan")) return parseRepairPlan(rest[1..]);
             if (eql(rest[0], "start")) return .daemon_start;
             if (eql(rest[0], "stop")) return .daemon_stop;
             if (eql(rest[0], "status")) return .daemon_status;
@@ -293,6 +304,29 @@ fn parseDiscover(args: []const []const u8) Command {
     return .{ .discover = result };
 }
 
+fn parseRepairPlan(args: []const []const u8) Command {
+    var result = Command.RepairPlanArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .repair_plan = result };
+}
+
 fn parseConfig(args: []const []const u8) Command {
     if (args.len == 0) return .config_path;
     if (eql(args[0], "validate")) return .config_validate;
@@ -433,6 +467,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  discover [--json]
         \\      Print redacted provider/profile inventory and agent-safe next commands.
+        \\
+        \\  repair-plan [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Explain non-mutating repair actions from runtime and liveness state.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -698,6 +735,31 @@ test "parse discover json" {
     }
 }
 
+test "parse repair plan with profile" {
+    const args = [_][]const u8{ "repair-plan", "--profile", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .repair_plan => |repair| {
+            try std.testing.expectEqualStrings("codex-max", repair.profile.?);
+            try std.testing.expect(repair.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse daemon repair plan alias" {
+    const args = [_][]const u8{ "daemon", "repair-plan", "--provider", "codex", "--account", "max-1", "--capability", "codex-max" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .repair_plan => |repair| {
+            try std.testing.expectEqualStrings("codex", repair.provider.?);
+            try std.testing.expectEqualStrings("max-1", repair.account.?);
+            try std.testing.expectEqualStrings("codex-max", repair.capability.?);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon run" {
     const args = [_][]const u8{ "daemon", "run" };
     try std.testing.expect(parse(&args) == .daemon_run);
@@ -716,6 +778,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a repair-plan -d 'Show non-mutating repair plan'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a setup -d 'First-run setup'
@@ -736,6 +799,11 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
@@ -758,6 +826,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'status:Show status'
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
+            \\    'repair-plan:Show non-mutating repair plan'
             \\    'config:Config operations'
             \\    'init:Generate config'
             \\    'setup:First-run setup'
@@ -775,7 +844,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\
