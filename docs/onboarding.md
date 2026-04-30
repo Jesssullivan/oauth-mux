@@ -177,9 +177,22 @@ policy and per-route `daemon_probe` / `daemon_repair` decisions.
 
 `oauth-mux daemon tick --once --json` is the portable daemon dogfood surface. It
 loads the same route/runtime/liveness state, applies the daemon policy, and
-prints what a future background loop would be allowed to do. It always reports
-`executed:false` today: no provider probes, browser/device auth, repair
-commands, or secret mutation are run by the tick.
+prints what a future background loop would be allowed to do. Without
+`--execute` it remains planning-only and reports `executed:false`.
+
+Opt-in beta execution is explicit:
+
+```bash
+oauth-mux daemon tick --once --execute --profile codex-max --capability codex-max --json
+```
+
+Execute mode runs at most one admitted non-interactive action per tick. The
+default policy admits `free_command`, so command-backed probes can refresh
+recorded route state without requiring a service manager. Provider-spending
+probes, interactive browser/device auth, and credential mutation remain refused
+unless policy explicitly admits them. Interactive reauth is not run in the
+background; execute mode records a redacted `daemon_handoff` event with the
+reviewable user command.
 
 For a bounded foreground loop, use:
 
@@ -188,8 +201,8 @@ oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max 
 ```
 
 Loop mode emits one JSON envelope containing repeated tick snapshots. Each tick
-re-reads local health and runtime state, but it remains planning-only and does
-not require launchd, systemd, Homebrew services, cron, or a platform-specific
+re-reads local health and runtime state and does not require launchd, systemd,
+Homebrew services, cron, or a platform-specific
 daemon manager.
 
 Route, runtime, repair-plan, and daemon tick JSON include a `writeback` object.

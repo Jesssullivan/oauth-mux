@@ -44,11 +44,15 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
   carries redacted `token_refresh` events for refresh admission/writeback
   outcomes.
 - `oauth-mux daemon tick --once --json` for one portable, policy-gated
-  daemon-shaped planning pass. It reports `executed:false` and does not run
-  probes, repair commands, or mutation.
+  daemon-shaped planning pass. Without `--execute`, it reports
+  `executed:false` and does not run probes, repair commands, or mutation.
+- `oauth-mux daemon tick --once --execute --json` as the beta execution
+  boundary. It runs at most one admitted non-interactive action per tick,
+  re-reads route state afterward, and queues interactive reauth as a redacted
+  `daemon_handoff` event instead of running it silently.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
-  for a bounded foreground planning loop. It re-reads local health/runtime
-  state each tick and remains service-manager agnostic.
+  for a bounded foreground loop. It re-reads local health/runtime state each
+  tick and remains service-manager agnostic.
 - Account-scoped advisory locks during confirmed `repair run`, reported back as
   `repair_in_progress` by runtime-aware route planning.
 - Config-level daemon admission policy for route planning. The default admits
@@ -66,12 +70,11 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 
 ## Not Allowed Yet
 
-- Background polling of live provider probes.
-- Automatic subscription-spending checks.
+- Unbounded background polling of live provider probes.
+- Automatic subscription-spending checks without explicit daemon policy.
 - Silent token refresh for providers whose refresh semantics are owned by an
   upstream CLI.
-- Automatic execution of repair-plan commands without an explicit foreground
-  user command and confirmation flag.
+- Silent execution of interactive repair-plan commands.
 - Any release gate that depends on a long-running daemon.
 - Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows
   Services as part of the core product contract.

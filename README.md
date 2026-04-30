@@ -136,14 +136,16 @@ only `free_local` and `free_command` work; `cheap_provider`, `spend_provider`,
 `interactive`, and `mutating` actions are reported as refused until the config
 explicitly allows them. `route explain --json` and `repair-plan --json` include
 the effective policy plus per-route admission decisions so agents can back off
-without guessing. `daemon tick --once --json` is the first daemon-shaped
-dogfood primitive: it evaluates the same routes under that policy and reports
-`executed:false`; it does not run live probes, repair commands, or background
-mutation. `daemon tick --loop --iterations <n> --interval-ms <ms> --json`
-runs the same planning tick as a bounded foreground loop for dogfood and
-wrappers. It re-reads health/runtime state each iteration, still emits
-`executed:false`, and remains portable: no `systemctl`, `launchctl`, service
-manager, browser auth, provider spend, or secret mutation is assumed.
+without guessing. `daemon tick --once --json` evaluates the same routes under
+that policy. By default it is planning-only and reports `executed:false`.
+`daemon tick --once --execute --json` is the opt-in beta execution boundary: it
+runs at most one admitted non-interactive action per tick, such as a
+`free_command` probe, then re-reads route state. Interactive reauth is never
+run silently; execute mode records a redacted `daemon_handoff` event with the
+user command to run. `daemon tick --loop --iterations <n> --interval-ms <ms>
+--json` repeats the same portable foreground tick for dogfood and wrappers. No
+`systemctl`, `launchctl`, service manager, browser auth, provider spend, or
+secret mutation is assumed unless policy and CLI flags explicitly admit it.
 
 Secret read and writeback are also separate. Route and runtime JSON expose a
 `writeback` object with the secret backend capability and whether automatic

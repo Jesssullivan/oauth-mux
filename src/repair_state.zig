@@ -10,6 +10,7 @@ pub const RepairEvent = struct {
     account: ?[]const u8 = null,
     capability: ?[]const u8 = null,
     action: ?[]const u8 = null,
+    command: ?[]const u8 = null,
     writeback_capability: ?[]const u8 = null,
     automatic_refresh_admitted: ?bool = null,
     outcome: []const u8,
@@ -243,6 +244,8 @@ fn writeEventJson(writer: anytype, event: RepairEvent) !void {
     if (event.capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"action\":");
     if (event.action) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"command\":");
+    if (event.command) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"writeback_capability\":");
     if (event.writeback_capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"automatic_refresh_admitted\":");
@@ -299,6 +302,7 @@ test "repair event json is redacted and structured" {
         .account = "max-1",
         .capability = "codex-max",
         .action = "reauth",
+        .command = "oauth-mux codex login-device max-1",
         .outcome = "confirmation_required",
         .reason = "missing_session",
         .ok = false,
@@ -309,6 +313,7 @@ test "repair event json is redacted and structured" {
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"provider\":\"codex\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"repair_run\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"profile\":\"codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"account\":\"max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "token") == null);

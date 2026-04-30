@@ -69,10 +69,12 @@ oauth-mux codex probe-all --capability codex-mini --json
 ```
 
 `doctor runtime`, `route explain`, `route select`, `daemon tick --once`, and
-bounded `daemon tick --loop` are no-spend surfaces. They only use local runtime
-checks plus recorded liveness, so they are safe for agents to run before
-deciding whether a live probe or user-driven reauth is warranted. Prefer scoped
-runtime checks such as
+bounded `daemon tick --loop` are no-spend surfaces when run without
+`--execute`. They only use local runtime checks plus recorded liveness, so they
+are safe for agents to run before deciding whether a live probe or user-driven
+reauth is warranted. `daemon tick --execute` is the beta foreground execution
+boundary: it can run one admitted non-interactive action or queue an interactive
+handoff event. Prefer scoped runtime checks such as
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
 when dogfooding a specific stay-afloat route; global runtime doctor is still
 useful for support bundles and full-machine cleanup.

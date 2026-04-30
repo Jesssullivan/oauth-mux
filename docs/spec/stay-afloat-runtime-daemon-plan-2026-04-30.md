@@ -475,6 +475,15 @@ what a future daemon loop would be allowed to consider. The tick is explicitly
 planning-only and emits `executed:false`; it does not run provider probes,
 repair commands, browser/device auth, or secret mutation.
 
+Implementation note, 2026-04-30: daemon tick beta execution now exists behind
+`--execute`. Execute mode runs at most one admitted non-interactive action per
+tick, then re-reads route state before rendering JSON. This is intentionally
+small: `free_command` probes can keep route evidence fresh, provider-spending
+probes require explicit policy, and interactive reauth becomes a redacted
+`daemon_handoff` event with a user command instead of silent background auth.
+Tick JSON now includes `execution_mode`, `executions`, `handoff_queued`, and
+`next_tick_after` scheduling hints.
+
 Implementation note, 2026-04-30: bounded foreground loop mode now exists through
 `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`. This
 keeps the daemon beta portable and wrapper-friendly: no system service manager
