@@ -6,6 +6,7 @@ const provider_schema = @import("provider_schema.zig");
 pub const Config = struct {
     version: u32 = 1,
     defaults: Defaults = .{},
+    policy: PolicyConfig = .{},
     provider_definitions: std.json.ArrayHashMap(provider_schema.ProviderDefinition) = .{},
     providers: std.json.ArrayHashMap(ProviderConfig) = .{},
     profiles: std.json.ArrayHashMap(ProfileConfig) = .{},
@@ -17,6 +18,16 @@ pub const Defaults = struct {
     strategy: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     daemon: bool = false,
+};
+
+pub const PolicyConfig = struct {
+    daemon: DaemonPolicyConfig = .{},
+};
+
+pub const DaemonPolicyConfig = struct {
+    allowed_budgets: []const types.ActionBudget = &.{ .free_local, .free_command },
+    allow_interactive: bool = false,
+    allow_mutating: bool = false,
 };
 
 pub const ProviderConfig = struct {
@@ -211,6 +222,13 @@ pub fn resolveProviderKind(cfg: Config, provider_name: []const u8) ?types.Provid
         return types.ProviderKind.fromString(prov_cfg.kind);
     }
     return types.ProviderKind.fromString(provider_name);
+}
+
+pub fn daemonPolicyAllowsBudget(policy: DaemonPolicyConfig, budget: types.ActionBudget) bool {
+    for (policy.allowed_budgets) |allowed| {
+        if (allowed == budget) return true;
+    }
+    return false;
 }
 
 fn validateProviderConfig(cfg: Config, provider_name: []const u8, prov: ProviderConfig, writer: anytype, ok: *bool) !void {
@@ -713,6 +731,51 @@ test "loadFromBytes provider definition override" {
     defer out.deinit();
     try validate(parsed.value, out.writer());
     try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
+test "loadFromBytes accepts daemon budget policy" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "policy": {
+        \\    "daemon": {
+        \\      "allowed_budgets": ["free_local", "free_command", "cheap_provider"],
+        \\      "allow_interactive": false,
+        \\      "allow_mutating": false
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "work": {
+        \\          "secret": { "backend": "env", "variable": "CLAUDE_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expect(daemonPolicyAllowsBudget(parsed.value.policy.daemon, .free_local));
+    try std.testing.expect(daemonPolicyAllowsBudget(parsed.value.policy.daemon, .cheap_provider));
+    try std.testing.expect(!daemonPolicyAllowsBudget(parsed.value.policy.daemon, .spend_provider));
+    try std.testing.expect(!parsed.value.policy.daemon.allow_interactive);
+    try std.testing.expect(!parsed.value.policy.daemon.allow_mutating);
+}
+
+test "default daemon policy admits only local and command budgets" {
+    const policy = PolicyConfig{};
+    try std.testing.expect(daemonPolicyAllowsBudget(policy.daemon, .free_local));
+    try std.testing.expect(daemonPolicyAllowsBudget(policy.daemon, .free_command));
+    try std.testing.expect(!daemonPolicyAllowsBudget(policy.daemon, .cheap_provider));
+    try std.testing.expect(!daemonPolicyAllowsBudget(policy.daemon, .spend_provider));
+    try std.testing.expect(!policy.daemon.allow_interactive);
+    try std.testing.expect(!policy.daemon.allow_mutating);
 }
 
 test "validate rejects unknown provider kind without definition" {

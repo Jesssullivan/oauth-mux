@@ -162,6 +162,13 @@ the audit trail with:
 oauth-mux daemon events --json
 ```
 
+Daemon policy is intentionally conservative. The default config admits only
+`free_local` and `free_command` budgets for daemon/background work. Provider
+calls, provider-spending probes, browser/device auth, and credential mutation
+are refused in the admission report unless `policy.daemon` explicitly allows
+them. `repair-plan --json` and `route explain --json` include both the effective
+policy and per-route `daemon_probe` / `daemon_repair` decisions.
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a

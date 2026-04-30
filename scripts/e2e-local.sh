@@ -321,6 +321,7 @@ repair_reauth="$(cat "$repair_reauth_json")"
 expect_contains "$repair_reauth" '"confirmation_required":true' "repair run requires confirmation"
 expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run reports required flag"
 expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
+expect_contains "$repair_reauth" '"daemon_repair":{"admitted":false,"reason":"interactive_not_allowed","budget":"interactive"}' "repair run reports daemon policy refusal"
 test ! -e "$tmp/reauth-home/auth.json"
 
 repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"

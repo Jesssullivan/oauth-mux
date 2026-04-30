@@ -459,6 +459,15 @@ log without requiring the daemon to be running. This is still one-shot
 foreground repair; it is the audit and concurrency layer needed before any
 background loop.
 
+Implementation note, 2026-04-30: daemon admission policy now exists in config.
+The default `policy.daemon.allowed_budgets` is `free_local` and `free_command`,
+with `allow_interactive=false` and `allow_mutating=false`. `repair-plan --json`
+and `route explain --json` emit the effective policy plus per-route
+`daemon_probe` and `daemon_repair` admission decisions. This keeps the future
+daemon loop policy-driven while preserving the current product boundary: no
+provider calls, quota-spending probes, browser/device auth, or credential
+mutation in background mode unless an operator opts in explicitly.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.
@@ -470,8 +479,8 @@ background loop.
 ### M4: Daemon Beta
 
 - Promote daemon to opt-in beta.
-- Add configurable budgets and status JSON beyond the current repair-run event
-  log and advisory lock substrate.
+- Add status JSON beyond the current repair-run event log, advisory lock
+  substrate, and config-level daemon admission policy.
 - Keep live probes disabled by default.
 - Add Homebrew/systemd/launchd packaging notes only after stop/status behavior
   is proven.
