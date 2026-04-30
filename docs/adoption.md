@@ -31,6 +31,12 @@ oauth-mux config validate
 oauth-mux discover --json
 ```
 
+Source checkouts prove this path without touching real operator state:
+
+```bash
+just first-run-e2e
+```
+
 For Codex subscription users working from a source checkout today:
 
 ```bash

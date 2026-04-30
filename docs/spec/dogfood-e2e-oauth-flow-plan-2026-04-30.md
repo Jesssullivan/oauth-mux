@@ -102,6 +102,17 @@ Acceptance:
 - diagnostics point to the next safe command;
 - generated config validates from a clean state.
 
+Automated source-checkout proof:
+
+```bash
+just first-run-e2e
+```
+
+This lane runs the required path with a temporary `HOME`, XDG config/state/data
+roots, and no inherited `OMUX_*` overrides. It also verifies the Codex Max
+starter config uses the same resolved store root as Codex setup, so users with
+`XDG_DATA_HOME` or `OMUX_CODEX_STORE_ROOT` do not get split-brain account paths.
+
 ### Story B: Codex Subscription User With Three Accounts
 
 Goal: prove the flagship multi-account subscription use case.

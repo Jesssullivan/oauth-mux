@@ -154,7 +154,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh'
     @echo "all checks passed"
 
 e2e:
@@ -163,6 +163,13 @@ e2e:
 e2e-local:
     zig build
     ./scripts/e2e-local.sh
+
+first-run-e2e:
+    nix develop --command just first-run-e2e-local
+
+first-run-e2e-local:
+    zig build
+    ./scripts/first-run-e2e.sh
 
 live-qa:
     nix develop --command ./scripts/live-provider-qa.sh

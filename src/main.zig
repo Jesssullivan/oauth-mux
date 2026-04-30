@@ -1969,7 +1969,22 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\  }
         \\}
     ;
-    const codex_max_starter_config =
+    const file = try std.fs.createFileAbsolute(path, .{});
+    defer file.close();
+
+    if (args.codex_max) {
+        const store_root = try codexStoreRoot(allocator, .{});
+        defer allocator.free(store_root);
+        try writeCodexMaxStarterConfig(allocator, file.writer(), store_root);
+    } else {
+        try file.writeAll(generic_starter_config);
+    }
+
+    try writer.print("created {s}\n", .{path});
+}
+
+fn writeCodexMaxStarterConfig(allocator: std.mem.Allocator, writer: anytype, store_root: []const u8) !void {
+    try writer.writeAll(
         \\{
         \\  "version": 1,
         \\  "defaults": {
@@ -1982,33 +1997,14 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\      "kind": "codex",
         \\      "config_dir_env": "CODEX_HOME",
         \\      "accounts": {
-        \\        "max-1": {
-        \\          "priority": 30,
-        \\          "config_dir": "~/.local/share/oauth-mux/codex/max-1",
-        \\          "secret": {
-        \\            "backend": "file",
-        \\            "path": "~/.local/share/oauth-mux/codex/max-1/auth.json"
-        \\          },
-        \\          "tags": ["subscription", "codex-max"]
-        \\        },
-        \\        "max-2": {
-        \\          "priority": 20,
-        \\          "config_dir": "~/.local/share/oauth-mux/codex/max-2",
-        \\          "secret": {
-        \\            "backend": "file",
-        \\            "path": "~/.local/share/oauth-mux/codex/max-2/auth.json"
-        \\          },
-        \\          "tags": ["subscription", "codex-max"]
-        \\        },
-        \\        "max-3": {
-        \\          "priority": 10,
-        \\          "config_dir": "~/.local/share/oauth-mux/codex/max-3",
-        \\          "secret": {
-        \\            "backend": "file",
-        \\            "path": "~/.local/share/oauth-mux/codex/max-3/auth.json"
-        \\          },
-        \\          "tags": ["subscription", "codex-max"]
-        \\        }
+        \\
+    );
+
+    try writeCodexMaxStarterAccount(allocator, writer, store_root, "max-1", 30, true);
+    try writeCodexMaxStarterAccount(allocator, writer, store_root, "max-2", 20, false);
+    try writeCodexMaxStarterAccount(allocator, writer, store_root, "max-3", 10, false);
+
+    try writer.writeAll(
         \\      }
         \\    }
         \\  },
@@ -2041,17 +2037,41 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\    }
         \\  }
         \\}
-    ;
-    const starter_config = if (args.codex_max)
-        codex_max_starter_config
-    else
-        generic_starter_config;
+    );
+}
 
-    const file = try std.fs.createFileAbsolute(path, .{});
-    defer file.close();
-    try file.writeAll(starter_config);
+fn writeCodexMaxStarterAccount(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    store_root: []const u8,
+    account: []const u8,
+    priority: i32,
+    first: bool,
+) !void {
+    const account_dir = try std.fs.path.join(allocator, &.{ store_root, account });
+    defer allocator.free(account_dir);
+    const auth_path = try std.fs.path.join(allocator, &.{ account_dir, "auth.json" });
+    defer allocator.free(auth_path);
 
-    try writer.print("created {s}\n", .{path});
+    if (!first) try writer.writeAll(",\n");
+    try writer.print("        \"{s}\": {{\n", .{account});
+    try writer.print("          \"priority\": {d},\n", .{priority});
+    try writer.writeAll("          \"config_dir\": ");
+    try std.json.stringify(account_dir, .{}, writer);
+    try writer.writeAll(",\n");
+    try writer.writeAll(
+        \\          "secret": {
+        \\            "backend": "file",
+        \\            "path":
+    );
+    try writer.writeByte(' ');
+    try std.json.stringify(auth_path, .{}, writer);
+    try writer.writeAll(
+        \\
+        \\          },
+        \\          "tags": ["subscription", "codex-max"]
+        \\        }
+    );
 }
 
 fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
@@ -2324,6 +2344,21 @@ test "matchesProvider filters account keys" {
     try std.testing.expect(matchesProvider("codex", "codex"));
     try std.testing.expect(!matchesProvider("codexish:max-1", "codex"));
     try std.testing.expect(!matchesProvider("claude:work", "codex"));
+}
+
+test "Codex Max starter config uses resolved store root" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeCodexMaxStarterConfig(std.testing.allocator, buf.writer(), "/tmp/omux-codex");
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"config_dir\": \"/tmp/omux-codex/max-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"path\": \"/tmp/omux-codex/max-1/auth.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "~/.local/share/oauth-mux/codex") == null);
+
+    const parsed = try config.loadFromBytes(std.testing.allocator, buf.items);
+    defer parsed.deinit();
+    try config.validate(parsed.value, std.io.null_writer);
 }
 
 test "writeHealthJson includes redacted liveness" {

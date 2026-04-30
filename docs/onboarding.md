@@ -111,6 +111,17 @@ thin aliases for installed commands. `just codex-max-setup` is a thin alias for
 `oauth-mux setup codex`, and `just codex-max-probe-all` is likewise a thin alias
 for `oauth-mux codex probe-all`.
 
+The clean no-config first-run path is covered by:
+
+```bash
+just first-run-e2e
+```
+
+That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
+and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
+diagnostics, redacted support output, and non-mutating Codex help without
+touching the operator's real OAuth stores.
+
 ## Agent Discovery Contract
 
 Agents should start with:
