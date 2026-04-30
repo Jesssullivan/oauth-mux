@@ -82,6 +82,9 @@ codex-max-canary: build
 codex-max-repair-plan CAPABILITY="codex-max": build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux repair-plan --profile {{CAPABILITY}} --capability {{CAPABILITY}} --json
 
+codex-max-config-candidate OUTPUT="/tmp/oauth-mux-codex-max.config.json": build
+    ./zig-out/bin/oauth-mux codex config-candidate --output {{OUTPUT}}
+
 codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
     OMUX_CONFIG=$PWD/{{codex_max_config}} OMUX_STATE_DIR={{codex_max_state}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
 

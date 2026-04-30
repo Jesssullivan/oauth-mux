@@ -106,6 +106,7 @@ pub const Command = union(enum) {
         onboard,
         canary,
         probe_all,
+        config_candidate,
     };
 
     pub const CodexArgs = struct {
@@ -118,6 +119,7 @@ pub const Command = union(enum) {
         status_only: bool = false,
         live: bool = false,
         json: bool = false,
+        output: ?[]const u8 = null,
     };
 
     pub const CompletionsArgs = struct {
@@ -382,6 +384,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .canary;
         } else if (eql(args[0], "probe-all")) {
             result.action = .probe_all;
+        } else if (eql(args[0], "config-candidate")) {
+            result.action = .config_candidate;
         } else {
             result.action = .canary;
             option_start = 0;
@@ -409,6 +413,9 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
         } else if (eql(args[i], "--store-root")) {
             i += 1;
             if (i < args.len) result.store_root = args[i];
+        } else if (eql(args[i], "--output")) {
+            i += 1;
+            if (i < args.len) result.output = args[i];
         } else if (eql(args[i], "--device")) {
             result.device = true;
         } else if (eql(args[i], "--status-only")) {
@@ -494,6 +501,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
         \\      Probe every selected Codex account/capability route.
         \\
+        \\  codex config-candidate [--output path] [--store-root path] [--json]
+        \\      Write a non-overwriting Codex Max config candidate.
+        \\
         \\  codex login <account> | login-device <account> | login-status [account] | login-status-all
         \\      Codex account login/status helpers using isolated CODEX_HOME dirs.
         \\
@@ -525,6 +535,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
         \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
+        \\  oauth-mux codex config-candidate [--output path] [--store-root path] [--json]
         \\  oauth-mux codex bootstrap-dirs [--accounts a,b,c] [--store-root path]
         \\  oauth-mux codex login <account> [--store-root path]
         \\  oauth-mux codex login-device <account> [--store-root path]
@@ -660,6 +671,19 @@ test "parse codex subcommand help as non-mutating help" {
 
     const setup_args = [_][]const u8{ "setup", "codex", "--help" };
     try std.testing.expect(parse(&setup_args) == .codex_help);
+}
+
+test "parse codex config candidate" {
+    const args = [_][]const u8{ "codex", "config-candidate", "--output", "/tmp/codex-max.config.json", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .config_candidate);
+            try std.testing.expectEqualStrings("/tmp/codex-max.config.json", codex.output.?);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
 }
 
 test "parse codex setup alias" {
@@ -807,7 +831,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary probe-all bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary probe-all config-candidate bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status' -d 'Daemon subcommand'
             \\
         );
