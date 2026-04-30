@@ -8,6 +8,12 @@ Keep daemon usage optional until provider-specific refresh semantics are proven
 for each OAuth-backed harness. The default production path remains explicit
 selection, explicit probe, env injection, and exec handoff.
 
+The 2026-04-30 stay-afloat review keeps this boundary in place. Real Codex
+dogfood proved route-scoped fallback from `codex:max-1#codex-max` quota
+exhaustion to `codex:max-2#codex-max`, but it also exposed that runtime
+permission/session ownership and automatic reauth are not solved by the current
+daemon. See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
+
 ## Allowed Now
 
 - `oauth-mux daemon status` for local inspection.
@@ -27,12 +33,15 @@ selection, explicit probe, env injection, and exec handoff.
 The daemon can become a supported operator feature when:
 
 1. provider refresh ownership is documented per provider;
-2. refresh and probe budgets are configurable;
-3. every background action records redacted evidence;
-4. stop/status behavior is reliable on macOS and Linux;
-5. Windows behavior is either implemented or explicitly unsupported in package
+2. credential writeback is explicit per secret backend;
+3. refresh-token rotation and token age semantics are tested;
+4. runtime permission failures are classified separately from OAuth failures;
+5. refresh and probe budgets are configurable;
+6. every background action records redacted evidence;
+7. stop/status behavior is reliable on macOS and Linux;
+8. Windows behavior is either implemented or explicitly unsupported in package
    docs;
-6. live-provider QA covers timeout, auth failure, quota exhaustion, and
+9. live-provider QA covers timeout, auth failure, quota exhaustion, and
    transient rate-limit behavior.
 
 Until then, user and agent onboarding should use one-shot commands:

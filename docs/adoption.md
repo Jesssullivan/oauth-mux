@@ -98,7 +98,9 @@ matrix current whenever a published or staged install lane changes state.
 The current adoption plan is tracked in
 `docs/spec/product-adoption-sprint-2026-04-28.md`. The current dogfood and
 real OAuth flow proof plan is tracked in
-`docs/spec/dogfood-e2e-oauth-flow-plan-2026-04-30.md`. Together they cover:
+`docs/spec/dogfood-e2e-oauth-flow-plan-2026-04-30.md`. The stay-afloat runtime
+and daemon gap plan is tracked in
+`docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`. Together they cover:
 
 - website structure and public positioning;
 - `v0.1.3` onboarding/doctor/report scope;

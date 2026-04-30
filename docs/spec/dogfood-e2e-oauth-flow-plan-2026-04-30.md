@@ -74,6 +74,12 @@ These are the adoption blockers that should stay visible:
    a product surface until `TIN-738` defines provider ownership, budgets, and
    anti-surprise rules.
 
+7. Stay-afloat automation is not yet built.
+   The mux can fall through from a quota-exhausted Codex route to an available
+   account, but it does not yet automatically repair stale credentials, persist
+   refreshed tokens, or drive browser/device reauth. See
+   `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
+
 ## User Story Gates
 
 Each story should have a reproducible command path and a redacted evidence
@@ -135,6 +141,18 @@ Acceptance:
 - live probes classify available, rate-limited, quota-exhausted, degraded, and
   dead states distinctly;
 - a bad `codex-max` route does not poison the same account for `codex-mini`.
+
+2026-04-30 dogfood evidence:
+
+- Running Codex probes inside a restricted sandbox produced false
+  `degraded:unknown_4xx` results because Codex could not write its session
+  files under the isolated `CODEX_HOME`.
+- Running outside that sandbox proved the product path:
+  `codex:max-1#codex-mini` was available, `codex:max-1#codex-max` was
+  `live.quota_exhausted`, and `oauth-mux` selected
+  `codex:max-2#codex-max` successfully.
+
+This is fallback proof, not automatic reauth proof.
 
 ### Story C: Agent-Safe Discovery And Support Bundle
 
