@@ -448,6 +448,8 @@ foreground admission gate for mutating repair. It does not change
 `repair-plan`; it reuses the same typed action model, refuses mutation without
 `--confirm-repair`, no-ops when a profile is already afloat, and only runs
 provider-owned repair commands that are represented as first-class actions.
+Confirmed interactive repair is intentionally rejected in `--json` mode because
+upstream CLIs can write browser/device auth output to stdout or stderr.
 
 ### M3: Refresh Writeback
 
