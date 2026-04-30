@@ -175,6 +175,17 @@ prints what a future background loop would be allowed to do. It always reports
 `executed:false` today: no provider probes, browser/device auth, repair
 commands, or secret mutation are run by the tick.
 
+For a bounded foreground loop, use:
+
+```bash
+oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
+```
+
+Loop mode emits one JSON envelope containing repeated tick snapshots. Each tick
+re-reads local health and runtime state, but it remains planning-only and does
+not require launchd, systemd, Homebrew services, cron, or a platform-specific
+daemon manager.
+
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a

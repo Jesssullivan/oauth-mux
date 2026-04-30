@@ -220,6 +220,9 @@ daemon-events: build
 daemon-tick PROFILE="codex-max" CAPABILITY="codex-max": build
     ./zig-out/bin/oauth-mux daemon tick --once --profile {{PROFILE}} --capability {{CAPABILITY}} --json
 
+daemon-loop PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="2" INTERVAL_MS="0": build
+    ./zig-out/bin/oauth-mux daemon tick --loop --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}} --profile {{PROFILE}} --capability {{CAPABILITY}} --json
+
 # ── Shell integration ──
 
 completions-fish: build

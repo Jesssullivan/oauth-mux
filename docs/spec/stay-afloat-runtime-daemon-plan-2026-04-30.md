@@ -475,6 +475,12 @@ what a future daemon loop would be allowed to consider. The tick is explicitly
 planning-only and emits `executed:false`; it does not run provider probes,
 repair commands, browser/device auth, or secret mutation.
 
+Implementation note, 2026-04-30: bounded foreground loop mode now exists through
+`oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`. This
+keeps the daemon beta portable and wrapper-friendly: no system service manager
+is assumed, each iteration re-reads local health/runtime state, and the default
+policy still refuses provider spend, interactive auth, and mutation.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.

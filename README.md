@@ -97,6 +97,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile 
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux daemon tick --once --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon events --json
 ```
 
@@ -133,7 +134,11 @@ the effective policy plus per-route admission decisions so agents can back off
 without guessing. `daemon tick --once --json` is the first daemon-shaped
 dogfood primitive: it evaluates the same routes under that policy and reports
 `executed:false`; it does not run live probes, repair commands, or background
-mutation.
+mutation. `daemon tick --loop --iterations <n> --interval-ms <ms> --json`
+runs the same planning tick as a bounded foreground loop for dogfood and
+wrappers. It re-reads health/runtime state each iteration, still emits
+`executed:false`, and remains portable: no `systemctl`, `launchctl`, service
+manager, browser auth, provider spend, or secret mutation is assumed.
 
 First-run Codex subscription path:
 
