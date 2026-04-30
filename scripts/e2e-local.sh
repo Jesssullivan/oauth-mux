@@ -323,6 +323,23 @@ expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run rep
 expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
 test ! -e "$tmp/reauth-home/auth.json"
 
+repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"
+set +e
+OMUX_CONFIG="$reauth_config" \
+  OMUX_STATE_DIR="$state_dir" \
+  OMUX_E2E_REAUTH='{}' \
+  "$bin" repair run --profile needs-reauth --capability codex-max --confirm-repair --json >"$repair_reauth_confirmed_json" 2>"$tmp/repair-run-reauth-confirmed.stderr"
+repair_reauth_confirmed_status=$?
+set -e
+if [ "$repair_reauth_confirmed_status" -eq 0 ]; then
+  printf 'e2e assertion failed: repair run --json should refuse confirmed interactive repair\n' >&2
+  exit 1
+fi
+repair_reauth_confirmed="$(cat "$repair_reauth_confirmed_json")"
+expect_contains "$repair_reauth_confirmed" '"error":"interactive_json_unsupported"' "repair run json refuses interactive execution"
+expect_contains "$repair_reauth_confirmed" '"executed":false' "repair run json does not execute interactive repair"
+test ! -e "$tmp/reauth-home/auth.json"
+
 printf 'e2e: route health does not poison unrelated capability\n'
 cheap_after_quota="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_after_quota" "export OMUX_ACTIVE_ACCOUNT='a1'" "cheap route still uses a1 after expensive quota"

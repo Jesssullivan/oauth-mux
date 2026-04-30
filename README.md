@@ -109,7 +109,9 @@ the stay-afloat decision.
 `repair run` is the explicit mutation boundary. Without `--confirm-repair`, it
 will not open auth flows or run upstream CLI repair commands; it only reports
 whether a route is already selectable, whether no admitted repair exists, or
-which command would require confirmation.
+which command would require confirmation. Confirmed interactive repairs should
+be run without `--json` so upstream CLI login output cannot corrupt machine
+readable output.
 
 First-run Codex subscription path:
 

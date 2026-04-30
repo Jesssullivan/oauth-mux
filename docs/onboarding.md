@@ -147,7 +147,9 @@ exits nonzero when no route has enough evidence to be selected.
 mutation unless `--confirm-repair` is present. Without confirmation, it is safe
 for agents to run because it only reports that a route is already selectable,
 that no admitted repair exists, or that a specific upstream CLI command would
-need user approval.
+need user approval. Confirmed interactive repair is a human foreground flow and
+should be run without `--json`; JSON mode refuses interactive repair execution
+so upstream CLI output cannot corrupt machine-readable output.
 
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the three-account Codex Max shape. That usually means the

@@ -548,6 +548,11 @@ fn runRepairRun(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
         return error.RepairConfirmationRequired;
     }
 
+    if (args.json and evaluation.action.interactive) {
+        try writeRepairRunJsonInteractiveUnsupported(writer, allocator, parsed.value, evaluation, args);
+        return error.RepairConfirmationRequired;
+    }
+
     const command = try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route);
     defer if (command) |value| allocator.free(value);
 
@@ -656,6 +661,24 @@ fn writeRepairRunConfirmationJson(
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"ok\":false,\"executed\":false,\"confirmation_required\":true,\"requires\":\"--confirm-repair\",\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"route\":");
+    try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, false);
+    try writer.writeAll("}\n");
+}
+
+fn writeRepairRunJsonInteractiveUnsupported(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+    args: cli.Command.RepairRunArgs,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":false,\"executed\":false,\"confirmation_required\":false,\"error\":\"interactive_json_unsupported\",\"message\":\"interactive repair may write upstream CLI output; rerun without --json after reviewing repair-plan\",\"profile\":");
     if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
     if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
@@ -5414,6 +5437,53 @@ test "repair run confirmation json refuses mutating reauth by default" {
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"confirmation_required\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"requires\":\"--confirm-repair\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+}
+
+test "repair run json refuses confirmed interactive repair execution" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "config_dir": "/tmp/oauth-mux-test/max-1",
+        \\          "secret": { "backend": "file", "path": "/tmp/oauth-mux-test/max-1/auth.json" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const evaluation = RouteEvaluation{
+        .route = route,
+        .runtime = .{ .needs_reauth = .{ .methods = &.{"upstream_cli_login"}, .reason = "session_file_missing" } },
+        .health = null,
+        .budget = .spend_provider,
+        .action = reauthAction(route, provider_schema.codex_def),
+        .selectable = false,
+        .skip_reason = "needs_reauth",
+    };
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRepairRunJsonInteractiveUnsupported(buf.writer(), std.testing.allocator, parsed.value, evaluation, .{
+        .provider = "codex",
+        .account = "max-1",
+        .capability = "codex-max",
+        .confirm_repair = true,
+        .json = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"error\":\"interactive_json_unsupported\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"executed\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
 }
 
