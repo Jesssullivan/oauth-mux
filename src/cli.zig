@@ -107,6 +107,7 @@ pub const Command = union(enum) {
         canary,
         probe_all,
         config_candidate,
+        config_merge,
     };
 
     pub const CodexArgs = struct {
@@ -120,6 +121,8 @@ pub const Command = union(enum) {
         live: bool = false,
         json: bool = false,
         output: ?[]const u8 = null,
+        candidate: ?[]const u8 = null,
+        backup: ?[]const u8 = null,
     };
 
     pub const CompletionsArgs = struct {
@@ -386,6 +389,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .probe_all;
         } else if (eql(args[0], "config-candidate")) {
             result.action = .config_candidate;
+        } else if (eql(args[0], "config-merge")) {
+            result.action = .config_merge;
         } else {
             result.action = .canary;
             option_start = 0;
@@ -416,6 +421,12 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
         } else if (eql(args[i], "--output")) {
             i += 1;
             if (i < args.len) result.output = args[i];
+        } else if (eql(args[i], "--candidate")) {
+            i += 1;
+            if (i < args.len) result.candidate = args[i];
+        } else if (eql(args[i], "--backup")) {
+            i += 1;
+            if (i < args.len) result.backup = args[i];
         } else if (eql(args[i], "--device")) {
             result.device = true;
         } else if (eql(args[i], "--status-only")) {
@@ -504,6 +515,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex config-candidate [--output path] [--store-root path] [--json]
         \\      Write a non-overwriting Codex Max config candidate.
         \\
+        \\  codex config-merge [--candidate path] [--backup path] [--json]
+        \\      Merge a reviewed Codex Max candidate into the active config with backup.
+        \\
         \\  codex login <account> | login-device <account> | login-status [account] | login-status-all
         \\      Codex account login/status helpers using isolated CODEX_HOME dirs.
         \\
@@ -536,6 +550,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
         \\  oauth-mux codex config-candidate [--output path] [--store-root path] [--json]
+        \\  oauth-mux codex config-merge [--candidate path] [--backup path] [--json]
         \\  oauth-mux codex bootstrap-dirs [--accounts a,b,c] [--store-root path]
         \\  oauth-mux codex login <account> [--store-root path]
         \\  oauth-mux codex login-device <account> [--store-root path]
@@ -680,6 +695,20 @@ test "parse codex config candidate" {
         .codex => |codex| {
             try std.testing.expect(codex.action == .config_candidate);
             try std.testing.expectEqualStrings("/tmp/codex-max.config.json", codex.output.?);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex config merge" {
+    const args = [_][]const u8{ "codex", "config-merge", "--candidate", "/tmp/candidate.json", "--backup", "/tmp/config.backup.json", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .config_merge);
+            try std.testing.expectEqualStrings("/tmp/candidate.json", codex.candidate.?);
+            try std.testing.expectEqualStrings("/tmp/config.backup.json", codex.backup.?);
             try std.testing.expect(codex.json);
         },
         else => return error.Unexpected,
@@ -831,7 +860,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary probe-all config-candidate bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status' -d 'Daemon subcommand'
             \\
         );

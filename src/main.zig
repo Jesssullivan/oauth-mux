@@ -2777,6 +2777,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .canary => try runCodexCanary(allocator, writer, args, root),
         .probe_all => try runCodexProbeAll(allocator, writer, args),
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
+        .config_merge => try runCodexConfigMerge(allocator, writer, args),
     }
 }
 
@@ -2945,6 +2946,8 @@ fn writeCodexConfigCandidateResult(
     defer allocator.free(repair_cmd);
     const canary_cmd = try std.fmt.allocPrint(allocator, "OMUX_CONFIG={s} oauth-mux codex canary", .{quoted_candidate_path});
     defer allocator.free(canary_cmd);
+    const merge_cmd = try std.fmt.allocPrint(allocator, "oauth-mux codex config-merge --candidate {s}", .{quoted_candidate_path});
+    defer allocator.free(merge_cmd);
 
     if (json) {
         try writer.writeAll("{\"created\":");
@@ -2961,6 +2964,8 @@ fn writeCodexConfigCandidateResult(
         try writeCommandJson(writer, repair_cmd);
         try writer.writeByte(',');
         try writeCommandJson(writer, canary_cmd);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, merge_cmd);
         try writer.writeAll("]}\n");
         return;
     }
@@ -2975,6 +2980,277 @@ fn writeCodexConfigCandidateResult(
     try writer.print("  {s}\n", .{status_cmd});
     try writer.print("  {s}\n", .{repair_cmd});
     try writer.print("  {s}\n", .{canary_cmd});
+    try writer.print("  {s}\n", .{merge_cmd});
+}
+
+const CodexConfigMergeResult = struct {
+    merged: bool,
+    backup_created: bool,
+    reason: []const u8,
+};
+
+fn runCodexConfigMerge(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const active_config_path = try paths.configFilePath(allocator);
+    defer allocator.free(active_config_path);
+
+    const candidate_path = if (args.candidate) |candidate|
+        try paths.expandTilde(allocator, candidate)
+    else
+        try defaultCodexConfigCandidatePath(allocator, active_config_path);
+    defer allocator.free(candidate_path);
+
+    const backup_path = if (args.backup) |backup|
+        try paths.expandTilde(allocator, backup)
+    else
+        try defaultCodexConfigBackupPath(allocator, active_config_path);
+    defer allocator.free(backup_path);
+
+    const result = try mergeCodexConfigCandidate(allocator, active_config_path, candidate_path, backup_path);
+    try writeCodexConfigMergeResult(writer, active_config_path, candidate_path, backup_path, result, args.json);
+}
+
+fn defaultCodexConfigBackupPath(allocator: std.mem.Allocator, active_config_path: []const u8) ![]const u8 {
+    return try std.fmt.allocPrint(allocator, "{s}.backup-{d}", .{ active_config_path, std.time.timestamp() });
+}
+
+fn mergeCodexConfigCandidate(
+    allocator: std.mem.Allocator,
+    active_config_path: []const u8,
+    candidate_path: []const u8,
+    backup_path: []const u8,
+) !CodexConfigMergeResult {
+    var active = try config.loadFromPath(allocator, active_config_path);
+    defer active.deinit();
+    try config.validate(active.value, std.io.null_writer);
+
+    if (codexMaxShapeConfigured(active.value)) {
+        return .{
+            .merged = false,
+            .backup_created = false,
+            .reason = "active_config_already_codex_max",
+        };
+    }
+
+    var candidate = try config.loadFromPath(allocator, candidate_path);
+    defer candidate.deinit();
+    try config.validate(candidate.value, std.io.null_writer);
+    if (!codexMaxShapeConfigured(candidate.value)) return error.ConfigValidationError;
+
+    var merged_buf = std.ArrayList(u8).init(allocator);
+    defer merged_buf.deinit();
+    try writeMergedCodexConfigJson(merged_buf.writer(), active.value, candidate.value);
+
+    const merged = try config.loadFromBytes(allocator, merged_buf.items);
+    defer merged.deinit();
+    try config.validate(merged.value, std.io.null_writer);
+    if (!codexMaxShapeConfigured(merged.value)) return error.ConfigValidationError;
+
+    if (fileExistsAbsolute(backup_path)) return error.PathAlreadyExists;
+    if (std.fs.path.dirname(active_config_path)) |dir| try std.fs.cwd().makePath(dir);
+
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp-{x}", .{ active_config_path, std.crypto.random.int(u64) });
+    defer allocator.free(tmp_path);
+
+    const tmp_file = try std.fs.createFileAbsolute(tmp_path, .{ .exclusive = true, .mode = 0o600 });
+    errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
+    {
+        defer tmp_file.close();
+        try tmp_file.writeAll(merged_buf.items);
+    }
+
+    try std.fs.renameAbsolute(active_config_path, backup_path);
+    std.fs.renameAbsolute(tmp_path, active_config_path) catch |e| {
+        std.fs.renameAbsolute(backup_path, active_config_path) catch {};
+        return e;
+    };
+
+    return .{
+        .merged = true,
+        .backup_created = true,
+        .reason = "merged_codex_max_candidate",
+    };
+}
+
+fn writeMergedCodexConfigJson(writer: anytype, active: config.Config, candidate: config.Config) !void {
+    const codex_provider = candidate.providers.map.get("codex") orelse return error.ConfigValidationError;
+    const codex_max_profile = candidate.profiles.map.get("codex-max") orelse return error.ConfigValidationError;
+    const codex_mini_profile = candidate.profiles.map.get("codex-mini") orelse return error.ConfigValidationError;
+    const health_weighted = candidate.strategies.map.get("health-weighted") orelse return error.ConfigValidationError;
+
+    try writer.writeAll("{\"version\":");
+    try writer.print("{d}", .{active.version});
+    try writer.writeAll(",\"defaults\":");
+    try std.json.stringify(active.defaults, .{}, writer);
+    try writer.writeAll(",\"provider_definitions\":");
+    try std.json.stringify(active.provider_definitions, .{}, writer);
+    try writer.writeAll(",\"providers\":{");
+
+    var first = true;
+    var wrote_codex = false;
+    var provider_it = active.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+
+        const provider_name = entry.key_ptr.*;
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeByte(':');
+        if (std.mem.eql(u8, provider_name, "codex")) {
+            try writeMergedCodexProviderJson(writer, entry.value_ptr.*, codex_provider);
+            wrote_codex = true;
+        } else {
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        }
+    }
+    if (!wrote_codex) {
+        if (!first) try writer.writeByte(',');
+        try std.json.stringify("codex", .{}, writer);
+        try writer.writeByte(':');
+        try writeMergedCodexProviderJson(writer, null, codex_provider);
+    }
+
+    try writer.writeAll("},\"profiles\":{");
+    first = true;
+    var profile_it = active.profiles.map.iterator();
+    while (profile_it.next()) |entry| {
+        const profile_name = entry.key_ptr.*;
+        if (std.mem.eql(u8, profile_name, "codex-max") or std.mem.eql(u8, profile_name, "codex-mini")) continue;
+
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(profile_name, .{}, writer);
+        try writer.writeByte(':');
+        try std.json.stringify(entry.value_ptr.*, .{}, writer);
+    }
+    if (!first) try writer.writeByte(',');
+    try std.json.stringify("codex-max", .{}, writer);
+    try writer.writeByte(':');
+    try std.json.stringify(codex_max_profile, .{}, writer);
+    try writer.writeByte(',');
+    try std.json.stringify("codex-mini", .{}, writer);
+    try writer.writeByte(':');
+    try std.json.stringify(codex_mini_profile, .{}, writer);
+
+    try writer.writeAll("},\"strategies\":{");
+    first = true;
+    var wrote_health_weighted = false;
+    var strategy_it = active.strategies.map.iterator();
+    while (strategy_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+
+        const strategy_name = entry.key_ptr.*;
+        try std.json.stringify(strategy_name, .{}, writer);
+        try writer.writeByte(':');
+        try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        if (std.mem.eql(u8, strategy_name, "health-weighted")) wrote_health_weighted = true;
+    }
+
+    if (!wrote_health_weighted) {
+        if (!first) try writer.writeByte(',');
+        try std.json.stringify("health-weighted", .{}, writer);
+        try writer.writeByte(':');
+        try std.json.stringify(health_weighted, .{}, writer);
+    }
+
+    try writer.writeAll("}}\n");
+}
+
+fn writeMergedCodexProviderJson(
+    writer: anytype,
+    active_provider: ?config.ProviderConfig,
+    candidate_provider: config.ProviderConfig,
+) !void {
+    try writer.writeAll("{\"kind\":");
+    try std.json.stringify(candidate_provider.kind, .{}, writer);
+    try writer.writeAll(",\"config_dir_env\":");
+    if (candidate_provider.config_dir_env) |config_dir_env| {
+        try std.json.stringify(config_dir_env, .{}, writer);
+    } else if (active_provider) |provider_cfg| {
+        if (provider_cfg.config_dir_env) |config_dir_env| {
+            try std.json.stringify(config_dir_env, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"accounts\":{");
+
+    var first = true;
+    if (active_provider) |provider_cfg| {
+        var active_account_it = provider_cfg.accounts.map.iterator();
+        while (active_account_it.next()) |entry| {
+            const account_name = entry.key_ptr.*;
+            if (candidate_provider.accounts.map.get(account_name) != null) continue;
+
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try std.json.stringify(account_name, .{}, writer);
+            try writer.writeByte(':');
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        }
+    }
+
+    var candidate_account_it = candidate_provider.accounts.map.iterator();
+    while (candidate_account_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        try writer.writeByte(':');
+        try std.json.stringify(entry.value_ptr.*, .{}, writer);
+    }
+
+    try writer.writeAll("}}");
+}
+
+fn writeCodexConfigMergeResult(
+    writer: anytype,
+    active_config_path: []const u8,
+    candidate_path: []const u8,
+    backup_path: []const u8,
+    result: CodexConfigMergeResult,
+    json: bool,
+) !void {
+    if (json) {
+        try writer.writeAll("{\"merged\":");
+        try writer.writeAll(if (result.merged) "true" else "false");
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(result.reason, .{}, writer);
+        try writer.writeAll(",\"active_config\":");
+        try std.json.stringify(active_config_path, .{}, writer);
+        try writer.writeAll(",\"candidate_config\":");
+        try std.json.stringify(candidate_path, .{}, writer);
+        try writer.writeAll(",\"backup_config\":");
+        if (result.backup_created) {
+            try std.json.stringify(backup_path, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"next_commands\":[");
+        try writeCommandJson(writer, "oauth-mux doctor --json");
+        try writer.writeByte(',');
+        try writeCommandJson(writer, "oauth-mux setup codex --status-only");
+        try writer.writeByte(',');
+        try writeCommandJson(writer, "oauth-mux codex canary");
+        try writer.writeAll("]}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux Codex Max config merge\n\n");
+    try writer.print("active config:    {s}\n", .{active_config_path});
+    try writer.print("candidate config: {s}\n", .{candidate_path});
+    if (result.backup_created) {
+        try writer.print("backup config:    {s}\n", .{backup_path});
+    } else {
+        try writer.writeAll("backup config:    not created\n");
+    }
+    try writer.print("merged:           {s}\n", .{if (result.merged) "yes" else "no"});
+    try writer.print("reason:           {s}\n\n", .{result.reason});
+    try writer.writeAll("next:\n");
+    try writer.writeAll("  oauth-mux doctor --json\n");
+    try writer.writeAll("  oauth-mux setup codex --status-only\n");
+    try writer.writeAll("  oauth-mux codex canary\n");
 }
 
 fn shellQuoteAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -3240,6 +3516,93 @@ test "doctor json recommends Codex Max candidate for single-account drift" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"codex_max_configured\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"severity\":\"warning\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux codex config-candidate --json") != null);
+}
+
+test "mergeCodexConfigCandidate preserves unrelated active providers" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const active_path = try std.fs.path.join(std.testing.allocator, &.{ root, "config.json" });
+    defer std.testing.allocator.free(active_path);
+    const candidate_path = try std.fs.path.join(std.testing.allocator, &.{ root, "codex-max.config.json" });
+    defer std.testing.allocator.free(candidate_path);
+    const backup_path = try std.fs.path.join(std.testing.allocator, &.{ root, "config.backup.json" });
+    defer std.testing.allocator.free(backup_path);
+
+    const active_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "personal": {
+        \\          "secret": { "backend": "env", "variable": "CLAUDE_TOKEN" }
+        \\        }
+        \\      }
+        \\    },
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "config_dir_env": "CODEX_HOME",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "default": {
+        \\      "providers": ["claude:personal", "codex:default"],
+        \\      "strategy": "health-weighted"
+        \\    }
+        \\  },
+        \\  "strategies": {
+        \\    "health-weighted": {
+        \\      "kind": "health-weighted",
+        \\      "rate_limit_penalty": -10,
+        \\      "failure_penalty": -20,
+        \\      "success_bonus": 1
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    {
+        const file = try std.fs.createFileAbsolute(active_path, .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(active_json);
+    }
+    {
+        const file = try std.fs.createFileAbsolute(candidate_path, .{ .mode = 0o600 });
+        defer file.close();
+        try writeCodexMaxStarterConfig(std.testing.allocator, file.writer(), "/tmp/omux-codex");
+    }
+
+    const result = try mergeCodexConfigCandidate(std.testing.allocator, active_path, candidate_path, backup_path);
+    try std.testing.expect(result.merged);
+    try std.testing.expect(result.backup_created);
+
+    const merged = try config.loadFromPath(std.testing.allocator, active_path);
+    defer merged.deinit();
+    try config.validate(merged.value, std.io.null_writer);
+    try std.testing.expect(codexMaxShapeConfigured(merged.value));
+    try std.testing.expect(merged.value.providers.map.get("claude") != null);
+    try std.testing.expect(merged.value.profiles.map.get("default") != null);
+
+    const backup = try config.loadFromPath(std.testing.allocator, backup_path);
+    defer backup.deinit();
+    try config.validate(backup.value, std.io.null_writer);
+    try std.testing.expect(!codexMaxShapeConfigured(backup.value));
+    try std.testing.expect(backup.value.providers.map.get("claude") != null);
+
+    const noop = try mergeCodexConfigCandidate(std.testing.allocator, active_path, candidate_path, backup_path);
+    try std.testing.expect(!noop.merged);
+    try std.testing.expect(!noop.backup_created);
+    try std.testing.expectEqualStrings("active_config_already_codex_max", noop.reason);
 }
 
 test "writeHealthJson includes redacted liveness" {
