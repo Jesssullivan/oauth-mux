@@ -178,6 +178,92 @@ if [ "$(cat "$config_path")" != "$config_before" ]; then
   exit 1
 fi
 
+printf 'first-run e2e: config-merge backs up drift config and preserves other providers\n'
+drift_dir="$tmp/drift"
+mkdir -p "$drift_dir"
+drift_config="$drift_dir/config.json"
+drift_candidate="$drift_dir/codex-max.config.json"
+drift_backup="$drift_dir/config.backup.json"
+drift_store_root="$tmp/drift-data/codex"
+cat >"$drift_config" <<'JSON'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "kind": "claude",
+      "accounts": {
+        "personal": {
+          "secret": { "backend": "env", "variable": "CLAUDE_TOKEN" }
+        }
+      }
+    },
+    "codex": {
+      "kind": "codex",
+      "config_dir_env": "CODEX_HOME",
+      "accounts": {
+        "default": {
+          "secret": { "backend": "env", "variable": "CODEX_TOKEN" }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "default": {
+      "providers": ["claude:personal", "codex:default"],
+      "strategy": "health-weighted"
+    }
+  },
+  "strategies": {
+    "health-weighted": {
+      "kind": "health-weighted",
+      "rate_limit_penalty": -10,
+      "failure_penalty": -20,
+      "success_bonus": 1
+    }
+  }
+}
+JSON
+drift_omux() (
+  unset OMUX_CONFIG_DIR
+  unset OMUX_STATE_DIR
+  export HOME="$home"
+  export XDG_CONFIG_HOME="$xdg_config"
+  export XDG_STATE_HOME="$xdg_state"
+  export XDG_DATA_HOME="$xdg_data"
+  export XDG_RUNTIME_DIR="$xdg_runtime"
+  export OMUX_CONFIG="$drift_config"
+  export OMUX_CODEX_STORE_ROOT="$drift_store_root"
+  "$bin" "$@"
+)
+drift_candidate_json="$tmp/drift-config-candidate.json"
+drift_omux codex config-candidate --output "$drift_candidate" --json >"$drift_candidate_json"
+jq -e --arg path "$drift_candidate" '
+  .created == true
+  and .candidate_config == $path
+  and any(.next_commands[]; contains("oauth-mux codex config-merge --candidate") and contains($path))
+' "$drift_candidate_json" >/dev/null
+drift_merge_json="$tmp/drift-config-merge.json"
+drift_omux codex config-merge --candidate "$drift_candidate" --backup "$drift_backup" --json >"$drift_merge_json"
+jq -e --arg backup "$drift_backup" '
+  .merged == true
+  and .backup_config == $backup
+  and .reason == "merged_codex_max_candidate"
+' "$drift_merge_json" >/dev/null
+test -f "$drift_backup"
+jq -e '
+  (.providers.claude.accounts.personal.secret.backend == "env")
+  and (.providers.codex.accounts.default.secret.backend == "env")
+  and (.providers.codex.accounts["max-1"].secret.backend == "file")
+  and (.providers.codex.accounts["max-2"].secret.backend == "file")
+  and (.providers.codex.accounts["max-3"].secret.backend == "file")
+  and (.profiles["codex-max"].providers | length) == 3
+  and (.profiles.default.providers | index("claude:personal") != null)
+' "$drift_config" >/dev/null
+jq -e '
+  (.providers.claude.accounts.personal.secret.backend == "env")
+  and (.providers.codex.accounts.default.secret.backend == "env")
+' "$drift_backup" >/dev/null
+
 printf 'first-run e2e: support report is redacted JSON\n'
 report_json="$tmp/report.json"
 run_json "$report_json" report --redacted --json

@@ -126,10 +126,17 @@ cannot stay afloat.
 The command writes `codex-max.config.json` next to the active config, refuses to
 overwrite an existing candidate, validates the generated JSON before writing,
 and prints exact `OMUX_CONFIG=...` commands for `config validate`,
-`setup codex --status-only`, `repair-plan`, and `codex canary`. After reviewing
-that candidate, either run commands with `OMUX_CONFIG=<candidate>` or merge the
-`max-1`, `max-2`, `max-3`, `codex-max`, and `codex-mini` blocks into the active
-config deliberately.
+`setup codex --status-only`, `repair-plan`, and `codex canary`. It also prints
+a merge command for after review:
+
+```bash
+oauth-mux codex config-merge --candidate ~/.config/oauth-mux/codex-max.config.json
+```
+
+`config-merge` validates the reviewed candidate, refuses invalid Codex Max
+shapes, backs up the active config, and merges only the `codex` provider plus
+the `codex-max` and `codex-mini` profiles. Existing non-Codex providers and
+profiles remain in the active config.
 
 Codex subcommand help is non-mutating. These commands print usage without
 creating `CODEX_HOME` directories, checking login status, or running probes:
@@ -156,8 +163,8 @@ just first-run-e2e
 That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
 and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
 diagnostics, redacted support output, repair-plan route explanation,
-non-clobbering config-candidate generation, and non-mutating Codex help without
-touching the operator's real OAuth stores.
+non-clobbering config-candidate generation, config-merge backup behavior, and
+non-mutating Codex help without touching the operator's real OAuth stores.
 
 ## Agent Discovery Contract
 

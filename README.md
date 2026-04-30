@@ -92,11 +92,14 @@ sidecar Codex Max candidate without overwriting it:
 
 ```bash
 oauth-mux codex config-candidate
+oauth-mux codex config-merge --candidate ~/.config/oauth-mux/codex-max.config.json
 ```
 
 `oauth-mux doctor --json` and `oauth-mux discover --json` expose
 `codex_max_configured`; when it is false for a Codex config, they recommend that
-same candidate command.
+same candidate command. `config-merge` validates the candidate, backs up the
+active config, and merges only the Codex Max provider/profiles into place so
+other configured providers remain intact.
 
 Run the deterministic no-secret E2E harness:
 
