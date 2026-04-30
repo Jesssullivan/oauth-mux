@@ -499,7 +499,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  config path        Print the config file path.
         \\
         \\  daemon run         Run the daemon in the foreground.
-        \\  daemon start       Start background token refresh daemon.
+        \\  daemon start       Start experimental daemon stub; no automatic repair.
         \\  daemon stop        Stop the daemon.
         \\  daemon status      Show daemon status.
         \\
