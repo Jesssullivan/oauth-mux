@@ -1,6 +1,6 @@
 # Install Beta Matrix
 
-Updated: 2026-04-29
+Updated: 2026-04-30
 
 This matrix tracks clean-install proof for the public adoption surfaces. It is
 operator evidence, not a credential runbook: do not paste OAuth stores, `.env`
@@ -18,6 +18,7 @@ files, SOPS plaintext, or token-shaped values here.
 | deb package | 0.1.3 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25137323710` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.3 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25137323710` installed package and ran `/usr/bin/oauth-mux version`. |
 | lab dogfood | 0.1.3 | `../lab` on macOS arm64 | installed `oauth-mux` CLI | Pass | Installed `oauth-mux doctor --json` reports `ok: true` against local config/state. |
+| first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, redacted report, and non-mutating Codex help. |
 
 ## Evidence Commands
 
@@ -86,6 +87,18 @@ Expected output includes:
 
 ```text
 Homebrew install QA passed for oauth-mux 0.1.3 via tinyland/tools/oauth-mux
+```
+
+First-run source e2e:
+
+```bash
+just first-run-e2e
+```
+
+Expected output includes:
+
+```text
+first-run e2e passed
 ```
 
 To keep the formula installed after dogfood QA:
