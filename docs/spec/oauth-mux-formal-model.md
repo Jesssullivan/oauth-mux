@@ -202,6 +202,25 @@ A credential may be live for one capability and unusable for another. Examples:
 - Figma MCP auth is valid, but the tool schema is rejected by a client.
 - Linear MCP OAuth is valid, but a tool call needs additional scopes.
 
+Stay-afloat adds a separate runtime-readiness axis:
+
+```zig
+RuntimeReadiness =
+    ready
+  | missing_binary
+  | permission_denied
+  | unwritable_store
+  | session_unavailable
+  | sandbox_blocked
+  | needs_reauth
+  | repair_in_progress
+```
+
+This must stay separate from credential liveness. A provider CLI that cannot
+write its session directory is not an OAuth-dead account. A revoked token is not
+a platform service failure. Selection should require both an acceptable
+credential state and `ready` runtime state.
+
 ## Availability Semantics
 
 Availability describes capacity, not identity:
