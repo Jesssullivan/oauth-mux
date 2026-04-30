@@ -121,6 +121,13 @@ readiness instead of racing an upstream CLI login flow. Inspect recent events
 with `oauth-mux daemon events --json`; this does not require the daemon to be
 running.
 
+Daemon admission is policy-gated. By default, background/daemon planning admits
+only `free_local` and `free_command` work; `cheap_provider`, `spend_provider`,
+`interactive`, and `mutating` actions are reported as refused until the config
+explicitly allows them. `route explain --json` and `repair-plan --json` include
+the effective policy plus per-route admission decisions so agents can back off
+without guessing.
+
 First-run Codex subscription path:
 
 ```bash

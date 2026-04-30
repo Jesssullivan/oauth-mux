@@ -485,10 +485,17 @@ const RepairAction = struct {
     severity: []const u8,
     message: []const u8,
     command: RepairCommandKind = .none,
+    budget: ?types.ActionBudget = null,
     interactive: bool = false,
     mutating: bool = false,
     retry_after_s: ?u32 = null,
     wait_until: ?i64 = null,
+};
+
+const AdmissionDecision = struct {
+    admitted: bool,
+    reason: []const u8,
+    budget: ?types.ActionBudget = null,
 };
 
 fn runRepairPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.RepairPlanArgs) !void {
@@ -981,6 +988,8 @@ fn writeRepairPlanJson(
 ) !void {
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"policy\":");
+    try writePolicyJson(writer, cfg.policy);
     try writer.writeAll(",\"profile\":");
     if (args.profile) |profile_name| {
         try std.json.stringify(profile_name, .{}, writer);
@@ -1029,6 +1038,8 @@ fn writeRepairPlanRouteJson(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"admission\":");
+    try writeRouteAdmissionJson(writer, cfg.policy, action, budget);
     try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessJson(writer, runtime);
     try writer.writeAll(",\"liveness\":");
@@ -1065,6 +1076,8 @@ fn writeRepairActionJson(
     try writer.writeAll(if (action.interactive) "true" else "false");
     try writer.writeAll(",\"mutating\":");
     try writer.writeAll(if (action.mutating) "true" else "false");
+    try writer.writeAll(",\"budget\":");
+    if (action.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"retry_after_s\":");
     if (action.retry_after_s) |retry_after| {
         try writer.print("{d}", .{retry_after});
@@ -1085,6 +1098,112 @@ fn writeRepairActionJson(
         try writer.writeAll("null");
     }
     try writer.writeByte('}');
+}
+
+fn writePolicyJson(writer: anytype, policy: config.PolicyConfig) !void {
+    try writer.writeAll("{\"daemon\":{");
+    try writer.writeAll("\"allowed_budgets\":");
+    try writeBudgetArrayJson(writer, policy.daemon.allowed_budgets);
+    try writer.writeAll(",\"allow_interactive\":");
+    try writer.writeAll(if (policy.daemon.allow_interactive) "true" else "false");
+    try writer.writeAll(",\"allow_mutating\":");
+    try writer.writeAll(if (policy.daemon.allow_mutating) "true" else "false");
+    try writer.writeAll("}}");
+}
+
+fn writeBudgetArrayJson(writer: anytype, budgets: []const types.ActionBudget) !void {
+    try writer.writeByte('[');
+    for (budgets, 0..) |budget, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try std.json.stringify(@tagName(budget), .{}, writer);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeRouteAdmissionJson(
+    writer: anytype,
+    policy: config.PolicyConfig,
+    action: RepairAction,
+    probe_budget: ?types.ActionBudget,
+) !void {
+    const probe = daemonProbeAdmission(policy.daemon, probe_budget);
+    const repair = daemonRepairAdmission(policy.daemon, action);
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"daemon_probe\":");
+    try writeAdmissionDecisionJson(writer, probe);
+    try writer.writeAll(",\"daemon_repair\":");
+    try writeAdmissionDecisionJson(writer, repair);
+    try writer.writeByte('}');
+}
+
+fn writeAdmissionDecisionJson(writer: anytype, decision: AdmissionDecision) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"admitted\":");
+    try writer.writeAll(if (decision.admitted) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(decision.reason, .{}, writer);
+    try writer.writeAll(",\"budget\":");
+    if (decision.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
+    try writer.writeByte('}');
+}
+
+fn daemonProbeAdmission(policy: config.DaemonPolicyConfig, budget: ?types.ActionBudget) AdmissionDecision {
+    const value = budget orelse return .{
+        .admitted = false,
+        .reason = "no_probe_budget",
+    };
+    if (!config.daemonPolicyAllowsBudget(policy, value)) {
+        return .{
+            .admitted = false,
+            .reason = "budget_not_allowed",
+            .budget = value,
+        };
+    }
+    return .{
+        .admitted = true,
+        .reason = "allowed_by_policy",
+        .budget = value,
+    };
+}
+
+fn daemonRepairAdmission(policy: config.DaemonPolicyConfig, action: RepairAction) AdmissionDecision {
+    if (action.command == .probe) {
+        return .{
+            .admitted = true,
+            .reason = "no_repair_action",
+        };
+    }
+    const budget = action.budget orelse return .{
+        .admitted = true,
+        .reason = "no_repair_action",
+    };
+    if (action.interactive and !policy.allow_interactive) {
+        return .{
+            .admitted = false,
+            .reason = "interactive_not_allowed",
+            .budget = budget,
+        };
+    }
+    if (action.mutating and !policy.allow_mutating) {
+        return .{
+            .admitted = false,
+            .reason = "mutating_not_allowed",
+            .budget = budget,
+        };
+    }
+    if (!config.daemonPolicyAllowsBudget(policy, budget)) {
+        return .{
+            .admitted = false,
+            .reason = "budget_not_allowed",
+            .budget = budget,
+        };
+    }
+    return .{
+        .admitted = true,
+        .reason = "allowed_by_policy",
+        .budget = budget,
+    };
 }
 
 fn routeHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) ?health_mod.AccountHealth {
@@ -1121,17 +1240,20 @@ fn repairActionFor(
             .kind = "fix_runtime",
             .severity = "error",
             .message = "required upstream CLI is missing",
+            .budget = .free_local,
         },
         .permission_denied, .unwritable_store, .session_unavailable, .sandbox_blocked => return .{
             .kind = "fix_runtime",
             .severity = "error",
             .message = "runtime is not ready; fix local permissions, store, session, or sandbox access",
+            .budget = .free_local,
         },
         .needs_reauth => return reauthAction(route, def),
         .repair_in_progress => return .{
             .kind = "wait_for_repair",
             .severity = "info",
             .message = "repair is already in progress",
+            .budget = .free_local,
         },
     }
 
@@ -1143,6 +1265,7 @@ fn repairActionFor(
         else
             "no health evidence recorded; run a probe to classify this route",
         .command = .probe,
+        .budget = budget,
     };
 
     return switch (current.liveness) {
@@ -1156,27 +1279,35 @@ fn repairActionFor(
                 .kind = "wait_and_retry",
                 .severity = "warning",
                 .message = "short rate-limit window is active; try another route until retry",
+                .budget = .free_local,
                 .retry_after_s = rl.retry_after_s,
             },
             .quota_exhausted => |quota| .{
                 .kind = "wait_for_quota",
                 .severity = "warning",
                 .message = "quota window is exhausted; use another account until reset",
+                .budget = .free_local,
                 .wait_until = quota.window_resets_at,
             },
             .cooldown => |cooldown| .{
                 .kind = "wait_for_cooldown",
                 .severity = "warning",
                 .message = "local cooldown is active",
+                .budget = .free_local,
                 .wait_until = cooldown.until,
             },
         },
-        .degraded => |degraded| degradedAction(route, def, degraded.reason),
+        .degraded => |degraded| degradedAction(route, def, degraded.reason, budget),
         .dead => reauthAction(route, def),
     };
 }
 
-fn degradedAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinition, reason: types.DegradedReason) RepairAction {
+fn degradedAction(
+    route: RepairPlanRoute,
+    def: provider_schema.ProviderDefinition,
+    reason: types.DegradedReason,
+    budget: ?types.ActionBudget,
+) RepairAction {
     return switch (reason) {
         .step_up_required, .pending_verification, .terms_required => reauthAction(route, def),
         .scope_insufficient => .{
@@ -1184,6 +1315,7 @@ fn degradedAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinitio
             .severity = "warning",
             .message = "credential is valid but lacks required scope or route permission",
             .command = .probe,
+            .budget = budget,
         },
         .tier_insufficient, .subscription_paused => .{
             .kind = "provider_plan",
@@ -1200,6 +1332,7 @@ fn degradedAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinitio
             .severity = "warning",
             .message = "provider returned a route/schema error; inspect provider definition and probe evidence",
             .command = .probe,
+            .budget = budget,
         },
     };
 }
@@ -1211,6 +1344,7 @@ fn reauthAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinition)
             .severity = "error",
             .message = "reauth is owned by the upstream CLI",
             .command = if (std.mem.eql(u8, route.provider, "codex")) .codex_login_device else .none,
+            .budget = .interactive,
             .interactive = true,
             .mutating = true,
         },
@@ -1218,6 +1352,7 @@ fn reauthAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinition)
             .kind = "refresh",
             .severity = "warning",
             .message = "oauth-mux owns refresh for this provider; automatic repair is not enabled by repair-plan",
+            .budget = .mutating,
             .mutating = true,
         },
         .external_secret_owner => .{
@@ -1408,6 +1543,8 @@ fn writeRouteJson(
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"action\":");
     try std.json.stringify(@tagName(args.action), .{}, writer);
+    try writer.writeAll(",\"policy\":");
+    try writePolicyJson(writer, cfg.policy);
     try writer.writeAll(",\"profile\":");
     if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
@@ -1475,6 +1612,8 @@ fn writeRouteEvaluationJson(
     try std.json.stringify(@tagName(def.repair.owner), .{}, writer);
     try writer.writeAll(",\"probe_budget\":");
     if (evaluation.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"admission\":");
+    try writeRouteAdmissionJson(writer, cfg.policy, evaluation.action, evaluation.budget);
     try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessJson(writer, evaluation.runtime);
     try writer.writeAll(",\"liveness\":");
@@ -5422,7 +5561,53 @@ test "repairActionFor warns before spending provider quota without health eviden
     try std.testing.expectEqualStrings("probe_needed", action.kind);
     try std.testing.expectEqualStrings("warning", action.severity);
     try std.testing.expect(action.command == .probe);
+    try std.testing.expectEqual(types.ActionBudget.spend_provider, action.budget.?);
     try std.testing.expect(std.mem.indexOf(u8, action.message, "spend provider quota") != null);
+}
+
+test "daemon admission policy refuses provider spend by default" {
+    const policy = config.PolicyConfig{};
+
+    const spend_probe = daemonProbeAdmission(policy.daemon, .spend_provider);
+    try std.testing.expect(!spend_probe.admitted);
+    try std.testing.expectEqualStrings("budget_not_allowed", spend_probe.reason);
+
+    const free_command = daemonProbeAdmission(policy.daemon, .free_command);
+    try std.testing.expect(free_command.admitted);
+    try std.testing.expectEqualStrings("allowed_by_policy", free_command.reason);
+
+    const probe_action = RepairAction{
+        .kind = "probe_needed",
+        .severity = "warning",
+        .message = "probe",
+        .command = .probe,
+        .budget = .spend_provider,
+    };
+    const probe_repair = daemonRepairAdmission(policy.daemon, probe_action);
+    try std.testing.expect(probe_repair.admitted);
+    try std.testing.expectEqualStrings("no_repair_action", probe_repair.reason);
+
+    const reauth = RepairAction{
+        .kind = "reauth",
+        .severity = "error",
+        .message = "reauth",
+        .budget = .interactive,
+        .interactive = true,
+        .mutating = true,
+    };
+    const repair = daemonRepairAdmission(policy.daemon, reauth);
+    try std.testing.expect(!repair.admitted);
+    try std.testing.expectEqualStrings("interactive_not_allowed", repair.reason);
+}
+
+test "writePolicyJson exposes effective daemon admission policy" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writePolicyJson(buf.writer(), .{});
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allowed_budgets\":[\"free_local\",\"free_command\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allow_interactive\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allow_mutating\":false") != null);
 }
 
 test "repairActionFor classifies quota exhaustion as wait action" {

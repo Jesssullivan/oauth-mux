@@ -43,6 +43,9 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
   reads local state and does not require a daemon process.
 - Account-scoped advisory locks during confirmed `repair run`, reported back as
   `repair_in_progress` by runtime-aware route planning.
+- Config-level daemon admission policy for route planning. The default admits
+  only `free_local` and `free_command` budgets; provider calls, provider-spend,
+  interactive auth, and mutation remain refused unless explicitly configured.
 - Local experimentation with daemon socket/status behavior.
 - Future manual QA where daemon activity is bounded and visible.
 
