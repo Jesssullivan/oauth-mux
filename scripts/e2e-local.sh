@@ -365,6 +365,13 @@ expect_contains "$daemon_handoff" '"admitted":false' "daemon handoff preserves d
 expect_contains "$daemon_handoff" '"command":"oauth-mux codex login-device max-1"' "daemon handoff reports upstream login command"
 test ! -e "$tmp/reauth-home/auth.json"
 
+printf 'e2e: daemon handoffs exposes queued user-mediated repair actions\n'
+daemon_handoffs="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json)"
+expect_contains "$daemon_handoffs" '"handoffs":[' "daemon handoffs returns json handoff list"
+expect_contains "$daemon_handoffs" '"kind":"daemon_handoff"' "daemon handoffs includes handoff events"
+expect_contains "$daemon_handoffs" '"outcome":"handoff_queued"' "daemon handoffs includes queued outcome"
+expect_contains "$daemon_handoffs" '"command":"oauth-mux codex login-device max-1"' "daemon handoffs includes upstream command"
+
 repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"
 set +e
 OMUX_CONFIG="$reauth_config" \

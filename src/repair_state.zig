@@ -51,15 +51,31 @@ pub fn appendEvent(allocator: std.mem.Allocator, event: RepairEvent) !void {
 }
 
 pub fn writeEvents(allocator: std.mem.Allocator, writer: anytype, json: bool, limit: usize) !void {
+    try writeEventView(allocator, writer, json, limit, "events", null, "no repair events recorded");
+}
+
+pub fn writeHandoffs(allocator: std.mem.Allocator, writer: anytype, json: bool, limit: usize) !void {
+    try writeEventView(allocator, writer, json, limit, "handoffs", "daemon_handoff", "no daemon handoffs recorded");
+}
+
+fn writeEventView(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    json: bool,
+    limit: usize,
+    root_key: []const u8,
+    filter_kind: ?[]const u8,
+    empty_text: []const u8,
+) !void {
     const path = try eventsPath(allocator);
     defer allocator.free(path);
 
     const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
         error.FileNotFound => {
             if (json) {
-                try writer.writeAll("{\"events\":[]}\n");
+                try writeEmptyJsonView(writer, root_key);
             } else {
-                try writer.writeAll("no repair events recorded\n");
+                try writer.print("{s}\n", .{empty_text});
             }
             return;
         },
@@ -70,26 +86,45 @@ pub fn writeEvents(allocator: std.mem.Allocator, writer: anytype, json: bool, li
     const bytes = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(bytes);
 
-    if (!json) {
-        try writeLastTextLines(writer, bytes, limit);
-        return;
-    }
-
-    try writer.writeAll("{\"events\":[");
     var lines = std.ArrayList([]const u8).init(allocator);
     defer lines.deinit();
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len != 0) try lines.append(trimmed);
+        if (trimmed.len != 0 and eventLineMatchesKind(trimmed, filter_kind)) try lines.append(trimmed);
+    }
+
+    if (lines.items.len == 0 and !json) {
+        try writer.print("{s}\n", .{empty_text});
+        return;
     }
 
     const start = if (limit != 0 and lines.items.len > limit) lines.items.len - limit else 0;
+
+    if (!json) {
+        try writeTextLines(writer, lines.items[start..]);
+        return;
+    }
+
+    try writer.print("{{\"{s}\":[", .{root_key});
     for (lines.items[start..], 0..) |line, idx| {
         if (idx > 0) try writer.writeByte(',');
         try writer.writeAll(line);
     }
     try writer.writeAll("]}\n");
+}
+
+fn writeEmptyJsonView(writer: anytype, root_key: []const u8) !void {
+    try writer.print("{{\"{s}\":[]}}\n", .{root_key});
+}
+
+fn eventLineMatchesKind(line: []const u8, filter_kind: ?[]const u8) bool {
+    const kind = filter_kind orelse return true;
+    const marker = "\"kind\":\"";
+    const pos = std.mem.indexOf(u8, line, marker) orelse return false;
+    const value_start = pos + marker.len;
+    const value_end_delta = std.mem.indexOfScalar(u8, line[value_start..], '"') orelse return false;
+    return std.mem.eql(u8, line[value_start .. value_start + value_end_delta], kind);
 }
 
 pub fn acquireRepairLock(
@@ -265,24 +300,10 @@ fn writeEventJson(writer: anytype, event: RepairEvent) !void {
     try writer.writeByte('}');
 }
 
-fn writeLastTextLines(writer: anytype, bytes: []const u8, limit: usize) !void {
-    var count: usize = 0;
-    var it_count = std.mem.splitScalar(u8, bytes, '\n');
-    while (it_count.next()) |line| {
-        if (std.mem.trim(u8, line, " \t\r").len != 0) count += 1;
-    }
-
-    const skip = if (limit != 0 and count > limit) count - limit else 0;
-    var seen: usize = 0;
-    var it = std.mem.splitScalar(u8, bytes, '\n');
-    while (it.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0) continue;
-        if (seen >= skip) {
-            try writer.writeAll(trimmed);
-            try writer.writeByte('\n');
-        }
-        seen += 1;
+fn writeTextLines(writer: anytype, lines: []const []const u8) !void {
+    for (lines) |line| {
+        try writer.writeAll(line);
+        try writer.writeByte('\n');
     }
 }
 
@@ -317,6 +338,13 @@ test "repair event json is redacted and structured" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"profile\":\"codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"account\":\"max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "token") == null);
+}
+
+test "event kind filtering keeps daemon handoffs only" {
+    try std.testing.expect(eventLineMatchesKind("{\"kind\":\"daemon_handoff\"}", "daemon_handoff"));
+    try std.testing.expect(!eventLineMatchesKind("{\"kind\":\"repair_run\"}", "daemon_handoff"));
+    try std.testing.expect(!eventLineMatchesKind("{\"kind\":\"repair_run\",\"reason\":\"daemon_handoff\"}", "daemon_handoff"));
+    try std.testing.expect(eventLineMatchesKind("{\"kind\":\"repair_run\"}", null));
 }
 
 test "refresh event json carries redacted writeback evidence" {

@@ -162,6 +162,9 @@ pub fn main() !void {
         .daemon_events => |events_args| {
             try repair_state.writeEvents(allocator, stdout, events_args.json, events_args.limit);
         },
+        .daemon_handoffs => |events_args| {
+            try repair_state.writeHandoffs(allocator, stdout, events_args.json, events_args.limit);
+        },
         .daemon_tick => |tick_args| {
             runDaemonTick(allocator, stdout, tick_args) catch |e| {
                 log.err("daemon tick: {s}", .{@errorName(e)});
