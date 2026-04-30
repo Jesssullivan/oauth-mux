@@ -134,6 +134,13 @@ pub fn main() !void {
             };
         },
 
+        .stay_afloat => |tick_args| {
+            runDaemonTick(allocator, stdout, tick_args, "oauth-mux stay-afloat") catch |e| {
+                log.err("stay-afloat: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -166,7 +173,7 @@ pub fn main() !void {
             try repair_state.writeHandoffs(allocator, stdout, events_args.json, events_args.limit, events_args.all);
         },
         .daemon_tick => |tick_args| {
-            runDaemonTick(allocator, stdout, tick_args) catch |e| {
+            runDaemonTick(allocator, stdout, tick_args, "oauth-mux daemon tick") catch |e| {
                 log.err("daemon tick: {s}", .{@errorName(e)});
                 std.process.exit(exitCodeFromPipelineError(e));
             };
@@ -356,7 +363,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux route explain --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux route select --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair-plan --profile <profile> --capability <capability> --json\n");
-    try writer.writeAll("    oauth-mux daemon tick --once --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair run --profile <profile> --capability <capability> --json\n");
     if (codex_configured and !codex_max_configured) {
         try writer.writeAll("    oauth-mux codex config-candidate --json\n");
@@ -462,7 +469,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux route explain --profile <profile> --capability <capability> --json",
         "oauth-mux route select --profile <profile> --capability <capability> --json",
         "oauth-mux repair-plan --profile <profile> --capability <capability> --json",
-        "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json",
+        "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json",
         "oauth-mux repair run --profile <profile> --capability <capability> --json",
         "oauth-mux env --profile <profile> --capability <capability> --shell <shell>",
         "oauth-mux exec --profile <profile> --capability <capability> -- <command>",
@@ -1481,7 +1488,12 @@ fn runRoute(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Rou
     if (args.action == .select and selected_index == null) return error.AllAccountsExhausted;
 }
 
-fn runDaemonTick(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DaemonTickArgs) !void {
+fn runDaemonTick(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.DaemonTickArgs,
+    command_name: []const u8,
+) !void {
     const parsed = try config.load(allocator);
     defer parsed.deinit();
 
@@ -1543,7 +1555,7 @@ fn runDaemonTick(allocator: std.mem.Allocator, writer: anytype, args: cli.Comman
             }
         } else {
             if (iterations > 1) try writer.print("tick {d}/{d}\n", .{ idx + 1, iterations });
-            try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, executions.items, args, observed_at);
+            try writeDaemonTickText(writer, allocator, parsed.value, evaluations.items, selected_index, executions.items, args, observed_at, command_name);
             if (iterations > 1 and idx + 1 < iterations) try writer.writeByte('\n');
         }
 
@@ -1999,8 +2011,9 @@ fn writeDaemonTickText(
     executions: []const DaemonTickExecution,
     args: cli.Command.DaemonTickArgs,
     observed_at: i64,
+    command_name: []const u8,
 ) !void {
-    try writer.writeAll("oauth-mux daemon tick\n\n");
+    try writer.print("{s}\n\n", .{command_name});
     try writer.print("  mode: {s}\n", .{if (args.once) "once" else "loop"});
     try writer.print("  execution_mode: {s}\n", .{if (args.execute) "execute" else "plan"});
     try writer.print("  executed: {s}\n", .{if (daemonTickExecutionsRan(executions)) "yes" else "no"});
@@ -2522,7 +2535,7 @@ fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
     try writer.writeAll("    oauth-mux doctor runtime --json\n");
     try writer.writeAll("    oauth-mux route explain --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux route select --profile <profile> --capability <capability> --json\n");
-    try writer.writeAll("    oauth-mux daemon tick --once --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair run --profile <profile> --capability <capability> --json\n");
     if (stats.codex_configured) {
         if (!stats.codex_max_configured) {
@@ -2558,7 +2571,7 @@ fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
     try writeDoctorCommandJson(writer, &first, "oauth-mux route explain --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux route select --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux repair-plan --json");
-    try writeDoctorCommandJson(writer, &first, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux repair run --profile <profile> --capability <capability> --json");
     if (stats.codex_configured) {
         if (!stats.codex_max_configured) {
@@ -2892,7 +2905,7 @@ fn writeDoctorRuntimeJson(
     try writer.writeByte(',');
     try writeCommandJson(writer, "oauth-mux repair-plan --profile <profile> --capability <capability> --json");
     try writer.writeByte(',');
-    try writeCommandJson(writer, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json");
+    try writeCommandJson(writer, "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json");
     try writer.writeAll("]}\n");
 }
 
@@ -2936,7 +2949,7 @@ fn writeDoctorRuntimeScopedJson(
     try writer.writeByte(',');
     try writeCommandJson(writer, "oauth-mux repair-plan --profile <profile> --capability <capability> --json");
     try writer.writeByte(',');
-    try writeCommandJson(writer, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json");
+    try writeCommandJson(writer, "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json");
     try writer.writeAll("]}\n");
 }
 
@@ -6109,7 +6122,7 @@ test "writeDiscoverJson includes stay-afloat agent-safe commands" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux route explain --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux route select --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux daemon tick --once --profile <profile> --capability <capability> --json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair run --profile <profile> --capability <capability> --json") != null);
 }
 

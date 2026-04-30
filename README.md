@@ -96,8 +96,8 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
-OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux daemon tick --once --profile codex-max --capability codex-max --json
-OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon events --json
 ```
 
@@ -136,16 +136,16 @@ only `free_local` and `free_command` work; `cheap_provider`, `spend_provider`,
 `interactive`, and `mutating` actions are reported as refused until the config
 explicitly allows them. `route explain --json` and `repair-plan --json` include
 the effective policy plus per-route admission decisions so agents can back off
-without guessing. `daemon tick --once --json` evaluates the same routes under
+without guessing. `stay-afloat --once --json` evaluates the same routes under
 that policy. By default it is planning-only and reports `executed:false`.
-`daemon tick --once --execute --json` is the opt-in beta execution boundary: it
+`stay-afloat --once --execute --json` is the opt-in beta execution boundary: it
 runs at most one admitted non-interactive action per tick, such as a
-`free_command` probe, then re-reads route state. Interactive reauth is never
-run silently; execute mode records a redacted `daemon_handoff` event with the
-user command to run. Inspect those queued user-mediated repairs with
-`oauth-mux daemon handoffs --json`; add `--all` to include historical handoff
-events after a later daemon tick has refreshed route evidence. `daemon tick
---loop --iterations <n> --interval-ms <ms> --json` repeats the same portable
+`free_command` probe, then re-reads route state. Interactive reauth is never run
+silently; execute mode records a redacted `daemon_handoff` event with the user
+command to run. Inspect those queued user-mediated repairs with `oauth-mux
+daemon handoffs --json`; add `--all` to include historical handoff events after
+a later stay-afloat tick has refreshed route evidence. `stay-afloat --loop
+--iterations <n> --interval-ms <ms> --json` repeats the same portable
 foreground tick for dogfood and wrappers. No `systemctl`, `launchctl`, service
 manager, browser auth, provider spend, or secret mutation is assumed unless
 policy and CLI flags explicitly admit it.
