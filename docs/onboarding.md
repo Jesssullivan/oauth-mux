@@ -251,8 +251,11 @@ thin aliases for installed commands. `just codex-max-setup` is a thin alias for
 `oauth-mux repair-plan --profile codex-max --capability codex-max --json`, and
 `just codex-max-live-qa` / `just codex-max-live-qa-confirmed` wrap the guarded
 installed live QA command. `just codex-max-probe-all` is likewise a thin alias
-for `oauth-mux codex probe-all`. Route selection and explanation should be run
-through the installed CLI directly:
+for `oauth-mux codex probe-all`. These source helpers intentionally share the
+default oauth-mux state directory so dogfood probes feed later route selection.
+Set `OMUX_STATE_DIR=/tmp/<dir>` explicitly when a run should be isolated for CI
+or artifact collection. Route selection and explanation should be run through
+the installed CLI directly:
 
 ```bash
 oauth-mux route explain --profile codex-max --capability codex-max --json

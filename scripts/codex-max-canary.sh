@@ -8,7 +8,7 @@ config_path="${OMUX_CONFIG:-$repo_root/examples/codex-max.config.json}"
 accounts_csv="${OMUX_CODEX_ACCOUNTS:-max-1,max-2,max-3}"
 capabilities_csv="${OMUX_CODEX_CANARY_CAPABILITIES:-codex-mini,codex-max}"
 store_root="${OMUX_CODEX_STORE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/oauth-mux/codex}"
-state_dir="${OMUX_STATE_DIR:-/tmp/oauth-mux-codex-max-health}"
+state_dir="${OMUX_STATE_DIR:-}"
 bin="${OMUX_BIN:-$repo_root/zig-out/bin/oauth-mux}"
 
 if [ ! -x "$bin" ]; then
@@ -27,7 +27,11 @@ out_dir="${OMUX_CODEX_CANARY_OUT:-$repo_root/dist/codex-canary/$stamp}"
 mkdir -p "$out_dir"
 
 export OMUX_CONFIG="$config_path"
-export OMUX_STATE_DIR="$state_dir"
+if [ -n "$state_dir" ]; then
+  export OMUX_STATE_DIR="$state_dir"
+else
+  unset OMUX_STATE_DIR
+fi
 
 IFS=',' read -r -a accounts <<<"$accounts_csv"
 IFS=',' read -r -a capabilities <<<"$capabilities_csv"
@@ -43,7 +47,7 @@ summary="$out_dir/summary.txt"
 {
   printf 'oauth-mux Codex Max canary\n\n'
   printf 'config:       %s\n' "$config_path"
-  printf 'state:        %s\n' "$state_dir"
+  printf 'state:        %s\n' "${state_dir:-default oauth-mux state dir}"
   printf 'store root:   %s\n' "$store_root"
   printf 'accounts:     %s\n' "$accounts_csv"
   printf 'capabilities: %s\n' "$capabilities_csv"
@@ -87,13 +91,17 @@ done
 confirm="${OMUX_CODEX_CANARY_CONFIRM:-${OMUX_LIVE_QA_CONFIRM:-}}"
 if [ "$confirm" = "spend-real-calls" ]; then
   printf '\n=== live QA ===\n' | tee -a "$summary"
-  OMUX_CONFIG="$config_path" \
-    OMUX_STATE_DIR="$state_dir" \
-    OMUX_LIVE_QA_PROVIDER="${OMUX_LIVE_QA_PROVIDER:-codex}" \
-    OMUX_LIVE_QA_ACCOUNTS="$accounts_csv" \
-    OMUX_LIVE_QA_CAPABILITIES="$capabilities_csv" \
-    OMUX_LIVE_QA_CONFIRM=spend-real-calls \
-    "$repo_root/scripts/live-provider-qa.sh" 2>&1 | redact | tee "$out_dir/live-qa.txt"
+  live_env=(
+    "OMUX_CONFIG=$config_path"
+    "OMUX_LIVE_QA_PROVIDER=${OMUX_LIVE_QA_PROVIDER:-codex}"
+    "OMUX_LIVE_QA_ACCOUNTS=$accounts_csv"
+    "OMUX_LIVE_QA_CAPABILITIES=$capabilities_csv"
+    "OMUX_LIVE_QA_CONFIRM=spend-real-calls"
+  )
+  if [ -n "$state_dir" ]; then
+    live_env+=("OMUX_STATE_DIR=$state_dir")
+  fi
+  env "${live_env[@]}" "$repo_root/scripts/live-provider-qa.sh" 2>&1 | redact | tee "$out_dir/live-qa.txt"
 else
   {
     printf '\nLive probes not run.\n'
