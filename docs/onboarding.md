@@ -97,6 +97,15 @@ To probe one route class across every expected Codex account:
 oauth-mux codex probe-all --capability codex-mini --json
 ```
 
+Codex subcommand help is non-mutating. These commands print usage without
+creating `CODEX_HOME` directories, checking login status, or running probes:
+
+```bash
+oauth-mux codex canary --help
+oauth-mux codex probe-all --help
+oauth-mux setup codex --help
+```
+
 Source checkouts keep `just codex-max-onboard` and `just codex-max-canary` as
 thin aliases for installed commands. `just codex-max-setup` is a thin alias for
 `oauth-mux setup codex`, and `just codex-max-probe-all` is likewise a thin alias
