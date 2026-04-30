@@ -206,9 +206,13 @@ oauth-mux exec --profile <profile> --capability <capability> -- <command>
 Probe JSON includes `ok`, `error`, and `exit_code` alongside typed
 `liveness`. `codex live-qa --json` is safe without confirmation: it exits
 nonzero with `confirmation_required` and `spends_provider_calls: true` before
-running provider calls. Agents should use `liveness` to distinguish
-`rate_limited`, `quota_exhausted`, `degraded`, and `dead` instead of treating
-every nonzero probe exit as the same failure class.
+running provider calls. Once confirmed, its top-level `ok` means every
+requested capability has at least one available account, not that every account
+is currently available. Use `routes_available`, `routes_unavailable`,
+`probe_errors`, `capabilities_covered`, and `capabilities_uncovered` for
+automation. Agents should use route `liveness` to distinguish `rate_limited`,
+`quota_exhausted`, `degraded`, and `dead` instead of treating every nonzero
+probe exit as the same failure class.
 
 Agents must not:
 

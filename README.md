@@ -77,6 +77,12 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa --confirm-spend
 ```
 
+`codex live-qa --json` reports both per-route liveness and mux coverage.
+`routes_unavailable` can be nonzero while top-level `ok` remains true when
+another account still covers each requested capability. If an entire requested
+capability has no available account, `capabilities_uncovered` becomes nonzero
+and the command exits nonzero.
+
 Explain current Codex Max stay-afloat actions without running probes or
 mutating auth state:
 

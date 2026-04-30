@@ -56,6 +56,12 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex live-qa --confirm-spend
 ```
 
+For `codex live-qa --json`, top-level `ok` is a mux coverage result: every
+requested capability must have at least one currently available account.
+Individual exhausted, limited, degraded, or dead routes remain visible through
+`routes_unavailable` and each route's typed `liveness`, so one spent account
+does not hide the fact that another account can still carry the capability.
+
 For a focused account matrix on one route class:
 
 ```bash

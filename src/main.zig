@@ -2899,19 +2899,37 @@ fn runCodexLiveQa(allocator: std.mem.Allocator, writer: anytype, args: cli.Comma
 
         var route_buf = std.ArrayList(u8).init(allocator);
         defer route_buf.deinit();
-        var failures: usize = 0;
-        var total: usize = 0;
-        try collectCodexLiveQaRoutesJson(allocator, &route_buf, args, &total, &failures);
+        var capability_coverage = std.StringHashMap(bool).init(allocator);
+        defer freeLiveQaCoverage(allocator, &capability_coverage);
+        try seedLiveQaCapabilities(allocator, &capability_coverage, args.capabilities);
 
-        try writer.writeAll(if (failures == 0) "true" else "false");
+        var summary = LiveQaSummary{
+            .capabilities_total = capability_coverage.count(),
+        };
+        try collectCodexLiveQaRoutesJson(allocator, &route_buf, args, &capability_coverage, &summary);
+        summary.capabilities_covered = countLiveQaCoveredCapabilities(&capability_coverage);
+
+        try writer.writeAll(if (summary.ok()) "true" else "false");
         try writer.writeAll(",\"spends_provider_calls\":true,\"accounts\":");
         try std.json.stringify(args.accounts, .{}, writer);
         try writer.writeAll(",\"capabilities\":");
         try std.json.stringify(args.capabilities, .{}, writer);
-        try writer.print(",\"routes_total\":{d},\"failures\":{d},\"routes\":[", .{ total, failures });
+        try writer.print(
+            ",\"routes_total\":{d},\"routes_available\":{d},\"routes_unavailable\":{d},\"probe_errors\":{d},\"failures\":{d},\"capabilities_total\":{d},\"capabilities_covered\":{d},\"capabilities_uncovered\":{d},\"routes\":[",
+            .{
+                summary.routes_total,
+                summary.routes_available,
+                summary.routes_unavailable,
+                summary.probe_errors,
+                summary.failureCount(),
+                summary.capabilities_total,
+                summary.capabilities_covered,
+                summary.capabilitiesUncovered(),
+            },
+        );
         try writer.writeAll(route_buf.items);
         try writer.writeAll("]}\n");
-        if (failures != 0) return error.CodexRouteProbeFailed;
+        if (!summary.ok()) return error.CodexRouteProbeFailed;
         return;
     }
 
@@ -2939,6 +2957,31 @@ fn runCodexLiveQa(allocator: std.mem.Allocator, writer: anytype, args: cli.Comma
     if (failures != 0) return error.CodexRouteProbeFailed;
 }
 
+const LiveQaSummary = struct {
+    routes_total: usize = 0,
+    routes_available: usize = 0,
+    routes_unavailable: usize = 0,
+    probe_errors: usize = 0,
+    capabilities_total: usize = 0,
+    capabilities_covered: usize = 0,
+
+    fn capabilitiesUncovered(self: LiveQaSummary) usize {
+        if (self.capabilities_covered >= self.capabilities_total) return 0;
+        return self.capabilities_total - self.capabilities_covered;
+    }
+
+    fn ok(self: LiveQaSummary) bool {
+        return self.routes_total > 0 and
+            self.probe_errors == 0 and
+            self.capabilities_total > 0 and
+            self.capabilitiesUncovered() == 0;
+    }
+
+    fn failureCount(self: LiveQaSummary) usize {
+        return self.probe_errors + self.capabilitiesUncovered();
+    }
+};
+
 fn codexLiveQaConfirmed(args: cli.Command.CodexArgs) bool {
     if (args.confirm_spend) return true;
     const confirm = std.process.getEnvVarOwned(std.heap.page_allocator, "OMUX_LIVE_QA_CONFIRM") catch return false;
@@ -2946,12 +2989,44 @@ fn codexLiveQaConfirmed(args: cli.Command.CodexArgs) bool {
     return std.mem.eql(u8, confirm, "spend-real-calls");
 }
 
+fn seedLiveQaCapabilities(
+    allocator: std.mem.Allocator,
+    coverage: *std.StringHashMap(bool),
+    capabilities: []const u8,
+) !void {
+    var capability_it = std.mem.splitScalar(u8, capabilities, ',');
+    while (capability_it.next()) |raw_capability| {
+        const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
+        if (capability.len == 0 or coverage.contains(capability)) continue;
+        const key = try allocator.dupe(u8, capability);
+        errdefer allocator.free(key);
+        try coverage.put(key, false);
+    }
+}
+
+fn countLiveQaCoveredCapabilities(coverage: *const std.StringHashMap(bool)) usize {
+    var covered: usize = 0;
+    var it = coverage.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.*) covered += 1;
+    }
+    return covered;
+}
+
+fn freeLiveQaCoverage(allocator: std.mem.Allocator, coverage: *std.StringHashMap(bool)) void {
+    var it = coverage.iterator();
+    while (it.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+    }
+    coverage.deinit();
+}
+
 fn collectCodexLiveQaRoutesJson(
     allocator: std.mem.Allocator,
     routes: *std.ArrayList(u8),
     args: cli.Command.CodexArgs,
-    total: *usize,
-    failures: *usize,
+    capability_coverage: *std.StringHashMap(bool),
+    summary: *LiveQaSummary,
 ) !void {
     var first = true;
     var account_it = std.mem.splitScalar(u8, args.accounts, ',');
@@ -2962,7 +3037,7 @@ fn collectCodexLiveQaRoutesJson(
         while (capability_it.next()) |raw_capability| {
             const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
             if (capability.len == 0) continue;
-            total.* += 1;
+            summary.routes_total += 1;
 
             var probe_buf = std.ArrayList(u8).init(allocator);
             defer probe_buf.deinit();
@@ -2973,8 +3048,16 @@ fn collectCodexLiveQaRoutesJson(
                 .json = true,
             });
 
-            const route_failed = if (probe_error) |_| false else |e| !liveQaErrorIsRecordedEvidence(e);
-            if (route_failed) failures.* += 1;
+            if (probe_error) |_| {
+                summary.routes_available += 1;
+                if (capability_coverage.getPtr(capability)) |covered| covered.* = true;
+            } else |e| {
+                if (liveQaErrorIsRecordedEvidence(e)) {
+                    summary.routes_unavailable += 1;
+                } else {
+                    summary.probe_errors += 1;
+                }
+            }
 
             if (!first) try routes.append(',');
             first = false;
@@ -3987,6 +4070,54 @@ test "writeProbeJson includes terminal pipeline error" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"health_key\":\"codex:max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"dead\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hint_class\":\"auth_dead\"") != null);
+}
+
+test "LiveQaSummary ok is capability coverage not every route availability" {
+    const covered_with_unavailable_route = LiveQaSummary{
+        .routes_total = 3,
+        .routes_available = 2,
+        .routes_unavailable = 1,
+        .probe_errors = 0,
+        .capabilities_total = 2,
+        .capabilities_covered = 2,
+    };
+    try std.testing.expect(covered_with_unavailable_route.ok());
+    try std.testing.expectEqual(@as(usize, 0), covered_with_unavailable_route.capabilitiesUncovered());
+
+    const uncovered = LiveQaSummary{
+        .routes_total = 3,
+        .routes_available = 1,
+        .routes_unavailable = 2,
+        .probe_errors = 0,
+        .capabilities_total = 2,
+        .capabilities_covered = 1,
+    };
+    try std.testing.expect(!uncovered.ok());
+    try std.testing.expectEqual(@as(usize, 1), uncovered.capabilitiesUncovered());
+    try std.testing.expectEqual(@as(usize, 1), uncovered.failureCount());
+
+    const machinery_error = LiveQaSummary{
+        .routes_total = 2,
+        .routes_available = 2,
+        .probe_errors = 1,
+        .capabilities_total = 2,
+        .capabilities_covered = 2,
+    };
+    try std.testing.expect(!machinery_error.ok());
+    try std.testing.expectEqual(@as(usize, 1), machinery_error.failureCount());
+}
+
+test "seedLiveQaCapabilities deduplicates requested coverage keys" {
+    var coverage = std.StringHashMap(bool).init(std.testing.allocator);
+    defer freeLiveQaCoverage(std.testing.allocator, &coverage);
+
+    try seedLiveQaCapabilities(std.testing.allocator, &coverage, "codex-mini, codex-max,codex-mini");
+    try std.testing.expectEqual(@as(usize, 2), coverage.count());
+    try std.testing.expect(coverage.get("codex-mini").? == false);
+    try std.testing.expect(coverage.get("codex-max").? == false);
+
+    coverage.getPtr("codex-max").?.* = true;
+    try std.testing.expectEqual(@as(usize, 1), countLiveQaCoveredCapabilities(&coverage));
 }
 
 // Pull in all module tests
