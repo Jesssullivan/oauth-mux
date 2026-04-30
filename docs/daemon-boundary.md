@@ -28,7 +28,8 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 ## Allowed Now
 
 - `oauth-mux daemon run` as the foreground primitive for any future wrapper.
-- `oauth-mux doctor runtime` for no-spend local runtime/session diagnostics.
+- `oauth-mux doctor runtime` for no-spend local runtime/session diagnostics,
+  including profile-scoped route readiness checks.
 - `oauth-mux route explain` for no-spend route-state explanation.
 - `oauth-mux route select` for no-spend route choice from recorded evidence.
 - `oauth-mux repair-plan` for non-mutating stay-afloat action planning.
@@ -71,6 +72,7 @@ Until then, user and agent onboarding should use one-shot commands:
 oauth-mux discover --json
 oauth-mux codex canary
 oauth-mux doctor runtime --json
+oauth-mux doctor runtime --profile <profile> --capability <capability> --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux route select --profile <profile> --capability <capability> --json
 oauth-mux probe --profile <profile> --capability <capability> --json

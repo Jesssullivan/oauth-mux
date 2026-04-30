@@ -67,7 +67,10 @@ oauth-mux codex probe-all --capability codex-mini --json
 `doctor runtime`, `route explain`, and `route select` are no-spend surfaces.
 They only use local runtime checks plus recorded liveness, so they are safe for
 agents to run before deciding whether a live probe or user-driven reauth is
-warranted.
+warranted. Prefer scoped runtime checks such as
+`oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
+when dogfooding a specific stay-afloat route; global runtime doctor is still
+useful for support bundles and full-machine cleanup.
 
 ## Provider Author Experience
 

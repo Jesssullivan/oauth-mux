@@ -50,6 +50,7 @@ oauth-mux doctor runtime --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
+oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
@@ -64,6 +65,11 @@ upstream binary availability, configured account store directories, local write
 access via a temporary marker file, and expected session-file presence. It does
 not read token values, run live probes, open auth flows, or create missing
 account stores.
+
+For profile-level stay-afloat checks, scope the runtime report:
+`oauth-mux doctor runtime --profile codex-max --capability codex-max --json`.
+That reports only the route set the user or agent intends to use, so unrelated
+legacy accounts can be cleaned up separately without hiding a usable mux path.
 
 `oauth-mux setup codex` is the user-facing alias for
 `oauth-mux codex onboard` / `oauth-mux codex setup`. It creates the expected
@@ -216,6 +222,7 @@ oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
 oauth-mux doctor runtime --json
+oauth-mux doctor runtime --profile <profile> --capability <capability> --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 ```
 

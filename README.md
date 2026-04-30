@@ -91,6 +91,7 @@ mutating auth state:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route explain --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 ```
 
 `route select` and `route explain` are no-spend stay-afloat commands. They use
@@ -100,6 +101,9 @@ as `probe_needed` instead of being treated as available.
 `doctor runtime --json` is also no-spend. It checks local runtime prerequisites
 such as upstream binaries, configured account store directories, write access,
 and expected session files without reading token values or contacting providers.
+Use `doctor runtime --profile <name> --capability <name> --json` when a user or
+agent needs profile-level truth without letting a stale unrelated account poison
+the stay-afloat decision.
 
 First-run Codex subscription path:
 
@@ -110,6 +114,7 @@ oauth-mux doctor runtime --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
+oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```

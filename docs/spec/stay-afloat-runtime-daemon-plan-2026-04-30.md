@@ -424,6 +424,12 @@ process while their session files were present. `route explain` now consumes the
 same account runtime readiness, so an otherwise `live.available` Codex account
 is not selected when the current process cannot write its account store.
 
+Implementation note, 2026-04-30: `doctor runtime` now accepts the same
+`--profile`, `--provider`, `--account`, and `--capability` selectors as
+`repair-plan` and `route`. Scoped runtime doctor reports route-level readiness,
+which lets a user or agent prove that a specific stay-afloat profile is usable
+even when unrelated configured accounts still need cleanup.
+
 ### M2: Repair Plan
 
 - Add `needs_reauth` state.
