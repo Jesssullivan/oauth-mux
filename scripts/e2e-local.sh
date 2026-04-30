@@ -257,6 +257,72 @@ expect_contains "$route_select" '"action":"select"' "route select reports action
 expect_contains "$route_select" '"ok":true' "route select reports available selection"
 expect_contains "$route_select" '"selected":{"provider":"toy","account":"a2"' "route select selects fallback account a2"
 
+printf 'e2e: repair run no-ops when fallback route is selectable\n'
+repair_run="$(omux repair run --profile expensive --capability expensive --json)"
+expect_contains "$repair_run" '"ok":true' "repair run reports ok when afloat"
+expect_contains "$repair_run" '"executed":false' "repair run does not execute while route is selectable"
+expect_contains "$repair_run" '"reason":"route_selectable"' "repair run reports selectable route reason"
+
+printf 'e2e: repair run requires confirmation before upstream reauth\n'
+reauth_config="$tmp/reauth-config.json"
+mkdir -p "$tmp/reauth-home"
+cat >"$reauth_config" <<EOF
+{
+  "version": 1,
+  "provider_definitions": {
+    "codex": {
+      "name": "codex",
+      "display_name": "Codex Test Harness",
+      "repair": {
+        "owner": "upstream_cli_login"
+      },
+      "runtime": {
+        "writable_paths": ["CODEX_HOME"],
+        "session_paths": ["CODEX_HOME/auth.json"]
+      }
+    }
+  },
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "config_dir_env": "CODEX_HOME",
+      "accounts": {
+        "max-1": {
+          "config_dir": "$tmp/reauth-home",
+          "secret": {
+            "backend": "env",
+            "variable": "OMUX_E2E_REAUTH"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "needs-reauth": {
+      "providers": ["codex:max-1#codex-max"]
+    }
+  },
+  "strategies": {}
+}
+EOF
+repair_reauth_json="$tmp/repair-run-reauth.json"
+set +e
+OMUX_CONFIG="$reauth_config" \
+  OMUX_STATE_DIR="$state_dir" \
+  OMUX_E2E_REAUTH='{}' \
+  "$bin" repair run --profile needs-reauth --capability codex-max --json >"$repair_reauth_json" 2>"$tmp/repair-run-reauth.stderr"
+repair_reauth_status=$?
+set -e
+if [ "$repair_reauth_status" -eq 0 ]; then
+  printf 'e2e assertion failed: repair run should require confirmation before reauth\n' >&2
+  exit 1
+fi
+repair_reauth="$(cat "$repair_reauth_json")"
+expect_contains "$repair_reauth" '"confirmation_required":true' "repair run requires confirmation"
+expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run reports required flag"
+expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
+test ! -e "$tmp/reauth-home/auth.json"
+
 printf 'e2e: route health does not poison unrelated capability\n'
 cheap_after_quota="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_after_quota" "export OMUX_ACTIVE_ACCOUNT='a1'" "cheap route still uses a1 after expensive quota"

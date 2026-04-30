@@ -15,10 +15,12 @@ permission/session ownership and automatic reauth are not solved by the current
 daemon.
 
 `oauth-mux doctor runtime`, `oauth-mux route explain`, `oauth-mux route
-select`, and `oauth-mux repair-plan` are the current bridge between dogfooding
-evidence and future daemon work. They read local runtime readiness and recorded
-liveness, then either diagnose account stores, explain the route set, select
-the first currently usable route, or print the next non-mutating repair actions.
+select`, `oauth-mux repair-plan`, and `oauth-mux repair run` are the current
+bridge between dogfooding evidence and future daemon work. They read local
+runtime readiness and recorded liveness, then either diagnose account stores,
+explain the route set, select the first currently usable route, print the next
+non-mutating repair actions, or run one admitted repair action only after an
+explicit confirmation flag.
 `oauth-mux daemon repair-plan` is only a namespace alias for that same one-shot
 planner; it does not start a background service, run probes, open browsers,
 refresh credentials, or rewrite secret stores.
@@ -33,6 +35,7 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux route explain` for no-spend route-state explanation.
 - `oauth-mux route select` for no-spend route choice from recorded evidence.
 - `oauth-mux repair-plan` for non-mutating stay-afloat action planning.
+- `oauth-mux repair run` for one explicit, confirmed repair command.
 - `oauth-mux daemon repair-plan` as a compatibility alias for the same
   one-shot planner.
 - `oauth-mux daemon status` for local inspection.
@@ -45,7 +48,8 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - Automatic subscription-spending checks.
 - Silent token refresh for providers whose refresh semantics are owned by an
   upstream CLI.
-- Automatic execution of repair-plan commands.
+- Automatic execution of repair-plan commands without an explicit foreground
+  user command and confirmation flag.
 - Any release gate that depends on a long-running daemon.
 - Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows
   Services as part of the core product contract.
@@ -77,5 +81,6 @@ oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux route select --profile <profile> --capability <capability> --json
 oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux repair-plan --profile <profile> --capability <capability> --json
+oauth-mux repair run --profile <profile> --capability <capability> --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```

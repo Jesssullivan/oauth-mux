@@ -183,6 +183,7 @@ jq -e '
   and (.agent_safe_commands | index("oauth-mux route explain --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux route select --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null)
+  and (.agent_safe_commands | index("oauth-mux repair run --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux codex config-candidate --json") == null)
 ' "$discover_json" >/dev/null
 
@@ -226,6 +227,18 @@ jq -e '
   and .selected == null
   and (.routes | length) == 3
 ' "$route_select_json" >/dev/null
+
+printf 'first-run e2e: repair run refuses to mutate without admitted repair\n'
+repair_run_json="$tmp/repair-run-codex-max.json"
+run_json "$repair_run_json" repair run --profile codex-max --capability codex-max --json
+jq -e '
+  .ok == true
+  and .executed == false
+  and .confirmation_required == false
+  and .reason == "no_admitted_repair"
+' "$repair_run_json" >/dev/null
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
 
 printf 'first-run e2e: config-candidate writes sidecar without clobbering active config\n'
 config_before="$(cat "$config_path")"

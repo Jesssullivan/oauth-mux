@@ -443,6 +443,12 @@ runtime readiness plus recorded liveness, emits typed action JSON, and suggests
 copy-pastable commands. The `daemon repair-plan` spelling is an alias for that
 one-shot planner, not daemon automation.
 
+Implementation note, 2026-04-30: `oauth-mux repair run` is the first explicit
+foreground admission gate for mutating repair. It does not change
+`repair-plan`; it reuses the same typed action model, refuses mutation without
+`--confirm-repair`, no-ops when a profile is already afloat, and only runs
+provider-owned repair commands that are represented as first-class actions.
+
 ### M3: Refresh Writeback
 
 - Implement backend write capabilities.

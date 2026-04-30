@@ -118,6 +118,13 @@ pub fn main() !void {
             };
         },
 
+        .repair_run => |repair_args| {
+            runRepairRun(allocator, stdout, repair_args) catch |e| {
+                log.err("repair run: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .route => |route_args| {
             runRoute(allocator, stdout, route_args) catch |e| {
                 log.err("route: {s}", .{@errorName(e)});
@@ -335,6 +342,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux route explain --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux route select --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux repair-plan --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux repair run --profile <profile> --capability <capability> --json\n");
     if (codex_configured and !codex_max_configured) {
         try writer.writeAll("    oauth-mux codex config-candidate --json\n");
     }
@@ -439,6 +447,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux route explain --profile <profile> --capability <capability> --json",
         "oauth-mux route select --profile <profile> --capability <capability> --json",
         "oauth-mux repair-plan --profile <profile> --capability <capability> --json",
+        "oauth-mux repair run --profile <profile> --capability <capability> --json",
         "oauth-mux env --profile <profile> --capability <capability> --shell <shell>",
         "oauth-mux exec --profile <profile> --capability <capability> -- <command>",
     };
@@ -497,6 +506,219 @@ fn runRepairPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Comman
     } else {
         try writeRepairPlanText(writer, allocator, parsed.value, &store, routes.items, args);
     }
+}
+
+fn runRepairRun(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.RepairRunArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, repairRunArgsToPlanArgs(args));
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+    const candidate_index = repairRunCandidate(evaluations.items, selected_index, args);
+
+    if (candidate_index == null) {
+        if (args.json) {
+            try writeRepairRunNoopJson(writer, evaluations.items, selected_index, args);
+        } else {
+            try writeRepairRunNoopText(writer, evaluations.items, selected_index, args);
+        }
+        return;
+    }
+
+    const evaluation = evaluations.items[candidate_index.?];
+    if (!args.confirm_repair) {
+        if (args.json) {
+            try writeRepairRunConfirmationJson(writer, allocator, parsed.value, evaluation, args);
+        } else {
+            try writeRepairRunConfirmationText(writer, allocator, evaluation);
+        }
+        return error.RepairConfirmationRequired;
+    }
+
+    const command = try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route);
+    defer if (command) |value| allocator.free(value);
+
+    const ok = try executeRepairCommand(allocator, parsed.value, evaluation);
+    if (args.json) {
+        try writeRepairRunExecutedJson(writer, allocator, parsed.value, evaluation, command, ok);
+    } else {
+        try writeRepairRunExecutedText(writer, evaluation, command, ok);
+    }
+    if (!ok) return error.CodexCommandFailed;
+}
+
+fn repairRunArgsToPlanArgs(args: cli.Command.RepairRunArgs) cli.Command.RepairPlanArgs {
+    return .{
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+        .json = args.json,
+    };
+}
+
+fn repairRunCandidate(
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    args: cli.Command.RepairRunArgs,
+) ?usize {
+    if (args.account == null and selected_index != null) return null;
+
+    for (evaluations, 0..) |evaluation, idx| {
+        if (evaluation.action.mutating and evaluation.action.command != .none) return idx;
+    }
+    return null;
+}
+
+fn writeRepairRunNoopText(
+    writer: anytype,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    args: cli.Command.RepairRunArgs,
+) !void {
+    try writer.writeAll("oauth-mux repair run\n\n");
+    if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
+    if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
+    if (selected_index) |idx| {
+        const route = evaluations[idx].route;
+        try writer.print("  selected: {s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |capability| try writer.print("#{s}", .{capability});
+        try writer.writeAll("\n  executed: no\n  reason: route is already selectable; no repair needed for stay-afloat\n");
+    } else {
+        try writer.writeAll("  executed: no\n  reason: no admitted mutating repair action found\n");
+    }
+}
+
+fn writeRepairRunNoopJson(
+    writer: anytype,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    args: cli.Command.RepairRunArgs,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":true,\"executed\":false,\"confirmation_required\":false,\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"reason\":");
+    if (selected_index != null) {
+        try std.json.stringify("route_selectable", .{}, writer);
+    } else {
+        try std.json.stringify("no_admitted_repair", .{}, writer);
+    }
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| {
+        try writeRouteSelectionJson(writer, evaluations[idx].route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll("}\n");
+}
+
+fn writeRepairRunConfirmationText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    evaluation: RouteEvaluation,
+) !void {
+    try writer.writeAll("oauth-mux repair run\n\n");
+    try writer.writeAll("  executed: no\n");
+    try writer.writeAll("  confirmation_required: --confirm-repair\n");
+    try writer.print("  route: {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
+    if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
+    try writer.print("\n  action: {s}\n", .{evaluation.action.kind});
+    if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
+        defer allocator.free(command);
+        try writer.print("  command: {s}\n", .{command});
+    }
+}
+
+fn writeRepairRunConfirmationJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+    args: cli.Command.RepairRunArgs,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":false,\"executed\":false,\"confirmation_required\":true,\"requires\":\"--confirm-repair\",\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"route\":");
+    try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, false);
+    try writer.writeAll("}\n");
+}
+
+fn writeRepairRunExecutedText(
+    writer: anytype,
+    evaluation: RouteEvaluation,
+    command: ?[]const u8,
+    ok: bool,
+) !void {
+    try writer.writeAll("oauth-mux repair run\n\n");
+    try writer.print("  executed: {s}\n", .{if (ok) "yes" else "failed"});
+    try writer.print("  route: {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
+    if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
+    try writer.print("\n  action: {s}\n", .{evaluation.action.kind});
+    if (command) |value| try writer.print("  command: {s}\n", .{value});
+}
+
+fn writeRepairRunExecutedJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+    command: ?[]const u8,
+    ok: bool,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"executed\":true,\"confirmation_required\":false,\"command\":");
+    if (command) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"route\":");
+    try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, false);
+    try writer.writeAll("}\n");
+}
+
+fn executeRepairCommand(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+) !bool {
+    return switch (evaluation.action.command) {
+        .none, .probe => false,
+        .codex_login_device => try executeCodexLoginDeviceRepair(allocator, cfg, evaluation.route),
+    };
+}
+
+fn executeCodexLoginDeviceRepair(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    route: RepairPlanRoute,
+) !bool {
+    const prov = cfg.providers.map.get(route.provider) orelse return false;
+    const account = prov.accounts.map.get(route.account) orelse return false;
+    const config_dir = account.config_dir orelse return false;
+    const expanded = try paths.expandTilde(allocator, config_dir);
+    defer allocator.free(expanded);
+    return try runCodexCli(allocator, expanded, &.{ "codex", "login", "--device-auth" });
 }
 
 fn collectRepairPlanRoutes(
@@ -1362,6 +1584,7 @@ fn writeDoctorNextCommandsText(writer: anytype, stats: DoctorStats) !void {
     try writer.writeAll("    oauth-mux doctor runtime --json\n");
     try writer.writeAll("    oauth-mux route explain --profile <profile> --capability <capability> --json\n");
     try writer.writeAll("    oauth-mux route select --profile <profile> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux repair run --profile <profile> --capability <capability> --json\n");
     if (stats.codex_configured) {
         if (!stats.codex_max_configured) {
             try writer.writeAll("    oauth-mux codex config-candidate\n");
@@ -1396,6 +1619,7 @@ fn writeDoctorNextCommandsJson(writer: anytype, stats: DoctorStats) !void {
     try writeDoctorCommandJson(writer, &first, "oauth-mux route explain --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux route select --profile <profile> --capability <capability> --json");
     try writeDoctorCommandJson(writer, &first, "oauth-mux repair-plan --json");
+    try writeDoctorCommandJson(writer, &first, "oauth-mux repair run --profile <profile> --capability <capability> --json");
     if (stats.codex_configured) {
         if (!stats.codex_max_configured) {
             try writeDoctorCommandJson(writer, &first, "oauth-mux codex config-candidate --json");
@@ -4908,6 +5132,7 @@ test "writeDiscoverJson includes stay-afloat agent-safe commands" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux route explain --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux route select --profile <profile> --capability <capability> --json") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "oauth-mux repair run --profile <profile> --capability <capability> --json") != null);
 }
 
 test "writeDiscoverJson exposes Codex Max drift command" {
@@ -5115,6 +5340,80 @@ test "writeRepairActionJson emits codex reauth command without running it" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+}
+
+test "repairRunCandidate skips repair when profile already has selectable route" {
+    const dead_route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const live_route = RepairPlanRoute{ .provider = "codex", .account = "max-2", .capability = "codex-max" };
+    const evaluations = [_]RouteEvaluation{
+        .{
+            .route = dead_route,
+            .runtime = .{ .needs_reauth = .{ .methods = &.{"upstream_cli_login"}, .reason = "session_file_missing" } },
+            .health = null,
+            .budget = .spend_provider,
+            .action = reauthAction(dead_route, provider_schema.codex_def),
+            .selectable = false,
+            .skip_reason = "needs_reauth",
+        },
+        .{
+            .route = live_route,
+            .runtime = .ready,
+            .health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .available } } },
+            .budget = .spend_provider,
+            .action = .{ .kind = "none", .severity = "ok", .message = "route is selectable" },
+            .selectable = true,
+            .skip_reason = "available",
+        },
+    };
+
+    try std.testing.expect(repairRunCandidate(&evaluations, 1, .{ .profile = "codex-max" }) == null);
+    try std.testing.expectEqual(@as(?usize, 0), repairRunCandidate(&evaluations, null, .{ .profile = "codex-max" }));
+}
+
+test "repair run confirmation json refuses mutating reauth by default" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "config_dir": "/tmp/oauth-mux-test/max-1",
+        \\          "secret": { "backend": "file", "path": "/tmp/oauth-mux-test/max-1/auth.json" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const evaluation = RouteEvaluation{
+        .route = route,
+        .runtime = .{ .needs_reauth = .{ .methods = &.{"upstream_cli_login"}, .reason = "session_file_missing" } },
+        .health = null,
+        .budget = .spend_provider,
+        .action = reauthAction(route, provider_schema.codex_def),
+        .selectable = false,
+        .skip_reason = "needs_reauth",
+    };
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRepairRunConfirmationJson(buf.writer(), std.testing.allocator, parsed.value, evaluation, .{
+        .provider = "codex",
+        .account = "max-1",
+        .capability = "codex-max",
+        .json = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"confirmation_required\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"requires\":\"--confirm-repair\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
 }
 

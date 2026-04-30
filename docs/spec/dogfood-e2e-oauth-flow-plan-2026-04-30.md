@@ -103,6 +103,7 @@ oauth-mux report --redacted --json
 oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
+oauth-mux repair run --profile codex-max --capability codex-max --json
 oauth-mux codex canary --help
 ```
 
