@@ -2772,6 +2772,10 @@ fn runCodexCanary(allocator: std.mem.Allocator, writer: anytype, args: cli.Comma
     try writer.writeAll("Existing oauth-mux health state; add --live to refresh with real provider probes.\n");
     try writeCodexRouteSnapshot(allocator, writer, args);
 
+    try writer.writeAll("\n=== repair plan ===\n");
+    try writer.writeAll("Non-mutating next actions from runtime readiness and recorded route liveness.\n");
+    try writeCodexRepairPlanSnapshot(allocator, writer, args);
+
     if (args.live) {
         try writer.writeAll("\n=== live probes ===\n");
         try runCodexLiveProbes(allocator, writer, args, true);
@@ -2861,6 +2865,32 @@ fn writeCodexRouteSnapshot(allocator: std.mem.Allocator, writer: anytype, args: 
             }
             try writer.writeByte('\n');
         }
+    }
+}
+
+fn writeCodexRepairPlanSnapshot(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    var capability_it = std.mem.splitScalar(u8, args.capabilities, ',');
+    while (capability_it.next()) |raw_capability| {
+        const capability = std.mem.trim(u8, raw_capability, " \t\r\n");
+        if (capability.len == 0) continue;
+
+        if (!args.json) try writer.print("\n--- profile {s} ---\n", .{capability});
+        runRepairPlan(allocator, writer, .{
+            .profile = capability,
+            .capability = capability,
+            .json = args.json,
+        }) catch |e| switch (e) {
+            error.ConfigValidationError => {
+                if (args.json) {
+                    try writer.writeAll("{\"profile\":");
+                    try std.json.stringify(capability, .{}, writer);
+                    try writer.writeAll(",\"skipped\":true,\"error\":\"ConfigValidationError\"}\n");
+                } else {
+                    try writer.print("repair-plan skipped for profile {s}: current config does not define that Codex profile\n", .{capability});
+                }
+            },
+            else => return e,
+        };
     }
 }
 

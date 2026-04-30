@@ -47,6 +47,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux setup codex
 oauth-mux codex canary
+oauth-mux repair-plan --profile codex-max --capability codex-max --json
 ```
 
 `oauth-mux doctor` is the no-spend readiness report. It checks whether config is
@@ -84,8 +85,11 @@ oauth-mux codex canary
 
 The canary validates config, prints redacted discovery, checks
 `codex login status` for each expected account, and summarizes whether route
-health has already been recorded. It does not run live probes by default. To
-include bounded route probes:
+health has already been recorded. It also prints the current non-mutating
+repair plan for the configured Codex route profiles, so a user or agent can see
+whether the next action is to fix runtime setup, run an explicit probe, wait for
+quota, or reauthenticate through the upstream Codex CLI. It does not run live
+probes by default. To include bounded route probes:
 
 ```bash
 oauth-mux codex canary --live
@@ -96,6 +100,20 @@ To probe one route class across every expected Codex account:
 ```bash
 oauth-mux codex probe-all --capability codex-mini --json
 ```
+
+To inspect the stay-afloat decision loop without running a canary:
+
+```bash
+oauth-mux repair-plan --profile codex-max --capability codex-max --json
+oauth-mux repair-plan --profile codex-mini --capability codex-mini --json
+```
+
+If `repair-plan --profile codex-max` reports a config validation error, the
+active config is not the three-account Codex Max shape. That usually means the
+machine still has an older generic config with only `codex:default`. Generate a
+fresh Codex Max config with `oauth-mux init --codex-max` in a clean config
+location, or update the active config so it contains `max-1`, `max-2`, `max-3`,
+`codex-max`, and `codex-mini`.
 
 Codex subcommand help is non-mutating. These commands print usage without
 creating `CODEX_HOME` directories, checking login status, or running probes:
@@ -108,8 +126,10 @@ oauth-mux setup codex --help
 
 Source checkouts keep `just codex-max-onboard` and `just codex-max-canary` as
 thin aliases for installed commands. `just codex-max-setup` is a thin alias for
-`oauth-mux setup codex`, and `just codex-max-probe-all` is likewise a thin alias
-for `oauth-mux codex probe-all`.
+`oauth-mux setup codex`, `just codex-max-repair-plan` is a thin alias for
+`oauth-mux repair-plan --profile codex-max --capability codex-max --json`, and
+`just codex-max-probe-all` is likewise a thin alias for
+`oauth-mux codex probe-all`.
 
 The clean no-config first-run path is covered by:
 
@@ -119,8 +139,8 @@ just first-run-e2e
 
 That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
 and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
-diagnostics, redacted support output, and non-mutating Codex help without
-touching the operator's real OAuth stores.
+diagnostics, redacted support output, repair-plan route explanation, and
+non-mutating Codex help without touching the operator's real OAuth stores.
 
 ## Agent Discovery Contract
 
