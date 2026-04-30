@@ -40,7 +40,9 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
   one-shot planner.
 - `oauth-mux daemon status --json` for local inspection.
 - `oauth-mux daemon events --json` for the redacted repair-run event log. This
-  reads local state and does not require a daemon process.
+  reads local state and does not require a daemon process. The same stream also
+  carries redacted `token_refresh` events for refresh admission/writeback
+  outcomes.
 - `oauth-mux daemon tick --once --json` for one portable, policy-gated
   daemon-shaped planning pass. It reports `executed:false` and does not run
   probes, repair commands, or mutation.

@@ -505,6 +505,13 @@ automatic refresh requires both `repair.owner = "oauth_mux_refresh"` and an
 admitted backend. Read-only, command, keychain, SOPS, unsupported, and
 upstream-owned backends fail closed.
 
+Implementation note, 2026-04-30: refresh admission and writeback outcomes are
+now written to the redacted local event stream as `token_refresh` events. Events
+include route identity, writeback capability, admission, outcome, and redacted
+reason; they intentionally omit tokens, credential paths, and provider response
+bodies. `oauth-mux daemon events --json` remains the single local evidence
+surface for both foreground repair and pipeline refresh behavior.
+
 ### M4: Daemon Beta
 
 - Promote daemon to opt-in beta.

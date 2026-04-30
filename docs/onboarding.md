@@ -162,6 +162,12 @@ the audit trail with:
 oauth-mux daemon events --json
 ```
 
+The same event log also records `token_refresh` outcomes from the pipeline.
+Those events include writeback capability and admission fields so dogfood runs
+can explain whether refresh was refused, attempted, persisted, or failed
+without exposing access tokens, refresh tokens, credential paths, or provider
+response bodies.
+
 Daemon policy is intentionally conservative. The default config admits only
 `free_local` and `free_command` budgets for daemon/background work. Provider
 calls, provider-spending probes, browser/device auth, and credential mutation

@@ -4,11 +4,14 @@ const types = @import("types.zig");
 
 pub const RepairEvent = struct {
     ts: i64 = 0,
+    kind: []const u8 = "repair_run",
     profile: ?[]const u8 = null,
     provider: ?[]const u8 = null,
     account: ?[]const u8 = null,
     capability: ?[]const u8 = null,
     action: ?[]const u8 = null,
+    writeback_capability: ?[]const u8 = null,
+    automatic_refresh_admitted: ?bool = null,
     outcome: []const u8,
     reason: ?[]const u8 = null,
     ok: bool = false,
@@ -228,7 +231,8 @@ fn ensureParentDir(path: []const u8) !void {
 
 fn writeEventJson(writer: anytype, event: RepairEvent) !void {
     const ts = if (event.ts == 0) std.time.timestamp() else event.ts;
-    try writer.print("{{\"ts\":{d},\"kind\":\"repair_run\"", .{ts});
+    try writer.print("{{\"ts\":{d},\"kind\":", .{ts});
+    try std.json.stringify(event.kind, .{}, writer);
     try writer.writeAll(",\"profile\":");
     if (event.profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"provider\":");
@@ -239,6 +243,10 @@ fn writeEventJson(writer: anytype, event: RepairEvent) !void {
     if (event.capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"action\":");
     if (event.action) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"writeback_capability\":");
+    if (event.writeback_capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"automatic_refresh_admitted\":");
+    if (event.automatic_refresh_admitted) |value| try writer.writeAll(if (value) "true" else "false") else try writer.writeAll("null");
     try writer.writeAll(",\"outcome\":");
     try std.json.stringify(event.outcome, .{}, writer);
     try writer.writeAll(",\"reason\":");
@@ -300,9 +308,38 @@ test "repair event json is redacted and structured" {
     });
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"provider\":\"codex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"repair_run\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"profile\":\"codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"account\":\"max-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "token") == null);
+}
+
+test "refresh event json carries redacted writeback evidence" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeEventJson(buf.writer(), .{
+        .ts = 43,
+        .kind = "token_refresh",
+        .profile = "work",
+        .provider = "figma",
+        .account = "design",
+        .action = "refresh",
+        .writeback_capability = "replace_file",
+        .automatic_refresh_admitted = true,
+        .outcome = "persisted",
+        .reason = "replace_file_writeback_available",
+        .ok = true,
+        .executed = true,
+        .mutating = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"token_refresh\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"writeback_capability\":\"replace_file\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"automatic_refresh_admitted\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"outcome\":\"persisted\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "access_token") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "refresh_token") == null);
 }
 
 test "sanitized lock file names do not preserve path separators" {
