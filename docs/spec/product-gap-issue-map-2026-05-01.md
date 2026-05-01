@@ -3,7 +3,8 @@ Date: 2026-05-01
 
 Issue context: GitHub `Jesssullivan/oauth-mux#66`, `#67`, `#68`; Linear
 `TIN-858`, `TIN-736`, `TIN-738`, `TIN-859`, `TIN-860`, `TIN-861`, `TIN-862`,
-`TIN-863`, and `TIN-866`.
+`TIN-863`, `TIN-866`, `TIN-867`, `TIN-876`, `TIN-877`, `TIN-878`, and
+`TIN-879`.
 
 ## Baseline
 
@@ -17,9 +18,9 @@ boundaries that need separate tracking.
 
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
-| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. |
-| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. |
-| Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863` | Codex is live-proven; most other providers are schema-modeled or admitted but not live-proven. |
+| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy still needs to stop advertising the private tap. |
+| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. |
+| Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex is live-proven; non-Codex proof is capability-level or still needs operator proof. |
 
 ## Homebrew Boundary
 
@@ -34,6 +35,9 @@ Current truth:
 - This is not Homebrew core. It is a public Homebrew tap.
 - Formula updates must continue to come from public GitHub Release
   `oauth-mux.rb` and `SHA256SUMS`, not local `dist/out` output.
+- A live check of `https://omux.xoxd.ai/` on 2026-05-01 still found
+  `brew install tinyland-inc/tools/oauth-mux`; `#66` / `TIN-858` stay open
+  until website and release copy use the public `jesssullivan/omux` tap.
 
 The decision record is
 `docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The website can now
@@ -57,6 +61,8 @@ Current truth:
   route-level tick JSON must expose deterministic `next_tick_after` and
   `schedule_reason` values, and the summary must report the earliest wake-up
   reason.
+- `TIN-867` is complete: the socket daemon boundary is decided and documented
+  as non-product plumbing for this release line.
 - The default daemon policy refuses provider-spend probes, silent interactive
   auth, and silent mutation.
 - Codex fallback is proven from quota-exhausted `max-1#codex-max` to available
@@ -123,10 +129,20 @@ Next split:
   status is `public_live_proven`. The next slice now has a typed target for
   resource-token routing errors: explicit resource/audience mismatch evidence
   is `degraded.audience_mismatch`, not a revoked account.
+- `TIN-876`: prove Vercel identity. The built-in `identity` capability exists
+  for `GET https://api.vercel.com/v2/user`, but still needs redacted operator
+  proof before promotion.
+- `TIN-877`: prove Figma OAuth, PAT, and plan-token shapes separately.
+  `identity`, `identity-pat`, and `file-metadata-plan` must not collapse into a
+  single generic "Figma works" claim.
+- `TIN-878`: prove FlakeHub/Determinate as command-first status, with missing
+  binaries and unwritable runtime separated from credential liveness.
+- `TIN-879`: decide and prove the Gemini CLI provider shape before any proof
+  promotion; do not assume generic Google OAuth token behavior is enough for
+  the harness.
 
-Later slices should cover Vercel/Figma token variants and Gemini plus
-FlakeHub/Determinate command-first status once the first three provider-proof
-patterns are settled.
+Older broad wave tickets `TIN-818` and `TIN-816` are canceled as superseded by
+these precise provider-proof children.
 
 ## Immediate Execution Order
 
@@ -137,12 +153,12 @@ patterns are settled.
    `needs_operator_proof`.
 3. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
    quota/repair semantics and MCP resource-bound bearer-token proof.
-4. Return to daemon background scheduling only after wrapper/install decisions
-   and provider proof produce enough real operator evidence. The immediate
-   daemon-side exceptions are `TIN-865`, because false liveness evidence would
-   make every later scheduler less trustworthy, and `TIN-866`, because wrappers
-   need deterministic wake-up hints before any service-manager recipes are
-   honest.
+4. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
+   `TIN-878` FlakeHub/Determinate, and `TIN-879` Gemini.
+5. Return to daemon background scheduling only after wrapper/install decisions
+   and provider proof produce enough real operator evidence. The current socket
+   daemon decision is complete under `TIN-867`; future production daemon work
+   must promote the foreground tick engine deliberately.
 
 ## Guardrails
 
