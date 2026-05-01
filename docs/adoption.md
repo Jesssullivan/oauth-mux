@@ -9,18 +9,16 @@ they must not become requirements for ordinary users.
 Target install surfaces:
 
 - npm: `npm install -g oauth-mux`
-- Homebrew staged/private tap:
-  `brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git && brew install tinyland/tools/oauth-mux`
+- Homebrew public tap:
+  `brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git && brew install jesssullivan/omux/oauth-mux`
 - curl installer: `curl -fsSL ... | sh`
 - deb/rpm packages for Linux hosts
 - raw release tarballs for air-gapped or policy-managed systems
 
-The Homebrew command above is proven for the Tinyland tap, but it is not yet a
-public Homebrew distribution promise. Track that decision in
-`docs/spec/product-gap-issue-map-2026-05-01.md`. The recommended public lane is
-a Jess-owned tap, `Jesssullivan/homebrew-omux`, documented in
-`docs/spec/homebrew-public-lane-decision-2026-05-01.md`; do not publish public
-Homebrew install copy until that tap exists and clean-machine QA passes.
+The public Homebrew tap is `Jesssullivan/homebrew-omux`, documented in
+`docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The older
+`tinyland-inc/homebrew-tools` tap remains private/staged Tinyland
+infrastructure, not public adoption copy.
 
 Each release artifact should be derived from the same CI release tree. npm is
 published only from CI tarballs; workstation `npm publish` is not supported.

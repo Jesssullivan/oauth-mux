@@ -14,7 +14,7 @@ files, SOPS plaintext, or token-shaped values here.
 | npm one-shot | 0.1.6 | macOS arm64 | public npm registry | Pass | `npx -y oauth-mux@0.1.6 version` returns `oauth-mux 0.1.6`. |
 | GitHub release tarball | 0.1.6 | macOS arm64 | public `Jesssullivan/oauth-mux` release asset | Pass | Release workflow `25195318899` published all tarballs, packages, checksums, formula, and installer. |
 | `curl | sh` installer | 0.1.6 | macOS arm64 and `../lab` | public `Jesssullivan/oauth-mux` `install.sh` asset | Pass | Default installer repo is canonical; no `REPO=...` override needed. |
-| Homebrew formula | 0.1.6 | macOS arm64 | `tinyland/tools` tap | Pass | `just homebrew-qa 0.1.6` installs from the private `tinyland-inc/homebrew-tools` tap, runs `brew audit`, `brew test`, `oauth-mux version`, and `oauth-mux doctor --json`. Public lane recommendation is `Jesssullivan/homebrew-omux`, pending repo creation and QA. |
+| Homebrew formula | 0.1.6 | macOS arm64 + hosted Ubuntu dry-run | public `jesssullivan/omux` tap | Pass | Clean local uninstall/untap followed by `just homebrew-qa 0.1.6` installed from `Jesssullivan/homebrew-omux`; hosted registry dry-run `25199131583` checked out the public tap and passed the Homebrew lane. |
 | deb package | 0.1.6 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.6 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
 | Codex route dogfood | 0.1.6 | macOS arm64 | public npm one-shot | Pass with degraded route | Published npm binary selected `max-2#codex-max` while recorded liveness kept `max-1#codex-max` quota exhausted. |
@@ -87,7 +87,7 @@ just homebrew-qa 0.1.6
 Expected output includes:
 
 ```text
-Homebrew install QA passed for oauth-mux 0.1.6 via tinyland/tools/oauth-mux
+Homebrew install QA passed for oauth-mux 0.1.6 via jesssullivan/omux/oauth-mux
 ```
 
 First-run source e2e:
@@ -125,6 +125,22 @@ OMUX_LIVE_QA_CONFIRM=spend-real-calls \
 ```
 
 Latest local Homebrew dogfood proof:
+
+```text
+brew uninstall oauth-mux: pass
+brew untap jesssullivan/omux: pass
+brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git: pass
+brew install jesssullivan/omux/oauth-mux: pass
+brew audit --formula --strict jesssullivan/omux/oauth-mux: pass
+brew test jesssullivan/omux/oauth-mux: pass
+/opt/homebrew/bin/oauth-mux version: oauth-mux 0.1.6
+/opt/homebrew/bin/oauth-mux doctor --json: ok
+Public tap repository: `Jesssullivan/homebrew-omux`, default branch `main`.
+Hosted registry dry-run `25199131583`: pass, checked out public tap and passed
+the Homebrew lane.
+```
+
+Latest private/staged Homebrew proof:
 
 ```text
 brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git: pass
@@ -173,7 +189,6 @@ just system-package-qa 0.1.6
 2. For each release that changes deb/rpm packaging, run the workflow after the
    GitHub Release assets exist.
 3. Treat registry metadata checks as insufficient without this install proof.
-4. Create the public Jess-owned Homebrew tap from
-   `docs/spec/homebrew-public-lane-decision-2026-05-01.md`, then rerun
-   Homebrew QA with `OMUX_HOMEBREW_TAP_NAME=jesssullivan/omux` and
-   `OMUX_HOMEBREW_TAP_GIT_URL=https://github.com/Jesssullivan/homebrew-omux.git`.
+4. Keep Homebrew release updates derived from public GitHub Release
+   `oauth-mux.rb` and `SHA256SUMS`, then rerun `just homebrew-qa <version>`
+   against the public `jesssullivan/omux` tap.
