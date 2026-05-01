@@ -148,6 +148,14 @@ OMUX_LINEAR_WORK_TOKEN="$LINEAR_ACCESS_TOKEN" \
   ./zig-out/bin/oauth-mux probe --profile linear --capability identity --json
 ```
 
+Linear personal API keys use a raw `Authorization` header, not `Bearer`. Use
+the explicit API-key capability when proving a personal key:
+
+```bash
+OMUX_CONFIG=$PWD/examples/linear-api-key.config.json \
+  ./zig-out/bin/oauth-mux probe --profile linear-api-key --capability identity-api-key --json
+```
+
 To capture local artifacts through the same wrapper used by hosted provider QA:
 
 ```bash
@@ -163,6 +171,12 @@ OMUX_CONFIG=$PWD/examples/linear.config.json \
 OMUX_LINEAR_WORK_TOKEN="$LINEAR_ACCESS_TOKEN" \
 OMUX_LIVE_QA_PROFILE=linear \
 OMUX_LIVE_QA_CAPABILITIES=identity \
+  just live-qa
+
+OMUX_LIVE_QA_CONFIRM=spend-real-calls \
+OMUX_CONFIG=$PWD/examples/linear-api-key.config.json \
+OMUX_LIVE_QA_PROFILE=linear-api-key \
+OMUX_LIVE_QA_CAPABILITIES=identity-api-key \
   just live-qa
 ```
 

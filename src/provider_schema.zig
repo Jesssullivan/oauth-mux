@@ -164,6 +164,7 @@ pub const ProbeTransport = enum {
 
 pub const ProbeAuth = enum {
     bearer,
+    authorization_header,
     token_header,
     none,
 };
@@ -425,6 +426,18 @@ const linear_capabilities = [_]CapabilityDefinition{
             .body = "{\"query\":\"query Me { viewer { id name email } }\"}",
             .content_type = "application/json",
             .auth = .bearer,
+            .hint_body = true,
+        },
+    },
+    .{
+        .name = "identity-api-key",
+        .aliases = &.{ "api-key", "personal-api-key", "pat", "whoami-api-key" },
+        .probe = .{
+            .method = "POST",
+            .url = "https://api.linear.app/graphql",
+            .body = "{\"query\":\"query Me { viewer { id name email } }\"}",
+            .content_type = "application/json",
+            .auth = .authorization_header,
             .hint_body = true,
         },
     },
@@ -1568,6 +1581,20 @@ test "linear identity capability uses GraphQL viewer probe" {
     try std.testing.expectEqualStrings("identity", plan.capability);
     try std.testing.expectEqualStrings("POST", plan.method);
     try std.testing.expectEqualStrings("https://api.linear.app/graphql", plan.url);
+    try std.testing.expect(plan.body != null);
+    try std.testing.expect(std.mem.indexOf(u8, plan.body.?, "viewer") != null);
+    try std.testing.expectEqualStrings("application/json", plan.content_type.?);
+    try std.testing.expect(plan.hint_body);
+}
+
+test "linear api key identity capability uses raw authorization probe" {
+    const plan = probePlanForCapability(linear_def, "personal-api-key").?;
+    try std.testing.expectEqual(ProbeTransport.http, plan.transport);
+    try std.testing.expectEqualStrings("identity-api-key", plan.capability);
+    try std.testing.expectEqualStrings("POST", plan.method);
+    try std.testing.expectEqualStrings("https://api.linear.app/graphql", plan.url);
+    try std.testing.expectEqual(ProbeAuth.authorization_header, plan.auth);
+    try std.testing.expect(plan.auth_header == null);
     try std.testing.expect(plan.body != null);
     try std.testing.expect(std.mem.indexOf(u8, plan.body.?, "viewer") != null);
     try std.testing.expectEqualStrings("application/json", plan.content_type.?);

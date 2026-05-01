@@ -210,6 +210,10 @@ session directory is runtime readiness, not OAuth liveness.
 token material such as bearer authorization headers, access tokens, refresh
 tokens, ID tokens, or token-template placeholders. The mux injects credentials
 at execution time; provider schemas describe only how to run the probe.
+Use `auth = bearer` for `Authorization: Bearer <token>`, `auth = token_header`
+for provider-specific non-Authorization headers such as `X-Figma-Token`, and
+`auth = authorization_header` only when provider-owned docs require a raw token
+as the `Authorization` header value.
 
 7. Map failures into liveness.
 
