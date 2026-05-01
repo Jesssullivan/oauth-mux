@@ -254,6 +254,7 @@ DegradedReason =
   | subscription_paused
   | provider_degraded
   | scope_insufficient
+  | audience_mismatch
   | schema_invalid
   | terms_required
   | step_up_required
@@ -261,9 +262,10 @@ DegradedReason =
   | unknown_4xx
 ```
 
-Route-level `scope_insufficient`, `schema_invalid`, `terms_required`,
-`step_up_required`, and `pending_verification` keep MCP step-up, client schema
-failures, and account action requirements out of the generic auth-failure path.
+Route-level `scope_insufficient`, `audience_mismatch`, `schema_invalid`,
+`terms_required`, `step_up_required`, and `pending_verification` keep MCP
+step-up, resource-bound token mismatch, client schema failures, and account
+action requirements out of the generic auth-failure path.
 
 ## Dead Semantics
 

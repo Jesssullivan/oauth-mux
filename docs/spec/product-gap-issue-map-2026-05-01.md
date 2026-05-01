@@ -101,7 +101,9 @@ Next split:
   The first metadata hardening slice is captured in
   `docs/spec/provider-proof-mcp-http-authorization-2026-05-01.md`: MCP
   `resource-metadata` no longer treats any HTTP 200 body as live unless the
-  RFC 9728/MCP metadata fields are structurally valid.
+  RFC 9728/MCP metadata fields are structurally valid. The next slice now has a
+  typed target for resource-token routing errors: explicit resource/audience
+  mismatch evidence is `degraded.audience_mismatch`, not a revoked account.
 
 Later slices should cover Vercel/Figma token variants and Gemini plus
 FlakeHub/Determinate command-first status once the first three provider-proof

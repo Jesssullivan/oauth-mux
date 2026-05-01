@@ -276,6 +276,36 @@ const claude_capabilities = [_]CapabilityDefinition{
 
 const mcp_failure_rules = [_]FailureRule{
     .{
+        .status = 401,
+        .hint_contains = "invalid_target",
+        .class = .{ .degraded = .audience_mismatch },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "invalid_target",
+        .class = .{ .degraded = .audience_mismatch },
+    },
+    .{
+        .status = 401,
+        .hint_contains = "audience",
+        .class = .{ .degraded = .audience_mismatch },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "audience",
+        .class = .{ .degraded = .audience_mismatch },
+    },
+    .{
+        .status = 401,
+        .hint_contains = "resource mismatch",
+        .class = .{ .degraded = .audience_mismatch },
+    },
+    .{
+        .status = 403,
+        .hint_contains = "resource mismatch",
+        .class = .{ .degraded = .audience_mismatch },
+    },
+    .{
         .status = 403,
         .hint_contains = "insufficient_scope",
         .class = .{ .degraded = .scope_insufficient },
@@ -1450,6 +1480,24 @@ test "classifyHttp MCP route failures" {
     const step_up = classifyHttp(mcp_def, 403, null, "mcp step_up required");
     switch (step_up) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.step_up_required, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const invalid_target = classifyHttp(mcp_def, 401, null, "Bearer error=\"invalid_target\"");
+    switch (invalid_target) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.audience_mismatch, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const audience = classifyHttp(mcp_def, 401, null, "Bearer error=\"invalid_token\", error_description=\"audience mismatch\"");
+    switch (audience) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.audience_mismatch, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const revoked = classifyHttp(mcp_def, 401, null, "Bearer error=\"invalid_token\"");
+    switch (revoked) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
         else => return error.TestUnexpectedResult,
     }
 

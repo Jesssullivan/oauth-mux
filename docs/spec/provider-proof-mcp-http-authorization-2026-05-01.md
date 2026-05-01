@@ -58,6 +58,12 @@ Malformed or incomplete metadata is classified as `degraded.schema_invalid`.
 This keeps MCP proof aligned with the formal liveness model instead of treating
 any HTTP 200 response as usable authorization evidence.
 
+MCP resource probes also classify explicit resource/audience mismatch evidence
+as `degraded.audience_mismatch`, not `dead.token_revoked`. This is intentionally
+narrow: `invalid_token` without a target/audience hint remains dead-token
+evidence, while `invalid_target`, `audience`, or `resource mismatch` hints mean
+the route needs a token minted for the selected resource.
+
 The generic URL-template guard also now distinguishes full URL placeholders
 from embedded path placeholders. Full HTTPS URLs are accepted only when the
 entire probe URL template is a single placeholder such as
@@ -110,6 +116,8 @@ resource-bound access token.
 
 - Add a resource-token proof only with a scoped MCP token minted for
   `https://mcp.figma.com/mcp` or another explicit test resource.
+- Exercise `degraded.audience_mismatch` against a redacted resource-token
+  cassette or a safe test MCP resource that rejects wrong-audience tokens.
 - Keep `resource` bearer-token proof out of default daemon loops. MCP resource
   probes are provider calls and require an explicit operator-selected resource.
 - Later: implement challenge discovery from `WWW-Authenticate:

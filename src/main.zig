@@ -1385,6 +1385,13 @@ fn degradedAction(
             .command = .probe,
             .budget = budget,
         },
+        .audience_mismatch => .{
+            .kind = "resource_or_audience",
+            .severity = "warning",
+            .message = "credential is valid but was minted for a different resource or audience",
+            .command = .probe,
+            .budget = budget,
+        },
         .tier_insufficient, .subscription_paused => .{
             .kind = "provider_plan",
             .severity = "warning",
