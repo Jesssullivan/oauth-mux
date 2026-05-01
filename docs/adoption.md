@@ -128,6 +128,11 @@ GloriousFlywheel, or Codex Max accounts.
 Clean-install proof is tracked in `docs/install-beta-matrix.md`. Keep that
 matrix current whenever a published or staged install lane changes state.
 
+Open adoption gaps are tracked in
+`docs/spec/product-gap-issue-map-2026-05-01.md`. That map links the public
+GitHub issues and Linear tickets for the remaining Homebrew distribution,
+stay-afloat daemon, and non-Codex provider proof work.
+
 ## Product Adoption Sprint
 
 The current adoption plan is tracked in
