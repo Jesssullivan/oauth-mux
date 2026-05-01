@@ -478,6 +478,8 @@ fn writeAccountCapabilityJson(
     try std.json.stringify(capability.name, .{}, writer);
     try writer.writeAll(",\"proof_status\":");
     try std.json.stringify(capability.proof_status, .{}, writer);
+    try writer.writeAll(",\"proof_requirements\":");
+    try writeStringArrayJson(writer, capability.proof_requirements);
     try writer.writeAll(",\"budget\":");
     if (budget) |probe_budget| try std.json.stringify(@tagName(probe_budget), .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"runtime\":");
@@ -5758,6 +5760,8 @@ fn writeCapabilityBudgetsJson(writer: anytype, def: provider_schema.ProviderDefi
         try std.json.stringify(capability.name, .{}, writer);
         try writer.writeAll(",\"proof_status\":");
         try std.json.stringify(capability.proof_status, .{}, writer);
+        try writer.writeAll(",\"proof_requirements\":");
+        try writeStringArrayJson(writer, capability.proof_requirements);
         try writer.writeAll(",\"budget\":");
         if (capability.probe) |probe_def| {
             try std.json.stringify(@tagName(probe_def.budget orelse provider_schema.defaultProbeBudget(probe_def.transport)), .{}, writer);
@@ -8133,6 +8137,7 @@ test "writeProvidersListJson exposes extension and budget metadata" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"runtime\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability_budgets\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"proof_requirements\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"codex-max\",\"proof_status\":\"live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"auth-status\",\"proof_status\":\"local_live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"identity\",\"proof_status\":\"local_live_proven\"") != null);
@@ -8140,6 +8145,8 @@ test "writeProvidersListJson exposes extension and budget metadata" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"resource-metadata\",\"proof_status\":\"public_live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"resource\",\"proof_status\":\"needs_operator_proof\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"identity-api-key\",\"proof_status\":\"local_live_proven\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "OMUX_FIGMA_PLAN_FILE_KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "OMUX_MCP_RESOURCE_TOKEN") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"budget\":\"spend_provider\"") != null);
 }
 

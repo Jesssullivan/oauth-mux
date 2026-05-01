@@ -216,6 +216,34 @@ intended auth modes have attached redacted evidence.
 - MCP `resource` with a Figma PAT as bearer candidate: HTTP 405,
   `degraded.unknown_4xx`; this is not resource-token proof.
 
+## Paid Multi-Account Proof Cohort
+
+The next dogfood lane is tracked in Linear `TIN-892` and specified in
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md`. It is a one-month
+paid cohort, not a default CI lane.
+
+Target shapes:
+
+- Codex: existing three Max-capable accounts plus one lower-tier OAuth account
+  to prove tier and usage contrast.
+- Claude Code: three isolated account/billing shapes across Pro, Max, and a
+  team/API-billed route where available.
+- Figma: three token/resource shapes across PAT, OAuth bearer, and
+  Organization/Enterprise plan-token file metadata if that spend is approved.
+
+The cohort uses the same explicit confirmation gates as other live QA:
+
+```bash
+OMUX_LIVE_QA_CONFIRM=spend-real-calls \
+  just live-qa
+```
+
+Do not schedule the paid cohort. It is a manual artifact-producing lane for
+provider proof and foreground stay-afloat soak evidence. The pass condition is
+not "every account is available"; the pass condition is that every unavailable
+account is typed correctly and at least one route can carry the requested
+capability when the cohort is expected to stay afloat.
+
 ## GitHub Workflow
 
 `.github/workflows/live-provider-qa.yml` is manual-only. It requires the
