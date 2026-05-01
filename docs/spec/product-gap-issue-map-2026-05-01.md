@@ -127,11 +127,11 @@ patterns are settled.
 
 1. Update website/release copy to use the public `jesssullivan/omux` Homebrew
    tap and close `#66` / `TIN-858` after those surfaces are aligned.
-2. Finish `TIN-862` as the first non-Codex provider proof by running redacted
-   GitHub and Linear identity artifacts after the classifier/documentation
-   patch lands.
-3. Use `TIN-861` and `TIN-863` to prove the two harder shapes: CLI-owned
-   subscription state and MCP resource-bound OAuth.
+2. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
+   Linear API-key identity are locally proven; Linear OAuth `identity` remains
+   `needs_operator_proof`.
+3. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
+   quota/repair semantics and MCP resource-bound bearer-token proof.
 4. Return to daemon background scheduling only after wrapper/install decisions
    and provider proof produce enough real operator evidence. The immediate
    daemon-side exceptions are `TIN-865`, because false liveness evidence would
