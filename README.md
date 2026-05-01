@@ -52,6 +52,7 @@ Discover the redacted, agent-safe inventory:
 oauth-mux doctor
 oauth-mux report --redacted
 oauth-mux providers list
+oauth-mux accounts list --json
 oauth-mux discover --json
 oauth-mux doctor runtime --json
 ```
@@ -94,6 +95,7 @@ mutating auth state:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route explain --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provider codex --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
@@ -111,6 +113,11 @@ and expected session files without reading token values or contacting providers.
 Use `doctor runtime --profile <name> --capability <name> --json` when a user or
 agent needs profile-level truth without letting a stale unrelated account poison
 the stay-afloat decision.
+
+`accounts list --json` is the provider-neutral account inventory. It reports
+configured provider accounts, secret backend names, runtime readiness,
+writeback admission, capability proof, recorded liveness, selectability, and
+safe next commands without reading credential values.
 
 `repair run` is the explicit mutation boundary. Without `--confirm-repair`, it
 will not open auth flows or run upstream CLI repair commands; it only reports
@@ -169,6 +176,7 @@ First-run Codex subscription path:
 oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux doctor runtime --json
+oauth-mux accounts list --provider codex --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa

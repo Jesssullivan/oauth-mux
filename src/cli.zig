@@ -10,6 +10,7 @@ pub const Command = union(enum) {
     doctor: DoctorArgs,
     report: ReportArgs,
     providers: ProvidersArgs,
+    accounts: AccountsArgs,
     status: StatusArgs,
     health: HealthArgs,
     discover: DiscoverArgs,
@@ -83,6 +84,16 @@ pub const Command = union(enum) {
 
     pub const ProvidersArgs = struct {
         action: ProvidersAction = .list,
+        json: bool = false,
+    };
+
+    pub const AccountsAction = enum {
+        list,
+    };
+
+    pub const AccountsArgs = struct {
+        action: AccountsAction = .list,
+        provider: ?[]const u8 = null,
         json: bool = false,
     };
 
@@ -225,6 +236,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "doctor")) return parseDoctor(rest);
     if (eql(cmd, "report")) return parseReport(rest);
     if (eql(cmd, "providers")) return parseProviders(rest);
+    if (eql(cmd, "accounts")) return parseAccounts(rest);
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
@@ -380,6 +392,24 @@ fn parseProviders(args: []const []const u8) Command {
         if (eql(args[i], "--json")) result.json = true;
     }
     return .{ .providers = result };
+}
+
+fn parseAccounts(args: []const []const u8) Command {
+    var result = Command.AccountsArgs{};
+    var i: usize = 0;
+    if (args.len > 0 and eql(args[0], "list")) {
+        result.action = .list;
+        i = 1;
+    }
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .accounts = result };
 }
 
 fn parseStatus(args: []const []const u8) Command {
@@ -786,6 +816,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  providers list [--json]
         \\      Show built-in and configured provider support status.
         \\
+        \\  accounts list [--provider <name>] [--json]
+        \\      Show configured accounts, runtime readiness, liveness evidence, and safe next commands.
+        \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
         \\
@@ -1157,6 +1190,19 @@ test "parse discover json" {
     }
 }
 
+test "parse accounts list provider json" {
+    const args = [_][]const u8{ "accounts", "list", "--provider", "codex", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .accounts => |accounts| {
+            try std.testing.expect(accounts.action == .list);
+            try std.testing.expectEqualStrings("codex", accounts.provider.?);
+            try std.testing.expect(accounts.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse repair plan with profile" {
     const args = [_][]const u8{ "repair-plan", "--profile", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1367,6 +1413,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a doctor -d 'Run readiness checks'
             \\complete -c oauth-mux -n __fish_use_subcommand -a report -d 'Print redacted support report'
             \\complete -c oauth-mux -n __fish_use_subcommand -a providers -d 'List provider support'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a accounts -d 'List configured accounts'
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
@@ -1392,10 +1439,12 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l capability -d 'Route capability' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from report providers' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from report providers accounts' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l redacted -d 'Redact credential paths and values'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from report' -l include-paths -d 'Include non-token paths'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from providers' -a 'list' -d 'Provider subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from accounts' -a 'list' -d 'Accounts subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from accounts' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
@@ -1454,6 +1503,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'doctor:Run readiness checks'
             \\    'report:Print redacted support report'
             \\    'providers:List provider support'
+            \\    'accounts:List configured accounts'
             \\    'status:Show status'
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
@@ -1478,7 +1528,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers status health discover repair-plan repair route stay-afloat config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts status health discover repair-plan repair route stay-afloat config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

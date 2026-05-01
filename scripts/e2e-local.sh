@@ -216,6 +216,25 @@ expect_contains() {
   esac
 }
 
+expect_not_contains() {
+  haystack="$1"
+  needle="$2"
+  label="$3"
+
+  if [ -z "$needle" ]; then
+    return
+  fi
+
+  case "$haystack" in
+    *"$needle"*)
+      printf 'e2e assertion failed: %s\n' "$label" >&2
+      printf 'did not expect to find: %s\n' "$needle" >&2
+      printf 'output was:\n%s\n' "$haystack" >&2
+      exit 1
+      ;;
+  esac
+}
+
 printf 'e2e: validate generated config\n'
 omux config validate >/dev/null
 
@@ -256,6 +275,22 @@ expect_contains "$providers_json" '"proof_status":"needs_operator_proof"' "provi
 expect_contains "$providers_json" '"name":"cheap","proof_status":"needs_operator_proof"' "providers list marks custom capability proof state"
 expect_contains "$providers_json" '"name":"codex-max","proof_status":"live_proven"' "providers list marks Codex capability proof state"
 expect_contains "$providers_json" '"configured_accounts":2' "providers list counts custom provider accounts"
+
+printf 'e2e: accounts list reports redacted account inventory before probes\n'
+accounts_json="$(omux accounts list --provider toy --json)"
+expect_contains "$accounts_json" '"configured":true' "accounts list reports configured state"
+expect_contains "$accounts_json" '"filter_provider":"toy"' "accounts list reports provider filter"
+expect_contains "$accounts_json" '"provider":"toy"' "accounts list includes toy provider"
+expect_contains "$accounts_json" '"account":"a1"' "accounts list includes account a1"
+expect_contains "$accounts_json" '"account":"a2"' "accounts list includes account a2"
+expect_contains "$accounts_json" '"state":"configured"' "accounts list distinguishes configured without liveness evidence"
+expect_contains "$accounts_json" '"runtime":{"state":"ready"}' "accounts list includes runtime readiness"
+expect_contains "$accounts_json" '"name":"cheap","proof_status":"needs_operator_proof"' "accounts list reports capability proof status"
+expect_contains "$accounts_json" '"health_recorded":false' "accounts list reports missing liveness evidence"
+expect_contains "$accounts_json" '"selectable":false' "accounts list refuses selection without recorded health"
+expect_contains "$accounts_json" '"oauth-mux repair-plan --provider <provider> --account <account> --capability <capability> --json"' "accounts list advertises safe repair plan"
+expect_not_contains "$accounts_json" "omux-e2e-a1" "accounts list does not expose env secret value"
+expect_not_contains "$accounts_json" "omux-e2e-a2" "accounts list does not expose env secret value"
 
 printf 'e2e: cheap route selects first healthy account\n'
 cheap_env="$(omux env --profile cheap --capability cheap --shell bash)"

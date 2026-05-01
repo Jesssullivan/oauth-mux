@@ -33,6 +33,7 @@ oauth-mux init
 oauth-mux doctor
 oauth-mux report --redacted
 oauth-mux providers list
+oauth-mux accounts list
 oauth-mux config validate
 oauth-mux discover --json
 oauth-mux doctor runtime --json
@@ -55,6 +56,7 @@ For Codex subscription users working from a source checkout today:
 oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux doctor runtime --json
+oauth-mux accounts list --provider codex --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -88,6 +90,9 @@ handoff event. Prefer scoped runtime checks such as
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
 when dogfooding a specific stay-afloat route; global runtime doctor is still
 useful for support bundles and full-machine cleanup.
+`oauth-mux accounts list --json` is the provider-neutral account inventory
+surface. It reports configured accounts, runtime readiness, capability proof,
+recorded liveness, and safe next commands without reading credential values.
 After a user-mediated upstream login, `oauth-mux stay-afloat refresh --profile
 <profile> --capability <capability> --json` is the concise evidence refresh
 step that can clear pending handoffs.
@@ -113,6 +118,9 @@ The wrapper contract lives in
 `docs/spec/stay-afloat-permission-broker-contract-2026-05-01.md`. Use that
 contract before adding a shell hook, CI wrapper, service unit, or agent
 permission broker around stay-afloat.
+The account enrollment and agent inventory contract lives in
+`docs/spec/account-enrollment-agent-contract-2026-05-01.md`. Use that contract
+before adding provider-neutral enrollment commands or MCP mutation tools.
 
 ## Provider Author Experience
 
