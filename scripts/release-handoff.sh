@@ -173,7 +173,8 @@ still private at publication time, use the CI-only npm workflow with
 
 ## Homebrew Tap
 
-Copy the rendered formula into the tap and review the four platform checksums:
+Copy the rendered formula into the public tap
+\`Jesssullivan/homebrew-omux\` and review the four platform checksums:
 
 \`\`\`bash
 cp dist/out/v${version}/homebrew/oauth-mux.rb <tap-checkout>/Formula/oauth-mux.rb

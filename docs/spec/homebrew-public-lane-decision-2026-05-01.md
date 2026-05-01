@@ -21,9 +21,9 @@ brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git
 brew install jesssullivan/omux/oauth-mux
 ```
 
-Until that repository exists and clean-machine QA passes, public docs and the
-website must keep Homebrew marked as staged/private and should advertise npm,
-GitHub Release tarballs, `curl | sh`, deb, and rpm first.
+As of the implementation update below, that repository exists and clean local
+install QA passes. Public docs may use the public tap wording, while still
+avoiding any claim that this is Homebrew core.
 
 ## Current Truth
 
@@ -31,10 +31,32 @@ GitHub Release tarballs, `curl | sh`, deb, and rpm first.
 - `tinyland/tools/oauth-mux` installs v0.1.6 from that private tap.
 - The private tap has passed local Homebrew QA: tap, audit, install/reinstall,
   test, `oauth-mux version`, and `oauth-mux doctor --json`.
-- No accessible `Jesssullivan/homebrew-omux` or `Jesssullivan/homebrew-tools`
-  repo exists at this checkpoint.
+- `Jesssullivan/homebrew-omux` now exists as the public tap, with default
+  branch `main`.
 - The release workflow already emits `oauth-mux.rb` and `SHA256SUMS` from the
   public GitHub Release tree.
+
+## Implementation Update
+
+On 2026-05-01, `Jesssullivan/homebrew-omux` was created as a public repository
+and populated from the public `oauth-mux` v0.1.6 release asset
+`oauth-mux.rb`.
+
+Strict local dogfood then removed the existing local `oauth-mux` install and
+public tap, tapped `jesssullivan/omux` from
+`https://github.com/Jesssullivan/homebrew-omux.git`, installed
+`jesssullivan/omux/oauth-mux`, ran `brew audit`, ran `brew test`, checked
+`oauth-mux version`, and ran `oauth-mux doctor --json`.
+
+Hosted registry dry-run `25199131583` also checked out
+`Jesssullivan/homebrew-omux` and passed the Homebrew lane against the public
+tap.
+
+Result:
+
+```text
+Homebrew install QA passed for oauth-mux 0.1.6 via jesssullivan/omux/oauth-mux
+```
 
 ## Rationale
 
@@ -84,7 +106,7 @@ Rollback should be a tap commit, not a local formula edit:
 
 ## Website Wording
 
-Before public tap creation:
+Before public tap creation, historical wording was:
 
 ```text
 Homebrew: staged/private tap; npm, GitHub Release, curl, deb, and rpm are the
@@ -106,6 +128,9 @@ Close `#66` / `TIN-858` only after:
 
 1. `Jesssullivan/homebrew-omux` exists and is public.
 2. The formula is populated from a public `oauth-mux` release asset.
-3. Clean-machine QA passes against the public tap.
+3. Clean-machine or clean-local QA passes against the public tap.
 4. `docs/adoption.md`, `docs/install-beta-matrix.md`, the website, and release
    notes use the public tap wording.
+
+Items 1-3 have clean-local v0.1.6 proof as of 2026-05-01. Item 4 remains the
+cross-repo alignment gate.

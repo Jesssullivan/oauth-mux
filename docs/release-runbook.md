@@ -211,6 +211,11 @@ Current release evidence:
   and execute `/usr/bin/oauth-mux version`.
 - Homebrew tap PR `tinyland-inc/homebrew-tools#4` updated `tinyland/tools` to
   v0.1.6; `just homebrew-qa 0.1.6` passed against the production tap.
+- Public Homebrew tap `Jesssullivan/homebrew-omux` now serves
+  `jesssullivan/omux/oauth-mux` v0.1.6; strict local QA removed the prior
+  install/tap and `just homebrew-qa 0.1.6` passed against the public tap.
+- Registry dry-run run `25199131583` completed the Homebrew lane against the
+  public `Jesssullivan/homebrew-omux` tap checkout.
 - NPM publish workflow run `25195456341` completed from `main` with
   `dry_run=true` for v0.1.6.
 - NPM publish workflow run `25195609579` published v0.1.6 through the CI-only

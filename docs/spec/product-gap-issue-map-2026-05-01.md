@@ -9,15 +9,15 @@ and `TIN-863`.
 
 `oauth-mux` v0.1.6 is published and dogfooded for the Codex three-account
 route. The release has public GitHub assets, npm `latest`, `curl | sh`,
-deb/rpm assets, and a private/staged Homebrew tap path. The remaining adoption
-risks are no longer general release mechanics. They are three specific product
+deb/rpm assets, and a public Jess-owned Homebrew tap. The remaining adoption
+risks are no longer general release mechanics. They are specific product
 boundaries that need separate tracking.
 
 ## Public Issue Map
 
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
-| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Private/staged Tinyland tap works; recommended public lane is a Jess-owned tap, pending repo creation and QA. |
+| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. |
 | Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863` | Codex is live-proven; most other providers are schema-modeled or admitted but not live-proven. |
 
@@ -25,25 +25,19 @@ boundaries that need separate tracking.
 
 Current truth:
 
-- `brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git`
-  plus `brew install tinyland/tools/oauth-mux` installs v0.1.6.
-- The tap is still private/staged infrastructure, not Homebrew core and not a
-  public tap promise.
+- `brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git`
+  plus `brew install jesssullivan/omux/oauth-mux` installs v0.1.6 from the
+  public tap.
+- The public tap is `Jesssullivan/homebrew-omux`, default branch `main`.
+- `tinyland-inc/homebrew-tools` still exists and remains private/staged
+  Tinyland infrastructure.
+- This is not Homebrew core. It is a public Homebrew tap.
 - Formula updates must continue to come from public GitHub Release
   `oauth-mux.rb` and `SHA256SUMS`, not local `dist/out` output.
 
-Decision options:
-
-1. Recommended: create a public Jess-owned tap,
-   `Jesssullivan/homebrew-omux`, and use tap name `jesssullivan/omux`.
-2. Keep `tinyland-inc/homebrew-tools` private as staged Tinyland
-   infrastructure.
-3. Continue advertising npm, GitHub Release, curl, deb, and rpm as the public
-   install surfaces until public tap QA passes.
-
 The decision record is
-`docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The website must keep
-staged/private wording until the public tap exists and clean-machine QA passes.
+`docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The website can now
+use public tap wording once it matches this repo truth.
 
 ## Stay-Afloat Daemon Boundary
 
@@ -107,9 +101,8 @@ patterns are settled.
 
 ## Immediate Execution Order
 
-1. Create and prove the public Jess-owned Homebrew tap from
-   `docs/spec/homebrew-public-lane-decision-2026-05-01.md`, or keep website
-   wording staged/private until that work lands.
+1. Update website/release copy to use the public `jesssullivan/omux` Homebrew
+   tap and close `#66` / `TIN-858` after those surfaces are aligned.
 2. Finish `TIN-862` as the first non-Codex provider proof by running redacted
    GitHub and Linear identity artifacts after the classifier/documentation
    patch lands.
@@ -120,8 +113,7 @@ patterns are settled.
 
 ## Guardrails
 
-- Do not advertise Homebrew as public until the tap visibility/ownership is
-  settled.
+- Do not describe the public tap as Homebrew core.
 - Do not make daemon execution a first-run or release gate.
 - Do not run live probes by default.
 - Do not mutate upstream CLI-owned credential stores.

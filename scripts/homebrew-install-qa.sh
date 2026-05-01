@@ -10,8 +10,8 @@ Installs oauth-mux from the configured Homebrew tap, runs brew audit/test, and
 verifies the installed binary version.
 
 Environment:
-  OMUX_HOMEBREW_TAP_NAME       Homebrew tap name. Default: tinyland/tools
-  OMUX_HOMEBREW_TAP_GIT_URL    Tap git URL. Default: https://github.com/tinyland-inc/homebrew-tools.git
+  OMUX_HOMEBREW_TAP_NAME       Homebrew tap name. Default: jesssullivan/omux
+  OMUX_HOMEBREW_TAP_GIT_URL    Tap git URL. Default: https://github.com/Jesssullivan/homebrew-omux.git
   OMUX_BREW_BIN                brew executable. Default: brew
   OMUX_HOMEBREW_KEEP_INSTALLED Keep oauth-mux installed after QA. Default: preserve prior state
   OMUX_HOMEBREW_KEEP_TAP       Keep tap after QA. Default: preserve prior state
@@ -22,8 +22,8 @@ EOF
 fi
 
 brew_cmd="${OMUX_BREW_BIN:-brew}"
-tap_name="${OMUX_HOMEBREW_TAP_NAME:-tinyland/tools}"
-tap_url="${OMUX_HOMEBREW_TAP_GIT_URL:-https://github.com/tinyland-inc/homebrew-tools.git}"
+tap_name="${OMUX_HOMEBREW_TAP_NAME:-jesssullivan/omux}"
+tap_url="${OMUX_HOMEBREW_TAP_GIT_URL:-https://github.com/Jesssullivan/homebrew-omux.git}"
 formula="${tap_name}/oauth-mux"
 
 require_command() {
