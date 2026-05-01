@@ -416,6 +416,7 @@ const vercel_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity",
         .aliases = &.{ "user", "whoami" },
+        .proof_status = proof_local_live,
         .probe = .{
             .method = "GET",
             .url = "https://api.vercel.com/v2/user",

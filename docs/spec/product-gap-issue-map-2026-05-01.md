@@ -129,12 +129,16 @@ Next split:
   status is `public_live_proven`. The next slice now has a typed target for
   resource-token routing errors: explicit resource/audience mismatch evidence
   is `degraded.audience_mismatch`, not a revoked account.
-- `TIN-876`: prove Vercel identity. The built-in `identity` capability exists
-  for `GET https://api.vercel.com/v2/user`, but still needs redacted operator
-  proof before promotion.
+- `TIN-876`: prove Vercel identity. A low-impact local proof now shows
+  `vercel:work#identity` returning HTTP 200 and `live.available`; the
+  capability proof status is `local_live_proven`. Broader provider status stays
+  conservative until Vercel token, team, scope, and project/resource failure
+  shapes have redacted fixture coverage.
 - `TIN-877`: prove Figma OAuth, PAT, and plan-token shapes separately.
   `identity`, `identity-pat`, and `file-metadata-plan` must not collapse into a
-  single generic "Figma works" claim.
+  single generic "Figma works" claim. A 2026-05-01 OAuth bearer attempt
+  returned HTTP 403 and correctly classified as `degraded.scope_insufficient`;
+  that is classifier evidence, not live proof.
 - `TIN-878`: prove FlakeHub/Determinate as command-first status, with missing
   binaries and unwritable runtime separated from credential liveness.
 - `TIN-879`: decide and prove the Gemini CLI provider shape before any proof
