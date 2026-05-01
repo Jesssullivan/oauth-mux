@@ -55,6 +55,8 @@ oauth-mux providers list
 oauth-mux accounts list --json
 oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
+oauth-mux enroll plan claude --account work --json
+oauth-mux enroll claude --account work --confirm-enroll --json
 oauth-mux discover --json
 oauth-mux doctor runtime --json
 ```
@@ -126,11 +128,12 @@ into an explicit provider-specific setup plan, marking which steps are
 agent-safe, interactive, mutating, or provider-call-spending before anything is
 run.
 
-`enroll codex --account <name> --confirm-enroll --json` is the first consented
-provider-neutral enrollment mutation. It adds the named Codex account to the
-active oauth-mux config and Codex Max/Mini profiles, bootstraps the isolated
-`CODEX_HOME` directory, and returns the `oauth-mux codex login-device <name>`
-handoff. It does not run Codex login or provider probes.
+`enroll codex --account <name> --confirm-enroll --json` and
+`enroll claude --account <name> --confirm-enroll --json` are the first
+consented provider-neutral enrollment mutations. They add named accounts to the
+active oauth-mux config, bootstrap isolated provider-owned config directories,
+and return explicit upstream login handoffs. They do not run provider login or
+provider probes.
 
 `repair run` is the explicit mutation boundary. Without `--confirm-repair`, it
 will not open auth flows or run upstream CLI repair commands; it only reports
@@ -192,6 +195,8 @@ oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
 oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
+oauth-mux enroll plan claude --account work --json
+oauth-mux enroll claude --account work --confirm-enroll --json
 oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary
