@@ -24,6 +24,9 @@ The existing `oauth-mux daemon run/start/stop/status` socket code is not the
 production supervisor contract. It is a Unix socket status/control stub that is
 useful for local experiments. It is currently unsupported on Windows and does
 not perform automatic repair, route refresh, or background scheduling.
+The TIN-867 decision is to keep that socket daemon out of the supported
+stay-afloat product surface for the current release line. Wrapper authors
+should call the foreground tick engine directly.
 
 Service managers are wrappers, not core semantics. `systemctl`, `launchctl`,
 Homebrew services, cron, Windows Services, scheduled tasks, containers, and CI
@@ -91,12 +94,14 @@ The current socket daemon is experimental.
   supervisor.
 - The socket handler supports `status`, `stop`, and a placeholder `refresh`
   response.
-- It does not host the stay-afloat tick engine yet.
+- It does not host the stay-afloat tick engine in the supported product
+  contract.
 - It must not be required by first-run, release gates, live QA, or provider
   authoring.
 
-The socket stub can become an implementation detail for a future beta daemon,
-but only after its behavior is aligned with the foreground supervisor contract.
+The socket stub can become an implementation detail for a future beta daemon
+only through a new promotion slice that aligns it with the foreground
+supervisor contract and repeats the daemon promotion gates.
 
 ### Layer 4: service wrappers
 

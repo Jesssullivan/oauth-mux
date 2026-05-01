@@ -161,7 +161,9 @@ foreground supervisor contract is tracked in
 - `v0.1.3` onboarding/doctor/report scope;
 - launch sequencing and outreach;
 - provider-author feedback loops;
-- follow-up Linear split from `TIN-491`.
+- follow-up Linear split from `TIN-491`;
+- the `TIN-867` decision that the socket daemon remains non-product
+  status/control plumbing for the current release line.
 
 ## Ownership And URL
 
