@@ -26,6 +26,12 @@ the `viewer` access pattern. Because GraphQL can return semantic errors under
 HTTP `200`, the provider rule must inspect the body hint and downgrade
 `{"errors":[...]}` to degraded instead of live.
 
+Linear personal API keys use the same GraphQL endpoint and viewer query, but
+the provider-owned docs require `Authorization: <API_KEY>` instead of
+`Authorization: Bearer <ACCESS_TOKEN>`. That is modeled as a separate
+`identity-api-key` capability so OAuth bearer proof and personal-key proof do
+not share an ambiguous auth mode.
+
 ## Classifier Decisions
 
 - `401` remains generic OAuth death: `dead.token_revoked`.
@@ -37,6 +43,8 @@ HTTP `200`, the provider rule must inspect the body hint and downgrade
 - Linear `200` plus GraphQL `errors` is `degraded.unknown_4xx` until a narrower
   Linear error taxonomy is justified by fixtures.
 - Linear `403` remains `degraded.scope_insufficient`.
+- Linear OAuth proof uses `identity`; Linear personal API key proof uses
+  `identity-api-key`.
 - Provider `5xx` remains `provider_degraded`.
 
 The GitHub distinction requires exact matching on the remaining-count hint.
@@ -59,6 +67,13 @@ Local Linear proof, using an already-scoped OAuth access token:
 OMUX_CONFIG=$PWD/examples/linear.config.json \
 OMUX_LINEAR_WORK_TOKEN="$LINEAR_ACCESS_TOKEN" \
   ./zig-out/bin/oauth-mux probe --profile linear --capability identity --json
+```
+
+Local Linear proof, using a personal API key from `LINEAR_API_KEY`:
+
+```bash
+OMUX_CONFIG=$PWD/examples/linear-api-key.config.json \
+  ./zig-out/bin/oauth-mux probe --profile linear-api-key --capability identity-api-key --json
 ```
 
 Artifacted proof should run through `just live-qa` with
@@ -86,13 +101,18 @@ are true:
   supplied by `gh auth token`. The redacted result was
   `github:work#identity`, `probe_status=200`, `live.available`, and
   `decision=use_this`.
-- Linear live QA is still pending. The current shell did not expose
-  `LINEAR_ACCESS_TOKEN`, and this slice intentionally did not search secret
-  stores for a token.
+- Linear personal API key live QA passed on 2026-05-01 through
+  `scripts/live-provider-qa.sh` using `examples/linear-api-key.config.json` and
+  the existing `LINEAR_API_KEY` environment variable. The redacted result was
+  `linear:work#identity-api-key`, `probe_status=200`, `live.available`, and
+  `decision=use_this`.
+- Linear OAuth bearer live QA is still pending. The current shell did not expose
+  `LINEAR_ACCESS_TOKEN`.
 
-This is enough to prove the GitHub path locally, but not enough to promote the
-provider globally. TIN-862 should still collect durable issue evidence and a
-Linear proof before changing public support status.
+This is enough to prove the GitHub path locally and the Linear personal API-key
+path locally, but not enough to claim that every Linear auth mode is live-proven.
+TIN-862 should record the OAuth bearer proof separately before changing public
+support status.
 
 ## Sources
 

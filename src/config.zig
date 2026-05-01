@@ -1349,6 +1349,51 @@ test "validate rejects authorization as custom token header" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "probe.auth_header must be a non-Authorization HTTP header name") != null);
 }
 
+test "validate accepts raw authorization header auth" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "identity-api-key",
+        \\          "probe": {
+        \\            "method": "GET",
+        \\            "url": "https://example.invalid/v1/me",
+        \\            "auth": "authorization_header"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        { "status": 403, "class": { "degraded": "scope_insufficient" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try validate(parsed.value, out.writer());
+}
+
 test "validate rejects auth header without token header auth" {
     const json =
         \\{

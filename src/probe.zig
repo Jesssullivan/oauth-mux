@@ -79,6 +79,10 @@ fn executeHttp(
             headers_buf[header_count] = .{ .name = "Authorization", .value = bearer_value.? };
             header_count += 1;
         },
+        .authorization_header => {
+            headers_buf[header_count] = .{ .name = "Authorization", .value = access_token };
+            header_count += 1;
+        },
         .token_header => {
             const header_name = plan.auth_header orelse return error.UnsupportedTransport;
             headers_buf[header_count] = .{ .name = header_name, .value = access_token };

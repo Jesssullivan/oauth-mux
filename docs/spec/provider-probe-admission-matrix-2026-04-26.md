@@ -31,7 +31,7 @@ implemented yet.
 | MCP HTTP server | `mcp_profile`; built-in `resource-metadata` and `resource` probe templates | `GET {{OMUX_MCP_RESOURCE_METADATA_URL}}` without auth for RFC 9728 metadata; `GET {{OMUX_MCP_RESOURCE_PROBE_URL}}` with resource-bound bearer token for server probe | 401 invalid/expired token, 403 insufficient_scope or step-up, malformed metadata/schema, provider degraded |
 | MCP stdio server | `admitted_command` / injection | Environment or config injection; MCP HTTP OAuth flow does not apply | missing secret, malformed env/config, child-process failure |
 | GitHub | `admitted_http`; built-in `identity` probe | `GET https://api.github.com/user` with bearer token | 200 live, 401 dead, 403 forbidden/rate-limited, rate-limit headers |
-| Linear | `admitted_http`; built-in `identity` probe | `POST https://api.linear.app/graphql` with `query { viewer { id name email } }` and OAuth bearer token | 200 plus GraphQL errors, 401 dead, 403/scope, 429/rate, 5xx degraded |
+| Linear | `admitted_http`; built-in `identity` and `identity-api-key` probes | `POST https://api.linear.app/graphql` with `query { viewer { id name email } }`; OAuth uses bearer auth, personal API keys use raw `Authorization` | 200 plus GraphQL errors, 401 dead, 403/scope, 429/rate, 5xx degraded |
 | Figma REST | `admitted_http`; built-in OAuth `identity`, PAT `identity-pat`, and plan-token `file-metadata-plan` probes | `GET https://api.figma.com/v1/me` with OAuth bearer token and `current_user:read`; PATs use `X-Figma-Token`; plan access tokens use `GET /v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta` with `file_metadata:read` | 200 live, 401 dead, 403 scope/tier, 404 resource not allowed/found, 429/rate, 5xx degraded |
 | Figma Remote MCP | `mcp_profile` | Treat as MCP HTTP resource, not as Figma REST | MCP metadata, scope challenge, tool/schema errors |
 | Vercel | `admitted_http`; built-in `identity` probe | `GET https://api.vercel.com/v2/user`; token metadata endpoint and semantic `softBlock` body checks are later optional refinements | 200 live, 401 dead, 403 forbidden/team/scope, 429/rate, 5xx degraded |
@@ -54,7 +54,8 @@ implemented yet.
    until the provider documents direct resource-server semantics.
 6. Custom token-header probes are explicit. Use `auth = token_header` with a
    non-`Authorization` header name such as `X-Figma-Token`; use `auth = bearer`
-   for OAuth Authorization headers.
+   for OAuth Authorization headers; use `auth = authorization_header` only when
+   provider-owned docs require a raw token in the `Authorization` header.
 7. URL templates are for non-secret resource identifiers only. Placeholder
    names must be env-var shaped (`A_Z0_9_`); runtime values must be URL-safe
    unreserved characters.

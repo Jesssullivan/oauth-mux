@@ -342,7 +342,10 @@ The compiled adapter may add provider probes, but the common shape should be
 declarative enough for new OAuth-backed tools to be added without editing the
 selection core. Capability probes are plans, not secrets: token material or
 account-scoped env such as `CODEX_HOME` is added only when the probe executes.
-HTTP probes use `method`, `url`, bearer auth, and optional hint headers.
+HTTP probes use `method`, `url`, explicit auth mode, and optional hint headers.
+OAuth bearer tokens use `bearer`, provider-specific non-Authorization token
+headers use `token_header`, and provider-documented raw Authorization tokens
+use `authorization_header`.
 Command probes use argv plus inherited environment overlays, must have a
 positive `timeout_ms`, and are classified from stdout/stderr cassettes when the
 provider supplies a parser. Failure rules are intentionally small: exact status

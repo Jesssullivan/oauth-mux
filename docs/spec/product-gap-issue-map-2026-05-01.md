@@ -93,8 +93,8 @@ Next split:
 - `TIN-862`: prove GitHub and Linear low-impact identity probes. This is now
   underway with classifier hardening and a proof spec in
   `docs/spec/provider-proof-github-linear-2026-05-01.md`; local GitHub live QA
-  has passed, while Linear live proof and durable tracking evidence are still
-  pending.
+  has passed, Linear personal API-key live QA has passed, and Linear OAuth
+  bearer proof remains pending.
 - `TIN-863`: prove MCP HTTP authorization and protected-resource metadata.
 
 Later slices should cover Vercel/Figma token variants and Gemini plus
