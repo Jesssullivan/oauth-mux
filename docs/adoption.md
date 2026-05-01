@@ -17,7 +17,10 @@ Target install surfaces:
 
 The Homebrew command above is proven for the Tinyland tap, but it is not yet a
 public Homebrew distribution promise. Track that decision in
-`docs/spec/product-gap-issue-map-2026-05-01.md`.
+`docs/spec/product-gap-issue-map-2026-05-01.md`. The recommended public lane is
+a Jess-owned tap, `Jesssullivan/homebrew-omux`, documented in
+`docs/spec/homebrew-public-lane-decision-2026-05-01.md`; do not publish public
+Homebrew install copy until that tap exists and clean-machine QA passes.
 
 Each release artifact should be derived from the same CI release tree. npm is
 published only from CI tarballs; workstation `npm publish` is not supported.
