@@ -88,6 +88,10 @@ Current truth:
 Next split:
 
 - `TIN-861`: prove Claude Code through command-owned auth/session behavior.
+  The first no-spend local proof is captured in
+  `docs/spec/provider-proof-claude-command-auth-2026-05-01.md`: `auth-status`
+  can now run through `claude auth status --json` without first reading or
+  mutating Claude's credential store.
 - `TIN-862`: prove GitHub and Linear low-impact identity probes. This is now
   underway with classifier hardening and a proof spec in
   `docs/spec/provider-proof-github-linear-2026-05-01.md`; local GitHub live QA

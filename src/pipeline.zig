@@ -28,6 +28,7 @@ pub const Context = struct {
     allocated_values: std.ArrayList([]const u8),
     target_argv: []const []const u8 = &.{},
     shell: types.ShellKind = .posix,
+    probe_only: bool = false,
     last_probe_executed: bool = false,
     last_probe_status: ?u16 = null,
     last_probe_decision: ?types.MuxDecision = null,
@@ -81,6 +82,8 @@ pub fn runEnv(ctx: *Context) PipelineError!void {
 
 pub fn runProbe(ctx: *Context) PipelineError!void {
     try resolveProvider(ctx);
+    ctx.probe_only = true;
+    defer ctx.probe_only = false;
     try selectWithFallback(ctx);
 }
 
@@ -133,6 +136,33 @@ fn selectWithFallback(ctx: *Context) PipelineError!void {
         ctx.account_name = candidate.account;
         ctx.capability_name = candidate.capability;
         ctx.provider_kind = config_mod.resolveProviderKind(ctx.cfg, candidate.provider);
+
+        if (ctx.probe_only and probePlanUsesNoCredential(ctx)) {
+            const post_probe_decision = probeCapability(ctx) catch |e| {
+                recordCandidateFailure(ctx, key.slice(), e);
+                last_err = e;
+                freeCurrentToken(ctx);
+                continue;
+            };
+            switch (post_probe_decision) {
+                .use_this => {},
+                .try_next_provider => {
+                    if (skipped_provider_count < skipped_providers.len) {
+                        skipped_providers[skipped_provider_count] = candidate.provider;
+                        skipped_provider_count += 1;
+                    }
+                    freeCurrentToken(ctx);
+                    continue;
+                },
+                .try_next_account, .wait_and_retry, .give_up => {
+                    freeCurrentToken(ctx);
+                    continue;
+                },
+            }
+
+            log.info("pipeline: using {s}:{s}", .{ candidate.provider, candidate.account });
+            return;
+        }
 
         // Try the read → validate path
         readSecret(ctx) catch |e| {
@@ -190,8 +220,16 @@ fn freeCurrentToken(ctx: *Context) void {
     if (ctx.token) |tok| {
         ctx.allocator.free(tok.access_token);
         if (tok.refresh_token) |rt| ctx.allocator.free(rt);
-        ctx.token = null;
     }
+    ctx.token = null;
+}
+
+fn probePlanUsesNoCredential(ctx: *Context) bool {
+    const capability = ctx.capability_name orelse return false;
+    const prov = ctx.provider_name orelse return false;
+    const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+    const plan = provider_schema.probePlanForCapability(def, capability) orelse return false;
+    return plan.auth == .none;
 }
 
 fn recordCandidateFailure(ctx: *Context, key: []const u8, err: PipelineError) void {
@@ -408,11 +446,16 @@ fn validateToken(ctx: *Context) PipelineError!void {
 
 fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     const capability = ctx.capability_name orelse return .use_this;
-    const tok = ctx.token orelse return error.TokenParseFailed;
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
     const acct = ctx.account_name orelse return error.AccountNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
     const plan = provider_schema.probePlanForCapability(def, capability) orelse return .use_this;
+    const access_token = if (ctx.token) |tok|
+        tok.access_token
+    else switch (plan.auth) {
+        .none => "",
+        else => return error.TokenParseFailed,
+    };
 
     var probe_env = buildProbeEnv(ctx, prov, acct, def, plan) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -420,7 +463,7 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     };
     defer probe_env.deinit();
 
-    const result = probe.execute(ctx.allocator, plan, tok.access_token, probe_env.pairs.items) catch |e| switch (e) {
+    const result = probe.execute(ctx.allocator, plan, access_token, probe_env.pairs.items) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
         error.UnsupportedMethod, error.UnsupportedTransport => return error.ConfigValidationError,
         error.NetworkError => return error.NetworkError,
@@ -1187,6 +1230,71 @@ test "runProbe honors explicit account filter without a configured probe plan" {
     try std.testing.expect(!ctx.last_probe_executed);
     try std.testing.expect(store.accounts.get("codex:max-2") != null);
     try std.testing.expect(store.accounts.get("codex:max-1") == null);
+}
+
+test "runProbe executes auth none command probe without reading missing secret" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": { "provider": "toy" },
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "status",
+        \\          "probe": {
+        \\            "transport": "command",
+        \\            "auth": "none",
+        \\            "command": ["sh", "-c", "printf '{\"loggedIn\":true}'"],
+        \\            "budget": "free_command"
+        \\          }
+        \\        }
+        \\      ],
+        \\      "failure_rules": [
+        \\        {
+        \\          "status": 400,
+        \\          "hint_contains": "\"loggedIn\":false",
+        \\          "class": { "dead": "token_revoked" }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "OMUX_TEST_SECRET_THAT_IS_NOT_SET" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "toy": { "providers": ["toy:default#status"] }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.profile_name = "toy";
+    ctx.capability_name = "status";
+
+    try runProbe(&ctx);
+
+    try std.testing.expect(ctx.last_probe_executed);
+    try std.testing.expect(ctx.token == null);
+    try std.testing.expectEqual(@as(?u16, 200), ctx.last_probe_status);
+    try std.testing.expectEqual(types.MuxDecision.use_this, ctx.last_probe_decision.?);
+    try std.testing.expect(store.accounts.get("toy:default#status") != null);
 }
 
 test "runEnv skips remaining accounts for degraded provider" {
