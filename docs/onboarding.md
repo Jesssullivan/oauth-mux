@@ -236,6 +236,11 @@ daemon manager. Per-route `tick.next_tick_after` and `tick.schedule_reason`,
 plus `summary.next_tick_after` and `summary.next_tick_reason`, are the portable
 sleep/backoff contract for wrappers and agents.
 
+`oauth-mux daemon status --json` is socket-stub inspection, not the stay-afloat
+supervisor. It reports `contract:"experimental_socket_stub"` and
+`hosts_stay_afloat:false` until the socket daemon is deliberately aligned with
+the foreground tick contract.
+
 Route, runtime, repair-plan, and stay-afloat JSON include a `writeback` object.
 That object separates the secret backend surface (`readonly`, `replace_file`,
 `command_write`, `keychain_write`, `sops_write`, or `unsupported`) from whether

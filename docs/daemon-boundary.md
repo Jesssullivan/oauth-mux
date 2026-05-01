@@ -50,6 +50,9 @@ loop, perform automatic repair, or define production daemon semantics.
 Homebrew services, systemd user units, launchd plists, cron, Windows Services,
 containers, and CI wrappers must preserve the foreground command contract
 rather than introducing separate behavior.
+`oauth-mux daemon status --json` reports this boundary directly with
+`contract:"experimental_socket_stub"`, `production_supported:false`,
+`hosts_stay_afloat:false`, and `wrapper_contract:"foreground_tick"`.
 
 ## Allowed Now
 
@@ -62,7 +65,8 @@ rather than introducing separate behavior.
 - `oauth-mux repair run` for one explicit, confirmed repair command.
 - `oauth-mux daemon repair-plan` as a compatibility alias for the same
   one-shot planner.
-- `oauth-mux daemon status --json` for local inspection.
+- `oauth-mux daemon status --json` for local inspection and machine-readable
+  socket-daemon contract metadata.
 - `oauth-mux daemon events --json` for the redacted repair-run event log. This
   reads local state and does not require a daemon process. The same stream also
   carries redacted `token_refresh` events for refresh admission/writeback

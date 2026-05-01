@@ -66,6 +66,10 @@ Remaining daemon split:
 
 - Align the experimental socket daemon with the foreground tick contract before
   calling it a beta background daemon.
+- `TIN-867` now tracks that socket-daemon alignment decision. Until it is
+  resolved, `daemon status --json` exposes `contract:"experimental_socket_stub"`
+  and `hosts_stay_afloat:false` so wrappers do not treat the socket stub as
+  production stay-afloat.
 - Add optional package wrapper examples only after public install lanes and
   stop/status behavior are stable.
 - Keep production background scheduling separate from first-run and release
