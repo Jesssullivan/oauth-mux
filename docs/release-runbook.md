@@ -135,7 +135,7 @@ at the staged artifact directory instead of GitHub Releases.
 After the GitHub Release exists, run the hosted system-package install proof:
 
 ```bash
-gh workflow run system-package-install-qa.yml -f version=0.1.5
+gh workflow run system-package-install-qa.yml -f version=0.1.6
 ```
 
 This workflow downloads the published `.deb` and `.rpm` release assets, verifies
@@ -145,7 +145,7 @@ Linux containers on `ubuntu-latest`, and runs `/usr/bin/oauth-mux version`.
 For local reproduction on a healthy Docker-compatible host:
 
 ```bash
-just system-package-qa 0.1.5
+just system-package-qa 0.1.6
 ```
 
 This is stricter than the registry `system` dry-run lane. The dry-run lane
@@ -201,11 +201,20 @@ Current release evidence:
 - Main CI run `25032478278` completed `test`, `nix`, all six cross-compiles,
   and real GloriousFlywheel cache-first validation after the evidence docs
   merged.
-- System Package Install QA run `25172711458` completed for v0.1.5 and proved
+- Release workflow run `25195318899` published v0.1.6 GitHub Release assets:
+  tarballs, npm package bundles, deb/rpm packages, formula, installer, and
+  checksums.
+- Registry dry-run run `25195456326` completed
+  `plan,github,npm,homebrew,system` for v0.1.6 without mutating registries.
+- System Package Install QA run `25195456319` completed for v0.1.6 and proved
   published `.deb` and `.rpm` assets install in hosted Debian/Rocky containers
   and execute `/usr/bin/oauth-mux version`.
-- Homebrew tap PR `tinyland-inc/homebrew-tools#3` updated `tinyland/tools` to
-  v0.1.5; `just homebrew-qa 0.1.5` passed against the production tap.
+- Homebrew tap PR `tinyland-inc/homebrew-tools#4` updated `tinyland/tools` to
+  v0.1.6; `just homebrew-qa 0.1.6` passed against the production tap.
+- NPM publish workflow run `25195456341` completed from `main` with
+  `dry_run=true` for v0.1.6.
+- NPM publish workflow run `25195609579` published v0.1.6 through the CI-only
+  SOPS-backed path; `npm view oauth-mux version` reports `0.1.6`.
 
 ## Before Marking A PR Ready
 
