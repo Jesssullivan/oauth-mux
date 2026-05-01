@@ -525,6 +525,17 @@ const AdmissionDecision = struct {
     budget: ?types.ActionBudget = null,
 };
 
+const DaemonTickSchedule = struct {
+    next_tick_after: ?i64 = null,
+    reason: []const u8 = "none",
+};
+
+const daemon_repair_poll_s: i64 = 30;
+const daemon_runtime_recheck_s: i64 = 300;
+const daemon_handoff_recheck_s: i64 = 300;
+const daemon_quota_unknown_recheck_s: i64 = 3600;
+const daemon_provider_plan_recheck_s: i64 = 3600;
+
 fn runRepairPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.RepairPlanArgs) !void {
     const parsed = try config.load(allocator);
     defer parsed.deinit();
@@ -2098,6 +2109,7 @@ const DaemonTickDecision = struct {
     executed: bool = false,
     handoff: bool = false,
     next_tick_after: ?i64 = null,
+    schedule_reason: []const u8 = "none",
 };
 
 const DaemonTickExecution = struct {
@@ -2123,6 +2135,7 @@ const DaemonTickStats = struct {
     blocked_repairs: usize = 0,
     no_action: usize = 0,
     next_tick_after: ?i64 = null,
+    next_tick_reason: ?[]const u8 = null,
 };
 
 fn writeDaemonTickText(
@@ -2170,6 +2183,8 @@ fn writeDaemonTickText(
             decision.reason,
         });
         if (decision.budget) |budget| try writer.print(" budget={s}", .{@tagName(budget)});
+        try writer.print(" schedule={s}", .{decision.schedule_reason});
+        if (decision.next_tick_after) |next| try writer.print(" next_tick_after={d}", .{next});
         if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
             defer allocator.free(command);
             try writer.print(" command={s}", .{command});
@@ -2284,6 +2299,12 @@ fn writeDaemonTickStatsJson(writer: anytype, stats: DaemonTickStats) !void {
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"next_tick_reason\":");
+    if (stats.next_tick_reason) |reason| {
+        try std.json.stringify(reason, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
     try writer.writeByte('}');
 }
 
@@ -2371,6 +2392,8 @@ fn writeDaemonTickDecisionJson(writer: anytype, decision: DaemonTickDecision) !v
     try writer.writeAll(if (decision.handoff) "true" else "false");
     try writer.writeAll(",\"next_tick_after\":");
     if (decision.next_tick_after) |next| try writer.print("{d}", .{next}) else try writer.writeAll("null");
+    try writer.writeAll(",\"schedule_reason\":");
+    try std.json.stringify(decision.schedule_reason, .{}, writer);
     try writer.writeByte('}');
 }
 
@@ -2387,7 +2410,10 @@ fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const Route
             stats.no_action += 1;
         }
         if (decision.next_tick_after) |next| {
-            if (stats.next_tick_after == null or next < stats.next_tick_after.?) stats.next_tick_after = next;
+            if (stats.next_tick_after == null or next < stats.next_tick_after.?) {
+                stats.next_tick_after = next;
+                stats.next_tick_reason = decision.schedule_reason;
+            }
         }
     }
     return stats;
@@ -2400,8 +2426,11 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
             .action = "none",
             .admitted = true,
             .reason = "route_selectable",
+            .schedule_reason = "route_selectable",
         };
     }
+
+    const schedule = daemonTickSchedule(evaluation.action, observed_at);
 
     if (evaluation.action.command == .probe) {
         const admission = daemonProbeAdmission(policy, evaluation.budget);
@@ -2411,7 +2440,8 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
             .admitted = admission.admitted,
             .reason = admission.reason,
             .budget = admission.budget,
-            .next_tick_after = daemonTickNextAfter(evaluation.action, observed_at),
+            .next_tick_after = schedule.next_tick_after,
+            .schedule_reason = schedule.reason,
         };
     }
 
@@ -2424,7 +2454,8 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
             .reason = admission.reason,
             .budget = admission.budget,
             .handoff = evaluation.action.interactive,
-            .next_tick_after = daemonTickNextAfter(evaluation.action, observed_at),
+            .next_tick_after = schedule.next_tick_after,
+            .schedule_reason = schedule.reason,
         };
     }
 
@@ -2435,17 +2466,50 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
         .admitted = admission.admitted,
         .reason = if (admission.admitted) "observe_only" else admission.reason,
         .budget = admission.budget,
-        .next_tick_after = daemonTickNextAfter(evaluation.action, observed_at),
+        .next_tick_after = schedule.next_tick_after,
+        .schedule_reason = schedule.reason,
     };
 }
 
-fn daemonTickNextAfter(action: RepairAction, observed_at: i64) ?i64 {
-    if (action.retry_after_s) |retry_after| return observed_at + @as(i64, retry_after);
-    if (action.wait_until) |wait_until| return wait_until;
-    if (std.mem.eql(u8, action.kind, "wait_for_repair")) return observed_at + 30;
-    if (std.mem.eql(u8, action.kind, "probe_needed")) return observed_at;
-    if (std.mem.eql(u8, action.kind, "reauth")) return observed_at;
-    return null;
+fn daemonTickSchedule(action: RepairAction, observed_at: i64) DaemonTickSchedule {
+    if (action.retry_after_s) |retry_after| return .{
+        .next_tick_after = observed_at + @as(i64, retry_after),
+        .reason = "retry_after",
+    };
+    if (action.wait_until) |wait_until| return .{
+        .next_tick_after = wait_until,
+        .reason = "wait_until",
+    };
+    if (std.mem.eql(u8, action.kind, "wait_for_repair")) return .{
+        .next_tick_after = observed_at + daemon_repair_poll_s,
+        .reason = "repair_poll",
+    };
+    if (action.command == .probe) return .{
+        .next_tick_after = observed_at,
+        .reason = "probe_due",
+    };
+    if (action.interactive) return .{
+        .next_tick_after = observed_at + daemon_handoff_recheck_s,
+        .reason = "handoff_recheck",
+    };
+    if (std.mem.eql(u8, action.kind, "fix_runtime")) return .{
+        .next_tick_after = observed_at + daemon_runtime_recheck_s,
+        .reason = "runtime_recheck",
+    };
+    if (std.mem.eql(u8, action.kind, "wait_for_quota")) return .{
+        .next_tick_after = observed_at + daemon_quota_unknown_recheck_s,
+        .reason = "quota_poll",
+    };
+    if (std.mem.eql(u8, action.kind, "provider_plan") or
+        std.mem.eql(u8, action.kind, "try_next_provider"))
+    {
+        return .{
+            .next_tick_after = observed_at + daemon_provider_plan_recheck_s,
+            .reason = "provider_recheck",
+        };
+    }
+    if (std.mem.eql(u8, action.kind, "none")) return .{ .reason = "no_action" };
+    return .{};
 }
 
 const DoctorStats = struct {
@@ -6306,6 +6370,7 @@ test "daemon tick refuses spend provider probe by default" {
     try std.testing.expectEqual(types.ActionBudget.spend_provider, decision.budget.?);
     try std.testing.expect(!decision.executed);
     try std.testing.expectEqual(@as(?i64, 1000), decision.next_tick_after);
+    try std.testing.expectEqualStrings("probe_due", decision.schedule_reason);
 }
 
 test "daemon tick reports selectable route as no-op" {
@@ -6331,6 +6396,89 @@ test "daemon tick reports selectable route as no-op" {
     try std.testing.expectEqualStrings("route_selectable", decision.reason);
     try std.testing.expect(!decision.executed);
     try std.testing.expect(decision.next_tick_after == null);
+    try std.testing.expectEqualStrings("route_selectable", decision.schedule_reason);
+}
+
+test "daemon tick schedules interactive handoff recheck without admitting silent auth" {
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+        .route = route,
+        .runtime = .{ .needs_reauth = .{ .methods = &.{"upstream_cli_login"}, .reason = "session_file_missing" } },
+        .health = null,
+        .budget = .spend_provider,
+        .action = reauthAction(route, provider_schema.codex_def),
+        .selectable = false,
+        .skip_reason = "needs_reauth",
+    }, 1000);
+
+    try std.testing.expectEqualStrings("repair", decision.phase);
+    try std.testing.expectEqualStrings("reauth", decision.action);
+    try std.testing.expect(!decision.admitted);
+    try std.testing.expect(decision.handoff);
+    try std.testing.expectEqualStrings("interactive_not_allowed", decision.reason);
+    try std.testing.expectEqual(@as(?i64, 1300), decision.next_tick_after);
+    try std.testing.expectEqualStrings("handoff_recheck", decision.schedule_reason);
+}
+
+test "daemon tick schedules runtime repair recheck" {
+    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+        .route = .{ .provider = "codex", .account = "max-1", .capability = "codex-max" },
+        .runtime = .{ .unwritable_store = "/tmp/oauth-mux-test/store" },
+        .health = null,
+        .budget = .free_local,
+        .action = .{
+            .kind = "fix_runtime",
+            .severity = "error",
+            .message = "runtime is not ready",
+            .budget = .free_local,
+        },
+        .selectable = false,
+        .skip_reason = "unwritable_store",
+    }, 1000);
+
+    try std.testing.expectEqualStrings("observe", decision.phase);
+    try std.testing.expect(decision.admitted);
+    try std.testing.expectEqualStrings("observe_only", decision.reason);
+    try std.testing.expectEqual(@as(?i64, 1300), decision.next_tick_after);
+    try std.testing.expectEqualStrings("runtime_recheck", decision.schedule_reason);
+}
+
+test "daemon tick stats carries earliest schedule reason" {
+    const evaluations = [_]RouteEvaluation{
+        .{
+            .route = .{ .provider = "codex", .account = "max-1", .capability = "codex-max" },
+            .runtime = .ready,
+            .health = null,
+            .budget = .free_local,
+            .action = .{
+                .kind = "wait_for_quota",
+                .severity = "warning",
+                .message = "quota exhausted without known reset",
+                .budget = .free_local,
+            },
+            .selectable = false,
+            .skip_reason = "quota_exhausted",
+        },
+        .{
+            .route = .{ .provider = "codex", .account = "max-2", .capability = "codex-max" },
+            .runtime = .{ .unwritable_store = "/tmp/oauth-mux-test/store" },
+            .health = null,
+            .budget = .free_local,
+            .action = .{
+                .kind = "fix_runtime",
+                .severity = "error",
+                .message = "runtime is not ready",
+                .budget = .free_local,
+            },
+            .selectable = false,
+            .skip_reason = "unwritable_store",
+        },
+    };
+    const stats = daemonTickStats((config.PolicyConfig{}).daemon, &evaluations, 1000);
+
+    try std.testing.expectEqual(@as(?i64, 1300), stats.next_tick_after);
+    try std.testing.expect(stats.next_tick_reason != null);
+    try std.testing.expectEqualStrings("runtime_recheck", stats.next_tick_reason.?);
 }
 
 test "repairActionFor classifies quota exhaustion as wait action" {

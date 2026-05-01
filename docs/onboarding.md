@@ -232,7 +232,9 @@ oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max 
 Loop mode emits one JSON envelope containing repeated tick snapshots. Each tick
 re-reads local health and runtime state and does not require launchd, systemd,
 Homebrew services, cron, or a platform-specific
-daemon manager.
+daemon manager. Per-route `tick.next_tick_after` and `tick.schedule_reason`,
+plus `summary.next_tick_after` and `summary.next_tick_reason`, are the portable
+sleep/backoff contract for wrappers and agents.
 
 Route, runtime, repair-plan, and stay-afloat JSON include a `writeback` object.
 That object separates the secret backend surface (`readonly`, `replace_file`,

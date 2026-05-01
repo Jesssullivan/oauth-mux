@@ -2,7 +2,7 @@
 Date: 2026-05-01
 
 Issue context: GitHub `Jesssullivan/oauth-mux#67`; Linear `TIN-738`,
-`TIN-859`, and `TIN-860`.
+`TIN-859`, `TIN-860`, and `TIN-866`.
 
 ## Decision
 
@@ -177,6 +177,16 @@ should treat `afloat:true` plus a non-null `selected` as the positive route
 condition. They should treat `handoff_queued:true` or `handoff_pending:true` as
 the signal to surface user-mediated repair.
 
+Each per-route `tick` object also carries deterministic scheduling hints:
+
+- `next_tick_after`: Unix timestamp for the next useful revisit, or `null`.
+- `schedule_reason`: why that timestamp was chosen.
+
+The top-level `summary` carries the earliest route-level `next_tick_after` as
+`next_tick_after` plus `next_tick_reason`. Wrappers may sleep until that time
+or use their own slower cadence. They must not treat the hint as permission to
+run unbounded busy loops, spend provider budget, or bypass admission policy.
+
 Process exit codes are not the primary supervisor API. Use command failure for
 parse/config/runtime errors, and use JSON fields for route state. `route select`
 may exit nonzero when no route is selectable; long-running wrappers should
@@ -203,6 +213,40 @@ If any route is already selectable, the tick is a no-op and the route remains
 afloat. If no route is selectable, the first admitted action wins. If no action
 is admitted, the tick reports the refused action and reason rather than
 escalating silently.
+
+## Schedule Semantics
+
+Scheduling is part of the portable foreground contract and must stay
+service-manager agnostic. A tick does not daemonize itself. It reports when a
+wrapper, CI job, shell hook, or future socket daemon should next re-check the
+same route state.
+
+Current schedule reasons:
+
+| Reason | Meaning |
+| --- | --- |
+| `route_selectable` | A route is already afloat; no wake-up is required. |
+| `probe_due` | A no-spend or admitted probe is useful immediately. |
+| `retry_after` | Provider rate-limit evidence supplied a retry-after window. |
+| `wait_until` | Quota or cooldown evidence supplied an absolute reset time. |
+| `quota_poll` | Quota is exhausted without a known reset; re-check on the conservative quota cadence. |
+| `repair_poll` | Another repair owns the account lock; poll the lock on the repair cadence. |
+| `runtime_recheck` | Local runtime repair is needed; re-check after the operator or wrapper has time to fix paths, stores, permissions, or sandboxing. |
+| `handoff_recheck` | Interactive user-mediated auth is required or pending; re-check after surfacing the handoff. |
+| `provider_recheck` | Provider plan/degradation evidence should be revisited later without busy-looping. |
+| `no_action` | The route has no follow-up action. |
+| `none` | No schedule rule matched. |
+
+Default cadences are intentionally conservative and deterministic:
+
+- repair-lock polling: 30 seconds;
+- runtime repair re-check: 5 minutes;
+- handoff re-check: 5 minutes;
+- quota-without-reset and provider-plan re-checks: 1 hour.
+
+These values are not platform service policy. Service wrappers may choose a
+slower interval, but faster intervals should still honor the route-level
+`next_tick_after` and admission policy.
 
 ## Admission Policy
 
@@ -290,9 +334,11 @@ Before calling the background daemon production-ready, the project needs:
    docs;
 6. wrapper examples for at least one package lane without changing core
    semantics;
-7. live QA proving timeout, auth failure, quota exhaustion, transient
+7. deterministic scheduler JSON with route-level reasons and top-level summary
+   hints;
+8. live QA proving timeout, auth failure, quota exhaustion, transient
    rate-limit, runtime permission, and handoff states;
-8. docs that distinguish foreground stay-afloat, experimental socket daemon,
+9. docs that distinguish foreground stay-afloat, experimental socket daemon,
    and optional service wrappers.
 
 Until those gates are met, public docs should describe stay-afloat as an

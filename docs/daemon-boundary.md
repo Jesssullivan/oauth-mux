@@ -92,7 +92,10 @@ rather than introducing separate behavior.
   after a user-mediated upstream login.
 - `oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --json`
   for a bounded foreground loop. It re-reads local health/runtime state each
-  tick and remains service-manager agnostic.
+  tick and remains service-manager agnostic. Route ticks expose
+  `next_tick_after` plus `schedule_reason`, and the summary exposes the
+  earliest `next_tick_after` plus `next_tick_reason`, so wrappers can back off
+  without inventing separate scheduler semantics.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
   as the lower-level wrapper-author spelling for the same bounded foreground
   loop.

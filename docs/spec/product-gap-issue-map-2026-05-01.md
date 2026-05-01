@@ -3,7 +3,7 @@ Date: 2026-05-01
 
 Issue context: GitHub `Jesssullivan/oauth-mux#66`, `#67`, `#68`; Linear
 `TIN-858`, `TIN-736`, `TIN-738`, `TIN-859`, `TIN-860`, `TIN-861`, `TIN-862`,
-and `TIN-863`.
+`TIN-863`, and `TIN-866`.
 
 ## Baseline
 
@@ -18,7 +18,7 @@ boundaries that need separate tracking.
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
 | Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. |
-| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. |
+| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863` | Codex is live-proven; most other providers are schema-modeled or admitted but not live-proven. |
 
 ## Homebrew Boundary
@@ -53,6 +53,10 @@ Current truth:
 - `TIN-865` covers a stay-afloat hardening slice: command-probe runtime
   failures must surface as runtime repair state without poisoning persisted
   credential liveness.
+- `TIN-866` covers the scheduler policy gate before background daemon wrappers:
+  route-level tick JSON must expose deterministic `next_tick_after` and
+  `schedule_reason` values, and the summary must report the earliest wake-up
+  reason.
 - The default daemon policy refuses provider-spend probes, silent interactive
   auth, and silent mutation.
 - Codex fallback is proven from quota-exhausted `max-1#codex-max` to available
@@ -124,8 +128,10 @@ patterns are settled.
    subscription state and MCP resource-bound OAuth.
 4. Return to daemon background scheduling only after wrapper/install decisions
    and provider proof produce enough real operator evidence. The immediate
-   daemon-side exception is `TIN-865`, because false liveness evidence would
-   make every later scheduler less trustworthy.
+   daemon-side exceptions are `TIN-865`, because false liveness evidence would
+   make every later scheduler less trustworthy, and `TIN-866`, because wrappers
+   need deterministic wake-up hints before any service-manager recipes are
+   honest.
 
 ## Guardrails
 
