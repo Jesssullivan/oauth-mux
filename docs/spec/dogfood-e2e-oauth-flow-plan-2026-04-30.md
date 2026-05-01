@@ -267,7 +267,10 @@ Wave 2 should cover OAuth/MCP and plan-token complexity:
 Public copy should use these words precisely:
 
 - `live_proven`: real credential or account store, explicit consent, redacted
-  artifact, typed liveness, and successful hosted or local proof.
+  artifact, typed liveness, and successful hosted proof for the provider or
+  route.
+- `local_live_proven`: local redacted operator proof for one capability.
+- `public_live_proven`: no-secret public metadata proof for one capability.
 - `built_in`: compiled provider schema, probes, and failure rules exist, but
   live proof is not yet recorded.
 - `schema_modeled`: user or example JSON provider definition validates.

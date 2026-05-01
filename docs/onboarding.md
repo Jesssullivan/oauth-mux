@@ -381,8 +381,12 @@ paths unless the user explicitly passes `--include-paths`.
 
 `providers list --json` separates support status from proof status. `codex` is
 `live_proven`; shipped schemas are `built_in`; user JSON providers are
-`schema_modeled`; non-Codex providers still carry `needs_operator_proof` until
-live provider QA proves them.
+`schema_modeled`; non-Codex providers still carry provider-level
+`needs_operator_proof` until live provider QA proves the full route family.
+Capability entries expose narrower proof status in `capability_budgets`:
+`live_proven` for hosted secret-scoped proof, `local_live_proven` for local
+operator proof, `public_live_proven` for no-secret public metadata proof, and
+`needs_operator_proof` for modeled-but-unproven capabilities.
 
 ## Provider Onboarding Checklist
 

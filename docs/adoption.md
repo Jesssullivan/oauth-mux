@@ -120,7 +120,9 @@ or core liveness algebra changes.
 
 Provider authors should use `oauth-mux providers list --json` to verify whether
 their provider is currently `built_in`, `schema_modeled`, `live_proven`, or still
-waiting on `needs_operator_proof`.
+waiting on `needs_operator_proof`. Capability entries can be promoted more
+narrowly with `local_live_proven` or `public_live_proven` before the whole
+provider family is proven.
 
 ## Non-Tinyland Deployments
 

@@ -183,7 +183,8 @@ Candidate CLI additions:
 
 - `oauth-mux providers list --json`
   - reports provider status as `built_in`, `schema_modeled`, `live_proven`, or
-    `needs_operator_proof`.
+    `needs_operator_proof`, plus capability-level proof status for narrower
+    local or public proof.
 
 Initial implementation status:
 

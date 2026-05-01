@@ -181,9 +181,10 @@ OMUX_LIVE_QA_CAPABILITIES=identity-api-key \
 ```
 
 These probes are still explicit live provider calls. Keep them out of default
-checks and scheduled daemon loops. Promote GitHub or Linear from
-`needs_operator_proof` only after a redacted artifact run is attached to the
-tracking issue.
+checks and scheduled daemon loops. A successful local artifact may promote the
+specific capability to `local_live_proven`, but do not promote the whole GitHub
+or Linear provider from `needs_operator_proof` until the provider's intended
+auth modes have attached redacted evidence.
 
 ## GitHub Workflow
 

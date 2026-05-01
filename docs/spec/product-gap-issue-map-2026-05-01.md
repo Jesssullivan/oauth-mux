@@ -90,7 +90,9 @@ Current truth:
   FlakeHub/Determinate, Gemini, Anthropic API key, and MCP HTTP resource
   servers.
 - Public claims should keep `schema_modeled`, `needs_operator_proof`, and
-  `live_proven` separate.
+  `live_proven` separate. Capability proof can be narrower than provider proof:
+  `local_live_proven` means a local redacted operator proof exists, while
+  `public_live_proven` means a no-secret public metadata route was verified.
 
 Next split:
 
@@ -98,20 +100,24 @@ Next split:
   The first no-spend local proof is captured in
   `docs/spec/provider-proof-claude-command-auth-2026-05-01.md`: `auth-status`
   can now run through `claude auth status --json` without first reading or
-  mutating Claude's credential store. Synthetic fixture coverage now keeps
-  logged-out auth evidence separate from `runtime.missing_binary`.
+  mutating Claude's credential store. Its capability proof status is
+  `local_live_proven`. Synthetic fixture coverage now keeps logged-out auth
+  evidence separate from `runtime.missing_binary`.
 - `TIN-862`: prove GitHub and Linear low-impact identity probes. This is now
   underway with classifier hardening and a proof spec in
   `docs/spec/provider-proof-github-linear-2026-05-01.md`; local GitHub live QA
   has passed, Linear personal API-key live QA has passed, and Linear OAuth
-  bearer proof remains pending.
+  bearer proof remains pending. GitHub `identity` and Linear
+  `identity-api-key` are `local_live_proven`; Linear OAuth `identity` remains
+  `needs_operator_proof`.
 - `TIN-863`: prove MCP HTTP authorization and protected-resource metadata.
   The first metadata hardening slice is captured in
   `docs/spec/provider-proof-mcp-http-authorization-2026-05-01.md`: MCP
   `resource-metadata` no longer treats any HTTP 200 body as live unless the
-  RFC 9728/MCP metadata fields are structurally valid. The next slice now has a
-  typed target for resource-token routing errors: explicit resource/audience
-  mismatch evidence is `degraded.audience_mismatch`, not a revoked account.
+  RFC 9728/MCP metadata fields are structurally valid. Its capability proof
+  status is `public_live_proven`. The next slice now has a typed target for
+  resource-token routing errors: explicit resource/audience mismatch evidence
+  is `degraded.audience_mismatch`, not a revoked account.
 
 Later slices should cover Vercel/Figma token variants and Gemini plus
 FlakeHub/Determinate command-first status once the first three provider-proof
@@ -140,4 +146,5 @@ patterns are settled.
 - Do not run live probes by default.
 - Do not mutate upstream CLI-owned credential stores.
 - Do not promote a provider to `live_proven` without redacted fixtures and an
-  explicit proof run.
+  explicit proof run. Promote individual capabilities first when the evidence
+  only covers one route shape.
