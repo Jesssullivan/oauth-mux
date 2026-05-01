@@ -145,7 +145,9 @@ The current adoption plan is tracked in
 real OAuth flow proof plan is tracked in
 `docs/spec/dogfood-e2e-oauth-flow-plan-2026-04-30.md`. The stay-afloat runtime
 and daemon gap plan is tracked in
-`docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`. Together they cover:
+`docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`, and the portable
+foreground supervisor contract is tracked in
+`docs/spec/stay-afloat-supervisor-contract-2026-05-01.md`. Together they cover:
 
 - website structure and public positioning;
 - `v0.1.3` onboarding/doctor/report scope;

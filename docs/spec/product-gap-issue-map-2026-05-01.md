@@ -59,6 +59,12 @@ Next split:
 - `TIN-860`: add handoff acknowledgement and route-evidence refresh UX for
   user-mediated repairs.
 
+The first `TIN-859` artifact is
+`docs/spec/stay-afloat-supervisor-contract-2026-05-01.md`. It defines the
+foreground tick contract as the portable core, keeps the current socket daemon
+experimental, and treats Homebrew/systemd/launchd/Windows service integration
+as optional wrappers rather than product semantics.
+
 Core product docs must remain service-manager agnostic. `systemctl`,
 `launchctl`, Homebrew services, cron, and Windows Services can become wrapper
 examples only after the portable contract is stable.
@@ -88,8 +94,8 @@ patterns are settled.
 
 1. Resolve `#66` / `TIN-858` enough for website wording: public tap, Jess tap,
    or staged-only.
-2. Implement `TIN-859` before adding service wrappers; this protects
-   cross-platform behavior.
+2. Land `TIN-859` before adding service wrappers; this protects cross-platform
+   behavior.
 3. Implement `TIN-860` so a user can recover from a queued auth handoff with a
    short, documented command path.
 4. Start `TIN-862` as the first non-Codex provider proof because GitHub and
