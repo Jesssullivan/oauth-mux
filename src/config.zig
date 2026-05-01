@@ -83,7 +83,10 @@ pub fn load(allocator: std.mem.Allocator) !std.json.Parsed(Config) {
 }
 
 pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !std.json.Parsed(Config) {
-    const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
+    const file = (if (std.fs.path.isAbsolute(path))
+        std.fs.openFileAbsolute(path, .{})
+    else
+        std.fs.cwd().openFile(path, .{})) catch |e| switch (e) {
         error.FileNotFound => return error.FileNotFound,
         else => return error.Unexpected,
     };
@@ -1666,6 +1669,38 @@ test "validate rejects empty failure rule hint" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "failure_rules[0].hint_contains must not be empty") != null);
+}
+
+test "loadFromPath accepts relative config paths" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        const file = try tmp.dir.createFile("config.json", .{});
+        defer file.close();
+        try file.writeAll(
+            \\{
+            \\  "version": 1,
+            \\  "providers": {},
+            \\  "profiles": {},
+            \\  "strategies": {}
+            \\}
+        );
+    }
+
+    const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd_path);
+    const config_path = try tmp.dir.realpathAlloc(allocator, "config.json");
+    defer allocator.free(config_path);
+    const relative_path = try std.fs.path.relative(allocator, cwd_path, config_path);
+    defer allocator.free(relative_path);
+
+    const parsed = try loadFromPath(allocator, relative_path);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.version);
 }
 
 test "resolveSecretBackend keychain" {

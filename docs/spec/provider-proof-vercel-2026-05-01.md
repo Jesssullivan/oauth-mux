@@ -67,15 +67,20 @@ The Vercel `identity` capability can now report `local_live_proven`. Provider
 level status should remain conservative until broader Vercel token, team,
 scope, and project/resource failure shapes have redacted fixture coverage.
 
-## Adjacent Figma Finding
+## Adjacent Figma Findings
 
-The same proof pass also tested a Figma OAuth bearer identity token through
+An earlier proof pass also tested a Figma OAuth bearer identity token through
 `examples/figma.config.json`. That route returned HTTP 403 and correctly
 classified as `degraded.scope_insufficient`.
 
 That is useful evidence for the Figma classifier, but it is not a Figma live
-proof and does not promote any Figma capability. `TIN-877` remains open for
-Figma OAuth, PAT, and plan-token proof.
+proof and does not promote OAuth bearer identity.
+
+A later SOPS-backed proof tested the Figma PAT route through
+`examples/figma-pat.config.json`. That route returned HTTP 200,
+`live.available`, and `decision=use_this`, so only `identity-pat` can now be
+reported as `local_live_proven`. `TIN-877` remains open for Figma OAuth bearer
+identity and plan/file-token metadata proof.
 
 ## Next
 

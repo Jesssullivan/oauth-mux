@@ -168,7 +168,10 @@ Next split:
   `identity`, `identity-pat`, and `file-metadata-plan` must not collapse into a
   single generic "Figma works" claim. A 2026-05-01 OAuth bearer attempt
   returned HTTP 403 and correctly classified as `degraded.scope_insufficient`;
-  that is classifier evidence, not live proof.
+  that is classifier evidence, not live proof. A later SOPS-backed PAT proof
+  returned HTTP 200 and `live.available` for `identity-pat`, so only that
+  capability is `local_live_proven`; OAuth bearer identity, plan/file metadata,
+  and MCP resource-token proof remain open.
 - `TIN-878`: prove FlakeHub/Determinate as command-first status. A low-impact
   local proof now shows `flakehub:work#status` through `determinate-nixd
   status` returning HTTP-shaped status 200 and `live.available`; the capability
