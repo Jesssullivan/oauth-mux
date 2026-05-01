@@ -337,6 +337,8 @@ for _ in $(seq 1 200); do
 done
 expect_contains "$daemon_status" '"status":"running"' "daemon status reports foreground daemon running"
 expect_contains "$daemon_status" '"socket":' "daemon status reports socket path"
+expect_contains "$daemon_status" '"contract":"experimental_socket_stub"' "daemon status reports socket contract"
+expect_contains "$daemon_status" '"hosts_stay_afloat":false' "daemon status does not claim to host stay-afloat"
 OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon stop >/dev/null 2>&1
 set +e
 wait "$daemon_pid" 2>/dev/null
@@ -353,6 +355,7 @@ case "$daemon_wait_status" in
 esac
 daemon_stopped="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json)"
 expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status reports stopped foreground daemon"
+expect_contains "$daemon_stopped" '"wrapper_contract":"foreground_tick"' "daemon status reports wrapper contract when stopped"
 
 printf 'e2e: daemon tick execute runs one admitted command probe\n'
 omux health --reset toy:a1 >/dev/null

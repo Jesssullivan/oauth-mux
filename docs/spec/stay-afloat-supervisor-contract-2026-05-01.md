@@ -84,6 +84,11 @@ The current socket daemon is experimental.
 - `daemon start` forks on Linux/macOS and starts the same loop.
 - `daemon status --json` reports `running` with a pid and socket path, or
   `not_running`.
+- `daemon status --json` also reports
+  `contract:"experimental_socket_stub"`, `production_supported:false`,
+  `hosts_stay_afloat:false`, and `wrapper_contract:"foreground_tick"` so
+  agents and wrappers do not mistake the socket stub for the stay-afloat
+  supervisor.
 - The socket handler supports `status`, `stop`, and a placeholder `refresh`
   response.
 - It does not host the stay-afloat tick engine yet.

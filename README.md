@@ -124,7 +124,9 @@ oauth-mux state directory. Confirmed repair uses an account-scoped advisory
 lock so concurrent repair attempts surface as `repair_in_progress` in runtime
 readiness instead of racing an upstream CLI login flow. Inspect recent events
 with `oauth-mux daemon events --json`; this does not require the daemon to be
-running.
+running. `oauth-mux daemon status --json` is local socket inspection only; it
+reports `contract:"experimental_socket_stub"` and `hosts_stay_afloat:false` so
+wrappers do not mistake the socket stub for the stay-afloat supervisor.
 
 Refresh attempts use the same local event stream. `token_refresh` events record
 only route identity, writeback capability, admission, outcome, and redacted
@@ -146,11 +148,10 @@ command to run. Repeated ticks report an existing handoff as pending instead of
 duplicating the event. Inspect those queued user-mediated repairs with
 `oauth-mux stay-afloat handoffs --json`; add `--all` to include historical
 handoff events after a later stay-afloat tick has refreshed route evidence.
-`stay-afloat --loop
---iterations <n> --interval-ms <ms> --json` repeats the same portable
-foreground tick for dogfood and wrappers. No `systemctl`, `launchctl`, service
-manager, browser auth, provider spend, or secret mutation is assumed unless
-policy and CLI flags explicitly admit it. Tick JSON includes route-level
+`stay-afloat --loop --iterations <n> --interval-ms <ms> --json` repeats the same
+portable foreground tick for dogfood and wrappers. No `systemctl`, `launchctl`,
+service manager, browser auth, provider spend, or secret mutation is assumed
+unless policy and CLI flags explicitly admit it. Tick JSON includes route-level
 `next_tick_after` and `schedule_reason` fields, plus top-level summary wake-up
 hints, so wrappers can sleep or back off without guessing.
 

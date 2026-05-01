@@ -126,19 +126,34 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
         const sock = try paths.socketPath(allocator);
         defer allocator.free(sock);
         if (json) {
-            try writer.print("{{\"status\":\"running\",\"pid\":{d},\"socket\":", .{pid});
+            try writer.writeAll("{\"status\":\"running\"");
+            try writeStatusContractJson(writer);
+            try writer.print(",\"pid\":{d},\"socket\":", .{pid});
             try std.json.stringify(sock, .{}, writer);
             try writer.writeAll("}\n");
         } else {
             try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
+            try writer.writeAll("daemon: experimental socket stub; stay-afloat contract is the foreground tick engine\n");
         }
     } else {
         if (json) {
-            try writer.writeAll("{\"status\":\"not_running\"}\n");
+            try writer.writeAll("{\"status\":\"not_running\"");
+            try writeStatusContractJson(writer);
+            try writer.writeAll("}\n");
         } else {
             try writer.writeAll("daemon: not running\n");
+            try writer.writeAll("daemon: experimental socket stub; stay-afloat contract is the foreground tick engine\n");
         }
     }
+}
+
+fn writeStatusContractJson(writer: anytype) !void {
+    try writer.writeAll(",\"contract\":\"experimental_socket_stub\"");
+    try writer.writeAll(",\"production_supported\":false");
+    try writer.writeAll(",\"hosts_stay_afloat\":false");
+    try writer.writeAll(",\"wrapper_contract\":\"foreground_tick\"");
+    try writer.writeAll(",\"socket_transport_supported\":");
+    try writer.writeAll(if (builtin.os.tag == .windows) "false" else "true");
 }
 
 fn isRunning(allocator: std.mem.Allocator) bool {
@@ -264,4 +279,16 @@ fn readPidFile(allocator: std.mem.Allocator, path: []const u8) !Pid {
 
 test "isRunning returns false when no daemon" {
     try std.testing.expect(!isRunning(std.testing.allocator));
+}
+
+test "status json exposes socket daemon contract" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try status(std.testing.allocator, buf.writer(), true);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"status\":\"not_running\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"contract\":\"experimental_socket_stub\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"production_supported\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hosts_stay_afloat\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"wrapper_contract\":\"foreground_tick\"") != null);
 }
