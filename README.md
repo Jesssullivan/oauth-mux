@@ -150,7 +150,9 @@ handoff events after a later stay-afloat tick has refreshed route evidence.
 --iterations <n> --interval-ms <ms> --json` repeats the same portable
 foreground tick for dogfood and wrappers. No `systemctl`, `launchctl`, service
 manager, browser auth, provider spend, or secret mutation is assumed unless
-policy and CLI flags explicitly admit it.
+policy and CLI flags explicitly admit it. Tick JSON includes route-level
+`next_tick_after` and `schedule_reason` fields, plus top-level summary wake-up
+hints, so wrappers can sleep or back off without guessing.
 
 Secret read and writeback are also separate. Route and runtime JSON expose a
 `writeback` object with the secret backend capability and whether automatic

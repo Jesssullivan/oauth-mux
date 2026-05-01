@@ -294,7 +294,10 @@ expect_contains "$daemon_tick" '"executed":false' "daemon tick does not execute 
 expect_contains "$daemon_tick" '"afloat":true' "daemon tick reports profile afloat"
 expect_contains "$daemon_tick" '"selected":{"provider":"toy","account":"a2"' "daemon tick selects fallback account a2"
 expect_contains "$daemon_tick" '"action":"wait_for_quota"' "daemon tick includes wait action for exhausted route"
+expect_contains "$daemon_tick" '"schedule_reason":"wait_until"' "daemon tick exposes quota reset schedule reason"
+expect_contains "$daemon_tick" '"next_tick_reason":"wait_until"' "daemon tick summary exposes earliest schedule reason"
 expect_contains "$daemon_tick" '"reason":"route_selectable"' "daemon tick marks selectable route as no-op"
+expect_contains "$daemon_tick" '"schedule_reason":"route_selectable"' "daemon tick marks selectable route as unscheduled"
 
 printf 'e2e: stay-afloat aliases daemon tick planning\n'
 stay_afloat="$(omux stay-afloat --once --profile expensive --capability expensive --json)"
@@ -302,6 +305,7 @@ expect_contains "$stay_afloat" '"mode":"once"' "stay-afloat reports one-shot mod
 expect_contains "$stay_afloat" '"executed":false' "stay-afloat remains planning-only by default"
 expect_contains "$stay_afloat" '"afloat":true' "stay-afloat reports profile afloat"
 expect_contains "$stay_afloat" '"selected":{"provider":"toy","account":"a2"' "stay-afloat selects fallback account a2"
+expect_contains "$stay_afloat" '"next_tick_reason":"wait_until"' "stay-afloat exposes scheduler summary"
 
 printf 'e2e: bounded daemon tick loop emits repeated planning snapshots\n'
 daemon_loop="$(omux daemon tick --loop --iterations 2 --interval-ms 0 --profile expensive --capability expensive --json)"
