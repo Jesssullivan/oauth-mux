@@ -98,6 +98,10 @@ Next split:
   has passed, Linear personal API-key live QA has passed, and Linear OAuth
   bearer proof remains pending.
 - `TIN-863`: prove MCP HTTP authorization and protected-resource metadata.
+  The first metadata hardening slice is captured in
+  `docs/spec/provider-proof-mcp-http-authorization-2026-05-01.md`: MCP
+  `resource-metadata` no longer treats any HTTP 200 body as live unless the
+  RFC 9728/MCP metadata fields are structurally valid.
 
 Later slices should cover Vercel/Figma token variants and Gemini plus
 FlakeHub/Determinate command-first status once the first three provider-proof

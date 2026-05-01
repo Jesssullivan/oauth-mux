@@ -26,6 +26,13 @@ pub fn classifyResult(
     plan: provider_schema.ProbePlan,
     result: ProbeResult,
 ) types.HttpClassification {
+    if (isMcpResourceMetadataPlan(def, plan) and
+        result.status >= plan.success_status_min and
+        result.status <= plan.success_status_max)
+    {
+        return classifyMcpProtectedResourceMetadata(allocator, result.hint);
+    }
+
     if (plan.transport == .command) {
         if (std.mem.eql(u8, def.name, "codex")) {
             if (result.hint) |hint| {
@@ -41,6 +48,54 @@ pub fn classifyResult(
         return if (classified == .success) .success else classified;
     }
     return classified;
+}
+
+fn isMcpResourceMetadataPlan(
+    def: provider_schema.ProviderDefinition,
+    plan: provider_schema.ProbePlan,
+) bool {
+    return std.mem.eql(u8, def.name, "mcp") and
+        std.mem.eql(u8, plan.capability, "resource-metadata");
+}
+
+fn classifyMcpProtectedResourceMetadata(
+    allocator: std.mem.Allocator,
+    hint: ?[]const u8,
+) types.HttpClassification {
+    const body = hint orelse return schemaInvalid();
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return schemaInvalid();
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |obj| obj,
+        else => return schemaInvalid(),
+    };
+
+    const resource = jsonString(obj.get("resource") orelse return schemaInvalid()) orelse return schemaInvalid();
+    if (!isSafeAbsoluteHttpsUrl(resource)) return schemaInvalid();
+
+    const authorization_servers = switch (obj.get("authorization_servers") orelse return schemaInvalid()) {
+        .array => |arr| arr,
+        else => return schemaInvalid(),
+    };
+    if (authorization_servers.items.len == 0) return schemaInvalid();
+    for (authorization_servers.items) |server_value| {
+        const server = jsonString(server_value) orelse return schemaInvalid();
+        if (!isSafeAbsoluteHttpsUrl(server)) return schemaInvalid();
+    }
+
+    return .success;
+}
+
+fn jsonString(value: std.json.Value) ?[]const u8 {
+    return switch (value) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn schemaInvalid() types.HttpClassification {
+    return .{ .degraded = .schema_invalid };
 }
 
 pub fn execute(
@@ -136,6 +191,17 @@ fn executeHttp(
 }
 
 fn expandUrlTemplate(allocator: std.mem.Allocator, template: []const u8) ProbeError![]const u8 {
+    if (singlePlaceholderName(template)) |name| {
+        const value = std.process.getEnvVarOwned(allocator, name) catch |e| switch (e) {
+            error.EnvironmentVariableNotFound => return error.UnsupportedTransport,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.UnsupportedTransport,
+        };
+        errdefer allocator.free(value);
+        if (!isSafeTemplateValue(value) and !isSafeAbsoluteHttpsUrl(value)) return error.UnsupportedTransport;
+        return value;
+    }
+
     var out = std.ArrayList(u8).init(allocator);
     errdefer out.deinit();
 
@@ -163,6 +229,14 @@ fn expandUrlTemplate(allocator: std.mem.Allocator, template: []const u8) ProbeEr
     return try out.toOwnedSlice();
 }
 
+fn singlePlaceholderName(template: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, template, "{{")) return null;
+    if (!std.mem.endsWith(u8, template, "}}")) return null;
+    if (std.mem.indexOfPos(u8, template, 2, "{{") != null) return null;
+    const name = template[2 .. template.len - 2];
+    return if (isSafeTemplateName(name)) name else null;
+}
+
 fn isSafeTemplateName(name: []const u8) bool {
     if (name.len == 0) return false;
     for (name) |c| {
@@ -177,6 +251,16 @@ fn isSafeTemplateValue(value: []const u8) bool {
     for (value) |c| {
         if (std.ascii.isAlphanumeric(c) or c == '-' or c == '.' or c == '_' or c == '~') continue;
         return false;
+    }
+    return true;
+}
+
+fn isSafeAbsoluteHttpsUrl(value: []const u8) bool {
+    if (!std.mem.startsWith(u8, value, "https://")) return false;
+    if (value.len == "https://".len) return false;
+    if (std.mem.indexOfScalar(u8, value, '#') != null) return false;
+    for (value) |c| {
+        if (std.ascii.isWhitespace(c)) return false;
     }
     return true;
 }
@@ -449,10 +533,65 @@ test "classifyResult uses hint text" {
     }
 }
 
+test "classifyResult validates MCP protected resource metadata" {
+    const plan = provider_schema.probePlanForCapability(provider_schema.mcp_def, "metadata").?;
+    const body =
+        \\{
+        \\  "resource": "https://mcp.figma.com/mcp",
+        \\  "authorization_servers": ["https://api.figma.com"],
+        \\  "bearer_methods_supported": ["header"],
+        \\  "scopes_supported": ["mcp:connect"]
+        \\}
+    ;
+    const classified = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 200,
+        .hint = body,
+    });
+    try std.testing.expectEqual(types.HttpClassification.success, classified);
+}
+
+test "classifyResult rejects malformed MCP protected resource metadata" {
+    const plan = provider_schema.probePlanForCapability(provider_schema.mcp_def, "metadata").?;
+    const missing_authorization_servers = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 200,
+        .hint = "{\"resource\":\"https://mcp.example.com/mcp\"}",
+    });
+    switch (missing_authorization_servers) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.schema_invalid, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const wrong_resource_scheme = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 200,
+        .hint = "{\"resource\":\"http://mcp.example.com/mcp\",\"authorization_servers\":[\"https://auth.example.com\"]}",
+    });
+    switch (wrong_resource_scheme) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.schema_invalid, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const invalid_json = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 200,
+        .hint = "not json",
+    });
+    switch (invalid_json) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.schema_invalid, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "expandUrlTemplate rejects malformed placeholder" {
     try std.testing.expectError(error.UnsupportedTransport, expandUrlTemplate(std.testing.allocator, "https://example.invalid/{{BAD"));
     try std.testing.expectError(error.UnsupportedTransport, expandUrlTemplate(std.testing.allocator, "https://example.invalid/BAD}}"));
     try std.testing.expectError(error.UnsupportedTransport, expandUrlTemplate(std.testing.allocator, "https://example.invalid/{{BAD-NAME}}"));
+}
+
+test "single placeholder URL templates may carry absolute HTTPS URLs" {
+    try std.testing.expectEqualStrings("OMUX_MCP_RESOURCE_METADATA_URL", singlePlaceholderName("{{OMUX_MCP_RESOURCE_METADATA_URL}}").?);
+    try std.testing.expect(singlePlaceholderName("https://example.invalid/{{OMUX_MCP_RESOURCE_METADATA_URL}}") == null);
+    try std.testing.expect(isSafeAbsoluteHttpsUrl("https://mcp.figma.com/.well-known/oauth-protected-resource/mcp"));
+    try std.testing.expect(!isSafeAbsoluteHttpsUrl("http://mcp.figma.com/.well-known/oauth-protected-resource/mcp"));
+    try std.testing.expect(!isSafeAbsoluteHttpsUrl("https://mcp.figma.com/mcp#fragment"));
 }
 
 test "classifyResult can downgrade successful GraphQL status from body hint" {
