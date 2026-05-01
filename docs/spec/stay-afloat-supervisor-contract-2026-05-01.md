@@ -289,3 +289,15 @@ Before calling the background daemon production-ready, the project needs:
 
 Until those gates are met, public docs should describe stay-afloat as an
 agent-safe foreground beta, not as an always-on background daemon.
+
+## Local Proof
+
+`scripts/e2e-local.sh` includes a no-mutation foreground daemon check using
+temporary config, state, and runtime directories. It starts `oauth-mux daemon
+run` in the background, waits for `daemon status --json` to report `running`,
+stops it through `daemon stop`, waits for the process to exit, and verifies
+`daemon status --json` reports `not_running`.
+
+That proof is intentionally narrow. It validates the current socket
+status/stop behavior without promoting the socket stub to production
+stay-afloat semantics.

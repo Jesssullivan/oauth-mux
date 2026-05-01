@@ -13,7 +13,15 @@ if [ ! -x "$bin" ]; then
 fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-e2e.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+daemon_pid=""
+cleanup() {
+  if [ -n "${daemon_pid:-}" ]; then
+    kill "$daemon_pid" 2>/dev/null || true
+    wait "$daemon_pid" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 config="$tmp/config.json"
 state_dir="$tmp/state"
@@ -303,6 +311,42 @@ expect_contains "$daemon_loop" '"ticks":[' "daemon tick loop returns tick array"
 expect_contains "$daemon_loop" '"tick_index":0' "daemon tick loop includes first tick"
 expect_contains "$daemon_loop" '"tick_index":1' "daemon tick loop includes second tick"
 expect_contains "$daemon_loop" '"executed":false' "daemon tick loop remains planning-only"
+
+printf 'e2e: daemon foreground status and stop stay inside temp runtime\n'
+daemon_runtime="$tmp/daemon-runtime"
+daemon_state="$tmp/daemon-state"
+daemon_log="$tmp/daemon.log"
+mkdir -p "$daemon_runtime" "$daemon_state"
+OMUX_CONFIG="$config" \
+  OMUX_STATE_DIR="$daemon_state" \
+  XDG_RUNTIME_DIR="$daemon_runtime" \
+  "$bin" daemon run >"$daemon_log" 2>&1 &
+daemon_pid=$!
+daemon_status=""
+for _ in $(seq 1 200); do
+  daemon_status="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json || true)"
+  case "$daemon_status" in
+    *'"status":"running"'*) break ;;
+  esac
+done
+expect_contains "$daemon_status" '"status":"running"' "daemon status reports foreground daemon running"
+expect_contains "$daemon_status" '"socket":' "daemon status reports socket path"
+OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon stop >/dev/null 2>&1
+set +e
+wait "$daemon_pid" 2>/dev/null
+daemon_wait_status=$?
+set -e
+daemon_pid=""
+case "$daemon_wait_status" in
+  0|143) ;;
+  *)
+    printf 'e2e assertion failed: foreground daemon exited unexpectedly with status %s\n' "$daemon_wait_status" >&2
+    printf 'daemon log:\n%s\n' "$(cat "$daemon_log")" >&2
+    exit 1
+    ;;
+esac
+daemon_stopped="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json)"
+expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status reports stopped foreground daemon"
 
 printf 'e2e: daemon tick execute runs one admitted command probe\n'
 omux health --reset toy:a1 >/dev/null
