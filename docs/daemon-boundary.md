@@ -25,7 +25,31 @@ explicit confirmation flag.
 planner; it does not start a background service, run probes, open browsers,
 refresh credentials, or rewrite secret stores.
 
-See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
+See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md` for the runtime
+gap analysis and `docs/spec/stay-afloat-supervisor-contract-2026-05-01.md` for
+the portable foreground supervisor contract tracked by `TIN-859`.
+
+## Supervisor Contract
+
+The stable stay-afloat contract is the foreground tick engine, not a platform
+service manager and not the current socket stub:
+
+```bash
+oauth-mux stay-afloat --once --json
+oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --json
+oauth-mux stay-afloat --once --execute --json
+oauth-mux stay-afloat handoffs --json
+```
+
+`oauth-mux daemon tick` is the lower-level alias for wrapper authors. It shares
+the same planner/executor as `stay-afloat`.
+
+`oauth-mux daemon run/start/stop/status` remains experimental socket plumbing.
+It can report a local Unix socket status, but it does not host the stay-afloat
+loop, perform automatic repair, or define production daemon semantics.
+Homebrew services, systemd user units, launchd plists, cron, Windows Services,
+containers, and CI wrappers must preserve the foreground command contract
+rather than introducing separate behavior.
 
 ## Allowed Now
 
@@ -60,6 +84,9 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - `oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --json`
   for a bounded foreground loop. It re-reads local health/runtime state each
   tick and remains service-manager agnostic.
+- `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
+  as the lower-level wrapper-author spelling for the same bounded foreground
+  loop.
 - Account-scoped advisory locks during confirmed `repair run`, reported back as
   `repair_in_progress` by runtime-aware route planning.
 - Config-level daemon admission policy for route planning. The default admits
@@ -85,6 +112,8 @@ See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
 - Any release gate that depends on a long-running daemon.
 - Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows
   Services as part of the core product contract.
+- Presenting `oauth-mux daemon run/start` as the production stay-afloat daemon
+  before the socket process is aligned with the foreground tick contract.
 
 ## Promotion Criteria
 
