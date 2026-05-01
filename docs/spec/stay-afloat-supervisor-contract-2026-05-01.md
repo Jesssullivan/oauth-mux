@@ -54,6 +54,14 @@ The default policy admits only `free_local` and `free_command` budgets. It
 refuses provider-spend probes, interactive auth, and mutation unless config
 explicitly admits them.
 
+Command-adapter runtime failures are not credential evidence. If a command
+probe cannot run because the binary is missing, the selected store is
+unavailable, the store is not writable, a session file is missing, a sandbox
+blocks execution, or another local runtime precondition fails, the supervisor
+must surface `RuntimeReadiness` and a repair action without recording a
+dead/degraded OAuth liveness transition. Only an executed provider command or
+HTTP probe may update credential liveness.
+
 ### Layer 2: local evidence and coordination
 
 This layer does not require a daemon process.

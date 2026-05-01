@@ -50,6 +50,9 @@ Current truth:
   no-mutation E2E coverage.
 - `TIN-860` landed in PR `#73`: user-mediated handoffs now have list, ack,
   clear, and named refresh commands.
+- `TIN-865` covers a stay-afloat hardening slice: command-probe runtime
+  failures must surface as runtime repair state without poisoning persisted
+  credential liveness.
 - The default daemon policy refuses provider-spend probes, silent interactive
   auth, and silent mutation.
 - Codex fallback is proven from quota-exhausted `max-1#codex-max` to available
@@ -120,7 +123,9 @@ patterns are settled.
 3. Use `TIN-861` and `TIN-863` to prove the two harder shapes: CLI-owned
    subscription state and MCP resource-bound OAuth.
 4. Return to daemon background scheduling only after wrapper/install decisions
-   and provider proof produce enough real operator evidence.
+   and provider proof produce enough real operator evidence. The immediate
+   daemon-side exception is `TIN-865`, because false liveness evidence would
+   make every later scheduler less trustworthy.
 
 ## Guardrails
 
