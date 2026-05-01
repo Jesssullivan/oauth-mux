@@ -141,6 +141,13 @@ pub fn main() !void {
             };
         },
 
+        .stay_afloat_handoff => |handoff_args| {
+            runStayAfloatHandoff(allocator, stdout, handoff_args) catch |e| {
+                log.err("stay-afloat handoff: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -1588,6 +1595,89 @@ fn sleepBetweenDaemonTicks(args: cli.Command.DaemonTickArgs, idx: u32, iteration
     const max_ms = std.math.maxInt(u64) / std.time.ns_per_ms;
     const bounded_ms = @min(args.interval_ms, max_ms);
     std.time.sleep(bounded_ms * std.time.ns_per_ms);
+}
+
+fn runStayAfloatHandoff(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.HandoffArgs,
+) !void {
+    const provider_name = args.provider orelse return error.ConfigValidationError;
+    const account = args.account orelse return error.ConfigValidationError;
+    const key = repair_state.HandoffKey{
+        .profile = args.profile,
+        .provider = provider_name,
+        .account = account,
+        .capability = args.capability,
+    };
+    const pending_before = try repair_state.hasPendingHandoff(allocator, key);
+
+    var event_recorded = false;
+    const outcome = switch (args.action) {
+        .ack => "handoff_acknowledged",
+        .clear => "handoff_resolved",
+    };
+    const reason = switch (args.action) {
+        .ack => if (pending_before) "user_acknowledged" else "no_pending_handoff",
+        .clear => if (pending_before) "manual_clear" else "no_pending_handoff",
+    };
+
+    if (pending_before) {
+        try repair_state.appendEvent(allocator, .{
+            .kind = "daemon_handoff",
+            .profile = args.profile,
+            .provider = provider_name,
+            .account = account,
+            .capability = args.capability,
+            .action = @tagName(args.action),
+            .outcome = outcome,
+            .reason = reason,
+            .ok = true,
+            .executed = false,
+            .interactive = true,
+            .mutating = false,
+        });
+        event_recorded = true;
+    }
+
+    const pending_after = try repair_state.hasPendingHandoff(allocator, key);
+
+    if (args.json) {
+        try writer.writeAll("{\"ok\":true,\"action\":");
+        try std.json.stringify(@tagName(args.action), .{}, writer);
+        try writer.writeAll(",\"profile\":");
+        if (args.profile) |profile| try std.json.stringify(profile, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"provider\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"account\":");
+        try std.json.stringify(account, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"handoff_pending\":");
+        try writer.writeAll(if (pending_after) "true" else "false");
+        try writer.writeAll(",\"handoff_acknowledged\":");
+        try writer.writeAll(if (args.action == .ack and event_recorded) "true" else "false");
+        try writer.writeAll(",\"handoff_resolved\":");
+        try writer.writeAll(if (args.action == .clear and event_recorded and !pending_after) "true" else "false");
+        try writer.writeAll(",\"event_recorded\":");
+        try writer.writeAll(if (event_recorded) "true" else "false");
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(reason, .{}, writer);
+        try writer.writeAll("}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux stay-afloat handoff\n\n");
+    try writer.print("  action: {s}\n", .{@tagName(args.action)});
+    try writer.print("  provider: {s}\n", .{provider_name});
+    try writer.print("  account: {s}\n", .{account});
+    if (args.profile) |profile| try writer.print("  profile: {s}\n", .{profile});
+    if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
+    try writer.print("  handoff_pending: {s}\n", .{if (pending_after) "true" else "false"});
+    try writer.print("  handoff_acknowledged: {s}\n", .{if (args.action == .ack and event_recorded) "true" else "false"});
+    try writer.print("  handoff_resolved: {s}\n", .{if (args.action == .clear and event_recorded and !pending_after) "true" else "false"});
+    try writer.print("  event_recorded: {s}\n", .{if (event_recorded) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{reason});
 }
 
 fn daemonTickMessage(args: cli.Command.DaemonTickArgs) []const u8 {

@@ -473,6 +473,28 @@ expect_contains "$daemon_handoffs" '"command":"oauth-mux codex login-device max-
 stay_afloat_handoffs="$(OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat handoffs --json)"
 expect_contains "$stay_afloat_handoffs" '"kind":"daemon_handoff"' "stay-afloat handoffs aliases pending handoff queue"
 
+printf 'e2e: stay-afloat handoff ack records user acknowledgement without clearing pending work\n'
+stay_afloat_ack="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat handoff ack --profile needs-reauth --provider codex --account max-1 --capability codex-max --json)"
+expect_contains "$stay_afloat_ack" '"handoff_acknowledged":true' "stay-afloat handoff ack records acknowledgement"
+expect_contains "$stay_afloat_ack" '"handoff_pending":true' "stay-afloat handoff ack leaves route pending"
+expect_contains "$stay_afloat_ack" '"event_recorded":true' "stay-afloat handoff ack records an event"
+daemon_handoffs_after_ack="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json)"
+expect_contains "$daemon_handoffs_after_ack" '"outcome":"handoff_queued"' "daemon handoffs still shows pending queue after acknowledgement"
+daemon_handoffs_all_after_ack="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json --all)"
+expect_contains "$daemon_handoffs_all_after_ack" '"outcome":"handoff_acknowledged"' "daemon handoffs --all shows acknowledgement history"
+
+printf 'e2e: stay-afloat handoff clear dismisses stale pending work explicitly\n'
+stay_afloat_clear="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat handoff clear --profile needs-reauth --provider codex --account max-1 --capability codex-max --json)"
+expect_contains "$stay_afloat_clear" '"handoff_resolved":true' "stay-afloat handoff clear records resolution"
+expect_contains "$stay_afloat_clear" '"handoff_pending":false' "stay-afloat handoff clear removes pending route"
+daemon_handoffs_after_clear="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json)"
+expect_contains "$daemon_handoffs_after_clear" '"handoffs":[]' "daemon handoffs clears after explicit handoff clear"
+daemon_handoffs_all_after_clear="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json --all)"
+expect_contains "$daemon_handoffs_all_after_clear" '"outcome":"handoff_resolved"' "daemon handoffs --all shows explicit handoff resolution"
+
+daemon_handoff_requeued="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" daemon tick --once --execute --profile needs-reauth --capability codex-max --json)"
+expect_contains "$daemon_handoff_requeued" '"handoff_queued":true' "daemon tick can requeue handoff after explicit clear"
+
 repair_reauth_confirmed_json="$tmp/repair-run-reauth-confirmed.json"
 set +e
 OMUX_CONFIG="$reauth_config" \
@@ -492,13 +514,15 @@ test ! -e "$tmp/reauth-home/auth.json"
 
 printf 'e2e: daemon handoffs clears after route evidence refresh\n'
 printf '%s\n' '{"access_token":"reauth-e2e"}' >"$tmp/reauth-home/auth.json"
-daemon_repaired="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" daemon tick --once --execute --profile needs-reauth --capability codex-max --json)"
-expect_contains "$daemon_repaired" '"executed":true' "daemon repaired tick runs probe after user-mediated login"
-expect_contains "$daemon_repaired" '"phase":"probe"' "daemon repaired tick records probe phase"
+daemon_repaired="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat refresh --profile needs-reauth --capability codex-max --json)"
+expect_contains "$daemon_repaired" '"execution_mode":"execute"' "stay-afloat refresh runs execute tick"
+expect_contains "$daemon_repaired" '"executed":true' "stay-afloat refresh runs probe after user-mediated login"
+expect_contains "$daemon_repaired" '"phase":"probe"' "stay-afloat refresh records probe phase"
 daemon_handoffs_cleared="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json)"
 expect_contains "$daemon_handoffs_cleared" '"handoffs":[]' "daemon handoffs clears resolved handoff"
 daemon_handoffs_all="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon handoffs --json --all)"
 expect_contains "$daemon_handoffs_all" '"kind":"daemon_handoff"' "daemon handoffs --all preserves historical handoff events"
+expect_contains "$daemon_handoffs_all" '"outcome":"handoff_acknowledged"' "daemon handoffs --all preserves acknowledgement events"
 
 printf 'e2e: daemon events exposes redacted repair run audit trail\n'
 repair_events="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon events --json)"

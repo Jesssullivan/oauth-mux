@@ -253,6 +253,7 @@ fn removeResolvedHandoffs(pending: *std.ArrayList([]const u8), event_line: []con
 
 fn eventResolvesHandoff(line: []const u8) bool {
     if (eventFieldEquals(line, "outcome", "route_selectable")) return true;
+    if (eventFieldEquals(line, "outcome", "handoff_resolved")) return true;
     if (eventFieldBool(line, "ok") == true and eventFieldEquals(line, "outcome", "executed")) return true;
     if (eventFieldBool(line, "ok") == true and eventFieldEquals(line, "outcome", "noop")) return true;
     return false;
@@ -566,6 +567,24 @@ test "pending handoff queue resolves by later route event" {
     try upsertPendingHandoff(&pending, handoff);
     try std.testing.expectEqual(@as(usize, 1), pending.items.len);
     removeResolvedHandoffs(&pending, unrelated);
+    try std.testing.expectEqual(@as(usize, 1), pending.items.len);
+    removeResolvedHandoffs(&pending, resolved);
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+}
+
+test "pending handoff queue resolves by explicit handoff event" {
+    var pending = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer pending.deinit();
+
+    const handoff =
+        "{\"kind\":\"daemon_handoff\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-1\",\"capability\":\"codex-max\",\"outcome\":\"handoff_queued\",\"ok\":false}";
+    const acknowledged =
+        "{\"kind\":\"daemon_handoff\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-1\",\"capability\":\"codex-max\",\"outcome\":\"handoff_acknowledged\",\"ok\":true}";
+    const resolved =
+        "{\"kind\":\"daemon_handoff\",\"profile\":\"codex-max\",\"provider\":\"codex\",\"account\":\"max-1\",\"capability\":\"codex-max\",\"outcome\":\"handoff_resolved\",\"ok\":true}";
+
+    try upsertPendingHandoff(&pending, handoff);
+    removeResolvedHandoffs(&pending, acknowledged);
     try std.testing.expectEqual(@as(usize, 1), pending.items.len);
     removeResolvedHandoffs(&pending, resolved);
     try std.testing.expectEqual(@as(usize, 0), pending.items.len);
