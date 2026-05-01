@@ -8,6 +8,14 @@ Keep daemon usage optional until provider-specific refresh semantics are proven
 for each OAuth-backed harness. The default production path remains explicit
 selection, explicit probe, env injection, and exec handoff.
 
+For the current product line, the socket daemon is not the stay-afloat product
+surface. It remains local experimental status/control plumbing. Wrappers,
+package recipes, CI jobs, and agents should call the foreground tick contract:
+`oauth-mux stay-afloat ...` or the lower-level `oauth-mux daemon tick ...`.
+If a production background daemon is added later, it must be a deliberate beta
+promotion of the same foreground tick engine, not a semantic fork of the socket
+stub.
+
 The 2026-04-30 stay-afloat review keeps this boundary in place. Real Codex
 dogfood proved route-scoped fallback from `codex:max-1#codex-max` quota
 exhaustion to `codex:max-2#codex-max`, but it also exposed that runtime
@@ -46,7 +54,8 @@ the same planner/executor as `stay-afloat`.
 
 `oauth-mux daemon run/start/stop/status` remains experimental socket plumbing.
 It can report a local Unix socket status, but it does not host the stay-afloat
-loop, perform automatic repair, or define production daemon semantics.
+loop, perform automatic repair, or define production daemon semantics. This is
+the final TIN-867 decision for the current release line.
 Homebrew services, systemd user units, launchd plists, cron, Windows Services,
 containers, and CI wrappers must preserve the foreground command contract
 rather than introducing separate behavior.
@@ -129,7 +138,7 @@ rather than introducing separate behavior.
 - Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows
   Services as part of the core product contract.
 - Presenting `oauth-mux daemon run/start` as the production stay-afloat daemon
-  before the socket process is aligned with the foreground tick contract.
+  in the current product line.
 
 ## Promotion Criteria
 
