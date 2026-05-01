@@ -254,6 +254,8 @@ also includes `diagnostic_command`. Run that command in the process boundary
 that actually owns the upstream store; for example, a sandboxed agent may need
 the user or wrapper to run the diagnostic in a normal shell before deciding
 whether the account is usable.
+The fuller wrapper contract is
+`docs/spec/stay-afloat-permission-broker-contract-2026-05-01.md`.
 
 The refresh path now uses that same admission gate. File-backed credentials can
 be replaced atomically, but automatic refresh only runs for providers whose
