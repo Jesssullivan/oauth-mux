@@ -35,6 +35,7 @@ oauth-mux report --redacted
 oauth-mux providers list
 oauth-mux accounts list
 oauth-mux enroll plan <provider>
+oauth-mux enroll codex --account <name> --confirm-enroll
 oauth-mux config validate
 oauth-mux discover --json
 oauth-mux doctor runtime --json
@@ -59,6 +60,8 @@ oauth-mux doctor
 oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
 oauth-mux enroll plan codex --account max-4 --json
+oauth-mux enroll codex --account max-4 --confirm-enroll --json
+oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -99,6 +102,11 @@ recorded liveness, and safe next commands without reading credential values.
 surface. It does not mutate config or auth state; it marks each provider-specific
 step as agent-safe, interactive, mutating, or provider-call-spending so users
 and agents can ask for consent at the right boundary.
+`oauth-mux enroll codex --account <name> --confirm-enroll --json` is the first
+consented provider-neutral enrollment mutation. It updates oauth-mux config,
+adds the Codex Max/Mini routes, and bootstraps the local account directory. It
+does not run `codex login`, open a browser, or spend provider calls; the login
+handoff remains explicit in `next_commands`.
 After a user-mediated upstream login, `oauth-mux stay-afloat refresh --profile
 <profile> --capability <capability> --json` is the concise evidence refresh
 step that can clear pending handoffs.
@@ -126,7 +134,7 @@ contract before adding a shell hook, CI wrapper, service unit, or agent
 permission broker around stay-afloat.
 The account enrollment and agent inventory contract lives in
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. Use that contract
-before adding provider-neutral enrollment commands or MCP mutation tools.
+before broadening provider-neutral enrollment commands or MCP mutation tools.
 
 ## Provider Author Experience
 
