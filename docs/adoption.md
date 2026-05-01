@@ -109,6 +109,11 @@ the user, wrapper, or permission broker to run in the correct process boundary;
 it is not an automatic repair command and should not be treated as provider
 failure evidence.
 
+The wrapper contract lives in
+`docs/spec/stay-afloat-permission-broker-contract-2026-05-01.md`. Use that
+contract before adding a shell hook, CI wrapper, service unit, or agent
+permission broker around stay-afloat.
+
 ## Provider Author Experience
 
 A new provider should usually start as data, not Zig:

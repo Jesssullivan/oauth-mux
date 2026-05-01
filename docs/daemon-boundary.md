@@ -35,7 +35,10 @@ refresh credentials, or rewrite secret stores.
 
 See `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md` for the runtime
 gap analysis and `docs/spec/stay-afloat-supervisor-contract-2026-05-01.md` for
-the portable foreground supervisor contract tracked by `TIN-859`.
+the portable foreground supervisor contract tracked by `TIN-859`. See
+`docs/spec/stay-afloat-permission-broker-contract-2026-05-01.md` for how agents
+and wrappers should handle `action.diagnostic_command` without promoting the
+socket daemon.
 
 ## Supervisor Contract
 

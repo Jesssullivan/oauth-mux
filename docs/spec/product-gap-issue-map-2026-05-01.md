@@ -98,6 +98,12 @@ foreground tick contract as the portable core, keeps the current socket daemon
 experimental, and treats Homebrew/systemd/launchd/Windows service integration
 as optional wrappers rather than product semantics.
 
+The `TIN-891` permission-broker artifact is
+`docs/spec/stay-afloat-permission-broker-contract-2026-05-01.md`. It defines
+how agents, shells, CI jobs, and optional service wrappers should handle
+`action.diagnostic_command` in the right process boundary without turning
+runtime diagnostics into OAuth liveness or automatic repair evidence.
+
 Core product docs must remain service-manager agnostic. `systemctl`,
 `launchctl`, Homebrew services, cron, and Windows Services can become wrapper
 examples only after the portable contract is stable.
