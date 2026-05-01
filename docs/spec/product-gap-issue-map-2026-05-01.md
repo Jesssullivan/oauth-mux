@@ -91,7 +91,8 @@ Next split:
   The first no-spend local proof is captured in
   `docs/spec/provider-proof-claude-command-auth-2026-05-01.md`: `auth-status`
   can now run through `claude auth status --json` without first reading or
-  mutating Claude's credential store.
+  mutating Claude's credential store. Synthetic fixture coverage now keeps
+  logged-out auth evidence separate from `runtime.missing_binary`.
 - `TIN-862`: prove GitHub and Linear low-impact identity probes. This is now
   underway with classifier hardening and a proof spec in
   `docs/spec/provider-proof-github-linear-2026-05-01.md`; local GitHub live QA

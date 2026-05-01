@@ -6403,6 +6403,42 @@ test "runtime doctor route scope reports only requested profile routes" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"provider\":\"stale\"") == null);
 }
 
+test "provider runtime readiness reports missing command adapter binary" {
+    const missing_binary = "omux-definitely-missing-claude-fixture";
+    const def = provider_schema.ProviderDefinition{
+        .name = "claude",
+        .display_name = "Synthetic Claude",
+        .extension_mode = .command_adapter,
+        .runtime = .{
+            .required_binaries = &.{missing_binary},
+            .env_vars = &.{"CLAUDE_CONFIG_DIR"},
+        },
+        .capabilities = &.{
+            .{
+                .name = "auth-status",
+                .probe = .{
+                    .transport = .command,
+                    .auth = .none,
+                    .command = &.{ missing_binary, "auth", "status", "--json" },
+                    .budget = .free_command,
+                },
+            },
+        },
+    };
+
+    const readiness = try providerRuntimeReadiness(std.testing.allocator, def, "auth-status");
+    switch (readiness) {
+        .missing_binary => |binary| try std.testing.expectEqualStrings(missing_binary, binary),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRuntimeReadinessJson(buf.writer(), readiness);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"missing_binary\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, missing_binary) != null);
+}
+
 test "repairActionFor warns before spending provider quota without health evidence" {
     const def = provider_schema.ProviderDefinition{
         .name = "toy",
