@@ -558,6 +558,7 @@ const flakehub_capabilities = [_]CapabilityDefinition{
     .{
         .name = "status",
         .aliases = &.{ "identity", "whoami" },
+        .proof_status = proof_local_live,
         .probe = .{
             .transport = .command,
             .auth = .none,
