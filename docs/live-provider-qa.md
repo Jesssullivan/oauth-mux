@@ -156,6 +156,15 @@ OMUX_CONFIG=$PWD/examples/linear-api-key.config.json \
   ./zig-out/bin/oauth-mux probe --profile linear-api-key --capability identity-api-key --json
 ```
 
+Figma PAT identity uses `X-Figma-Token`, not bearer auth. Use the explicit PAT
+profile when proving that mode:
+
+```bash
+OMUX_CONFIG=$PWD/examples/figma-pat.config.json \
+OMUX_FIGMA_PAT="$FIGMA_ACCESS_TOKEN" \
+  ./zig-out/bin/oauth-mux probe --profile figma-pat --capability identity-pat --json
+```
+
 To capture local artifacts through the same wrapper used by hosted provider QA:
 
 ```bash
@@ -178,13 +187,34 @@ OMUX_CONFIG=$PWD/examples/linear-api-key.config.json \
 OMUX_LIVE_QA_PROFILE=linear-api-key \
 OMUX_LIVE_QA_CAPABILITIES=identity-api-key \
   just live-qa
+
+OMUX_LIVE_QA_CONFIRM=spend-real-calls \
+OMUX_CONFIG=$PWD/examples/figma-pat.config.json \
+OMUX_FIGMA_PAT="$FIGMA_ACCESS_TOKEN" \
+OMUX_LIVE_QA_PROFILE=figma-pat \
+OMUX_LIVE_QA_CAPABILITIES=identity-pat \
+  just live-qa
 ```
 
 These probes are still explicit live provider calls. Keep them out of default
 checks and scheduled daemon loops. A successful local artifact may promote the
 specific capability to `local_live_proven`, but do not promote the whole GitHub
-or Linear provider from `needs_operator_proof` until the provider's intended
-auth modes have attached redacted evidence.
+Linear, or Figma provider from `needs_operator_proof` until the provider's
+intended auth modes have attached redacted evidence.
+
+2026-05-01 local SOPS-backed evidence:
+
+- GitHub `identity`: HTTP 200, `live.available`, `decision=use_this`.
+- Vercel `identity`: HTTP 200, `live.available`, `decision=use_this`.
+- Linear `identity-api-key`: HTTP 200, `live.available`, `decision=use_this`.
+- Linear OAuth bearer `identity`: using the personal API key as bearer returned
+  HTTP 400 and stays `needs_operator_proof`.
+- Figma PAT `identity-pat`: HTTP 200, `live.available`,
+  `decision=use_this`.
+- MCP `resource-metadata`: HTTP 200, valid RFC 9728/MCP metadata,
+  `live.available`.
+- MCP `resource` with a Figma PAT as bearer candidate: HTTP 405,
+  `degraded.unknown_4xx`; this is not resource-token proof.
 
 ## GitHub Workflow
 

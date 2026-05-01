@@ -114,6 +114,15 @@ resource-bound access token. The metadata capability can be reported as
 `public_live_proven`, while the bearer-token `resource` capability remains
 `needs_operator_proof`.
 
+## Negative Resource Proof
+
+The 2026-05-01 SOPS-backed Figma PAT was intentionally tried as an MCP
+resource bearer candidate against `https://mcp.figma.com/mcp`. The probe
+returned HTTP 405 and classified as `degraded.unknown_4xx`.
+
+That is useful boundary evidence: a Figma REST PAT must not be treated as a
+resource-bound MCP OAuth token. It does not promote MCP `resource` proof.
+
 ## Remaining Work
 
 - Add a resource-token proof only with a scoped MCP token minted for

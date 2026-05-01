@@ -513,6 +513,7 @@ const figma_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity-pat",
         .aliases = &.{ "me-pat", "pat" },
+        .proof_status = proof_local_live,
         .probe = .{
             .method = "GET",
             .url = "https://api.figma.com/v1/me",
@@ -1698,6 +1699,15 @@ test "figma identity capability uses OAuth me probe" {
 }
 
 test "figma pat identity capability uses explicit token header" {
+    var proof_status: ?[]const u8 = null;
+    for (figma_def.capabilities) |capability| {
+        if (std.mem.eql(u8, capability.name, "identity-pat")) {
+            proof_status = capability.proof_status;
+            break;
+        }
+    }
+    try std.testing.expectEqualStrings(proof_local_live, proof_status.?);
+
     const plan = probePlanForCapability(figma_def, "me-pat").?;
     try std.testing.expectEqual(ProbeTransport.http, plan.transport);
     try std.testing.expectEqualStrings("identity-pat", plan.capability);

@@ -5,12 +5,18 @@ const env = @import("env.zig");
 pub const app_name = "oauth-mux";
 
 pub fn configDir(allocator: std.mem.Allocator) ![]const u8 {
-    if (try env.get(allocator, "OMUX_CONFIG_DIR")) |dir| return dir;
+    if (try env.get(allocator, "OMUX_CONFIG_DIR")) |dir| {
+        defer allocator.free(dir);
+        return absolutePath(allocator, dir);
+    }
     return xdgOrMacOS(allocator, "XDG_CONFIG_HOME", ".config", "Application Support");
 }
 
 pub fn stateDir(allocator: std.mem.Allocator) ![]const u8 {
-    if (try env.get(allocator, "OMUX_STATE_DIR")) |dir| return dir;
+    if (try env.get(allocator, "OMUX_STATE_DIR")) |dir| {
+        defer allocator.free(dir);
+        return absolutePath(allocator, dir);
+    }
     return xdgOrMacOS(allocator, "XDG_STATE_HOME", ".local/state", "Application Support");
 }
 
@@ -30,7 +36,10 @@ pub fn runtimeDir(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 pub fn configFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    if (try env.get(allocator, "OMUX_CONFIG")) |path| return path;
+    if (try env.get(allocator, "OMUX_CONFIG")) |path| {
+        defer allocator.free(path);
+        return absolutePath(allocator, path);
+    }
     const dir = try configDir(allocator);
     defer allocator.free(dir);
     return std.fs.path.join(allocator, &.{ dir, "config.json" });
@@ -56,7 +65,9 @@ fn xdgOrMacOS(
 ) ![]const u8 {
     if (try env.get(allocator, xdg_env)) |base| {
         defer allocator.free(base);
-        return std.fs.path.join(allocator, &.{ base, app_name });
+        const joined = try std.fs.path.join(allocator, &.{ base, app_name });
+        defer allocator.free(joined);
+        return absolutePath(allocator, joined);
     }
     const home = (try env.get(allocator, "HOME")) orelse return error.OutOfMemory;
     defer allocator.free(home);
@@ -64,6 +75,16 @@ fn xdgOrMacOS(
         return std.fs.path.join(allocator, &.{ home, "Library", macos_dir_name, app_name });
     }
     return std.fs.path.join(allocator, &.{ home, linux_default_suffix, app_name });
+}
+
+pub fn absolutePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const expanded = try expandTilde(allocator, path);
+    defer allocator.free(expanded);
+    if (std.fs.path.isAbsolute(expanded)) return try allocator.dupe(u8, expanded);
+
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, expanded });
 }
 
 pub fn expandTilde(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -86,5 +107,20 @@ test "expandTilde" {
         const result = try expandTilde(allocator, "");
         defer allocator.free(result);
         try std.testing.expectEqualStrings("", result);
+    }
+}
+
+test "absolutePath keeps absolute and expands relative paths" {
+    const allocator = std.testing.allocator;
+    {
+        const result = try absolutePath(allocator, "/absolute/path");
+        defer allocator.free(result);
+        try std.testing.expectEqualStrings("/absolute/path", result);
+    }
+    {
+        const result = try absolutePath(allocator, "relative/path");
+        defer allocator.free(result);
+        try std.testing.expect(std.fs.path.isAbsolute(result));
+        try std.testing.expect(std.mem.endsWith(u8, result, "relative/path"));
     }
 }
