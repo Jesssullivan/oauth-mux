@@ -47,19 +47,26 @@ Current truth:
 
 - `stay-afloat --once`, bounded `stay-afloat --loop`, `--execute`, handoffs,
   redacted events, route selection, locks, and writeback admission are shipped.
+- `TIN-859` landed in PR `#71` and PR `#72`: the portable foreground
+  supervisor contract is documented, and the socket status/stop lifecycle has
+  no-mutation E2E coverage.
+- `TIN-860` landed in PR `#73`: user-mediated handoffs now have list, ack,
+  clear, and named refresh commands.
 - The default daemon policy refuses provider-spend probes, silent interactive
   auth, and silent mutation.
 - Codex fallback is proven from quota-exhausted `max-1#codex-max` to available
   `max-2#codex-max`; automatic reauth and background repair are not proven.
 
-Next split:
+Remaining daemon split:
 
-- `TIN-859`: define a portable foreground supervisor contract with socket,
-  status, event, lock, stop, exit-code, and JSON semantics.
-- `TIN-860`: add handoff acknowledgement and route-evidence refresh UX for
-  user-mediated repairs.
+- Align the experimental socket daemon with the foreground tick contract before
+  calling it a beta background daemon.
+- Add optional package wrapper examples only after public install lanes and
+  stop/status behavior are stable.
+- Keep production background scheduling separate from first-run and release
+  gates.
 
-The first `TIN-859` artifact is
+The `TIN-859` contract artifact is
 `docs/spec/stay-afloat-supervisor-contract-2026-05-01.md`. It defines the
 foreground tick contract as the portable core, keeps the current socket daemon
 experimental, and treats Homebrew/systemd/launchd/Windows service integration
@@ -94,14 +101,12 @@ patterns are settled.
 
 1. Resolve `#66` / `TIN-858` enough for website wording: public tap, Jess tap,
    or staged-only.
-2. Land `TIN-859` before adding service wrappers; this protects cross-platform
-   behavior.
-3. Implement `TIN-860` so a user can recover from a queued auth handoff with a
-   short, documented command path.
-4. Start `TIN-862` as the first non-Codex provider proof because GitHub and
+2. Start `TIN-862` as the first non-Codex provider proof because GitHub and
    Linear identity checks are low-impact and do not require model spend.
-5. Use `TIN-861` and `TIN-863` to prove the two harder shapes: CLI-owned
+3. Use `TIN-861` and `TIN-863` to prove the two harder shapes: CLI-owned
    subscription state and MCP resource-bound OAuth.
+4. Return to daemon background scheduling only after wrapper/install decisions
+   and provider proof produce enough real operator evidence.
 
 ## Guardrails
 
