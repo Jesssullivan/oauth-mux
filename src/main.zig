@@ -6151,6 +6151,7 @@ test "writeProvidersListJson exposes extension and budget metadata" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability_budgets\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"codex-max\",\"proof_status\":\"live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"auth-status\",\"proof_status\":\"local_live_proven\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"identity\",\"proof_status\":\"local_live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"resource-metadata\",\"proof_status\":\"public_live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"resource\",\"proof_status\":\"needs_operator_proof\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"identity-api-key\",\"proof_status\":\"local_live_proven\"") != null);
