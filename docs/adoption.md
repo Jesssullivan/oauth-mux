@@ -34,6 +34,7 @@ oauth-mux doctor
 oauth-mux report --redacted
 oauth-mux providers list
 oauth-mux accounts list
+oauth-mux enroll plan <provider>
 oauth-mux config validate
 oauth-mux discover --json
 oauth-mux doctor runtime --json
@@ -57,6 +58,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
+oauth-mux enroll plan codex --account max-4 --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -93,6 +95,10 @@ useful for support bundles and full-machine cleanup.
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,
 recorded liveness, and safe next commands without reading credential values.
+`oauth-mux enroll plan <provider> --json` is the provider-neutral planning
+surface. It does not mutate config or auth state; it marks each provider-specific
+step as agent-safe, interactive, mutating, or provider-call-spending so users
+and agents can ask for consent at the right boundary.
 After a user-mediated upstream login, `oauth-mux stay-afloat refresh --profile
 <profile> --capability <capability> --json` is the concise evidence refresh
 step that can clear pending handoffs.

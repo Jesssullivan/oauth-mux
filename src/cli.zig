@@ -11,6 +11,7 @@ pub const Command = union(enum) {
     report: ReportArgs,
     providers: ProvidersArgs,
     accounts: AccountsArgs,
+    enroll: EnrollArgs,
     status: StatusArgs,
     health: HealthArgs,
     discover: DiscoverArgs,
@@ -94,6 +95,18 @@ pub const Command = union(enum) {
     pub const AccountsArgs = struct {
         action: AccountsAction = .list,
         provider: ?[]const u8 = null,
+        json: bool = false,
+    };
+
+    pub const EnrollAction = enum {
+        plan,
+    };
+
+    pub const EnrollArgs = struct {
+        action: EnrollAction = .plan,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        mode: ?[]const u8 = null,
         json: bool = false,
     };
 
@@ -237,6 +250,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "report")) return parseReport(rest);
     if (eql(cmd, "providers")) return parseProviders(rest);
     if (eql(cmd, "accounts")) return parseAccounts(rest);
+    if (eql(cmd, "enroll")) return parseEnroll(rest);
     if (eql(cmd, "status")) return parseStatus(rest);
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
@@ -410,6 +424,34 @@ fn parseAccounts(args: []const []const u8) Command {
         }
     }
     return .{ .accounts = result };
+}
+
+fn parseEnroll(args: []const []const u8) Command {
+    var result = Command.EnrollArgs{};
+    var i: usize = 0;
+    if (args.len > 0 and eql(args[0], "plan")) {
+        result.action = .plan;
+        i = 1;
+    }
+    if (i < args.len and !std.mem.startsWith(u8, args[i], "--")) {
+        result.provider = args[i];
+        i += 1;
+    }
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--mode")) {
+            i += 1;
+            if (i < args.len) result.mode = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .enroll = result };
 }
 
 fn parseStatus(args: []const []const u8) Command {
@@ -819,6 +861,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  accounts list [--provider <name>] [--json]
         \\      Show configured accounts, runtime readiness, liveness evidence, and safe next commands.
         \\
+        \\  enroll plan <provider> [--account <name>] [--mode <mode>] [--json]
+        \\      Show provider-specific enrollment steps without mutating auth state.
+        \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
         \\
@@ -1203,6 +1248,21 @@ test "parse accounts list provider json" {
     }
 }
 
+test "parse enroll plan provider account mode json" {
+    const args = [_][]const u8{ "enroll", "plan", "figma", "--account", "work", "--mode", "pat", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .enroll => |enroll| {
+            try std.testing.expect(enroll.action == .plan);
+            try std.testing.expectEqualStrings("figma", enroll.provider.?);
+            try std.testing.expectEqualStrings("work", enroll.account.?);
+            try std.testing.expectEqualStrings("pat", enroll.mode.?);
+            try std.testing.expect(enroll.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse repair plan with profile" {
     const args = [_][]const u8{ "repair-plan", "--profile", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1414,6 +1474,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a report -d 'Print redacted support report'
             \\complete -c oauth-mux -n __fish_use_subcommand -a providers -d 'List provider support'
             \\complete -c oauth-mux -n __fish_use_subcommand -a accounts -d 'List configured accounts'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a enroll -d 'Plan account enrollment'
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
@@ -1445,6 +1506,11 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from providers' -a 'list' -d 'Provider subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from accounts' -a 'list' -d 'Accounts subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from accounts' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -a 'plan' -d 'Enrollment subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l mode -d 'Enrollment mode' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from status' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from discover' -l json -d 'JSON output'
@@ -1504,6 +1570,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'report:Print redacted support report'
             \\    'providers:List provider support'
             \\    'accounts:List configured accounts'
+            \\    'enroll:Plan account enrollment'
             \\    'status:Show status'
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
@@ -1528,7 +1595,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts status health discover repair-plan repair route stay-afloat config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts enroll status health discover repair-plan repair route stay-afloat config init setup codex daemon version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\

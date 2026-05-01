@@ -188,6 +188,26 @@ expect_not_contains "$(cat "$accounts_json")" "$store_root/max-1" "accounts list
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
 
+printf 'first-run e2e: enroll plan is provider-neutral and non-mutating\n'
+enroll_plan_json="$tmp/enroll-plan-codex.json"
+run_json "$enroll_plan_json" enroll plan codex --account max-4 --json
+jq -e '
+  .action == "plan"
+  and .mutates == false
+  and .provider == "codex"
+  and .account == "max-4"
+  and .provider_configured == true
+  and .provider_neutral_mutation_supported == false
+  and (.existing_accounts | length) == 3
+  and (.steps[] | select(.kind == "inspect_accounts") | .agent_safe == true)
+  and (.steps[] | select(.kind == "provider_login") | .command == "oauth-mux codex login-device max-4" and .interactive == true and .agent_safe == false)
+  and (.steps[] | select(.kind == "runtime_proof") | .command == "oauth-mux doctor runtime --provider codex --account max-4 --capability codex-max --json" and .agent_safe == true)
+  and .future_provider_neutral_command.available == false
+' "$enroll_plan_json" >/dev/null
+expect_not_contains "$(cat "$enroll_plan_json")" "$store_root/max-1" "enroll plan does not print concrete Codex store paths"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
+
 printf 'first-run e2e: discovery is redacted and agent-usable\n'
 discover_json="$tmp/discover.json"
 run_json "$discover_json" discover --json
@@ -197,6 +217,7 @@ jq -e '
   and (.providers[] | select(.name == "codex") | .accounts | length) == 3
   and (.agent_safe_commands | index("oauth-mux report --redacted --json") != null)
   and (.agent_safe_commands | index("oauth-mux doctor runtime --json") != null)
+  and (.agent_safe_commands | index("oauth-mux enroll plan <provider> --json") != null)
   and (.agent_safe_commands | index("oauth-mux route explain --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux route select --profile <profile> --capability <capability> --json") != null)
   and (.agent_safe_commands | index("oauth-mux repair-plan --profile <profile> --capability <capability> --json") != null)

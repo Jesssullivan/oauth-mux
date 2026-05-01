@@ -292,6 +292,20 @@ expect_contains "$accounts_json" '"oauth-mux repair-plan --provider <provider> -
 expect_not_contains "$accounts_json" "omux-e2e-a1" "accounts list does not expose env secret value"
 expect_not_contains "$accounts_json" "omux-e2e-a2" "accounts list does not expose env secret value"
 
+printf 'e2e: enroll plan reports non-mutating provider-neutral setup plan\n'
+enroll_plan_json="$(omux enroll plan toy --account a3 --json)"
+expect_contains "$enroll_plan_json" '"action":"plan"' "enroll plan reports plan action"
+expect_contains "$enroll_plan_json" '"mutates":false' "enroll plan is non-mutating"
+expect_contains "$enroll_plan_json" '"provider":"toy"' "enroll plan reports provider"
+expect_contains "$enroll_plan_json" '"account":"a3"' "enroll plan reports target account"
+expect_contains "$enroll_plan_json" '"provider_configured":true' "enroll plan sees configured provider"
+expect_contains "$enroll_plan_json" '"account":"a1"' "enroll plan includes existing account a1"
+expect_contains "$enroll_plan_json" '"kind":"runtime_proof"' "enroll plan includes runtime proof step"
+expect_contains "$enroll_plan_json" '"command":"oauth-mux doctor runtime --provider toy --account a3 --json"' "enroll plan builds account-scoped runtime command"
+expect_contains "$enroll_plan_json" '"provider_neutral_mutation_supported":false' "enroll plan refuses to claim mutation support"
+expect_not_contains "$enroll_plan_json" "omux-e2e-a1" "enroll plan does not expose env secret value"
+expect_not_contains "$enroll_plan_json" "omux-e2e-a2" "enroll plan does not expose env secret value"
+
 printf 'e2e: cheap route selects first healthy account\n'
 cheap_env="$(omux env --profile cheap --capability cheap --shell bash)"
 expect_contains "$cheap_env" "export TOY_TOKEN='omux-e2e-a1'" "cheap env injects account a1 token"

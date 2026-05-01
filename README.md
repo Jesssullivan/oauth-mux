@@ -53,6 +53,7 @@ oauth-mux doctor
 oauth-mux report --redacted
 oauth-mux providers list
 oauth-mux accounts list --json
+oauth-mux enroll plan codex --account max-4 --json
 oauth-mux discover --json
 oauth-mux doctor runtime --json
 ```
@@ -119,6 +120,11 @@ configured provider accounts, secret backend names, runtime readiness,
 writeback admission, capability proof, recorded liveness, selectability, and
 safe next commands without reading credential values.
 
+`enroll plan <provider> --json` is also non-mutating. It turns the inventory
+into an explicit provider-specific setup plan, marking which steps are
+agent-safe, interactive, mutating, or provider-call-spending before anything is
+run.
+
 `repair run` is the explicit mutation boundary. Without `--confirm-repair`, it
 will not open auth flows or run upstream CLI repair commands; it only reports
 whether a route is already selectable, whether no admitted repair exists, or
@@ -177,6 +183,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
+oauth-mux enroll plan codex --account max-4 --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa

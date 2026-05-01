@@ -37,6 +37,19 @@ oauth-mux accounts list --provider codex --json
 surface for deciding which provider-specific or future provider-neutral
 enrollment command should run next.
 
+The second slice adds non-mutating admission planning through:
+
+```bash
+oauth-mux enroll plan <provider> --json
+oauth-mux enroll plan codex --account max-4 --json
+oauth-mux enroll plan figma --account work --mode pat --json
+```
+
+`enroll plan` does not mutate config or auth state. It labels every proposed
+step with `agent_safe`, `interactive`, `mutating`, and
+`spends_provider_calls`, and it explicitly reports provider-neutral enrollment
+mutation as unavailable until provider-owned consent flows are implemented.
+
 ## User Stories
 
 ### Story A: user adds a fourth Codex account
@@ -48,6 +61,7 @@ Expected flow:
 
 ```bash
 oauth-mux accounts list --provider codex --json
+oauth-mux enroll plan codex --account max-4 --json
 oauth-mux codex config-candidate --store-root ~/.local/share/oauth-mux/codex --json
 oauth-mux codex config-merge --candidate /tmp/oauth-mux-codex-max.config.json --json
 oauth-mux codex login-device max-4
@@ -72,6 +86,7 @@ Expected future flow:
 ```bash
 oauth-mux enroll claude --account work
 oauth-mux enroll claude --account personal
+oauth-mux enroll plan claude --account work --json
 oauth-mux accounts list --provider claude --json
 oauth-mux stay-afloat --once --profile claude --capability auth-status --json
 ```
@@ -89,6 +104,7 @@ Expected future flow:
 ```bash
 oauth-mux enroll figma --account work --mode oauth
 oauth-mux enroll figma --account service --mode pat
+oauth-mux enroll plan figma --account service --mode pat --json
 oauth-mux accounts list --provider figma --json
 oauth-mux probe --provider figma --account service --capability identity-pat --json
 ```
@@ -103,6 +119,7 @@ An agent should start with inventory, not mutation:
 ```bash
 oauth-mux discover --json
 oauth-mux accounts list --json
+oauth-mux enroll plan <provider> --json
 oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
@@ -124,6 +141,16 @@ handoff rather than trying to run browser/device auth silently.
 - per-capability proof, runtime readiness, recorded liveness, selectability,
   and safe action shape;
 - agent-safe next commands.
+
+`enroll plan --json` reports:
+
+- requested provider, account, and mode;
+- whether the provider is already configured;
+- existing configured accounts with secret backend names only;
+- ordered steps, each labeled for agent safety, interactivity, mutation, and
+  provider-call spend;
+- safe next commands;
+- the future provider-neutral mutation command with `available:false`.
 
 Account state is intentionally coarse:
 
@@ -166,6 +193,7 @@ Account state is intentionally coarse:
 The MCP-facing surface should expose inventory and explanation before mutation:
 
 - `accounts.list`
+- `enroll.plan`
 - `providers.list`
 - `doctor.runtime`
 - `route.explain`
@@ -180,7 +208,7 @@ diagnostic, handoff, probe, repair, and mutation.
 ## Next Implementation Slices
 
 1. Land `accounts list` as the provider-neutral inventory surface.
-2. Add `enroll plan <provider>` to print the exact provider-specific setup
+2. Land `enroll plan <provider>` to print the exact provider-specific setup
    steps without mutation.
 3. Promote Codex N+1 enrollment from provider-specific helpers into
    `enroll codex --account <name>`.
