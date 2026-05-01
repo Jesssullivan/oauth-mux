@@ -17,7 +17,7 @@ boundaries that need separate tracking.
 
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
-| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Private/staged Tinyland tap works; public Homebrew lane undecided. |
+| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Private/staged Tinyland tap works; recommended public lane is a Jess-owned tap, pending repo creation and QA. |
 | Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863` | Codex is live-proven; most other providers are schema-modeled or admitted but not live-proven. |
 
@@ -34,12 +34,16 @@ Current truth:
 
 Decision options:
 
-1. Make `tinyland-inc/homebrew-tools` public.
-2. Create a public Jess-owned tap, such as `Jesssullivan/homebrew-omux`.
-3. Keep Homebrew staged/private and advertise npm, GitHub Release, curl, and
-   deb/rpm as the public install surfaces.
+1. Recommended: create a public Jess-owned tap,
+   `Jesssullivan/homebrew-omux`, and use tap name `jesssullivan/omux`.
+2. Keep `tinyland-inc/homebrew-tools` private as staged Tinyland
+   infrastructure.
+3. Continue advertising npm, GitHub Release, curl, deb, and rpm as the public
+   install surfaces until public tap QA passes.
 
-The website must use staged/private wording until this is decided.
+The decision record is
+`docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The website must keep
+staged/private wording until the public tap exists and clean-machine QA passes.
 
 ## Stay-Afloat Daemon Boundary
 
@@ -103,8 +107,9 @@ patterns are settled.
 
 ## Immediate Execution Order
 
-1. Resolve `#66` / `TIN-858` enough for website wording: public tap, Jess tap,
-   or staged-only.
+1. Create and prove the public Jess-owned Homebrew tap from
+   `docs/spec/homebrew-public-lane-decision-2026-05-01.md`, or keep website
+   wording staged/private until that work lands.
 2. Finish `TIN-862` as the first non-Codex provider proof by running redacted
    GitHub and Linear identity artifacts after the classifier/documentation
    patch lands.
