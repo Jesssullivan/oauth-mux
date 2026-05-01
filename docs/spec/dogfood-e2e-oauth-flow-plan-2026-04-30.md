@@ -45,9 +45,13 @@ OAuth and muxing surfaces:
 
 These are the adoption blockers that should stay visible:
 
-1. Non-Codex live provider proof is still mostly schema-level.
+1. Non-Codex provider proof is still capability-level, not provider-level.
    Built-ins exist for Claude, GitHub, Vercel, Linear, Figma, FlakeHub, Gemini,
-   and MCP, but only Codex is currently `live_proven`.
+   and MCP. Codex is provider-level `live_proven`; Claude `auth-status`,
+   GitHub `identity`, Linear `identity-api-key`, and MCP `resource-metadata`
+   now have narrower capability proof statuses. Linear OAuth bearer, MCP
+   bearer-resource, Vercel, Figma, Gemini, and FlakeHub still need explicit
+   proof before public provider-level claims.
 
 2. Clean first-run OAuth is not yet a single captured journey.
    We have install proof and Codex account proof, but we still need recorded
