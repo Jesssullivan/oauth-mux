@@ -585,6 +585,7 @@ pub const PipelineError = error{
     TokenRevoked,
     RateLimited,
     NetworkError,
+    RuntimeNotReady,
     ExecFailed,
     ShellDetectionFailed,
     OutOfMemory,

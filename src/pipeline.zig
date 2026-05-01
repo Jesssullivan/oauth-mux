@@ -13,6 +13,7 @@ const oauth = @import("oauth.zig");
 const probe = @import("probe.zig");
 const env = @import("env.zig");
 const repair_state = @import("repair_state.zig");
+const runtime = @import("runtime.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -246,6 +247,7 @@ fn recordCandidateFailure(ctx: *Context, key: []const u8, err: PipelineError) vo
         error.ConfigNotFound,
         error.ConfigParseError,
         error.ConfigValidationError,
+        error.RuntimeNotReady,
         => {},
         else => ctx.health.recordFailure(key, .error_response),
     }
@@ -456,6 +458,18 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
         .none => "",
         else => return error.TokenParseFailed,
     };
+
+    if (plan.transport == .command) {
+        const readiness = runtime.routeReadiness(ctx.allocator, ctx.cfg, .{
+            .provider = prov,
+            .account = acct,
+            .capability = capability,
+        }, def) catch |e| switch (e) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.RuntimeNotReady,
+        };
+        if (!readiness.isReady()) return error.RuntimeNotReady;
+    }
 
     var probe_env = buildProbeEnv(ctx, prov, acct, def, plan) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -1295,6 +1309,158 @@ test "runProbe executes auth none command probe without reading missing secret" 
     try std.testing.expectEqual(@as(?u16, 200), ctx.last_probe_status);
     try std.testing.expectEqual(types.MuxDecision.use_this, ctx.last_probe_decision.?);
     try std.testing.expect(store.accounts.get("toy:default#status") != null);
+}
+
+test "runProbe does not poison liveness when command probe binary is missing" {
+    const missing_binary = "omux-definitely-missing-probe-runtime";
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "defaults": {{ "provider": "toy" }},
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "capabilities": [
+        \\        {{
+        \\          "name": "status",
+        \\          "probe": {{
+        \\            "transport": "command",
+        \\            "auth": "none",
+        \\            "command": ["{s}", "status"],
+        \\            "budget": "free_command"
+        \\          }}
+        \\        }}
+        \\      ],
+        \\      "failure_rules": [
+        \\        {{ "status_min": 500, "status_max": 599, "class": {{ "provider_degraded": {{}} }} }}
+        \\      ]
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{
+        \\          "secret": {{ "backend": "env", "variable": "OMUX_TEST_SECRET_THAT_IS_NOT_SET" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "toy": {{ "providers": ["toy:default#status"] }}
+        \\  }},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{missing_binary},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.profile_name = "toy";
+    ctx.capability_name = "status";
+
+    try std.testing.expectError(error.RuntimeNotReady, runProbe(&ctx));
+    try std.testing.expect(!ctx.last_probe_executed);
+    try expectUnpoisonedRuntimeHealth(store.accounts.get("toy:default").?);
+    try expectUnpoisonedRuntimeHealth(store.accounts.get("toy:default#status").?);
+}
+
+test "runProbe does not poison liveness when command account runtime is unavailable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const missing_config_dir = try std.fs.path.join(std.testing.allocator, &.{ root, "missing-store" });
+    defer std.testing.allocator.free(missing_config_dir);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "defaults": {{ "provider": "toy" }},
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "injection": {{ "config_dir_env": "TOY_HOME" }},
+        \\      "runtime": {{
+        \\        "env_vars": ["TOY_HOME"],
+        \\        "writable_paths": ["TOY_HOME"],
+        \\        "session_paths": ["TOY_HOME/session.json"]
+        \\      }},
+        \\      "capabilities": [
+        \\        {{
+        \\          "name": "status",
+        \\          "probe": {{
+        \\            "transport": "command",
+        \\            "auth": "none",
+        \\            "command": ["sh", "-c", "printf '{{\"loggedIn\":true}}'"],
+        \\            "budget": "free_command"
+        \\          }}
+        \\        }}
+        \\      ],
+        \\      "failure_rules": [
+        \\        {{ "status_min": 500, "status_max": 599, "class": {{ "provider_degraded": {{}} }} }}
+        \\      ]
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "env", "variable": "OMUX_TEST_SECRET_THAT_IS_NOT_SET" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "toy": {{ "providers": ["toy:default#status"] }}
+        \\  }},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{missing_config_dir},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.profile_name = "toy";
+    ctx.capability_name = "status";
+
+    try std.testing.expectError(error.RuntimeNotReady, runProbe(&ctx));
+    try std.testing.expect(!ctx.last_probe_executed);
+    try expectUnpoisonedRuntimeHealth(store.accounts.get("toy:default").?);
+    try expectUnpoisonedRuntimeHealth(store.accounts.get("toy:default#status").?);
+}
+
+fn expectUnpoisonedRuntimeHealth(health: health_mod.AccountHealth) !void {
+    switch (health.liveness) {
+        .live => |live| switch (live.availability) {
+            .available => {},
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(health.last_http_status == null);
+    try std.testing.expect(health.last_probe_source == null);
 }
 
 test "runEnv skips remaining accounts for degraded provider" {
