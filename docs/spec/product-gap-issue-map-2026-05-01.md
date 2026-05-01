@@ -139,8 +139,12 @@ Next split:
   single generic "Figma works" claim. A 2026-05-01 OAuth bearer attempt
   returned HTTP 403 and correctly classified as `degraded.scope_insufficient`;
   that is classifier evidence, not live proof.
-- `TIN-878`: prove FlakeHub/Determinate as command-first status, with missing
-  binaries and unwritable runtime separated from credential liveness.
+- `TIN-878`: prove FlakeHub/Determinate as command-first status. A low-impact
+  local proof now shows `flakehub:work#status` through `determinate-nixd
+  status` returning HTTP-shaped status 200 and `live.available`; the capability
+  proof status is `local_live_proven`. Broader provider status stays
+  conservative until logged-out, missing-binary, timeout, cache/apply, and
+  private-flake permission states have fixture coverage.
 - `TIN-879`: decide and prove the Gemini CLI provider shape before any proof
   promotion; do not assume generic Google OAuth token behavior is enough for
   the harness.
