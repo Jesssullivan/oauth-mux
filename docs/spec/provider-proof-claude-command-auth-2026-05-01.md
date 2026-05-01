@@ -68,10 +68,24 @@ without reading or mutating Claude's credential file. It does not prove Claude
 quota, tier, or model-call availability, and it does not make direct OAuth
 repair admissible.
 
+## Fixture Coverage
+
+Synthetic tests now cover the two non-spend states needed before broader Claude
+claims:
+
+- `claude auth status --json` output with `{"loggedIn":false}` is classified as
+  `dead.token_revoked`, which means user-mediated login is required.
+- A missing command-adapter binary is `runtime.missing_binary`, not OAuth
+  liveness and not provider degradation.
+
+These fixtures keep local runtime absence separate from Claude account state.
+They do not replace real operator proof for logged-out, keychain, or quota
+conditions.
+
 ## Remaining Work
 
-- Attach this proof to `TIN-861` and GitHub `#68`.
-- Add logged-out and missing-binary operator fixtures when available.
+- Attach the fixture and live proof evidence to `TIN-861` and GitHub `#68`.
+- Add real logged-out/keychain/session operator fixtures when available.
 - Keep Claude as command-first until provider-owned docs expose direct repair
   semantics that are safe for subscription session stores.
 - Do not schedule Claude model-call probes by default. Any future route probe
