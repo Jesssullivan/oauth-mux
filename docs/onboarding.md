@@ -453,7 +453,9 @@ paths unless the user explicitly passes `--include-paths`.
 Capability entries expose narrower proof status in `capability_budgets`:
 `live_proven` for hosted secret-scoped proof, `local_live_proven` for local
 operator proof, `public_live_proven` for no-secret public metadata proof, and
-`needs_operator_proof` for modeled-but-unproven capabilities.
+`needs_operator_proof` for modeled-but-unproven capabilities. They also expose
+non-secret `proof_requirements` so agents can ask for the right env var, CLI
+login, plan token, file key, or consent gate without guessing.
 
 ## Provider Onboarding Checklist
 

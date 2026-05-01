@@ -15,6 +15,12 @@ The goal is a stable shape where users and agents can add the N+1 account,
 inspect what changed, and keep work afloat without memorizing each provider's
 storage quirks.
 
+The paid proof cohort in
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md` is the first planned
+stress test for this contract: one lower-tier Codex account added to the
+existing Max cohort, three Claude Code account/billing shapes, and three Figma
+token/resource shapes.
+
 ## Product Contract
 
 Enrollment is a three-layer contract:
@@ -167,7 +173,7 @@ handoff rather than trying to run browser/device auth silently.
 - account-level runtime readiness;
 - writeback admission;
 - per-capability proof, runtime readiness, recorded liveness, selectability,
-  and safe action shape;
+  proof requirements, and safe action shape;
 - agent-safe next commands.
 
 `enroll plan --json` reports:

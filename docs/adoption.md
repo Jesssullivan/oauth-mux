@@ -180,7 +180,9 @@ Provider authors should use `oauth-mux providers list --json` to verify whether
 their provider is currently `built_in`, `schema_modeled`, `live_proven`, or still
 waiting on `needs_operator_proof`. Capability entries can be promoted more
 narrowly with `local_live_proven` or `public_live_proven` before the whole
-provider family is proven.
+provider family is proven. The same JSON includes non-secret
+`proof_requirements`, which is the agent-safe handoff list for missing tokens,
+provider CLI logins, file keys, and live proof consent.
 
 ## Non-Tinyland Deployments
 

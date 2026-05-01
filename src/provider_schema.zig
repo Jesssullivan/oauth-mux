@@ -143,6 +143,7 @@ pub const CapabilityDefinition = struct {
     name: []const u8,
     aliases: []const []const u8 = &.{},
     proof_status: []const u8 = proof_needs_operator,
+    proof_requirements: []const []const u8 = &.{},
     probe: ?ProbeDefinition = null,
 };
 
@@ -271,6 +272,11 @@ const claude_capabilities = [_]CapabilityDefinition{
         .name = "auth-status",
         .aliases = &.{ "status", "identity", "whoami" },
         .proof_status = proof_local_live,
+        .proof_requirements = &.{
+            "claude CLI installed",
+            "account-scoped CLAUDE_CONFIG_DIR",
+            "user-mediated claude auth login",
+        },
         .probe = .{
             .transport = .command,
             .auth = .none,
@@ -344,6 +350,10 @@ const mcp_capabilities = [_]CapabilityDefinition{
         .name = "resource-metadata",
         .aliases = &.{ "metadata", "protected-resource-metadata" },
         .proof_status = proof_public_live,
+        .proof_requirements = &.{
+            "OMUX_MCP_RESOURCE_METADATA_URL",
+            "public RFC 9728 protected resource metadata",
+        },
         .probe = .{
             .method = "GET",
             .url = "{{OMUX_MCP_RESOURCE_METADATA_URL}}",
@@ -355,6 +365,11 @@ const mcp_capabilities = [_]CapabilityDefinition{
     .{
         .name = "resource",
         .aliases = &.{ "resource-probe", "http" },
+        .proof_requirements = &.{
+            "OMUX_MCP_RESOURCE_TOKEN",
+            "OMUX_MCP_RESOURCE_PROBE_URL",
+            "resource-bound bearer token for the probed MCP resource",
+        },
         .probe = .{
             .method = "GET",
             .url = "{{OMUX_MCP_RESOURCE_PROBE_URL}}",
@@ -417,6 +432,10 @@ const vercel_capabilities = [_]CapabilityDefinition{
         .name = "identity",
         .aliases = &.{ "user", "whoami" },
         .proof_status = proof_local_live,
+        .proof_requirements = &.{
+            "VERCEL_TOKEN",
+            "Vercel token accepted by GET /v2/user",
+        },
         .probe = .{
             .method = "GET",
             .url = "https://api.vercel.com/v2/user",
@@ -430,6 +449,10 @@ const github_capabilities = [_]CapabilityDefinition{
         .name = "identity",
         .aliases = &.{ "user", "whoami" },
         .proof_status = proof_local_live,
+        .proof_requirements = &.{
+            "GH_TOKEN or gh auth token",
+            "GitHub token accepted by GET /user",
+        },
         .probe = .{
             .method = "GET",
             .url = "https://api.github.com/user",
@@ -460,6 +483,10 @@ const linear_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity",
         .aliases = &.{ "viewer", "whoami" },
+        .proof_requirements = &.{
+            "LINEAR_ACCESS_TOKEN",
+            "OAuth bearer token accepted by Linear GraphQL viewer query",
+        },
         .probe = .{
             .method = "POST",
             .url = "https://api.linear.app/graphql",
@@ -473,6 +500,10 @@ const linear_capabilities = [_]CapabilityDefinition{
         .name = "identity-api-key",
         .aliases = &.{ "api-key", "personal-api-key", "pat", "whoami-api-key" },
         .proof_status = proof_local_live,
+        .proof_requirements = &.{
+            "Linear personal API key",
+            "raw Authorization header accepted by Linear GraphQL viewer query",
+        },
         .probe = .{
             .method = "POST",
             .url = "https://api.linear.app/graphql",
@@ -504,6 +535,10 @@ const figma_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity",
         .aliases = &.{ "me", "whoami" },
+        .proof_requirements = &.{
+            "FIGMA_ACCESS_TOKEN",
+            "OAuth token with current_user:read",
+        },
         .probe = .{
             .method = "GET",
             .url = "https://api.figma.com/v1/me",
@@ -514,6 +549,10 @@ const figma_capabilities = [_]CapabilityDefinition{
         .name = "identity-pat",
         .aliases = &.{ "me-pat", "pat" },
         .proof_status = proof_local_live,
+        .proof_requirements = &.{
+            "OMUX_FIGMA_PAT or FIGMA_ACCESS_TOKEN",
+            "Figma personal access token accepted by X-Figma-Token",
+        },
         .probe = .{
             .method = "GET",
             .url = "https://api.figma.com/v1/me",
@@ -524,6 +563,11 @@ const figma_capabilities = [_]CapabilityDefinition{
     .{
         .name = "file-metadata-plan",
         .aliases = &.{ "plan-file-meta", "plan-file-metadata", "plan" },
+        .proof_requirements = &.{
+            "OMUX_FIGMA_PLAN_TOKEN",
+            "OMUX_FIGMA_PLAN_FILE_KEY",
+            "Organization or Enterprise plan access token with file metadata scope",
+        },
         .probe = .{
             .method = "GET",
             .url = "https://api.figma.com/v1/files/{{OMUX_FIGMA_PLAN_FILE_KEY}}/meta",
@@ -560,6 +604,10 @@ const flakehub_capabilities = [_]CapabilityDefinition{
         .name = "status",
         .aliases = &.{ "identity", "whoami" },
         .proof_status = proof_local_live,
+        .proof_requirements = &.{
+            "determinate-nixd installed",
+            "local Determinate/FlakeHub auth state",
+        },
         .probe = .{
             .transport = .command,
             .auth = .none,
@@ -575,6 +623,12 @@ const codex_capabilities = [_]CapabilityDefinition{
         .name = "codex-max",
         .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
         .proof_status = proof_live,
+        .proof_requirements = &.{
+            "codex CLI installed",
+            "account-scoped CODEX_HOME",
+            "ChatGPT account with Codex Max-capable subscription or API path",
+            "OMUX_LIVE_QA_CONFIRM=spend-real-calls for live proof",
+        },
         .probe = .{
             .transport = .command,
             .auth = .none,
@@ -596,6 +650,12 @@ const codex_capabilities = [_]CapabilityDefinition{
         .name = "codex-mini",
         .aliases = &.{ "mini", "spark", "gpt-5.3-codex-spark", "gpt-5.1-codex-mini" },
         .proof_status = proof_live,
+        .proof_requirements = &.{
+            "codex CLI installed",
+            "account-scoped CODEX_HOME",
+            "ChatGPT account with Codex CLI access",
+            "OMUX_LIVE_QA_CONFIRM=spend-real-calls for live proof",
+        },
         .probe = .{
             .transport = .command,
             .auth = .none,
@@ -1718,6 +1778,17 @@ test "figma pat identity capability uses explicit token header" {
 }
 
 test "figma plan capability uses resource scoped file metadata probe" {
+    var proof_requirement_found = false;
+    for (figma_def.capabilities) |capability| {
+        if (std.mem.eql(u8, capability.name, "file-metadata-plan")) {
+            for (capability.proof_requirements) |requirement| {
+                if (std.mem.eql(u8, requirement, "OMUX_FIGMA_PLAN_FILE_KEY")) proof_requirement_found = true;
+            }
+            break;
+        }
+    }
+    try std.testing.expect(proof_requirement_found);
+
     const plan = probePlanForCapability(figma_def, "plan-file-meta").?;
     try std.testing.expectEqual(ProbeTransport.http, plan.transport);
     try std.testing.expectEqualStrings("file-metadata-plan", plan.capability);
