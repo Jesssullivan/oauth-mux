@@ -104,6 +104,11 @@ through its upstream CLI. Current automatic refresh follows that contract: it
 will not call a token endpoint unless writeback is admitted, and admitted file
 backends are replaced atomically.
 
+Runtime repair actions also report `diagnostic_command`. That command is for
+the user, wrapper, or permission broker to run in the correct process boundary;
+it is not an automatic repair command and should not be treated as provider
+failure evidence.
+
 ## Provider Author Experience
 
 A new provider should usually start as data, not Zig:

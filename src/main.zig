@@ -1013,6 +1013,10 @@ fn writeRepairPlanText(
             defer allocator.free(command);
             try writer.print("    command: {s}\n", .{command});
         }
+        if (try runtimeDiagnosticCommandAlloc(allocator, action, route)) |command| {
+            defer allocator.free(command);
+            try writer.print("    diagnostic: {s}\n", .{command});
+        }
     }
 }
 
@@ -1132,6 +1136,13 @@ fn writeRepairActionJson(
     }
     try writer.writeAll(",\"command\":");
     if (try repairCommandAlloc(allocator, action.command, route)) |command| {
+        defer allocator.free(command);
+        try std.json.stringify(command, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"diagnostic_command\":");
+    if (try runtimeDiagnosticCommandAlloc(allocator, action, route)) |command| {
         defer allocator.free(command);
         try std.json.stringify(command, .{}, writer);
     } else {
@@ -1468,6 +1479,18 @@ fn repairCommandAlloc(
             try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --json", .{ route.provider, route.account }),
         .codex_login_device => try std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{route.account}),
     };
+}
+
+fn runtimeDiagnosticCommandAlloc(
+    allocator: std.mem.Allocator,
+    action: RepairAction,
+    route: RepairPlanRoute,
+) !?[]const u8 {
+    if (!std.mem.eql(u8, action.kind, "fix_runtime")) return null;
+    return if (route.capability) |capability|
+        try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ route.provider, route.account, capability })
+    else
+        try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --json", .{ route.provider, route.account });
 }
 
 const RouteEvaluation = struct {
@@ -1999,6 +2022,10 @@ fn writeRouteText(
                 defer allocator.free(command);
                 try writer.print(" command={s}", .{command});
             }
+            if (try runtimeDiagnosticCommandAlloc(allocator, evaluation.action, evaluation.route)) |command| {
+                defer allocator.free(command);
+                try writer.print(" diagnostic={s}", .{command});
+            }
         }
         try writer.writeByte('\n');
     }
@@ -2188,6 +2215,10 @@ fn writeDaemonTickText(
         if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
             defer allocator.free(command);
             try writer.print(" command={s}", .{command});
+        }
+        if (try runtimeDiagnosticCommandAlloc(allocator, evaluation.action, evaluation.route)) |command| {
+            defer allocator.free(command);
+            try writer.print(" diagnostic={s}", .{command});
         }
         try writer.writeByte('\n');
     }
@@ -6535,6 +6566,19 @@ test "writeRepairActionJson emits codex reauth command without running it" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+}
+
+test "writeRepairActionJson emits runtime diagnostic command without executable repair" {
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const action = repairActionFor(route, provider_schema.codex_def, .{ .unwritable_store = "config_dir" }, null, .spend_provider);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeRepairActionJson(buf.writer(), std.testing.allocator, action, route);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"fix_runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"diagnostic_command\":\"oauth-mux doctor runtime --provider codex --account max-1 --capability codex-max --json\"") != null);
 }
 
 test "repairRunCandidate skips repair when profile already has selectable route" {
