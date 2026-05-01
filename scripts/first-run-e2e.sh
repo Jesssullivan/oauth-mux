@@ -33,6 +33,7 @@ chmod 0700 "$xdg_runtime"
 config_path="$xdg_config/oauth-mux/config.json"
 candidate_config_path="$xdg_config/oauth-mux/codex-max.config.json"
 store_root="$xdg_data/oauth-mux/codex"
+claude_config_root="$xdg_data/oauth-mux/claude"
 legacy_store_root="$home/.local/share/oauth-mux/codex"
 
 omux() (
@@ -40,6 +41,7 @@ omux() (
   unset OMUX_CONFIG_DIR
   unset OMUX_STATE_DIR
   unset OMUX_CODEX_STORE_ROOT
+  unset OMUX_CLAUDE_CONFIG_ROOT
   export HOME="$home"
   export XDG_CONFIG_HOME="$xdg_config"
   export XDG_STATE_HOME="$xdg_state"
@@ -465,5 +467,53 @@ jq -e '
   (.accounts | length) == 4
   and any(.accounts[]; .account == "max-4" and .state == "action_needed")
 ' "$accounts_after_enroll_json" >/dev/null
+
+printf 'first-run e2e: enroll claude requires explicit confirmation\n'
+enroll_claude_preview_json="$tmp/enroll-claude-preview.json"
+run_json "$enroll_claude_preview_json" enroll claude --account work --json
+jq -e --arg root "$claude_config_root" '
+  .ok == false
+  and .confirmation_required == true
+  and .requires == "--confirm-enroll"
+  and .provider == "claude"
+  and .account == "work"
+  and .config_root == $root
+  and .spends_provider_calls == false
+  and (.confirm_command | contains("oauth-mux enroll claude --account work --confirm-enroll"))
+  and .plan.provider_neutral_mutation_supported == true
+' "$enroll_claude_preview_json" >/dev/null
+test ! -d "$claude_config_root/work"
+
+printf 'first-run e2e: confirmed enroll claude adds isolated config dir without login\n'
+enroll_claude_confirmed_json="$tmp/enroll-claude-confirmed.json"
+run_json "$enroll_claude_confirmed_json" enroll claude --account work --confirm-enroll --json
+jq -e '
+  .ok == true
+  and .executed == true
+  and .provider == "claude"
+  and .account == "work"
+  and .config_changed == true
+  and .config_bootstrapped == true
+  and .ran_provider_login == false
+  and .spends_provider_calls == false
+  and .backup_config != null
+  and any(.next_commands[]; startswith("env CLAUDE_CONFIG_DIR=") and contains("claude auth login"))
+  and (.next_commands | index("oauth-mux doctor runtime --provider claude --account work --capability auth-status --json") != null)
+' "$enroll_claude_confirmed_json" >/dev/null
+test -d "$claude_config_root/work"
+jq -e '
+  (.providers.claude.kind == "claude")
+  and (.providers.claude.config_dir_env == "CLAUDE_CONFIG_DIR")
+  and (.providers.claude.accounts.work.secret.backend == "file")
+  and (.providers.claude.accounts.work.secret.path | contains(".credentials.json"))
+  and (.providers.claude.accounts.work.config_dir | contains("work"))
+  and (.profiles.claude.providers | index("claude:work#auth-status") != null)
+' "$config_path" >/dev/null
+accounts_after_claude_json="$tmp/accounts-after-claude.json"
+run_json "$accounts_after_claude_json" accounts list --provider claude --json
+jq -e '
+  (.accounts | length) == 1
+  and any(.accounts[]; .account == "work" and .secret_backend == "file")
+' "$accounts_after_claude_json" >/dev/null
 
 printf 'first-run e2e passed\n'

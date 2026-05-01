@@ -41,6 +41,7 @@ oauth-mux config validate
 oauth-mux accounts list --json
 oauth-mux enroll plan <provider> --json
 oauth-mux enroll codex --account <name> --confirm-enroll --json
+oauth-mux enroll claude --account <name> --confirm-enroll --json
 oauth-mux discover
 ```
 
@@ -53,6 +54,8 @@ oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
 oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
+oauth-mux enroll plan claude --account work --json
+oauth-mux enroll claude --account work --confirm-enroll --json
 oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary
@@ -87,12 +90,13 @@ agent-safe, interactive, mutating, or provider-call-spending. Provider-neutral
 enrollment mutation is only available where the provider-owned consent contract
 has been implemented.
 
-`oauth-mux enroll codex --account <name> --confirm-enroll --json` is the first
-provider-neutral enrollment mutation. It updates the active oauth-mux config,
-adds the Codex Max/Mini profile routes, and creates the isolated Codex account
-directory. It does not run `codex login`, open browser/device auth, or probe the
-provider. The returned `next_commands` include the explicit
-`oauth-mux codex login-device <name>` handoff plus runtime and inventory checks.
+`oauth-mux enroll codex --account <name> --confirm-enroll --json` and
+`oauth-mux enroll claude --account <name> --confirm-enroll --json` are the first
+provider-neutral enrollment mutations. They update the active oauth-mux config,
+add provider routes, and create isolated account directories. They do not run
+upstream login, open browser/device auth, or probe providers. The returned
+`next_commands` include explicit provider login handoffs plus runtime and
+inventory checks.
 
 For profile-level stay-afloat checks, scope the runtime report:
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`.
@@ -425,9 +429,10 @@ handoff, or a live proof run.
 setup sequence. Agents may present steps with `agent_safe:false` to a user or
 permission broker, but must not run those steps without explicit consent.
 
-`enroll codex --account <name> --confirm-enroll --json` is not agent-safe by
-default because it mutates config and creates an account directory. Agents may
-request it through a permission broker, but must not infer that the account is
+`enroll codex --account <name> --confirm-enroll --json` and
+`enroll claude --account <name> --confirm-enroll --json` are not agent-safe by
+default because they mutate config and create account directories. Agents may
+request them through a permission broker, but must not infer that the account is
 authenticated until the user has run the returned login command and runtime
 checks pass.
 
@@ -457,8 +462,11 @@ operator proof, `public_live_proven` for no-secret public metadata proof, and
 7. For Codex N+1, run
    `oauth-mux enroll codex --account <name> --confirm-enroll --json`, then the
    returned `oauth-mux codex login-device <name>` handoff.
-8. Run no-spend checks first: `status`, `health`, and credential parse probes.
-9. Run live probes only through `scripts/live-provider-qa.sh` or the manual
+8. For Claude N+1, run
+   `oauth-mux enroll claude --account <name> --confirm-enroll --json`, then the
+   returned `env CLAUDE_CONFIG_DIR=... claude auth login` handoff.
+9. Run no-spend checks first: `status`, `health`, and credential parse probes.
+10. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.
 
 ## Operator Definition of Done

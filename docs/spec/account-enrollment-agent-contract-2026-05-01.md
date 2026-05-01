@@ -48,18 +48,24 @@ oauth-mux enroll plan figma --account work --mode pat --json
 `enroll plan` does not mutate config or auth state. It labels every proposed
 step with `agent_safe`, `interactive`, `mutating`, and
 `spends_provider_calls`, and it explicitly reports provider-neutral enrollment
-mutation as unavailable until provider-owned consent flows are implemented.
+mutation as available only where provider-owned consent flows are implemented.
 
-The first consented mutation is Codex-only:
+The first consented mutations are Codex and Claude:
 
 ```bash
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
+oauth-mux enroll claude --account work --confirm-enroll --json
 ```
 
 Confirmed Codex enrollment mutates only oauth-mux-owned state: active config,
 Codex Max/Mini profile routes, and the isolated local Codex account directory.
 It does not run `codex login`, open browser/device auth, or spend provider
 calls. The output returns the provider-owned login handoff as a next command.
+
+Confirmed Claude enrollment follows the same boundary: active oauth-mux config,
+the `claude` profile route, and an isolated `CLAUDE_CONFIG_DIR` are scaffolded,
+then `claude auth login` is returned as a user-mediated handoff. oauth-mux does
+not run the Claude login command or rewrite Claude-owned credential state.
 
 ## User Stories
 
@@ -96,12 +102,13 @@ Claude is command-owned. oauth-mux should isolate `CLAUDE_CONFIG_DIR` per
 account, hand off login to the Claude CLI, and avoid silently rewriting
 Claude-owned state.
 
-Expected future flow:
+Expected flow:
 
 ```bash
-oauth-mux enroll claude --account work
-oauth-mux enroll claude --account personal
 oauth-mux enroll plan claude --account work --json
+oauth-mux enroll claude --account work --confirm-enroll --json
+env CLAUDE_CONFIG_DIR=<account-dir> claude auth login
+oauth-mux doctor runtime --provider claude --account work --capability auth-status --json
 oauth-mux accounts list --provider claude --json
 oauth-mux stay-afloat --once --profile claude --capability auth-status --json
 ```
@@ -167,8 +174,8 @@ handoff rather than trying to run browser/device auth silently.
 - safe next commands;
 - the future provider-neutral mutation command with `available:false`.
 
-For Codex, that command is now available and points to
-`oauth-mux enroll codex --account <name> --confirm-enroll`.
+For Codex and Claude, that command is now available and points to
+`oauth-mux enroll <provider> --account <name> --confirm-enroll`.
 
 Account state is intentionally coarse:
 
@@ -223,17 +230,19 @@ Mutation-capable tools such as `enroll.start`, `enroll.complete`, or
 evidence. MCP tools should preserve the same action taxonomy as the CLI:
 diagnostic, handoff, probe, repair, and mutation.
 
-For the current Codex implementation, the mutation-capable tool equivalent
-should expose the same shape as `enroll codex --confirm-enroll`: config/store
-scaffolding only, with provider login returned as a user-mediated handoff.
+For the current Codex and Claude implementations, the mutation-capable tool
+equivalent should expose the same shape as `enroll <provider>
+--confirm-enroll`: config/store scaffolding only, with provider login returned
+as a user-mediated handoff.
 
-## Next Implementation Slices
+## Implementation Slices
 
-1. Land `accounts list` as the provider-neutral inventory surface.
-2. Land `enroll plan <provider>` to print the exact provider-specific setup
+1. Shipped `accounts list` as the provider-neutral inventory surface.
+2. Shipped `enroll plan <provider>` to print the exact provider-specific setup
    steps without mutation.
-3. Land Codex N+1 enrollment as
+3. Shipped Codex N+1 enrollment as
    `enroll codex --account <name> --confirm-enroll`.
-4. Add Claude account-store config candidate and runtime proof.
+4. Shipped Claude account-store enrollment as
+   `enroll claude --account <name> --confirm-enroll`.
 5. Add Figma OAuth/PAT enrollment mutation planning and proof fixtures.
 6. Define the MCP tool schema against the same JSON surfaces.

@@ -101,6 +101,7 @@ pub const Command = union(enum) {
     pub const EnrollAction = enum {
         plan,
         codex,
+        claude,
     };
 
     pub const EnrollArgs = struct {
@@ -439,9 +440,13 @@ fn parseEnroll(args: []const []const u8) Command {
         result.action = .codex;
         result.provider = "codex";
         i = 1;
+    } else if (args.len > 0 and eql(args[0], "claude")) {
+        result.action = .claude;
+        result.provider = "claude";
+        i = 1;
     }
     if (i < args.len and !std.mem.startsWith(u8, args[i], "--")) {
-        if (result.action == .codex) {
+        if (result.action == .codex or result.action == .claude) {
             result.account = args[i];
         } else {
             result.provider = args[i];
@@ -458,7 +463,7 @@ fn parseEnroll(args: []const []const u8) Command {
         } else if (eql(args[i], "--mode")) {
             i += 1;
             if (i < args.len) result.mode = args[i];
-        } else if (eql(args[i], "--store-root")) {
+        } else if (eql(args[i], "--store-root") or eql(args[i], "--config-root")) {
             i += 1;
             if (i < args.len) result.store_root = args[i];
         } else if (eql(args[i], "--confirm-enroll") or eql(args[i], "--confirm")) {
@@ -883,6 +888,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  enroll codex --account <name> [--store-root <path>] [--confirm-enroll] [--json]
         \\      Add a Codex account to oauth-mux config; does not run Codex login.
         \\
+        \\  enroll claude --account <name> [--config-root <path>] [--confirm-enroll] [--json]
+        \\      Add a Claude account config dir; does not run Claude login.
+        \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
         \\
@@ -1298,6 +1306,22 @@ test "parse enroll codex account confirmation" {
     }
 }
 
+test "parse enroll claude account confirmation" {
+    const args = [_][]const u8{ "enroll", "claude", "work", "--config-root", "/tmp/claude", "--confirm", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .enroll => |enroll| {
+            try std.testing.expect(enroll.action == .claude);
+            try std.testing.expectEqualStrings("claude", enroll.provider.?);
+            try std.testing.expectEqualStrings("work", enroll.account.?);
+            try std.testing.expectEqualStrings("/tmp/claude", enroll.store_root.?);
+            try std.testing.expect(enroll.confirm_enroll);
+            try std.testing.expect(enroll.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse repair plan with profile" {
     const args = [_][]const u8{ "repair-plan", "--profile", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1541,11 +1565,12 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from providers' -a 'list' -d 'Provider subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from accounts' -a 'list' -d 'Accounts subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from accounts' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -a 'plan codex' -d 'Enrollment subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -a 'plan codex claude' -d 'Enrollment subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l mode -d 'Enrollment mode' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l store-root -d 'Codex store root' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l config-root -d 'Provider config root' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l confirm-enroll -d 'Confirm config/store mutation'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from enroll' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from env' -l shell -d 'Shell type' -r -a 'fish zsh bash ksh'
