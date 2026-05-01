@@ -108,7 +108,9 @@ The account-enrollment artifact is
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. It defines the
 provider-neutral visibility, admission, and mutation layers for N+1 Codex,
 Claude, Figma, and future MCP-facing enrollment. The first implementation slice
-is the non-mutating `oauth-mux accounts list --json` inventory surface.
+is the non-mutating `oauth-mux accounts list --json` inventory surface. The
+second slice is `oauth-mux enroll plan <provider> --json`, which explains the
+provider-specific setup path and labels each step before any mutation.
 
 Core product docs must remain service-manager agnostic. `systemctl`,
 `launchctl`, Homebrew services, cron, and Windows Services can become wrapper
@@ -176,9 +178,9 @@ these precise provider-proof children.
 
 ## Immediate Execution Order
 
-1. Land the provider-neutral account inventory surface and keep it aligned with
+1. Keep provider-neutral account inventory and enrollment planning aligned with
    the account-enrollment contract, so agents can inspect N configured accounts
-   before route, repair, handoff, or live-proof decisions.
+   and explain setup before route, repair, handoff, or live-proof decisions.
 2. Update website/release copy to use the public `jesssullivan/omux` Homebrew
    tap and close `#66` / `TIN-858` after those surfaces are aligned.
 3. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and

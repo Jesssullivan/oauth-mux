@@ -39,6 +39,7 @@ oauth-mux doctor
 oauth-mux doctor runtime --json
 oauth-mux config validate
 oauth-mux accounts list --json
+oauth-mux enroll plan <provider> --json
 oauth-mux discover
 ```
 
@@ -49,6 +50,7 @@ oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
+oauth-mux enroll plan codex --account max-4 --json
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
@@ -75,6 +77,12 @@ planning: it reports each configured provider/account, secret backend name,
 runtime readiness, writeback admission, capability proof status, recorded
 liveness, selectability, and safe next commands without reading credential
 values.
+
+`oauth-mux enroll plan <provider> --json` is the no-mutation enrollment planner.
+It converts provider inventory into ordered setup steps and labels each step as
+agent-safe, interactive, mutating, or provider-call-spending. Provider-neutral
+enrollment mutation is still intentionally reported as unavailable until the
+provider-owned login and consent contracts are stronger.
 
 For profile-level stay-afloat checks, scope the runtime report:
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`.
@@ -352,6 +360,7 @@ oauth-mux doctor --json
 oauth-mux report --redacted --json
 oauth-mux providers list --json
 oauth-mux accounts list --json
+oauth-mux enroll plan <provider> --json
 oauth-mux discover --json
 oauth-mux status --json
 oauth-mux health --json
@@ -402,6 +411,10 @@ it after `providers list --json` when deciding whether the next step is a
 provider-specific setup command, a runtime diagnostic, a route explanation, a
 handoff, or a live proof run.
 
+`enroll plan <provider> --json` is safe for agents because it only explains the
+setup sequence. Agents may present steps with `agent_safe:false` to a user or
+permission broker, but must not run those steps without explicit consent.
+
 `report --redacted --json` is the support-bundle surface. It adds platform,
 config shape, provider/account labels, command availability, health summaries,
 and recent probe evidence. It never reads credential values and omits credential
@@ -424,8 +437,9 @@ operator proof, `public_live_proven` for no-secret public metadata proof, and
 4. Run `oauth-mux config validate`.
 5. Run `oauth-mux doctor --json`, `oauth-mux report --redacted --json`, and
    `oauth-mux accounts list --json` plus `oauth-mux discover --json`.
-6. Run no-spend checks first: `status`, `health`, and credential parse probes.
-7. Run live probes only through `scripts/live-provider-qa.sh` or the manual
+6. Run `oauth-mux enroll plan <provider> --json` before adding an N+1 account.
+7. Run no-spend checks first: `status`, `health`, and credential parse probes.
+8. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.
 
 ## Operator Definition of Done
@@ -433,6 +447,8 @@ operator proof, `public_live_proven` for no-secret public metadata proof, and
 - Config validates.
 - `accounts list --json` exposes every expected account with redacted runtime
   and liveness state.
+- `enroll plan <provider> --json` describes any remaining setup without running
+  it.
 - `discover --json` is usable by agents.
 - `report --redacted --json` is usable for a support bundle without token
   material.

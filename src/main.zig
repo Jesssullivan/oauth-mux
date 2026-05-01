@@ -92,6 +92,10 @@ pub fn main() !void {
             try runAccounts(allocator, stdout, accounts_args);
         },
 
+        .enroll => |enroll_args| {
+            try runEnroll(allocator, stdout, enroll_args);
+        },
+
         .exec => |exec_args| {
             runExec(allocator, exec_args) catch |e| {
                 log.err("exec: {s}", .{@errorName(e)});
@@ -528,6 +532,375 @@ fn livenessIsAvailable(liveness: types.CredentialLiveness) bool {
     };
 }
 
+fn runEnroll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnrollArgs) !void {
+    switch (args.action) {
+        .plan => {},
+    }
+
+    var parsed_config: ?std.json.Parsed(config.Config) = config.load(allocator) catch null;
+    defer if (parsed_config) |*parsed| parsed.deinit();
+    const cfg: ?config.Config = if (parsed_config) |parsed| parsed.value else null;
+
+    if (args.json) {
+        try writeEnrollPlanJson(writer, allocator, cfg, args);
+    } else {
+        try writeEnrollPlanText(writer, allocator, cfg, args);
+    }
+}
+
+fn writeEnrollPlanText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: ?config.Config,
+    args: cli.Command.EnrollArgs,
+) !void {
+    const provider_label = args.provider orelse "<provider>";
+    try writer.writeAll("oauth-mux enroll plan\n\n");
+    try writer.print("  provider: {s}\n", .{provider_label});
+    if (args.account) |account| try writer.print("  account: {s}\n", .{account});
+    if (args.mode) |mode| try writer.print("  mode: {s}\n", .{mode});
+    try writer.writeAll("  mutates: false\n");
+    try writer.writeAll("  provider-neutral enrollment mutation: not shipped yet\n\n");
+
+    try writer.writeAll("  existing accounts:\n");
+    try writeEnrollExistingAccountsText(writer, cfg, args.provider);
+
+    try writer.writeAll("\n  plan:\n");
+    try writeEnrollPlanStepsText(writer, allocator, args);
+
+    try writer.writeAll("\n  agent-safe next:\n");
+    try writer.writeAll("    oauth-mux providers list --json\n");
+    if (args.provider) |provider_name| {
+        try writer.print("    oauth-mux accounts list --provider {s} --json\n", .{provider_name});
+    } else {
+        try writer.writeAll("    oauth-mux accounts list --json\n");
+    }
+    try writer.writeAll("    oauth-mux config validate\n");
+}
+
+fn writeEnrollPlanJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: ?config.Config,
+    args: cli.Command.EnrollArgs,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"action\":\"plan\",\"mutates\":false,\"provider\":");
+    if (args.provider) |provider_name| try std.json.stringify(provider_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"account\":");
+    if (args.account) |account| try std.json.stringify(account, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"mode\":");
+    if (args.mode) |mode| try std.json.stringify(mode, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"configured\":");
+    try writer.writeAll(if (cfg != null) "true" else "false");
+    try writer.writeAll(",\"provider_configured\":");
+    try writer.writeAll(if (enrollProviderConfigured(cfg, args.provider)) "true" else "false");
+    try writer.writeAll(",\"provider_neutral_mutation_supported\":false");
+    try writer.writeAll(",\"existing_accounts\":[");
+    try writeEnrollExistingAccountsJson(writer, cfg, args.provider);
+    try writer.writeAll("],\"steps\":[");
+    try writeEnrollPlanStepsJson(writer, allocator, args);
+    try writer.writeAll("],\"agent_safe_commands\":[");
+    try writeCommandJson(writer, "oauth-mux providers list --json");
+    try writer.writeByte(',');
+    const accounts_command = try enrollAccountsCommand(allocator, args.provider);
+    defer allocator.free(accounts_command);
+    try writeCommandJson(writer, accounts_command);
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux config validate");
+    try writer.writeAll("],\"future_provider_neutral_command\":");
+    try writeEnrollFutureCommandJson(writer, allocator, args);
+    try writer.writeAll("}\n");
+}
+
+fn writeEnrollExistingAccountsText(writer: anytype, cfg: ?config.Config, provider_filter: ?[]const u8) !void {
+    const config_value = cfg orelse {
+        try writer.writeAll("    config unavailable\n");
+        return;
+    };
+
+    var count: usize = 0;
+    var provider_it = config_value.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        if (!enrollProviderMatches(provider_filter, provider_name, prov.kind)) continue;
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |acct_entry| {
+            count += 1;
+            try writer.print("    {s}:{s} secret={s}\n", .{
+                provider_name,
+                acct_entry.key_ptr.*,
+                acct_entry.value_ptr.secret.backend,
+            });
+        }
+    }
+
+    if (count == 0) try writer.writeAll("    none configured\n");
+}
+
+fn writeEnrollExistingAccountsJson(writer: anytype, cfg: ?config.Config, provider_filter: ?[]const u8) !void {
+    const config_value = cfg orelse return;
+
+    var first = true;
+    var provider_it = config_value.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        if (!enrollProviderMatches(provider_filter, provider_name, prov.kind)) continue;
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |acct_entry| {
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try writer.writeByte('{');
+            try writer.writeAll("\"provider\":");
+            try std.json.stringify(provider_name, .{}, writer);
+            try writer.writeAll(",\"kind\":");
+            try std.json.stringify(prov.kind, .{}, writer);
+            try writer.writeAll(",\"account\":");
+            try std.json.stringify(acct_entry.key_ptr.*, .{}, writer);
+            try writer.writeAll(",\"secret_backend\":");
+            try std.json.stringify(acct_entry.value_ptr.secret.backend, .{}, writer);
+            try writer.writeAll("}");
+        }
+    }
+}
+
+fn writeEnrollPlanStepsText(writer: anytype, allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) !void {
+    const provider_name = args.provider orelse {
+        try writer.writeAll("    1. Pick a provider after inspecting provider support.\n");
+        try writer.writeAll("       command: oauth-mux providers list --json\n");
+        try writer.writeAll("    2. Inspect already configured accounts.\n");
+        try writer.writeAll("       command: oauth-mux accounts list --json\n");
+        try writer.writeAll("    3. Re-run this plan with a provider.\n");
+        try writer.writeAll("       command: oauth-mux enroll plan <provider> --json\n");
+        return;
+    };
+
+    if (isProvider(provider_name, "codex")) {
+        const accounts_command = try enrollAccountsCommand(allocator, provider_name);
+        defer allocator.free(accounts_command);
+        try writeEnrollPlanStepText(writer, 1, "Inspect configured Codex accounts.", accounts_command, false, false, false);
+        try writeEnrollPlanStepText(writer, 2, "Generate or review the Codex Max config sidecar when the active config is not already N-account.", "oauth-mux codex config-candidate --json", true, false, false);
+        const login_command = try enrollCodexLoginCommand(allocator, args.account);
+        defer allocator.free(login_command);
+        try writeEnrollPlanStepText(writer, 3, "Run provider-owned Codex login for the target account.", login_command, true, true, false);
+        const runtime_command = try enrollRuntimeCommand(allocator, provider_name, args.account, "codex-max");
+        defer allocator.free(runtime_command);
+        try writeEnrollPlanStepText(writer, 4, "Recheck local runtime readiness for that account.", runtime_command, false, false, false);
+        try writeEnrollPlanStepText(writer, 5, "Refresh recorded route evidence after user-mediated login.", "oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json", true, false, false);
+    } else if (isProvider(provider_name, "claude")) {
+        const accounts_command = try enrollAccountsCommand(allocator, provider_name);
+        defer allocator.free(accounts_command);
+        try writeEnrollPlanStepText(writer, 1, "Inspect configured Claude accounts.", accounts_command, false, false, false);
+        try writeEnrollPlanStepText(writer, 2, "Create or review an account-scoped CLAUDE_CONFIG_DIR config entry.", null, true, false, false);
+        try writeEnrollPlanStepText(writer, 3, "Run Claude CLI-owned login in the selected config directory.", "claude auth login", true, true, false);
+        const runtime_command = try enrollRuntimeCommand(allocator, provider_name, args.account, "auth-status");
+        defer allocator.free(runtime_command);
+        try writeEnrollPlanStepText(writer, 4, "Prove low-impact auth status before broader quota/repair claims.", runtime_command, false, false, false);
+    } else if (isProvider(provider_name, "figma")) {
+        const capability = figmaCapabilityForMode(args.mode);
+        const accounts_command = try enrollAccountsCommand(allocator, provider_name);
+        defer allocator.free(accounts_command);
+        try writeEnrollPlanStepText(writer, 1, "Inspect configured Figma identities.", accounts_command, false, false, false);
+        try writeEnrollPlanStepText(writer, 2, "Configure OAuth/PAT/plan-token mode explicitly in the account secret backend.", null, true, false, false);
+        try writeEnrollPlanStepText(writer, 3, "Validate config before any provider call.", "oauth-mux config validate", false, false, false);
+        const probe_command = try enrollProbeCommand(allocator, provider_name, args.account, capability);
+        defer allocator.free(probe_command);
+        try writeEnrollPlanStepText(writer, 4, "Run the chosen low-impact Figma proof only with user consent.", probe_command, false, false, true);
+    } else if (isProvider(provider_name, "mcp")) {
+        const accounts_command = try enrollAccountsCommand(allocator, provider_name);
+        defer allocator.free(accounts_command);
+        try writeEnrollPlanStepText(writer, 1, "Inspect configured MCP resource-server accounts.", accounts_command, false, false, false);
+        try writeEnrollPlanStepText(writer, 2, "Probe protected-resource metadata before assuming OAuth server details.", "oauth-mux probe --provider mcp --capability resource-metadata --json", false, false, false);
+        try writeEnrollPlanStepText(writer, 3, "Only then attach a bearer resource token and prove audience/resource matching.", null, true, false, true);
+    } else {
+        const accounts_command = try enrollAccountsCommand(allocator, provider_name);
+        defer allocator.free(accounts_command);
+        try writeEnrollPlanStepText(writer, 1, "Inspect provider support and configured accounts.", accounts_command, false, false, false);
+        try writeEnrollPlanStepText(writer, 2, "Validate config after adding a named account and secret backend.", "oauth-mux config validate", false, false, false);
+        const runtime_command = try enrollRuntimeCommand(allocator, provider_name, args.account, null);
+        defer allocator.free(runtime_command);
+        try writeEnrollPlanStepText(writer, 3, "Run runtime diagnostics before provider calls.", runtime_command, false, false, false);
+    }
+}
+
+fn writeEnrollPlanStepsJson(writer: anytype, allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) !void {
+    var first = true;
+    const provider_name = args.provider orelse {
+        try writeEnrollPlanStepJson(writer, &first, "choose_provider", "Pick a provider after inspecting provider support.", "oauth-mux providers list --json", false, false, false);
+        try writeEnrollPlanStepJson(writer, &first, "inspect_accounts", "Inspect already configured accounts.", "oauth-mux accounts list --json", false, false, false);
+        try writeEnrollPlanStepJson(writer, &first, "rerun_plan", "Re-run this plan with a provider.", "oauth-mux enroll plan <provider> --json", false, false, false);
+        return;
+    };
+
+    const accounts_command = try enrollAccountsCommand(allocator, provider_name);
+    defer allocator.free(accounts_command);
+    try writeEnrollPlanStepJson(writer, &first, "inspect_accounts", "Inspect configured accounts for this provider.", accounts_command, false, false, false);
+
+    if (isProvider(provider_name, "codex")) {
+        try writeEnrollPlanStepJson(writer, &first, "config_candidate", "Generate or review the Codex Max config sidecar when the active config is not already N-account.", "oauth-mux codex config-candidate --json", true, false, false);
+        const login_command = try enrollCodexLoginCommand(allocator, args.account);
+        defer allocator.free(login_command);
+        try writeEnrollPlanStepJson(writer, &first, "provider_login", "Run provider-owned Codex login for the target account.", login_command, true, true, false);
+        const runtime_command = try enrollRuntimeCommand(allocator, provider_name, args.account, "codex-max");
+        defer allocator.free(runtime_command);
+        try writeEnrollPlanStepJson(writer, &first, "runtime_proof", "Recheck local runtime readiness for that account.", runtime_command, false, false, false);
+        try writeEnrollPlanStepJson(writer, &first, "refresh_evidence", "Refresh recorded route evidence after user-mediated login.", "oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json", true, false, false);
+    } else if (isProvider(provider_name, "claude")) {
+        try writeEnrollPlanStepJson(writer, &first, "config_entry", "Create or review an account-scoped CLAUDE_CONFIG_DIR config entry.", null, true, false, false);
+        try writeEnrollPlanStepJson(writer, &first, "provider_login", "Run Claude CLI-owned login in the selected config directory.", "claude auth login", true, true, false);
+        const runtime_command = try enrollRuntimeCommand(allocator, provider_name, args.account, "auth-status");
+        defer allocator.free(runtime_command);
+        try writeEnrollPlanStepJson(writer, &first, "runtime_proof", "Prove low-impact auth status before broader quota/repair claims.", runtime_command, false, false, false);
+    } else if (isProvider(provider_name, "figma")) {
+        const capability = figmaCapabilityForMode(args.mode);
+        try writeEnrollPlanStepJson(writer, &first, "secret_backend", "Configure OAuth/PAT/plan-token mode explicitly in the account secret backend.", null, true, false, false);
+        try writeEnrollPlanStepJson(writer, &first, "validate_config", "Validate config before any provider call.", "oauth-mux config validate", false, false, false);
+        const probe_command = try enrollProbeCommand(allocator, provider_name, args.account, capability);
+        defer allocator.free(probe_command);
+        try writeEnrollPlanStepJson(writer, &first, "provider_proof", "Run the chosen low-impact Figma proof only with user consent.", probe_command, false, false, true);
+    } else if (isProvider(provider_name, "mcp")) {
+        try writeEnrollPlanStepJson(writer, &first, "resource_metadata", "Probe protected-resource metadata before assuming OAuth server details.", "oauth-mux probe --provider mcp --capability resource-metadata --json", false, false, false);
+        try writeEnrollPlanStepJson(writer, &first, "bearer_resource", "Only then attach a bearer resource token and prove audience/resource matching.", null, true, false, true);
+    } else {
+        try writeEnrollPlanStepJson(writer, &first, "validate_config", "Validate config after adding a named account and secret backend.", "oauth-mux config validate", false, false, false);
+        const runtime_command = try enrollRuntimeCommand(allocator, provider_name, args.account, null);
+        defer allocator.free(runtime_command);
+        try writeEnrollPlanStepJson(writer, &first, "runtime_proof", "Run runtime diagnostics before provider calls.", runtime_command, false, false, false);
+    }
+}
+
+fn writeEnrollPlanStepText(
+    writer: anytype,
+    index: usize,
+    description: []const u8,
+    command: ?[]const u8,
+    mutating: bool,
+    interactive: bool,
+    spends_provider_calls: bool,
+) !void {
+    try writer.print("    {d}. {s}\n", .{ index, description });
+    if (command) |cmd| try writer.print("       command: {s}\n", .{cmd});
+    try writer.print("       mutating={s} interactive={s} spends_provider_calls={s}\n", .{
+        if (mutating) "true" else "false",
+        if (interactive) "true" else "false",
+        if (spends_provider_calls) "true" else "false",
+    });
+}
+
+fn writeEnrollPlanStepJson(
+    writer: anytype,
+    first: *bool,
+    kind: []const u8,
+    description: []const u8,
+    command: ?[]const u8,
+    mutating: bool,
+    interactive: bool,
+    spends_provider_calls: bool,
+) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writer.writeByte('{');
+    try writer.writeAll("\"kind\":");
+    try std.json.stringify(kind, .{}, writer);
+    try writer.writeAll(",\"description\":");
+    try std.json.stringify(description, .{}, writer);
+    try writer.writeAll(",\"command\":");
+    if (command) |cmd| try std.json.stringify(cmd, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"mutating\":");
+    try writer.writeAll(if (mutating) "true" else "false");
+    try writer.writeAll(",\"interactive\":");
+    try writer.writeAll(if (interactive) "true" else "false");
+    try writer.writeAll(",\"spends_provider_calls\":");
+    try writer.writeAll(if (spends_provider_calls) "true" else "false");
+    try writer.writeAll(",\"agent_safe\":");
+    try writer.writeAll(if (!mutating and !interactive and !spends_provider_calls) "true" else "false");
+    try writer.writeByte('}');
+}
+
+fn writeEnrollFutureCommandJson(writer: anytype, allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"available\":false,\"command\":");
+    const provider_name = args.provider orelse {
+        try writer.writeAll("null,\"reason\":\"provider_required\"}");
+        return;
+    };
+    const account = args.account orelse "<account>";
+    const command = try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s}", .{ provider_name, account });
+    defer allocator.free(command);
+    try std.json.stringify(command, .{}, writer);
+    try writer.writeAll(",\"reason\":\"not_implemented; use enroll plan and provider-owned setup commands\"}");
+}
+
+fn enrollProviderConfigured(cfg: ?config.Config, provider_filter: ?[]const u8) bool {
+    const config_value = cfg orelse return false;
+    const filter = provider_filter orelse return config_value.providers.map.count() > 0;
+    var provider_it = config_value.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        if (enrollProviderMatches(filter, entry.key_ptr.*, entry.value_ptr.kind)) return true;
+    }
+    return false;
+}
+
+fn enrollProviderMatches(provider_filter: ?[]const u8, provider_name: []const u8, provider_kind: []const u8) bool {
+    const filter = provider_filter orelse return true;
+    return std.mem.eql(u8, filter, provider_name) or std.mem.eql(u8, filter, provider_kind);
+}
+
+fn isProvider(provider_name: []const u8, expected: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(provider_name, expected);
+}
+
+fn figmaCapabilityForMode(mode: ?[]const u8) []const u8 {
+    const value = mode orelse return "identity";
+    if (isProvider(value, "pat")) return "identity-pat";
+    if (isProvider(value, "plan") or isProvider(value, "file") or isProvider(value, "file-metadata")) return "file-metadata-plan";
+    return "identity";
+}
+
+fn enrollAccountsCommand(allocator: std.mem.Allocator, provider_name: ?[]const u8) ![]const u8 {
+    if (provider_name) |name| return std.fmt.allocPrint(allocator, "oauth-mux accounts list --provider {s} --json", .{name});
+    return allocator.dupe(u8, "oauth-mux accounts list --json");
+}
+
+fn enrollCodexLoginCommand(allocator: std.mem.Allocator, account: ?[]const u8) ![]const u8 {
+    if (account) |name| return std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{name});
+    return allocator.dupe(u8, "oauth-mux setup codex --status-only");
+}
+
+fn enrollRuntimeCommand(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    account: ?[]const u8,
+    capability: ?[]const u8,
+) ![]const u8 {
+    if (account) |account_name| {
+        if (capability) |capability_name| {
+            return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ provider_name, account_name, capability_name });
+        }
+        return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --json", .{ provider_name, account_name });
+    }
+    if (capability) |capability_name| {
+        return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --capability {s} --json", .{ provider_name, capability_name });
+    }
+    return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --json", .{provider_name});
+}
+
+fn enrollProbeCommand(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    account: ?[]const u8,
+    capability: []const u8,
+) ![]const u8 {
+    if (account) |account_name| {
+        return std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --capability {s} --json", .{ provider_name, account_name, capability });
+    }
+    return std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --capability {s} --json", .{ provider_name, capability });
+}
+
 fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DiscoverArgs) !void {
     const config_path = try paths.configFilePath(allocator);
     defer allocator.free(config_path);
@@ -553,6 +926,8 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux accounts list");
             try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux enroll plan <provider>");
+            try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux report --redacted");
             try writer.writeAll("]}\n");
         } else {
@@ -565,6 +940,7 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writer.writeAll("    oauth-mux doctor\n");
             try writer.writeAll("    oauth-mux providers list\n");
             try writer.writeAll("    oauth-mux accounts list\n");
+            try writer.writeAll("    oauth-mux enroll plan <provider>\n");
             try writer.writeAll("    oauth-mux report --redacted\n");
             try writer.writeAll("    oauth-mux config validate\n");
         }
@@ -649,6 +1025,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux report --redacted --json\n");
     try writer.writeAll("    oauth-mux providers list --json\n");
     try writer.writeAll("    oauth-mux accounts list --json\n");
+    try writer.writeAll("    oauth-mux enroll plan <provider> --json\n");
     try writer.writeAll("    oauth-mux status --json\n");
     try writer.writeAll("    oauth-mux health --json\n");
     try writer.writeAll("    oauth-mux doctor runtime --json\n");
@@ -756,6 +1133,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux report --redacted --json",
         "oauth-mux providers list --json",
         "oauth-mux accounts list --json",
+        "oauth-mux enroll plan <provider> --json",
         "oauth-mux status --json",
         "oauth-mux health --json",
         "oauth-mux doctor runtime --json",
