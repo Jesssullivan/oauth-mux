@@ -246,6 +246,8 @@ Routing semantics:
 - `dead`: user action required; do not automatically retry.
 - `degraded`: try the next account for this route; retry only after a long
   window or explicit step-up.
+- `audience_mismatch`: token material may be valid, but it is not minted for
+  this resource/audience; select another token or re-mint for the target route.
 - `rate_limited`: skip briefly or wait and retry after the short window.
 - `quota_exhausted`: skip until the quota window resets.
 - `provider_degraded`: try the next provider, not only the next account.

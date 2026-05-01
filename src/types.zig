@@ -226,6 +226,7 @@ pub const DegradedReason = enum {
     subscription_paused,
     provider_degraded,
     scope_insufficient,
+    audience_mismatch,
     schema_invalid,
     terms_required,
     step_up_required,
