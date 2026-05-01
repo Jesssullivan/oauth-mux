@@ -40,6 +40,7 @@ oauth-mux doctor runtime --json
 oauth-mux config validate
 oauth-mux accounts list --json
 oauth-mux enroll plan <provider> --json
+oauth-mux enroll codex --account <name> --confirm-enroll --json
 oauth-mux discover
 ```
 
@@ -51,6 +52,8 @@ oauth-mux doctor
 oauth-mux doctor runtime --json
 oauth-mux accounts list --provider codex --json
 oauth-mux enroll plan codex --account max-4 --json
+oauth-mux enroll codex --account max-4 --confirm-enroll --json
+oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
@@ -81,8 +84,15 @@ values.
 `oauth-mux enroll plan <provider> --json` is the no-mutation enrollment planner.
 It converts provider inventory into ordered setup steps and labels each step as
 agent-safe, interactive, mutating, or provider-call-spending. Provider-neutral
-enrollment mutation is still intentionally reported as unavailable until the
-provider-owned login and consent contracts are stronger.
+enrollment mutation is only available where the provider-owned consent contract
+has been implemented.
+
+`oauth-mux enroll codex --account <name> --confirm-enroll --json` is the first
+provider-neutral enrollment mutation. It updates the active oauth-mux config,
+adds the Codex Max/Mini profile routes, and creates the isolated Codex account
+directory. It does not run `codex login`, open browser/device auth, or probe the
+provider. The returned `next_commands` include the explicit
+`oauth-mux codex login-device <name>` handoff plus runtime and inventory checks.
 
 For profile-level stay-afloat checks, scope the runtime report:
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`.
@@ -415,6 +425,12 @@ handoff, or a live proof run.
 setup sequence. Agents may present steps with `agent_safe:false` to a user or
 permission broker, but must not run those steps without explicit consent.
 
+`enroll codex --account <name> --confirm-enroll --json` is not agent-safe by
+default because it mutates config and creates an account directory. Agents may
+request it through a permission broker, but must not infer that the account is
+authenticated until the user has run the returned login command and runtime
+checks pass.
+
 `report --redacted --json` is the support-bundle surface. It adds platform,
 config shape, provider/account labels, command availability, health summaries,
 and recent probe evidence. It never reads credential values and omits credential
@@ -438,8 +454,11 @@ operator proof, `public_live_proven` for no-secret public metadata proof, and
 5. Run `oauth-mux doctor --json`, `oauth-mux report --redacted --json`, and
    `oauth-mux accounts list --json` plus `oauth-mux discover --json`.
 6. Run `oauth-mux enroll plan <provider> --json` before adding an N+1 account.
-7. Run no-spend checks first: `status`, `health`, and credential parse probes.
-8. Run live probes only through `scripts/live-provider-qa.sh` or the manual
+7. For Codex N+1, run
+   `oauth-mux enroll codex --account <name> --confirm-enroll --json`, then the
+   returned `oauth-mux codex login-device <name>` handoff.
+8. Run no-spend checks first: `status`, `health`, and credential parse probes.
+9. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.
 
 ## Operator Definition of Done
@@ -449,6 +468,8 @@ operator proof, `public_live_proven` for no-secret public metadata proof, and
   and liveness state.
 - `enroll plan <provider> --json` describes any remaining setup without running
   it.
+- Confirmed Codex enrollment returns a user-mediated login handoff instead of
+  silently running upstream auth.
 - `discover --json` is usable by agents.
 - `report --redacted --json` is usable for a support bundle without token
   material.

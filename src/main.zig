@@ -534,18 +534,427 @@ fn livenessIsAvailable(liveness: types.CredentialLiveness) bool {
 
 fn runEnroll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnrollArgs) !void {
     switch (args.action) {
-        .plan => {},
+        .plan => {
+            var parsed_config: ?std.json.Parsed(config.Config) = config.load(allocator) catch null;
+            defer if (parsed_config) |*parsed| parsed.deinit();
+            const cfg: ?config.Config = if (parsed_config) |parsed| parsed.value else null;
+
+            if (args.json) {
+                try writeEnrollPlanJson(writer, allocator, cfg, args);
+            } else {
+                try writeEnrollPlanText(writer, allocator, cfg, args);
+            }
+        },
+        .codex => try runEnrollCodex(allocator, writer, args),
+    }
+}
+
+const EnrollCodexResult = struct {
+    ok: bool,
+    reason: []const u8,
+    account: []const u8,
+    store_root: []const u8,
+    account_dir: []const u8,
+    active_config: []const u8,
+    backup_config: ?[]const u8 = null,
+    config_changed: bool = false,
+    store_bootstrapped: bool = false,
+};
+
+fn runEnrollCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnrollArgs) !void {
+    const account = args.account orelse {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"missing_account\",\"mutates\":true,\"requires\":\"--account <name>\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux enroll plan codex --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux enroll codex\n\n");
+            try writer.writeAll("  missing required --account <name>\n");
+            try writer.writeAll("  next: oauth-mux enroll plan codex --json\n");
+        }
+        return;
+    };
+
+    const store_root = try codexStoreRoot(allocator, .{ .store_root = args.store_root });
+    defer allocator.free(store_root);
+    const account_dir = try codexAccountDir(allocator, store_root, account);
+    defer allocator.free(account_dir);
+    const active_config_path = try paths.configFilePath(allocator);
+    defer allocator.free(active_config_path);
+
+    if (!args.confirm_enroll) {
+        try writeEnrollCodexConfirmationRequired(writer, allocator, args, active_config_path, store_root, account_dir);
+        return;
     }
 
+    var active = config.loadFromPath(allocator, active_config_path) catch |e| {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":");
+            try std.json.stringify(@errorName(e), .{}, writer);
+            try writer.writeAll(",\"message\":\"active config is required before confirmed Codex enrollment\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux init --codex-max");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux enroll codex\n\n");
+            try writer.print("  config unavailable: {s}\n", .{@errorName(e)});
+            try writer.writeAll("  next: oauth-mux init --codex-max\n");
+        }
+        return;
+    };
+    defer active.deinit();
+    try config.validate(active.value, std.io.null_writer);
+
+    if (!codexMaxShapeConfigured(active.value)) {
+        try writeEnrollCodexRequiresCodexMax(writer, args.json);
+        return;
+    }
+
+    var result = EnrollCodexResult{
+        .ok = true,
+        .reason = "enrolled_codex_account",
+        .account = account,
+        .store_root = store_root,
+        .account_dir = account_dir,
+        .active_config = active_config_path,
+    };
+
+    const config_changed = !codexEnrollmentShapeConfigured(active.value, account);
+    if (config_changed) {
+        var config_buf = std.ArrayList(u8).init(allocator);
+        defer config_buf.deinit();
+        try writeCodexEnrollConfigJson(allocator, config_buf.writer(), active.value, store_root, account);
+
+        const parsed = try config.loadFromBytes(allocator, config_buf.items);
+        defer parsed.deinit();
+        try config.validate(parsed.value, std.io.null_writer);
+        if (!codexEnrollmentShapeConfigured(parsed.value, account)) return error.ConfigValidationError;
+
+        const backup_path = try defaultCodexConfigBackupPath(allocator, active_config_path);
+        defer allocator.free(backup_path);
+        try writeActiveConfigAtomically(allocator, active_config_path, backup_path, config_buf.items);
+
+        result.backup_config = backup_path;
+        result.config_changed = true;
+    } else {
+        result.reason = "codex_account_already_configured";
+    }
+
+    if (args.json) {
+        try bootstrapOneCodexDir(allocator, std.io.null_writer, store_root, account);
+    } else {
+        try bootstrapOneCodexDir(allocator, writer, store_root, account);
+    }
+    result.store_bootstrapped = true;
+
+    try writeEnrollCodexResult(writer, allocator, result, args.json);
+}
+
+fn writeEnrollCodexConfirmationRequired(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    args: cli.Command.EnrollArgs,
+    active_config_path: []const u8,
+    store_root: []const u8,
+    account_dir: []const u8,
+) !void {
+    const account = args.account orelse "<account>";
+    const confirm_command = try enrollCodexConfirmCommand(allocator, account, args.store_root, args.json);
+    defer allocator.free(confirm_command);
+
+    if (args.json) {
+        try writer.writeAll("{\"ok\":false,\"executed\":false,\"confirmation_required\":true,\"requires\":\"--confirm-enroll\",\"mutates\":true,\"interactive\":false,\"spends_provider_calls\":false,\"provider\":\"codex\",\"account\":");
+        try std.json.stringify(account, .{}, writer);
+        try writer.writeAll(",\"active_config\":");
+        try std.json.stringify(active_config_path, .{}, writer);
+        try writer.writeAll(",\"store_root\":");
+        try std.json.stringify(store_root, .{}, writer);
+        try writer.writeAll(",\"account_dir\":");
+        try std.json.stringify(account_dir, .{}, writer);
+        try writer.writeAll(",\"confirm_command\":");
+        try std.json.stringify(confirm_command, .{}, writer);
+        try writer.writeAll(",\"plan\":");
+        try writeEnrollPlanJsonInline(writer, allocator, args);
+        try writer.writeAll("}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux enroll codex\n\n");
+    try writer.writeAll("  confirmation required: --confirm-enroll\n");
+    try writer.writeAll("  mutates: active oauth-mux config and local Codex account directory\n");
+    try writer.writeAll("  does not run: codex login, provider probes, browser/device auth\n\n");
+    try writer.print("  active config: {s}\n", .{active_config_path});
+    try writer.print("  store root:    {s}\n", .{store_root});
+    try writer.print("  account dir:   {s}\n\n", .{account_dir});
+    try writer.writeAll("next:\n");
+    try writer.print("  {s}\n", .{confirm_command});
+}
+
+fn writeEnrollPlanJsonInline(writer: anytype, allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) !void {
     var parsed_config: ?std.json.Parsed(config.Config) = config.load(allocator) catch null;
     defer if (parsed_config) |*parsed| parsed.deinit();
     const cfg: ?config.Config = if (parsed_config) |parsed| parsed.value else null;
 
-    if (args.json) {
-        try writeEnrollPlanJson(writer, allocator, cfg, args);
-    } else {
-        try writeEnrollPlanText(writer, allocator, cfg, args);
+    const plan_args = cli.Command.EnrollArgs{
+        .action = .plan,
+        .provider = args.provider orelse "codex",
+        .account = args.account,
+        .mode = args.mode,
+        .store_root = args.store_root,
+        .json = true,
+    };
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"action\":\"plan\",\"mutates\":false,\"provider\":\"codex\",\"account\":");
+    if (plan_args.account) |account| try std.json.stringify(account, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"mode\":null,\"configured\":");
+    try writer.writeAll(if (cfg != null) "true" else "false");
+    try writer.writeAll(",\"provider_configured\":");
+    try writer.writeAll(if (enrollProviderConfigured(cfg, "codex")) "true" else "false");
+    try writer.writeAll(",\"provider_neutral_mutation_supported\":true,\"existing_accounts\":[");
+    try writeEnrollExistingAccountsJson(writer, cfg, "codex");
+    try writer.writeAll("],\"steps\":[");
+    try writeEnrollPlanStepsJson(writer, allocator, plan_args);
+    try writer.writeAll("]}");
+}
+
+fn writeEnrollCodexRequiresCodexMax(writer: anytype, json: bool) !void {
+    if (json) {
+        try writer.writeAll("{\"ok\":false,\"executed\":false,\"error\":\"requires_codex_max_config\",\"message\":\"confirmed Codex enrollment requires the active config to already have codex-max and codex-mini profiles\",\"next_commands\":[");
+        try writeCommandJson(writer, "oauth-mux codex config-candidate --json");
+        try writer.writeByte(',');
+        try writeCommandJson(writer, "oauth-mux codex config-merge --candidate ~/.config/oauth-mux/codex-max.config.json --json");
+        try writer.writeAll("]}\n");
+        return;
     }
+
+    try writer.writeAll("oauth-mux enroll codex\n\n");
+    try writer.writeAll("  active config is not a Codex Max mux shape yet.\n");
+    try writer.writeAll("  next:\n");
+    try writer.writeAll("    oauth-mux codex config-candidate --json\n");
+    try writer.writeAll("    oauth-mux codex config-merge --candidate ~/.config/oauth-mux/codex-max.config.json --json\n");
+}
+
+fn writeEnrollCodexResult(writer: anytype, allocator: std.mem.Allocator, result: EnrollCodexResult, json: bool) !void {
+    const login_command = try enrollCodexLoginCommand(allocator, result.account);
+    defer allocator.free(login_command);
+    const runtime_command = try enrollRuntimeCommand(allocator, "codex", result.account, "codex-max");
+    defer allocator.free(runtime_command);
+    const accounts_command = try enrollAccountsCommand(allocator, "codex");
+    defer allocator.free(accounts_command);
+
+    if (json) {
+        try writer.writeAll("{\"ok\":");
+        try writer.writeAll(if (result.ok) "true" else "false");
+        try writer.writeAll(",\"executed\":true,\"provider\":\"codex\",\"account\":");
+        try std.json.stringify(result.account, .{}, writer);
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(result.reason, .{}, writer);
+        try writer.writeAll(",\"config_changed\":");
+        try writer.writeAll(if (result.config_changed) "true" else "false");
+        try writer.writeAll(",\"store_bootstrapped\":");
+        try writer.writeAll(if (result.store_bootstrapped) "true" else "false");
+        try writer.writeAll(",\"active_config\":");
+        try std.json.stringify(result.active_config, .{}, writer);
+        try writer.writeAll(",\"backup_config\":");
+        if (result.backup_config) |backup| try std.json.stringify(backup, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"store_root\":");
+        try std.json.stringify(result.store_root, .{}, writer);
+        try writer.writeAll(",\"account_dir\":");
+        try std.json.stringify(result.account_dir, .{}, writer);
+        try writer.writeAll(",\"ran_provider_login\":false,\"spends_provider_calls\":false,\"next_commands\":[");
+        try writeCommandJson(writer, login_command);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, runtime_command);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, accounts_command);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, "oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json");
+        try writer.writeAll("]}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux enroll codex\n\n");
+    try writer.print("  account:             {s}\n", .{result.account});
+    try writer.print("  config changed:      {s}\n", .{if (result.config_changed) "yes" else "no"});
+    if (result.backup_config) |backup| try writer.print("  backup config:       {s}\n", .{backup});
+    try writer.print("  account dir:         {s}\n", .{result.account_dir});
+    try writer.writeAll("  provider login run:  no\n\n");
+    try writer.writeAll("next:\n");
+    try writer.print("  {s}\n", .{login_command});
+    try writer.print("  {s}\n", .{runtime_command});
+    try writer.print("  {s}\n", .{accounts_command});
+    try writer.writeAll("  oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json\n");
+}
+
+fn enrollCodexConfirmCommand(allocator: std.mem.Allocator, account: []const u8, store_root: ?[]const u8, json: bool) ![]const u8 {
+    if (store_root) |root| {
+        return try std.fmt.allocPrint(allocator, "oauth-mux enroll codex --account {s} --store-root {s} --confirm-enroll{s}", .{
+            account,
+            root,
+            if (json) " --json" else "",
+        });
+    }
+    return try std.fmt.allocPrint(allocator, "oauth-mux enroll codex --account {s} --confirm-enroll{s}", .{
+        account,
+        if (json) " --json" else "",
+    });
+}
+
+fn codexEnrollmentShapeConfigured(cfg: config.Config, account: []const u8) bool {
+    const codex_provider = cfg.providers.map.get("codex") orelse return false;
+    if (codex_provider.accounts.map.get(account) == null) return false;
+
+    const max_route = health_mod.capabilityKey("codex", account, "codex-max");
+    const mini_route = health_mod.capabilityKey("codex", account, "codex-mini");
+    return profileContainsProvider(cfg, "codex-max", max_route.slice()) and
+        profileContainsProvider(cfg, "codex-mini", mini_route.slice());
+}
+
+fn profileContainsProvider(cfg: config.Config, profile_name: []const u8, provider_ref: []const u8) bool {
+    const profile = cfg.profiles.map.get(profile_name) orelse return false;
+    for (profile.providers) |existing| {
+        if (std.mem.eql(u8, existing, provider_ref)) return true;
+    }
+    return false;
+}
+
+fn writeCodexEnrollConfigJson(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    active: config.Config,
+    store_root: []const u8,
+    account: []const u8,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try writer.print("{d}", .{active.version});
+    try writer.writeAll(",\"defaults\":");
+    try std.json.stringify(active.defaults, .{}, writer);
+    try writer.writeAll(",\"policy\":");
+    try std.json.stringify(active.policy, .{}, writer);
+    try writer.writeAll(",\"provider_definitions\":");
+    try std.json.stringify(active.provider_definitions, .{}, writer);
+    try writer.writeAll(",\"providers\":{");
+
+    var first = true;
+    var provider_it = active.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        try writer.writeByte(':');
+        if (std.mem.eql(u8, entry.key_ptr.*, "codex")) {
+            try writeCodexProviderWithEnrollment(allocator, writer, entry.value_ptr.*, store_root, account);
+        } else {
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        }
+    }
+
+    try writer.writeAll("},\"profiles\":{");
+    first = true;
+    var profile_it = active.profiles.map.iterator();
+    while (profile_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        const profile_name = entry.key_ptr.*;
+        try std.json.stringify(profile_name, .{}, writer);
+        try writer.writeByte(':');
+        if (std.mem.eql(u8, profile_name, "codex-max")) {
+            const route = health_mod.capabilityKey("codex", account, "codex-max");
+            try writeProfileWithAddedProvider(writer, entry.value_ptr.*, route.slice());
+        } else if (std.mem.eql(u8, profile_name, "codex-mini")) {
+            const route = health_mod.capabilityKey("codex", account, "codex-mini");
+            try writeProfileWithAddedProvider(writer, entry.value_ptr.*, route.slice());
+        } else {
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        }
+    }
+
+    try writer.writeAll("},\"strategies\":");
+    try std.json.stringify(active.strategies, .{}, writer);
+    try writer.writeAll("}\n");
+}
+
+fn writeCodexProviderWithEnrollment(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    active_provider: config.ProviderConfig,
+    store_root: []const u8,
+    account: []const u8,
+) !void {
+    try writer.writeAll("{\"kind\":");
+    try std.json.stringify(active_provider.kind, .{}, writer);
+    try writer.writeAll(",\"config_dir_env\":");
+    if (active_provider.config_dir_env) |config_dir_env| {
+        try std.json.stringify(config_dir_env, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"accounts\":{");
+
+    var first = true;
+    var next_priority: i32 = 10;
+    var account_it = active_provider.accounts.map.iterator();
+    while (account_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        try writer.writeByte(':');
+        try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        if (entry.value_ptr.priority <= next_priority) next_priority = entry.value_ptr.priority - 10;
+    }
+
+    if (active_provider.accounts.map.get(account) == null) {
+        if (!first) try writer.writeByte(',');
+        try writeCodexMaxStarterAccount(allocator, writer, store_root, account, next_priority, true);
+    }
+
+    try writer.writeAll("}}");
+}
+
+fn writeProfileWithAddedProvider(writer: anytype, profile: config.ProfileConfig, provider_ref: []const u8) !void {
+    try writer.writeAll("{\"providers\":[");
+    var first = true;
+    var already_present = false;
+    for (profile.providers) |existing| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(existing, .{}, writer);
+        if (std.mem.eql(u8, existing, provider_ref)) already_present = true;
+    }
+    if (!already_present) {
+        if (!first) try writer.writeByte(',');
+        try std.json.stringify(provider_ref, .{}, writer);
+    }
+    try writer.writeAll("],\"strategy\":");
+    if (profile.strategy) |strategy| {
+        try std.json.stringify(strategy, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.print(",\"affinity_ttl_minutes\":{d}}}", .{profile.affinity_ttl_minutes});
+}
+
+fn writeActiveConfigAtomically(allocator: std.mem.Allocator, active_config_path: []const u8, backup_path: []const u8, bytes: []const u8) !void {
+    if (fileExistsAbsolute(backup_path)) return error.PathAlreadyExists;
+    if (std.fs.path.dirname(active_config_path)) |dir| try std.fs.cwd().makePath(dir);
+
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp-{x}", .{ active_config_path, std.crypto.random.int(u64) });
+    defer allocator.free(tmp_path);
+
+    const tmp_file = try std.fs.createFileAbsolute(tmp_path, .{ .exclusive = true, .mode = 0o600 });
+    errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
+    {
+        defer tmp_file.close();
+        try tmp_file.writeAll(bytes);
+    }
+
+    try std.fs.renameAbsolute(active_config_path, backup_path);
+    std.fs.renameAbsolute(tmp_path, active_config_path) catch |e| {
+        std.fs.renameAbsolute(backup_path, active_config_path) catch {};
+        return e;
+    };
 }
 
 fn writeEnrollPlanText(
@@ -560,7 +969,9 @@ fn writeEnrollPlanText(
     if (args.account) |account| try writer.print("  account: {s}\n", .{account});
     if (args.mode) |mode| try writer.print("  mode: {s}\n", .{mode});
     try writer.writeAll("  mutates: false\n");
-    try writer.writeAll("  provider-neutral enrollment mutation: not shipped yet\n\n");
+    try writer.print("  provider-neutral enrollment mutation: {s}\n\n", .{
+        if (args.provider != null and isProvider(args.provider.?, "codex")) "available with --confirm-enroll" else "not shipped yet",
+    });
 
     try writer.writeAll("  existing accounts:\n");
     try writeEnrollExistingAccountsText(writer, cfg, args.provider);
@@ -597,7 +1008,8 @@ fn writeEnrollPlanJson(
     try writer.writeAll(if (cfg != null) "true" else "false");
     try writer.writeAll(",\"provider_configured\":");
     try writer.writeAll(if (enrollProviderConfigured(cfg, args.provider)) "true" else "false");
-    try writer.writeAll(",\"provider_neutral_mutation_supported\":false");
+    try writer.writeAll(",\"provider_neutral_mutation_supported\":");
+    try writer.writeAll(if (args.provider != null and isProvider(args.provider.?, "codex")) "true" else "false");
     try writer.writeAll(",\"existing_accounts\":[");
     try writeEnrollExistingAccountsJson(writer, cfg, args.provider);
     try writer.writeAll("],\"steps\":[");
@@ -823,16 +1235,27 @@ fn writeEnrollPlanStepJson(
 
 fn writeEnrollFutureCommandJson(writer: anytype, allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) !void {
     try writer.writeByte('{');
-    try writer.writeAll("\"available\":false,\"command\":");
     const provider_name = args.provider orelse {
+        try writer.writeAll("\"available\":false,\"command\":");
         try writer.writeAll("null,\"reason\":\"provider_required\"}");
         return;
     };
     const account = args.account orelse "<account>";
-    const command = try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s}", .{ provider_name, account });
+    const available = isProvider(provider_name, "codex");
+    try writer.writeAll("\"available\":");
+    try writer.writeAll(if (available) "true" else "false");
+    try writer.writeAll(",\"command\":");
+    const command = if (available)
+        try std.fmt.allocPrint(allocator, "oauth-mux enroll codex --account {s} --confirm-enroll", .{account})
+    else
+        try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s}", .{ provider_name, account });
     defer allocator.free(command);
     try std.json.stringify(command, .{}, writer);
-    try writer.writeAll(",\"reason\":\"not_implemented; use enroll plan and provider-owned setup commands\"}");
+    if (available) {
+        try writer.writeAll(",\"reason\":\"available_for_codex_config_and_store_scaffolding; provider login remains a user-run handoff\"}");
+    } else {
+        try writer.writeAll(",\"reason\":\"not_implemented; use enroll plan and provider-owned setup commands\"}");
+    }
 }
 
 fn enrollProviderConfigured(cfg: ?config.Config, provider_filter: ?[]const u8) bool {

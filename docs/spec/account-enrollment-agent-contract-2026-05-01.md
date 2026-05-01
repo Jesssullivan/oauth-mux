@@ -50,6 +50,17 @@ step with `agent_safe`, `interactive`, `mutating`, and
 `spends_provider_calls`, and it explicitly reports provider-neutral enrollment
 mutation as unavailable until provider-owned consent flows are implemented.
 
+The first consented mutation is Codex-only:
+
+```bash
+oauth-mux enroll codex --account max-4 --confirm-enroll --json
+```
+
+Confirmed Codex enrollment mutates only oauth-mux-owned state: active config,
+Codex Max/Mini profile routes, and the isolated local Codex account directory.
+It does not run `codex login`, open browser/device auth, or spend provider
+calls. The output returns the provider-owned login handoff as a next command.
+
 ## User Stories
 
 ### Story A: user adds a fourth Codex account
@@ -62,18 +73,22 @@ Expected flow:
 ```bash
 oauth-mux accounts list --provider codex --json
 oauth-mux enroll plan codex --account max-4 --json
-oauth-mux codex config-candidate --store-root ~/.local/share/oauth-mux/codex --json
-oauth-mux codex config-merge --candidate /tmp/oauth-mux-codex-max.config.json --json
+oauth-mux enroll codex --account max-4 --confirm-enroll --json
 oauth-mux codex login-device max-4
 oauth-mux doctor runtime --provider codex --account max-4 --capability codex-max --json
 oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json
 ```
 
-Future provider-neutral shape:
+Provider-neutral shape:
 
 ```bash
-oauth-mux enroll codex --account max-4
+oauth-mux enroll codex --account max-4 --confirm-enroll
 ```
+
+If the active config is not already a Codex Max/Mini mux shape, the command
+refuses and returns the existing `codex config-candidate` / `config-merge`
+path. This keeps migration from single-account Codex separate from N+1
+enrollment.
 
 ### Story B: user adds work and personal Claude accounts
 
@@ -152,6 +167,9 @@ handoff rather than trying to run browser/device auth silently.
 - safe next commands;
 - the future provider-neutral mutation command with `available:false`.
 
+For Codex, that command is now available and points to
+`oauth-mux enroll codex --account <name> --confirm-enroll`.
+
 Account state is intentionally coarse:
 
 | State | Meaning |
@@ -205,13 +223,17 @@ Mutation-capable tools such as `enroll.start`, `enroll.complete`, or
 evidence. MCP tools should preserve the same action taxonomy as the CLI:
 diagnostic, handoff, probe, repair, and mutation.
 
+For the current Codex implementation, the mutation-capable tool equivalent
+should expose the same shape as `enroll codex --confirm-enroll`: config/store
+scaffolding only, with provider login returned as a user-mediated handoff.
+
 ## Next Implementation Slices
 
 1. Land `accounts list` as the provider-neutral inventory surface.
 2. Land `enroll plan <provider>` to print the exact provider-specific setup
    steps without mutation.
-3. Promote Codex N+1 enrollment from provider-specific helpers into
-   `enroll codex --account <name>`.
+3. Land Codex N+1 enrollment as
+   `enroll codex --account <name> --confirm-enroll`.
 4. Add Claude account-store config candidate and runtime proof.
-5. Add Figma OAuth/PAT enrollment plan and proof fixtures.
+5. Add Figma OAuth/PAT enrollment mutation planning and proof fixtures.
 6. Define the MCP tool schema against the same JSON surfaces.

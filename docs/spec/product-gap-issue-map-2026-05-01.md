@@ -110,7 +110,10 @@ provider-neutral visibility, admission, and mutation layers for N+1 Codex,
 Claude, Figma, and future MCP-facing enrollment. The first implementation slice
 is the non-mutating `oauth-mux accounts list --json` inventory surface. The
 second slice is `oauth-mux enroll plan <provider> --json`, which explains the
-provider-specific setup path and labels each step before any mutation.
+provider-specific setup path and labels each step before any mutation. The
+third slice is Codex-only `oauth-mux enroll codex --account <name>
+--confirm-enroll --json`, which mutates oauth-mux config/store scaffolding but
+returns upstream login as a user-mediated handoff.
 
 Core product docs must remain service-manager agnostic. `systemctl`,
 `launchctl`, Homebrew services, cron, and Windows Services can become wrapper
@@ -181,16 +184,18 @@ these precise provider-proof children.
 1. Keep provider-neutral account inventory and enrollment planning aligned with
    the account-enrollment contract, so agents can inspect N configured accounts
    and explain setup before route, repair, handoff, or live-proof decisions.
-2. Update website/release copy to use the public `jesssullivan/omux` Homebrew
+2. Use the Codex confirmed enrollment path as the consent/mutation reference
+   before adding Claude, Figma, or MCP mutation tools.
+3. Update website/release copy to use the public `jesssullivan/omux` Homebrew
    tap and close `#66` / `TIN-858` after those surfaces are aligned.
-3. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
+4. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
    Linear API-key identity are locally proven; Linear OAuth `identity` remains
    `needs_operator_proof`.
-4. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
+5. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
    quota/repair semantics and MCP resource-bound bearer-token proof.
-5. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
+6. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
    `TIN-878` FlakeHub/Determinate, and `TIN-879` Gemini.
-6. Return to daemon background scheduling only after wrapper/install decisions
+7. Return to daemon background scheduling only after wrapper/install decisions
    and provider proof produce enough real operator evidence. The current socket
    daemon decision is complete under `TIN-867`; future production daemon work
    must promote the foreground tick engine deliberately.

@@ -197,14 +197,30 @@ jq -e '
   and .provider == "codex"
   and .account == "max-4"
   and .provider_configured == true
-  and .provider_neutral_mutation_supported == false
+  and .provider_neutral_mutation_supported == true
   and (.existing_accounts | length) == 3
   and (.steps[] | select(.kind == "inspect_accounts") | .agent_safe == true)
   and (.steps[] | select(.kind == "provider_login") | .command == "oauth-mux codex login-device max-4" and .interactive == true and .agent_safe == false)
   and (.steps[] | select(.kind == "runtime_proof") | .command == "oauth-mux doctor runtime --provider codex --account max-4 --capability codex-max --json" and .agent_safe == true)
-  and .future_provider_neutral_command.available == false
+  and .future_provider_neutral_command.available == true
+  and (.future_provider_neutral_command.command | contains("--confirm-enroll"))
 ' "$enroll_plan_json" >/dev/null
 expect_not_contains "$(cat "$enroll_plan_json")" "$store_root/max-1" "enroll plan does not print concrete Codex store paths"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
+
+printf 'first-run e2e: enroll codex requires explicit confirmation\n'
+enroll_unconfirmed_json="$tmp/enroll-codex-unconfirmed.json"
+run_json "$enroll_unconfirmed_json" enroll codex --account max-4 --json
+jq -e '
+  .ok == false
+  and .executed == false
+  and .confirmation_required == true
+  and .requires == "--confirm-enroll"
+  and .mutates == true
+  and .spends_provider_calls == false
+  and (.confirm_command | contains("oauth-mux enroll codex --account max-4 --confirm-enroll --json"))
+' "$enroll_unconfirmed_json" >/dev/null
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
 
@@ -419,5 +435,35 @@ help_out="$(omux codex canary --help)"
 expect_contains "$help_out" "non-mutating" "Codex help declares non-mutating behavior"
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
+
+printf 'first-run e2e: confirmed enroll codex adds N+1 account without login\n'
+enroll_confirmed_json="$tmp/enroll-codex-confirmed.json"
+run_json "$enroll_confirmed_json" enroll codex --account max-4 --confirm-enroll --json
+jq -e '
+  .ok == true
+  and .executed == true
+  and .provider == "codex"
+  and .account == "max-4"
+  and .config_changed == true
+  and .store_bootstrapped == true
+  and .ran_provider_login == false
+  and .spends_provider_calls == false
+  and .backup_config != null
+  and (.next_commands | index("oauth-mux codex login-device max-4") != null)
+  and (.next_commands | index("oauth-mux doctor runtime --provider codex --account max-4 --capability codex-max --json") != null)
+' "$enroll_confirmed_json" >/dev/null
+test -d "$store_root/max-4"
+jq -e '
+  (.providers.codex.accounts["max-4"].secret.backend == "file")
+  and (.providers.codex.accounts["max-4"].config_dir | contains("max-4"))
+  and (.profiles["codex-max"].providers | index("codex:max-4#codex-max") != null)
+  and (.profiles["codex-mini"].providers | index("codex:max-4#codex-mini") != null)
+' "$config_path" >/dev/null
+accounts_after_enroll_json="$tmp/accounts-after-enroll.json"
+run_json "$accounts_after_enroll_json" accounts list --provider codex --json
+jq -e '
+  (.accounts | length) == 4
+  and any(.accounts[]; .account == "max-4" and .state == "action_needed")
+' "$accounts_after_enroll_json" >/dev/null
 
 printf 'first-run e2e passed\n'
