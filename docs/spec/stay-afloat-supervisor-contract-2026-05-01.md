@@ -187,6 +187,11 @@ should treat `afloat:true` plus a non-null `selected` as the positive route
 condition. They should treat `handoff_queued:true` or `handoff_pending:true` as
 the signal to surface user-mediated repair.
 
+Runtime repair actions expose `action.diagnostic_command` when the route needs
+local runtime proof before any provider call. The diagnostic command is not an
+automatic repair action; it is an agent-safe next command for users, wrappers,
+or permission brokers to run in the right process boundary.
+
 Each per-route `tick` object also carries deterministic scheduling hints:
 
 - `next_tick_after`: Unix timestamp for the next useful revisit, or `null`.

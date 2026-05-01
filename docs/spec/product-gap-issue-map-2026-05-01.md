@@ -67,6 +67,12 @@ Current truth:
   auth, and silent mutation.
 - Codex fallback is proven from quota-exhausted `max-1#codex-max` to available
   `max-2#codex-max`; automatic reauth and background repair are not proven.
+- A 2026-05-01 recheck split the runtime truth cleanly: inside the current
+  Codex sandbox, all three configured Codex account stores report
+  `unwritable_store`; outside that sandbox, all three stores are runtime-ready
+  and `stay-afloat --once --profile codex-max --capability codex-max --json`
+  selects `codex:max-2#codex-max` with `max-3` still selectable. This is a
+  sandbox/runtime-boundary product concern, not OAuth death or quota failure.
 
 Remaining daemon split:
 
@@ -77,6 +83,10 @@ Remaining daemon split:
   `contract:"experimental_socket_stub"` and `hosts_stay_afloat:false` so
   wrappers do not treat the socket stub as production stay-afloat. Future
   background-daemon work must promote the foreground tick engine deliberately.
+- Runtime repair actions now expose a non-executing `diagnostic_command` such
+  as `oauth-mux doctor runtime --provider codex --account max-1 --capability
+  codex-max --json`, so agents can ask for the precise local proof command
+  without treating diagnostics as automatic repair.
 - Add optional package wrapper examples only after public install lanes and
   stop/status behavior are stable.
 - Keep production background scheduling separate from first-run and release

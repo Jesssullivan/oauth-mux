@@ -117,6 +117,13 @@ Capability-level promotion is narrower:
   `decision=use_this`.
 - Linear OAuth bearer live QA is still pending. The current shell did not expose
   `LINEAR_ACCESS_TOKEN`.
+- A 2026-05-01 SOPS recheck of `../lab/nix/secrets/common.yaml` found
+  `api.linear`, but it is the same personal API key already exposed as
+  `LINEAR_API_KEY`, not a Linear OAuth bearer. Sourcing that key through SOPS
+  proves `linear:work#identity-api-key` as `live.available`; using the same
+  value against the OAuth-bearer `identity` route returns HTTP 400 and stays
+  `degraded.unknown_4xx`. This confirms the SOPS path is useful for API-key
+  proof but does not unblock OAuth proof.
 
 This is enough to prove the GitHub path locally and the Linear personal API-key
 path locally, but not enough to claim that every Linear auth mode is live-proven.

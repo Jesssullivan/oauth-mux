@@ -249,6 +249,12 @@ Codex and Claude-style CLI-owned stores: a file-backed credential can be
 readable and writable by the current user, while oauth-mux still refuses to
 rewrite it because upstream login owns the session.
 
+When a route needs local runtime repair before any provider call, the action
+also includes `diagnostic_command`. Run that command in the process boundary
+that actually owns the upstream store; for example, a sandboxed agent may need
+the user or wrapper to run the diagnostic in a normal shell before deciding
+whether the account is usable.
+
 The refresh path now uses that same admission gate. File-backed credentials can
 be replaced atomically, but automatic refresh only runs for providers whose
 definition declares `repair.owner = "oauth_mux_refresh"` and whose backend
