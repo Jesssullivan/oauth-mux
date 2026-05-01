@@ -90,7 +90,11 @@ Current truth:
 Next split:
 
 - `TIN-861`: prove Claude Code through command-owned auth/session behavior.
-- `TIN-862`: prove GitHub and Linear low-impact identity probes.
+- `TIN-862`: prove GitHub and Linear low-impact identity probes. This is now
+  underway with classifier hardening and a proof spec in
+  `docs/spec/provider-proof-github-linear-2026-05-01.md`; local GitHub live QA
+  has passed, while Linear live proof and durable tracking evidence are still
+  pending.
 - `TIN-863`: prove MCP HTTP authorization and protected-resource metadata.
 
 Later slices should cover Vercel/Figma token variants and Gemini plus
@@ -101,8 +105,9 @@ patterns are settled.
 
 1. Resolve `#66` / `TIN-858` enough for website wording: public tap, Jess tap,
    or staged-only.
-2. Start `TIN-862` as the first non-Codex provider proof because GitHub and
-   Linear identity checks are low-impact and do not require model spend.
+2. Finish `TIN-862` as the first non-Codex provider proof by running redacted
+   GitHub and Linear identity artifacts after the classifier/documentation
+   patch lands.
 3. Use `TIN-861` and `TIN-863` to prove the two harder shapes: CLI-owned
    subscription state and MCP resource-bound OAuth.
 4. Return to daemon background scheduling only after wrapper/install decisions

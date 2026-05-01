@@ -120,6 +120,57 @@ Hosted evidence from PR-branch run `25134175687` on 2026-04-29:
   `OMUX_LIVE_QA_STORE_TGZ_B64` from a minimized credential bundle containing
   only `auth.json`, `installation_id`, and per-account `config.toml` files.
 
+## Low-Impact Identity Probes
+
+GitHub and Linear are the first non-Codex provider-proof lane because their
+built-in `identity` capabilities use provider-owned identity endpoints and do
+not send model prompts, create records, or mutate upstream state.
+
+GitHub uses `GET https://api.github.com/user` with bearer auth. A fine-grained
+token does not need explicit permissions for the endpoint; OAuth app tokens and
+classic PATs may need `user` scope only for private profile fields. The probe
+captures the `x-ratelimit-remaining` header as a classification hint and never
+stores the raw token.
+
+```bash
+OMUX_CONFIG=$PWD/examples/github.config.json \
+OMUX_GITHUB_WORK_TOKEN="$(gh auth token)" \
+  ./zig-out/bin/oauth-mux probe --profile github --capability identity --json
+```
+
+Linear uses `POST https://api.linear.app/graphql` with
+`query Me { viewer { id name email } }` and OAuth bearer auth. A GraphQL `200`
+with an `errors` array is treated as degraded instead of live.
+
+```bash
+OMUX_CONFIG=$PWD/examples/linear.config.json \
+OMUX_LINEAR_WORK_TOKEN="$LINEAR_ACCESS_TOKEN" \
+  ./zig-out/bin/oauth-mux probe --profile linear --capability identity --json
+```
+
+To capture local artifacts through the same wrapper used by hosted provider QA:
+
+```bash
+OMUX_LIVE_QA_CONFIRM=spend-real-calls \
+OMUX_CONFIG=$PWD/examples/github.config.json \
+OMUX_GITHUB_WORK_TOKEN="$(gh auth token)" \
+OMUX_LIVE_QA_PROFILE=github \
+OMUX_LIVE_QA_CAPABILITIES=identity \
+  just live-qa
+
+OMUX_LIVE_QA_CONFIRM=spend-real-calls \
+OMUX_CONFIG=$PWD/examples/linear.config.json \
+OMUX_LINEAR_WORK_TOKEN="$LINEAR_ACCESS_TOKEN" \
+OMUX_LIVE_QA_PROFILE=linear \
+OMUX_LIVE_QA_CAPABILITIES=identity \
+  just live-qa
+```
+
+These probes are still explicit live provider calls. Keep them out of default
+checks and scheduled daemon loops. Promote GitHub or Linear from
+`needs_operator_proof` only after a redacted artifact run is attached to the
+tracking issue.
+
 ## GitHub Workflow
 
 `.github/workflows/live-provider-qa.yml` is manual-only. It requires the

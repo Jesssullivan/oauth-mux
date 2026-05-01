@@ -375,6 +375,13 @@ fn validateFailureRule(
         ok.* = false;
     }
 
+    if (rule.hint_equals) |hint| {
+        if (hint.len == 0) {
+            try writer.print("config error: provider_definitions.{s}.failure_rules[{d}].hint_equals must not be empty\n", .{ def_key, rule_idx });
+            ok.* = false;
+        }
+    }
+
     if (rule.hint_contains) |hint| {
         if (hint.len == 0) {
             try writer.print("config error: provider_definitions.{s}.failure_rules[{d}].hint_contains must not be empty\n", .{ def_key, rule_idx });
@@ -407,6 +414,7 @@ fn failureRuleHasMatcher(rule: provider_schema.FailureRule) bool {
         rule.status_max != null or
         rule.retry_after_gte != null or
         rule.retry_after_lt != null or
+        rule.hint_equals != null or
         rule.hint_contains != null;
 }
 
@@ -1506,6 +1514,77 @@ test "validate rejects catch-all failure rule" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "failure_rules[0] must include at least one matcher") != null);
+}
+
+test "validate accepts exact failure rule hint matcher" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "failure_rules": [
+        \\        { "hint_equals": "0", "class": { "rate_limited": {} } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try validate(parsed.value, out.writer());
+}
+
+test "validate rejects empty failure rule exact hint" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "failure_rules": [
+        \\        { "status": 403, "hint_equals": "", "class": { "degraded": "unknown_4xx" } }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "failure_rules[0].hint_equals must not be empty") != null);
 }
 
 test "validate rejects empty failure rule hint" {
