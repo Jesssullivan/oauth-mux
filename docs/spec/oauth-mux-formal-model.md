@@ -347,8 +347,8 @@ Command probes use argv plus inherited environment overlays, must have a
 positive `timeout_ms`, and are classified from stdout/stderr cassettes when the
 provider supplies a parser. Failure rules are intentionally small: exact status
 or status range, optional `retry_after` threshold, optional case-insensitive
-hint substring, and a typed liveness class. This keeps provider extension
-friendly without introducing regex engines or plugin code.
+exact or substring hint, and a typed liveness class. This keeps provider
+extension friendly without introducing regex engines or plugin code.
 
 ## Health Evidence
 

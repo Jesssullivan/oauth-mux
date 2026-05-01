@@ -66,8 +66,8 @@ pub const ProviderDefinition = struct {
 
     // ── Failure Classification ──
     // Provider-specific HTTP/status/body hints that override generic OAuth
-    // fallback classification. No regex; only exact status/range and substring
-    // hints so the parser remains std-only.
+    // fallback classification. No regex; only exact status/range and simple
+    // exact/substring hints so the parser remains std-only.
     failure_rules: []const FailureRule = &.{},
 };
 
@@ -202,6 +202,7 @@ pub const FailureRule = struct {
     status_max: ?u16 = null,
     retry_after_gte: ?u32 = null,
     retry_after_lt: ?u32 = null,
+    hint_equals: ?[]const u8 = null,
     hint_contains: ?[]const u8 = null,
     class: FailureClass,
 };
@@ -341,7 +342,7 @@ const codex_failure_rules = [_]FailureRule{
 const github_failure_rules = [_]FailureRule{
     .{
         .status = 403,
-        .hint_contains = "0",
+        .hint_equals = "0",
         .class = .rate_limited,
     },
     .{
@@ -1052,6 +1053,10 @@ fn failureRuleMatches(rule: FailureRule, status: u16, retry_after: ?u32, hint: ?
         const wait = retry_after orelse return false;
         if (wait >= max_wait) return false;
     }
+    if (rule.hint_equals) |expected| {
+        const h = hint orelse return false;
+        if (!equalsIgnoreAsciiCaseTrimmed(h, expected)) return false;
+    }
     if (rule.hint_contains) |needle| {
         const h = hint orelse return false;
         if (!containsIgnoreAsciiCase(h, needle)) return false;
@@ -1079,6 +1084,16 @@ fn classificationFromRule(class: FailureClass, retry_after: ?u32) types.HttpClas
 
 fn windowFromRetryAfter(wait: u32) types.RateLimitWindow {
     return if (wait <= 60) .per_minute else if (wait <= 3600) .per_hour else .per_day;
+}
+
+fn equalsIgnoreAsciiCaseTrimmed(left: []const u8, right: []const u8) bool {
+    const left_trimmed = std.mem.trim(u8, left, " \t\r\n");
+    const right_trimmed = std.mem.trim(u8, right, " \t\r\n");
+    if (left_trimmed.len != right_trimmed.len) return false;
+    for (left_trimmed, right_trimmed) |l, r| {
+        if (std.ascii.toLower(l) != std.ascii.toLower(r)) return false;
+    }
+    return true;
 }
 
 fn containsIgnoreAsciiCase(haystack: []const u8, needle: []const u8) bool {
@@ -1567,6 +1582,23 @@ test "linear failure rules classify GraphQL errors as degraded" {
     }
 }
 
+test "linear generic OAuth failures stay typed" {
+    const revoked = classifyHttp(linear_def, 401, null, null);
+    switch (revoked) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const limited = classifyHttp(linear_def, 429, 45, null);
+    switch (limited) {
+        .rate_limited => |rl| {
+            try std.testing.expectEqual(@as(u32, 45), rl.retry_after_s);
+            try std.testing.expectEqual(types.RateLimitWindow.per_minute, rl.window);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "figma identity capability uses OAuth me probe" {
     const plan = probePlanForCapability(figma_def, "me").?;
     try std.testing.expectEqual(ProbeTransport.http, plan.transport);
@@ -1630,7 +1662,7 @@ test "flakehub failure rules classify logged out status as dead" {
 }
 
 test "github failure rules distinguish rate limit from scope degradation" {
-    const limited = classifyHttp(github_def, 403, null, "0");
+    const limited = classifyHttp(github_def, 403, null, " 0 ");
     switch (limited) {
         .rate_limited => |rl| try std.testing.expectEqual(@as(u32, 30), rl.retry_after_s),
         else => return error.TestUnexpectedResult,
@@ -1639,6 +1671,29 @@ test "github failure rules distinguish rate limit from scope degradation" {
     const forbidden = classifyHttp(github_def, 403, null, "1");
     switch (forbidden) {
         .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const double_digit_remaining = classifyHttp(github_def, 403, null, "10");
+    switch (double_digit_remaining) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "github generic OAuth failures stay typed" {
+    const revoked = classifyHttp(github_def, 401, null, null);
+    switch (revoked) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const limited = classifyHttp(github_def, 429, 90, null);
+    switch (limited) {
+        .rate_limited => |rl| {
+            try std.testing.expectEqual(@as(u32, 90), rl.retry_after_s);
+            try std.testing.expectEqual(types.RateLimitWindow.per_hour, rl.window);
+        },
         else => return error.TestUnexpectedResult,
     }
 }
