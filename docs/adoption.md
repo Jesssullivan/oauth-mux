@@ -9,10 +9,15 @@ they must not become requirements for ordinary users.
 Target install surfaces:
 
 - npm: `npm install -g oauth-mux`
-- Homebrew: `brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git && brew install tinyland/tools/oauth-mux`
+- Homebrew staged/private tap:
+  `brew tap tinyland/tools https://github.com/tinyland-inc/homebrew-tools.git && brew install tinyland/tools/oauth-mux`
 - curl installer: `curl -fsSL ... | sh`
 - deb/rpm packages for Linux hosts
 - raw release tarballs for air-gapped or policy-managed systems
+
+The Homebrew command above is proven for the Tinyland tap, but it is not yet a
+public Homebrew distribution promise. Track that decision in
+`docs/spec/product-gap-issue-map-2026-05-01.md`.
 
 Each release artifact should be derived from the same CI release tree. npm is
 published only from CI tarballs; workstation `npm publish` is not supported.
