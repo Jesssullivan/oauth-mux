@@ -3658,8 +3658,8 @@ fn writeProvidersListText(
         }
     }
 
-    try writer.writeAll("\n  support: live_proven means hosted secret-scoped QA has proved a real route.\n");
-    try writer.writeAll("  proof: needs_operator_proof means the schema exists but needs live provider evidence.\n");
+    try writer.writeAll("\n  support: live_proven means hosted secret-scoped QA has proved a real provider route.\n");
+    try writer.writeAll("  proof: provider proof remains conservative; capability proof details are in --json.\n");
     _ = allocator;
 }
 
@@ -3802,6 +3802,8 @@ fn writeCapabilityBudgetsJson(writer: anytype, def: provider_schema.ProviderDefi
         try writer.writeByte('{');
         try writer.writeAll("\"name\":");
         try std.json.stringify(capability.name, .{}, writer);
+        try writer.writeAll(",\"proof_status\":");
+        try std.json.stringify(capability.proof_status, .{}, writer);
         try writer.writeAll(",\"budget\":");
         if (capability.probe) |probe_def| {
             try std.json.stringify(@tagName(probe_def.budget orelse provider_schema.defaultProbeBudget(probe_def.transport)), .{}, writer);
@@ -4082,14 +4084,14 @@ fn supportStatusForConfig(cfg: config.Config, provider_name: []const u8, provide
 }
 
 fn supportStatus(def_name: []const u8, built_in: bool) []const u8 {
-    if (std.mem.eql(u8, def_name, "codex")) return "live_proven";
+    if (std.mem.eql(u8, def_name, "codex")) return provider_schema.proof_live;
     if (built_in) return "built_in";
     return "schema_modeled";
 }
 
 fn proofStatus(def_name: []const u8) []const u8 {
-    if (std.mem.eql(u8, def_name, "codex")) return "live_proven";
-    return "needs_operator_proof";
+    if (std.mem.eql(u8, def_name, "codex")) return provider_schema.proof_live;
+    return provider_schema.proof_needs_operator;
 }
 
 fn providerDisplayName(def: provider_schema.ProviderDefinition) []const u8 {
@@ -6147,6 +6149,11 @@ test "writeProvidersListJson exposes extension and budget metadata" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"runtime\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability_budgets\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"codex-max\",\"proof_status\":\"live_proven\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"auth-status\",\"proof_status\":\"local_live_proven\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"resource-metadata\",\"proof_status\":\"public_live_proven\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"resource\",\"proof_status\":\"needs_operator_proof\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"identity-api-key\",\"proof_status\":\"local_live_proven\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"budget\":\"spend_provider\"") != null);
 }
 

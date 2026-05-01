@@ -110,7 +110,9 @@ Observed local result on 2026-05-01:
 - last probe source: `capability_probe`
 
 This is not enough to prove resource-token liveness because that requires a
-resource-bound access token.
+resource-bound access token. The metadata capability can be reported as
+`public_live_proven`, while the bearer-token `resource` capability remains
+`needs_operator_proof`.
 
 ## Remaining Work
 

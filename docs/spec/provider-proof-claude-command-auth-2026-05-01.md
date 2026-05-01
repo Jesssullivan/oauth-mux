@@ -66,7 +66,9 @@ Observed local result on 2026-05-01:
 This proves the command-owned auth-status lane can report a live Claude session
 without reading or mutating Claude's credential file. It does not prove Claude
 quota, tier, or model-call availability, and it does not make direct OAuth
-repair admissible.
+repair admissible. The capability can be reported as `local_live_proven`, while
+the provider remains `needs_operator_proof` for broader Claude account and quota
+semantics.
 
 ## Fixture Coverage
 

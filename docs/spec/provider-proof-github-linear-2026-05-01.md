@@ -7,9 +7,10 @@ Issue context: Linear `TIN-862`, parent `TIN-736`; GitHub
 ## Baseline
 
 Codex is live-proven. GitHub and Linear are schema-modeled with admitted
-low-impact identity probes, but they should remain `needs_operator_proof` until
-redacted live artifacts exist. This slice tightens the provider semantics needed
-before running those proofs.
+low-impact identity probes. Provider-level status should remain
+`needs_operator_proof` until the intended auth modes have redacted evidence, but
+individual capabilities can now carry narrower proof status when a local or
+public proof exists.
 
 ## Provider Contracts
 
@@ -83,16 +84,24 @@ the same redaction and pass/fail semantics as Codex.
 
 ## Promotion Gate
 
-Do not mark GitHub or Linear `live_proven` in `src/main.zig` until all of these
-are true:
+Do not mark GitHub or Linear provider-level `live_proven` in `src/main.zig`
+until all of these are true:
 
 1. Unit tests cover provider-specific classification and generic OAuth fallback.
 2. A local or hosted live artifact shows `live.available` for the identity
    probe without leaking token or raw profile response data.
 3. GitHub issue `#68` and Linear `TIN-862` link the proof artifact or a redacted
    summary of the run.
-4. The docs keep `schema_modeled`, `needs_operator_proof`, and `live_proven`
-   separate.
+4. The docs keep `schema_modeled`, `needs_operator_proof`,
+   `local_live_proven`, and `live_proven` separate.
+
+Capability-level promotion is narrower:
+
+- GitHub `identity`: `local_live_proven` after the local redacted artifact.
+- Linear `identity-api-key`: `local_live_proven` after the local redacted
+  artifact.
+- Linear `identity`: stays `needs_operator_proof` until OAuth bearer proof
+  exists.
 
 ## Current Evidence
 
@@ -112,7 +121,7 @@ are true:
 This is enough to prove the GitHub path locally and the Linear personal API-key
 path locally, but not enough to claim that every Linear auth mode is live-proven.
 TIN-862 should record the OAuth bearer proof separately before changing public
-support status.
+provider support status.
 
 ## Sources
 

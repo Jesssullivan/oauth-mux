@@ -253,6 +253,8 @@ providers_json="$(omux providers list --json)"
 expect_contains "$providers_json" '"name":"toy"' "providers list includes custom toy provider"
 expect_contains "$providers_json" '"support_status":"schema_modeled"' "providers list classifies custom provider"
 expect_contains "$providers_json" '"proof_status":"needs_operator_proof"' "providers list marks custom provider proof state"
+expect_contains "$providers_json" '"name":"cheap","proof_status":"needs_operator_proof"' "providers list marks custom capability proof state"
+expect_contains "$providers_json" '"name":"codex-max","proof_status":"live_proven"' "providers list marks Codex capability proof state"
 expect_contains "$providers_json" '"configured_accounts":2' "providers list counts custom provider accounts"
 
 printf 'e2e: cheap route selects first healthy account\n'

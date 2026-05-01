@@ -2,6 +2,11 @@ const std = @import("std");
 const types = @import("types.zig");
 const log = @import("log.zig");
 
+pub const proof_needs_operator = "needs_operator_proof";
+pub const proof_live = "live_proven";
+pub const proof_local_live = "local_live_proven";
+pub const proof_public_live = "public_live_proven";
+
 // ── Declarative Provider Definition ──
 //
 // A provider is fully described by data — no code required.
@@ -137,6 +142,7 @@ pub const RepairConfig = struct {
 pub const CapabilityDefinition = struct {
     name: []const u8,
     aliases: []const []const u8 = &.{},
+    proof_status: []const u8 = proof_needs_operator,
     probe: ?ProbeDefinition = null,
 };
 
@@ -264,6 +270,7 @@ const claude_capabilities = [_]CapabilityDefinition{
     .{
         .name = "auth-status",
         .aliases = &.{ "status", "identity", "whoami" },
+        .proof_status = proof_local_live,
         .probe = .{
             .transport = .command,
             .auth = .none,
@@ -336,6 +343,7 @@ const mcp_capabilities = [_]CapabilityDefinition{
     .{
         .name = "resource-metadata",
         .aliases = &.{ "metadata", "protected-resource-metadata" },
+        .proof_status = proof_public_live,
         .probe = .{
             .method = "GET",
             .url = "{{OMUX_MCP_RESOURCE_METADATA_URL}}",
@@ -420,6 +428,7 @@ const github_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity",
         .aliases = &.{ "user", "whoami" },
+        .proof_status = proof_local_live,
         .probe = .{
             .method = "GET",
             .url = "https://api.github.com/user",
@@ -462,6 +471,7 @@ const linear_capabilities = [_]CapabilityDefinition{
     .{
         .name = "identity-api-key",
         .aliases = &.{ "api-key", "personal-api-key", "pat", "whoami-api-key" },
+        .proof_status = proof_local_live,
         .probe = .{
             .method = "POST",
             .url = "https://api.linear.app/graphql",
@@ -561,6 +571,7 @@ const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-max",
         .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
+        .proof_status = proof_live,
         .probe = .{
             .transport = .command,
             .auth = .none,
@@ -581,6 +592,7 @@ const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-mini",
         .aliases = &.{ "mini", "spark", "gpt-5.3-codex-spark", "gpt-5.1-codex-mini" },
+        .proof_status = proof_live,
         .probe = .{
             .transport = .command,
             .auth = .none,
