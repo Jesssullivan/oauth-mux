@@ -104,6 +104,12 @@ how agents, shells, CI jobs, and optional service wrappers should handle
 `action.diagnostic_command` in the right process boundary without turning
 runtime diagnostics into OAuth liveness or automatic repair evidence.
 
+The account-enrollment artifact is
+`docs/spec/account-enrollment-agent-contract-2026-05-01.md`. It defines the
+provider-neutral visibility, admission, and mutation layers for N+1 Codex,
+Claude, Figma, and future MCP-facing enrollment. The first implementation slice
+is the non-mutating `oauth-mux accounts list --json` inventory surface.
+
 Core product docs must remain service-manager agnostic. `systemctl`,
 `launchctl`, Homebrew services, cron, and Windows Services can become wrapper
 examples only after the portable contract is stable.
@@ -170,16 +176,19 @@ these precise provider-proof children.
 
 ## Immediate Execution Order
 
-1. Update website/release copy to use the public `jesssullivan/omux` Homebrew
+1. Land the provider-neutral account inventory surface and keep it aligned with
+   the account-enrollment contract, so agents can inspect N configured accounts
+   before route, repair, handoff, or live-proof decisions.
+2. Update website/release copy to use the public `jesssullivan/omux` Homebrew
    tap and close `#66` / `TIN-858` after those surfaces are aligned.
-2. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
+3. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
    Linear API-key identity are locally proven; Linear OAuth `identity` remains
    `needs_operator_proof`.
-3. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
+4. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
    quota/repair semantics and MCP resource-bound bearer-token proof.
-4. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
+5. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
    `TIN-878` FlakeHub/Determinate, and `TIN-879` Gemini.
-5. Return to daemon background scheduling only after wrapper/install decisions
+6. Return to daemon background scheduling only after wrapper/install decisions
    and provider proof produce enough real operator evidence. The current socket
    daemon decision is complete under `TIN-867`; future production daemon work
    must promote the foreground tick engine deliberately.

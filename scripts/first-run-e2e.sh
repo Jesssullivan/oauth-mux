@@ -171,6 +171,23 @@ expect_not_contains "$(cat "$runtime_doctor_scoped")" "$store_root/max-1" "scope
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
 
+printf 'first-run e2e: accounts inventory is redacted and non-mutating\n'
+accounts_json="$tmp/accounts-codex.json"
+run_json "$accounts_json" accounts list --provider codex --json
+jq -e '
+  .configured == true
+  and .filter_provider == "codex"
+  and (.accounts | length) == 3
+  and all(.accounts[]; .provider == "codex" and .state == "action_needed" and .secret_backend == "file")
+  and all(.accounts[]; (.capabilities | length) == 2)
+  and all(.accounts[].capabilities[]; .proof_status == "live_proven" and .health_recorded == false and .selectable == false)
+  and (.agent_safe_commands | index("oauth-mux accounts list --json") != null)
+  and (.agent_safe_commands | index("oauth-mux doctor runtime --provider <provider> --account <account> --json") != null)
+' "$accounts_json" >/dev/null
+expect_not_contains "$(cat "$accounts_json")" "$store_root/max-1" "accounts list does not print concrete Codex store paths"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
+
 printf 'first-run e2e: discovery is redacted and agent-usable\n'
 discover_json="$tmp/discover.json"
 run_json "$discover_json" discover --json

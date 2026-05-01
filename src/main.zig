@@ -88,6 +88,10 @@ pub fn main() !void {
             try runProviders(allocator, stdout, providers_args);
         },
 
+        .accounts => |accounts_args| {
+            try runAccounts(allocator, stdout, accounts_args);
+        },
+
         .exec => |exec_args| {
             runExec(allocator, exec_args) catch |e| {
                 log.err("exec: {s}", .{@errorName(e)});
@@ -247,6 +251,283 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
     }
 }
 
+fn runAccounts(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.AccountsArgs) !void {
+    switch (args.action) {
+        .list => {},
+    }
+
+    const parsed = config.load(allocator) catch |e| {
+        if (args.json) {
+            try writer.writeAll("{\"version\":");
+            try std.json.stringify(cli.version, .{}, writer);
+            try writer.writeAll(",\"configured\":false,\"config_error\":");
+            try std.json.stringify(@errorName(e), .{}, writer);
+            try writer.writeAll(",\"accounts\":[],\"agent_safe_commands\":[");
+            try writeCommandJson(writer, "oauth-mux init");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux init --codex-max");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux accounts list --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux accounts\n\n");
+            try writer.print("  config: unavailable ({s})\n", .{@errorName(e)});
+            try writer.writeAll("  next: oauth-mux init\n");
+        }
+        return;
+    };
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    if (args.json) {
+        try writeAccountsListJson(writer, allocator, parsed.value, &store, args);
+    } else {
+        try writeAccountsListText(writer, allocator, parsed.value, &store, args);
+    }
+}
+
+fn writeAccountsListText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    args: cli.Command.AccountsArgs,
+) !void {
+    try writer.writeAll("oauth-mux accounts\n\n");
+    if (args.provider) |provider_filter| try writer.print("  provider: {s}\n\n", .{provider_filter});
+
+    var count: usize = 0;
+    var provider_it = cfg.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        if (!accountsProviderMatches(args, provider_name, prov.kind)) continue;
+
+        const def = config.resolveProviderDefinition(cfg, provider_name);
+        const kind = config.resolveProviderKind(cfg, provider_name);
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |acct_entry| {
+            count += 1;
+            const account_name = acct_entry.key_ptr.*;
+            const account = acct_entry.value_ptr.*;
+            const info = try runtime_mod.accountInfo(allocator, prov, account, def, kind);
+            const state = accountEnrollmentState(store, provider_name, account_name, def, info.readiness);
+            try writer.print("  {s}:{s} state={s} runtime={s} secret={s}", .{
+                provider_name,
+                account_name,
+                state,
+                runtimeReadinessSummary(info.readiness),
+                account.secret.backend,
+            });
+            if (account.config_dir != null) try writer.writeAll(" config_dir=set");
+            try writer.writeByte('\n');
+
+            for (def.capabilities) |capability| {
+                const route = RepairPlanRoute{ .provider = provider_name, .account = account_name, .capability = capability.name };
+                const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
+                const health = routeHealth(store, route);
+                const selectable = routeSelectable(runtime, health);
+                try writer.print("    {s} proof={s} selectable={s} runtime={s}", .{
+                    capability.name,
+                    capability.proof_status,
+                    if (selectable) "true" else "false",
+                    runtimeReadinessSummary(runtime),
+                });
+                if (health) |h| {
+                    try writer.writeAll(" liveness=");
+                    try health_mod.writeLivenessSummary(writer, h.liveness);
+                } else {
+                    try writer.writeAll(" liveness=unrecorded");
+                }
+                try writer.writeByte('\n');
+            }
+        }
+    }
+
+    if (count == 0) try writer.writeAll("  no configured accounts\n");
+    try writer.writeAll("\n  agent-safe next:\n");
+    try writer.writeAll("    oauth-mux accounts list --json\n");
+    try writer.writeAll("    oauth-mux doctor runtime --provider <provider> --account <account> --json\n");
+    try writer.writeAll("    oauth-mux repair-plan --provider <provider> --account <account> --capability <capability> --json\n");
+    try writer.writeAll("    oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json\n");
+}
+
+fn writeAccountsListJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    args: cli.Command.AccountsArgs,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"configured\":true,\"filter_provider\":");
+    if (args.provider) |provider_filter| try std.json.stringify(provider_filter, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"accounts\":[");
+
+    var first = true;
+    var provider_it = cfg.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        const provider_name = entry.key_ptr.*;
+        const prov = entry.value_ptr.*;
+        if (!accountsProviderMatches(args, provider_name, prov.kind)) continue;
+
+        const def = config.resolveProviderDefinition(cfg, provider_name);
+        const kind = config.resolveProviderKind(cfg, provider_name);
+        var account_it = prov.accounts.map.iterator();
+        while (account_it.next()) |acct_entry| {
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try writeAccountListJsonEntry(writer, allocator, cfg, store, provider_name, prov, acct_entry.key_ptr.*, acct_entry.value_ptr.*, def, kind);
+        }
+    }
+
+    try writer.writeAll("],\"agent_safe_commands\":[");
+    try writeCommandJson(writer, "oauth-mux accounts list --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux doctor runtime --provider <provider> --account <account> --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux repair-plan --provider <provider> --account <account> --capability <capability> --json");
+    try writer.writeByte(',');
+    try writeCommandJson(writer, "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json");
+    try writer.writeAll("]}\n");
+}
+
+fn writeAccountListJsonEntry(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    provider_name: []const u8,
+    prov: config.ProviderConfig,
+    account_name: []const u8,
+    account: config.AccountConfig,
+    def: provider_schema.ProviderDefinition,
+    kind: ?types.ProviderKind,
+) !void {
+    const info = try runtime_mod.accountInfo(allocator, prov, account, def, kind);
+    const state = accountEnrollmentState(store, provider_name, account_name, def, info.readiness);
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(provider_name, .{}, writer);
+    try writer.writeAll(",\"kind\":");
+    try std.json.stringify(prov.kind, .{}, writer);
+    try writer.writeAll(",\"display_name\":");
+    try std.json.stringify(providerDisplayName(def), .{}, writer);
+    try writer.writeAll(",\"support_status\":");
+    try std.json.stringify(supportStatusForConfig(cfg, provider_name, prov.kind), .{}, writer);
+    try writer.writeAll(",\"provider_proof_status\":");
+    try std.json.stringify(proofStatus(prov.kind), .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(account_name, .{}, writer);
+    try writer.writeAll(",\"state\":");
+    try std.json.stringify(state, .{}, writer);
+    try writer.print(",\"priority\":{d}", .{account.priority});
+    try writer.writeAll(",\"secret_backend\":");
+    try std.json.stringify(account.secret.backend, .{}, writer);
+    try writer.writeAll(",\"config_dir_set\":");
+    try writer.writeAll(if (account.config_dir != null) "true" else "false");
+    try writer.writeAll(",\"config_dir_env\":");
+    if (runtime_mod.configDirEnv(prov, def, kind)) |env_var| try std.json.stringify(env_var, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"tags\":[");
+    if (account.tags) |tags| {
+        for (tags, 0..) |tag, idx| {
+            if (idx > 0) try writer.writeByte(',');
+            try std.json.stringify(tag, .{}, writer);
+        }
+    }
+    try writer.writeAll("],\"runtime\":");
+    try writeRuntimeReadinessJson(writer, info.readiness);
+    try writer.writeAll(",\"writeback\":");
+    try writeAccountWritebackJson(writer, account, def);
+    try writer.writeAll(",\"capabilities\":[");
+    for (def.capabilities, 0..) |capability, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        try writeAccountCapabilityJson(writer, allocator, cfg, store, provider_name, account_name, def, capability);
+    }
+    try writer.writeAll("]}");
+}
+
+fn writeAccountCapabilityJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    provider_name: []const u8,
+    account_name: []const u8,
+    def: provider_schema.ProviderDefinition,
+    capability: provider_schema.CapabilityDefinition,
+) !void {
+    const route = RepairPlanRoute{ .provider = provider_name, .account = account_name, .capability = capability.name };
+    const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
+    const health = routeHealth(store, route);
+    const budget = routeProbeBudget(def, capability.name);
+    const action = repairActionFor(route, def, runtime, health, budget);
+    const selectable = routeSelectable(runtime, health);
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"name\":");
+    try std.json.stringify(capability.name, .{}, writer);
+    try writer.writeAll(",\"proof_status\":");
+    try std.json.stringify(capability.proof_status, .{}, writer);
+    try writer.writeAll(",\"budget\":");
+    if (budget) |probe_budget| try std.json.stringify(@tagName(probe_budget), .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"runtime\":");
+    try writeRuntimeReadinessJson(writer, runtime);
+    try writer.writeAll(",\"health_recorded\":");
+    try writer.writeAll(if (health != null) "true" else "false");
+    try writer.writeAll(",\"liveness\":");
+    if (health) |h| try writeLivenessJson(writer, h.liveness) else try writer.writeAll("null");
+    try writer.writeAll(",\"selectable\":");
+    try writer.writeAll(if (selectable) "true" else "false");
+    try writer.writeAll(",\"action\":");
+    try writeRepairActionJson(writer, allocator, action, route);
+    try writer.writeByte('}');
+}
+
+fn accountsProviderMatches(args: cli.Command.AccountsArgs, provider_name: []const u8, provider_kind: []const u8) bool {
+    const provider_filter = args.provider orelse return true;
+    return std.mem.eql(u8, provider_filter, provider_name) or std.mem.eql(u8, provider_filter, provider_kind);
+}
+
+fn accountEnrollmentState(
+    store: *health_mod.HealthStore,
+    provider_name: []const u8,
+    account_name: []const u8,
+    def: provider_schema.ProviderDefinition,
+    runtime: types.RuntimeReadiness,
+) []const u8 {
+    if (!runtime.isReady()) return "action_needed";
+    var has_evidence = false;
+
+    const account_key = health_mod.accountKey(provider_name, account_name);
+    if (store.accounts.get(account_key.slice())) |health| {
+        has_evidence = true;
+        if (livenessIsAvailable(health.liveness)) return "available";
+    }
+
+    for (def.capabilities) |capability| {
+        const capability_key = health_mod.capabilityKey(provider_name, account_name, capability.name);
+        if (store.accounts.get(capability_key.slice())) |health| {
+            has_evidence = true;
+            if (livenessIsAvailable(health.liveness)) return "available";
+        }
+    }
+
+    return if (has_evidence) "has_evidence" else "configured";
+}
+
+fn livenessIsAvailable(liveness: types.CredentialLiveness) bool {
+    return switch (liveness) {
+        .live => |live| live.availability == .available,
+        .degraded, .dead => false,
+    };
+}
+
 fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DiscoverArgs) !void {
     const config_path = try paths.configFilePath(allocator);
     defer allocator.free(config_path);
@@ -270,6 +551,8 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux providers list");
             try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux accounts list");
+            try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux report --redacted");
             try writer.writeAll("]}\n");
         } else {
@@ -281,6 +564,7 @@ fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.
             try writer.writeAll("    oauth-mux init --codex-max\n");
             try writer.writeAll("    oauth-mux doctor\n");
             try writer.writeAll("    oauth-mux providers list\n");
+            try writer.writeAll("    oauth-mux accounts list\n");
             try writer.writeAll("    oauth-mux report --redacted\n");
             try writer.writeAll("    oauth-mux config validate\n");
         }
@@ -364,6 +648,7 @@ fn writeDiscoverText(writer: anytype, cfg: config.Config, config_path: []const u
     try writer.writeAll("    oauth-mux doctor --json\n");
     try writer.writeAll("    oauth-mux report --redacted --json\n");
     try writer.writeAll("    oauth-mux providers list --json\n");
+    try writer.writeAll("    oauth-mux accounts list --json\n");
     try writer.writeAll("    oauth-mux status --json\n");
     try writer.writeAll("    oauth-mux health --json\n");
     try writer.writeAll("    oauth-mux doctor runtime --json\n");
@@ -470,6 +755,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux doctor --json",
         "oauth-mux report --redacted --json",
         "oauth-mux providers list --json",
+        "oauth-mux accounts list --json",
         "oauth-mux status --json",
         "oauth-mux health --json",
         "oauth-mux doctor runtime --json",
