@@ -38,6 +38,7 @@ oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat handoffs --json
+oauth-mux stay-afloat refresh --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile <profile> --capability <capability> --json
 ```
 
@@ -59,6 +60,7 @@ oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat handoffs --json
+oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
 
@@ -85,6 +87,9 @@ handoff event. Prefer scoped runtime checks such as
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
 when dogfooding a specific stay-afloat route; global runtime doctor is still
 useful for support bundles and full-machine cleanup.
+After a user-mediated upstream login, `oauth-mux stay-afloat refresh --profile
+<profile> --capability <capability> --json` is the concise evidence refresh
+step that can clear pending handoffs.
 
 `oauth-mux repair run --profile <profile> --capability <capability> --json` is
 also safe without confirmation. It will not open a browser, run `codex login`,

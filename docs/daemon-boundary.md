@@ -72,6 +72,12 @@ rather than introducing separate behavior.
   not run silently in the background. `oauth-mux daemon handoffs --json` is the
   lower-level alias. `--all` keeps the historical handoff events visible after
   later route evidence clears a pending prompt.
+- `oauth-mux stay-afloat handoff ack --provider <provider> --account <account>
+  [--profile <profile>] [--capability <capability>] --json` to record that a
+  pending user-mediated repair was seen without clearing it.
+- `oauth-mux stay-afloat handoff clear --provider <provider> --account
+  <account> [--profile <profile>] [--capability <capability>] --json` to
+  explicitly dismiss a stale pending handoff.
 - `oauth-mux stay-afloat --once --json` for one portable, policy-gated
   daemon-shaped planning pass. `oauth-mux daemon tick --once --json` is the
   lower-level alias. Without `--execute`, it reports `executed:false` and does
@@ -81,6 +87,9 @@ rather than introducing separate behavior.
   re-reads route state afterward, and queues interactive reauth as a redacted
   `daemon_handoff` event instead of running it silently. Repeated ticks report
   an existing handoff as pending rather than appending duplicate events.
+- `oauth-mux stay-afloat refresh --profile <profile> --capability <capability>
+  --json` as the named one-shot execute tick for refreshing route evidence
+  after a user-mediated upstream login.
 - `oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --json`
   for a bounded foreground loop. It re-reads local health/runtime state each
   tick and remains service-manager agnostic.
@@ -144,6 +153,7 @@ oauth-mux probe --profile <profile> --capability <capability> --json
 oauth-mux repair-plan --profile <profile> --capability <capability> --json
 oauth-mux repair run --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile <profile> --capability <capability> --json
+oauth-mux stay-afloat refresh --profile <profile> --capability <capability> --json
 oauth-mux daemon events --json
 oauth-mux exec --profile <profile> --capability <capability> -- <command>
 ```

@@ -17,6 +17,7 @@ pub const Command = union(enum) {
     repair_run: RepairRunArgs,
     route: RouteArgs,
     stay_afloat: DaemonTickArgs,
+    stay_afloat_handoff: HandoffArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -194,6 +195,20 @@ pub const Command = union(enum) {
         iterations: u32 = 1,
         interval_ms: u64 = 60_000,
         execute: bool = false,
+        json: bool = false,
+    };
+
+    pub const HandoffAction = enum {
+        ack,
+        clear,
+    };
+
+    pub const HandoffArgs = struct {
+        action: HandoffAction = .ack,
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
         json: bool = false,
     };
 };
@@ -535,7 +550,47 @@ fn parseDaemonTick(args: []const []const u8) Command {
 
 fn parseStayAfloat(args: []const []const u8) Command {
     if (args.len > 0 and eql(args[0], "handoffs")) return parseDaemonHandoffs(args[1..]);
+    if (args.len > 0 and eql(args[0], "handoff")) return parseStayAfloatHandoff(args[1..]);
+    if (args.len > 0 and eql(args[0], "refresh")) {
+        var tick = parseDaemonTickArgs(args[1..]);
+        tick.once = true;
+        tick.iterations = 1;
+        tick.execute = true;
+        return .{ .stay_afloat = tick };
+    }
     return .{ .stay_afloat = parseDaemonTickArgs(args) };
+}
+
+fn parseStayAfloatHandoff(args: []const []const u8) Command {
+    var result = Command.HandoffArgs{};
+    var i: usize = 0;
+    if (args.len > 0) {
+        if (eql(args[0], "clear") or eql(args[0], "resolve")) {
+            result.action = .clear;
+            i = 1;
+        } else if (eql(args[0], "ack") or eql(args[0], "acknowledge")) {
+            result.action = .ack;
+            i = 1;
+        }
+    }
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .stay_afloat_handoff = result };
 }
 
 fn parseDaemonTickArgs(args: []const []const u8) Command.DaemonTickArgs {
@@ -751,8 +806,12 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  stay-afloat [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run the portable stay-afloat planner/executor without service-manager assumptions.
+        \\  stay-afloat refresh [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Run one execute tick to refresh route evidence after user-mediated auth.
         \\  stay-afloat handoffs [--json] [--limit <n>] [--all]
         \\      Show pending user-mediated stay-afloat handoffs; --all includes history.
+        \\  stay-afloat handoff ack|clear --provider <name> --account <name> [--profile <name>] [--capability <name>] [--json]
+        \\      Acknowledge or clear a pending user-mediated handoff.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -1236,6 +1295,51 @@ test "parse stay-afloat handoffs json limit" {
     }
 }
 
+test "parse stay-afloat refresh enables execute tick" {
+    const args = [_][]const u8{ "stay-afloat", "refresh", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat => |tick| {
+            try std.testing.expect(tick.once);
+            try std.testing.expect(tick.execute);
+            try std.testing.expect(tick.json);
+            try std.testing.expectEqualStrings("codex-max", tick.profile.?);
+            try std.testing.expectEqualStrings("codex-max", tick.capability.?);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse stay-afloat handoff acknowledgement" {
+    const args = [_][]const u8{ "stay-afloat", "handoff", "ack", "--profile", "codex-max", "--provider", "codex", "--account", "max-1", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat_handoff => |handoff| {
+            try std.testing.expectEqual(Command.HandoffAction.ack, handoff.action);
+            try std.testing.expectEqualStrings("codex-max", handoff.profile.?);
+            try std.testing.expectEqualStrings("codex", handoff.provider.?);
+            try std.testing.expectEqualStrings("max-1", handoff.account.?);
+            try std.testing.expectEqualStrings("codex-max", handoff.capability.?);
+            try std.testing.expect(handoff.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse stay-afloat handoff clear" {
+    const args = [_][]const u8{ "stay-afloat", "handoff", "clear", "--provider", "codex", "--account", "max-1", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat_handoff => |handoff| {
+            try std.testing.expectEqual(Command.HandoffAction.clear, handoff.action);
+            try std.testing.expectEqualStrings("codex", handoff.provider.?);
+            try std.testing.expectEqualStrings("max-1", handoff.account.?);
+            try std.testing.expect(handoff.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon tick bounded loop" {
     const args = [_][]const u8{ "daemon", "tick", "--loop", "--execute", "--iterations", "3", "--interval-ms", "250", "--profile", "codex-max", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -1310,7 +1414,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a handoffs -d 'Show pending handoffs'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'handoffs handoff refresh' -d 'Stay-afloat subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from handoff' -a 'ack clear' -d 'Handoff action'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l execute -d 'Execute one admitted non-interactive action'

@@ -202,9 +202,26 @@ oauth-mux stay-afloat handoffs --json
 
 The default handoff view is pending as of the daemon's last route evidence. Use
 `oauth-mux stay-afloat handoffs --json --all` when you need the historical audit
-trail instead. After a user completes an upstream CLI login, another
-`stay-afloat --once --execute ... --json` can refresh route evidence and clear
-the pending prompt.
+trail instead. A user or agent can acknowledge that the handoff has been seen
+without clearing it:
+
+```bash
+oauth-mux stay-afloat handoff ack --provider codex --account max-1 --profile codex-max --capability codex-max --json
+```
+
+The recovery loop after an auth expiry is:
+
+```bash
+oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json
+# run the redacted upstream command printed in the handoff, such as:
+oauth-mux codex login-device max-1
+oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json
+```
+
+`stay-afloat refresh` is a named one-shot execute tick. It refreshes route
+evidence after user-mediated login and clears the pending prompt when the route
+becomes selectable. Use `stay-afloat handoff clear ... --json` only to dismiss a
+stale pending prompt that the operator has decided is no longer actionable.
 
 For a bounded foreground loop, use:
 
