@@ -144,6 +144,24 @@ The account enrollment and agent inventory contract lives in
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. Use that contract
 before broadening provider-neutral enrollment commands or MCP mutation tools.
 
+## Wrapper Author Experience
+
+Wrappers should call the foreground command contract, not the socket daemon:
+
+```bash
+oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
+oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --profile <profile> --capability <capability> --json
+```
+
+A wrapper may act automatically only on admitted, non-interactive,
+non-mutating work. When JSON reports `action.kind:"fix_runtime"` with
+`action.command:null`, the wrapper should display or broker
+`action.diagnostic_command` in the user-owned process boundary, then rerun
+`stay-afloat` or `route explain`. It must not infer credential liveness from a
+runtime diagnostic, rewrite provider stores, or treat `systemd`, `launchd`,
+Homebrew services, cron, Windows Services, containers, or CI as product
+semantics.
+
 ## Provider Author Experience
 
 A new provider should usually start as data, not Zig:

@@ -251,6 +251,11 @@ jq -e '
   and (.routes | length) == 3
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
   and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
+  and all(.routes[]; if .action.kind == "fix_runtime" then
+    .action.command == null
+    and (.action.diagnostic_command | startswith("oauth-mux doctor runtime --provider codex --account "))
+    and (.action.diagnostic_command | endswith(" --capability codex-max --json"))
+  else true end)
 ' "$repair_plan_json" >/dev/null
 
 printf 'first-run e2e: route explain reports no recorded health without mutation\n'
@@ -265,7 +270,32 @@ jq -e '
   and (.routes | length) == 3
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
   and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed")
+  and all(.routes[]; if .action.kind == "fix_runtime" then
+    .action.command == null
+    and (.action.diagnostic_command | startswith("oauth-mux doctor runtime --provider codex --account "))
+    and (.action.diagnostic_command | endswith(" --capability codex-max --json"))
+  else true end)
 ' "$route_explain_json" >/dev/null
+
+printf 'first-run e2e: stay-afloat exposes runtime diagnostics without automatic repair\n'
+stay_afloat_json="$tmp/stay-afloat-codex-max.json"
+run_json "$stay_afloat_json" stay-afloat --once --profile codex-max --capability codex-max --json
+jq -e '
+  .mode == "once"
+  and .execution_mode == "plan"
+  and .executed == false
+  and .afloat == false
+  and .selected == null
+  and (.routes | length) == 3
+  and all(.routes[]; .route.provider == "codex" and .route.capability == "codex-max")
+  and all(.routes[]; if .route.action.kind == "fix_runtime" then
+    .route.action.command == null
+    and (.route.action.diagnostic_command | startswith("oauth-mux doctor runtime --provider codex --account "))
+    and (.route.action.diagnostic_command | endswith(" --capability codex-max --json"))
+  else true end)
+' "$stay_afloat_json" >/dev/null
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
 
 printf 'first-run e2e: route select refuses unrecorded health evidence\n'
 route_select_json="$tmp/route-select-codex-max.json"

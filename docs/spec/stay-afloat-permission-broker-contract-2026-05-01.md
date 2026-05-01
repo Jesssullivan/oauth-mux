@@ -173,3 +173,8 @@ service managers as optional wrapper examples.
 The next implementation slice should add a small wrapper-author section to the
 public docs and one fixture/E2E case that asserts `diagnostic_command` remains
 present for runtime repair while `command` remains `null`.
+
+Implementation note, 2026-05-01: the public adoption doc now includes the
+wrapper-author contract, and the clean first-run E2E asserts that
+`repair-plan`, `route explain`, and `stay-afloat --once` keep runtime repair
+as `command:null` plus a user/broker-visible `diagnostic_command`.
