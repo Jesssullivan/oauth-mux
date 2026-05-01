@@ -42,6 +42,7 @@ oauth-mux accounts list --json
 oauth-mux enroll plan <provider> --json
 oauth-mux enroll codex --account <name> --confirm-enroll --json
 oauth-mux enroll claude --account <name> --confirm-enroll --json
+oauth-mux enroll figma --account <name> --mode pat --confirm-enroll --json
 oauth-mux discover
 ```
 
@@ -56,6 +57,8 @@ oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
 oauth-mux enroll plan claude --account work --json
 oauth-mux enroll claude --account work --confirm-enroll --json
+oauth-mux enroll plan figma --account design --mode pat --json
+oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
 oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary
@@ -90,13 +93,15 @@ agent-safe, interactive, mutating, or provider-call-spending. Provider-neutral
 enrollment mutation is only available where the provider-owned consent contract
 has been implemented.
 
-`oauth-mux enroll codex --account <name> --confirm-enroll --json` and
-`oauth-mux enroll claude --account <name> --confirm-enroll --json` are the first
-provider-neutral enrollment mutations. They update the active oauth-mux config,
-add provider routes, and create isolated account directories. They do not run
-upstream login, open browser/device auth, or probe providers. The returned
-`next_commands` include explicit provider login handoffs plus runtime and
-inventory checks.
+`oauth-mux enroll codex --account <name> --confirm-enroll --json`,
+`oauth-mux enroll claude --account <name> --confirm-enroll --json`, and
+`oauth-mux enroll figma --account <name> --mode <oauth|pat|plan>
+--confirm-enroll --json` are the first provider-neutral enrollment mutations.
+They update the active oauth-mux config and add provider routes; Codex and
+Claude also create isolated account directories. Figma enrollment never creates
+token material. These commands do not run upstream login, open browser/device
+auth, or probe providers. The returned `next_commands` include explicit login,
+secret, proof, runtime, and inventory handoffs as appropriate.
 
 For profile-level stay-afloat checks, scope the runtime report:
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`.
@@ -429,12 +434,12 @@ handoff, or a live proof run.
 setup sequence. Agents may present steps with `agent_safe:false` to a user or
 permission broker, but must not run those steps without explicit consent.
 
-`enroll codex --account <name> --confirm-enroll --json` and
-`enroll claude --account <name> --confirm-enroll --json` are not agent-safe by
-default because they mutate config and create account directories. Agents may
-request them through a permission broker, but must not infer that the account is
-authenticated until the user has run the returned login command and runtime
-checks pass.
+`enroll codex --account <name> --confirm-enroll --json`,
+`enroll claude --account <name> --confirm-enroll --json`, and
+`enroll figma --account <name> --confirm-enroll --json` are not agent-safe by
+default because they mutate config. Agents may request them through a
+permission broker, but must not infer that the account is authenticated until
+the user has run the returned login/secret/proof handoffs and checks pass.
 
 `report --redacted --json` is the support-bundle surface. It adds platform,
 config shape, provider/account labels, command availability, health summaries,
@@ -465,8 +470,12 @@ operator proof, `public_live_proven` for no-secret public metadata proof, and
 8. For Claude N+1, run
    `oauth-mux enroll claude --account <name> --confirm-enroll --json`, then the
    returned `env CLAUDE_CONFIG_DIR=... claude auth login` handoff.
-9. Run no-spend checks first: `status`, `health`, and credential parse probes.
-10. Run live probes only through `scripts/live-provider-qa.sh` or the manual
+9. For Figma N+1, run
+   `oauth-mux enroll figma --account <name> --mode <oauth|pat|plan>
+   --confirm-enroll --json`, then set the returned secret env var before any
+   proof probe.
+10. Run no-spend checks first: `status`, `health`, and credential parse probes.
+11. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.
 
 ## Operator Definition of Done

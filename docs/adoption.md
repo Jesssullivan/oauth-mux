@@ -37,6 +37,7 @@ oauth-mux accounts list
 oauth-mux enroll plan <provider>
 oauth-mux enroll codex --account <name> --confirm-enroll
 oauth-mux enroll claude --account <name> --confirm-enroll
+oauth-mux enroll figma --account <name> --mode pat --confirm-enroll
 oauth-mux config validate
 oauth-mux discover --json
 oauth-mux doctor runtime --json
@@ -64,6 +65,8 @@ oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
 oauth-mux enroll plan claude --account work --json
 oauth-mux enroll claude --account work --confirm-enroll --json
+oauth-mux enroll plan figma --account design --mode pat --json
+oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
 oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary
@@ -105,12 +108,13 @@ recorded liveness, and safe next commands without reading credential values.
 surface. It does not mutate config or auth state; it marks each provider-specific
 step as agent-safe, interactive, mutating, or provider-call-spending so users
 and agents can ask for consent at the right boundary.
-`oauth-mux enroll codex --account <name> --confirm-enroll --json` and
-`oauth-mux enroll claude --account <name> --confirm-enroll --json` are the
-first consented provider-neutral enrollment mutations. They update oauth-mux
-config, add provider routes, and bootstrap isolated local account directories.
-They do not run upstream login, open a browser, or spend provider calls; login
-handoffs remain explicit in `next_commands`.
+`oauth-mux enroll codex --account <name> --confirm-enroll --json`,
+`oauth-mux enroll claude --account <name> --confirm-enroll --json`, and
+`oauth-mux enroll figma --account <name> --mode <oauth|pat|plan>
+--confirm-enroll --json` are the first consented provider-neutral enrollment
+mutations. They update oauth-mux config, add provider routes, and return
+explicit login, secret, or proof handoffs. They do not run upstream login, open
+a browser, create token material, or spend provider calls.
 After a user-mediated upstream login, `oauth-mux stay-afloat refresh --profile
 <profile> --capability <capability> --json` is the concise evidence refresh
 step that can clear pending handoffs.

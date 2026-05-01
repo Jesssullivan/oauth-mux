@@ -50,11 +50,12 @@ step with `agent_safe`, `interactive`, `mutating`, and
 `spends_provider_calls`, and it explicitly reports provider-neutral enrollment
 mutation as available only where provider-owned consent flows are implemented.
 
-The first consented mutations are Codex and Claude:
+The first consented mutations are Codex, Claude, and Figma:
 
 ```bash
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
 oauth-mux enroll claude --account work --confirm-enroll --json
+oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
 ```
 
 Confirmed Codex enrollment mutates only oauth-mux-owned state: active config,
@@ -66,6 +67,11 @@ Confirmed Claude enrollment follows the same boundary: active oauth-mux config,
 the `claude` profile route, and an isolated `CLAUDE_CONFIG_DIR` are scaffolded,
 then `claude auth login` is returned as a user-mediated handoff. oauth-mux does
 not run the Claude login command or rewrite Claude-owned credential state.
+
+Confirmed Figma enrollment is config-only. It adds a mode-specific Figma
+provider/profile route and an env-backed secret reference, but does not create
+token material, open OAuth, or run a proof probe. OAuth bearer, PAT, and
+plan/file metadata modes remain separate route shapes.
 
 ## User Stories
 
@@ -121,14 +127,14 @@ automatic quota repair.
 Figma needs auth-mode separation. OAuth bearer, PAT, and plan/file metadata
 routes must not collapse into one "Figma works" claim.
 
-Expected future flow:
+Expected flow:
 
 ```bash
-oauth-mux enroll figma --account work --mode oauth
-oauth-mux enroll figma --account service --mode pat
 oauth-mux enroll plan figma --account service --mode pat --json
+oauth-mux enroll figma --account service --mode pat --secret-env OMUX_FIGMA_SERVICE_PAT --confirm-enroll --json
+export OMUX_FIGMA_SERVICE_PAT=<figma-token>
 oauth-mux accounts list --provider figma --json
-oauth-mux probe --provider figma --account service --capability identity-pat --json
+oauth-mux probe --provider figma-pat --account service --capability identity-pat --json
 ```
 
 The proof gate must distinguish `scope_insufficient`, revoked token,
@@ -174,7 +180,7 @@ handoff rather than trying to run browser/device auth silently.
 - safe next commands;
 - the future provider-neutral mutation command with `available:false`.
 
-For Codex and Claude, that command is now available and points to
+For Codex, Claude, and Figma, that command is now available and points to
 `oauth-mux enroll <provider> --account <name> --confirm-enroll`.
 
 Account state is intentionally coarse:
@@ -230,10 +236,10 @@ Mutation-capable tools such as `enroll.start`, `enroll.complete`, or
 evidence. MCP tools should preserve the same action taxonomy as the CLI:
 diagnostic, handoff, probe, repair, and mutation.
 
-For the current Codex and Claude implementations, the mutation-capable tool
+For the current Codex, Claude, and Figma implementations, the mutation-capable tool
 equivalent should expose the same shape as `enroll <provider>
---confirm-enroll`: config/store scaffolding only, with provider login returned
-as a user-mediated handoff.
+--confirm-enroll`: config/store scaffolding only, with provider login, secret,
+or proof setup returned as a user-mediated handoff.
 
 ## Implementation Slices
 
@@ -244,5 +250,6 @@ as a user-mediated handoff.
    `enroll codex --account <name> --confirm-enroll`.
 4. Shipped Claude account-store enrollment as
    `enroll claude --account <name> --confirm-enroll`.
-5. Add Figma OAuth/PAT enrollment mutation planning and proof fixtures.
+5. Shipped Figma OAuth/PAT/plan enrollment scaffolding as
+   `enroll figma --account <name> --mode <oauth|pat|plan> --confirm-enroll`.
 6. Define the MCP tool schema against the same JSON surfaces.

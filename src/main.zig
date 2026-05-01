@@ -547,6 +547,7 @@ fn runEnroll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.En
         },
         .codex => try runEnrollCodex(allocator, writer, args),
         .claude => try runEnrollClaude(allocator, writer, args),
+        .figma => try runEnrollFigma(allocator, writer, args),
     }
 }
 
@@ -749,6 +750,107 @@ fn runEnrollClaude(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
     try writeEnrollClaudeResult(writer, allocator, result, args.json);
 }
 
+const EnrollFigmaResult = struct {
+    ok: bool,
+    reason: []const u8,
+    account: []const u8,
+    mode: []const u8,
+    provider: []const u8,
+    profile: []const u8,
+    capability: []const u8,
+    secret_env: []const u8,
+    active_config: []const u8,
+    backup_config: ?[]const u8 = null,
+    config_changed: bool = false,
+};
+
+fn runEnrollFigma(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.EnrollArgs) !void {
+    const account = args.account orelse {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"missing_account\",\"mutates\":true,\"requires\":\"--account <name>\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux enroll plan figma --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux enroll figma\n\n");
+            try writer.writeAll("  missing required --account <name>\n");
+            try writer.writeAll("  next: oauth-mux enroll plan figma --json\n");
+        }
+        return;
+    };
+
+    const mode = figmaEnrollmentMode(args.mode);
+    const provider_name = figmaProviderForMode(mode);
+    const profile_name = provider_name;
+    const capability = figmaCapabilityForMode(mode);
+    const secret_env = if (args.secret_env) |value|
+        try allocator.dupe(u8, value)
+    else
+        try figmaDefaultSecretEnv(allocator, account, mode);
+    defer allocator.free(secret_env);
+
+    const active_config_path = try paths.configFilePath(allocator);
+    defer allocator.free(active_config_path);
+
+    if (!args.confirm_enroll) {
+        try writeEnrollFigmaConfirmationRequired(writer, allocator, args, active_config_path, provider_name, profile_name, capability, secret_env);
+        return;
+    }
+
+    var active = config.loadFromPath(allocator, active_config_path) catch |e| {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":");
+            try std.json.stringify(@errorName(e), .{}, writer);
+            try writer.writeAll(",\"message\":\"active config is required before confirmed Figma enrollment\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux init");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux enroll figma\n\n");
+            try writer.print("  config unavailable: {s}\n", .{@errorName(e)});
+            try writer.writeAll("  next: oauth-mux init\n");
+        }
+        return;
+    };
+    defer active.deinit();
+    try config.validate(active.value, std.io.null_writer);
+
+    var result = EnrollFigmaResult{
+        .ok = true,
+        .reason = "enrolled_figma_account",
+        .account = account,
+        .mode = mode,
+        .provider = provider_name,
+        .profile = profile_name,
+        .capability = capability,
+        .secret_env = secret_env,
+        .active_config = active_config_path,
+    };
+
+    var backup_config: ?[]const u8 = null;
+    defer if (backup_config) |backup| allocator.free(backup);
+
+    const config_changed = !figmaEnrollmentShapeConfigured(active.value, provider_name, profile_name, account, capability);
+    if (config_changed) {
+        var config_buf = std.ArrayList(u8).init(allocator);
+        defer config_buf.deinit();
+        try writeFigmaEnrollConfigJson(config_buf.writer(), active.value, provider_name, profile_name, account, mode, capability, secret_env);
+
+        const parsed = try config.loadFromBytes(allocator, config_buf.items);
+        defer parsed.deinit();
+        try config.validate(parsed.value, std.io.null_writer);
+        if (!figmaEnrollmentShapeConfigured(parsed.value, provider_name, profile_name, account, capability)) return error.ConfigValidationError;
+
+        backup_config = try defaultCodexConfigBackupPath(allocator, active_config_path);
+        try writeActiveConfigAtomically(allocator, active_config_path, backup_config.?, config_buf.items);
+
+        result.backup_config = backup_config.?;
+        result.config_changed = true;
+    } else {
+        result.reason = "figma_account_already_configured";
+    }
+
+    try writeEnrollFigmaResult(writer, allocator, result, args.json);
+}
+
 fn writeEnrollCodexConfirmationRequired(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -829,6 +931,60 @@ fn writeEnrollClaudeConfirmationRequired(
     try writer.print("  {s}\n", .{confirm_command});
 }
 
+fn writeEnrollFigmaConfirmationRequired(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    args: cli.Command.EnrollArgs,
+    active_config_path: []const u8,
+    provider_name: []const u8,
+    profile_name: []const u8,
+    capability: []const u8,
+    secret_env: []const u8,
+) !void {
+    const account = args.account orelse "<account>";
+    const confirm_command = try enrollFigmaConfirmCommand(allocator, account, args.mode, args.secret_env, args.json);
+    defer allocator.free(confirm_command);
+    const probe_command = try enrollProbeCommand(allocator, provider_name, args.account, capability);
+    defer allocator.free(probe_command);
+
+    if (args.json) {
+        try writer.writeAll("{\"ok\":false,\"executed\":false,\"confirmation_required\":true,\"requires\":\"--confirm-enroll\",\"mutates\":true,\"interactive\":false,\"spends_provider_calls\":false,\"provider\":\"figma\",\"account\":");
+        try std.json.stringify(account, .{}, writer);
+        try writer.writeAll(",\"mode\":");
+        try std.json.stringify(figmaEnrollmentMode(args.mode), .{}, writer);
+        try writer.writeAll(",\"config_provider\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"profile\":");
+        try std.json.stringify(profile_name, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        try std.json.stringify(capability, .{}, writer);
+        try writer.writeAll(",\"secret_backend\":\"env\",\"secret_env\":");
+        try std.json.stringify(secret_env, .{}, writer);
+        try writer.writeAll(",\"active_config\":");
+        try std.json.stringify(active_config_path, .{}, writer);
+        try writer.writeAll(",\"confirm_command\":");
+        try std.json.stringify(confirm_command, .{}, writer);
+        try writer.writeAll(",\"proof_command\":");
+        try std.json.stringify(probe_command, .{}, writer);
+        try writer.writeAll(",\"plan\":");
+        try writeEnrollPlanJsonInline(writer, allocator, args);
+        try writer.writeAll("}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux enroll figma\n\n");
+    try writer.writeAll("  confirmation required: --confirm-enroll\n");
+    try writer.writeAll("  mutates: active oauth-mux config only\n");
+    try writer.writeAll("  does not create: Figma token material, OAuth browser auth, provider probes\n\n");
+    try writer.print("  active config: {s}\n", .{active_config_path});
+    try writer.print("  provider:      {s}\n", .{provider_name});
+    try writer.print("  profile:       {s}\n", .{profile_name});
+    try writer.print("  capability:    {s}\n", .{capability});
+    try writer.print("  secret env:    {s}\n\n", .{secret_env});
+    try writer.writeAll("next:\n");
+    try writer.print("  {s}\n", .{confirm_command});
+}
+
 fn writeEnrollPlanJsonInline(writer: anytype, allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) !void {
     var parsed_config: ?std.json.Parsed(config.Config) = config.load(allocator) catch null;
     defer if (parsed_config) |*parsed| parsed.deinit();
@@ -841,6 +997,7 @@ fn writeEnrollPlanJsonInline(writer: anytype, allocator: std.mem.Allocator, args
         .account = args.account,
         .mode = args.mode,
         .store_root = args.store_root,
+        .secret_env = args.secret_env,
         .json = true,
     };
 
@@ -987,6 +1144,65 @@ fn writeEnrollClaudeResult(writer: anytype, allocator: std.mem.Allocator, result
     try writer.writeAll("  oauth-mux stay-afloat refresh --profile claude --capability auth-status --json\n");
 }
 
+fn writeEnrollFigmaResult(writer: anytype, allocator: std.mem.Allocator, result: EnrollFigmaResult, json: bool) !void {
+    const accounts_command = try enrollAccountsCommand(allocator, "figma");
+    defer allocator.free(accounts_command);
+    const probe_command = try enrollProbeCommand(allocator, result.provider, result.account, result.capability);
+    defer allocator.free(probe_command);
+    const export_command = try figmaSecretExportCommand(allocator, result.secret_env);
+    defer allocator.free(export_command);
+
+    if (json) {
+        try writer.writeAll("{\"ok\":");
+        try writer.writeAll(if (result.ok) "true" else "false");
+        try writer.writeAll(",\"executed\":true,\"provider\":\"figma\",\"account\":");
+        try std.json.stringify(result.account, .{}, writer);
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(result.reason, .{}, writer);
+        try writer.writeAll(",\"mode\":");
+        try std.json.stringify(result.mode, .{}, writer);
+        try writer.writeAll(",\"config_provider\":");
+        try std.json.stringify(result.provider, .{}, writer);
+        try writer.writeAll(",\"profile\":");
+        try std.json.stringify(result.profile, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        try std.json.stringify(result.capability, .{}, writer);
+        try writer.writeAll(",\"secret_backend\":\"env\",\"secret_env\":");
+        try std.json.stringify(result.secret_env, .{}, writer);
+        try writer.writeAll(",\"config_changed\":");
+        try writer.writeAll(if (result.config_changed) "true" else "false");
+        try writer.writeAll(",\"active_config\":");
+        try std.json.stringify(result.active_config, .{}, writer);
+        try writer.writeAll(",\"backup_config\":");
+        if (result.backup_config) |backup| try std.json.stringify(backup, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"created_secret\":false,\"ran_provider_login\":false,\"spends_provider_calls\":false,\"next_commands\":[");
+        try writeCommandJson(writer, export_command);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, "oauth-mux config validate");
+        try writer.writeByte(',');
+        try writeCommandJson(writer, accounts_command);
+        try writer.writeByte(',');
+        try writeCommandJson(writer, probe_command);
+        try writer.writeAll("]}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux enroll figma\n\n");
+    try writer.print("  account:             {s}\n", .{result.account});
+    try writer.print("  mode:                {s}\n", .{result.mode});
+    try writer.print("  provider/profile:    {s} / {s}\n", .{ result.provider, result.profile });
+    try writer.print("  capability:          {s}\n", .{result.capability});
+    try writer.print("  secret env:          {s}\n", .{result.secret_env});
+    try writer.print("  config changed:      {s}\n", .{if (result.config_changed) "yes" else "no"});
+    if (result.backup_config) |backup| try writer.print("  backup config:       {s}\n", .{backup});
+    try writer.writeAll("  provider login run:  no\n\n");
+    try writer.writeAll("next:\n");
+    try writer.print("  {s}\n", .{export_command});
+    try writer.writeAll("  oauth-mux config validate\n");
+    try writer.print("  {s}\n", .{accounts_command});
+    try writer.print("  {s}\n", .{probe_command});
+}
+
 fn enrollCodexConfirmCommand(allocator: std.mem.Allocator, account: []const u8, store_root: ?[]const u8, json: bool) ![]const u8 {
     if (store_root) |root| {
         return try std.fmt.allocPrint(allocator, "oauth-mux enroll codex --account {s} --store-root {s} --confirm-enroll{s}", .{
@@ -1021,6 +1237,34 @@ fn enrollClaudeLoginCommand(allocator: std.mem.Allocator, account_dir: []const u
     return try std.fmt.allocPrint(allocator, "env CLAUDE_CONFIG_DIR={s} claude auth login", .{quoted_dir});
 }
 
+fn enrollFigmaConfirmCommand(
+    allocator: std.mem.Allocator,
+    account: []const u8,
+    mode: ?[]const u8,
+    secret_env: ?[]const u8,
+    json: bool,
+) ![]const u8 {
+    var command = std.ArrayList(u8).init(allocator);
+    errdefer command.deinit();
+    try command.appendSlice("oauth-mux enroll figma --account ");
+    try command.appendSlice(account);
+    if (mode) |value| {
+        try command.appendSlice(" --mode ");
+        try command.appendSlice(value);
+    }
+    if (secret_env) |value| {
+        try command.appendSlice(" --secret-env ");
+        try command.appendSlice(value);
+    }
+    try command.appendSlice(" --confirm-enroll");
+    if (json) try command.appendSlice(" --json");
+    return command.toOwnedSlice();
+}
+
+fn figmaSecretExportCommand(allocator: std.mem.Allocator, secret_env: []const u8) ![]const u8 {
+    return try std.fmt.allocPrint(allocator, "export {s}=<figma-token>", .{secret_env});
+}
+
 fn codexEnrollmentShapeConfigured(cfg: config.Config, account: []const u8) bool {
     const codex_provider = cfg.providers.map.get("codex") orelse return false;
     if (codex_provider.accounts.map.get(account) == null) return false;
@@ -1037,6 +1281,20 @@ fn claudeEnrollmentShapeConfigured(cfg: config.Config, account: []const u8) bool
 
     const route = health_mod.capabilityKey("claude", account, "auth-status");
     return profileContainsProvider(cfg, "claude", route.slice());
+}
+
+fn figmaEnrollmentShapeConfigured(
+    cfg: config.Config,
+    provider_name: []const u8,
+    profile_name: []const u8,
+    account: []const u8,
+    capability: []const u8,
+) bool {
+    const figma_provider = cfg.providers.map.get(provider_name) orelse return false;
+    if (figma_provider.accounts.map.get(account) == null) return false;
+
+    const route = health_mod.capabilityKey(provider_name, account, capability);
+    return profileContainsProvider(cfg, profile_name, route.slice());
 }
 
 fn profileContainsProvider(cfg: config.Config, profile_name: []const u8, provider_ref: []const u8) bool {
@@ -1174,6 +1432,80 @@ fn writeClaudeEnrollConfigJson(
     try writer.writeAll("}\n");
 }
 
+fn writeFigmaEnrollConfigJson(
+    writer: anytype,
+    active: config.Config,
+    provider_name: []const u8,
+    profile_name: []const u8,
+    account: []const u8,
+    mode: []const u8,
+    capability: []const u8,
+    secret_env: []const u8,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try writer.print("{d}", .{active.version});
+    try writer.writeAll(",\"defaults\":");
+    try std.json.stringify(active.defaults, .{}, writer);
+    try writer.writeAll(",\"policy\":");
+    try std.json.stringify(active.policy, .{}, writer);
+    try writer.writeAll(",\"provider_definitions\":");
+    try std.json.stringify(active.provider_definitions, .{}, writer);
+    try writer.writeAll(",\"providers\":{");
+
+    var first = true;
+    var wrote_figma = false;
+    var provider_it = active.providers.map.iterator();
+    while (provider_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        try writer.writeByte(':');
+        if (std.mem.eql(u8, entry.key_ptr.*, provider_name)) {
+            try writeFigmaProviderWithEnrollment(writer, entry.value_ptr.*, account, mode, secret_env);
+            wrote_figma = true;
+        } else {
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        }
+    }
+    if (!wrote_figma) {
+        if (!first) try writer.writeByte(',');
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeByte(':');
+        try writeFigmaProviderWithEnrollment(writer, null, account, mode, secret_env);
+    }
+
+    const route = health_mod.capabilityKey(provider_name, account, capability);
+    const profile_strategy = enrollmentProfileStrategy(active);
+
+    try writer.writeAll("},\"profiles\":{");
+    first = true;
+    var wrote_figma_profile = false;
+    var profile_it = active.profiles.map.iterator();
+    while (profile_it.next()) |entry| {
+        if (!first) try writer.writeByte(',');
+        first = false;
+        const current_profile_name = entry.key_ptr.*;
+        try std.json.stringify(current_profile_name, .{}, writer);
+        try writer.writeByte(':');
+        if (std.mem.eql(u8, current_profile_name, profile_name)) {
+            try writeProfileWithAddedProvider(writer, entry.value_ptr.*, route.slice());
+            wrote_figma_profile = true;
+        } else {
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+        }
+    }
+    if (!wrote_figma_profile) {
+        if (!first) try writer.writeByte(',');
+        try std.json.stringify(profile_name, .{}, writer);
+        try writer.writeByte(':');
+        try writeSingleRouteProfile(writer, route.slice(), profile_strategy);
+    }
+
+    try writer.writeAll("},\"strategies\":");
+    try std.json.stringify(active.strategies, .{}, writer);
+    try writer.writeAll("}\n");
+}
+
 fn writeCodexProviderWithEnrollment(
     allocator: std.mem.Allocator,
     writer: anytype,
@@ -1280,6 +1612,72 @@ fn writeClaudeStarterAccount(
     try writer.writeAll(",\"secret\":{\"backend\":\"file\",\"path\":");
     try std.json.stringify(credentials_path, .{}, writer);
     try writer.writeAll("},\"tags\":[\"oauth\",\"claude\"]}");
+}
+
+fn writeFigmaProviderWithEnrollment(
+    writer: anytype,
+    active_provider: ?config.ProviderConfig,
+    account: []const u8,
+    mode: []const u8,
+    secret_env: []const u8,
+) !void {
+    try writer.writeAll("{\"kind\":");
+    if (active_provider) |provider_cfg| {
+        try std.json.stringify(provider_cfg.kind, .{}, writer);
+    } else {
+        try std.json.stringify("figma", .{}, writer);
+    }
+    try writer.writeAll(",\"config_dir_env\":");
+    if (active_provider) |provider_cfg| {
+        if (provider_cfg.config_dir_env) |config_dir_env| {
+            try std.json.stringify(config_dir_env, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"accounts\":{");
+
+    var first = true;
+    var next_priority: i32 = 10;
+    var account_present = false;
+    if (active_provider) |provider_cfg| {
+        var account_it = provider_cfg.accounts.map.iterator();
+        while (account_it.next()) |entry| {
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try std.json.stringify(entry.key_ptr.*, .{}, writer);
+            try writer.writeByte(':');
+            try std.json.stringify(entry.value_ptr.*, .{}, writer);
+            if (entry.value_ptr.priority <= next_priority) next_priority = entry.value_ptr.priority - 10;
+            if (std.mem.eql(u8, entry.key_ptr.*, account)) account_present = true;
+        }
+    }
+
+    if (!account_present) {
+        if (!first) try writer.writeByte(',');
+        try writeFigmaStarterAccount(writer, account, mode, secret_env, next_priority);
+    }
+
+    try writer.writeAll("}}");
+}
+
+fn writeFigmaStarterAccount(
+    writer: anytype,
+    account: []const u8,
+    mode: []const u8,
+    secret_env: []const u8,
+    priority: i32,
+) !void {
+    try std.json.stringify(account, .{}, writer);
+    try writer.writeAll(":{\"priority\":");
+    try writer.print("{d}", .{priority});
+    try writer.writeAll(",\"secret\":{\"backend\":\"env\",\"variable\":");
+    try std.json.stringify(secret_env, .{}, writer);
+    try writer.writeAll("},\"tags\":[");
+    try std.json.stringify(mode, .{}, writer);
+    try writer.writeAll(",\"figma\"]}");
 }
 
 fn writeProfileWithAddedProvider(writer: anytype, profile: config.ProfileConfig, provider_ref: []const u8) !void {
@@ -1636,7 +2034,9 @@ fn writeEnrollFutureCommandJson(writer: anytype, allocator: std.mem.Allocator, a
     try writer.writeAll("\"available\":");
     try writer.writeAll(if (available) "true" else "false");
     try writer.writeAll(",\"command\":");
-    const command = if (available)
+    const command = if (available and isProvider(provider_name, "figma"))
+        try enrollFigmaConfirmCommand(allocator, account, args.mode, args.secret_env, false)
+    else if (available)
         try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s} --confirm-enroll", .{ provider_name, account })
     else
         try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s}", .{ provider_name, account });
@@ -1669,7 +2069,20 @@ fn isProvider(provider_name: []const u8, expected: []const u8) bool {
 }
 
 fn enrollMutationSupported(provider_name: []const u8) bool {
-    return isProvider(provider_name, "codex") or isProvider(provider_name, "claude");
+    return isProvider(provider_name, "codex") or isProvider(provider_name, "claude") or isProvider(provider_name, "figma");
+}
+
+fn figmaEnrollmentMode(mode: ?[]const u8) []const u8 {
+    const value = mode orelse return "oauth";
+    if (isProvider(value, "pat")) return "pat";
+    if (isProvider(value, "plan") or isProvider(value, "file") or isProvider(value, "file-metadata")) return "plan";
+    return "oauth";
+}
+
+fn figmaProviderForMode(mode: []const u8) []const u8 {
+    if (isProvider(mode, "pat")) return "figma-pat";
+    if (isProvider(mode, "plan")) return "figma-plan";
+    return "figma";
 }
 
 fn figmaCapabilityForMode(mode: ?[]const u8) []const u8 {
@@ -1677,6 +2090,25 @@ fn figmaCapabilityForMode(mode: ?[]const u8) []const u8 {
     if (isProvider(value, "pat")) return "identity-pat";
     if (isProvider(value, "plan") or isProvider(value, "file") or isProvider(value, "file-metadata")) return "file-metadata-plan";
     return "identity";
+}
+
+fn figmaDefaultSecretEnv(allocator: std.mem.Allocator, account: []const u8, mode: []const u8) ![]const u8 {
+    var normalized_account = std.ArrayList(u8).init(allocator);
+    defer normalized_account.deinit();
+    for (account) |c| {
+        if (std.ascii.isAlphanumeric(c)) {
+            try normalized_account.append(std.ascii.toUpper(c));
+        } else {
+            try normalized_account.append('_');
+        }
+    }
+    const suffix = if (isProvider(mode, "pat"))
+        "PAT"
+    else if (isProvider(mode, "plan"))
+        "PLAN_TOKEN"
+    else
+        "TOKEN";
+    return try std.fmt.allocPrint(allocator, "OMUX_FIGMA_{s}_{s}", .{ normalized_account.items, suffix });
 }
 
 fn enrollAccountsCommand(allocator: std.mem.Allocator, provider_name: ?[]const u8) ![]const u8 {
