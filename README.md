@@ -57,6 +57,8 @@ oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
 oauth-mux enroll plan claude --account work --json
 oauth-mux enroll claude --account work --confirm-enroll --json
+oauth-mux enroll plan figma --account design --mode pat --json
+oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
 oauth-mux discover --json
 oauth-mux doctor runtime --json
 ```
@@ -128,12 +130,12 @@ into an explicit provider-specific setup plan, marking which steps are
 agent-safe, interactive, mutating, or provider-call-spending before anything is
 run.
 
-`enroll codex --account <name> --confirm-enroll --json` and
-`enroll claude --account <name> --confirm-enroll --json` are the first
-consented provider-neutral enrollment mutations. They add named accounts to the
-active oauth-mux config, bootstrap isolated provider-owned config directories,
-and return explicit upstream login handoffs. They do not run provider login or
-provider probes.
+`enroll codex --account <name> --confirm-enroll --json`,
+`enroll claude --account <name> --confirm-enroll --json`, and
+`enroll figma --account <name> --mode <oauth|pat|plan> --confirm-enroll
+--json` are the first consented provider-neutral enrollment mutations. They add
+named accounts to the active oauth-mux config and return explicit login, secret,
+or proof handoffs. They do not run provider login or provider probes.
 
 `repair run` is the explicit mutation boundary. Without `--confirm-repair`, it
 will not open auth flows or run upstream CLI repair commands; it only reports
@@ -197,6 +199,8 @@ oauth-mux enroll plan codex --account max-4 --json
 oauth-mux enroll codex --account max-4 --confirm-enroll --json
 oauth-mux enroll plan claude --account work --json
 oauth-mux enroll claude --account work --confirm-enroll --json
+oauth-mux enroll plan figma --account design --mode pat --json
+oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
 oauth-mux codex login-device max-4
 oauth-mux setup codex
 oauth-mux codex canary

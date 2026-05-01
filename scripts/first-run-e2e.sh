@@ -516,4 +516,61 @@ jq -e '
   and any(.accounts[]; .account == "work" and .secret_backend == "file")
 ' "$accounts_after_claude_json" >/dev/null
 
+printf 'first-run e2e: enroll figma requires explicit confirmation and mode truth\n'
+enroll_figma_preview_json="$tmp/enroll-figma-preview.json"
+run_json "$enroll_figma_preview_json" enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --json
+jq -e '
+  .ok == false
+  and .confirmation_required == true
+  and .requires == "--confirm-enroll"
+  and .provider == "figma"
+  and .account == "design"
+  and .mode == "pat"
+  and .config_provider == "figma-pat"
+  and .capability == "identity-pat"
+  and .secret_backend == "env"
+  and .secret_env == "OMUX_FIGMA_DESIGN_PAT"
+  and .spends_provider_calls == false
+  and (.confirm_command | contains("oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll"))
+  and (.proof_command == "oauth-mux probe --provider figma-pat --account design --capability identity-pat --json")
+  and .plan.provider_neutral_mutation_supported == true
+' "$enroll_figma_preview_json" >/dev/null
+jq -e '
+  (.providers["figma-pat"] == null)
+  and (.profiles["figma-pat"] == null)
+' "$config_path" >/dev/null
+
+printf 'first-run e2e: confirmed enroll figma adds env-backed route without token creation\n'
+enroll_figma_confirmed_json="$tmp/enroll-figma-confirmed.json"
+run_json "$enroll_figma_confirmed_json" enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
+jq -e '
+  .ok == true
+  and .executed == true
+  and .provider == "figma"
+  and .account == "design"
+  and .mode == "pat"
+  and .config_provider == "figma-pat"
+  and .capability == "identity-pat"
+  and .secret_backend == "env"
+  and .secret_env == "OMUX_FIGMA_DESIGN_PAT"
+  and .config_changed == true
+  and .created_secret == false
+  and .ran_provider_login == false
+  and .spends_provider_calls == false
+  and .backup_config != null
+  and (.next_commands | index("export OMUX_FIGMA_DESIGN_PAT=<figma-token>") != null)
+  and (.next_commands | index("oauth-mux probe --provider figma-pat --account design --capability identity-pat --json") != null)
+' "$enroll_figma_confirmed_json" >/dev/null
+jq -e '
+  (.providers["figma-pat"].kind == "figma")
+  and (.providers["figma-pat"].accounts.design.secret.backend == "env")
+  and (.providers["figma-pat"].accounts.design.secret.variable == "OMUX_FIGMA_DESIGN_PAT")
+  and (.profiles["figma-pat"].providers | index("figma-pat:design#identity-pat") != null)
+' "$config_path" >/dev/null
+accounts_after_figma_json="$tmp/accounts-after-figma.json"
+run_json "$accounts_after_figma_json" accounts list --provider figma --json
+jq -e '
+  any(.accounts[]; .provider == "figma-pat" and .account == "design" and .secret_backend == "env")
+' "$accounts_after_figma_json" >/dev/null
+
 printf 'first-run e2e passed\n'

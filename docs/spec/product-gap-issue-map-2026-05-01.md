@@ -113,8 +113,10 @@ second slice is `oauth-mux enroll plan <provider> --json`, which explains the
 provider-specific setup path and labels each step before any mutation. The
 third slice is Codex `oauth-mux enroll codex --account <name> --confirm-enroll
 --json`; the fourth slice is Claude `oauth-mux enroll claude --account <name>
---confirm-enroll --json`. Both mutate oauth-mux config/store scaffolding but
-return upstream login as a user-mediated handoff.
+--confirm-enroll --json`; the fifth slice is Figma `oauth-mux enroll figma
+--account <name> --mode <oauth|pat|plan> --confirm-enroll --json`. These mutate
+oauth-mux config/store scaffolding but return upstream login, secret, or proof
+setup as user-mediated handoffs.
 
 Core product docs must remain service-manager agnostic. `systemctl`,
 `launchctl`, Homebrew services, cron, and Windows Services can become wrapper
@@ -185,8 +187,8 @@ these precise provider-proof children.
 1. Keep provider-neutral account inventory and enrollment planning aligned with
    the account-enrollment contract, so agents can inspect N configured accounts
    and explain setup before route, repair, handoff, or live-proof decisions.
-2. Use the Codex and Claude confirmed enrollment paths as the consent/mutation
-   reference before adding Figma or MCP mutation tools.
+2. Use the Codex, Claude, and Figma confirmed enrollment paths as the
+   consent/mutation reference before adding MCP mutation tools.
 3. Update website/release copy to use the public `jesssullivan/omux` Homebrew
    tap and close `#66` / `TIN-858` after those surfaces are aligned.
 4. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
