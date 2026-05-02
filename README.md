@@ -151,6 +151,10 @@ one-turn proof for that UX path. It uses the session plan's selected route,
 starts a broker-owned app-server against Codex's default live provider, sends
 one prompt, and reports only redacted protocol evidence; prompt text, assistant
 output, tokens, account ids, and raw protocol output are not printed.
+For a bounded beta session loop, pipe line-delimited prompts to `codex
+broker-run --stdin --confirm-spend --json`; the command keeps one broker-owned
+app-server session open and reports prompt/turn counts without printing
+transcript content.
 `codex broker-smoke --confirm-broker --json` is the next local proof: it starts
 a broker-owned Codex app-server stdio child, sends the selected route token to
 that child only, and verifies initialize/login/account-update milestones while

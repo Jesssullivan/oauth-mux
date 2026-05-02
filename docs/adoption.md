@@ -170,6 +170,9 @@ turn one, and verifies a new brokered thread uses the fallback route.
 broker-owned UX. It starts the selected route against Codex's default live
 provider and emits redacted protocol evidence without printing prompt text,
 assistant output, tokens, account ids, or raw app-server protocol.
+For a bounded beta multi-turn session, pass `--stdin` instead of `--prompt` and
+pipe one prompt per line. The session stays broker-owned and redacted; the
+output reports prompt counts and completed turns, not transcript content.
 
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is

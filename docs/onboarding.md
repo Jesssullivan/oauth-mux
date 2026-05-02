@@ -243,6 +243,9 @@ Use
 provider spend. It runs one real broker-owned app-server turn from the session
 plan and prints redacted evidence, not prompt text, assistant output, tokens,
 account ids, or raw protocol output.
+For a bounded beta broker-owned session loop, pipe line-delimited prompts and
+replace `--prompt ...` with `--stdin`. The same spend gate applies, and
+transcript content remains suppressed in normal output.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a
