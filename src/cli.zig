@@ -19,6 +19,7 @@ pub const Command = union(enum) {
     repair_run: RepairRunArgs,
     route: RouteArgs,
     stay_afloat_next: RouteArgs,
+    stay_afloat_launch: ExecArgs,
     stay_afloat: DaemonTickArgs,
     stay_afloat_handoff: HandoffArgs,
     config_validate,
@@ -300,6 +301,10 @@ pub fn parse(args: []const []const u8) Command {
 }
 
 fn parseExec(args: []const []const u8) Command {
+    return .{ .exec = parseExecArgs(args) };
+}
+
+fn parseExecArgs(args: []const []const u8) Command.ExecArgs {
     var result = Command.ExecArgs{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -326,7 +331,7 @@ fn parseExec(args: []const []const u8) Command {
             if (i < args.len) result.strategy = args[i];
         }
     }
-    return .{ .exec = result };
+    return result;
 }
 
 fn parseEnv(args: []const []const u8) Command {
@@ -701,6 +706,7 @@ fn parseDaemonTick(args: []const []const u8) Command {
 }
 
 fn parseStayAfloat(args: []const []const u8) Command {
+    if (args.len > 0 and eql(args[0], "launch")) return .{ .stay_afloat_launch = parseExecArgs(args[1..]) };
     if (args.len > 0 and eql(args[0], "next")) return parseStayAfloatNext(args[1..]);
     if (args.len > 0 and eql(args[0], "handoffs")) return parseDaemonHandoffs(args[1..]);
     if (args.len > 0 and eql(args[0], "handoff")) return parseStayAfloatHandoff(args[1..]);
@@ -999,6 +1005,8 @@ pub fn printUsage(writer: anytype) !void {
         \\      Run the portable stay-afloat planner/executor without service-manager assumptions.
         \\  stay-afloat next [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Show the next mediated action: exec argv when afloat, otherwise typed repair/handoff.
+        \\  stay-afloat launch [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] -- <cmd> [args...]
+        \\      Launch a target only when route evidence selects an exact account; otherwise print mediation and exit nonzero.
         \\  stay-afloat refresh [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run one execute tick to refresh route evidence after user-mediated auth.
         \\  stay-afloat handoffs [--json] [--limit <n>] [--all]
@@ -1576,6 +1584,23 @@ test "parse stay-afloat next json selector" {
     }
 }
 
+test "parse stay-afloat launch selector and target" {
+    const args = [_][]const u8{ "stay-afloat", "launch", "--profile", "codex-max", "--provider", "codex", "--account", "max-2", "--capability", "codex-max", "--", "codex", "--ask-for-approval=never" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat_launch => |launch| {
+            try std.testing.expectEqualStrings("codex-max", launch.profile.?);
+            try std.testing.expectEqualStrings("codex", launch.provider.?);
+            try std.testing.expectEqualStrings("max-2", launch.account.?);
+            try std.testing.expectEqualStrings("codex-max", launch.capability.?);
+            try std.testing.expectEqual(@as(usize, 2), launch.target_argv.len);
+            try std.testing.expectEqualStrings("codex", launch.target_argv[0]);
+            try std.testing.expectEqualStrings("--ask-for-approval=never", launch.target_argv[1]);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon run stay-afloat supervisor" {
     const args = [_][]const u8{ "daemon", "run", "--stay-afloat", "--profile", "codex-max", "--capability", "codex-max", "--iterations", "2", "--interval-ms", "0" };
     const cmd = parse(&args);
@@ -1738,7 +1763,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'next handoffs handoff refresh' -d 'Stay-afloat subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'next launch handoffs handoff refresh' -d 'Stay-afloat subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from handoff' -a 'ack clear' -d 'Handoff action'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'

@@ -13,6 +13,7 @@ The supported contract is still the portable tick engine:
 
 ```bash
 oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
+oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
@@ -21,6 +22,15 @@ Use `stay-afloat next --json` before launching a harness from an agent or
 wrapper. It does not spend provider calls or mutate auth state; it either
 returns an exact `oauth-mux exec` argv for the selected route or returns the
 typed repair/handoff action to mediate first.
+
+Use `stay-afloat launch -- <command>` when the wrapper should actually start a
+new harness session. It runs the same route preflight, pins the selected account
+for `oauth-mux exec`, and refuses to run the target when repair or user handoff
+is needed. Because the delegated exec path still validates token and runtime
+state before startup, launch can refresh route evidence and try the next
+selectable account when a route that looked selectable at preflight is
+reclassified before the target starts. If no selectable account remains, it
+prints the refreshed mediation text and exits nonzero.
 
 The beta supervised daemon host wraps that same engine:
 

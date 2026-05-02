@@ -27,6 +27,7 @@ config="$tmp/config.json"
 state_dir="$tmp/state"
 exec_out="$tmp/exec.out"
 probe_cmd="$tmp/probe-harness.sh"
+probe_mode_file="$tmp/probe-mode"
 reauth_probe_cmd="$tmp/reauth-probe-harness.sh"
 
 mkdir -p "$state_dir" "$tmp/a1-home" "$tmp/a2-home"
@@ -39,6 +40,15 @@ capability="${1:-}"
 
 case "${capability}:${OMUX_ACTIVE_ACCOUNT:-}" in
   expensive:a1)
+    if [ -n "${OMUX_E2E_PROBE_MODE_FILE:-}" ] &&
+      [ -f "$OMUX_E2E_PROBE_MODE_FILE" ] &&
+      grep -q '^expensive:a1:ok$' "$OMUX_E2E_PROBE_MODE_FILE"; then
+      printf 'ok provider=%s account=%s capability=%s\n' \
+        "${OMUX_ACTIVE_PROVIDER:-}" \
+        "${OMUX_ACTIVE_ACCOUNT:-}" \
+        "${OMUX_ACTIVE_CAPABILITY:-}"
+      exit 0
+    fi
     printf '%s\n' 'quota_exhausted: simulated monthly route limit'
     exit 1
     ;;
@@ -197,6 +207,7 @@ omux() {
     OMUX_STATE_DIR="$state_dir" \
     OMUX_E2E_A1_AUTH="$auth_a1" \
     OMUX_E2E_A2_AUTH="$auth_a2" \
+    OMUX_E2E_PROBE_MODE_FILE="$probe_mode_file" \
     "$bin" "$@"
 }
 
@@ -345,6 +356,28 @@ expect_contains "$stay_next" '"ready_for_exec":true' "stay-afloat next reports e
 expect_contains "$stay_next" '"selected":{"provider":"toy","account":"a2"' "stay-afloat next selects fallback account a2"
 expect_contains "$stay_next" '"next_action":{"kind":"exec"' "stay-afloat next returns exec mediation"
 expect_contains "$stay_next" '"exec_argv":["oauth-mux","exec","--provider","toy","--account","a2","--capability","expensive","--","<command>"]' "stay-afloat next returns exact exec argv"
+
+printf 'e2e: stay-afloat launch executes target with selected fallback account\n'
+launch_out="$tmp/stay-launch.out"
+OMUX_E2E_EXEC_OUT="$launch_out" omux stay-afloat launch --profile expensive --capability expensive -- sh -c 'printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_EXEC_OUT"'
+launch_result="$(cat "$launch_out")"
+expect_contains "$launch_result" 'a2:omux-e2e-a2' "stay-afloat launch target receives selected fallback account"
+
+printf 'e2e: stay-afloat launch retries next route when exec reclassifies selected account\n'
+printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"
+omux health --reset toy:a1#expensive >/dev/null
+omux health --reset toy:a2#expensive >/dev/null
+stale_a1_probe="$(omux probe --provider toy --account a1 --capability expensive --json)"
+expect_contains "$stale_a1_probe" '"account":"a1"' "stale launch setup records a1 as available"
+stale_a2_probe="$(omux probe --provider toy --account a2 --capability expensive --json)"
+expect_contains "$stale_a2_probe" '"account":"a2"' "stale launch setup records a2 as available"
+rm -f "$probe_mode_file"
+stale_next="$(omux stay-afloat next --profile expensive --capability expensive --json)"
+expect_contains "$stale_next" '"selected":{"provider":"toy","account":"a1"' "stale launch preflight selects a1 from recorded evidence"
+stale_launch_out="$tmp/stay-launch-stale.out"
+OMUX_E2E_EXEC_OUT="$stale_launch_out" omux stay-afloat launch --profile expensive --capability expensive -- sh -c 'printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_EXEC_OUT"'
+stale_launch_result="$(cat "$stale_launch_out")"
+expect_contains "$stale_launch_result" 'a2:omux-e2e-a2' "stay-afloat launch falls through to a2 after a1 reclassification"
 
 printf 'e2e: daemon tick plans stay-afloat without executing work\n'
 daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"
@@ -573,6 +606,26 @@ expect_contains "$stay_next_reauth" '"kind":"reauth"' "stay-afloat next reauth r
 expect_contains "$stay_next_reauth" '"mediation":"user_handoff"' "stay-afloat next reauth reports user handoff"
 expect_contains "$stay_next_reauth" '"repair_owner":"upstream_cli_login"' "stay-afloat next reauth reports upstream owner"
 expect_contains "$stay_next_reauth" '"command":"oauth-mux codex login-device max-1"' "stay-afloat next reauth reports upstream command"
+test ! -e "$tmp/reauth-home/auth.json"
+
+printf 'e2e: stay-afloat launch refuses target when user-mediated reauth is needed\n'
+stay_launch_reauth_out="$tmp/stay-launch-reauth.out"
+stay_launch_should_not_run="$tmp/stay-launch-should-not-run"
+set +e
+OMUX_CONFIG="$reauth_config" \
+  OMUX_STATE_DIR="$state_dir" \
+  "$bin" stay-afloat launch --profile needs-reauth --capability codex-max -- sh -c "touch '$stay_launch_should_not_run'" >"$stay_launch_reauth_out" 2>"$tmp/stay-launch-reauth.stderr"
+stay_launch_reauth_status=$?
+set -e
+if [ "$stay_launch_reauth_status" -eq 0 ]; then
+  printf 'e2e assertion failed: stay-afloat launch should refuse a reauth-needed route\n' >&2
+  exit 1
+fi
+stay_launch_reauth="$(cat "$stay_launch_reauth_out")"
+expect_contains "$stay_launch_reauth" 'ready_for_exec: false' "stay-afloat launch refusal reports not ready"
+expect_contains "$stay_launch_reauth" 'next_action: reauth' "stay-afloat launch refusal reports reauth action"
+expect_contains "$stay_launch_reauth" 'command: oauth-mux codex login-device max-1' "stay-afloat launch refusal reports upstream command"
+test ! -e "$stay_launch_should_not_run"
 test ! -e "$tmp/reauth-home/auth.json"
 
 printf 'e2e: daemon tick execute queues interactive reauth handoff\n'

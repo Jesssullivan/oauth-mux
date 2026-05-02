@@ -150,6 +150,13 @@ pub fn main() !void {
             };
         },
 
+        .stay_afloat_launch => |launch_args| {
+            runStayAfloatLaunch(allocator, stdout, launch_args) catch |e| {
+                log.err("stay-afloat launch: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .stay_afloat => |tick_args| {
             runDaemonTick(allocator, stdout, tick_args, "oauth-mux stay-afloat") catch |e| {
                 log.err("stay-afloat: {s}", .{@errorName(e)});
@@ -3571,6 +3578,139 @@ fn runStayAfloatNext(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     }
 }
 
+fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ExecArgs) !void {
+    if (args.target_argv.len == 0) {
+        log.err("stay-afloat launch: no target command specified (use -- before the command)", .{});
+        return error.ConfigValidationError;
+    }
+
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    const selector = cli.Command.RouteArgs{
+        .action = .explain,
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+    };
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = selector.profile,
+        .provider = selector.provider,
+        .account = selector.account,
+        .capability = selector.capability,
+    });
+    defer routes.deinit();
+
+    var attempted_routes = std.ArrayList(RepairPlanRoute).init(allocator);
+    defer attempted_routes.deinit();
+
+    var last_exec_error: ?anyerror = null;
+    while (attempted_routes.items.len < routes.items.len) {
+        var store = health_mod.HealthStore.load(allocator, .{});
+        defer store.deinit();
+
+        var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+        defer evaluations.deinit();
+        try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+        const selected_index = firstSelectableRouteNotAttempted(evaluations.items, attempted_routes.items);
+        if (selected_index == null) {
+            const candidate_index = firstActionableRoute(evaluations.items);
+            try writeStayAfloatMediationText(writer, allocator, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
+            if (last_exec_error) |err| return err;
+            return error.AllAccountsExhausted;
+        }
+
+        const selected = evaluations.items[selected_index.?].route;
+        try attempted_routes.append(selected);
+
+        var exec_args = args;
+        exec_args.profile = null;
+        exec_args.provider = selected.provider;
+        exec_args.account = selected.account;
+        exec_args.capability = selected.capability orelse args.capability;
+        runExec(allocator, exec_args) catch |e| {
+            last_exec_error = e;
+            continue;
+        };
+    }
+
+    try writeStayAfloatLaunchMediationFromCurrentState(
+        allocator,
+        writer,
+        parsed.value,
+        routes.items,
+        selector,
+    );
+    if (last_exec_error) |err| return err;
+    return error.AllAccountsExhausted;
+}
+
+fn firstSelectableRouteNotAttempted(
+    evaluations: []const RouteEvaluation,
+    attempted_routes: []const RepairPlanRoute,
+) ?usize {
+    for (evaluations, 0..) |evaluation, idx| {
+        if (!evaluation.selectable) continue;
+        if (routeWasAttempted(evaluation.route, attempted_routes)) continue;
+        return idx;
+    }
+    return null;
+}
+
+fn routeWasAttempted(route: RepairPlanRoute, attempted_routes: []const RepairPlanRoute) bool {
+    for (attempted_routes) |attempted| {
+        if (routesEqual(route, attempted)) return true;
+    }
+    return false;
+}
+
+fn routesEqual(a: RepairPlanRoute, b: RepairPlanRoute) bool {
+    return std.mem.eql(u8, a.provider, b.provider) and
+        std.mem.eql(u8, a.account, b.account) and
+        optionalStringsEqual(a.capability, b.capability);
+}
+
+fn optionalStringsEqual(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a) |a_value| {
+        const b_value = b orelse return false;
+        return std.mem.eql(u8, a_value, b_value);
+    }
+    return b == null;
+}
+
+fn writeStayAfloatLaunchMediationFromCurrentState(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    cfg: config.Config,
+    routes: []const RepairPlanRoute,
+    selector: cli.Command.RouteArgs,
+) !void {
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, cfg, &store, routes, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+    const candidate_index = if (selected_index == null) firstActionableRoute(evaluations.items) else null;
+    try writeStayAfloatMediationText(
+        writer,
+        allocator,
+        evaluations.items,
+        selected_index,
+        candidate_index,
+        selector,
+        "oauth-mux stay-afloat launch",
+    );
+}
+
 fn runDaemonTick(
     allocator: std.mem.Allocator,
     writer: anytype,
@@ -4146,7 +4286,19 @@ fn writeStayAfloatNextText(
     candidate_index: ?usize,
     args: cli.Command.RouteArgs,
 ) !void {
-    try writer.writeAll("oauth-mux stay-afloat next\n\n");
+    try writeStayAfloatMediationText(writer, allocator, evaluations, selected_index, candidate_index, args, "oauth-mux stay-afloat next");
+}
+
+fn writeStayAfloatMediationText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    candidate_index: ?usize,
+    args: cli.Command.RouteArgs,
+    command_name: []const u8,
+) !void {
+    try writer.print("{s}\n\n", .{command_name});
     if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
     if (args.provider) |provider_name| try writer.print("  provider: {s}\n", .{provider_name});
     if (args.account) |account| try writer.print("  account: {s}\n", .{account});
