@@ -670,6 +670,38 @@ expect_not_contains "$broker_plan" 'acct-test' "broker-plan does not expose acco
 expect_not_contains "$broker_plan" "$broker_jwt" "broker-plan does not expose token value"
 expect_not_contains "$broker_plan" 'broker-refresh-token' "broker-plan does not expose refresh token value"
 
+printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
+mock_codex_app_server="$tmp/mock-codex-app-server"
+cat >"$mock_codex_app_server" <<'EOF'
+#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}'
+      ;;
+    *'"method":"account/login/start"'*)
+      printf '%s\n' '{"id":2,"result":{"type":"chatgptAuthTokens"}}'
+      printf '%s\n' '{"method":"account/login/completed","params":{"success":true}}'
+      printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
+      ;;
+  esac
+done
+EOF
+chmod +x "$mock_codex_app_server"
+broker_smoke="$(OMUX_CONFIG="$broker_config" OMUX_STATE_DIR="$state_dir" OMUX_CODEX_APP_SERVER="$mock_codex_app_server" "$bin" codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json)"
+expect_contains "$broker_smoke" '"mode":"codex_app_server_stdio_broker_smoke"' "broker-smoke reports broker stdio mode"
+expect_contains "$broker_smoke" '"ok":true' "broker-smoke reports success"
+expect_contains "$broker_smoke" '"proof_status":"local_protocol_smoke"' "broker-smoke reports local protocol proof status"
+expect_contains "$broker_smoke" '"initialized":true' "broker-smoke observes initialize response"
+expect_contains "$broker_smoke" '"login_response":true' "broker-smoke observes external-auth login response"
+expect_contains "$broker_smoke" '"login_completed":true' "broker-smoke observes login completed notification"
+expect_contains "$broker_smoke" '"account_updated":true' "broker-smoke observes chatgptAuthTokens account update"
+expect_contains "$broker_smoke" '"tokens_printed":false' "broker-smoke redaction reports token suppression"
+expect_contains "$broker_smoke" '"raw_protocol_printed":false' "broker-smoke redaction reports raw protocol suppression"
+expect_not_contains "$broker_smoke" 'acct-test' "broker-smoke does not expose account id value"
+expect_not_contains "$broker_smoke" "$broker_jwt" "broker-smoke does not expose token value"
+expect_not_contains "$broker_smoke" 'broker-refresh-token' "broker-smoke does not expose refresh token value"
+
 repair_reauth_json="$tmp/repair-run-reauth.json"
 set +e
 OMUX_CONFIG="$reauth_config" \
