@@ -358,6 +358,14 @@ expect_contains "$stay_afloat" '"afloat":true' "stay-afloat reports profile aflo
 expect_contains "$stay_afloat" '"selected":{"provider":"toy","account":"a2"' "stay-afloat selects fallback account a2"
 expect_contains "$stay_afloat" '"next_tick_reason":"wait_until"' "stay-afloat exposes scheduler summary"
 
+printf 'e2e: daemon status exposes latest stay-afloat snapshot without promoting socket daemon\n'
+daemon_status_snapshot="$(omux daemon status --json)"
+expect_contains "$daemon_status_snapshot" '"status":"not_running"' "daemon status remains stopped after foreground tick"
+expect_contains "$daemon_status_snapshot" '"hosts_stay_afloat":false' "daemon status still does not claim to host stay-afloat"
+expect_contains "$daemon_status_snapshot" '"stay_afloat":{"version":' "daemon status includes latest stay-afloat snapshot"
+expect_contains "$daemon_status_snapshot" '"contract":"foreground_tick_snapshot"' "daemon snapshot reports foreground tick contract"
+expect_contains "$daemon_status_snapshot" '"selected":{"provider":"toy","account":"a2"' "daemon snapshot carries selected fallback route"
+
 printf 'e2e: bounded daemon tick loop emits repeated planning snapshots\n'
 daemon_loop="$(omux daemon tick --loop --iterations 2 --interval-ms 0 --profile expensive --capability expensive --json)"
 expect_contains "$daemon_loop" '"mode":"loop"' "daemon tick loop reports loop mode"

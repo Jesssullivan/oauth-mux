@@ -3519,6 +3519,8 @@ fn runDaemonTick(
             selected_index = firstSelectableRoute(evaluations.items);
         }
 
+        writeDaemonTickSnapshot(allocator, parsed.value, evaluations.items, selected_index, executions.items, args, observed_at) catch {};
+
         if (args.json) {
             if (iterations > 1) {
                 if (idx > 0) try writer.writeByte(',');
@@ -3539,6 +3541,54 @@ fn runDaemonTick(
     if (args.json and iterations > 1) {
         try writer.writeAll("]}\n");
     }
+}
+
+fn writeDaemonTickSnapshot(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    executions: []const DaemonTickExecution,
+    args: cli.Command.DaemonTickArgs,
+    observed_at: i64,
+) !void {
+    var snapshot = std.ArrayList(u8).init(allocator);
+    defer snapshot.deinit();
+    const writer = snapshot.writer();
+    const stats = daemonTickStats(cfg.policy.daemon, evaluations, observed_at);
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"contract\":\"foreground_tick_snapshot\"");
+    try writer.writeAll(",\"last_tick_at\":");
+    try writer.print("{d}", .{observed_at});
+    try writer.writeAll(",\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"mode\":");
+    try std.json.stringify(if (args.once) "once" else "loop", .{}, writer);
+    try writer.writeAll(",\"execution_mode\":");
+    try std.json.stringify(if (args.execute) "execute" else "plan", .{}, writer);
+    try writer.writeAll(",\"executed\":");
+    try writer.writeAll(if (daemonTickExecutionsRan(executions)) "true" else "false");
+    try writer.writeAll(",\"handoff_queued\":");
+    try writer.writeAll(if (daemonTickHandoffQueued(executions)) "true" else "false");
+    try writer.writeAll(",\"handoff_pending\":");
+    try writer.writeAll(if (daemonTickHandoffPending(executions)) "true" else "false");
+    try writer.writeAll(",\"afloat\":");
+    try writer.writeAll(if (selected_index != null) "true" else "false");
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| {
+        try writeRouteSelectionJson(writer, evaluations[idx].route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"summary\":");
+    try writeDaemonTickStatsJson(writer, stats);
+    try writer.writeByte('}');
+
+    try repair_state.writeDaemonSnapshot(allocator, snapshot.items);
 }
 
 fn daemonTickArgsToPlanArgs(args: cli.Command.DaemonTickArgs) cli.Command.RepairPlanArgs {

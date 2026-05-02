@@ -2,6 +2,7 @@ const std = @import("std");
 const health_mod = @import("health.zig");
 const paths = @import("paths.zig");
 const log = @import("log.zig");
+const repair_state = @import("repair_state.zig");
 const builtin = @import("builtin");
 
 const Pid = if (builtin.os.tag == .windows) u32 else std.posix.pid_t;
@@ -128,6 +129,7 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
         if (json) {
             try writer.writeAll("{\"status\":\"running\"");
             try writeStatusContractJson(writer);
+            try writeStatusSnapshotJson(allocator, writer);
             try writer.print(",\"pid\":{d},\"socket\":", .{pid});
             try std.json.stringify(sock, .{}, writer);
             try writer.writeAll("}\n");
@@ -139,6 +141,7 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
         if (json) {
             try writer.writeAll("{\"status\":\"not_running\"");
             try writeStatusContractJson(writer);
+            try writeStatusSnapshotJson(allocator, writer);
             try writer.writeAll("}\n");
         } else {
             try writer.writeAll("daemon: not running\n");
@@ -154,6 +157,22 @@ fn writeStatusContractJson(writer: anytype) !void {
     try writer.writeAll(",\"wrapper_contract\":\"foreground_tick\"");
     try writer.writeAll(",\"socket_transport_supported\":");
     try writer.writeAll(if (builtin.os.tag == .windows) "false" else "true");
+}
+
+fn writeStatusSnapshotJson(allocator: std.mem.Allocator, writer: anytype) !void {
+    try writer.writeAll(",\"stay_afloat\":");
+    const snapshot = try repair_state.readDaemonSnapshotAlloc(allocator);
+    if (snapshot) |bytes| {
+        defer allocator.free(bytes);
+        const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+        if (trimmed.len == 0) {
+            try writer.writeAll("null");
+        } else {
+            try writer.writeAll(trimmed);
+        }
+    } else {
+        try writer.writeAll("null");
+    }
 }
 
 fn isRunning(allocator: std.mem.Allocator) bool {
@@ -291,4 +310,5 @@ test "status json exposes socket daemon contract" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"production_supported\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hosts_stay_afloat\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"wrapper_contract\":\"foreground_tick\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat\":") != null);
 }

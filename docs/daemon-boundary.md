@@ -39,6 +39,9 @@ the portable foreground supervisor contract tracked by `TIN-859`. See
 `docs/spec/stay-afloat-permission-broker-contract-2026-05-01.md` for how agents
 and wrappers should handle `action.diagnostic_command` without promoting the
 socket daemon.
+See `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md` for the
+`TIN-897` production-daemon contract and the distinction between prepared
+fallback, supervised restart, and true per-request muxing.
 
 ## Supervisor Contract
 
@@ -64,7 +67,10 @@ containers, and CI wrappers must preserve the foreground command contract
 rather than introducing separate behavior.
 `oauth-mux daemon status --json` reports this boundary directly with
 `contract:"experimental_socket_stub"`, `production_supported:false`,
-`hosts_stay_afloat:false`, and `wrapper_contract:"foreground_tick"`.
+`hosts_stay_afloat:false`, and `wrapper_contract:"foreground_tick"`. It also
+includes the latest redacted stay-afloat tick snapshot under `stay_afloat` when
+one exists, so wrappers can inspect prepared fallback state without treating
+the socket stub as the production supervisor.
 
 ## Allowed Now
 
@@ -158,6 +164,14 @@ The daemon can become a supported operator feature when:
    docs;
 9. live-provider QA covers timeout, auth failure, quota exhaustion, and
    transient rate-limit behavior.
+
+The stronger "seamless muxing" claim also requires a mediation point. A
+background daemon can keep route state and reauth handoffs warm, but it cannot
+hot-swap credentials already loaded into an upstream harness process unless
+that harness supports live reload, supervised restart, proxying, or an
+oauth-mux-aware in-agent adapter. Until that proof exists, user-facing copy
+should describe prepared fallback for the next mediated action, not transparent
+replacement of the current process.
 
 Until then, user and agent onboarding should use one-shot commands:
 
