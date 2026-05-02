@@ -44,6 +44,8 @@ See `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md` for the
 fallback, supervised restart, and true per-request muxing.
 See `docs/stay-afloat-wrappers.md` for beta wrapper recipes and soak checks
 tracked by `TIN-899` / GitHub #105.
+See `docs/provider-repair-contracts.md` for the provider-mediated action
+contract tracked by `TIN-900` / GitHub #106.
 
 ## Supervisor Contract
 

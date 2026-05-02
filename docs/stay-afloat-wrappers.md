@@ -271,4 +271,5 @@ Codex process.
 For Claude and Figma, do not claim parity until provider-mediated repair
 contracts distinguish quota exhaustion, auth death, scope insufficiency, local
 store permission failures, and upstream-login-required states. That work is
-tracked separately by GitHub #106 / Linear TIN-900.
+tracked separately by GitHub #106 / Linear TIN-900 and summarized in
+`docs/provider-repair-contracts.md`.
