@@ -3848,11 +3848,70 @@ fn writeDaemonTickSnapshot(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"claim\":");
+    try writeStayAfloatClaimJson(writer, args, selectedRoute(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
     try writer.writeByte('}');
 
     try repair_state.writeDaemonSnapshot(allocator, snapshot.items);
+}
+
+fn selectedRoute(evaluations: []const RouteEvaluation, selected_index: ?usize) ?RepairPlanRoute {
+    if (selected_index) |idx| {
+        if (idx < evaluations.len) return evaluations[idx].route;
+    }
+    return null;
+}
+
+fn writeStayAfloatClaimJson(
+    writer: anytype,
+    args: cli.Command.DaemonTickArgs,
+    route: ?RepairPlanRoute,
+) !void {
+    const prepared = route != null;
+    try writer.writeAll("{\"claim_version\":1");
+    try writer.writeAll(",\"level\":");
+    try std.json.stringify(if (prepared) "prepared_fallback" else "mediation_required", .{}, writer);
+    try writer.writeAll(",\"max_supported_level\":\"prepared_fallback\"");
+    try writer.writeAll(",\"prepared_fallback\":");
+    try writer.writeAll(if (prepared) "true" else "false");
+    try writer.writeAll(",\"requires_mediation\":true");
+    try writer.writeAll(",\"mediation_point\":\"stay-afloat launch\"");
+    try writer.writeAll(",\"target_boundary\":\"process_start\"");
+    try writer.writeAll(",\"current_process_hotswap\":false");
+    try writer.writeAll(",\"supervised_restart\":false");
+    try writer.writeAll(",\"per_request_muxing\":false");
+    try writer.writeAll(",\"launch_argv\":");
+    try writeStayAfloatLaunchArgvJson(writer, args);
+    try writer.writeByte('}');
+}
+
+fn writeStayAfloatLaunchArgvJson(writer: anytype, args: cli.Command.DaemonTickArgs) !void {
+    var first = true;
+    try writer.writeByte('[');
+    try writeJsonArrayString(writer, &first, "oauth-mux");
+    try writeJsonArrayString(writer, &first, "stay-afloat");
+    try writeJsonArrayString(writer, &first, "launch");
+    if (args.profile) |profile_name| {
+        try writeJsonArrayString(writer, &first, "--profile");
+        try writeJsonArrayString(writer, &first, profile_name);
+    }
+    if (args.provider) |provider_name| {
+        try writeJsonArrayString(writer, &first, "--provider");
+        try writeJsonArrayString(writer, &first, provider_name);
+    }
+    if (args.account) |account| {
+        try writeJsonArrayString(writer, &first, "--account");
+        try writeJsonArrayString(writer, &first, account);
+    }
+    if (args.capability) |capability| {
+        try writeJsonArrayString(writer, &first, "--capability");
+        try writeJsonArrayString(writer, &first, capability);
+    }
+    try writeJsonArrayString(writer, &first, "--");
+    try writeJsonArrayString(writer, &first, "<command>");
+    try writer.writeByte(']');
 }
 
 fn daemonTickArgsToPlanArgs(args: cli.Command.DaemonTickArgs) cli.Command.RepairPlanArgs {
@@ -4698,6 +4757,8 @@ fn writeDaemonTickJsonObject(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"claim\":");
+    try writeStayAfloatClaimJson(writer, args, selectedRoute(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
     try writer.writeAll(",\"executions\":");
