@@ -275,9 +275,12 @@ It writes the normal daemon pid file, records beta loop metadata under the
 runtime directory, runs the same stay-afloat tick engine with execute mode
 enabled, and updates the redacted `stay_afloat` status snapshot after each
 tick. `daemon status --json` reports `contract:"experimental_supervised_loop"`
-and `stay_afloat_loop.hosted:true` while the loop is running, but still reports
-`production_supported:false` and `hosts_stay_afloat:false` until wrapper docs
-and soak proof promote the product surface.
+and `stay_afloat_loop.hosted:true` while the loop is running. The same
+`stay_afloat_loop` object includes the hosted selector, interval, iteration
+bound, and execution mode so dogfood status can prove which route set is being
+supervised without reading process argv or logs. Status still reports
+`production_supported:false` and `hosts_stay_afloat:false` until wrapper docs and
+soak proof promote the product surface.
 
 Implementation note, 2026-05-02: the loop sleep path now honors the earliest
 summary `next_tick_after` emitted by route decisions, bounded by the operator's

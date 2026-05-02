@@ -3798,12 +3798,21 @@ fn runSupervisedStayAfloat(
     writer: anytype,
     args: cli.Command.DaemonTickArgs,
 ) !void {
-    var guard = try daemon.acquireStayAfloatRunGuard(allocator);
-    defer guard.release();
-
     var tick_args = args;
     tick_args.execute = true;
     tick_args.json = false;
+
+    var guard = try daemon.acquireStayAfloatRunGuard(allocator, .{
+        .profile = tick_args.profile,
+        .provider = tick_args.provider,
+        .account = tick_args.account,
+        .capability = tick_args.capability,
+        .once = tick_args.once,
+        .iterations = normalizedDaemonTickIterations(tick_args),
+        .interval_ms = tick_args.interval_ms,
+        .execute = tick_args.execute,
+    });
+    defer guard.release();
 
     try runDaemonTick(allocator, writer, tick_args, "oauth-mux daemon run --stay-afloat");
 }
