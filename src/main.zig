@@ -7517,6 +7517,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
         .broker_plan => try runCodexBrokerPlan(allocator, writer, args),
+        .broker_session_plan => try runCodexBrokerSessionPlan(allocator, writer, args),
         .broker_smoke => try runCodexBrokerSmoke(allocator, writer, args, .login),
         .broker_refresh_smoke => try runCodexBrokerSmoke(allocator, writer, args, .refresh),
         .broker_401_smoke => try runCodexBroker401Smoke(allocator, writer, args),
@@ -7911,6 +7912,252 @@ fn writeCodexBrokerPlanText(
         try writer.print(" account_id={s}", .{if (plan.chatgpt_account_id_present) "yes" else "no"});
         try writer.print(" plan_type={s}\n", .{if (plan.chatgpt_plan_type_present) "yes" else "no"});
     }
+}
+
+fn runCodexBrokerSessionPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, evaluations.items);
+
+    if (args.json) {
+        try writeCodexBrokerSessionPlanJson(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability);
+    } else {
+        try writeCodexBrokerSessionPlanText(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability);
+    }
+}
+
+const CodexBrokerSessionSummary = struct {
+    routes_total: usize = 0,
+    broker_ready_routes: usize = 0,
+    unreadable_routes: usize = 0,
+    selectable_routes: usize = 0,
+    selectable_broker_routes: usize = 0,
+    selectable_fallback_routes: usize = 0,
+    blocked_broker_routes: usize = 0,
+    auth_unready_routes: usize = 0,
+};
+
+fn firstSelectableCodexBrokerRouteIndex(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+) !?usize {
+    for (evaluations, 0..) |evaluation, idx| {
+        if (!evaluation.selectable) continue;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (plan.can_supply) return idx;
+    }
+    return null;
+}
+
+fn summarizeCodexBrokerSessionPlan(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+) !CodexBrokerSessionSummary {
+    var summary = CodexBrokerSessionSummary{};
+    for (evaluations, 0..) |evaluation, idx| {
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        summary.routes_total += 1;
+        if (evaluation.selectable) summary.selectable_routes += 1;
+        if (plan.can_supply) {
+            summary.broker_ready_routes += 1;
+            if (evaluation.selectable) {
+                summary.selectable_broker_routes += 1;
+                if (selected_index == null or idx != selected_index.?) summary.selectable_fallback_routes += 1;
+            } else {
+                summary.blocked_broker_routes += 1;
+            }
+        } else {
+            summary.auth_unready_routes += 1;
+            if (!plan.secret_readable) summary.unreadable_routes += 1;
+        }
+    }
+    return summary;
+}
+
+fn writeCodexBrokerSessionPlanJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) !void {
+    const summary = try summarizeCodexBrokerSessionPlan(allocator, cfg, evaluations, selected_index);
+    const session_start_ready = selected_index != null;
+    const prepared_fallback = summary.selectable_fallback_routes > 0;
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_broker_owned_session_plan\"");
+    try writer.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false");
+    try writer.writeAll(",\"app_server\":{\"transport\":\"stdio\",\"requires_experimental_api\":true,\"login_method\":\"account/login/start.chatgptAuthTokens\",\"refresh_method\":\"account/chatgptAuthTokens/refresh\"}");
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (session_start_ready) "true" else "false");
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"proof_status\":\"session_planning_only\",\"broker_owned_session\":true,\"session_start_ready\":");
+    try writer.writeAll(if (session_start_ready) "true" else "false");
+    try writer.writeAll(",\"prepared_fallback\":");
+    try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"next_thread_quota_fallback\":");
+    try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"policy\":");
+    try writePolicyJson(writer, cfg.policy);
+    try writer.writeAll(",\"profile\":");
+    if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"unreadable_routes\":{d},\"selectable_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
+        summary.routes_total,
+        summary.broker_ready_routes,
+        summary.unreadable_routes,
+        summary.selectable_routes,
+        summary.selectable_broker_routes,
+        summary.selectable_fallback_routes,
+        summary.blocked_broker_routes,
+        summary.auth_unready_routes,
+    });
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| {
+        try writeRouteSelectionJson(writer, evaluations[idx].route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"routes\":[");
+    for (evaluations, 0..) |evaluation, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        try writeCodexBrokerSessionRouteJson(writer, allocator, cfg, evaluation, selected, plan);
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeCodexBrokerSessionPlanText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) !void {
+    const summary = try summarizeCodexBrokerSessionPlan(allocator, cfg, evaluations, selected_index);
+    try writer.writeAll("oauth-mux Codex broker-owned session plan\n\n");
+    if (profile) |value| try writer.print("  profile: {s}\n", .{value});
+    if (capability) |value| try writer.print("  capability: {s}\n", .{value});
+    try writer.writeAll("  claim: planning-only current_process_auth_broker for broker-owned app-server sessions\n");
+    try writer.print("  broker_ready_routes: {d}\n", .{summary.broker_ready_routes});
+    try writer.print("  selectable_broker_routes: {d}\n", .{summary.selectable_broker_routes});
+    try writer.print("  selectable_fallback_routes: {d}\n", .{summary.selectable_fallback_routes});
+
+    if (selected_index) |idx| {
+        const selected = evaluations[idx].route;
+        try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
+        if (selected.capability) |value| try writer.print("#{s}", .{value});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("  selected: none\n");
+    }
+
+    if (evaluations.len == 0) {
+        try writer.writeAll("\n  no matching Codex routes\n");
+        return;
+    }
+
+    try writer.writeAll("\n  routes:\n");
+    for (evaluations, 0..) |evaluation, idx| {
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        const role = codexBrokerSessionRouteRole(evaluation, selected, plan);
+        try writer.print("    {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
+        if (evaluation.route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.print(" role={s} selectable={s} broker_ready={s} reason={s} broker_reason={s}\n", .{
+            role,
+            if (evaluation.selectable) "true" else "false",
+            if (plan.can_supply) "true" else "false",
+            evaluation.skip_reason,
+            plan.reason,
+        });
+    }
+}
+
+fn writeCodexBrokerSessionRouteJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+    selected: bool,
+    plan: CodexBrokerTokenPlan,
+) !void {
+    const fallback_candidate = plan.can_supply and evaluation.selectable and !selected;
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(evaluation.route.provider, .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(evaluation.route.account, .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (evaluation.route.capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"selected\":");
+    try writer.writeAll(if (selected) "true" else "false");
+    try writer.writeAll(",\"selectable\":");
+    try writer.writeAll(if (evaluation.selectable) "true" else "false");
+    try writer.writeAll(",\"broker_ready\":");
+    try writer.writeAll(if (plan.can_supply) "true" else "false");
+    try writer.writeAll(",\"session_ready\":");
+    try writer.writeAll(if (plan.can_supply and evaluation.selectable) "true" else "false");
+    try writer.writeAll(",\"fallback_candidate\":");
+    try writer.writeAll(if (fallback_candidate) "true" else "false");
+    try writer.writeAll(",\"route_role\":");
+    try std.json.stringify(codexBrokerSessionRouteRole(evaluation, selected, plan), .{}, writer);
+    try writer.writeAll(",\"skip_reason\":");
+    try std.json.stringify(evaluation.skip_reason, .{}, writer);
+    try writer.writeAll(",\"runtime\":");
+    try writeRuntimeReadinessJson(writer, evaluation.runtime);
+    try writer.writeAll(",\"liveness\":");
+    if (evaluation.health) |health| try writeLivenessJson(writer, health.liveness) else try writer.writeAll("null");
+    try writer.writeAll(",\"last_probe\":");
+    if (evaluation.health) |health| try writeProbeEvidenceJson(writer, health) else try writer.writeAll("null");
+    try writer.writeAll(",\"action\":");
+    try writeRepairActionJson(writer, allocator, evaluation.action, evaluation.route);
+    try writer.writeAll(",\"auth_broker\":");
+    try writeCodexBrokerRouteJson(writer, evaluation.route, cfg, plan);
+    try writer.writeByte('}');
+}
+
+fn codexBrokerSessionRouteRole(evaluation: RouteEvaluation, selected: bool, plan: CodexBrokerTokenPlan) []const u8 {
+    if (!plan.can_supply) return "auth_broker_unready";
+    if (selected) return "selected";
+    if (evaluation.selectable) return "selectable_fallback";
+    if (std.mem.eql(u8, evaluation.skip_reason, "quota_exhausted")) return "quota_blocked";
+    if (std.mem.eql(u8, evaluation.skip_reason, "rate_limited")) return "rate_limited";
+    if (std.mem.eql(u8, evaluation.skip_reason, "unrecorded")) return "probe_needed";
+    return "not_selectable";
 }
 
 fn runCodexBrokerSmoke(

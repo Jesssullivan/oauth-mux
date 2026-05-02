@@ -225,6 +225,12 @@ Use
 simulates usage-limit 429, confirms that this is not the same hook as 401
 auth-refresh, then verifies fallback Authorization on a new brokered thread.
 That is useful stay-afloat evidence, but not same-thread quota recovery.
+Use
+`oauth-mux codex broker-session-plan --profile codex-max --capability codex-max
+--json` when you need the user-facing broker-owned session plan without running
+Codex or spending provider calls. It joins route liveness with broker token
+readiness and reports which route would start the session plus which broker-ready
+routes are immediate fallbacks.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

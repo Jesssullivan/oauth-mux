@@ -670,6 +670,147 @@ expect_not_contains "$broker_plan" 'acct-test' "broker-plan does not expose acco
 expect_not_contains "$broker_plan" "$broker_jwt" "broker-plan does not expose token value"
 expect_not_contains "$broker_plan" 'broker-refresh-token' "broker-plan does not expose refresh token value"
 
+printf 'e2e: codex broker-session-plan combines route liveness with broker readiness\n'
+broker_auth_session_fallback="$tmp/broker-auth-session-fallback.json"
+broker_auth_session_spare="$tmp/broker-auth-session-spare.json"
+broker_session_config="$tmp/broker-session-config.json"
+broker_session_state="$tmp/broker-session-state"
+broker_session_max1_home="$tmp/broker-session-max-1"
+broker_session_max2_home="$tmp/broker-session-max-2"
+broker_session_max3_home="$tmp/broker-session-max-3"
+broker_session_bin="$tmp/broker-session-bin"
+mkdir -p "$broker_session_state" "$broker_session_max1_home" "$broker_session_max2_home" "$broker_session_max3_home" "$broker_session_bin"
+cat >"$broker_session_bin/codex" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$broker_session_bin/codex"
+cp "$broker_auth" "$broker_session_max1_home/auth.json"
+cat >"$broker_auth_session_fallback" <<EOF
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "$broker_jwt",
+    "access_token": "$broker_jwt",
+    "refresh_token": "broker-session-refresh-token",
+    "account_id": "acct-session-fallback"
+  }
+}
+EOF
+cat >"$broker_auth_session_spare" <<EOF
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "$broker_jwt",
+    "access_token": "$broker_jwt",
+    "refresh_token": "broker-session-spare-token",
+    "account_id": "acct-session-spare"
+  }
+}
+EOF
+cp "$broker_auth_session_fallback" "$broker_session_max2_home/auth.json"
+cp "$broker_auth_session_spare" "$broker_session_max3_home/auth.json"
+cat >"$broker_session_config" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-1": {
+          "config_dir": "$broker_session_max1_home",
+          "secret": {
+            "backend": "file",
+            "path": "$broker_session_max1_home/auth.json"
+          }
+        },
+        "max-2": {
+          "config_dir": "$broker_session_max2_home",
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth_session_fallback"
+          }
+        },
+        "max-3": {
+          "config_dir": "$broker_session_max3_home",
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth_session_spare"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "codex-max": {
+      "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max", "codex:max-3#codex-max"]
+    }
+  },
+  "strategies": {}
+}
+EOF
+cat >"$broker_session_state/health.json" <<'EOF'
+{
+  "version": 2,
+  "accounts": [
+    {
+      "key": "codex:max-1#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "quota_exhausted",
+      "last_probe_decision": "try_next_account",
+      "liveness": {
+        "state": "live",
+        "availability": "quota_exhausted",
+        "window_resets_at": 1999999999
+      }
+    },
+    {
+      "key": "codex:max-2#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "none",
+      "last_probe_decision": "use_this",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    },
+    {
+      "key": "codex:max-3#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "none",
+      "last_probe_decision": "use_this",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    }
+  ]
+}
+EOF
+broker_session_plan="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-plan --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_session_plan" '"mode":"codex_broker_owned_session_plan"' "broker-session-plan reports session mode"
+expect_contains "$broker_session_plan" '"spends_provider_calls":false' "broker-session-plan reports no provider spend"
+expect_contains "$broker_session_plan" '"mutates_route_health":false' "broker-session-plan reports no route-health mutation"
+expect_contains "$broker_session_plan" '"proof_status":"session_planning_only"' "broker-session-plan refuses execution proof claim"
+expect_contains "$broker_session_plan" '"broker_owned_session":true' "broker-session-plan scopes claim to broker-owned session"
+expect_contains "$broker_session_plan" '"session_start_ready":true' "broker-session-plan reports start-ready selected route"
+expect_contains "$broker_session_plan" '"prepared_fallback":true' "broker-session-plan reports selectable broker fallback"
+expect_contains "$broker_session_plan" '"same_thread_quota_recovery":false' "broker-session-plan keeps same-thread quota boundary explicit"
+expect_contains "$broker_session_plan" '"routes_total":3' "broker-session-plan counts routes"
+expect_contains "$broker_session_plan" '"broker_ready_routes":3' "broker-session-plan counts broker-ready routes"
+expect_contains "$broker_session_plan" '"selectable_broker_routes":2' "broker-session-plan counts selectable broker routes"
+expect_contains "$broker_session_plan" '"selectable_fallback_routes":1' "broker-session-plan counts immediate fallback route"
+expect_contains "$broker_session_plan" '"blocked_broker_routes":1' "broker-session-plan counts quota-blocked broker route"
+expect_contains "$broker_session_plan" '"selected":{"provider":"codex","account":"max-2","capability":"codex-max"' "broker-session-plan selects first selectable broker route"
+expect_contains "$broker_session_plan" '"route_role":"quota_blocked"' "broker-session-plan marks exhausted broker route"
+expect_contains "$broker_session_plan" '"route_role":"selected"' "broker-session-plan marks selected route"
+expect_contains "$broker_session_plan" '"route_role":"selectable_fallback"' "broker-session-plan marks fallback route"
+expect_not_contains "$broker_session_plan" 'acct-session-fallback' "broker-session-plan does not expose fallback account id value"
+expect_not_contains "$broker_session_plan" 'acct-session-spare' "broker-session-plan does not expose spare account id value"
+expect_not_contains "$broker_session_plan" "$broker_jwt" "broker-session-plan does not expose token value"
+expect_not_contains "$broker_session_plan" 'broker-session-refresh-token' "broker-session-plan does not expose refresh token value"
+expect_not_contains "$broker_session_plan" 'broker-session-spare-token' "broker-session-plan does not expose spare refresh token value"
+
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
 cat >"$mock_codex_app_server" <<'EOF'

@@ -153,6 +153,12 @@ auth-refresh hook, applies a fallback app-server login, and verifies a new
 brokered thread uses fallback Authorization. Same-thread quota recovery remains
 explicitly unproven.
 
+`oauth-mux codex broker-session-plan --profile codex-max --capability codex-max
+--json` is the no-spend UX planning surface for broker-owned Codex sessions. It
+combines recorded route liveness with app-server auth-broker readiness, then
+reports the selected route, immediate selectable fallbacks, quota-blocked broker
+routes, and the same explicit no-hot-swap/no-same-thread quota boundary.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local
