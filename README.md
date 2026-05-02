@@ -207,7 +207,10 @@ uses the earliest summary wake-up hint between ticks, bounded by
 latest `daemon status --json` snapshot also include `claim.level`. A
 `prepared_fallback` claim means the next mediated `stay-afloat launch` can pick
 a route; it does not claim current-process hot-swap, supervised restart, or
-per-request muxing.
+per-request muxing. When `daemon run --stay-afloat` is active,
+`daemon status --json` also reports `stay_afloat_loop.selector`,
+`interval_ms`, `iterations`, and `execution_mode` so operators can verify which
+profile/capability the beta host is actually supervising.
 
 Secret read and writeback are also separate. Route and runtime JSON expose a
 `writeback` object with the secret backend capability and whether automatic

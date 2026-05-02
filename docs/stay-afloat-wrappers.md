@@ -56,7 +56,17 @@ fields shaped like:
   "hosts_stay_afloat": false,
   "stay_afloat_loop": {
     "hosted": true,
-    "mode": "stay_afloat_supervisor"
+    "mode": "stay_afloat_supervisor",
+    "selector": {
+      "profile": "codex-max",
+      "provider": null,
+      "account": null,
+      "capability": "codex-max"
+    },
+    "once": false,
+    "iterations": 4294967295,
+    "interval_ms": 60000,
+    "execution_mode": "execute"
   },
   "transport": "foreground_supervised_loop",
   "socket": null,
@@ -114,6 +124,10 @@ Good soak evidence includes:
 - `status:"running"` while the wrapper is active.
 - `contract:"experimental_supervised_loop"` while the beta host is active.
 - `stay_afloat_loop.hosted:true` while the beta host is active.
+- `stay_afloat_loop.selector` matches the profile/provider/account/capability
+  you meant to supervise.
+- `stay_afloat_loop.interval_ms` and `stay_afloat_loop.execution_mode` match the
+  cadence and admission boundary you meant to run.
 - `transport:"foreground_supervised_loop"` and `socket:null`.
 - A redacted `stay_afloat` snapshot with selected route, fallback, repair, or
   handoff state.

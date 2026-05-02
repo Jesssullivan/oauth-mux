@@ -28,6 +28,17 @@ pub const RunGuard = struct {
     }
 };
 
+pub const StayAfloatRunMetadata = struct {
+    profile: ?[]const u8 = null,
+    provider: ?[]const u8 = null,
+    account: ?[]const u8 = null,
+    capability: ?[]const u8 = null,
+    once: bool = true,
+    iterations: u32 = 1,
+    interval_ms: u64 = 60_000,
+    execute: bool = true,
+};
+
 pub fn run(allocator: std.mem.Allocator) DaemonError!void {
     if (comptime builtin.os.tag == .windows) {
         log.err("daemon: foreground socket transport is not implemented on windows", .{});
@@ -53,7 +64,7 @@ pub fn run(allocator: std.mem.Allocator) DaemonError!void {
     runLoop(allocator, sock_path) catch return error.SocketError;
 }
 
-pub fn acquireStayAfloatRunGuard(allocator: std.mem.Allocator) DaemonError!RunGuard {
+pub fn acquireStayAfloatRunGuard(allocator: std.mem.Allocator, metadata: StayAfloatRunMetadata) DaemonError!RunGuard {
     if (comptime builtin.os.tag == .windows) {
         log.err("daemon: foreground stay-afloat loop is not implemented on windows", .{});
         return error.SocketError;
@@ -74,7 +85,7 @@ pub fn acquireStayAfloatRunGuard(allocator: std.mem.Allocator) DaemonError!RunGu
     writePidFile(pid_path, currentPid()) catch return error.SocketError;
     errdefer std.fs.deleteFileAbsolute(pid_path) catch {};
 
-    writeStayAfloatMetadata(metadata_path) catch return error.SocketError;
+    writeStayAfloatMetadata(metadata_path, metadata) catch return error.SocketError;
     return .{
         .allocator = allocator,
         .pid_path = pid_path,
@@ -376,15 +387,36 @@ fn metadataPath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ dir, "daemon-metadata.json" });
 }
 
-fn writeStayAfloatMetadata(path: []const u8) !void {
+fn writeStayAfloatMetadata(path: []const u8, metadata: StayAfloatRunMetadata) !void {
     try ensureParentDir(path);
     const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
     defer file.close();
-    const writer = file.writer();
+    try writeStayAfloatMetadataJson(file.writer(), metadata);
+}
+
+fn writeStayAfloatMetadataJson(writer: anytype, metadata: StayAfloatRunMetadata) !void {
     try writer.writeAll("{\"hosted\":true");
     try writer.writeAll(",\"mode\":\"stay_afloat_supervisor\"");
     try writer.writeAll(",\"contract\":\"beta_foreground_tick_host\"");
     try writer.writeAll(",\"production_supported\":false");
+    try writer.writeAll(",\"selector\":{");
+    try writer.writeAll("\"profile\":");
+    if (metadata.profile) |profile| try std.json.stringify(profile, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"provider\":");
+    if (metadata.provider) |provider| try std.json.stringify(provider, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"account\":");
+    if (metadata.account) |account| try std.json.stringify(account, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (metadata.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeByte('}');
+    try writer.writeAll(",\"once\":");
+    try writer.writeAll(if (metadata.once) "true" else "false");
+    try writer.writeAll(",\"iterations\":");
+    try writer.print("{d}", .{metadata.iterations});
+    try writer.writeAll(",\"interval_ms\":");
+    try writer.print("{d}", .{metadata.interval_ms});
+    try writer.writeAll(",\"execution_mode\":");
+    try std.json.stringify(if (metadata.execute) "execute" else "plan", .{}, writer);
     try writer.writeAll(",\"started_at\":");
     try writer.print("{d}", .{std.time.timestamp()});
     try writer.writeAll("}\n");
@@ -436,4 +468,25 @@ test "status json exposes socket daemon contract" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"wrapper_contract\":\"foreground_tick\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat_loop\":{\"hosted\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat\":") != null);
+}
+
+test "stay-afloat metadata json exposes selector and cadence" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeStayAfloatMetadataJson(buf.writer(), .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+        .once = false,
+        .iterations = 200,
+        .interval_ms = 50,
+        .execute = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hosted\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selector\":{\"profile\":\"codex-max\",\"provider\":null,\"account\":null,\"capability\":\"codex-max\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"once\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"iterations\":200") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interval_ms\":50") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"execution_mode\":\"execute\"") != null);
 }
