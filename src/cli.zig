@@ -183,6 +183,7 @@ pub const Command = union(enum) {
         config_candidate,
         config_merge,
         broker_plan,
+        broker_session_plan,
         broker_smoke,
         broker_refresh_smoke,
         broker_401_smoke,
@@ -886,6 +887,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .config_merge;
         } else if (eql(args[0], "broker-plan")) {
             result.action = .broker_plan;
+        } else if (eql(args[0], "broker-session-plan")) {
+            result.action = .broker_session_plan;
         } else if (eql(args[0], "broker-smoke")) {
             result.action = .broker_smoke;
         } else if (eql(args[0], "broker-refresh-smoke")) {
@@ -1078,6 +1081,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex broker-plan [--profile name] [--capability c] [--json]
         \\      Inspect whether Codex routes can supply app-server external auth tokens.
         \\
+        \\  codex broker-session-plan [--profile name] [--capability c] [--json]
+        \\      Plan a broker-owned Codex session from route liveness and auth-broker readiness.
+        \\
         \\  codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\      Start a broker-owned Codex app-server stdio session and verify external auth login.
         \\
@@ -1129,6 +1135,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
         \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
+        \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-refresh-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-401-smoke [--profile name] [--capability c] --confirm-broker [--json]
@@ -1342,6 +1349,20 @@ test "parse codex broker plan" {
     switch (cmd) {
         .codex => |codex| {
             try std.testing.expect(codex.action == .broker_plan);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex broker session plan" {
+    const args = [_][]const u8{ "codex", "broker-session-plan", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .broker_session_plan);
             try std.testing.expectEqualStrings("codex-max", codex.profile.?);
             try std.testing.expectEqualStrings("codex-max", codex.capabilities);
             try std.testing.expect(codex.json);
@@ -1895,7 +1916,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all broker-plan broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all broker-plan broker-session-plan broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run supervise start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host beta supervised stay-afloat loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'

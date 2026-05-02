@@ -76,9 +76,10 @@ There are now four distinct stay-afloat claim levels:
    healthy account.
 2. `supervised_restart`: not implemented. oauth-mux owns a child process and
    can restart it under another route after typed failure evidence.
-3. `current_process_auth_broker`: not implemented. The upstream harness exposes
-   a reload, external-auth, or account-switch protocol that oauth-mux can
-   drive while the harness process remains alive.
+3. `current_process_auth_broker`: implemented only for broker-owned Codex
+   app-server proof paths. The upstream harness exposes a reload, external-auth,
+   or account-switch protocol that oauth-mux can drive while the harness process
+   remains alive.
 4. `per_request_muxing`: not implemented. Every model/provider request passes
    through oauth-mux or an oauth-mux-aware adapter.
 
@@ -272,9 +273,14 @@ For quota-driven account changes, use a different action name, such as
    proves the first no-spend version: local usage-limit 429 does not produce
    the 401 refresh hook, fallback app-server login is accepted, and a new
    brokered thread uses fallback Authorization.
-10. Only after topology A is green, attempt topology B with a remote TUI and
+10. Add a no-spend session planning surface:
+   `oauth-mux codex broker-session-plan --profile codex-max --capability
+   codex-max --json` joins recorded route liveness with broker auth readiness
+   and reports selected, fallback, quota-blocked, and auth-unready routes for
+   the future broker-owned session UX.
+11. Only after topology A is green, attempt topology B with a remote TUI and
    sidecar broker.
-11. Update website and README claim language only after live dogfood passes.
+12. Update website and README claim language only after live dogfood passes.
 
 ## Acceptance Criteria
 
@@ -289,6 +295,9 @@ For quota-driven account changes, use a different action name, such as
 - The controlled quota smoke proves new-thread fallback after local
   usage-limit classification. It also records the negative evidence:
   same-turn and same-thread quota recovery are not proven.
+- The broker session plan is no-spend and planning-only. It can report a
+  broker-owned session start route plus immediate selectable fallbacks, but it
+  does not start Codex, spend provider calls, or claim unmanaged TUI hot-swap.
 - Cross-account switching is blocked when forced workspace or profile policy
   forbids it.
 - Quota/rate-limit behavior is separately classified as next-turn account
