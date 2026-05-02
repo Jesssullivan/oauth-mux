@@ -414,6 +414,48 @@ daemon_stopped="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtim
 expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status reports stopped foreground daemon"
 expect_contains "$daemon_stopped" '"wrapper_contract":"foreground_tick"' "daemon status reports wrapper contract when stopped"
 
+printf 'e2e: supervised stay-afloat daemon loop reports beta host status\n'
+supervised_runtime="$tmp/supervised-runtime"
+supervised_log="$tmp/supervised-daemon.log"
+mkdir -p "$supervised_runtime"
+OMUX_CONFIG="$config" \
+  OMUX_STATE_DIR="$state_dir" \
+  XDG_RUNTIME_DIR="$supervised_runtime" \
+  "$bin" daemon run --stay-afloat --profile expensive --capability expensive --iterations 200 --interval-ms 50 >"$supervised_log" 2>&1 &
+daemon_pid=$!
+supervised_status=""
+for _ in $(seq 1 200); do
+  supervised_status="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon status --json || true)"
+  case "$supervised_status" in
+    *'"status":"running"'*'"stay_afloat_loop":{"hosted":true'*'"stay_afloat":{"version":'*) break ;;
+  esac
+done
+expect_contains "$supervised_status" '"status":"running"' "supervised daemon status reports running"
+expect_contains "$supervised_status" '"contract":"experimental_supervised_loop"' "supervised daemon status reports beta contract"
+expect_contains "$supervised_status" '"hosts_stay_afloat":false' "supervised daemon does not claim production stay-afloat"
+expect_contains "$supervised_status" '"stay_afloat_loop":{"hosted":true' "supervised daemon reports hosted beta loop"
+expect_contains "$supervised_status" '"transport":"foreground_supervised_loop"' "supervised daemon status reports foreground loop transport"
+expect_contains "$supervised_status" '"socket":null' "supervised daemon does not claim a socket transport"
+expect_contains "$supervised_status" '"selected":{"provider":"toy","account":"a2"' "supervised daemon snapshot carries selected fallback route"
+OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon stop >/dev/null 2>&1
+set +e
+wait "$daemon_pid" 2>/dev/null
+supervised_wait_status=$?
+set -e
+daemon_pid=""
+case "$supervised_wait_status" in
+  0|143) ;;
+  *)
+    printf 'e2e assertion failed: supervised daemon exited unexpectedly with status %s\n' "$supervised_wait_status" >&2
+    printf 'supervised daemon log:\n%s\n' "$(cat "$supervised_log")" >&2
+    exit 1
+    ;;
+esac
+supervised_stopped="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon status --json)"
+expect_contains "$supervised_stopped" '"status":"not_running"' "supervised daemon status reports stopped"
+expect_contains "$supervised_stopped" '"stay_afloat_loop":{"hosted":false' "supervised daemon clears hosted loop metadata after stop"
+expect_contains "$supervised_stopped" '"stay_afloat":{"version":' "supervised daemon leaves latest redacted snapshot visible after stop"
+
 printf 'e2e: daemon tick execute runs one admitted command probe\n'
 omux health --reset toy:a1 >/dev/null
 omux health --reset toy:a2 >/dev/null

@@ -121,6 +121,11 @@ the socket stub as the production supervisor.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
   as the lower-level wrapper-author spelling for the same bounded foreground
   loop.
+- `oauth-mux daemon run --stay-afloat --profile <profile> --capability
+  <capability>` as the first opt-in beta host for the same tick engine. It
+  reports `stay_afloat_loop.hosted:true` while running, but
+  `production_supported:false` and `hosts_stay_afloat:false` remain in status
+  until soak and wrapper proof promote the daemon product surface.
 - Account-scoped advisory locks during confirmed `repair run`, reported back as
   `repair_in_progress` by runtime-aware route planning.
 - Config-level daemon admission policy for route planning. The default admits

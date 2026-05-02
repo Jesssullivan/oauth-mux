@@ -25,7 +25,7 @@ pub const Command = union(enum) {
     init: InitArgs,
     codex: CodexArgs,
     completions: CompletionsArgs,
-    daemon_run,
+    daemon_run: DaemonRunArgs,
     daemon_start,
     daemon_stop,
     daemon_status: DaemonStatusArgs,
@@ -205,6 +205,11 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    pub const DaemonRunArgs = struct {
+        stay_afloat: bool = false,
+        tick: DaemonTickArgs = .{},
+    };
+
     pub const DaemonEventsArgs = struct {
         json: bool = false,
         limit: usize = 50,
@@ -271,7 +276,8 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
     if (eql(cmd, "daemon")) {
         if (rest.len > 0) {
-            if (eql(rest[0], "run")) return .daemon_run;
+            if (eql(rest[0], "run")) return parseDaemonRun(rest[1..]);
+            if (eql(rest[0], "supervise")) return parseDaemonSupervise(rest[1..]);
             if (eql(rest[0], "repair-plan")) return parseRepairPlan(rest[1..]);
             if (eql(rest[0], "start")) return .daemon_start;
             if (eql(rest[0], "stop")) return .daemon_stop;
@@ -612,6 +618,45 @@ fn parseDaemonStatus(args: []const []const u8) Command {
     return .{ .daemon_status = result };
 }
 
+fn parseDaemonRun(args: []const []const u8) Command {
+    var result = Command.DaemonRunArgs{};
+    result.tick = parseDaemonTickArgs(args);
+    result.tick.execute = true;
+    var bounded = false;
+    for (args) |arg| {
+        if (eql(arg, "--stay-afloat") or eql(arg, "stay-afloat")) {
+            result.stay_afloat = true;
+        } else if (eql(arg, "--iterations") or eql(arg, "--once")) {
+            bounded = true;
+        }
+    }
+    if (!bounded) {
+        result.tick.once = false;
+        result.tick.iterations = std.math.maxInt(u32);
+    }
+    if (!result.stay_afloat) {
+        result.tick = .{};
+    }
+    return .{ .daemon_run = result };
+}
+
+fn parseDaemonSupervise(args: []const []const u8) Command {
+    var result = Command.DaemonRunArgs{
+        .stay_afloat = true,
+        .tick = parseDaemonTickArgs(args),
+    };
+    result.tick.execute = true;
+    var bounded = false;
+    for (args) |arg| {
+        if (eql(arg, "--iterations") or eql(arg, "--once")) bounded = true;
+    }
+    if (!bounded) {
+        result.tick.once = false;
+        result.tick.iterations = std.math.maxInt(u32);
+    }
+    return .{ .daemon_run = result };
+}
+
 fn parseDaemonEvents(args: []const []const u8) Command {
     var result = Command.DaemonEventsArgs{};
     var i: usize = 0;
@@ -933,7 +978,10 @@ pub fn printUsage(writer: anytype) !void {
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
         \\
-        \\  daemon run         Run the daemon in the foreground.
+        \\  daemon run [--stay-afloat] [stay-afloat options]
+        \\      Run the daemon in the foreground; --stay-afloat hosts the beta supervised tick loop.
+        \\  daemon supervise [stay-afloat options]
+        \\      Alias for daemon run --stay-afloat.
         \\  daemon start       Start experimental daemon stub; no automatic repair.
         \\  daemon stop        Stop the daemon.
         \\  daemon status [--json]
@@ -1420,7 +1468,11 @@ test "parse route explain with profile" {
 
 test "parse daemon run" {
     const args = [_][]const u8{ "daemon", "run" };
-    try std.testing.expect(parse(&args) == .daemon_run);
+    const cmd = parse(&args);
+    switch (cmd) {
+        .daemon_run => |run| try std.testing.expect(!run.stay_afloat),
+        else => return error.Unexpected,
+    }
 }
 
 test "parse daemon events json limit" {
@@ -1473,6 +1525,23 @@ test "parse stay-afloat once json selector" {
             try std.testing.expectEqualStrings("codex-max", tick.capability.?);
         },
         else => return error.Unexpected,
+    }
+}
+
+test "parse daemon run stay-afloat supervisor" {
+    const args = [_][]const u8{ "daemon", "run", "--stay-afloat", "--profile", "codex-max", "--capability", "codex-max", "--iterations", "2", "--interval-ms", "0" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .daemon_run => |run| {
+            try std.testing.expect(run.stay_afloat);
+            try std.testing.expect(!run.tick.once);
+            try std.testing.expect(run.tick.execute);
+            try std.testing.expectEqual(@as(u32, 2), run.tick.iterations);
+            try std.testing.expectEqual(@as(u64, 0), run.tick.interval_ms);
+            try std.testing.expectEqualStrings("codex-max", run.tick.profile.?);
+            try std.testing.expectEqualStrings("codex-max", run.tick.capability.?);
+        },
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -1634,7 +1703,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run start stop status events handoffs tick' -d 'Daemon subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run supervise start stop status events handoffs tick' -d 'Daemon subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host beta supervised stay-afloat loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l limit -d 'Limit event count' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l all -d 'Include historical handoff events'

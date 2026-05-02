@@ -6,7 +6,7 @@ Issue context: GitHub `Jesssullivan/oauth-mux#66`, `#67`, `#68`; Linear
 `TIN-863`, `TIN-866`, `TIN-867`, `TIN-876`, `TIN-877`, `TIN-878`, and
 `TIN-879`, plus paid cohort lane `TIN-892` with children `TIN-893`,
 `TIN-894`, `TIN-895`, and `TIN-896`, plus production daemon contract
-`TIN-897`.
+`TIN-897` and supervised-loop implementation `TIN-898`.
 
 ## Baseline
 
@@ -21,7 +21,7 @@ boundaries that need separate tracking.
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
 | Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy still needs to stop advertising the private tap. |
-| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. `TIN-897` now defines the promotion contract and the mediation boundary for seamless handoff claims. |
+| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. `TIN-897` defines the mediation boundary for seamless handoff claims; `TIN-898` adds the first opt-in beta supervised loop without changing default policy or production claims. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex is live-proven; non-Codex proof is capability-level or still needs operator proof. |
 | Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | A one-month paid cohort is now tracked for Codex lower-tier contrast, Claude subscription/billing shapes, Figma token/seat/plan shapes, and a foreground stay-afloat soak gate. |
 
@@ -115,6 +115,10 @@ product is aiming first at prepared fallback plus daemon-warmed route state.
 It must not claim hot-swap of an already-running Codex, Claude, or Figma
 harness unless that harness has a proven reload, restart, proxy, or in-agent
 mediation path.
+`TIN-898` adds `daemon run --stay-afloat` / `daemon supervise` as an opt-in
+beta host for the same foreground tick engine. Status can report
+`stay_afloat_loop.hosted:true`, but production support remains false until
+soak and wrapper proof complete.
 
 The account-enrollment artifact is
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. It defines the

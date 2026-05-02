@@ -15,6 +15,19 @@ pub const DaemonError = error{
     OutOfMemory,
 };
 
+pub const RunGuard = struct {
+    allocator: std.mem.Allocator,
+    pid_path: []const u8,
+    metadata_path: []const u8,
+
+    pub fn release(self: *RunGuard) void {
+        std.fs.deleteFileAbsolute(self.pid_path) catch {};
+        std.fs.deleteFileAbsolute(self.metadata_path) catch {};
+        self.allocator.free(self.pid_path);
+        self.allocator.free(self.metadata_path);
+    }
+};
+
 pub fn run(allocator: std.mem.Allocator) DaemonError!void {
     if (comptime builtin.os.tag == .windows) {
         log.err("daemon: foreground socket transport is not implemented on windows", .{});
@@ -38,6 +51,35 @@ pub fn run(allocator: std.mem.Allocator) DaemonError!void {
     defer std.fs.deleteFileAbsolute(pid_path) catch {};
 
     runLoop(allocator, sock_path) catch return error.SocketError;
+}
+
+pub fn acquireStayAfloatRunGuard(allocator: std.mem.Allocator) DaemonError!RunGuard {
+    if (comptime builtin.os.tag == .windows) {
+        log.err("daemon: foreground stay-afloat loop is not implemented on windows", .{});
+        return error.SocketError;
+    }
+
+    const pid_path = pidPath(allocator) catch return error.OutOfMemory;
+    errdefer allocator.free(pid_path);
+
+    const metadata_path = metadataPath(allocator) catch return error.OutOfMemory;
+    errdefer allocator.free(metadata_path);
+
+    if (isRunning(allocator)) {
+        log.err("daemon: already running", .{});
+        return error.AlreadyRunning;
+    }
+
+    ensureParentDir(pid_path) catch return error.SocketError;
+    writePidFile(pid_path, currentPid()) catch return error.SocketError;
+    errdefer std.fs.deleteFileAbsolute(pid_path) catch {};
+
+    writeStayAfloatMetadata(metadata_path) catch return error.SocketError;
+    return .{
+        .allocator = allocator,
+        .pid_path = pid_path,
+        .metadata_path = metadata_path,
+    };
 }
 
 pub fn start(allocator: std.mem.Allocator) DaemonError!void {
@@ -114,49 +156,81 @@ pub fn stop(allocator: std.mem.Allocator) !void {
         return;
     };
 
+    const metadata_path = metadataPath(allocator) catch null;
+    defer if (metadata_path) |path| allocator.free(path);
+
     log.info("daemon: stopped (pid {d})", .{pid});
     std.fs.deleteFileAbsolute(pid_path) catch {};
+    if (metadata_path) |path| std.fs.deleteFileAbsolute(path) catch {};
 }
 
 pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
     const pid_path = try pidPath(allocator);
     defer allocator.free(pid_path);
 
-    if (isRunning(allocator)) {
+    const running = isRunning(allocator);
+    const loop_hosted = if (running) hasStayAfloatMetadata(allocator) else false;
+
+    if (running) {
         const pid = readPidFile(allocator, pid_path) catch 0;
         const sock = try paths.socketPath(allocator);
         defer allocator.free(sock);
         if (json) {
             try writer.writeAll("{\"status\":\"running\"");
-            try writeStatusContractJson(writer);
+            try writeStatusContractJson(writer, loop_hosted);
+            try writeStatusLoopJson(allocator, writer, loop_hosted);
             try writeStatusSnapshotJson(allocator, writer);
-            try writer.print(",\"pid\":{d},\"socket\":", .{pid});
-            try std.json.stringify(sock, .{}, writer);
+            try writer.print(",\"pid\":{d},\"transport\":", .{pid});
+            try std.json.stringify(if (loop_hosted) "foreground_supervised_loop" else "unix_socket", .{}, writer);
+            try writer.writeAll(",\"socket\":");
+            if (loop_hosted) try writer.writeAll("null") else try std.json.stringify(sock, .{}, writer);
             try writer.writeAll("}\n");
         } else {
-            try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
-            try writer.writeAll("daemon: experimental socket stub; stay-afloat contract is the foreground tick engine\n");
+            if (loop_hosted) {
+                try writer.print("daemon: running supervised stay-afloat loop (pid {d})\n", .{pid});
+            } else {
+                try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
+            }
+            try writer.writeAll("daemon: experimental; stay-afloat contract is the foreground tick engine\n");
         }
     } else {
         if (json) {
             try writer.writeAll("{\"status\":\"not_running\"");
-            try writeStatusContractJson(writer);
+            try writeStatusContractJson(writer, false);
+            try writeStatusLoopJson(allocator, writer, false);
             try writeStatusSnapshotJson(allocator, writer);
             try writer.writeAll("}\n");
         } else {
             try writer.writeAll("daemon: not running\n");
-            try writer.writeAll("daemon: experimental socket stub; stay-afloat contract is the foreground tick engine\n");
+            try writer.writeAll("daemon: experimental; stay-afloat contract is the foreground tick engine\n");
         }
     }
 }
 
-fn writeStatusContractJson(writer: anytype) !void {
-    try writer.writeAll(",\"contract\":\"experimental_socket_stub\"");
+fn writeStatusContractJson(writer: anytype, loop_hosted: bool) !void {
+    try writer.writeAll(",\"contract\":");
+    try std.json.stringify(if (loop_hosted) "experimental_supervised_loop" else "experimental_socket_stub", .{}, writer);
     try writer.writeAll(",\"production_supported\":false");
     try writer.writeAll(",\"hosts_stay_afloat\":false");
     try writer.writeAll(",\"wrapper_contract\":\"foreground_tick\"");
     try writer.writeAll(",\"socket_transport_supported\":");
     try writer.writeAll(if (builtin.os.tag == .windows) "false" else "true");
+}
+
+fn writeStatusLoopJson(allocator: std.mem.Allocator, writer: anytype, loop_hosted: bool) !void {
+    try writer.writeAll(",\"stay_afloat_loop\":");
+    if (loop_hosted) {
+        const metadata = try readMetadataAlloc(allocator);
+        if (metadata) |bytes| {
+            defer allocator.free(bytes);
+            const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+            if (trimmed.len != 0 and trimmed[0] == '{') {
+                try writer.writeAll(trimmed);
+                return;
+            }
+        }
+    }
+    try writer.writeAll("{\"hosted\":false,\"production_supported\":false}");
 }
 
 fn writeStatusSnapshotJson(allocator: std.mem.Allocator, writer: anytype) !void {
@@ -296,6 +370,56 @@ fn readPidFile(allocator: std.mem.Allocator, path: []const u8) !Pid {
     return std.fmt.parseInt(Pid, pid_str, 10) catch return error.InvalidCharacter;
 }
 
+fn metadataPath(allocator: std.mem.Allocator) ![]const u8 {
+    const dir = paths.runtimeDir(allocator) catch return error.OutOfMemory;
+    defer allocator.free(dir);
+    return std.fs.path.join(allocator, &.{ dir, "daemon-metadata.json" });
+}
+
+fn writeStayAfloatMetadata(path: []const u8) !void {
+    try ensureParentDir(path);
+    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
+    defer file.close();
+    const writer = file.writer();
+    try writer.writeAll("{\"hosted\":true");
+    try writer.writeAll(",\"mode\":\"stay_afloat_supervisor\"");
+    try writer.writeAll(",\"contract\":\"beta_foreground_tick_host\"");
+    try writer.writeAll(",\"production_supported\":false");
+    try writer.writeAll(",\"started_at\":");
+    try writer.print("{d}", .{std.time.timestamp()});
+    try writer.writeAll("}\n");
+}
+
+fn readMetadataAlloc(allocator: std.mem.Allocator) !?[]const u8 {
+    const path = try metadataPath(allocator);
+    defer allocator.free(path);
+    const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
+        error.FileNotFound => return null,
+        else => return e,
+    };
+    defer file.close();
+    return try file.readToEndAlloc(allocator, 16 * 1024);
+}
+
+fn hasStayAfloatMetadata(allocator: std.mem.Allocator) bool {
+    const metadata = readMetadataAlloc(allocator) catch return false;
+    if (metadata) |bytes| {
+        defer allocator.free(bytes);
+        return std.mem.indexOf(u8, bytes, "\"hosted\":true") != null and
+            std.mem.indexOf(u8, bytes, "\"mode\":\"stay_afloat_supervisor\"") != null;
+    }
+    return false;
+}
+
+fn ensureParentDir(path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
+            error.PathAlreadyExists => {},
+            else => return e,
+        };
+    }
+}
+
 test "isRunning returns false when no daemon" {
     try std.testing.expect(!isRunning(std.testing.allocator));
 }
@@ -310,5 +434,6 @@ test "status json exposes socket daemon contract" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"production_supported\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hosts_stay_afloat\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"wrapper_contract\":\"foreground_tick\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat_loop\":{\"hosted\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat\":") != null);
 }
