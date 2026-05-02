@@ -161,7 +161,14 @@ pub fn main() !void {
             try cli.printCompletions(stdout, comp_args.shell);
         },
 
-        .daemon_run => {
+        .daemon_run => |run_args| {
+            if (run_args.stay_afloat) {
+                runSupervisedStayAfloat(allocator, stdout, run_args.tick) catch |e| {
+                    log.err("daemon stay-afloat: {s}", .{@errorName(e)});
+                    std.process.exit(types.ExitCode.general_error.int());
+                };
+                return;
+            }
             daemon.run(allocator) catch |e| {
                 log.err("daemon: {s}", .{@errorName(e)});
                 std.process.exit(types.ExitCode.general_error.int());
@@ -3541,6 +3548,21 @@ fn runDaemonTick(
     if (args.json and iterations > 1) {
         try writer.writeAll("]}\n");
     }
+}
+
+fn runSupervisedStayAfloat(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.DaemonTickArgs,
+) !void {
+    var guard = try daemon.acquireStayAfloatRunGuard(allocator);
+    defer guard.release();
+
+    var tick_args = args;
+    tick_args.execute = true;
+    tick_args.json = false;
+
+    try runDaemonTick(allocator, writer, tick_args, "oauth-mux daemon run --stay-afloat");
 }
 
 fn writeDaemonTickSnapshot(

@@ -258,6 +258,21 @@ snapshot under `stay_afloat` while still reporting
 - Reuse account locks, handoffs, event logs, and scheduler hints.
 - Prove macOS and Linux stop/status behavior.
 
+Implementation note, 2026-05-02: the beta loop is available as:
+
+```bash
+oauth-mux daemon run --stay-afloat --profile <profile> --capability <capability>
+oauth-mux daemon supervise --profile <profile> --capability <capability>
+```
+
+It writes the normal daemon pid file, records beta loop metadata under the
+runtime directory, runs the same stay-afloat tick engine with execute mode
+enabled, and updates the redacted `stay_afloat` status snapshot after each
+tick. `daemon status --json` reports `contract:"experimental_supervised_loop"`
+and `stay_afloat_loop.hosted:true` while the loop is running, but still reports
+`production_supported:false` and `hosts_stay_afloat:false` until wrapper docs
+and soak proof promote the product surface.
+
 ### D3: wrapper recipes
 
 - Add package-neutral wrapper docs first.
