@@ -127,7 +127,10 @@ in-agent adapter proves those stronger levels.
   tick and remains service-manager agnostic. Route ticks expose
   `next_tick_after` plus `schedule_reason`, and the summary exposes the
   earliest `next_tick_after` plus `next_tick_reason`, so wrappers can back off
-  without inventing separate scheduler semantics.
+  without inventing separate scheduler semantics. The built-in loop also uses
+  that earliest wake-up hint when sleeping between ticks, bounded by
+  `--interval-ms`; the hint does not admit provider-spend probes, interactive
+  auth, or mutation by itself.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
   as the lower-level wrapper-author spelling for the same bounded foreground
   loop.

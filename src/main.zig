@@ -3784,7 +3784,8 @@ fn runDaemonTick(
             if (iterations > 1 and idx + 1 < iterations) try writer.writeByte('\n');
         }
 
-        sleepBetweenDaemonTicks(args, idx, iterations);
+        const stats = daemonTickStats(parsed.value.policy.daemon, evaluations.items, observed_at);
+        sleepBetweenDaemonTicks(args, idx, iterations, stats, observed_at);
     }
 
     if (args.json and iterations > 1) {
@@ -3954,12 +3955,29 @@ fn normalizedDaemonTickIterations(args: cli.Command.DaemonTickArgs) u32 {
     return @max(args.iterations, 1);
 }
 
-fn sleepBetweenDaemonTicks(args: cli.Command.DaemonTickArgs, idx: u32, iterations: u32) void {
-    if (idx + 1 >= iterations) return;
-    if (args.interval_ms == 0) return;
+fn sleepBetweenDaemonTicks(args: cli.Command.DaemonTickArgs, idx: u32, iterations: u32, stats: DaemonTickStats, observed_at: i64) void {
+    const sleep_ms = daemonTickSleepMs(args, idx, iterations, stats, observed_at);
+    if (sleep_ms == 0) return;
+    std.time.sleep(sleep_ms * std.time.ns_per_ms);
+}
+
+fn daemonTickSleepMs(args: cli.Command.DaemonTickArgs, idx: u32, iterations: u32, stats: DaemonTickStats, observed_at: i64) u64 {
+    if (idx + 1 >= iterations) return 0;
+    if (args.interval_ms == 0) return 0;
     const max_ms = std.math.maxInt(u64) / std.time.ns_per_ms;
-    const bounded_ms = @min(args.interval_ms, max_ms);
-    std.time.sleep(bounded_ms * std.time.ns_per_ms);
+    var sleep_ms = @min(args.interval_ms, max_ms);
+
+    if (stats.next_tick_after) |next_tick_after| {
+        if (next_tick_after <= observed_at) return 0;
+        const seconds_until: u64 = @intCast(next_tick_after - observed_at);
+        const hint_ms = if (seconds_until > max_ms / 1000)
+            max_ms
+        else
+            seconds_until * 1000;
+        sleep_ms = @min(sleep_ms, hint_ms);
+    }
+
+    return sleep_ms;
 }
 
 fn runStayAfloatHandoff(
@@ -9053,6 +9071,45 @@ test "daemon tick stats carries earliest schedule reason" {
     try std.testing.expectEqual(@as(?i64, 1300), stats.next_tick_after);
     try std.testing.expect(stats.next_tick_reason != null);
     try std.testing.expectEqualStrings("runtime_recheck", stats.next_tick_reason.?);
+}
+
+test "daemon tick sleep honors earlier route wake-up hint" {
+    const sleep_ms = daemonTickSleepMs(
+        .{ .interval_ms = 60_000 },
+        0,
+        2,
+        .{ .next_tick_after = 1030, .next_tick_reason = "rate_limit" },
+        1000,
+    );
+
+    try std.testing.expectEqual(@as(u64, 30_000), sleep_ms);
+}
+
+test "daemon tick sleep is bounded by configured interval" {
+    const sleep_ms = daemonTickSleepMs(
+        .{ .interval_ms = 5_000 },
+        0,
+        2,
+        .{ .next_tick_after = 1300, .next_tick_reason = "quota_reset" },
+        1000,
+    );
+
+    try std.testing.expectEqual(@as(u64, 5_000), sleep_ms);
+}
+
+test "daemon tick sleep handles immediate and final wake-up cases" {
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        daemonTickSleepMs(.{ .interval_ms = 60_000 }, 0, 2, .{ .next_tick_after = 1000 }, 1000),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        daemonTickSleepMs(.{ .interval_ms = 60_000 }, 1, 2, .{ .next_tick_after = 1030 }, 1000),
+    );
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        daemonTickSleepMs(.{ .interval_ms = 0 }, 0, 2, .{ .next_tick_after = 1030 }, 1000),
+    );
 }
 
 test "repairActionFor classifies quota exhaustion as wait action" {

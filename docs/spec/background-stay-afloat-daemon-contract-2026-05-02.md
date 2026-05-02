@@ -279,6 +279,13 @@ and `stay_afloat_loop.hosted:true` while the loop is running, but still reports
 `production_supported:false` and `hosts_stay_afloat:false` until wrapper docs
 and soak proof promote the product surface.
 
+Implementation note, 2026-05-02: the loop sleep path now honors the earliest
+summary `next_tick_after` emitted by route decisions, bounded by the operator's
+`--interval-ms`. A due or overdue route wakes the next tick immediately; a
+far-future reset still respects the configured maximum cadence. This is only a
+scheduler improvement and does not grant provider-spend, interactive, or
+mutating admission.
+
 ### D3: wrapper recipes
 
 - Add package-neutral wrapper docs first.
