@@ -323,6 +323,11 @@ For quota-driven account changes, use a different action name, such as
   its bounded `--stdin` beta can exercise multiple turns in one broker-owned
   app-server session. It still does not prove fallback recovery or unmanaged
   TUI hot-swap, and it reports counts without printing transcript content.
+- Exhausted route revalidation is spend-gated. It exists for external billing,
+  plan, or credit changes: bypass only recorded exhausted route-health blocks,
+  re-probe the provider, and persist the fresh capability evidence. It removes
+  the manual health-reset step, but it does not imply dashboard credits make a
+  route available for every Codex capability.
 - The broker fallback drill is no-spend but mutates local route health. It can
   observe next-route fallback after a controlled quota-exhausted mark, while
   explicitly not claiming provider-originated quota exhaustion.

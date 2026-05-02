@@ -174,6 +174,15 @@ For a bounded beta multi-turn session, pass `--stdin` instead of `--prompt` and
 pipe one prompt per line. The session stays broker-owned and redacted; the
 output reports prompt counts and completed turns, not transcript content.
 
+`oauth-mux codex revalidate-exhausted --profile codex-max --capability
+codex-max --confirm-spend --json` is the operator-safe post-billing-change
+refresh. It targets Codex routes already recorded as quota-exhausted or
+rate-limited, bypasses only those local route-health blocks, spends confirmed
+provider probes, and persists the fresh provider evidence. Use it after credits
+or plan changes instead of manually resetting health keys. It may make a route
+selectable again, or it may confirm that the provider still rejects that exact
+capability.
+
 `oauth-mux codex broker-fallback-drill --profile codex-max --capability
 codex-max --from-account max-3 --confirm-drill --json` is the controlled
 operator drill for observing fallback without waiting for a provider-originated

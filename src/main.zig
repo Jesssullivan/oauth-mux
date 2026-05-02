@@ -7513,6 +7513,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .onboard => try runCodexOnboard(allocator, writer, args, root),
         .canary => try runCodexCanary(allocator, writer, args, root),
         .live_qa => try runCodexLiveQa(allocator, writer, args, root),
+        .revalidate_exhausted => try runCodexRevalidateExhausted(allocator, writer, args),
         .probe_all => try runCodexProbeAll(allocator, writer, args),
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
@@ -7622,6 +7623,352 @@ fn runCodexProbeAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Com
         try writer.writeAll("\n=== live probes ===\n");
     }
     try runCodexLiveProbes(allocator, writer, args, !args.json);
+}
+
+const CodexRevalidateExhaustedSummary = struct {
+    routes_total: usize = 0,
+    candidates: usize = 0,
+    routes_probed: usize = 0,
+    provider_evidence_routes: usize = 0,
+    routes_available_after: usize = 0,
+    routes_blocked_after: usize = 0,
+    probe_errors: usize = 0,
+};
+
+fn runCodexRevalidateExhausted(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.CodexArgs,
+) !void {
+    if (!codexLiveQaConfirmed(args)) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"confirmation_required\",\"confirmation_required\":true,\"requires\":\"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls\",\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":true,\"mode\":\"codex_exhausted_route_revalidation\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux codex revalidate-exhausted --profile <profile> --capability <capability> --confirm-spend --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex exhausted route revalidation is disabled.\n\n");
+            try writer.writeAll("This command re-probes exhausted Codex routes and can spend subscription quota.\n");
+            try writer.writeAll("Re-run with --confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls.\n");
+        }
+        return error.CodexLiveQaConfirmationRequired;
+    }
+
+    const capability = firstCommaValue(args.capabilities) orelse {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"capability_required\",\"requires\":\"--capability <capability>\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"mode\":\"codex_exhausted_route_revalidation\"}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex exhausted route revalidation\n\n");
+            try writer.writeAll("  capability required: --capability <capability>\n");
+        }
+        return;
+    };
+
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = if (args.profile == null) args.account else null,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var before = std.ArrayList(RouteEvaluation).init(allocator);
+    defer before.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &before);
+
+    const before_selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, before.items);
+
+    var summary = CodexRevalidateExhaustedSummary{
+        .routes_total = before.items.len,
+    };
+
+    var route_results = std.ArrayList(u8).init(allocator);
+    defer route_results.deinit();
+    var first_result = true;
+
+    for (before.items) |evaluation| {
+        if (!isCodexExhaustedRevalidationCandidate(evaluation, capability, args.account)) continue;
+        summary.candidates += 1;
+        summary.routes_probed += 1;
+
+        const route = evaluation.route;
+        const key = repairPlanRouteHealthKey(route);
+        const previous_health = takeHealthEntry(&store, key.slice());
+        var restored_previous = false;
+
+        var ctx = pipeline.Context.init(allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = route.provider;
+        ctx.account_name = route.account;
+        ctx.capability_name = route.capability;
+
+        const probe_result = pipeline.runProbe(&ctx);
+        var probe_error: ?types.PipelineError = null;
+        if (probe_result) |_| {} else |e| {
+            probe_error = e;
+        }
+
+        const recorded_provider_evidence = probe_error == null or liveQaErrorIsRecordedEvidence(probe_error.?);
+        if (!recorded_provider_evidence) {
+            summary.probe_errors += 1;
+            if (store.accounts.get(key.slice()) == null) {
+                if (previous_health) |health| {
+                    try putHealthEntryCopy(&store, key.slice(), health);
+                    restored_previous = true;
+                }
+            }
+        } else {
+            summary.provider_evidence_routes += 1;
+        }
+
+        const after_health = store.accounts.get(key.slice());
+        if (after_health) |health| {
+            if (livenessIsAvailable(health.liveness)) {
+                summary.routes_available_after += 1;
+            } else if (accountLivenessBlocksRoute(health.liveness)) {
+                summary.routes_blocked_after += 1;
+            }
+        }
+
+        var probe_json = std.ArrayList(u8).init(allocator);
+        defer probe_json.deinit();
+        try writeProbeJson(probe_json.writer(), allocator, &store, &ctx, probe_error);
+
+        if (!first_result) try route_results.append(',');
+        first_result = false;
+        try writeCodexRevalidateRouteJson(
+            route_results.writer(),
+            route,
+            key.slice(),
+            previous_health,
+            after_health,
+            probe_json.items,
+            probe_error,
+            recorded_provider_evidence,
+            restored_previous,
+        );
+    }
+
+    store.persist();
+
+    var after = std.ArrayList(RouteEvaluation).init(allocator);
+    defer after.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &after);
+
+    const selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, after.items);
+    const ok = summary.candidates > 0 and summary.probe_errors == 0;
+    const reason = if (summary.candidates == 0)
+        "no_exhausted_routes_to_revalidate"
+    else if (summary.probe_errors != 0)
+        "revalidation_probe_errors"
+    else if (summary.routes_available_after != 0)
+        "revalidation_found_available_route"
+    else
+        "provider_evidence_still_blocked";
+
+    if (args.json) {
+        try writeCodexRevalidateExhaustedJson(
+            writer,
+            allocator,
+            parsed.value,
+            before.items,
+            after.items,
+            before_selected_index,
+            selected_index,
+            args.profile,
+            capability,
+            summary,
+            ok,
+            reason,
+            route_results.items,
+        );
+    } else {
+        try writeCodexRevalidateExhaustedText(writer, before.items, after.items, before_selected_index, selected_index, capability, summary, ok, reason);
+    }
+}
+
+fn isCodexExhaustedRevalidationCandidate(
+    evaluation: RouteEvaluation,
+    capability: []const u8,
+    account_filter: ?[]const u8,
+) bool {
+    if (!std.mem.eql(u8, evaluation.route.provider, "codex")) return false;
+    if (!evaluation.runtime.isReady()) return false;
+    if (account_filter) |account| {
+        if (!std.mem.eql(u8, evaluation.route.account, account)) return false;
+    }
+    const route_capability = evaluation.route.capability orelse return false;
+    if (!std.mem.eql(u8, route_capability, capability)) return false;
+    return std.mem.eql(u8, evaluation.skip_reason, "quota_exhausted") or
+        std.mem.eql(u8, evaluation.skip_reason, "rate_limited");
+}
+
+fn repairPlanRouteHealthKey(route: RepairPlanRoute) health_mod.KeyBuf {
+    if (route.capability) |capability| {
+        return health_mod.capabilityKey(route.provider, route.account, capability);
+    }
+    return health_mod.accountKey(route.provider, route.account);
+}
+
+fn takeHealthEntry(store: *health_mod.HealthStore, key: []const u8) ?health_mod.AccountHealth {
+    if (store.accounts.fetchRemove(key)) |kv| {
+        defer store.allocator.free(kv.key);
+        return kv.value;
+    }
+    return null;
+}
+
+fn putHealthEntryCopy(store: *health_mod.HealthStore, key: []const u8, health: health_mod.AccountHealth) !void {
+    const result = try store.accounts.getOrPut(key);
+    if (!result.found_existing) {
+        result.key_ptr.* = try store.allocator.dupe(u8, key);
+    }
+    result.value_ptr.* = health;
+}
+
+fn writeCodexRevalidateRouteJson(
+    writer: anytype,
+    route: RepairPlanRoute,
+    health_key: []const u8,
+    before_health: ?health_mod.AccountHealth,
+    after_health: ?health_mod.AccountHealth,
+    probe_json: []const u8,
+    probe_error: ?types.PipelineError,
+    provider_evidence_recorded: bool,
+    restored_previous: bool,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(route.provider, .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(route.account, .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (route.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"health_key\":");
+    try std.json.stringify(health_key, .{}, writer);
+    try writer.writeAll(",\"before_liveness\":");
+    if (before_health) |health| try writeLivenessJson(writer, health.liveness) else try writer.writeAll("null");
+    try writer.writeAll(",\"after_liveness\":");
+    if (after_health) |health| try writeLivenessJson(writer, health.liveness) else try writer.writeAll("null");
+    try writer.writeAll(",\"after_probe\":");
+    if (after_health) |health| try writeProbeEvidenceJson(writer, health) else try writer.writeAll("null");
+    try writer.writeAll(",\"provider_evidence_recorded\":");
+    try writer.writeAll(if (provider_evidence_recorded) "true" else "false");
+    try writer.writeAll(",\"restored_previous_health\":");
+    try writer.writeAll(if (restored_previous) "true" else "false");
+    try writer.writeAll(",\"probe_error\":");
+    if (probe_error) |err| try std.json.stringify(@errorName(err), .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"probe\":");
+    const trimmed_probe_json = std.mem.trim(u8, probe_json, " \t\r\n");
+    if (trimmed_probe_json.len == 0) try writer.writeAll("null") else try writer.writeAll(trimmed_probe_json);
+    try writer.writeByte('}');
+}
+
+fn writeCodexRevalidateExhaustedJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    before: []const RouteEvaluation,
+    after: []const RouteEvaluation,
+    before_selected_index: ?usize,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: []const u8,
+    summary: CodexRevalidateExhaustedSummary,
+    ok: bool,
+    reason: []const u8,
+    route_results: []const u8,
+) !void {
+    const session_summary = try summarizeCodexBrokerSessionPlan(allocator, cfg, after, selected_index);
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_exhausted_route_revalidation\",\"ok\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":true");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(reason, .{}, writer);
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"route_health_revalidation\",\"proof_status\":\"spend_gated_exhausted_route_revalidation\",\"provider_originated_evidence\":");
+    try writer.writeAll(if (summary.provider_evidence_routes > 0) "true" else "false");
+    try writer.writeAll(",\"manual_health_reset_required\":false,\"next_turn_route_selection_refreshed\":");
+    try writer.writeAll(if (selected_index != null) "true" else "false");
+    try writer.writeAll(",\"next_turn_route_state_fallback\":false,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"profile\":");
+    if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    try std.json.stringify(capability, .{}, writer);
+    try writer.writeAll(",\"previous_selected\":");
+    if (before_selected_index) |idx| try writeRouteSelectionJson(writer, before[idx].route) else try writer.writeAll("null");
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| try writeRouteSelectionJson(writer, after[idx].route) else try writer.writeAll("null");
+    try writer.print(",\"summary\":{{\"routes_total\":{d},\"candidates\":{d},\"routes_probed\":{d},\"provider_evidence_routes\":{d},\"routes_available_after\":{d},\"routes_blocked_after\":{d},\"probe_errors\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d}}}", .{
+        summary.routes_total,
+        summary.candidates,
+        summary.routes_probed,
+        summary.provider_evidence_routes,
+        summary.routes_available_after,
+        summary.routes_blocked_after,
+        summary.probe_errors,
+        session_summary.broker_ready_routes,
+        session_summary.selectable_broker_routes,
+        session_summary.selectable_fallback_routes,
+        session_summary.blocked_broker_routes,
+    });
+    try writer.writeAll(",\"revalidated_routes\":[");
+    try writer.writeAll(route_results);
+    try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false}");
+    try writer.writeAll("}\n");
+}
+
+fn writeCodexRevalidateExhaustedText(
+    writer: anytype,
+    before: []const RouteEvaluation,
+    after: []const RouteEvaluation,
+    before_selected_index: ?usize,
+    selected_index: ?usize,
+    capability: []const u8,
+    summary: CodexRevalidateExhaustedSummary,
+    ok: bool,
+    reason: []const u8,
+) !void {
+    try writer.writeAll("oauth-mux Codex exhausted route revalidation\n\n");
+    try writer.print("  capability: {s}\n", .{capability});
+    try writer.print("  candidates: {d}\n", .{summary.candidates});
+    try writer.print("  probed: {d}\n", .{summary.routes_probed});
+    try writer.print("  provider evidence: {d}\n", .{summary.provider_evidence_routes});
+    try writer.print("  available after: {d}\n", .{summary.routes_available_after});
+    try writer.print("  blocked after: {d}\n", .{summary.routes_blocked_after});
+    try writer.print("  probe errors: {d}\n", .{summary.probe_errors});
+    try writer.writeAll("  previous selected: ");
+    if (before_selected_index) |idx| {
+        const route = before[idx].route;
+        try writer.print("{s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("none\n");
+    }
+    try writer.writeAll("  selected after: ");
+    if (selected_index) |idx| {
+        const route = after[idx].route;
+        try writer.print("{s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("none\n");
+    }
+    try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{reason});
+    try writer.writeAll("  boundary: spend-gated provider revalidation; same-turn and same-thread quota recovery remain unproven\n");
 }
 
 const CodexBrokerTokenPlan = struct {

@@ -109,6 +109,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --pr
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt 'Reply with oauth-mux broker-run ok.' --confirm-spend --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex revalidate-exhausted --profile codex-max --capability codex-max --confirm-spend --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-3 --confirm-drill --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
@@ -156,6 +157,12 @@ For a bounded beta session loop, pipe line-delimited prompts to `codex
 broker-run --stdin --confirm-spend --json`; the command keeps one broker-owned
 app-server session open and reports prompt/turn counts without printing
 transcript content.
+`codex revalidate-exhausted --confirm-spend --json` is the spend-gated
+post-billing-change check. It finds recorded exhausted Codex routes for the
+selected profile/capability, bypasses only those local health blocks, runs fresh
+provider probes, and records the new evidence. Use it after credits, plan, or
+billing state changes; it removes the need to hand-reset route health, but still
+does not claim same-turn or same-thread quota recovery.
 `codex broker-fallback-drill --from-account ... --confirm-drill --json` is the
 controlled no-spend way to observe route-state fallback. It records the named
 Codex route as quota-exhausted in local oauth-mux health, then verifies the next
@@ -307,6 +314,7 @@ oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt 'Reply with oauth-mux broker-run ok.' --confirm-spend --json
+oauth-mux codex revalidate-exhausted --profile codex-max --capability codex-max --confirm-spend --json
 oauth-mux codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-3 --confirm-drill --json
 oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
