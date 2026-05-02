@@ -14,14 +14,24 @@ fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-e2e.XXXXXX")"
 daemon_pid=""
+short_runtime_dirs=""
 cleanup() {
   if [ -n "${daemon_pid:-}" ]; then
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
   rm -rf "$tmp"
+  if [ -n "$short_runtime_dirs" ]; then
+    rm -rf $short_runtime_dirs
+  fi
 }
 trap cleanup EXIT
+
+short_runtime_dir() {
+  dir="$(mktemp -d "/tmp/oauth-mux-e2e-runtime.XXXXXX")"
+  short_runtime_dirs="${short_runtime_dirs}${short_runtime_dirs:+ }$dir"
+  printf '%s\n' "$dir"
+}
 
 config="$tmp/config.json"
 state_dir="$tmp/state"
@@ -433,10 +443,10 @@ expect_contains "$daemon_loop" '"tick_index":1' "daemon tick loop includes secon
 expect_contains "$daemon_loop" '"executed":false' "daemon tick loop remains planning-only"
 
 printf 'e2e: daemon foreground status and stop stay inside temp runtime\n'
-daemon_runtime="$tmp/daemon-runtime"
+daemon_runtime="$(short_runtime_dir)"
 daemon_state="$tmp/daemon-state"
 daemon_log="$tmp/daemon.log"
-mkdir -p "$daemon_runtime" "$daemon_state"
+mkdir -p "$daemon_state"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$daemon_state" \
   XDG_RUNTIME_DIR="$daemon_runtime" \
@@ -472,9 +482,8 @@ expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status report
 expect_contains "$daemon_stopped" '"wrapper_contract":"foreground_tick"' "daemon status reports wrapper contract when stopped"
 
 printf 'e2e: supervised stay-afloat daemon loop reports beta host status\n'
-supervised_runtime="$tmp/supervised-runtime"
+supervised_runtime="$(short_runtime_dir)"
 supervised_log="$tmp/supervised-daemon.log"
-mkdir -p "$supervised_runtime"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$state_dir" \
   XDG_RUNTIME_DIR="$supervised_runtime" \

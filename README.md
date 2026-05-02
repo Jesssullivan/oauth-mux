@@ -124,6 +124,8 @@ secret mutation. It also returns a `claim` object so agents can distinguish the
 current product level: today `prepared_fallback` means a new process can be
 launched through `claim.launch_argv`, while `current_process_hotswap`,
 `supervised_restart`, and `per_request_muxing` remain false.
+Codex app-server auth brokering is a separate proof track for mediated Codex
+sessions, not a current public claim.
 
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
@@ -207,7 +209,9 @@ uses the earliest summary wake-up hint between ticks, bounded by
 latest `daemon status --json` snapshot also include `claim.level`. A
 `prepared_fallback` claim means the next mediated `stay-afloat launch` can pick
 a route; it does not claim current-process hot-swap, supervised restart, or
-per-request muxing. `daemon status --json` also reports
+per-request muxing. A provider-specific auth-broker path, starting with Codex
+app-server external auth, must be proven before `current_process_hotswap` can
+be true. `daemon status --json` also reports
 `stay_afloat_snapshot` metadata with presence, parseability, `last_tick_at`,
 `age_seconds`, active-loop correlation, a 300 second staleness threshold, and a
 fresh/stale reason so wrappers can reject old prepared-fallback claims. When

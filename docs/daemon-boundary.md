@@ -41,7 +41,10 @@ and wrappers should handle `action.diagnostic_command` without promoting the
 socket daemon.
 See `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md` for the
 `TIN-897` production-daemon contract and the distinction between prepared
-fallback, supervised restart, and true per-request muxing.
+fallback, supervised restart, current-process auth brokering, and true
+per-request muxing.
+See `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` for the Codex
+app-server auth-broker proof track, Linear `TIN-913` / GitHub `#125`.
 See `docs/stay-afloat-wrappers.md` for beta wrapper recipes and soak checks
 tracked by `TIN-899` / GitHub #105.
 See `docs/provider-repair-contracts.md` for the provider-mediated action
@@ -85,8 +88,8 @@ That snapshot includes `claim.level`. `prepared_fallback` means the next
 mediated launch can select an account; it does not mean an already-running
 harness process will be hot-swapped. The same claim object keeps
 `current_process_hotswap:false`, `supervised_restart:false`, and
-`per_request_muxing:false` until a specific wrapper, restart path, proxy, or
-in-agent adapter proves those stronger levels.
+`per_request_muxing:false` until a specific wrapper, restart path, auth broker,
+proxy, or in-agent adapter proves those stronger levels.
 
 ## Allowed Now
 
@@ -197,12 +200,17 @@ The daemon can become a supported operator feature when:
 The stronger "seamless muxing" claim also requires a mediation point. A
 background daemon can keep route state and reauth handoffs warm, but it cannot
 hot-swap credentials already loaded into an upstream harness process unless
-that harness supports live reload, supervised restart, proxying, or an
-oauth-mux-aware in-agent adapter. Until that proof exists, user-facing copy
-should describe prepared fallback for the next mediated action, not transparent
-replacement of the current process. The supervised restart path is tracked in
+that harness supports live reload, auth brokering, supervised restart,
+proxying, or an oauth-mux-aware in-agent adapter. Until that proof exists,
+user-facing copy should describe prepared fallback for the next mediated
+action, not transparent replacement of the current process. The supervised
+restart path is tracked in
 `docs/spec/supervised-harness-restart-contract-2026-05-02.md`; it must remain a
-separate wrapper-owned process claim, not a daemon status inference.
+separate wrapper-owned process claim, not a daemon status inference. The Codex
+app-server auth-broker proof is tracked in
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` under Linear
+`TIN-913` / GitHub `#125`; it is a
+provider-specific current-process proof target, not a generic daemon claim.
 
 Until then, user and agent onboarding should use one-shot commands:
 

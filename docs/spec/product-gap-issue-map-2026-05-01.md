@@ -6,7 +6,8 @@ Issue context: GitHub `Jesssullivan/oauth-mux#66`, `#67`, `#68`; Linear
 `TIN-863`, `TIN-866`, `TIN-867`, `TIN-876`, `TIN-877`, `TIN-878`, and
 `TIN-879`, plus paid cohort lane `TIN-892` with children `TIN-893`,
 `TIN-894`, `TIN-895`, and `TIN-896`, plus production daemon contract
-`TIN-897` and supervised-loop implementation `TIN-898`.
+`TIN-897`, supervised-loop implementation `TIN-898`, and Codex app-server
+auth-broker proof `TIN-913` / GitHub `#125`.
 
 ## Baseline
 
@@ -109,16 +110,25 @@ runtime diagnostics into OAuth liveness or automatic repair evidence.
 
 The `TIN-897` background-daemon artifact is
 `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md`. It defines
-three levels of seamless muxing: prepared fallback for the next mediated
-action, supervised restart/relaunch, and true per-request muxing. The current
-product is aiming first at prepared fallback plus daemon-warmed route state.
-It must not claim hot-swap of an already-running Codex, Claude, or Figma
-harness unless that harness has a proven reload, restart, proxy, or in-agent
-mediation path.
+four levels of seamless muxing: prepared fallback for the next mediated
+action, supervised restart/relaunch, current-process auth brokering, and true
+per-request muxing. The current product is aiming first at prepared fallback
+plus daemon-warmed route state. It must not claim hot-swap of an
+already-running Codex, Claude, or Figma harness unless that harness has a
+proven reload, broker, restart, proxy, or in-agent mediation path.
 `TIN-898` adds `daemon run --stay-afloat` / `daemon supervise` as an opt-in
 beta host for the same foreground tick engine. Status can report
 `stay_afloat_loop.hosted:true`, but production support remains false until
 soak and wrapper proof complete.
+
+The `TIN-913` / GitHub `#125` Codex app-server auth-broker artifact is
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. It records the
+source-backed opportunity discovered after the supervised-restart contract:
+Codex app-server can accept external ChatGPT auth tokens and request refreshed
+tokens from a client after `401 Unauthorized`. That may become the first
+`current_process_auth_broker` proof for sessions launched under oauth-mux
+mediation. It does not prove quota-exhaustion same-turn handoff and does not
+change claims for unmanaged Codex TUI/CLI processes.
 
 The account-enrollment artifact is
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. It defines the
@@ -228,7 +238,11 @@ these precise provider-proof children.
 8. Work `TIN-897` as the daemon promotion contract: define daemon snapshot
    status, supervised tick loop, wrapper recipes, and mediation adapters before
    making seamless handoff claims.
-9. Return to daemon background implementation only after wrapper/install
+9. Work `TIN-913` / GitHub `#125` as the Codex app-server auth-broker proof
+   track before assuming restart is
+   the only viable Codex current-process path. Keep unauthorized-token recovery
+   separate from quota/usage-limit recovery.
+10. Return to daemon background implementation only after wrapper/install
    decisions and provider proof produce enough real operator evidence. The
    current socket daemon decision is complete under `TIN-867`; future
    production daemon work must promote the foreground tick engine deliberately.
@@ -238,7 +252,7 @@ these precise provider-proof children.
 - Do not describe the public tap as Homebrew core.
 - Do not make daemon execution a first-run or release gate.
 - Do not claim hot-swap inside an already-running harness without a proven
-  reload, supervised restart, proxy, or in-agent mediation path.
+  reload, auth broker, supervised restart, proxy, or in-agent mediation path.
 - Track wrapper-owned supervised restart separately under
   `docs/spec/supervised-harness-restart-contract-2026-05-02.md` / `TIN-911` /
   GitHub `#123`; do not infer it from a fresh daemon snapshot.
