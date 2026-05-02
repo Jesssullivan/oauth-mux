@@ -237,6 +237,12 @@ Use
 broker-owned app-server session. It keeps provider traffic mocked, simulates
 quota exhaustion on the first turn, and verifies fallback Authorization on a new
 brokered thread selected from the session plan.
+Use
+`oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt
+... --confirm-spend --json` only after the operator explicitly approves live
+provider spend. It runs one real broker-owned app-server turn from the session
+plan and prints redacted evidence, not prompt text, assistant output, tokens,
+account ids, or raw protocol output.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a
