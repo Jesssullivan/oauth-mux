@@ -338,6 +338,14 @@ expect_contains "$route_select" '"action":"select"' "route select reports action
 expect_contains "$route_select" '"ok":true' "route select reports available selection"
 expect_contains "$route_select" '"selected":{"provider":"toy","account":"a2"' "route select selects fallback account a2"
 
+printf 'e2e: stay-afloat next returns exact executable mediation for selected fallback\n'
+stay_next="$(omux stay-afloat next --profile expensive --capability expensive --json)"
+expect_contains "$stay_next" '"action":"next"' "stay-afloat next reports action"
+expect_contains "$stay_next" '"ready_for_exec":true' "stay-afloat next reports executable route"
+expect_contains "$stay_next" '"selected":{"provider":"toy","account":"a2"' "stay-afloat next selects fallback account a2"
+expect_contains "$stay_next" '"next_action":{"kind":"exec"' "stay-afloat next returns exec mediation"
+expect_contains "$stay_next" '"exec_argv":["oauth-mux","exec","--provider","toy","--account","a2","--capability","expensive","--","<command>"]' "stay-afloat next returns exact exec argv"
+
 printf 'e2e: daemon tick plans stay-afloat without executing work\n'
 daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"
 expect_contains "$daemon_tick" '"mode":"once"' "daemon tick reports one-shot mode"
@@ -554,6 +562,17 @@ expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run rep
 expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
 expect_contains "$repair_reauth" '"daemon_repair":{"admitted":false,"reason":"interactive_not_allowed","budget":"interactive"}' "repair run reports daemon policy refusal"
 expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"provider_repair_owned_by_upstream_cli"}' "repair run reports upstream-owned file writeback boundary"
+test ! -e "$tmp/reauth-home/auth.json"
+
+printf 'e2e: stay-afloat next returns provider-mediated handoff when not afloat\n'
+stay_next_reauth="$(OMUX_CONFIG="$reauth_config" OMUX_STATE_DIR="$state_dir" "$bin" stay-afloat next --profile needs-reauth --capability codex-max --json)"
+expect_contains "$stay_next_reauth" '"action":"next"' "stay-afloat next reauth reports action"
+expect_contains "$stay_next_reauth" '"ready_for_exec":false' "stay-afloat next reauth refuses exec readiness"
+expect_contains "$stay_next_reauth" '"next_action":{"kind":"repair"' "stay-afloat next reauth returns repair mediation"
+expect_contains "$stay_next_reauth" '"kind":"reauth"' "stay-afloat next reauth reports reauth action"
+expect_contains "$stay_next_reauth" '"mediation":"user_handoff"' "stay-afloat next reauth reports user handoff"
+expect_contains "$stay_next_reauth" '"repair_owner":"upstream_cli_login"' "stay-afloat next reauth reports upstream owner"
+expect_contains "$stay_next_reauth" '"command":"oauth-mux codex login-device max-1"' "stay-afloat next reauth reports upstream command"
 test ! -e "$tmp/reauth-home/auth.json"
 
 printf 'e2e: daemon tick execute queues interactive reauth handoff\n'

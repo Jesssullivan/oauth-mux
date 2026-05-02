@@ -170,6 +170,7 @@ To inspect the stay-afloat decision loop without running a canary:
 ```bash
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
+oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-mini --capability codex-mini --json
 ```
@@ -178,6 +179,13 @@ oauth-mux repair-plan --profile codex-mini --capability codex-mini --json
 readiness plus recorded route liveness and do not probe providers or mutate auth
 state. Unrecorded routes are reported as `probe_needed`, and `route select`
 exits nonzero when no route has enough evidence to be selected.
+
+`stay-afloat next --json` is the preferred agent mediation surface. It also
+does not probe or mutate. If a route is selectable, it returns
+`ready_for_exec:true` and an exact `exec_argv` that pins provider, account, and
+capability for `oauth-mux exec`. If no route is selectable, it returns
+`ready_for_exec:false` and embeds the typed repair action, mediation mode,
+repair owner, and any user-facing command to run.
 
 `oauth-mux repair run` is the explicit repair execution gate. It refuses
 mutation unless `--confirm-repair` is present. Without confirmation, it is safe

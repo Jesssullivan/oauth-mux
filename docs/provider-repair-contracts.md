@@ -10,9 +10,9 @@ into one generic failure.
 
 ## JSON Contract
 
-`repair-plan`, `route explain`, `daemon tick`, `stay-afloat`, and
-`daemon supervise` route objects expose an `action` object. The action now has
-three distinct identity fields:
+`repair-plan`, `route explain`, `stay-afloat next`, `daemon tick`,
+`stay-afloat`, and `daemon supervise` route objects expose an `action` object.
+The action now has three distinct identity fields:
 
 ```json
 {
@@ -30,6 +30,11 @@ three distinct identity fields:
 - `kind` is the precise route action.
 - `mediation` is how an agent, wrapper, or user should handle the action.
 - `repair_owner` identifies who owns credential repair when there is one.
+
+`stay-afloat next --json` wraps the same action contract in a single
+agent-facing decision. Selectable routes return `ready_for_exec:true` with an
+exact `exec_argv`; non-selectable routes return `ready_for_exec:false` with the
+typed repair action, mediation, owner, and command fields shown above.
 
 The repair owner values are:
 
