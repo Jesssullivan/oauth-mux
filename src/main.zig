@@ -10703,6 +10703,22 @@ fn runCodexAppServerLiveBrokerRun(
         try appendCodexBrokerPollFifo(allocator, &stderr_buf, poller.fifo(.stderr));
 
         const observation = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+        if (result.live_provider_failure == null) {
+            if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stdout_buf.items)) |classification| {
+                result.live_provider_failure = classification;
+                result.live_provider_failure_source = "app_server_protocol";
+            } else if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stderr_buf.items)) |classification| {
+                result.live_provider_failure = classification;
+                result.live_provider_failure_source = "app_server_stderr";
+            }
+        }
+        if (result.live_provider_failure != null and !result.stdin_closed) {
+            if (child.stdin) |stdin_file| {
+                stdin_file.close();
+                child.stdin = null;
+                result.stdin_closed = true;
+            }
+        }
         if (!login_sent and observation.initialized) {
             if (child.stdin) |stdin_file| {
                 try stdin_file.writeAll(login_request.items);
@@ -10719,7 +10735,7 @@ fn runCodexAppServerLiveBrokerRun(
 
         const thread_id = try findCodexBrokerThreadId(allocator, stdout_buf.items);
         defer if (thread_id) |id| allocator.free(id);
-        if (turns_sent < prompts.len and observation.turn_completed_count >= turns_sent) {
+        if (result.live_provider_failure == null and turns_sent < prompts.len and observation.turn_completed_count >= turns_sent) {
             if (thread_id) |id| {
                 if (child.stdin) |stdin_file| {
                     try writeCodexAppServerTurnStartRequestWithId(stdin_file.writer(), @intCast(4 + turns_sent), id, prompts[turns_sent]);
@@ -10763,12 +10779,14 @@ fn runCodexAppServerLiveBrokerRun(
     result.stdout_bytes = stdout_buf.items.len;
     result.stderr_bytes = stderr_buf.items.len;
     result.protocol = inspectCodexBrokerProtocolOutput(stdout_buf.items);
-    if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stdout_buf.items)) |classification| {
-        result.live_provider_failure = classification;
-        result.live_provider_failure_source = "app_server_protocol";
-    } else if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stderr_buf.items)) |classification| {
-        result.live_provider_failure = classification;
-        result.live_provider_failure_source = "app_server_stderr";
+    if (result.live_provider_failure == null) {
+        if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stdout_buf.items)) |classification| {
+            result.live_provider_failure = classification;
+            result.live_provider_failure_source = "app_server_protocol";
+        } else if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stderr_buf.items)) |classification| {
+            result.live_provider_failure = classification;
+            result.live_provider_failure_source = "app_server_stderr";
+        }
     }
     result.ok = codexBrokerRunOk(result, prompts.len);
     if (result.ok) {

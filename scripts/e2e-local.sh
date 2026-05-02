@@ -912,6 +912,9 @@ while IFS= read -r line; do
       printf '%s\n' '{"id":3,"result":{"thread":{"id":"thread-quota"}}}'
       ;;
     *'"method":"turn/start"'*)
+      if [ -n "${OMUX_E2E_TURN_LOG:-}" ]; then
+        printf '%s\n' "$line" >> "$OMUX_E2E_TURN_LOG"
+      fi
       printf '%s\n' '{"id":4,"result":{}}'
       printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-quota","status":"failed","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}}}'
       ;;
@@ -920,12 +923,17 @@ done
 EOF
 chmod +x "$mock_codex_app_server_quota"
 broker_run_quota_state="$tmp/broker-run-quota-state"
+broker_run_quota_turn_log="$tmp/broker-run-quota-turns.log"
 mkdir -p "$broker_run_quota_state"
 cp "$broker_session_health_before_drill" "$broker_run_quota_state/health.json"
-broker_run_quota="$(PATH="$broker_session_bin:$PATH" OMUX_CODEX_APP_SERVER="$mock_codex_app_server_quota" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_run_quota_state" "$bin" codex broker-run --profile codex-max --capability codex-max --prompt 'hello' --confirm-spend --json)"
+broker_run_quota="$(printf 'one\ntwo\n' | PATH="$broker_session_bin:$PATH" OMUX_E2E_TURN_LOG="$broker_run_quota_turn_log" OMUX_CODEX_APP_SERVER="$mock_codex_app_server_quota" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_run_quota_state" "$bin" codex broker-run --profile codex-max --capability codex-max --stdin --confirm-spend --json)"
 expect_contains "$broker_run_quota" '"mode":"codex_broker_owned_session_live_run"' "broker-run quota path reports live mode"
 expect_contains "$broker_run_quota" '"ok":false' "broker-run quota path does not report success"
 expect_contains "$broker_run_quota" '"reason":"live_quota_exhausted"' "broker-run quota path classifies quota exhaustion"
+expect_contains "$broker_run_quota" '"prompt_source":"stdin"' "broker-run quota path reports stdin prompt source"
+expect_contains "$broker_run_quota" '"prompt_count":2' "broker-run quota path accepts bounded stdin session input"
+expect_contains "$broker_run_quota" '"turns_requested":2' "broker-run quota path reports requested turn count"
+expect_contains "$broker_run_quota" '"turns_completed":1' "broker-run quota path stops after the failed turn"
 expect_contains "$broker_run_quota" '"mutates_route_health":true' "broker-run quota path mutates route health"
 expect_contains "$broker_run_quota" '"route_health_recorded":true' "broker-run quota path records route health"
 expect_contains "$broker_run_quota" '"health_key":"codex:max-2#codex-max"' "broker-run quota path reports selected route health key"
@@ -937,6 +945,13 @@ expect_not_contains "$broker_run_quota" 'acct-session-spare' "broker-run quota p
 expect_not_contains "$broker_run_quota" "$broker_jwt" "broker-run quota path does not expose token value"
 expect_not_contains "$broker_run_quota" 'broker-session-refresh-token' "broker-run quota path does not expose refresh token value"
 expect_not_contains "$broker_run_quota" 'broker-session-spare-token' "broker-run quota path does not expose spare refresh token value"
+broker_run_quota_turns="$(wc -l < "$broker_run_quota_turn_log" | tr -d ' ')"
+if [ "$broker_run_quota_turns" != "1" ]; then
+  printf 'e2e assertion failed: broker-run quota path should stop sending prompts after provider failure\n' >&2
+  printf 'turn starts observed: %s\n' "$broker_run_quota_turns" >&2
+  printf 'output was:\n%s\n' "$broker_run_quota" >&2
+  exit 1
+fi
 
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
