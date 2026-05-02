@@ -42,6 +42,8 @@ socket daemon.
 See `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md` for the
 `TIN-897` production-daemon contract and the distinction between prepared
 fallback, supervised restart, and true per-request muxing.
+See `docs/stay-afloat-wrappers.md` for beta wrapper recipes and soak checks
+tracked by `TIN-899` / GitHub #105.
 
 ## Supervisor Contract
 

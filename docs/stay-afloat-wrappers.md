@@ -1,0 +1,274 @@
+# Stay-Afloat Wrapper Recipes
+
+Status: beta operator recipes for the supervised stay-afloat loop.
+
+These recipes make the current daemon beta dogfoodable without changing the
+public product claim. The loop can keep route-state evidence warm and queue
+user-mediated repair handoffs, but it does not hot-swap credentials inside an
+already-running upstream harness process.
+
+## Product Truth
+
+The supported contract is still the portable tick engine:
+
+```bash
+oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
+oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
+```
+
+The beta supervised daemon host wraps that same engine:
+
+```bash
+oauth-mux daemon run --stay-afloat --profile codex-max --capability codex-max --interval-ms 60000
+oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+```
+
+While the beta loop is running, `oauth-mux daemon status --json` should report
+fields shaped like:
+
+```json
+{
+  "status": "running",
+  "contract": "experimental_supervised_loop",
+  "production_supported": false,
+  "hosts_stay_afloat": false,
+  "stay_afloat_loop": {
+    "hosted": true,
+    "mode": "stay_afloat_supervisor"
+  },
+  "transport": "foreground_supervised_loop",
+  "socket": null,
+  "stay_afloat": {}
+}
+```
+
+`production_supported:false` and `hosts_stay_afloat:false` are intentional. The
+beta loop is useful for dogfooding, wrapper integration, and soak proof, but it
+is not yet the production background daemon claim tracked by GitHub #67.
+
+## Smoke And Soak
+
+Use a bounded loop first. It should write a redacted snapshot and exit without
+leaving a daemon pid behind:
+
+```bash
+oauth-mux daemon supervise --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
+oauth-mux daemon status --json
+```
+
+Then run the long-lived beta host:
+
+```bash
+oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+```
+
+Inspect it from another shell:
+
+```bash
+oauth-mux daemon status --json
+oauth-mux daemon handoffs --json
+oauth-mux daemon events --json
+```
+
+Stop it explicitly:
+
+```bash
+oauth-mux daemon stop
+oauth-mux daemon status --json
+```
+
+Good soak evidence includes:
+
+- `status:"running"` while the wrapper is active.
+- `contract:"experimental_supervised_loop"` while the beta host is active.
+- `stay_afloat_loop.hosted:true` while the beta host is active.
+- `transport:"foreground_supervised_loop"` and `socket:null`.
+- A redacted `stay_afloat` snapshot with selected route, fallback, repair, or
+  handoff state.
+- `status:"not_running"` after `oauth-mux daemon stop`.
+- No hidden browser/device auth.
+- No provider-spend probes unless the operator opted into a spend-capable
+  command or daemon admission policy.
+
+## Plain Shell
+
+Use this when a user, CI job, terminal multiplexer, or external supervisor owns
+process lifetime:
+
+```bash
+exec oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+```
+
+For a bounded proof in a PR or release lane:
+
+```bash
+oauth-mux daemon supervise --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
+oauth-mux daemon status --json
+```
+
+Rollback is just:
+
+```bash
+oauth-mux daemon stop
+```
+
+## macOS Launchd
+
+Create `~/Library/LaunchAgents/dev.xoxd.omux.codex-max.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.xoxd.omux.codex-max</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/oauth-mux</string>
+    <string>daemon</string>
+    <string>supervise</string>
+    <string>--profile</string>
+    <string>codex-max</string>
+    <string>--capability</string>
+    <string>codex-max</string>
+    <string>--interval-ms</string>
+    <string>60000</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/omux-codex-max.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/omux-codex-max.err.log</string>
+</dict>
+</plist>
+```
+
+Start and inspect:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.xoxd.omux.codex-max.plist
+launchctl kickstart -k "gui/$(id -u)/dev.xoxd.omux.codex-max"
+oauth-mux daemon status --json
+```
+
+Rollback:
+
+```bash
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/dev.xoxd.omux.codex-max.plist
+oauth-mux daemon stop
+rm -f ~/Library/LaunchAgents/dev.xoxd.omux.codex-max.plist
+```
+
+## Linux Systemd User Unit
+
+This is an optional wrapper recipe, not the oauth-mux core contract. Put this
+in `~/.config/systemd/user/omux-codex-max.service`:
+
+```ini
+[Unit]
+Description=oauth-mux Codex Max stay-afloat beta loop
+Documentation=https://github.com/Jesssullivan/oauth-mux/issues/67
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+Restart=on-failure
+RestartSec=15s
+
+[Install]
+WantedBy=default.target
+```
+
+Start and inspect:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now omux-codex-max.service
+oauth-mux daemon status --json
+```
+
+Rollback:
+
+```bash
+systemctl --user disable --now omux-codex-max.service
+oauth-mux daemon stop
+rm -f ~/.config/systemd/user/omux-codex-max.service
+systemctl --user daemon-reload
+```
+
+Do not require systemd for adoption. Containers, SSH hosts, and minimal Linux
+machines can use the plain shell contract instead.
+
+## Windows Current Lane
+
+The current supervised daemon pid/status host is not implemented on Windows.
+Windows packages should not claim `oauth-mux daemon supervise` as supported
+until stop/status/process control is implemented there.
+
+For now, use the portable foreground loop under Task Scheduler, PowerShell,
+WinSW, NSSM, or another operator-owned supervisor:
+
+```powershell
+oauth-mux.exe stay-afloat --loop --profile codex-max --capability codex-max --interval-ms 60000 --json
+```
+
+Task Scheduler shape:
+
+```powershell
+$Action = New-ScheduledTaskAction `
+  -Execute "oauth-mux.exe" `
+  -Argument "stay-afloat --loop --profile codex-max --capability codex-max --interval-ms 60000 --json"
+$Trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName "omux-codex-max" -Action $Action -Trigger $Trigger
+```
+
+Rollback:
+
+```powershell
+Unregister-ScheduledTask -TaskName "omux-codex-max" -Confirm:$false
+```
+
+Windows promotion needs a separate implementation or wrapper contract for
+process status, stop behavior, and redacted snapshot inspection.
+
+## Container Or CI
+
+Use bounded loops in CI and long-lived foreground loops in containers. Avoid
+backgrounding inside the container entrypoint; let the container runtime own the
+process:
+
+```bash
+oauth-mux daemon supervise --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
+oauth-mux daemon status --json
+```
+
+Container entrypoint shape:
+
+```bash
+exec oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+```
+
+Rollback is container or job termination plus an explicit status check in the
+same state/runtime namespace:
+
+```bash
+oauth-mux daemon stop
+oauth-mux daemon status --json
+```
+
+## Dogfood Notes
+
+For Codex, a good dogfood run intentionally includes at least one exhausted
+account and one available account. The expected outcome is prepared fallback for
+the next mediated action, not hot replacement of credentials inside the current
+Codex process.
+
+For Claude and Figma, do not claim parity until provider-mediated repair
+contracts distinguish quota exhaustion, auth death, scope insufficiency, local
+store permission failures, and upstream-login-required states. That work is
+tracked separately by GitHub #106 / Linear TIN-900.
