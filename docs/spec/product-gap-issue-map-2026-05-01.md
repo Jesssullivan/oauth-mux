@@ -5,7 +5,8 @@ Issue context: GitHub `Jesssullivan/oauth-mux#66`, `#67`, `#68`; Linear
 `TIN-858`, `TIN-736`, `TIN-738`, `TIN-859`, `TIN-860`, `TIN-861`, `TIN-862`,
 `TIN-863`, `TIN-866`, `TIN-867`, `TIN-876`, `TIN-877`, `TIN-878`, and
 `TIN-879`, plus paid cohort lane `TIN-892` with children `TIN-893`,
-`TIN-894`, `TIN-895`, and `TIN-896`.
+`TIN-894`, `TIN-895`, and `TIN-896`, plus production daemon contract
+`TIN-897`.
 
 ## Baseline
 
@@ -20,7 +21,7 @@ boundaries that need separate tracking.
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
 | Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy still needs to stop advertising the private tap. |
-| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. |
+| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. `TIN-897` now defines the promotion contract and the mediation boundary for seamless handoff claims. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex is live-proven; non-Codex proof is capability-level or still needs operator proof. |
 | Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | A one-month paid cohort is now tracked for Codex lower-tier contrast, Claude subscription/billing shapes, Figma token/seat/plan shapes, and a foreground stay-afloat soak gate. |
 
@@ -105,6 +106,15 @@ The `TIN-891` permission-broker artifact is
 how agents, shells, CI jobs, and optional service wrappers should handle
 `action.diagnostic_command` in the right process boundary without turning
 runtime diagnostics into OAuth liveness or automatic repair evidence.
+
+The `TIN-897` background-daemon artifact is
+`docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md`. It defines
+three levels of seamless muxing: prepared fallback for the next mediated
+action, supervised restart/relaunch, and true per-request muxing. The current
+product is aiming first at prepared fallback plus daemon-warmed route state.
+It must not claim hot-swap of an already-running Codex, Claude, or Figma
+harness unless that harness has a proven reload, restart, proxy, or in-agent
+mediation path.
 
 The account-enrollment artifact is
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. It defines the
@@ -211,15 +221,20 @@ these precise provider-proof children.
    matrix and keep provider-level promotion conservative.
 7. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
    `TIN-878` FlakeHub/Determinate, and `TIN-879` Gemini.
-8. Return to daemon background scheduling only after wrapper/install decisions
-   and provider proof produce enough real operator evidence. The current socket
-   daemon decision is complete under `TIN-867`; future production daemon work
-   must promote the foreground tick engine deliberately.
+8. Work `TIN-897` as the daemon promotion contract: define daemon snapshot
+   status, supervised tick loop, wrapper recipes, and mediation adapters before
+   making seamless handoff claims.
+9. Return to daemon background implementation only after wrapper/install
+   decisions and provider proof produce enough real operator evidence. The
+   current socket daemon decision is complete under `TIN-867`; future
+   production daemon work must promote the foreground tick engine deliberately.
 
 ## Guardrails
 
 - Do not describe the public tap as Homebrew core.
 - Do not make daemon execution a first-run or release gate.
+- Do not claim hot-swap inside an already-running harness without a proven
+  reload, supervised restart, proxy, or in-agent mediation path.
 - Do not run live probes by default.
 - Do not mutate upstream CLI-owned credential stores.
 - Do not promote a provider to `live_proven` without redacted fixtures and an

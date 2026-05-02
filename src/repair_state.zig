@@ -69,6 +69,32 @@ pub fn writeHandoffs(allocator: std.mem.Allocator, writer: anytype, json: bool, 
     try writePendingHandoffView(allocator, writer, json, limit);
 }
 
+pub fn writeDaemonSnapshot(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    const path = try daemonSnapshotPath(allocator);
+    defer allocator.free(path);
+    try ensureParentDir(path);
+
+    const file = try std.fs.createFileAbsolute(path, .{
+        .truncate = true,
+        .mode = 0o600,
+    });
+    defer file.close();
+    try file.writeAll(bytes);
+    if (bytes.len == 0 or bytes[bytes.len - 1] != '\n') try file.writeAll("\n");
+}
+
+pub fn readDaemonSnapshotAlloc(allocator: std.mem.Allocator) !?[]const u8 {
+    const path = try daemonSnapshotPath(allocator);
+    defer allocator.free(path);
+
+    const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
+        error.FileNotFound => return null,
+        else => return e,
+    };
+    defer file.close();
+    return try file.readToEndAlloc(allocator, 64 * 1024);
+}
+
 pub fn hasPendingHandoff(allocator: std.mem.Allocator, key: HandoffKey) !bool {
     const path = try eventsPath(allocator);
     defer allocator.free(path);
@@ -395,6 +421,12 @@ fn eventsPath(allocator: std.mem.Allocator) ![]const u8 {
     const dir = try paths.stateDir(allocator);
     defer allocator.free(dir);
     return std.fs.path.join(allocator, &.{ dir, "repair-events.jsonl" });
+}
+
+fn daemonSnapshotPath(allocator: std.mem.Allocator) ![]const u8 {
+    const dir = try paths.stateDir(allocator);
+    defer allocator.free(dir);
+    return std.fs.path.join(allocator, &.{ dir, "daemon-snapshot.json" });
 }
 
 fn locksDir(allocator: std.mem.Allocator) ![]const u8 {
