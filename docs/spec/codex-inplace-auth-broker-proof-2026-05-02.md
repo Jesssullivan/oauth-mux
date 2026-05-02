@@ -254,8 +254,9 @@ For quota-driven account changes, use a different action name, such as
 7. Prove the local refresh-response primitive with
    `oauth-mux codex broker-refresh-smoke --profile codex-max --capability
    codex-max --confirm-broker --json`: after app-server login, observe
-   `account/chatgptAuthTokens/refresh`, respond with the selected route's
-   external-auth tuple, and report only redacted protocol milestones.
+   `account/chatgptAuthTokens/refresh`, respond with the next ready route's
+   external-auth tuple when a fallback account exists, and report only redacted
+   protocol milestones.
 8. Add a controlled 401 proof that switches from one account token to another
    and records redacted evidence.
 9. Add a no-overclaim quota proof: show that rate-limit snapshots can trigger

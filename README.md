@@ -138,9 +138,10 @@ that child only, and verifies initialize/login/account-update milestones while
 still suppressing token, account-id, and raw protocol output.
 `codex broker-refresh-smoke --confirm-broker --json` proves the next app-server
 primitive: after external-auth login, oauth-mux can observe
-`account/chatgptAuthTokens/refresh` and answer it with the selected route token
-tuple. This is still a local mediated app-server protocol proof, not an
-unmanaged running Codex TUI hot-swap or quota-recovery claim.
+`account/chatgptAuthTokens/refresh` and answer it with the next ready route
+token tuple when a fallback account exists. This is still a local mediated
+app-server protocol proof, not an unmanaged running Codex TUI hot-swap or
+quota-recovery claim.
 
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
