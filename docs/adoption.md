@@ -165,6 +165,12 @@ the session plan's selected and fallback routes, starts a broker-owned
 app-server against local mocked backend endpoints, simulates quota exhaustion on
 turn one, and verifies a new brokered thread uses the fallback route.
 
+`oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt
+... --confirm-spend --json` is the explicit live one-turn proof for the same
+broker-owned UX. It starts the selected route against Codex's default live
+provider and emits redacted protocol evidence without printing prompt text,
+assistant output, tokens, account ids, or raw app-server protocol.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local

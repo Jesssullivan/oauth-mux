@@ -7519,6 +7519,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .broker_plan => try runCodexBrokerPlan(allocator, writer, args),
         .broker_session_plan => try runCodexBrokerSessionPlan(allocator, writer, args),
         .broker_session_smoke => try runCodexBrokerSessionSmoke(allocator, writer, args),
+        .broker_run => try runCodexBrokerRun(allocator, writer, args),
         .broker_smoke => try runCodexBrokerSmoke(allocator, writer, args, .login),
         .broker_refresh_smoke => try runCodexBrokerSmoke(allocator, writer, args, .refresh),
         .broker_401_smoke => try runCodexBroker401Smoke(allocator, writer, args),
@@ -8342,6 +8343,207 @@ fn writeCodexBrokerSessionSmokeText(
     try writer.print("  next_turn_used_fallback: {s}\n", .{if (result.http.next_turn_used_fallback) "true" else "false"});
     try writer.print("  same_turn_refresh_request_seen: {s}\n", .{if (result.broker.protocol.refresh_request_seen) "true" else "false"});
     try writer.writeAll("  redaction: tokens/account ids/raw protocol not printed\n");
+}
+
+fn runCodexBrokerRun(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.CodexArgs,
+) !void {
+    if (!codexLiveQaConfirmed(args)) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"confirmation_required\",\"confirmation_required\":true,\"requires\":\"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls\",\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mode\":\"codex_broker_owned_session_live_run\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux codex broker-session-plan --profile <profile> --capability <capability> --json");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux codex broker-run --profile <profile> --capability <capability> --prompt <prompt> --confirm-spend --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker-owned live run is disabled.\n\n");
+            try writer.writeAll("This command starts a broker-owned Codex app-server and sends one real Codex turn.\n");
+            try writer.writeAll("Re-run with --confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls.\n");
+        }
+        return error.CodexLiveQaConfirmationRequired;
+    }
+
+    const prompt = args.prompt orelse {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"prompt_required\",\"requires\":\"--prompt\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mode\":\"codex_broker_owned_session_live_run\"}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker-owned live run\n\n");
+            try writer.writeAll("  prompt required: --prompt <text>\n");
+        }
+        return;
+    };
+
+    const model = try codexBrokerRunModel(allocator, args);
+    defer allocator.free(model);
+
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, evaluations.items);
+    const summary = try summarizeCodexBrokerSessionPlan(allocator, parsed.value, evaluations.items, selected_index);
+
+    var selected: ?CodexBrokerRouteCredentials = null;
+    defer if (selected) |*value| value.deinit(allocator);
+
+    if (selected_index) |idx| {
+        const route = evaluations.items[idx].route;
+        selected = .{
+            .route = route,
+            .credentials = try loadCodexBrokerCredentialsForRoute(allocator, parsed.value, route),
+        };
+    }
+
+    if (selected == null) {
+        if (args.json) {
+            try writer.writeAll("{\"version\":");
+            try std.json.stringify(cli.version, .{}, writer);
+            try writer.writeAll(",\"mode\":\"codex_broker_owned_session_live_run\",\"ok\":false,\"confirmed\":true,\"reason\":\"no_session_start_ready_route\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"routes_total\":");
+            try writer.print("{d}", .{evaluations.items.len});
+            try writer.writeAll(",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux codex broker-session-plan --profile <profile> --capability <capability> --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker-owned live run\n\n");
+            try writer.writeAll("  no session-start-ready Codex route found\n");
+            try writer.writeAll("  next: oauth-mux codex broker-session-plan --profile <profile> --capability <capability> --json\n");
+        }
+        return;
+    }
+
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+    const run_dir = try std.fmt.allocPrint(allocator, "{s}/codex-broker-run-{d}", .{ state_dir, std.time.milliTimestamp() });
+    defer allocator.free(run_dir);
+    try std.fs.cwd().makePath(run_dir);
+    try writeCodexBrokerLiveAppServerFiles(allocator, run_dir, model);
+
+    const result = try runCodexAppServerLiveBrokerRun(
+        allocator,
+        selected.?.credentials,
+        run_dir,
+        model,
+        prompt,
+    );
+
+    if (args.json) {
+        try writeCodexBrokerRunJson(writer, selected.?.route, capability, model, prompt, summary, result);
+    } else {
+        try writeCodexBrokerRunText(writer, selected.?.route, capability, model, prompt, summary, result);
+    }
+}
+
+fn codexBrokerRunModel(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) ![]const u8 {
+    if (args.model) |model| return try allocator.dupe(u8, model);
+    if (try getEnvOwnedOrNull(allocator, "OMUX_CODEX_BROKER_MODEL")) |model| return model;
+    return try allocator.dupe(u8, "gpt-5.5");
+}
+
+fn codexBrokerRunOk(result: CodexBrokerSmokeResult) bool {
+    return result.protocol.initialized and
+        result.protocol.login_response and
+        result.protocol.login_completed and
+        result.protocol.account_updated and
+        result.protocol.thread_started and
+        result.protocol.turn_started and
+        result.protocol.turn_completed and
+        result.exit_code != null and
+        result.exit_code.? == 0 and
+        !result.protocol.experimental_api_required_error;
+}
+
+fn codexBrokerRunReason(result: CodexBrokerSmokeResult) []const u8 {
+    if (codexBrokerRunOk(result)) return "live_turn_completed";
+    return result.reason;
+}
+
+fn writeCodexBrokerRunJson(
+    writer: anytype,
+    route: RepairPlanRoute,
+    capability: ?[]const u8,
+    model: []const u8,
+    prompt: []const u8,
+    summary: CodexBrokerSessionSummary,
+    result: CodexBrokerSmokeResult,
+) !void {
+    const prepared_fallback = summary.selectable_fallback_routes > 0;
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_broker_owned_session_live_run\",\"ok\":");
+    try writer.writeAll(if (codexBrokerRunOk(result)) "true" else "false");
+    try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(codexBrokerRunReason(result), .{}, writer);
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"proof_status\":\"live_broker_owned_session_one_turn\",\"broker_owned_session\":true,\"route_selection_source\":\"broker_session_plan\",\"session_start_ready\":true,\"live_provider_turn\":true,\"prepared_fallback\":");
+    try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"next_thread_quota_fallback\":false,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"selected\":");
+    try writeRouteSelectionJson(writer, route);
+    try writer.writeAll(",\"capability\":");
+    if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"model\":");
+    try std.json.stringify(model, .{}, writer);
+    try writer.print(",\"prompt_chars\":{d}", .{prompt.len});
+    try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
+        summary.routes_total,
+        summary.broker_ready_routes,
+        summary.selectable_broker_routes,
+        summary.selectable_fallback_routes,
+        summary.blocked_broker_routes,
+        summary.auth_unready_routes,
+    });
+    try writer.writeAll(",\"app_server\":{\"transport\":\"stdio\",\"requires_experimental_api\":true,\"login_method\":\"account/login/start.chatgptAuthTokens\",\"provider\":\"default_codex_provider\"}");
+    try writer.writeAll(",\"live\":{\"turns_requested\":1,\"turns_completed\":");
+    try writer.print("{d}", .{result.protocol.turn_completed_count});
+    try writer.writeAll(",\"transcript_printed\":false}");
+    try writer.writeAll(",\"protocol\":");
+    try writeCodexBrokerProtocolJson(writer, result);
+    try writer.writeAll(",\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false,\"prompt_printed\":false,\"assistant_output_printed\":false}");
+    try writer.writeAll("}\n");
+}
+
+fn writeCodexBrokerRunText(
+    writer: anytype,
+    route: RepairPlanRoute,
+    capability: ?[]const u8,
+    model: []const u8,
+    prompt: []const u8,
+    summary: CodexBrokerSessionSummary,
+    result: CodexBrokerSmokeResult,
+) !void {
+    try writer.writeAll("oauth-mux Codex broker-owned live run\n\n");
+    try writer.print("  route: {s}:{s}", .{ route.provider, route.account });
+    if (capability) |value| try writer.print("#{s}", .{value});
+    try writer.writeByte('\n');
+    try writer.print("  model: {s}\n", .{model});
+    try writer.print("  prompt chars: {d}\n", .{prompt.len});
+    try writer.print("  prepared fallback: {s}\n", .{if (summary.selectable_fallback_routes > 0) "true" else "false"});
+    try writer.print("  ok: {s}\n", .{if (codexBrokerRunOk(result)) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{codexBrokerRunReason(result)});
+    try writer.print("  turn_completed: {s}\n", .{if (result.protocol.turn_completed) "true" else "false"});
+    try writer.writeAll("  redaction: tokens/account ids/raw protocol/prompt/assistant output not printed\n");
 }
 
 fn runCodexBrokerSmoke(
@@ -9568,6 +9770,167 @@ fn runCodexAppServerQuotaBrokerSmoke(
     return result;
 }
 
+fn runCodexAppServerLiveBrokerRun(
+    allocator: std.mem.Allocator,
+    login_credentials: CodexBrokerCredentials,
+    codex_home: []const u8,
+    model: []const u8,
+    prompt: []const u8,
+) !CodexBrokerSmokeResult {
+    const app_server_bin = std.process.getEnvVarOwned(allocator, "OMUX_CODEX_APP_SERVER") catch try allocator.dupe(u8, "codex");
+    defer allocator.free(app_server_bin);
+
+    var initialize_request = std.ArrayList(u8).init(allocator);
+    defer initialize_request.deinit();
+    try writeCodexAppServerInitializeRequest(initialize_request.writer());
+    try initialize_request.append('\n');
+
+    var login_request = std.ArrayList(u8).init(allocator);
+    defer login_request.deinit();
+    try writeCodexAppServerLoginRequest(login_request.writer(), login_credentials);
+    try login_request.append('\n');
+
+    var thread_request = std.ArrayList(u8).init(allocator);
+    defer thread_request.deinit();
+    try writeCodexAppServerThreadStartRequestWithModel(thread_request.writer(), model);
+    try thread_request.append('\n');
+
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("CODEX_HOME", codex_home);
+    env_map.remove("OPENAI_API_KEY");
+
+    const argv = [_][]const u8{ app_server_bin, "app-server", "--listen", "stdio://" };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.env_map = &env_map;
+
+    child.spawn() catch |e| {
+        return .{ .ok = false, .reason = @errorName(e), .spawned = false };
+    };
+
+    var result = CodexBrokerSmokeResult{ .spawned = true };
+    var stdout_buf = std.ArrayListUnmanaged(u8){};
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayListUnmanaged(u8){};
+    defer stderr_buf.deinit(allocator);
+    var thread_request_sent = false;
+    var login_sent = false;
+    var turn_sent = false;
+
+    if (child.stdin) |stdin_file| {
+        try stdin_file.writeAll(initialize_request.items);
+    }
+
+    var poller = std.io.poll(allocator, enum { stdout, stderr }, .{
+        .stdout = child.stdout.?,
+        .stderr = child.stderr.?,
+    });
+    defer poller.deinit();
+
+    var term: ?std.process.Child.Term = null;
+    const max_output_bytes: usize = 2 * 1024 * 1024;
+    const deadline_ns = std.time.nanoTimestamp() + (90 * std.time.ns_per_s);
+    while (true) {
+        if (poller.fifo(.stdout).readableLength() > max_output_bytes or
+            poller.fifo(.stderr).readableLength() > max_output_bytes)
+        {
+            term = child.kill() catch null;
+            result.reason = "output_too_large";
+            break;
+        }
+
+        const now = std.time.nanoTimestamp();
+        if (now >= deadline_ns) {
+            try appendCodexBrokerPollFifo(allocator, &stdout_buf, poller.fifo(.stdout));
+            try appendCodexBrokerPollFifo(allocator, &stderr_buf, poller.fifo(.stderr));
+            term = child.kill() catch null;
+            result.reason = "timeout";
+            break;
+        }
+
+        const remaining_ns = deadline_ns - now;
+        const poll_ns_i = @min(remaining_ns, @as(i128, 50 * std.time.ns_per_ms));
+        const keep_polling = poller.pollTimeout(@intCast(poll_ns_i)) catch |e| {
+            term = child.kill() catch null;
+            result.reason = @errorName(e);
+            break;
+        };
+        try appendCodexBrokerPollFifo(allocator, &stdout_buf, poller.fifo(.stdout));
+        try appendCodexBrokerPollFifo(allocator, &stderr_buf, poller.fifo(.stderr));
+
+        const observation = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+        if (!login_sent and observation.initialized) {
+            if (child.stdin) |stdin_file| {
+                try stdin_file.writeAll(login_request.items);
+                login_sent = true;
+            }
+        }
+
+        if (!thread_request_sent and observation.login_completed and observation.account_updated) {
+            if (child.stdin) |stdin_file| {
+                try stdin_file.writeAll(thread_request.items);
+                thread_request_sent = true;
+            }
+        }
+
+        const thread_id = try findCodexBrokerThreadId(allocator, stdout_buf.items);
+        defer if (thread_id) |id| allocator.free(id);
+        if (!turn_sent) {
+            if (thread_id) |id| {
+                if (child.stdin) |stdin_file| {
+                    try writeCodexAppServerTurnStartRequestWithId(stdin_file.writer(), 4, id, prompt);
+                    try stdin_file.writeAll("\n");
+                    turn_sent = true;
+                }
+            }
+        }
+
+        if (turn_sent and observation.turn_completed_count >= 1 and !result.stdin_closed) {
+            if (child.stdin) |stdin_file| {
+                stdin_file.close();
+                child.stdin = null;
+                result.stdin_closed = true;
+            }
+        }
+
+        if (!keep_polling) break;
+    }
+
+    if (!result.stdin_closed) {
+        if (child.stdin) |stdin_file| {
+            stdin_file.close();
+            child.stdin = null;
+            result.stdin_closed = true;
+        }
+    }
+
+    if (term == null) {
+        term = child.wait() catch |e| {
+            result.reason = @errorName(e);
+            return result;
+        };
+    }
+
+    result.exited = true;
+    result.exit_code = switch (term.?) {
+        .Exited => |code| code,
+        else => null,
+    };
+    result.stdout_bytes = stdout_buf.items.len;
+    result.stderr_bytes = stderr_buf.items.len;
+    result.protocol = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+    result.ok = codexBrokerRunOk(result);
+    if (result.ok) {
+        result.reason = "live_turn_completed";
+    } else if (std.mem.eql(u8, result.reason, "unknown")) {
+        result.reason = "protocol_incomplete";
+    }
+    return result;
+}
+
 const CodexBroker401MockServerState = struct {
     mutex: std.Thread.Mutex = .{},
     observation: CodexBroker401HttpObservation = .{},
@@ -10091,7 +10454,17 @@ fn writeCodexAppServerThreadStartRequest(writer: anytype) !void {
 }
 
 fn writeCodexAppServerThreadStartRequestWithId(writer: anytype, id: i64) !void {
-    try writer.print("{{\"id\":{d},\"method\":\"thread/start\",\"params\":{{\"model\":\"mock-model\"}}}}", .{id});
+    try writeCodexAppServerThreadStartRequestWithIdAndModel(writer, id, "mock-model");
+}
+
+fn writeCodexAppServerThreadStartRequestWithModel(writer: anytype, model: []const u8) !void {
+    try writeCodexAppServerThreadStartRequestWithIdAndModel(writer, 3, model);
+}
+
+fn writeCodexAppServerThreadStartRequestWithIdAndModel(writer: anytype, id: i64, model: []const u8) !void {
+    try writer.print("{{\"id\":{d},\"method\":\"thread/start\",\"params\":{{\"model\":", .{id});
+    try std.json.stringify(model, .{}, writer);
+    try writer.writeAll("}}");
 }
 
 fn writeCodexAppServerTurnStartRequest(writer: anytype, thread_id: []const u8) !void {
@@ -10184,6 +10557,29 @@ fn writeCodexBroker401AppServerFiles(
         \\    }
         \\  ]
         \\}
+    );
+}
+
+fn writeCodexBrokerLiveAppServerFiles(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    model: []const u8,
+) !void {
+    const config_path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    defer allocator.free(config_path);
+    const config_file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true, .mode = 0o600 });
+    defer config_file.close();
+    try config_file.writer().writeAll("model = ");
+    try std.json.stringify(model, .{}, config_file.writer());
+    try config_file.writer().writeAll(
+        \\
+        \\approval_policy = "never"
+        \\sandbox_mode = "read-only"
+        \\model_reasoning_effort = "low"
+        \\
+        \\[features]
+        \\shell_snapshot = false
+        \\
     );
 }
 

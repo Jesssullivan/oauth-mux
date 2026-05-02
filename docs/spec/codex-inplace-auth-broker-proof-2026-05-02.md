@@ -284,9 +284,13 @@ For quota-driven account changes, use a different action name, such as
    fallback routes, starts a local app-server session against mocked backend
    endpoints, simulates quota exhaustion on turn one, and verifies a new
    brokered thread uses fallback Authorization.
-12. Only after topology A is green, attempt topology B with a remote TUI and
+12. Add the first spend-gated live broker-owned session proof:
+   `oauth-mux codex broker-run --profile codex-max --capability codex-max
+   --prompt ... --confirm-spend --json` starts the selected route against the
+   live Codex provider for one turn and emits redacted protocol evidence.
+13. Only after topology A is green, attempt topology B with a remote TUI and
    sidecar broker.
-13. Update website and README claim language only after live dogfood passes.
+14. Update website and README claim language only after live dogfood passes.
 
 ## Acceptance Criteria
 
@@ -307,6 +311,10 @@ For quota-driven account changes, use a different action name, such as
 - The broker session smoke is no-spend and local. It can prove a multi-turn
   broker-owned app-server handoff using session-plan route selection, but it
   still does not prove same-thread quota recovery or unmanaged TUI hot-swap.
+- The broker live run is spend-gated and one-turn only. It can prove a
+  broker-owned app-server session reaches Codex's live provider with the
+  selected route, but it still does not prove fallback recovery or unmanaged
+  TUI hot-swap.
 - Cross-account switching is blocked when forced workspace or profile policy
   forbids it.
 - Quota/rate-limit behavior is separately classified as next-turn account

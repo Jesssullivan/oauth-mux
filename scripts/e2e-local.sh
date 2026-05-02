@@ -818,6 +818,13 @@ expect_contains "$broker_session_smoke_prompt" '"confirmation_required":true' "b
 expect_contains "$broker_session_smoke_prompt" '"requires":"--confirm-broker"' "broker-session-smoke reports required confirmation flag"
 expect_contains "$broker_session_smoke_prompt" '"spends_provider_calls":false' "broker-session-smoke confirmation prompt reports no provider spend"
 
+printf 'e2e: codex broker-run requires explicit spend confirmation before live app-server turn\n'
+broker_run_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-run --profile codex-max --capability codex-max --prompt 'hello' --json 2>/dev/null || true)"
+expect_contains "$broker_run_prompt" '"mode":"codex_broker_owned_session_live_run"' "broker-run reports live broker mode"
+expect_contains "$broker_run_prompt" '"confirmation_required":true' "broker-run requires confirmation"
+expect_contains "$broker_run_prompt" '"requires":"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls"' "broker-run reports spend confirmation gate"
+expect_contains "$broker_run_prompt" '"spends_provider_calls":true' "broker-run confirmation prompt reports provider spend"
+
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
 cat >"$mock_codex_app_server" <<'EOF'

@@ -108,6 +108,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profi
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt 'Reply with oauth-mux broker-run ok.' --confirm-spend --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
@@ -145,6 +146,11 @@ boundary without starting Codex or probing providers.
 step: it uses the session plan's selected and fallback routes, starts a local
 broker-owned app-server session against mocked Responses/ChatGPT endpoints, and
 proves new-thread fallback after simulated quota exhaustion.
+`codex broker-run --prompt ... --confirm-spend --json` is the explicit live
+one-turn proof for that UX path. It uses the session plan's selected route,
+starts a broker-owned app-server against Codex's default live provider, sends
+one prompt, and reports only redacted protocol evidence; prompt text, assistant
+output, tokens, account ids, and raw protocol output are not printed.
 `codex broker-smoke --confirm-broker --json` is the next local proof: it starts
 a broker-owned Codex app-server stdio child, sends the selected route token to
 that child only, and verifies initialize/login/account-update milestones while
@@ -289,6 +295,7 @@ oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
+oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt 'Reply with oauth-mux broker-run ok.' --confirm-spend --json
 oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
