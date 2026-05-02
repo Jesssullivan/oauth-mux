@@ -200,7 +200,9 @@ hot-swap credentials already loaded into an upstream harness process unless
 that harness supports live reload, supervised restart, proxying, or an
 oauth-mux-aware in-agent adapter. Until that proof exists, user-facing copy
 should describe prepared fallback for the next mediated action, not transparent
-replacement of the current process.
+replacement of the current process. The supervised restart path is tracked in
+`docs/spec/supervised-harness-restart-contract-2026-05-02.md`; it must remain a
+separate wrapper-owned process claim, not a daemon status inference.
 
 Until then, user and agent onboarding should use one-shot commands:
 

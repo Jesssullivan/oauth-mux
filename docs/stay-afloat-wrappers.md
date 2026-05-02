@@ -7,6 +7,11 @@ public product claim. The loop can keep route-state evidence warm and queue
 user-mediated repair handoffs, but it does not hot-swap credentials inside an
 already-running upstream harness process.
 
+The next stronger claim is wrapper-mediated supervised restart, tracked in
+`docs/spec/supervised-harness-restart-contract-2026-05-02.md`. That path needs a
+separate parent-wrapper command because `stay-afloat launch` intentionally uses
+`execve` and cannot observe the target process after startup.
+
 ## Product Truth
 
 The supported contract is still the portable tick engine:

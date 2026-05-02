@@ -239,6 +239,9 @@ these precise provider-proof children.
 - Do not make daemon execution a first-run or release gate.
 - Do not claim hot-swap inside an already-running harness without a proven
   reload, supervised restart, proxy, or in-agent mediation path.
+- Track wrapper-owned supervised restart separately under
+  `docs/spec/supervised-harness-restart-contract-2026-05-02.md` / `TIN-911` /
+  GitHub `#123`; do not infer it from a fresh daemon snapshot.
 - Do not run live probes by default.
 - Do not mutate upstream CLI-owned credential stores.
 - Do not promote a provider to `live_proven` without redacted fixtures and an
