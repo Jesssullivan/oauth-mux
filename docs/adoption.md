@@ -106,7 +106,10 @@ useful for support bundles and full-machine cleanup.
 
 `oauth-mux stay-afloat next --json` is the simplest agent handoff: it returns
 an exact `exec_argv` when already afloat, otherwise it returns the typed repair
-or user-handoff action to mediate before retrying.
+or user-handoff action to mediate before retrying. It also returns `claim`:
+`prepared_fallback` means use `claim.launch_argv` for a fresh harness process,
+while current-process hot swap, supervised restart, and per-request muxing are
+explicitly false until those product levels are implemented and proven.
 
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is

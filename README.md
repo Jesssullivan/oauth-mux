@@ -120,7 +120,10 @@ When a route is selectable, it returns `ready_for_exec:true` plus an exact
 `exec_argv` pinned to provider, account, and capability. When no route is
 selectable, it returns `ready_for_exec:false` plus the typed repair or handoff
 action without running probes, auth flows, provider calls, target commands, or
-secret mutation.
+secret mutation. It also returns a `claim` object so agents can distinguish the
+current product level: today `prepared_fallback` means a new process can be
+launched through `claim.launch_argv`, while `current_process_hotswap`,
+`supervised_restart`, and `per_request_muxing` remain false.
 
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if

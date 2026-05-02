@@ -186,7 +186,10 @@ does not probe or mutate. If a route is selectable, it returns
 `ready_for_exec:true` and an exact `exec_argv` that pins provider, account, and
 capability for `oauth-mux exec`. If no route is selectable, it returns
 `ready_for_exec:false` and embeds the typed repair action, mediation mode,
-repair owner, and any user-facing command to run.
+repair owner, and any user-facing command to run. The same response includes a
+`claim` object. `claim.level:"prepared_fallback"` means oauth-mux can start the
+next harness process through `claim.launch_argv`; it is not a current-process
+hot swap, supervised restart, or per-request muxing claim.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

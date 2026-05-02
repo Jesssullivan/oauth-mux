@@ -3849,7 +3849,7 @@ fn writeDaemonTickSnapshot(
         try writer.writeAll("null");
     }
     try writer.writeAll(",\"claim\":");
-    try writeStayAfloatClaimJson(writer, args, selectedRoute(evaluations, selected_index));
+    try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
     try writer.writeByte('}');
@@ -3864,9 +3864,34 @@ fn selectedRoute(evaluations: []const RouteEvaluation, selected_index: ?usize) ?
     return null;
 }
 
+const StayAfloatSelector = struct {
+    profile: ?[]const u8 = null,
+    provider: ?[]const u8 = null,
+    account: ?[]const u8 = null,
+    capability: ?[]const u8 = null,
+};
+
+fn selectorFromDaemonTickArgs(args: cli.Command.DaemonTickArgs) StayAfloatSelector {
+    return .{
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+    };
+}
+
+fn selectorFromRouteArgs(args: cli.Command.RouteArgs) StayAfloatSelector {
+    return .{
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+    };
+}
+
 fn writeStayAfloatClaimJson(
     writer: anytype,
-    args: cli.Command.DaemonTickArgs,
+    selector: StayAfloatSelector,
     route: ?RepairPlanRoute,
 ) !void {
     const prepared = route != null;
@@ -3883,29 +3908,29 @@ fn writeStayAfloatClaimJson(
     try writer.writeAll(",\"supervised_restart\":false");
     try writer.writeAll(",\"per_request_muxing\":false");
     try writer.writeAll(",\"launch_argv\":");
-    try writeStayAfloatLaunchArgvJson(writer, args);
+    try writeStayAfloatLaunchArgvJson(writer, selector);
     try writer.writeByte('}');
 }
 
-fn writeStayAfloatLaunchArgvJson(writer: anytype, args: cli.Command.DaemonTickArgs) !void {
+fn writeStayAfloatLaunchArgvJson(writer: anytype, selector: StayAfloatSelector) !void {
     var first = true;
     try writer.writeByte('[');
     try writeJsonArrayString(writer, &first, "oauth-mux");
     try writeJsonArrayString(writer, &first, "stay-afloat");
     try writeJsonArrayString(writer, &first, "launch");
-    if (args.profile) |profile_name| {
+    if (selector.profile) |profile_name| {
         try writeJsonArrayString(writer, &first, "--profile");
         try writeJsonArrayString(writer, &first, profile_name);
     }
-    if (args.provider) |provider_name| {
+    if (selector.provider) |provider_name| {
         try writeJsonArrayString(writer, &first, "--provider");
         try writeJsonArrayString(writer, &first, provider_name);
     }
-    if (args.account) |account| {
+    if (selector.account) |account| {
         try writeJsonArrayString(writer, &first, "--account");
         try writeJsonArrayString(writer, &first, account);
     }
-    if (args.capability) |capability| {
+    if (selector.capability) |capability| {
         try writeJsonArrayString(writer, &first, "--capability");
         try writeJsonArrayString(writer, &first, capability);
     }
@@ -4458,6 +4483,8 @@ fn writeStayAfloatNextJson(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"claim\":");
+    try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index));
     try writer.writeAll(",\"next_action\":");
     try writeStayAfloatNextActionJson(writer, allocator, evaluations, selected_index, candidate_index);
     try writer.writeAll(",\"routes\":[");
@@ -4758,7 +4785,7 @@ fn writeDaemonTickJsonObject(
         try writer.writeAll("null");
     }
     try writer.writeAll(",\"claim\":");
-    try writeStayAfloatClaimJson(writer, args, selectedRoute(evaluations, selected_index));
+    try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
     try writer.writeAll(",\"executions\":");
@@ -9351,6 +9378,9 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"action\":\"next\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"prepared_fallback\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"current_process_hotswap\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"launch_argv\":[\"oauth-mux\",\"stay-afloat\",\"launch\",\"--profile\",\"work\",\"--capability\",\"chat\",\"--\",\"<command>\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"next_action\":{\"kind\":\"exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"exec_argv\":[\"oauth-mux\",\"exec\",\"--provider\",\"toy\",\"--account\",\"a2\",\"--capability\",\"chat\",\"--\",\"<command>\"]") != null);
 }
@@ -9401,6 +9431,9 @@ test "stay-afloat next emits mediated repair action when no route is selectable"
     });
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"mediation_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"prepared_fallback\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"launch_argv\":[\"oauth-mux\",\"stay-afloat\",\"launch\",\"--profile\",\"needs-reauth\",\"--capability\",\"codex-max\",\"--\",\"<command>\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"next_action\":{\"kind\":\"repair\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mediation\":\"user_handoff\"") != null);
