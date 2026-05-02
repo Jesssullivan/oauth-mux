@@ -290,9 +290,15 @@ For quota-driven account changes, use a different action name, such as
    live Codex provider for one turn and emits redacted protocol evidence.
    A bounded beta loop form accepts line-delimited prompts via `--stdin` and
    keeps one broker-owned app-server session open across those turns.
-13. Only after topology A is green, attempt topology B with a remote TUI and
+13. Add a controlled fallback observation drill:
+   `oauth-mux codex broker-fallback-drill --profile codex-max --capability
+   codex-max --from-account max-3 --confirm-drill --json` records the named
+   route as quota-exhausted in local route health and verifies the next
+   broker-owned route selection picks a distinct fallback. This is no-spend
+   route-state evidence, not provider-originated quota evidence.
+14. Only after topology A is green, attempt topology B with a remote TUI and
    sidecar broker.
-14. Update website and README claim language only after live dogfood passes.
+15. Update website and README claim language only after live dogfood passes.
 
 ## Acceptance Criteria
 
@@ -317,6 +323,9 @@ For quota-driven account changes, use a different action name, such as
   its bounded `--stdin` beta can exercise multiple turns in one broker-owned
   app-server session. It still does not prove fallback recovery or unmanaged
   TUI hot-swap, and it reports counts without printing transcript content.
+- The broker fallback drill is no-spend but mutates local route health. It can
+  observe next-route fallback after a controlled quota-exhausted mark, while
+  explicitly not claiming provider-originated quota exhaustion.
 - Cross-account switching is blocked when forced workspace or profile policy
   forbids it.
 - Quota/rate-limit behavior is separately classified as next-turn account

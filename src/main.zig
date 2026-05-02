@@ -7520,6 +7520,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .broker_session_plan => try runCodexBrokerSessionPlan(allocator, writer, args),
         .broker_session_smoke => try runCodexBrokerSessionSmoke(allocator, writer, args),
         .broker_run => try runCodexBrokerRun(allocator, writer, args),
+        .broker_fallback_drill => try runCodexBrokerFallbackDrill(allocator, writer, args),
         .broker_smoke => try runCodexBrokerSmoke(allocator, writer, args, .login),
         .broker_refresh_smoke => try runCodexBrokerSmoke(allocator, writer, args, .refresh),
         .broker_401_smoke => try runCodexBroker401Smoke(allocator, writer, args),
@@ -7960,6 +7961,309 @@ const CodexBrokerSessionSummary = struct {
     blocked_broker_routes: usize = 0,
     auth_unready_routes: usize = 0,
 };
+
+const codex_fallback_drill_retry_after_s: u32 = 7200;
+
+fn runCodexBrokerFallbackDrill(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.CodexArgs,
+) !void {
+    if (!args.confirm_drill) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"confirmation_required\":true,\"requires\":\"--confirm-drill\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":true,\"mode\":\"codex_broker_fallback_drill\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux codex broker-session-plan --profile <profile> --capability <capability> --json");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux codex broker-fallback-drill --profile <profile> --capability <capability> --from-account <account> --confirm-drill --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker fallback drill\n\n");
+            try writer.writeAll("  confirmation required: --confirm-drill\n");
+            try writer.writeAll("  this marks one local route-health entry quota-exhausted and proves the next broker-owned route selection\n");
+        }
+        return;
+    }
+
+    const from_account = nonEmpty(args.from_account) orelse {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"from_account_required\",\"requires\":\"--from-account <account>\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"mode\":\"codex_broker_fallback_drill\"}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker fallback drill\n\n");
+            try writer.writeAll("  from account required: --from-account <account>\n");
+        }
+        return;
+    };
+
+    const capability = firstCommaValue(args.capabilities) orelse {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"error\":\"capability_required\",\"requires\":\"--capability <capability>\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"mode\":\"codex_broker_fallback_drill\"}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker fallback drill\n\n");
+            try writer.writeAll("  capability required: --capability <capability>\n");
+        }
+        return;
+    };
+
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = null,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var before = std.ArrayList(RouteEvaluation).init(allocator);
+    defer before.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &before);
+
+    const target_index = findCodexBrokerRouteIndexForAccount(before.items, from_account, capability) orelse {
+        if (args.json) {
+            try writer.writeAll("{\"version\":");
+            try std.json.stringify(cli.version, .{}, writer);
+            try writer.writeAll(",\"mode\":\"codex_broker_fallback_drill\",\"ok\":false,\"confirmed\":true,\"reason\":\"from_account_not_in_route_set\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"from_account\":");
+            try std.json.stringify(from_account, .{}, writer);
+            try writer.writeAll(",\"profile\":");
+            if (args.profile) |profile| try std.json.stringify(profile, .{}, writer) else try writer.writeAll("null");
+            try writer.writeAll(",\"capability\":");
+            try std.json.stringify(capability, .{}, writer);
+            try writer.writeAll("}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex broker fallback drill\n\n");
+            try writer.print("  no matching Codex route for account {s}\n", .{from_account});
+        }
+        return;
+    };
+
+    const previous_selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, before.items);
+    const target_route = before.items[target_index].route;
+    const target_was_selected_before = if (previous_selected_index) |idx|
+        sameRepairPlanRouteIdentity(before.items[idx].route, target_route)
+    else
+        false;
+
+    const def = config.resolveProviderDefinition(parsed.value, target_route.provider);
+    if (target_route.capability) |route_capability| {
+        store.recordCapabilityHttpStatusForProvider(
+            target_route.provider,
+            target_route.account,
+            route_capability,
+            def,
+            429,
+            codex_fallback_drill_retry_after_s,
+            "controlled codex broker fallback drill",
+        );
+    } else {
+        const key = health_mod.accountKey(target_route.provider, target_route.account);
+        store.recordHttpStatusForProvider(
+            key.slice(),
+            def,
+            429,
+            codex_fallback_drill_retry_after_s,
+            "controlled codex broker fallback drill",
+        );
+    }
+    store.persist();
+
+    var after = std.ArrayList(RouteEvaluation).init(allocator);
+    defer after.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &after);
+
+    const selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, after.items);
+    const fallback_route_is_distinct = if (selected_index) |idx|
+        !sameRepairPlanRouteIdentity(after.items[idx].route, target_route)
+    else
+        false;
+    const ok = target_was_selected_before and fallback_route_is_distinct;
+    const reason = if (ok)
+        "controlled_fallback_selected_distinct_route"
+    else if (!target_was_selected_before)
+        "drilled_route_was_not_selected_before"
+    else if (selected_index == null)
+        "no_fallback_route_after_drill"
+    else
+        "drill_selected_same_route";
+
+    if (args.json) {
+        try writeCodexBrokerFallbackDrillJson(
+            writer,
+            allocator,
+            parsed.value,
+            before.items,
+            after.items,
+            target_route,
+            previous_selected_index,
+            selected_index,
+            args.profile,
+            capability,
+            ok,
+            reason,
+            target_was_selected_before,
+            fallback_route_is_distinct,
+        );
+    } else {
+        try writeCodexBrokerFallbackDrillText(
+            writer,
+            target_route,
+            before.items,
+            after.items,
+            previous_selected_index,
+            selected_index,
+            capability,
+            ok,
+            reason,
+            target_was_selected_before,
+            fallback_route_is_distinct,
+        );
+    }
+}
+
+fn findCodexBrokerRouteIndexForAccount(
+    evaluations: []const RouteEvaluation,
+    account: []const u8,
+    capability: []const u8,
+) ?usize {
+    for (evaluations, 0..) |evaluation, idx| {
+        if (!std.mem.eql(u8, evaluation.route.provider, "codex")) continue;
+        if (!std.mem.eql(u8, evaluation.route.account, account)) continue;
+        const route_capability = evaluation.route.capability orelse continue;
+        if (!std.mem.eql(u8, route_capability, capability)) continue;
+        return idx;
+    }
+    return null;
+}
+
+fn writeCodexBrokerFallbackDrillJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    before: []const RouteEvaluation,
+    after: []const RouteEvaluation,
+    target_route: RepairPlanRoute,
+    previous_selected_index: ?usize,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: []const u8,
+    ok: bool,
+    reason: []const u8,
+    target_was_selected_before: bool,
+    fallback_route_is_distinct: bool,
+) !void {
+    const summary = try summarizeCodexBrokerSessionPlan(allocator, cfg, after, selected_index);
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_broker_fallback_drill\",\"ok\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":true");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(reason, .{}, writer);
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"controlled_route_health_drill\",\"proof_status\":\"controlled_route_state_fallback_drill\",\"broker_owned_session\":true,\"route_selection_source\":\"route_health_after_controlled_mutation\",\"provider_originated_quota\":false,\"next_turn_route_state_fallback\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"profile\":");
+    if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    try std.json.stringify(capability, .{}, writer);
+    try writer.writeAll(",\"drilled\":{\"provider\":");
+    try std.json.stringify(target_route.provider, .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(target_route.account, .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (target_route.capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"health_key\":");
+    if (target_route.capability) |route_capability| {
+        const key = health_mod.capabilityKey(target_route.provider, target_route.account, route_capability);
+        try std.json.stringify(key.slice(), .{}, writer);
+    } else {
+        const key = health_mod.accountKey(target_route.provider, target_route.account);
+        try std.json.stringify(key.slice(), .{}, writer);
+    }
+    try writer.print(",\"http_status\":429,\"retry_after_s\":{d}", .{codex_fallback_drill_retry_after_s});
+    try writer.writeAll(",\"classification\":\"quota_exhausted\",\"decision\":\"try_next_account\",\"previously_selected\":");
+    try writer.writeAll(if (target_was_selected_before) "true" else "false");
+    try writer.writeByte('}');
+    try writer.writeAll(",\"previous_selected\":");
+    if (previous_selected_index) |idx| try writeRouteSelectionJson(writer, before[idx].route) else try writer.writeAll("null");
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| try writeRouteSelectionJson(writer, after[idx].route) else try writer.writeAll("null");
+    try writer.writeAll(",\"fallback_route_is_distinct\":");
+    try writer.writeAll(if (fallback_route_is_distinct) "true" else "false");
+    try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"unreadable_routes\":{d},\"selectable_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
+        summary.routes_total,
+        summary.broker_ready_routes,
+        summary.unreadable_routes,
+        summary.selectable_routes,
+        summary.selectable_broker_routes,
+        summary.selectable_fallback_routes,
+        summary.blocked_broker_routes,
+        summary.auth_unready_routes,
+    });
+    try writer.writeAll(",\"routes\":[");
+    for (after, 0..) |evaluation, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        try writeCodexBrokerSessionRouteJson(writer, allocator, cfg, evaluation, selected, plan);
+    }
+    try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false}");
+    try writer.writeAll("}\n");
+}
+
+fn writeCodexBrokerFallbackDrillText(
+    writer: anytype,
+    target_route: RepairPlanRoute,
+    before: []const RouteEvaluation,
+    after: []const RouteEvaluation,
+    previous_selected_index: ?usize,
+    selected_index: ?usize,
+    capability: []const u8,
+    ok: bool,
+    reason: []const u8,
+    target_was_selected_before: bool,
+    fallback_route_is_distinct: bool,
+) !void {
+    try writer.writeAll("oauth-mux Codex broker fallback drill\n\n");
+    try writer.print("  capability: {s}\n", .{capability});
+    try writer.print("  drilled: {s}:{s}", .{ target_route.provider, target_route.account });
+    if (target_route.capability) |value| try writer.print("#{s}", .{value});
+    try writer.print(" -> quota_exhausted retry_after_s={d}\n", .{codex_fallback_drill_retry_after_s});
+    try writer.writeAll("  previous selected: ");
+    if (previous_selected_index) |idx| {
+        const route = before[idx].route;
+        try writer.print("{s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("none\n");
+    }
+    try writer.writeAll("  selected after drill: ");
+    if (selected_index) |idx| {
+        const route = after[idx].route;
+        try writer.print("{s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("none\n");
+    }
+    try writer.print("  previously_selected={s} distinct_fallback={s}\n", .{
+        if (target_was_selected_before) "true" else "false",
+        if (fallback_route_is_distinct) "true" else "false",
+    });
+    try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{reason});
+    try writer.writeAll("  boundary: controlled route-health mutation; provider-originated quota is not proven by this drill\n");
+}
 
 fn firstSelectableCodexBrokerRouteIndex(
     allocator: std.mem.Allocator,

@@ -174,6 +174,14 @@ For a bounded beta multi-turn session, pass `--stdin` instead of `--prompt` and
 pipe one prompt per line. The session stays broker-owned and redacted; the
 output reports prompt counts and completed turns, not transcript content.
 
+`oauth-mux codex broker-fallback-drill --profile codex-max --capability
+codex-max --from-account max-3 --confirm-drill --json` is the controlled
+operator drill for observing fallback without waiting for a provider-originated
+quota event. It mutates local route health by recording the named route as
+quota-exhausted, then verifies the next broker-owned route selection chooses a
+distinct fallback. It does not spend provider calls and does not claim
+same-thread quota recovery or unmanaged TUI hot-swap.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local

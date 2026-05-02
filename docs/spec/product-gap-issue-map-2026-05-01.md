@@ -256,6 +256,11 @@ these precise provider-proof children.
    live one-turn broker-owned session proof and remains spend-gated. Its
    bounded `--stdin` beta keeps one broker-owned app-server session open across
    line-delimited live turns while still suppressing transcript content.
+   `oauth-mux codex broker-fallback-drill --from-account ...
+   --confirm-drill` is the controlled operator drill for fallback observation:
+   it marks a route quota-exhausted in local route health and verifies the next
+   broker-owned selection moves to a distinct fallback, without claiming that
+   the quota signal came from the provider.
 10. Return to daemon background implementation only after wrapper/install
    decisions and provider proof produce enough real operator evidence. The
    current socket daemon decision is complete under `TIN-867`; future
