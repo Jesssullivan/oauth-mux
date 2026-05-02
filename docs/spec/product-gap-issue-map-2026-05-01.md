@@ -249,7 +249,9 @@ these precise provider-proof children.
    fallback login, while same-turn and same-thread quota recovery remain
    unclaimed. `oauth-mux codex broker-session-plan` is the next UX slice: it
    combines route liveness with broker readiness to plan a broker-owned Codex
-   session without spending provider calls.
+   session without spending provider calls. `oauth-mux codex
+   broker-session-smoke --confirm-broker` exercises that plan as a local
+   multi-turn broker-owned app-server session against mocked backend endpoints.
 10. Return to daemon background implementation only after wrapper/install
    decisions and provider proof produce enough real operator evidence. The
    current socket daemon decision is complete under `TIN-867`; future

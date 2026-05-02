@@ -107,6 +107,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provid
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
@@ -140,6 +141,10 @@ ids, credential paths, or provider-call evidence.
 route liveness. It reports the selected broker-owned session route, immediate
 selectable fallback routes, quota-blocked routes, and the explicit claim
 boundary without starting Codex or probing providers.
+`codex broker-session-smoke --confirm-broker --json` takes the next no-spend UX
+step: it uses the session plan's selected and fallback routes, starts a local
+broker-owned app-server session against mocked Responses/ChatGPT endpoints, and
+proves new-thread fallback after simulated quota exhaustion.
 `codex broker-smoke --confirm-broker --json` is the next local proof: it starts
 a broker-owned Codex app-server stdio child, sends the selected route token to
 that child only, and verifies initialize/login/account-update milestones while
@@ -283,6 +288,7 @@ oauth-mux codex live-qa
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
+oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json

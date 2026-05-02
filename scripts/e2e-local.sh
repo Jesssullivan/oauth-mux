@@ -811,6 +811,13 @@ expect_not_contains "$broker_session_plan" "$broker_jwt" "broker-session-plan do
 expect_not_contains "$broker_session_plan" 'broker-session-refresh-token' "broker-session-plan does not expose refresh token value"
 expect_not_contains "$broker_session_plan" 'broker-session-spare-token' "broker-session-plan does not expose spare refresh token value"
 
+printf 'e2e: codex broker-session-smoke requires explicit confirmation before starting app-server\n'
+broker_session_smoke_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-smoke --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_session_smoke_prompt" '"mode":"codex_broker_owned_session_smoke"' "broker-session-smoke reports session smoke mode"
+expect_contains "$broker_session_smoke_prompt" '"confirmation_required":true' "broker-session-smoke requires confirmation"
+expect_contains "$broker_session_smoke_prompt" '"requires":"--confirm-broker"' "broker-session-smoke reports required confirmation flag"
+expect_contains "$broker_session_smoke_prompt" '"spends_provider_calls":false' "broker-session-smoke confirmation prompt reports no provider spend"
+
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
 cat >"$mock_codex_app_server" <<'EOF'
