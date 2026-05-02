@@ -146,6 +146,13 @@ request, answers app-server refresh with the next ready route, and verifies the
 retry uses the fallback token. This is the current strongest mediated Codex
 proof; it still does not claim unmanaged TUI hot-swap.
 
+`oauth-mux codex broker-quota-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` proves the no-spend quota boundary. It returns a local
+usage-limit 429 to the first turn, observes that Codex does not issue the 401
+auth-refresh hook, applies a fallback app-server login, and verifies a new
+brokered thread uses fallback Authorization. Same-thread quota recovery remains
+explicitly unproven.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local
