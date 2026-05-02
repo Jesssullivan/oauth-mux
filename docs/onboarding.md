@@ -231,6 +231,12 @@ Use
 Codex or spending provider calls. It joins route liveness with broker token
 readiness and reports which route would start the session plus which broker-ready
 routes are immediate fallbacks.
+Use
+`oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` to exercise that plan as a local multi-turn
+broker-owned app-server session. It keeps provider traffic mocked, simulates
+quota exhaustion on the first turn, and verifies fallback Authorization on a new
+brokered thread selected from the session plan.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

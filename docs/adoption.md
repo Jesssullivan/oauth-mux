@@ -159,6 +159,12 @@ combines recorded route liveness with app-server auth-broker readiness, then
 reports the selected route, immediate selectable fallbacks, quota-blocked broker
 routes, and the same explicit no-hot-swap/no-same-thread quota boundary.
 
+`oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` is the matching no-spend multi-turn UX smoke. It uses
+the session plan's selected and fallback routes, starts a broker-owned
+app-server against local mocked backend endpoints, simulates quota exhaustion on
+turn one, and verifies a new brokered thread uses the fallback route.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local
