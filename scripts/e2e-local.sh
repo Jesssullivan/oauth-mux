@@ -702,6 +702,41 @@ expect_not_contains "$broker_smoke" 'acct-test' "broker-smoke does not expose ac
 expect_not_contains "$broker_smoke" "$broker_jwt" "broker-smoke does not expose token value"
 expect_not_contains "$broker_smoke" 'broker-refresh-token' "broker-smoke does not expose refresh token value"
 
+printf 'e2e: codex broker-refresh-smoke answers app-server auth refresh without leaking tokens\n'
+mock_codex_refresh_app_server="$tmp/mock-codex-refresh-app-server"
+cat >"$mock_codex_refresh_app_server" <<'EOF'
+#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}'
+      ;;
+    *'"method":"account/login/start"'*)
+      printf '%s\n' '{"id":2,"result":{"type":"chatgptAuthTokens"}}'
+      printf '%s\n' '{"method":"account/login/completed","params":{"success":true}}'
+      printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
+      printf '%s\n' '{"id":99,"method":"account/chatgptAuthTokens/refresh","params":{"reason":"unauthorized"}}'
+      ;;
+    *'"id":99'*'"result"'*)
+      printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
+      ;;
+  esac
+done
+EOF
+chmod +x "$mock_codex_refresh_app_server"
+broker_refresh_smoke="$(OMUX_CONFIG="$broker_config" OMUX_STATE_DIR="$state_dir" OMUX_CODEX_APP_SERVER="$mock_codex_refresh_app_server" "$bin" codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json)"
+expect_contains "$broker_refresh_smoke" '"mode":"codex_app_server_stdio_broker_refresh_smoke"' "broker-refresh-smoke reports refresh broker mode"
+expect_contains "$broker_refresh_smoke" '"ok":true' "broker-refresh-smoke reports success"
+expect_contains "$broker_refresh_smoke" '"proof_status":"local_refresh_protocol_smoke"' "broker-refresh-smoke reports refresh protocol proof status"
+expect_contains "$broker_refresh_smoke" '"refresh_request_seen":true' "broker-refresh-smoke observes refresh request"
+expect_contains "$broker_refresh_smoke" '"refresh_reason_unauthorized":true' "broker-refresh-smoke classifies unauthorized refresh reason"
+expect_contains "$broker_refresh_smoke" '"refresh_response_sent":true' "broker-refresh-smoke sends refresh response"
+expect_contains "$broker_refresh_smoke" '"tokens_printed":false' "broker-refresh-smoke redaction reports token suppression"
+expect_contains "$broker_refresh_smoke" '"raw_protocol_printed":false' "broker-refresh-smoke redaction reports raw protocol suppression"
+expect_not_contains "$broker_refresh_smoke" 'acct-test' "broker-refresh-smoke does not expose account id value"
+expect_not_contains "$broker_refresh_smoke" "$broker_jwt" "broker-refresh-smoke does not expose token value"
+expect_not_contains "$broker_refresh_smoke" 'broker-refresh-token' "broker-refresh-smoke does not expose refresh token value"
+
 repair_reauth_json="$tmp/repair-run-reauth.json"
 set +e
 OMUX_CONFIG="$reauth_config" \
