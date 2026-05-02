@@ -208,9 +208,10 @@ unmanaged current TUI hot-swap or quota-recovery claim.
 Use
 `oauth-mux codex broker-refresh-smoke --profile codex-max --capability
 codex-max --confirm-broker --json` to prove that the same mediated app-server
-session can answer `account/chatgptAuthTokens/refresh` after login. This is the
-first local proof for the live 401 repair primitive; it does not yet prove
-automatic repair of an already-running unmanaged Codex process.
+session can answer `account/chatgptAuthTokens/refresh` after login with the
+next ready route when a fallback account exists. This is the first local proof
+for the live 401 repair primitive; it does not yet prove automatic repair of an
+already-running unmanaged Codex process.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

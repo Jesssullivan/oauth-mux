@@ -703,6 +703,51 @@ expect_not_contains "$broker_smoke" "$broker_jwt" "broker-smoke does not expose 
 expect_not_contains "$broker_smoke" 'broker-refresh-token' "broker-smoke does not expose refresh token value"
 
 printf 'e2e: codex broker-refresh-smoke answers app-server auth refresh without leaking tokens\n'
+broker_auth_fallback="$tmp/broker-auth-fallback.json"
+broker_switch_config="$tmp/broker-switch-config.json"
+cat >"$broker_auth_fallback" <<EOF
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "$broker_jwt",
+    "access_token": "$broker_jwt",
+    "refresh_token": "broker-refresh-token-fallback",
+    "account_id": "acct-fallback"
+  }
+}
+EOF
+cat >"$broker_switch_config" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-1": {
+          "priority": 20,
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth"
+          }
+        },
+        "max-2": {
+          "priority": 10,
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth_fallback"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "codex-max": {
+      "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"]
+    }
+  },
+  "strategies": {}
+}
+EOF
 mock_codex_refresh_app_server="$tmp/mock-codex-refresh-app-server"
 cat >"$mock_codex_refresh_app_server" <<'EOF'
 #!/bin/sh
@@ -717,23 +762,30 @@ while IFS= read -r line; do
       printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
       printf '%s\n' '{"id":99,"method":"account/chatgptAuthTokens/refresh","params":{"reason":"unauthorized"}}'
       ;;
-    *'"id":99'*'"result"'*)
+    *'"id":99'*'"result"'*'acct-fallback'*)
       printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
+      ;;
+    *'"id":99'*'"result"'*)
+      exit 17
       ;;
   esac
 done
 EOF
 chmod +x "$mock_codex_refresh_app_server"
-broker_refresh_smoke="$(OMUX_CONFIG="$broker_config" OMUX_STATE_DIR="$state_dir" OMUX_CODEX_APP_SERVER="$mock_codex_refresh_app_server" "$bin" codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json)"
+broker_refresh_smoke="$(OMUX_CONFIG="$broker_switch_config" OMUX_STATE_DIR="$state_dir" OMUX_CODEX_APP_SERVER="$mock_codex_refresh_app_server" "$bin" codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json)"
 expect_contains "$broker_refresh_smoke" '"mode":"codex_app_server_stdio_broker_refresh_smoke"' "broker-refresh-smoke reports refresh broker mode"
 expect_contains "$broker_refresh_smoke" '"ok":true' "broker-refresh-smoke reports success"
 expect_contains "$broker_refresh_smoke" '"proof_status":"local_refresh_protocol_smoke"' "broker-refresh-smoke reports refresh protocol proof status"
+expect_contains "$broker_refresh_smoke" '"selected":{"provider":"codex","account":"max-1","capability":"codex-max"' "broker-refresh-smoke starts from first ready route"
+expect_contains "$broker_refresh_smoke" '"refresh_selected":{"provider":"codex","account":"max-2","capability":"codex-max"' "broker-refresh-smoke answers refresh with fallback route"
+expect_contains "$broker_refresh_smoke" '"refresh_route_is_fallback":true' "broker-refresh-smoke marks refresh route as fallback"
 expect_contains "$broker_refresh_smoke" '"refresh_request_seen":true' "broker-refresh-smoke observes refresh request"
 expect_contains "$broker_refresh_smoke" '"refresh_reason_unauthorized":true' "broker-refresh-smoke classifies unauthorized refresh reason"
 expect_contains "$broker_refresh_smoke" '"refresh_response_sent":true' "broker-refresh-smoke sends refresh response"
 expect_contains "$broker_refresh_smoke" '"tokens_printed":false' "broker-refresh-smoke redaction reports token suppression"
 expect_contains "$broker_refresh_smoke" '"raw_protocol_printed":false' "broker-refresh-smoke redaction reports raw protocol suppression"
 expect_not_contains "$broker_refresh_smoke" 'acct-test' "broker-refresh-smoke does not expose account id value"
+expect_not_contains "$broker_refresh_smoke" 'acct-fallback' "broker-refresh-smoke does not expose fallback account id value"
 expect_not_contains "$broker_refresh_smoke" "$broker_jwt" "broker-refresh-smoke does not expose token value"
 expect_not_contains "$broker_refresh_smoke" 'broker-refresh-token' "broker-refresh-smoke does not expose refresh token value"
 

@@ -7718,6 +7718,44 @@ const CodexBrokerSmokeResult = struct {
     protocol: CodexBrokerProtocolObservation = .{},
 };
 
+const CodexBrokerRouteCredentials = struct {
+    route: RepairPlanRoute,
+    credentials: CodexBrokerCredentials,
+
+    fn deinit(self: *CodexBrokerRouteCredentials, allocator: std.mem.Allocator) void {
+        self.credentials.deinit(allocator);
+    }
+};
+
+fn cloneCodexBrokerCredentials(
+    allocator: std.mem.Allocator,
+    credentials: CodexBrokerCredentials,
+) !CodexBrokerCredentials {
+    const access_token = try allocator.dupe(u8, credentials.access_token);
+    errdefer allocator.free(access_token);
+    const chatgpt_account_id = try allocator.dupe(u8, credentials.chatgpt_account_id);
+    errdefer allocator.free(chatgpt_account_id);
+    const chatgpt_plan_type = if (credentials.chatgpt_plan_type) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (chatgpt_plan_type) |value| allocator.free(value);
+
+    return .{
+        .access_token = access_token,
+        .chatgpt_account_id = chatgpt_account_id,
+        .chatgpt_plan_type = chatgpt_plan_type,
+    };
+}
+
+fn sameRepairPlanRouteIdentity(a: RepairPlanRoute, b: RepairPlanRoute) bool {
+    if (!std.mem.eql(u8, a.provider, b.provider)) return false;
+    if (!std.mem.eql(u8, a.account, b.account)) return false;
+    if (a.capability == null and b.capability == null) return true;
+    if (a.capability == null or b.capability == null) return false;
+    return std.mem.eql(u8, a.capability.?, b.capability.?);
+}
+
 fn runCodexBrokerPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
     const parsed = try config.load(allocator);
     defer parsed.deinit();
@@ -7870,19 +7908,32 @@ fn runCodexBrokerSmoke(
     });
     defer routes.deinit();
 
-    var selected: ?RepairPlanRoute = null;
-    var credentials: ?CodexBrokerCredentials = null;
+    var selected: ?CodexBrokerRouteCredentials = null;
+    defer if (selected) |*value| value.deinit(allocator);
+    var refresh_selected: ?CodexBrokerRouteCredentials = null;
+    defer if (refresh_selected) |*value| value.deinit(allocator);
     for (routes.items) |route| {
         const plan = try inspectCodexBrokerRoute(allocator, parsed.value, route);
         if (!plan.can_supply) continue;
-        credentials = loadCodexBrokerCredentialsForRoute(allocator, parsed.value, route) catch null;
-        if (credentials != null) {
-            selected = route;
+        const credentials = loadCodexBrokerCredentialsForRoute(allocator, parsed.value, route) catch continue;
+        if (selected == null) {
+            selected = .{
+                .route = route,
+                .credentials = credentials,
+            };
+            continue;
+        }
+        if (mode == .refresh and refresh_selected == null and !sameRepairPlanRouteIdentity(selected.?.route, route)) {
+            refresh_selected = .{
+                .route = route,
+                .credentials = credentials,
+            };
             break;
         }
+        credentials.deinit(allocator);
     }
 
-    if (selected == null or credentials == null) {
+    if (selected == null) {
         if (args.json) {
             try writer.writeAll("{\"version\":");
             try std.json.stringify(cli.version, .{}, writer);
@@ -7900,7 +7951,13 @@ fn runCodexBrokerSmoke(
         }
         return;
     }
-    defer credentials.?.deinit(allocator);
+
+    if (mode == .refresh and refresh_selected == null) {
+        refresh_selected = .{
+            .route = selected.?.route,
+            .credentials = try cloneCodexBrokerCredentials(allocator, selected.?.credentials),
+        };
+    }
 
     const state_dir = try paths.stateDir(allocator);
     defer allocator.free(state_dir);
@@ -7908,18 +7965,21 @@ fn runCodexBrokerSmoke(
     defer allocator.free(run_dir);
     try std.fs.cwd().makePath(run_dir);
 
-    const result = try runCodexAppServerBrokerSmoke(allocator, credentials.?, run_dir, mode);
+    const refresh_route = if (refresh_selected) |value| value.route else null;
+    const refresh_credentials = if (refresh_selected) |value| value.credentials else selected.?.credentials;
+    const result = try runCodexAppServerBrokerSmoke(allocator, selected.?.credentials, refresh_credentials, run_dir, mode);
 
     if (args.json) {
-        try writeCodexBrokerSmokeJson(writer, selected.?, capability, result, mode);
+        try writeCodexBrokerSmokeJson(writer, selected.?.route, refresh_route, capability, result, mode);
     } else {
-        try writeCodexBrokerSmokeText(writer, selected.?, capability, result, mode);
+        try writeCodexBrokerSmokeText(writer, selected.?.route, refresh_route, capability, result, mode);
     }
 }
 
 fn writeCodexBrokerSmokeJson(
     writer: anytype,
     route: RepairPlanRoute,
+    refresh_route: ?RepairPlanRoute,
     capability: ?[]const u8,
     result: CodexBrokerSmokeResult,
     mode: CodexBrokerSmokeMode,
@@ -7936,6 +7996,10 @@ fn writeCodexBrokerSmokeJson(
     try writer.writeAll(",\"current_process_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"selected\":");
     try writeRouteSelectionJson(writer, route);
+    try writer.writeAll(",\"refresh_selected\":");
+    if (refresh_route) |value| try writeRouteSelectionJson(writer, value) else try writer.writeAll("null");
+    try writer.writeAll(",\"refresh_route_is_fallback\":");
+    try writer.writeAll(if (refresh_route != null and !sameRepairPlanRouteIdentity(route, refresh_route.?)) "true" else "false");
     try writer.writeAll(",\"capability\":");
     if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"app_server\":{\"transport\":\"stdio\",\"requires_experimental_api\":true,\"login_method\":\"account/login/start.chatgptAuthTokens\",\"refresh_method\":\"account/chatgptAuthTokens/refresh\"}");
@@ -7981,6 +8045,7 @@ fn writeCodexBrokerProtocolJson(writer: anytype, result: CodexBrokerSmokeResult)
 fn writeCodexBrokerSmokeText(
     writer: anytype,
     route: RepairPlanRoute,
+    refresh_route: ?RepairPlanRoute,
     capability: ?[]const u8,
     result: CodexBrokerSmokeResult,
     mode: CodexBrokerSmokeMode,
@@ -7989,6 +8054,11 @@ fn writeCodexBrokerSmokeText(
     try writer.print("  route: {s}:{s}", .{ route.provider, route.account });
     if (capability) |value| try writer.print("#{s}", .{value});
     try writer.writeByte('\n');
+    if (refresh_route) |value| {
+        try writer.print("  refresh route: {s}:{s}", .{ value.provider, value.account });
+        if (value.capability) |route_capability| try writer.print("#{s}", .{route_capability});
+        try writer.print(" fallback={s}\n", .{if (sameRepairPlanRouteIdentity(route, value)) "false" else "true"});
+    }
     try writer.print("  ok: {s}\n", .{if (result.ok) "true" else "false"});
     try writer.print("  reason: {s}\n", .{result.reason});
     try writer.print("  initialized: {s}\n", .{if (result.protocol.initialized) "true" else "false"});
@@ -8005,7 +8075,8 @@ fn writeCodexBrokerSmokeText(
 
 fn runCodexAppServerBrokerSmoke(
     allocator: std.mem.Allocator,
-    credentials: CodexBrokerCredentials,
+    login_credentials: CodexBrokerCredentials,
+    refresh_credentials: CodexBrokerCredentials,
     codex_home: []const u8,
     mode: CodexBrokerSmokeMode,
 ) !CodexBrokerSmokeResult {
@@ -8019,7 +8090,7 @@ fn runCodexAppServerBrokerSmoke(
 
     var login_request = std.ArrayList(u8).init(allocator);
     defer login_request.deinit();
-    try writeCodexAppServerLoginRequest(login_request.writer(), credentials);
+    try writeCodexAppServerLoginRequest(login_request.writer(), login_credentials);
     try login_request.append('\n');
 
     var env_map = try std.process.getEnvMap(allocator);
@@ -8102,7 +8173,7 @@ fn runCodexAppServerBrokerSmoke(
                 if (!request.reason_unauthorized) {
                     result.reason = "unsupported_refresh_reason";
                 } else if (child.stdin) |stdin_file| {
-                    try writeCodexAppServerRefreshResponse(stdin_file.writer(), request.id, credentials);
+                    try writeCodexAppServerRefreshResponse(stdin_file.writer(), request.id, refresh_credentials);
                     try stdin_file.writeAll("\n");
                     result.refresh_response_sent = true;
                     stdin_file.close();
@@ -8146,11 +8217,13 @@ fn runCodexAppServerBrokerSmoke(
     result.stdout_bytes = stdout_buf.items.len;
     result.stderr_bytes = stderr_buf.items.len;
     result.protocol = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+    const child_exit_ok = result.exit_code != null and result.exit_code.? == 0;
     result.ok = switch (mode) {
         .login => result.protocol.initialized and
             result.protocol.login_response and
             result.protocol.login_completed and
             result.protocol.account_updated and
+            child_exit_ok and
             !result.protocol.experimental_api_required_error,
         .refresh => result.protocol.initialized and
             result.protocol.login_response and
@@ -8159,6 +8232,7 @@ fn runCodexAppServerBrokerSmoke(
             result.protocol.refresh_request_seen and
             result.protocol.refresh_reason_unauthorized and
             result.refresh_response_sent and
+            child_exit_ok and
             !result.protocol.experimental_api_required_error,
     };
     if (result.ok) {

@@ -132,10 +132,11 @@ account-id, and raw protocol values.
 
 `oauth-mux codex broker-refresh-smoke --profile codex-max --capability
 codex-max --confirm-broker --json` extends that local proof by answering an
-app-server `account/chatgptAuthTokens/refresh` request with the selected route
-token tuple. This proves the refresh-response primitive needed for future live
-401 repair in mediated sessions. It is still not an unmanaged current TUI
-hot-swap, per-request mux, or quota-recovery claim.
+app-server `account/chatgptAuthTokens/refresh` request with the next ready
+route token tuple when a fallback account exists. This proves the
+refresh-response selection primitive needed for future live 401 repair in
+mediated sessions. It is still not an unmanaged current TUI hot-swap,
+per-request mux, or quota-recovery claim.
 
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
