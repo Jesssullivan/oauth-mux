@@ -321,8 +321,10 @@ For quota-driven account changes, use a different action name, such as
   still does not prove same-thread quota recovery or unmanaged TUI hot-swap.
 - The broker live run is spend-gated. Its `--prompt` form proves one live turn;
   its bounded `--stdin` beta can exercise multiple turns in one broker-owned
-  app-server session. It still does not prove fallback recovery or unmanaged
-  TUI hot-swap, and it reports counts without printing transcript content.
+   app-server session. It still does not prove fallback recovery or unmanaged
+   TUI hot-swap, and it reports counts without printing transcript content.
+   Live quota/rate-limit failures from the app-server protocol are now recorded
+   as route-health evidence so the output can report the next selected route.
 - Exhausted route revalidation is spend-gated. It exists for external billing,
   plan, or credit changes: bypass only recorded exhausted route-health blocks,
   re-probe the provider, and persist the fresh capability evidence. It removes

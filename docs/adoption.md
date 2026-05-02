@@ -169,7 +169,9 @@ turn one, and verifies a new brokered thread uses the fallback route.
 ... --confirm-spend --json` is the explicit live one-turn proof for the same
 broker-owned UX. It starts the selected route against Codex's default live
 provider and emits redacted protocol evidence without printing prompt text,
-assistant output, tokens, account ids, or raw app-server protocol.
+assistant output, tokens, account ids, or raw app-server protocol. A live
+quota/rate-limit failure is recorded as route-health evidence and the output
+reports the next selected route.
 For a bounded beta multi-turn session, pass `--stdin` instead of `--prompt` and
 pipe one prompt per line. The session stays broker-owned and redacted; the
 output reports prompt counts and completed turns, not transcript content.

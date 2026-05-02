@@ -152,7 +152,9 @@ proves new-thread fallback after simulated quota exhaustion.
 one-turn proof for that UX path. It uses the session plan's selected route,
 starts a broker-owned app-server against Codex's default live provider, sends
 one prompt, and reports only redacted protocol evidence; prompt text, assistant
-output, tokens, account ids, and raw protocol output are not printed.
+output, tokens, account ids, and raw protocol output are not printed. If the
+app-server reports a live quota or rate-limit failure, broker-run records that
+as route-health evidence and reports the next selected route.
 For a bounded beta session loop, pipe line-delimited prompts to `codex
 broker-run --stdin --confirm-spend --json`; the command keeps one broker-owned
 app-server session open and reports prompt/turn counts without printing

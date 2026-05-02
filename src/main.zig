@@ -8074,6 +8074,9 @@ const CodexBrokerSmokeResult = struct {
     stderr_bytes: usize = 0,
     refresh_response_sent: bool = false,
     protocol: CodexBrokerProtocolObservation = .{},
+    live_provider_failure: ?types.HttpClassification = null,
+    live_provider_failure_source: ?[]const u8 = null,
+    route_health_recorded: bool = false,
 };
 
 const CodexBroker401HttpObservation = struct {
@@ -9003,7 +9006,7 @@ fn runCodexBrokerRun(
 ) !void {
     if (!codexLiveQaConfirmed(args)) {
         if (args.json) {
-            try writer.writeAll("{\"ok\":false,\"error\":\"confirmation_required\",\"confirmation_required\":true,\"requires\":\"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls\",\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mode\":\"codex_broker_owned_session_live_run\",\"next_commands\":[");
+            try writer.writeAll("{\"ok\":false,\"error\":\"confirmation_required\",\"confirmation_required\":true,\"requires\":\"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls\",\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":true,\"mode\":\"codex_broker_owned_session_live_run\",\"next_commands\":[");
             try writeCommandJson(writer, "oauth-mux codex broker-session-plan --profile <profile> --capability <capability> --json");
             try writer.writeByte(',');
             try writeCommandJson(writer, "oauth-mux codex broker-run --profile <profile> --capability <capability> --prompt <prompt> --confirm-spend --json");
@@ -9131,7 +9134,7 @@ fn runCodexBrokerRun(
     try std.fs.cwd().makePath(run_dir);
     try writeCodexBrokerLiveAppServerFiles(allocator, run_dir, model);
 
-    const result = try runCodexAppServerLiveBrokerRun(
+    var result = try runCodexAppServerLiveBrokerRun(
         allocator,
         selected.?.credentials,
         run_dir,
@@ -9139,11 +9142,43 @@ fn runCodexBrokerRun(
         prompts.items,
     );
 
-    if (args.json) {
-        try writeCodexBrokerRunJson(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result);
-    } else {
-        try writeCodexBrokerRunText(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result);
+    if (result.live_provider_failure) |classification| {
+        recordCodexBrokerRunRouteHealth(&store, selected.?.route, classification);
+        result.route_health_recorded = true;
+        store.persist();
     }
+
+    var after_failure_evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer after_failure_evaluations.deinit();
+    var after_failure_selected_index: ?usize = null;
+    var after_failure_summary: ?CodexBrokerSessionSummary = null;
+    if (result.route_health_recorded) {
+        try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &after_failure_evaluations);
+        after_failure_selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, after_failure_evaluations.items);
+        after_failure_summary = try summarizeCodexBrokerSessionPlan(allocator, parsed.value, after_failure_evaluations.items, after_failure_selected_index);
+    }
+
+    if (args.json) {
+        try writeCodexBrokerRunJson(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, after_failure_summary);
+    } else {
+        try writeCodexBrokerRunText(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index);
+    }
+}
+
+fn recordCodexBrokerRunRouteHealth(
+    store: *health_mod.HealthStore,
+    route: RepairPlanRoute,
+    classification: types.HttpClassification,
+) void {
+    const key = repairPlanRouteHealthKey(route);
+    store.recordHttpClassification(key.slice(), 429, classification);
+    store.recordProbeEvidence(
+        key.slice(),
+        .broker_run_live,
+        health_mod.retryAfterFromClassification(classification),
+        health_mod.hintClassFromClassification(classification),
+        health_mod.decisionFromClassification(classification),
+    );
 }
 
 fn codexBrokerRunModel(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) ![]const u8 {
@@ -9163,7 +9198,20 @@ fn codexBrokerRunOk(result: CodexBrokerSmokeResult, expected_turns: usize) bool 
         result.protocol.turn_completed_count >= expected_turns and
         result.exit_code != null and
         result.exit_code.? == 0 and
+        result.live_provider_failure == null and
         !result.protocol.experimental_api_required_error;
+}
+
+fn codexBrokerRunProviderFailureReason(classification: types.HttpClassification) []const u8 {
+    return switch (classification) {
+        .quota_exhausted => "live_quota_exhausted",
+        .rate_limited => "live_rate_limited",
+        .dead => "live_auth_failed",
+        .degraded => "live_route_degraded",
+        .provider_degraded => "live_provider_degraded",
+        .failure => "live_provider_failure",
+        .success => "live_turn_completed",
+    };
 }
 
 fn codexBrokerRunReason(result: CodexBrokerSmokeResult, expected_turns: usize) []const u8 {
@@ -9188,6 +9236,9 @@ fn writeCodexBrokerRunJson(
     prompts: []const []const u8,
     summary: CodexBrokerSessionSummary,
     result: CodexBrokerSmokeResult,
+    after_failure_evaluations: []const RouteEvaluation,
+    after_failure_selected_index: ?usize,
+    after_failure_summary: ?CodexBrokerSessionSummary,
 ) !void {
     const prepared_fallback = summary.selectable_fallback_routes > 0;
     const prompt_chars_total = codexBrokerPromptsTotalChars(prompts);
@@ -9195,7 +9246,8 @@ fn writeCodexBrokerRunJson(
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"mode\":\"codex_broker_owned_session_live_run\",\"ok\":");
     try writer.writeAll(if (codexBrokerRunOk(result, prompts.len)) "true" else "false");
-    try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":false");
+    try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":");
+    try writer.writeAll(if (result.route_health_recorded) "true" else "false");
     try writer.writeAll(",\"reason\":");
     try std.json.stringify(codexBrokerRunReason(result, prompts.len), .{}, writer);
     try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"proof_status\":");
@@ -9228,10 +9280,69 @@ fn writeCodexBrokerRunJson(
     try writer.writeAll(",\"turns_completed\":");
     try writer.print("{d}", .{result.protocol.turn_completed_count});
     try writer.writeAll(",\"transcript_printed\":false}");
+    try writer.writeAll(",\"live_failure\":");
+    if (result.live_provider_failure) |classification| {
+        try writeCodexBrokerRunFailureJson(writer, classification, result.live_provider_failure_source, result.route_health_recorded);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"route_health_after_failure\":");
+    if (result.route_health_recorded) {
+        var recorded_health: ?health_mod.AccountHealth = null;
+        for (after_failure_evaluations) |evaluation| {
+            if (sameRepairPlanRouteIdentity(route, evaluation.route)) {
+                recorded_health = evaluation.health;
+                break;
+            }
+        }
+        try writer.writeByte('{');
+        try writer.writeAll("\"recorded\":true,\"health_key\":");
+        const key = repairPlanRouteHealthKey(route);
+        try std.json.stringify(key.slice(), .{}, writer);
+        try writer.writeAll(",\"recorded_probe\":");
+        if (recorded_health) |health| try writeProbeEvidenceJson(writer, health) else try writer.writeAll("null");
+        try writer.writeAll(",\"recorded_liveness\":");
+        if (recorded_health) |health| try writeLivenessJson(writer, health.liveness) else try writer.writeAll("null");
+        try writer.writeAll(",\"selected\":");
+        if (after_failure_selected_index) |idx| try writeRouteSelectionJson(writer, after_failure_evaluations[idx].route) else try writer.writeAll("null");
+        if (after_failure_summary) |after_summary| {
+            try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
+                after_summary.routes_total,
+                after_summary.broker_ready_routes,
+                after_summary.selectable_broker_routes,
+                after_summary.selectable_fallback_routes,
+                after_summary.blocked_broker_routes,
+                after_summary.auth_unready_routes,
+            });
+        }
+        try writer.writeByte('}');
+    } else {
+        try writer.writeAll("{\"recorded\":false}");
+    }
     try writer.writeAll(",\"protocol\":");
     try writeCodexBrokerProtocolJson(writer, result);
     try writer.writeAll(",\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false,\"prompt_printed\":false,\"assistant_output_printed\":false}");
     try writer.writeAll("}\n");
+}
+
+fn writeCodexBrokerRunFailureJson(
+    writer: anytype,
+    classification: types.HttpClassification,
+    source: ?[]const u8,
+    route_health_recorded: bool,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"source\":");
+    if (source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"route_health_recorded\":");
+    try writer.writeAll(if (route_health_recorded) "true" else "false");
+    try writer.writeAll(",\"classification\":");
+    try std.json.stringify(codexBrokerRunProviderFailureReason(classification), .{}, writer);
+    try writer.writeAll(",\"retry_after_s\":");
+    if (health_mod.retryAfterFromClassification(classification)) |retry_after| try writer.print("{d}", .{retry_after}) else try writer.writeAll("null");
+    try writer.writeAll(",\"decision\":");
+    try std.json.stringify(@tagName(health_mod.decisionFromClassification(classification)), .{}, writer);
+    try writer.writeByte('}');
 }
 
 fn writeCodexBrokerRunText(
@@ -9243,6 +9354,8 @@ fn writeCodexBrokerRunText(
     prompts: []const []const u8,
     summary: CodexBrokerSessionSummary,
     result: CodexBrokerSmokeResult,
+    after_failure_evaluations: []const RouteEvaluation,
+    after_failure_selected_index: ?usize,
 ) !void {
     const prompt_chars_total = codexBrokerPromptsTotalChars(prompts);
     try writer.writeAll("oauth-mux Codex broker-owned live run\n\n");
@@ -9256,6 +9369,20 @@ fn writeCodexBrokerRunText(
     try writer.print("  prepared fallback: {s}\n", .{if (summary.selectable_fallback_routes > 0) "true" else "false"});
     try writer.print("  ok: {s}\n", .{if (codexBrokerRunOk(result, prompts.len)) "true" else "false"});
     try writer.print("  reason: {s}\n", .{codexBrokerRunReason(result, prompts.len)});
+    if (result.live_provider_failure) |classification| {
+        try writer.print("  live failure: {s}", .{codexBrokerRunProviderFailureReason(classification)});
+        if (health_mod.retryAfterFromClassification(classification)) |retry_after| try writer.print(" retry_after_s={d}", .{retry_after});
+        try writer.print(" route_health_recorded={s}\n", .{if (result.route_health_recorded) "true" else "false"});
+        try writer.writeAll("  selected after failure: ");
+        if (after_failure_selected_index) |idx| {
+            const next_route = after_failure_evaluations[idx].route;
+            try writer.print("{s}:{s}", .{ next_route.provider, next_route.account });
+            if (next_route.capability) |value| try writer.print("#{s}", .{value});
+            try writer.writeByte('\n');
+        } else {
+            try writer.writeAll("none\n");
+        }
+    }
     try writer.print("  turn_completed: {s}\n", .{if (result.protocol.turn_completed) "true" else "false"});
     try writer.writeAll("  redaction: tokens/account ids/raw protocol/prompt/assistant output not printed\n");
 }
@@ -10636,9 +10763,18 @@ fn runCodexAppServerLiveBrokerRun(
     result.stdout_bytes = stdout_buf.items.len;
     result.stderr_bytes = stderr_buf.items.len;
     result.protocol = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+    if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stdout_buf.items)) |classification| {
+        result.live_provider_failure = classification;
+        result.live_provider_failure_source = "app_server_protocol";
+    } else if (provider_schema.classifyCodexAppServerJsonRpc(allocator, stderr_buf.items)) |classification| {
+        result.live_provider_failure = classification;
+        result.live_provider_failure_source = "app_server_stderr";
+    }
     result.ok = codexBrokerRunOk(result, prompts.len);
     if (result.ok) {
         result.reason = if (prompts.len == 1) "live_turn_completed" else "live_session_turns_completed";
+    } else if (result.live_provider_failure) |classification| {
+        result.reason = codexBrokerRunProviderFailureReason(classification);
     } else if (std.mem.eql(u8, result.reason, "unknown")) {
         result.reason = "protocol_incomplete";
     }

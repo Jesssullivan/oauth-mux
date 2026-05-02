@@ -242,7 +242,9 @@ Use
 ... --confirm-spend --json` only after the operator explicitly approves live
 provider spend. It runs one real broker-owned app-server turn from the session
 plan and prints redacted evidence, not prompt text, assistant output, tokens,
-account ids, or raw protocol output.
+account ids, or raw protocol output. If the live run reports quota or rate
+limiting, oauth-mux records route-health evidence and shows the next selected
+route.
 For a bounded beta broker-owned session loop, pipe line-delimited prompts and
 replace `--prompt ...` with `--stdin`. The same spend gate applies, and
 transcript content remains suppressed in normal output.

@@ -788,6 +788,8 @@ cat >"$broker_session_state/health.json" <<'EOF'
 }
 EOF
 broker_session_plan="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-plan --profile codex-max --capability codex-max --json)"
+broker_session_health_before_drill="$tmp/broker-session-health-before-drill.json"
+cp "$broker_session_state/health.json" "$broker_session_health_before_drill"
 expect_contains "$broker_session_plan" '"mode":"codex_broker_owned_session_plan"' "broker-session-plan reports session mode"
 expect_contains "$broker_session_plan" '"spends_provider_calls":false' "broker-session-plan reports no provider spend"
 expect_contains "$broker_session_plan" '"mutates_route_health":false' "broker-session-plan reports no route-health mutation"
@@ -887,9 +889,54 @@ expect_contains "$broker_run_prompt" '"mode":"codex_broker_owned_session_live_ru
 expect_contains "$broker_run_prompt" '"confirmation_required":true' "broker-run requires confirmation"
 expect_contains "$broker_run_prompt" '"requires":"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls"' "broker-run reports spend confirmation gate"
 expect_contains "$broker_run_prompt" '"spends_provider_calls":true' "broker-run confirmation prompt reports provider spend"
+expect_contains "$broker_run_prompt" '"mutates_route_health":true' "broker-run reports possible route-health mutation"
 broker_run_stdin_prompt="$(printf 'one\ntwo\n' | OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-run --profile codex-max --capability codex-max --stdin --json 2>/dev/null || true)"
 expect_contains "$broker_run_stdin_prompt" '"mode":"codex_broker_owned_session_live_run"' "broker-run stdin reports live broker mode"
 expect_contains "$broker_run_stdin_prompt" '"confirmation_required":true' "broker-run stdin requires confirmation before reading live prompts"
+
+printf 'e2e: codex broker-run records live quota failure and reports next route\n'
+mock_codex_app_server_quota="$tmp/mock-codex-app-server-quota"
+cat >"$mock_codex_app_server_quota" <<'EOF'
+#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}'
+      ;;
+    *'"method":"account/login/start"'*)
+      printf '%s\n' '{"id":2,"result":{"type":"chatgptAuthTokens"}}'
+      printf '%s\n' '{"method":"account/login/completed","params":{"success":true}}'
+      printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
+      ;;
+    *'"method":"thread/start"'*)
+      printf '%s\n' '{"id":3,"result":{"thread":{"id":"thread-quota"}}}'
+      ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{"id":4,"result":{}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-quota","status":"failed","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}}}'
+      ;;
+  esac
+done
+EOF
+chmod +x "$mock_codex_app_server_quota"
+broker_run_quota_state="$tmp/broker-run-quota-state"
+mkdir -p "$broker_run_quota_state"
+cp "$broker_session_health_before_drill" "$broker_run_quota_state/health.json"
+broker_run_quota="$(OMUX_CODEX_APP_SERVER="$mock_codex_app_server_quota" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_run_quota_state" "$bin" codex broker-run --profile codex-max --capability codex-max --prompt 'hello' --confirm-spend --json)"
+expect_contains "$broker_run_quota" '"mode":"codex_broker_owned_session_live_run"' "broker-run quota path reports live mode"
+expect_contains "$broker_run_quota" '"ok":false' "broker-run quota path does not report success"
+expect_contains "$broker_run_quota" '"reason":"live_quota_exhausted"' "broker-run quota path classifies quota exhaustion"
+expect_contains "$broker_run_quota" '"mutates_route_health":true' "broker-run quota path mutates route health"
+expect_contains "$broker_run_quota" '"route_health_recorded":true' "broker-run quota path records route health"
+expect_contains "$broker_run_quota" '"health_key":"codex:max-2#codex-max"' "broker-run quota path reports selected route health key"
+expect_contains "$broker_run_quota" '"selected":{"provider":"codex","account":"max-3","capability":"codex-max"' "broker-run quota path reports next selected route"
+expect_contains "$broker_run_quota" '"source":"broker_run_live"' "broker-run quota path persists broker-run evidence source"
+expect_contains "$broker_run_quota" '"tokens_printed":false' "broker-run quota path redaction reports token suppression"
+expect_not_contains "$broker_run_quota" 'acct-session-fallback' "broker-run quota path does not expose selected account id value"
+expect_not_contains "$broker_run_quota" 'acct-session-spare' "broker-run quota path does not expose fallback account id value"
+expect_not_contains "$broker_run_quota" "$broker_jwt" "broker-run quota path does not expose token value"
+expect_not_contains "$broker_run_quota" 'broker-session-refresh-token' "broker-run quota path does not expose refresh token value"
+expect_not_contains "$broker_run_quota" 'broker-session-spare-token' "broker-run quota path does not expose spare refresh token value"
 
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
