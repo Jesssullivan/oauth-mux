@@ -2439,10 +2439,46 @@ const RepairCommandKind = enum {
     codex_login_device,
 };
 
+const RepairActionKind = enum {
+    none,
+    probe_needed,
+    fix_runtime,
+    wait_for_repair,
+    wait_and_retry,
+    wait_for_quota,
+    wait_for_cooldown,
+    scope_or_permission,
+    resource_or_audience,
+    provider_plan,
+    try_next_provider,
+    inspect_provider_schema,
+    reauth,
+    refresh,
+    external_secret_rotation,
+    manual_repair,
+};
+
+const RepairMediation = enum {
+    none,
+    probe,
+    local_runtime,
+    wait,
+    user_handoff,
+    oauth_mux_refresh,
+    external_secret_owner,
+    manual_operator,
+    provider_scope,
+    provider_plan,
+    provider_degraded,
+    schema_inspection,
+};
+
 const RepairAction = struct {
-    kind: []const u8,
+    kind: RepairActionKind,
     severity: []const u8,
     message: []const u8,
+    mediation: RepairMediation = .none,
+    owner: ?types.RepairOwner = null,
     command: RepairCommandKind = .none,
     budget: ?types.ActionBudget = null,
     interactive: bool = false,
@@ -2628,7 +2664,7 @@ fn repairRunEvent(
         .provider = evaluation.route.provider,
         .account = evaluation.route.account,
         .capability = evaluation.route.capability,
-        .action = evaluation.action.kind,
+        .action = @tagName(evaluation.action.kind),
         .outcome = outcome,
         .reason = reason,
         .ok = ok,
@@ -2694,7 +2730,7 @@ fn writeRepairRunConfirmationText(
     try writer.writeAll("  confirmation_required: --confirm-repair\n");
     try writer.print("  route: {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
     if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
-    try writer.print("\n  action: {s}\n", .{evaluation.action.kind});
+    try writer.print("\n  action: {s}\n", .{@tagName(evaluation.action.kind)});
     if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
         defer allocator.free(command);
         try writer.print("  command: {s}\n", .{command});
@@ -2777,7 +2813,7 @@ fn writeRepairRunExecutedText(
     try writer.print("  executed: {s}\n", .{if (ok) "yes" else "failed"});
     try writer.print("  route: {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
     if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
-    try writer.print("\n  action: {s}\n", .{evaluation.action.kind});
+    try writer.print("\n  action: {s}\n", .{@tagName(evaluation.action.kind)});
     if (command) |value| try writer.print("  command: {s}\n", .{value});
 }
 
@@ -2940,7 +2976,7 @@ fn writeRepairPlanText(
         } else {
             try writer.writeAll("unrecorded");
         }
-        try writer.print("\n    action={s} severity={s} {s}\n", .{ action.kind, action.severity, action.message });
+        try writer.print("\n    action={s} severity={s} {s}\n", .{ @tagName(action.kind), action.severity, action.message });
         if (try repairCommandAlloc(allocator, action.command, route)) |command| {
             defer allocator.free(command);
             try writer.print("    command: {s}\n", .{command});
@@ -3043,7 +3079,11 @@ fn writeRepairActionJson(
 ) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"kind\":");
-    try std.json.stringify(action.kind, .{}, writer);
+    try std.json.stringify(@tagName(action.kind), .{}, writer);
+    try writer.writeAll(",\"mediation\":");
+    try std.json.stringify(@tagName(action.mediation), .{}, writer);
+    try writer.writeAll(",\"repair_owner\":");
+    if (action.owner) |owner| try std.json.stringify(@tagName(owner), .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"severity\":");
     try std.json.stringify(action.severity, .{}, writer);
     try writer.writeAll(",\"message\":");
@@ -3260,33 +3300,37 @@ fn repairActionFor(
     switch (runtime) {
         .ready => {},
         .missing_binary => return .{
-            .kind = "fix_runtime",
+            .kind = .fix_runtime,
             .severity = "error",
             .message = "required upstream CLI is missing",
+            .mediation = .local_runtime,
             .budget = .free_local,
         },
         .permission_denied, .unwritable_store, .session_unavailable, .sandbox_blocked => return .{
-            .kind = "fix_runtime",
+            .kind = .fix_runtime,
             .severity = "error",
             .message = "runtime is not ready; fix local permissions, store, session, or sandbox access",
+            .mediation = .local_runtime,
             .budget = .free_local,
         },
         .needs_reauth => return reauthAction(route, def),
         .repair_in_progress => return .{
-            .kind = "wait_for_repair",
+            .kind = .wait_for_repair,
             .severity = "info",
             .message = "repair is already in progress",
+            .mediation = .wait,
             .budget = .free_local,
         },
     }
 
     const current = health orelse return .{
-        .kind = "probe_needed",
+        .kind = .probe_needed,
         .severity = if (budget == .spend_provider) "warning" else "info",
         .message = if (budget == .spend_provider)
             "no health evidence recorded; explicit live probe may spend provider quota"
         else
             "no health evidence recorded; run a probe to classify this route",
+        .mediation = .probe,
         .command = .probe,
         .budget = budget,
     };
@@ -3294,28 +3338,31 @@ fn repairActionFor(
     return switch (current.liveness) {
         .live => |live| switch (live.availability) {
             .available => .{
-                .kind = "none",
+                .kind = .none,
                 .severity = "ok",
                 .message = "route is selectable",
             },
             .rate_limited => |rl| .{
-                .kind = "wait_and_retry",
+                .kind = .wait_and_retry,
                 .severity = "warning",
                 .message = "short rate-limit window is active; try another route until retry",
+                .mediation = .wait,
                 .budget = .free_local,
                 .retry_after_s = rl.retry_after_s,
             },
             .quota_exhausted => |quota| .{
-                .kind = "wait_for_quota",
+                .kind = .wait_for_quota,
                 .severity = "warning",
                 .message = "quota window is exhausted; use another account until reset",
+                .mediation = .wait,
                 .budget = .free_local,
                 .wait_until = quota.window_resets_at,
             },
             .cooldown => |cooldown| .{
-                .kind = "wait_for_cooldown",
+                .kind = .wait_for_cooldown,
                 .severity = "warning",
                 .message = "local cooldown is active",
+                .mediation = .wait,
                 .budget = .free_local,
                 .wait_until = cooldown.until,
             },
@@ -3334,33 +3381,38 @@ fn degradedAction(
     return switch (reason) {
         .step_up_required, .pending_verification, .terms_required => reauthAction(route, def),
         .scope_insufficient => .{
-            .kind = "scope_or_permission",
+            .kind = .scope_or_permission,
             .severity = "warning",
             .message = "credential is valid but lacks required scope or route permission",
+            .mediation = .provider_scope,
             .command = .probe,
             .budget = budget,
         },
         .audience_mismatch => .{
-            .kind = "resource_or_audience",
+            .kind = .resource_or_audience,
             .severity = "warning",
             .message = "credential is valid but was minted for a different resource or audience",
+            .mediation = .provider_scope,
             .command = .probe,
             .budget = budget,
         },
         .tier_insufficient, .subscription_paused => .{
-            .kind = "provider_plan",
+            .kind = .provider_plan,
             .severity = "warning",
             .message = "account is authenticated but not operable for this capability",
+            .mediation = .provider_plan,
         },
         .provider_degraded => .{
-            .kind = "try_next_provider",
+            .kind = .try_next_provider,
             .severity = "warning",
             .message = "provider appears degraded; try another provider route",
+            .mediation = .provider_degraded,
         },
         .schema_invalid, .unknown_4xx => .{
-            .kind = "inspect_provider_schema",
+            .kind = .inspect_provider_schema,
             .severity = "warning",
             .message = "provider returned a route/schema error; inspect provider definition and probe evidence",
+            .mediation = .schema_inspection,
             .command = .probe,
             .budget = budget,
         },
@@ -3370,30 +3422,38 @@ fn degradedAction(
 fn reauthAction(route: RepairPlanRoute, def: provider_schema.ProviderDefinition) RepairAction {
     return switch (def.repair.owner) {
         .upstream_cli_login => .{
-            .kind = "reauth",
+            .kind = .reauth,
             .severity = "error",
             .message = "reauth is owned by the upstream CLI",
+            .mediation = .user_handoff,
+            .owner = .upstream_cli_login,
             .command = if (std.mem.eql(u8, route.provider, "codex")) .codex_login_device else .none,
             .budget = .interactive,
             .interactive = true,
             .mutating = true,
         },
         .oauth_mux_refresh => .{
-            .kind = "refresh",
+            .kind = .refresh,
             .severity = "warning",
             .message = "oauth-mux owns refresh for this provider; automatic repair is not enabled by repair-plan",
+            .mediation = .oauth_mux_refresh,
+            .owner = .oauth_mux_refresh,
             .budget = .mutating,
             .mutating = true,
         },
         .external_secret_owner => .{
-            .kind = "external_secret_rotation",
+            .kind = .external_secret_rotation,
             .severity = "error",
             .message = "credential repair is owned by an external secret backend",
+            .mediation = .external_secret_owner,
+            .owner = .external_secret_owner,
         },
         .manual_only => .{
-            .kind = "manual_repair",
+            .kind = .manual_repair,
             .severity = "error",
             .message = "manual operator repair is required for this provider",
+            .mediation = .manual_operator,
+            .owner = .manual_only,
         },
     };
 }
@@ -3418,7 +3478,7 @@ fn runtimeDiagnosticCommandAlloc(
     action: RepairAction,
     route: RepairPlanRoute,
 ) !?[]const u8 {
-    if (!std.mem.eql(u8, action.kind, "fix_runtime")) return null;
+    if (action.kind != .fix_runtime) return null;
     return if (route.capability) |capability|
         try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ route.provider, route.account, capability })
     else
@@ -3812,7 +3872,7 @@ fn executeDaemonRepairCommand(
             try executions.append(.{
                 .route = evaluation.route,
                 .phase = "repair",
-                .action = evaluation.action.kind,
+                .action = @tagName(evaluation.action.kind),
                 .admitted = true,
                 .executed = false,
                 .ok = false,
@@ -3820,7 +3880,7 @@ fn executeDaemonRepairCommand(
                 .budget = decision.budget,
                 .command = evaluation.action.command,
             });
-            recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, evaluation.action.kind, "repair_in_progress", "lock_busy", false, false, false);
+            recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, @tagName(evaluation.action.kind), "repair_in_progress", "lock_busy", false, false, false);
             return false;
         },
         else => return e,
@@ -3831,7 +3891,7 @@ fn executeDaemonRepairCommand(
     try executions.append(.{
         .route = evaluation.route,
         .phase = "repair",
-        .action = evaluation.action.kind,
+        .action = @tagName(evaluation.action.kind),
         .admitted = true,
         .executed = true,
         .ok = ok,
@@ -3839,7 +3899,7 @@ fn executeDaemonRepairCommand(
         .budget = decision.budget,
         .command = evaluation.action.command,
     });
-    recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, evaluation.action.kind, if (ok) "executed" else "failed", if (ok) "command_success" else "command_failed", ok, true, false);
+    recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, @tagName(evaluation.action.kind), if (ok) "executed" else "failed", if (ok) "command_success" else "command_failed", ok, true, false);
     return ok;
 }
 
@@ -3860,7 +3920,7 @@ fn queueDaemonHandoff(
         try executions.append(.{
             .route = evaluation.route,
             .phase = "handoff",
-            .action = evaluation.action.kind,
+            .action = @tagName(evaluation.action.kind),
             .admitted = decision.admitted,
             .executed = false,
             .ok = false,
@@ -3876,7 +3936,7 @@ fn queueDaemonHandoff(
     try executions.append(.{
         .route = evaluation.route,
         .phase = "handoff",
-        .action = evaluation.action.kind,
+        .action = @tagName(evaluation.action.kind),
         .admitted = decision.admitted,
         .executed = false,
         .ok = false,
@@ -3886,7 +3946,7 @@ fn queueDaemonHandoff(
         .budget = decision.budget,
         .command = evaluation.action.command,
     });
-    recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, evaluation.action.kind, "handoff_queued", "interactive_user_handoff", false, false, true);
+    recordDaemonActionEvent(allocator, args, evaluation, evaluation.action.command, @tagName(evaluation.action.kind), "handoff_queued", "interactive_user_handoff", false, false, true);
 }
 
 fn recordDaemonActionEvent(
@@ -4014,7 +4074,7 @@ fn writeRouteText(
         }
         try writer.print(" reason={s}", .{evaluation.skip_reason});
         if (args.action == .explain) {
-            try writer.print(" action={s}", .{evaluation.action.kind});
+            try writer.print(" action={s}", .{@tagName(evaluation.action.kind)});
             if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
                 defer allocator.free(command);
                 try writer.print(" command={s}", .{command});
@@ -4477,7 +4537,7 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
         const admission = daemonRepairAdmission(policy, evaluation.action);
         return .{
             .phase = "repair",
-            .action = evaluation.action.kind,
+            .action = @tagName(evaluation.action.kind),
             .admitted = admission.admitted,
             .reason = admission.reason,
             .budget = admission.budget,
@@ -4490,7 +4550,7 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
     const admission = daemonRepairAdmission(policy, evaluation.action);
     return .{
         .phase = "observe",
-        .action = evaluation.action.kind,
+        .action = @tagName(evaluation.action.kind),
         .admitted = admission.admitted,
         .reason = if (admission.admitted) "observe_only" else admission.reason,
         .budget = admission.budget,
@@ -4508,7 +4568,7 @@ fn daemonTickSchedule(action: RepairAction, observed_at: i64) DaemonTickSchedule
         .next_tick_after = wait_until,
         .reason = "wait_until",
     };
-    if (std.mem.eql(u8, action.kind, "wait_for_repair")) return .{
+    if (action.kind == .wait_for_repair) return .{
         .next_tick_after = observed_at + daemon_repair_poll_s,
         .reason = "repair_poll",
     };
@@ -4520,23 +4580,21 @@ fn daemonTickSchedule(action: RepairAction, observed_at: i64) DaemonTickSchedule
         .next_tick_after = observed_at + daemon_handoff_recheck_s,
         .reason = "handoff_recheck",
     };
-    if (std.mem.eql(u8, action.kind, "fix_runtime")) return .{
+    if (action.kind == .fix_runtime) return .{
         .next_tick_after = observed_at + daemon_runtime_recheck_s,
         .reason = "runtime_recheck",
     };
-    if (std.mem.eql(u8, action.kind, "wait_for_quota")) return .{
+    if (action.kind == .wait_for_quota) return .{
         .next_tick_after = observed_at + daemon_quota_unknown_recheck_s,
         .reason = "quota_poll",
     };
-    if (std.mem.eql(u8, action.kind, "provider_plan") or
-        std.mem.eql(u8, action.kind, "try_next_provider"))
-    {
+    if (action.kind == .provider_plan or action.kind == .try_next_provider) {
         return .{
             .next_tick_after = observed_at + daemon_provider_plan_recheck_s,
             .reason = "provider_recheck",
         };
     }
-    if (std.mem.eql(u8, action.kind, "none")) return .{ .reason = "no_action" };
+    if (action.kind == .none) return .{ .reason = "no_action" };
     return .{};
 }
 
@@ -8367,7 +8425,8 @@ test "repairActionFor warns before spending provider quota without health eviden
         .spend_provider,
     );
 
-    try std.testing.expectEqualStrings("probe_needed", action.kind);
+    try std.testing.expectEqual(RepairActionKind.probe_needed, action.kind);
+    try std.testing.expectEqual(RepairMediation.probe, action.mediation);
     try std.testing.expectEqualStrings("warning", action.severity);
     try std.testing.expect(action.command == .probe);
     try std.testing.expectEqual(types.ActionBudget.spend_provider, action.budget.?);
@@ -8386,9 +8445,10 @@ test "daemon admission policy refuses provider spend by default" {
     try std.testing.expectEqualStrings("allowed_by_policy", free_command.reason);
 
     const probe_action = RepairAction{
-        .kind = "probe_needed",
+        .kind = .probe_needed,
         .severity = "warning",
         .message = "probe",
+        .mediation = .probe,
         .command = .probe,
         .budget = .spend_provider,
     };
@@ -8397,9 +8457,11 @@ test "daemon admission policy refuses provider spend by default" {
     try std.testing.expectEqualStrings("no_repair_action", probe_repair.reason);
 
     const reauth = RepairAction{
-        .kind = "reauth",
+        .kind = .reauth,
         .severity = "error",
         .message = "reauth",
+        .mediation = .user_handoff,
+        .owner = .upstream_cli_login,
         .budget = .interactive,
         .interactive = true,
         .mutating = true,
@@ -8426,9 +8488,10 @@ test "daemon tick refuses spend provider probe by default" {
         .health = null,
         .budget = .spend_provider,
         .action = .{
-            .kind = "probe_needed",
+            .kind = .probe_needed,
             .severity = "warning",
             .message = "probe would spend",
+            .mediation = .probe,
             .command = .probe,
             .budget = .spend_provider,
         },
@@ -8455,7 +8518,7 @@ test "daemon tick reports selectable route as no-op" {
         .health = health,
         .budget = .spend_provider,
         .action = .{
-            .kind = "none",
+            .kind = .none,
             .severity = "ok",
             .message = "route is selectable",
         },
@@ -8499,9 +8562,10 @@ test "daemon tick schedules runtime repair recheck" {
         .health = null,
         .budget = .free_local,
         .action = .{
-            .kind = "fix_runtime",
+            .kind = .fix_runtime,
             .severity = "error",
             .message = "runtime is not ready",
+            .mediation = .local_runtime,
             .budget = .free_local,
         },
         .selectable = false,
@@ -8523,9 +8587,10 @@ test "daemon tick stats carries earliest schedule reason" {
             .health = null,
             .budget = .free_local,
             .action = .{
-                .kind = "wait_for_quota",
+                .kind = .wait_for_quota,
                 .severity = "warning",
                 .message = "quota exhausted without known reset",
+                .mediation = .wait,
                 .budget = .free_local,
             },
             .selectable = false,
@@ -8537,9 +8602,10 @@ test "daemon tick stats carries earliest schedule reason" {
             .health = null,
             .budget = .free_local,
             .action = .{
-                .kind = "fix_runtime",
+                .kind = .fix_runtime,
                 .severity = "error",
                 .message = "runtime is not ready",
+                .mediation = .local_runtime,
                 .budget = .free_local,
             },
             .selectable = false,
@@ -8575,7 +8641,8 @@ test "repairActionFor classifies quota exhaustion as wait action" {
         .spend_provider,
     );
 
-    try std.testing.expectEqualStrings("wait_for_quota", action.kind);
+    try std.testing.expectEqual(RepairActionKind.wait_for_quota, action.kind);
+    try std.testing.expectEqual(RepairMediation.wait, action.mediation);
     try std.testing.expectEqualStrings("warning", action.severity);
     try std.testing.expectEqual(@as(?i64, 1_777_777), action.wait_until);
     try std.testing.expect(action.command == .none);
@@ -8595,9 +8662,42 @@ test "writeRepairActionJson emits codex reauth command without running it" {
 
     try writeRepairActionJson(buf.writer(), std.testing.allocator, action, route);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mediation\":\"user_handoff\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+}
+
+test "writeRepairActionJson emits claude upstream handoff without codex command" {
+    const route = RepairPlanRoute{ .provider = "claude", .account = "pro", .capability = "auth-status" };
+    const action = reauthAction(route, provider_schema.claude_def);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeRepairActionJson(buf.writer(), std.testing.allocator, action, route);
+    try std.testing.expectEqual(RepairActionKind.reauth, action.kind);
+    try std.testing.expectEqual(RepairMediation.user_handoff, action.mediation);
+    try std.testing.expectEqual(types.RepairOwner.upstream_cli_login, action.owner.?);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":null") != null);
+}
+
+test "figma scope degradation carries provider-scope mediation" {
+    const route = RepairPlanRoute{ .provider = "figma", .account = "team", .capability = "file-metadata" };
+    const action = degradedAction(route, provider_schema.figma_def, .scope_insufficient, .free_command);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeRepairActionJson(buf.writer(), std.testing.allocator, action, route);
+    try std.testing.expectEqual(RepairActionKind.scope_or_permission, action.kind);
+    try std.testing.expectEqual(RepairMediation.provider_scope, action.mediation);
+    try std.testing.expect(action.owner == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mediation\":\"provider_scope\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux probe --provider figma --account team --capability file-metadata --json\"") != null);
 }
 
 test "writeRepairActionJson emits runtime diagnostic command without executable repair" {
@@ -8609,6 +8709,7 @@ test "writeRepairActionJson emits runtime diagnostic command without executable 
 
     try writeRepairActionJson(buf.writer(), std.testing.allocator, action, route);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"fix_runtime\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mediation\":\"local_runtime\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"diagnostic_command\":\"oauth-mux doctor runtime --provider codex --account max-1 --capability codex-max --json\"") != null);
 }
@@ -8631,7 +8732,7 @@ test "repairRunCandidate skips repair when profile already has selectable route"
             .runtime = .ready,
             .health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .available } } },
             .budget = .spend_provider,
-            .action = .{ .kind = "none", .severity = "ok", .message = "route is selectable" },
+            .action = .{ .kind = .none, .severity = "ok", .message = "route is selectable" },
             .selectable = true,
             .skip_reason = "available",
         },
@@ -8829,7 +8930,7 @@ test "route explain treats unrecorded health as probe needed" {
 
     try std.testing.expect(firstSelectableRoute(evaluations.items) == null);
     try std.testing.expectEqualStrings("unrecorded", evaluations.items[0].skip_reason);
-    try std.testing.expectEqualStrings("probe_needed", evaluations.items[0].action.kind);
+    try std.testing.expectEqual(RepairActionKind.probe_needed, evaluations.items[0].action.kind);
 }
 
 test "shellQuoteAlloc protects config paths with spaces" {
