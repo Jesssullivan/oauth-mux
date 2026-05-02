@@ -1202,6 +1202,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  selected Codex route secret and send it only to a broker-owned
         \\  Codex app-server child process; they do not print token or
         \\  account-id values.
+        \\  broker-run may persist live quota/rate-limit evidence to route health.
         \\  broker-fallback-drill mutates only oauth-mux route health; it does
         \\  not spend provider calls or print secrets.
         \\  live-qa, revalidate-exhausted, and broker-run require --confirm-spend or

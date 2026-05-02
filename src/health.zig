@@ -23,6 +23,7 @@ pub const AccountHealth = struct {
 pub const ProbeEvidenceSource = enum {
     credential_validation,
     capability_probe,
+    broker_run_live,
     http_status,
 };
 

@@ -1009,6 +1009,77 @@ pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?
     return null;
 }
 
+pub fn classifyCodexAppServerJsonRpc(allocator: std.mem.Allocator, jsonl: []const u8) ?types.HttpClassification {
+    var lines = std.mem.splitScalar(u8, jsonl, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch {
+            if (classifyCodexPlainErrorMessage(trimmed)) |classification| return classification;
+            continue;
+        };
+        defer parsed.deinit();
+
+        if (resolveJsonString(parsed.value, "method")) |method| {
+            if (std.mem.eql(u8, method, "turn/completed")) {
+                if (resolveJsonString(parsed.value, "params.turn.status")) |status| {
+                    if (std.mem.eql(u8, status, "failed")) {
+                        if (classifyCodexAppServerErrorValue(allocator, parsed.value)) |classification| return classification;
+                    }
+                }
+            } else if (std.mem.eql(u8, method, "error")) {
+                if (classifyCodexAppServerErrorValue(allocator, parsed.value)) |classification| return classification;
+            }
+        }
+
+        if (classifyCodexAppServerErrorValue(allocator, parsed.value)) |classification| return classification;
+    }
+
+    return null;
+}
+
+fn classifyCodexAppServerErrorValue(allocator: std.mem.Allocator, value: std.json.Value) ?types.HttpClassification {
+    if (resolveJsonString(value, "params.turn.error.type")) |error_type| {
+        if (std.mem.eql(u8, error_type, "usage_limit_reached")) {
+            return .{ .quota_exhausted = .{
+                .retry_after_s = boundedRetryAfter(
+                    resolveJsonInt(value, "params.turn.error.resets_in_seconds") orelse
+                        resolveJsonInt(value, "params.turn.error.retry_after_s"),
+                ) orelse 86_400,
+            } };
+        }
+    }
+    if (resolveJsonString(value, "params.error.type")) |error_type| {
+        if (std.mem.eql(u8, error_type, "usage_limit_reached")) {
+            return .{ .quota_exhausted = .{
+                .retry_after_s = boundedRetryAfter(
+                    resolveJsonInt(value, "params.error.resets_in_seconds") orelse
+                        resolveJsonInt(value, "params.error.retry_after_s"),
+                ) orelse 86_400,
+            } };
+        }
+    }
+
+    if (resolveJsonString(value, "params.turn.error.message")) |message| {
+        return classifyCodexErrorMessage(allocator, message);
+    }
+    if (resolveJsonString(value, "params.error.message")) |message| {
+        return classifyCodexErrorMessage(allocator, message);
+    }
+    if (resolveJsonString(value, "error.message")) |message| {
+        return classifyCodexErrorMessage(allocator, message);
+    }
+
+    return classifyCodexErrorValue(value);
+}
+
+fn boundedRetryAfter(value: ?i64) ?u32 {
+    const seconds = value orelse return null;
+    if (seconds < 0) return null;
+    return @intCast(@min(seconds, std.math.maxInt(u32)));
+}
+
 fn classifyCodexErrorMessage(allocator: std.mem.Allocator, message: []const u8) types.HttpClassification {
     if (classifyCodexPlainErrorMessage(message)) |classification| return classification;
 
@@ -1920,6 +1991,26 @@ test "classifyCodexExecJsonl usage limit without reset as quota exhaustion" {
     const classification = classifyCodexExecJsonl(std.testing.allocator, jsonl).?;
     switch (classification) {
         .quota_exhausted => |quota| try std.testing.expectEqual(@as(u32, 86_400), quota.retry_after_s),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "classifyCodexAppServerJsonRpc ignores successful turn completion" {
+    const jsonl =
+        \\{"method":"turn/completed","params":{"turn":{"id":"turn-ok","status":"completed"}}}
+        \\
+    ;
+    try std.testing.expect(classifyCodexAppServerJsonRpc(std.testing.allocator, jsonl) == null);
+}
+
+test "classifyCodexAppServerJsonRpc usage limit as quota exhaustion" {
+    const jsonl =
+        \\{"method":"turn/completed","params":{"turn":{"id":"turn-quota","status":"failed","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}}}
+        \\
+    ;
+    const classification = classifyCodexAppServerJsonRpc(std.testing.allocator, jsonl).?;
+    switch (classification) {
+        .quota_exhausted => |quota| try std.testing.expectEqual(@as(u32, 7200), quota.retry_after_s),
         else => return error.TestUnexpectedResult,
     }
 }
