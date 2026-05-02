@@ -7519,6 +7519,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .broker_plan => try runCodexBrokerPlan(allocator, writer, args),
         .broker_smoke => try runCodexBrokerSmoke(allocator, writer, args, .login),
         .broker_refresh_smoke => try runCodexBrokerSmoke(allocator, writer, args, .refresh),
+        .broker_401_smoke => try runCodexBroker401Smoke(allocator, writer, args),
     }
 }
 
@@ -7700,6 +7701,9 @@ const CodexBrokerProtocolObservation = struct {
     login_completed: bool = false,
     account_updated: bool = false,
     account_updates: usize = 0,
+    thread_started: bool = false,
+    turn_started: bool = false,
+    turn_completed: bool = false,
     refresh_request_seen: bool = false,
     refresh_reason_unauthorized: bool = false,
     experimental_api_required_error: bool = false,
@@ -7716,6 +7720,26 @@ const CodexBrokerSmokeResult = struct {
     stderr_bytes: usize = 0,
     refresh_response_sent: bool = false,
     protocol: CodexBrokerProtocolObservation = .{},
+};
+
+const CodexBroker401HttpObservation = struct {
+    request_count: usize = 0,
+    responses_request_count: usize = 0,
+    pre_turn_responses_count: usize = 0,
+    turn_request_seen: bool = false,
+    models_request_seen: bool = false,
+    backend_request_seen: bool = false,
+    unauthorized_response_sent: bool = false,
+    sse_response_sent: bool = false,
+    initial_authorization_seen: bool = false,
+    fallback_authorization_seen: bool = false,
+    retried_with_fallback: bool = false,
+    server_error: ?[]const u8 = null,
+};
+
+const CodexBroker401SmokeResult = struct {
+    broker: CodexBrokerSmokeResult = .{},
+    http: CodexBroker401HttpObservation = .{},
 };
 
 const CodexBrokerRouteCredentials = struct {
@@ -7976,6 +8000,230 @@ fn runCodexBrokerSmoke(
     }
 }
 
+fn runCodexBroker401Smoke(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.CodexArgs,
+) !void {
+    if (!args.confirm_broker) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"confirmation_required\":true,\"requires\":\"--confirm-broker\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mode\":\"codex_app_server_401_broker_smoke\",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux codex broker-plan --profile <profile> --capability <capability> --json");
+            try writer.writeByte(',');
+            try writeCommandJson(writer, "oauth-mux codex broker-401-smoke --profile <profile> --capability <capability> --confirm-broker --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex app-server 401 broker smoke\n\n");
+            try writer.writeAll("  confirmation required: --confirm-broker\n");
+            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local no-spend Responses mock and verifies 401 retry fallback\n");
+        }
+        return;
+    }
+
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var selected: ?CodexBrokerRouteCredentials = null;
+    defer if (selected) |*value| value.deinit(allocator);
+    var refresh_selected: ?CodexBrokerRouteCredentials = null;
+    defer if (refresh_selected) |*value| value.deinit(allocator);
+    for (routes.items) |route| {
+        const plan = try inspectCodexBrokerRoute(allocator, parsed.value, route);
+        if (!plan.can_supply) continue;
+        const credentials = loadCodexBrokerCredentialsForRoute(allocator, parsed.value, route) catch continue;
+        if (selected == null) {
+            selected = .{
+                .route = route,
+                .credentials = credentials,
+            };
+            continue;
+        }
+        if (!sameRepairPlanRouteIdentity(selected.?.route, route)) {
+            refresh_selected = .{
+                .route = route,
+                .credentials = credentials,
+            };
+            break;
+        }
+        credentials.deinit(allocator);
+    }
+
+    if (selected == null or refresh_selected == null) {
+        const reason = if (selected == null) "no_broker_ready_route" else "no_distinct_fallback_broker_ready_route";
+        if (args.json) {
+            try writer.writeAll("{\"version\":");
+            try std.json.stringify(cli.version, .{}, writer);
+            try writer.writeAll(",\"mode\":\"codex_app_server_401_broker_smoke\",\"ok\":false,\"confirmed\":true,\"reason\":");
+            try std.json.stringify(reason, .{}, writer);
+            try writer.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"routes_total\":");
+            try writer.print("{d}", .{routes.items.len});
+            try writer.writeAll(",\"next_commands\":[");
+            try writeCommandJson(writer, "oauth-mux codex broker-plan --profile <profile> --capability <capability> --json");
+            try writer.writeAll("]}\n");
+        } else {
+            try writer.writeAll("oauth-mux Codex app-server 401 broker smoke\n\n");
+            try writer.print("  {s}\n", .{reason});
+            try writer.writeAll("  next: oauth-mux codex broker-plan --profile <profile> --capability <capability> --json\n");
+        }
+        return;
+    }
+
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+    const run_dir = try std.fmt.allocPrint(allocator, "{s}/codex-broker-401-smoke-{d}", .{ state_dir, std.time.milliTimestamp() });
+    defer allocator.free(run_dir);
+    try std.fs.cwd().makePath(run_dir);
+
+    var mock_server = try startCodexBroker401MockServer(allocator, selected.?.credentials.access_token, refresh_selected.?.credentials.access_token);
+    defer mock_server.destroy();
+
+    const mock_origin = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{mock_server.port});
+    defer allocator.free(mock_origin);
+    const base_url = try std.fmt.allocPrint(allocator, "{s}/v1", .{mock_origin});
+    defer allocator.free(base_url);
+    const chatgpt_base_url = try std.fmt.allocPrint(allocator, "{s}/backend-api", .{mock_origin});
+    defer allocator.free(chatgpt_base_url);
+    try writeCodexBroker401AppServerFiles(allocator, run_dir, base_url, chatgpt_base_url);
+
+    var result = CodexBroker401SmokeResult{
+        .broker = try runCodexAppServer401BrokerSmoke(
+            allocator,
+            selected.?.credentials,
+            refresh_selected.?.credentials,
+            run_dir,
+        ),
+    };
+    result.http = mock_server.finish();
+
+    if (args.json) {
+        try writeCodexBroker401SmokeJson(writer, selected.?.route, refresh_selected.?.route, capability, result);
+    } else {
+        try writeCodexBroker401SmokeText(writer, selected.?.route, refresh_selected.?.route, capability, result);
+    }
+}
+
+fn codexBroker401SmokeOk(result: CodexBroker401SmokeResult) bool {
+    return result.broker.protocol.initialized and
+        result.broker.protocol.login_response and
+        result.broker.protocol.login_completed and
+        result.broker.protocol.account_updated and
+        result.broker.protocol.thread_started and
+        result.broker.protocol.turn_started and
+        result.broker.protocol.refresh_request_seen and
+        result.broker.protocol.refresh_reason_unauthorized and
+        result.broker.refresh_response_sent and
+        result.broker.protocol.turn_completed and
+        result.http.retried_with_fallback and
+        result.broker.exit_code != null and
+        result.broker.exit_code.? == 0 and
+        !result.broker.protocol.experimental_api_required_error;
+}
+
+fn codexBroker401SmokeReason(result: CodexBroker401SmokeResult) []const u8 {
+    if (codexBroker401SmokeOk(result)) return "protocol_401_retry_completed";
+    if (result.http.server_error) |value| return value;
+    if (!result.http.turn_request_seen) return "turn_request_not_seen";
+    if (!result.http.initial_authorization_seen) return "initial_authorization_not_seen";
+    if (!result.http.fallback_authorization_seen) return "fallback_authorization_not_seen";
+    if (!result.http.retried_with_fallback) return "retry_did_not_use_fallback";
+    return result.broker.reason;
+}
+
+fn writeCodexBroker401SmokeJson(
+    writer: anytype,
+    route: RepairPlanRoute,
+    refresh_route: RepairPlanRoute,
+    capability: ?[]const u8,
+    result: CodexBroker401SmokeResult,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_app_server_401_broker_smoke\",\"ok\":");
+    try writer.writeAll(if (codexBroker401SmokeOk(result)) "true" else "false");
+    try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":false,\"mutates_user_config\":false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(codexBroker401SmokeReason(result), .{}, writer);
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"proof_status\":\"local_401_retry_smoke\",\"current_process_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"selected\":");
+    try writeRouteSelectionJson(writer, route);
+    try writer.writeAll(",\"refresh_selected\":");
+    try writeRouteSelectionJson(writer, refresh_route);
+    try writer.writeAll(",\"refresh_route_is_fallback\":");
+    try writer.writeAll(if (!sameRepairPlanRouteIdentity(route, refresh_route)) "true" else "false");
+    try writer.writeAll(",\"capability\":");
+    if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"app_server\":{\"transport\":\"stdio\",\"requires_experimental_api\":true,\"login_method\":\"account/login/start.chatgptAuthTokens\",\"refresh_method\":\"account/chatgptAuthTokens/refresh\",\"mock_provider\":\"local_responses_401_then_sse\"}");
+    try writer.writeAll(",\"protocol\":");
+    try writeCodexBrokerProtocolJson(writer, result.broker);
+    try writer.writeAll(",\"http_mock\":");
+    try writeCodexBroker401HttpJson(writer, result.http);
+    try writer.writeAll(",\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false}");
+    try writer.writeAll("}\n");
+}
+
+fn writeCodexBroker401HttpJson(writer: anytype, http: CodexBroker401HttpObservation) !void {
+    try writer.writeByte('{');
+    try writer.print("\"request_count\":{d}", .{http.request_count});
+    try writer.print(",\"responses_request_count\":{d}", .{http.responses_request_count});
+    try writer.print(",\"pre_turn_responses_count\":{d}", .{http.pre_turn_responses_count});
+    try writer.writeAll(",\"turn_request_seen\":");
+    try writer.writeAll(if (http.turn_request_seen) "true" else "false");
+    try writer.writeAll(",\"models_request_seen\":");
+    try writer.writeAll(if (http.models_request_seen) "true" else "false");
+    try writer.writeAll(",\"backend_request_seen\":");
+    try writer.writeAll(if (http.backend_request_seen) "true" else "false");
+    try writer.writeAll(",\"unauthorized_response_sent\":");
+    try writer.writeAll(if (http.unauthorized_response_sent) "true" else "false");
+    try writer.writeAll(",\"sse_response_sent\":");
+    try writer.writeAll(if (http.sse_response_sent) "true" else "false");
+    try writer.writeAll(",\"initial_authorization_seen\":");
+    try writer.writeAll(if (http.initial_authorization_seen) "true" else "false");
+    try writer.writeAll(",\"fallback_authorization_seen\":");
+    try writer.writeAll(if (http.fallback_authorization_seen) "true" else "false");
+    try writer.writeAll(",\"retried_with_fallback\":");
+    try writer.writeAll(if (http.retried_with_fallback) "true" else "false");
+    try writer.writeAll(",\"server_error\":");
+    if (http.server_error) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeByte('}');
+}
+
+fn writeCodexBroker401SmokeText(
+    writer: anytype,
+    route: RepairPlanRoute,
+    refresh_route: RepairPlanRoute,
+    capability: ?[]const u8,
+    result: CodexBroker401SmokeResult,
+) !void {
+    try writer.writeAll("oauth-mux Codex app-server 401 broker smoke\n\n");
+    try writer.print("  route: {s}:{s}", .{ route.provider, route.account });
+    if (capability) |value| try writer.print("#{s}", .{value});
+    try writer.writeByte('\n');
+    try writer.print("  refresh route: {s}:{s}", .{ refresh_route.provider, refresh_route.account });
+    if (refresh_route.capability) |route_capability| try writer.print("#{s}", .{route_capability});
+    try writer.print(" fallback={s}\n", .{if (sameRepairPlanRouteIdentity(route, refresh_route)) "false" else "true"});
+    try writer.print("  ok: {s}\n", .{if (codexBroker401SmokeOk(result)) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{codexBroker401SmokeReason(result)});
+    try writer.print("  refresh_request_seen: {s}\n", .{if (result.broker.protocol.refresh_request_seen) "true" else "false"});
+    try writer.print("  refresh_response_sent: {s}\n", .{if (result.broker.refresh_response_sent) "true" else "false"});
+    try writer.print("  turn_completed: {s}\n", .{if (result.broker.protocol.turn_completed) "true" else "false"});
+    try writer.print("  retried_with_fallback: {s}\n", .{if (result.http.retried_with_fallback) "true" else "false"});
+    try writer.writeAll("  redaction: tokens/account ids/raw protocol not printed\n");
+}
+
 fn writeCodexBrokerSmokeJson(
     writer: anytype,
     route: RepairPlanRoute,
@@ -8030,6 +8278,12 @@ fn writeCodexBrokerProtocolJson(writer: anytype, result: CodexBrokerSmokeResult)
     try writer.writeAll(",\"account_updated\":");
     try writer.writeAll(if (result.protocol.account_updated) "true" else "false");
     try writer.print(",\"account_updates\":{d}", .{result.protocol.account_updates});
+    try writer.writeAll(",\"thread_started\":");
+    try writer.writeAll(if (result.protocol.thread_started) "true" else "false");
+    try writer.writeAll(",\"turn_started\":");
+    try writer.writeAll(if (result.protocol.turn_started) "true" else "false");
+    try writer.writeAll(",\"turn_completed\":");
+    try writer.writeAll(if (result.protocol.turn_completed) "true" else "false");
     try writer.writeAll(",\"refresh_request_seen\":");
     try writer.writeAll(if (result.protocol.refresh_request_seen) "true" else "false");
     try writer.writeAll(",\"refresh_reason_unauthorized\":");
@@ -8246,6 +8500,480 @@ fn runCodexAppServerBrokerSmoke(
     return result;
 }
 
+fn runCodexAppServer401BrokerSmoke(
+    allocator: std.mem.Allocator,
+    login_credentials: CodexBrokerCredentials,
+    refresh_credentials: CodexBrokerCredentials,
+    codex_home: []const u8,
+) !CodexBrokerSmokeResult {
+    const app_server_bin = std.process.getEnvVarOwned(allocator, "OMUX_CODEX_APP_SERVER") catch try allocator.dupe(u8, "codex");
+    defer allocator.free(app_server_bin);
+
+    var initialize_request = std.ArrayList(u8).init(allocator);
+    defer initialize_request.deinit();
+    try writeCodexAppServerInitializeRequest(initialize_request.writer());
+    try initialize_request.append('\n');
+
+    var login_request = std.ArrayList(u8).init(allocator);
+    defer login_request.deinit();
+    try writeCodexAppServerLoginRequest(login_request.writer(), login_credentials);
+    try login_request.append('\n');
+
+    var thread_request = std.ArrayList(u8).init(allocator);
+    defer thread_request.deinit();
+    try writeCodexAppServerThreadStartRequest(thread_request.writer());
+    try thread_request.append('\n');
+
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("CODEX_HOME", codex_home);
+    env_map.remove("OPENAI_API_KEY");
+
+    const argv = [_][]const u8{ app_server_bin, "app-server", "--listen", "stdio://" };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.env_map = &env_map;
+
+    child.spawn() catch |e| {
+        return .{ .ok = false, .reason = @errorName(e), .spawned = false };
+    };
+
+    var result = CodexBrokerSmokeResult{ .spawned = true };
+    var stdout_buf = std.ArrayListUnmanaged(u8){};
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayListUnmanaged(u8){};
+    defer stderr_buf.deinit(allocator);
+    var turn_request_sent = false;
+    var thread_request_sent = false;
+    var login_sent = false;
+
+    if (child.stdin) |stdin_file| {
+        try stdin_file.writeAll(initialize_request.items);
+    }
+
+    var poller = std.io.poll(allocator, enum { stdout, stderr }, .{
+        .stdout = child.stdout.?,
+        .stderr = child.stderr.?,
+    });
+    defer poller.deinit();
+
+    var term: ?std.process.Child.Term = null;
+    const max_output_bytes: usize = 1024 * 1024;
+    const deadline_ns = std.time.nanoTimestamp() + (20 * std.time.ns_per_s);
+    while (true) {
+        if (poller.fifo(.stdout).readableLength() > max_output_bytes or
+            poller.fifo(.stderr).readableLength() > max_output_bytes)
+        {
+            term = child.kill() catch null;
+            result.reason = "output_too_large";
+            break;
+        }
+
+        const now = std.time.nanoTimestamp();
+        if (now >= deadline_ns) {
+            try appendCodexBrokerPollFifo(allocator, &stdout_buf, poller.fifo(.stdout));
+            try appendCodexBrokerPollFifo(allocator, &stderr_buf, poller.fifo(.stderr));
+            term = child.kill() catch null;
+            result.reason = "timeout";
+            break;
+        }
+
+        const remaining_ns = deadline_ns - now;
+        const poll_ns_i = @min(remaining_ns, @as(i128, 50 * std.time.ns_per_ms));
+        const keep_polling = poller.pollTimeout(@intCast(poll_ns_i)) catch |e| {
+            term = child.kill() catch null;
+            result.reason = @errorName(e);
+            break;
+        };
+        try appendCodexBrokerPollFifo(allocator, &stdout_buf, poller.fifo(.stdout));
+        try appendCodexBrokerPollFifo(allocator, &stderr_buf, poller.fifo(.stderr));
+
+        const observation = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+        if (!login_sent and observation.initialized) {
+            if (child.stdin) |stdin_file| {
+                try stdin_file.writeAll(login_request.items);
+                login_sent = true;
+            }
+        }
+
+        if (!thread_request_sent and observation.login_completed and observation.account_updated) {
+            if (child.stdin) |stdin_file| {
+                try stdin_file.writeAll(thread_request.items);
+                thread_request_sent = true;
+            }
+        }
+
+        if (!turn_request_sent) {
+            const thread_id = try findCodexBrokerThreadId(allocator, stdout_buf.items);
+            if (thread_id) |id| {
+                defer allocator.free(id);
+                if (child.stdin) |stdin_file| {
+                    try writeCodexAppServerTurnStartRequest(stdin_file.writer(), id);
+                    try stdin_file.writeAll("\n");
+                    turn_request_sent = true;
+                }
+            }
+        }
+
+        if (!result.refresh_response_sent) {
+            var refresh_request = try findCodexBrokerRefreshRequest(allocator, stdout_buf.items);
+            defer if (refresh_request) |*request| {
+                request.deinit(allocator);
+            };
+            if (refresh_request) |request| {
+                if (!request.reason_unauthorized) {
+                    result.reason = "unsupported_refresh_reason";
+                } else if (child.stdin) |stdin_file| {
+                    try writeCodexAppServerRefreshResponse(stdin_file.writer(), request.id, refresh_credentials);
+                    try stdin_file.writeAll("\n");
+                    result.refresh_response_sent = true;
+                }
+            }
+        }
+
+        if (observation.turn_completed and !result.stdin_closed) {
+            if (child.stdin) |stdin_file| {
+                stdin_file.close();
+                child.stdin = null;
+                result.stdin_closed = true;
+            }
+        }
+
+        if (!keep_polling) break;
+    }
+
+    if (!result.stdin_closed) {
+        if (child.stdin) |stdin_file| {
+            stdin_file.close();
+            child.stdin = null;
+            result.stdin_closed = true;
+        }
+    }
+
+    if (term == null) {
+        term = child.wait() catch |e| {
+            result.reason = @errorName(e);
+            return result;
+        };
+    }
+
+    result.exited = true;
+    result.exit_code = switch (term.?) {
+        .Exited => |code| code,
+        else => null,
+    };
+    result.stdout_bytes = stdout_buf.items.len;
+    result.stderr_bytes = stderr_buf.items.len;
+    result.protocol = inspectCodexBrokerProtocolOutput(stdout_buf.items);
+    result.ok = result.protocol.initialized and
+        result.protocol.login_response and
+        result.protocol.login_completed and
+        result.protocol.account_updated and
+        result.protocol.thread_started and
+        result.protocol.turn_started and
+        result.protocol.refresh_request_seen and
+        result.protocol.refresh_reason_unauthorized and
+        result.refresh_response_sent and
+        result.protocol.turn_completed and
+        result.exit_code != null and
+        result.exit_code.? == 0 and
+        !result.protocol.experimental_api_required_error;
+    if (result.ok) {
+        result.reason = "protocol_401_retry_completed";
+    } else if (std.mem.eql(u8, result.reason, "unknown")) {
+        result.reason = "protocol_incomplete";
+    }
+    return result;
+}
+
+const CodexBroker401MockServerState = struct {
+    mutex: std.Thread.Mutex = .{},
+    observation: CodexBroker401HttpObservation = .{},
+
+    fn snapshot(self: *CodexBroker401MockServerState) CodexBroker401HttpObservation {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.observation;
+    }
+
+    fn recordModelsRequest(self: *CodexBroker401MockServerState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.observation.request_count += 1;
+        self.observation.models_request_seen = true;
+    }
+
+    fn recordOtherRequest(self: *CodexBroker401MockServerState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.observation.request_count += 1;
+    }
+
+    fn recordBackendRequest(self: *CodexBroker401MockServerState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.observation.request_count += 1;
+        self.observation.backend_request_seen = true;
+    }
+
+    fn recordResponsesRequest(self: *CodexBroker401MockServerState, response_index: usize, initial_seen: bool, fallback_seen: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.observation.request_count += 1;
+        self.observation.responses_request_count = @max(self.observation.responses_request_count, response_index);
+        self.observation.turn_request_seen = true;
+        if (response_index == 1) {
+            self.observation.initial_authorization_seen = initial_seen;
+            self.observation.unauthorized_response_sent = true;
+        } else if (response_index == 2) {
+            self.observation.fallback_authorization_seen = fallback_seen;
+            self.observation.sse_response_sent = true;
+            self.observation.retried_with_fallback = fallback_seen;
+        }
+    }
+
+    fn recordPreTurnResponsesRequest(self: *CodexBroker401MockServerState) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.observation.request_count += 1;
+        self.observation.pre_turn_responses_count += 1;
+    }
+
+    fn setError(self: *CodexBroker401MockServerState, reason: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.observation.server_error == null) self.observation.server_error = reason;
+    }
+};
+
+const CodexBroker401MockServerArgs = struct {
+    server: std.net.Server,
+    initial_access_token: []const u8,
+    fallback_access_token: []const u8,
+    state: CodexBroker401MockServerState = .{},
+};
+
+const CodexBroker401MockServer = struct {
+    allocator: std.mem.Allocator,
+    args: *CodexBroker401MockServerArgs,
+    thread: std.Thread,
+    port: u16,
+    joined: bool = false,
+
+    fn finish(self: *CodexBroker401MockServer) CodexBroker401HttpObservation {
+        self.deinit();
+        return self.args.state.snapshot();
+    }
+
+    fn snapshot(self: *CodexBroker401MockServer) CodexBroker401HttpObservation {
+        return self.args.state.snapshot();
+    }
+
+    fn deinit(self: *CodexBroker401MockServer) void {
+        if (!self.joined) {
+            self.thread.join();
+            self.joined = true;
+        }
+    }
+
+    fn destroy(self: *CodexBroker401MockServer) void {
+        self.deinit();
+        self.allocator.destroy(self.args);
+    }
+};
+
+fn startCodexBroker401MockServer(
+    allocator: std.mem.Allocator,
+    initial_access_token: []const u8,
+    fallback_access_token: []const u8,
+) !CodexBroker401MockServer {
+    const addr = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try addr.listen(.{ .reuse_address = true });
+    errdefer server.deinit();
+
+    const args = try allocator.create(CodexBroker401MockServerArgs);
+    errdefer allocator.destroy(args);
+    args.* = .{
+        .server = server,
+        .initial_access_token = initial_access_token,
+        .fallback_access_token = fallback_access_token,
+    };
+
+    const thread = try std.Thread.spawn(.{}, runCodexBroker401MockServer, .{args});
+    return .{
+        .allocator = allocator,
+        .args = args,
+        .thread = thread,
+        .port = server.listen_address.getPort(),
+    };
+}
+
+fn runCodexBroker401MockServer(args: *CodexBroker401MockServerArgs) void {
+    defer args.server.deinit();
+    runCodexBroker401MockServerInner(args) catch |e| {
+        args.state.setError(@errorName(e));
+    };
+}
+
+fn runCodexBroker401MockServerInner(args: *CodexBroker401MockServerArgs) !void {
+    const deadline_ns = std.time.nanoTimestamp() + (20 * std.time.ns_per_s);
+    while (args.state.snapshot().responses_request_count < 2) {
+        if (std.time.nanoTimestamp() >= deadline_ns) {
+            args.state.setError("mock_server_timeout");
+            return;
+        }
+
+        var fds = [_]std.posix.pollfd{.{
+            .fd = args.server.stream.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = try std.posix.poll(&fds, 50);
+        if (ready == 0) continue;
+
+        const conn = args.server.accept() catch |e| switch (e) {
+            error.WouldBlock => continue,
+            else => return e,
+        };
+        defer conn.stream.close();
+        try handleCodexBroker401MockConnection(args, conn.stream);
+    }
+}
+
+fn handleCodexBroker401MockConnection(args: *CodexBroker401MockServerArgs, stream: std.net.Stream) !void {
+    var request_buf: [64 * 1024]u8 = undefined;
+    const request = try readHttpRequest(stream, &request_buf);
+    const path = findHttpRequestPath(request) orelse "/";
+    const auth_header = findHttpHeaderValue(request, "authorization");
+    const initial_seen = if (auth_header) |value| authHeaderMatchesBearer(value, args.initial_access_token) else false;
+    const fallback_seen = if (auth_header) |value| authHeaderMatchesBearer(value, args.fallback_access_token) else false;
+
+    if (std.mem.endsWith(u8, path, "/models")) {
+        try writeHttpJsonResponse(stream, 200, "OK", "{\"object\":\"list\",\"data\":[{\"id\":\"mock-model\",\"object\":\"model\",\"created\":0,\"owned_by\":\"oauth-mux\"}]}");
+        args.state.recordModelsRequest();
+        return;
+    }
+
+    if (std.mem.indexOf(u8, path, "/backend-api/") != null) {
+        try writeHttpJsonResponse(stream, 200, "OK", "{}");
+        args.state.recordBackendRequest();
+        return;
+    }
+
+    if (!std.mem.endsWith(u8, path, "/responses")) {
+        try writeHttpJsonResponse(stream, 404, "Not Found", "{\"error\":{\"message\":\"not found\"}}");
+        args.state.recordOtherRequest();
+        return;
+    }
+
+    if (!isCodexBroker401TurnRequest(request)) {
+        try writeCodexBroker401SseSuccess(stream);
+        args.state.recordPreTurnResponsesRequest();
+        return;
+    }
+
+    const response_index = args.state.snapshot().responses_request_count + 1;
+    if (response_index == 1) {
+        try writeHttpJsonResponse(stream, 401, "Unauthorized", "{\"error\":{\"message\":\"unauthorized\"}}");
+        args.state.recordResponsesRequest(response_index, initial_seen, false);
+    } else {
+        try writeCodexBroker401SseSuccess(stream);
+        args.state.recordResponsesRequest(response_index, false, fallback_seen);
+    }
+}
+
+fn readHttpRequest(stream: std.net.Stream, buf: []u8) ![]const u8 {
+    var used: usize = 0;
+    var header_end: ?usize = null;
+    while (used < buf.len) {
+        const n = try stream.read(buf[used..]);
+        if (n == 0) break;
+        used += n;
+        if (findHttpHeaderEnd(buf[0..used])) |end| {
+            header_end = end;
+            break;
+        }
+    }
+    const end = header_end orelse return buf[0..used];
+    const content_length = parseHttpContentLength(buf[0..end]) orelse 0;
+    const target_len = end + 4 + content_length;
+    if (target_len > buf.len) return error.HttpRequestTooLarge;
+    while (used < target_len) {
+        const n = try stream.read(buf[used..target_len]);
+        if (n == 0) break;
+        used += n;
+    }
+    return buf[0..used];
+}
+
+fn findHttpHeaderEnd(request: []const u8) ?usize {
+    return std.mem.indexOf(u8, request, "\r\n\r\n");
+}
+
+fn parseHttpContentLength(headers: []const u8) ?usize {
+    const value = findHttpHeaderValue(headers, "content-length") orelse return null;
+    return std.fmt.parseInt(usize, value, 10) catch null;
+}
+
+fn authHeaderMatchesBearer(value: []const u8, access_token: []const u8) bool {
+    const prefix = "Bearer ";
+    if (value.len != prefix.len + access_token.len) return false;
+    if (!std.ascii.eqlIgnoreCase(value[0.."Bearer".len], "Bearer")) return false;
+    if (value["Bearer".len] != ' ') return false;
+    return std.mem.eql(u8, value[prefix.len..], access_token);
+}
+
+fn isCodexBroker401TurnRequest(request: []const u8) bool {
+    return std.mem.indexOf(u8, request, "\"Hello\"") != null or
+        std.mem.indexOf(u8, request, "\\\"Hello\\\"") != null;
+}
+
+fn findHttpHeaderValue(request: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, request, "\r\n");
+    while (lines.next()) |line| {
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const key = std.mem.trim(u8, line[0..colon], " \t");
+        if (!std.ascii.eqlIgnoreCase(key, name)) continue;
+        return std.mem.trim(u8, line[colon + 1 ..], " \t");
+    }
+    return null;
+}
+
+fn findHttpRequestPath(request: []const u8) ?[]const u8 {
+    const first_line_end = std.mem.indexOf(u8, request, "\r\n") orelse return null;
+    const first_line = request[0..first_line_end];
+    var parts = std.mem.splitScalar(u8, first_line, ' ');
+    _ = parts.next() orelse return null;
+    return parts.next();
+}
+
+fn writeHttpJsonResponse(stream: std.net.Stream, status: u16, reason: []const u8, body: []const u8) !void {
+    try stream.writer().print(
+        "HTTP/1.1 {d} {s}\r\ncontent-type: application/json\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n{s}",
+        .{ status, reason, body.len, body },
+    );
+}
+
+fn writeHttpSseResponse(stream: std.net.Stream, body: []const u8) !void {
+    try stream.writer().print(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n{s}",
+        .{ body.len, body },
+    );
+}
+
+fn writeCodexBroker401SseSuccess(stream: std.net.Stream) !void {
+    const body =
+        "event: response.created\n" ++
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-turn\"}}\n\n" ++
+        "event: response.output_item.done\n" ++
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"id\":\"msg-turn\",\"content\":[{\"type\":\"output_text\",\"text\":\"turn ok\"}]}}\n\n" ++
+        "event: response.completed\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-turn\",\"usage\":{\"input_tokens\":0,\"input_tokens_details\":null,\"output_tokens\":0,\"output_tokens_details\":null,\"total_tokens\":0}}}\n\n";
+    try writeHttpSseResponse(stream, body);
+}
+
 fn appendCodexBrokerPollFifo(
     allocator: std.mem.Allocator,
     list: *std.ArrayListUnmanaged(u8),
@@ -8259,6 +8987,7 @@ fn appendCodexBrokerPollFifo(
         try list.appendSlice(allocator, chunk);
         offset += chunk.len;
     }
+    fifo.discard(total);
 }
 
 fn writeCodexAppServerInitializeRequest(writer: anytype) !void {
@@ -8275,6 +9004,97 @@ fn writeCodexAppServerLoginRequest(writer: anytype, credentials: CodexBrokerCred
     try writer.writeAll(",\"chatgptPlanType\":");
     if (credentials.chatgpt_plan_type) |plan| try std.json.stringify(plan, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll("}}");
+}
+
+fn writeCodexAppServerThreadStartRequest(writer: anytype) !void {
+    try writer.writeAll("{\"id\":3,\"method\":\"thread/start\",\"params\":{\"model\":\"mock-model\"}}");
+}
+
+fn writeCodexAppServerTurnStartRequest(writer: anytype, thread_id: []const u8) !void {
+    try writer.writeAll("{\"id\":4,\"method\":\"turn/start\",\"params\":{\"threadId\":");
+    try std.json.stringify(thread_id, .{}, writer);
+    try writer.writeAll(",\"input\":[{\"type\":\"text\",\"text\":\"Hello\",\"text_elements\":[]}]}}");
+}
+
+fn writeCodexBroker401AppServerFiles(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    base_url: []const u8,
+    chatgpt_base_url: []const u8,
+) !void {
+    const config_path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
+    defer allocator.free(config_path);
+    const config_file = try std.fs.createFileAbsolute(config_path, .{ .truncate = true, .mode = 0o600 });
+    defer config_file.close();
+    try config_file.writer().print(
+        \\
+        \\model = "mock-model"
+        \\approval_policy = "never"
+        \\sandbox_mode = "danger-full-access"
+        \\chatgpt_base_url = "{s}"
+        \\model_provider = "mock_provider"
+        \\
+        \\[features]
+        \\shell_snapshot = false
+        \\
+        \\[model_providers.mock_provider]
+        \\name = "Mock provider for oauth-mux broker smoke"
+        \\base_url = "{s}"
+        \\wire_api = "responses"
+        \\request_max_retries = 0
+        \\stream_max_retries = 0
+        \\requires_openai_auth = true
+        \\
+    , .{ chatgpt_base_url, base_url });
+
+    const cache_path = try std.fs.path.join(allocator, &.{ codex_home, "models_cache.json" });
+    defer allocator.free(cache_path);
+    const cache_file = try std.fs.createFileAbsolute(cache_path, .{ .truncate = true, .mode = 0o600 });
+    defer cache_file.close();
+    try cache_file.writer().writeAll(
+        \\{
+        \\  "fetched_at": "2999-01-01T00:00:00Z",
+        \\  "etag": null,
+        \\  "client_version": "oauth-mux",
+        \\  "models": [
+        \\    {
+        \\      "slug": "mock-model",
+        \\      "display_name": "mock-model",
+        \\      "description": "oauth-mux local broker smoke model",
+        \\      "default_reasoning_level": "medium",
+        \\      "supported_reasoning_levels": [
+        \\        {"effort": "low", "description": "low"},
+        \\        {"effort": "medium", "description": "medium"}
+        \\      ],
+        \\      "shell_type": "shell_command",
+        \\      "visibility": "list",
+        \\      "supported_in_api": true,
+        \\      "priority": 0,
+        \\      "additional_speed_tiers": [],
+        \\      "availability_nux": null,
+        \\      "upgrade": null,
+        \\      "base_instructions": "base instructions",
+        \\      "model_messages": null,
+        \\      "supports_reasoning_summaries": false,
+        \\      "default_reasoning_summary": "auto",
+        \\      "support_verbosity": false,
+        \\      "default_verbosity": null,
+        \\      "apply_patch_tool_type": null,
+        \\      "web_search_tool_type": "text",
+        \\      "truncation_policy": {"mode": "bytes", "limit": 10000},
+        \\      "supports_parallel_tool_calls": false,
+        \\      "supports_image_detail_original": false,
+        \\      "context_window": 272000,
+        \\      "max_context_window": 272000,
+        \\      "auto_compact_token_limit": null,
+        \\      "effective_context_window_percent": 95,
+        \\      "experimental_supported_tools": [],
+        \\      "input_modalities": ["text"],
+        \\      "supports_search_tool": false
+        \\    }
+        \\  ]
+        \\}
+    );
 }
 
 const CodexBrokerJsonRpcId = union(enum) {
@@ -8378,6 +9198,50 @@ fn findCodexBrokerRefreshRequest(allocator: std.mem.Allocator, stdout: []const u
     return null;
 }
 
+fn findCodexBrokerThreadId(allocator: std.mem.Allocator, stdout: []const u8) !?[]u8 {
+    var lines = std.mem.splitScalar(u8, stdout, '\n');
+    while (lines.next()) |line_raw| {
+        if (std.mem.indexOf(u8, line_raw, "\"id\":3") == null) continue;
+        const line = std.mem.trim(u8, line_raw, " \t\r\n");
+        if (line.len == 0) continue;
+
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{
+            .allocate = .alloc_always,
+        }) catch continue;
+        defer parsed.deinit();
+
+        const root = switch (parsed.value) {
+            .object => |object| object,
+            else => continue,
+        };
+        const id_value = root.get("id") orelse continue;
+        const id_matches = switch (id_value) {
+            .integer => |value| value == 3,
+            else => false,
+        };
+        if (!id_matches) continue;
+
+        const result_value = root.get("result") orelse continue;
+        const result = switch (result_value) {
+            .object => |object| object,
+            else => continue,
+        };
+        const thread_value = result.get("thread") orelse continue;
+        const thread = switch (thread_value) {
+            .object => |object| object,
+            else => continue,
+        };
+        const thread_id_value = thread.get("id") orelse continue;
+        const thread_id = switch (thread_id_value) {
+            .string => |value| value,
+            else => continue,
+        };
+        return try allocator.dupe(u8, thread_id);
+    }
+
+    return null;
+}
+
 fn inspectCodexBrokerProtocolOutput(stdout: []const u8) CodexBrokerProtocolObservation {
     const account_updates = countNeedle(stdout, "\"account/updated\"");
     return .{
@@ -8386,6 +9250,9 @@ fn inspectCodexBrokerProtocolOutput(stdout: []const u8) CodexBrokerProtocolObser
         .login_completed = std.mem.indexOf(u8, stdout, "\"account/login/completed\"") != null and std.mem.indexOf(u8, stdout, "\"success\":true") != null,
         .account_updated = account_updates != 0 and std.mem.indexOf(u8, stdout, "\"authMode\":\"chatgptAuthTokens\"") != null,
         .account_updates = account_updates,
+        .thread_started = std.mem.indexOf(u8, stdout, "\"id\":3") != null and std.mem.indexOf(u8, stdout, "\"thread\"") != null,
+        .turn_started = std.mem.indexOf(u8, stdout, "\"id\":4") != null and std.mem.indexOf(u8, stdout, "\"result\"") != null,
+        .turn_completed = std.mem.indexOf(u8, stdout, "\"turn/completed\"") != null,
         .refresh_request_seen = std.mem.indexOf(u8, stdout, "\"account/chatgptAuthTokens/refresh\"") != null,
         .refresh_reason_unauthorized = std.mem.indexOf(u8, stdout, "\"reason\":\"unauthorized\"") != null or
             std.mem.indexOf(u8, stdout, "\"reason\":\"Unauthorized\"") != null,

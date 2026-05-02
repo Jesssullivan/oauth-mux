@@ -138,6 +138,14 @@ refresh-response selection primitive needed for future live 401 repair in
 mediated sessions. It is still not an unmanaged current TUI hot-swap,
 per-request mux, or quota-recovery claim.
 
+`oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` proves the controlled no-spend 401 retry loop for a
+broker-owned Codex app-server session. oauth-mux points Responses and ChatGPT
+backend traffic at a local mock, returns 401 to the first turn Responses
+request, answers app-server refresh with the next ready route, and verifies the
+retry uses the fallback token. This is the current strongest mediated Codex
+proof; it still does not claim unmanaged TUI hot-swap.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local

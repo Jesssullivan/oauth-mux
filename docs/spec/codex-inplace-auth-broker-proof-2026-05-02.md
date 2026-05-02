@@ -257,8 +257,14 @@ For quota-driven account changes, use a different action name, such as
    `account/chatgptAuthTokens/refresh`, respond with the next ready route's
    external-auth tuple when a fallback account exists, and report only redacted
    protocol milestones.
-8. Add a controlled 401 proof that switches from one account token to another
-   and records redacted evidence.
+8. Add a controlled 401 proof:
+   `oauth-mux codex broker-401-smoke --profile codex-max --capability
+   codex-max --confirm-broker --json` starts a disposable app-server, points
+   Responses and ChatGPT backend traffic at a local mock, returns 401 to the
+   first turn Responses request, answers `account/chatgptAuthTokens/refresh`
+   with the next ready route, and verifies the retried Responses request uses
+   the fallback token. This is a local mediated-session proof, not unmanaged
+   TUI hot-swap.
 9. Add a no-overclaim quota proof: show that rate-limit snapshots can trigger
    next-turn account selection, but do not claim same-turn quota recovery until
    Codex exposes or proves that hook.
@@ -273,6 +279,9 @@ For quota-driven account changes, use a different action name, such as
 - The broker can explain why it did or did not switch accounts.
 - A 401-triggered app-server refresh request can be handled by oauth-mux with a
   selected account from the configured profile.
+- The controlled 401 smoke proves the retried local Responses request used the
+  fallback route token without printing token, account-id, or raw protocol
+  values.
 - Cross-account switching is blocked when forced workspace or profile policy
   forbids it.
 - Quota/rate-limit behavior is separately classified as next-turn account
@@ -287,10 +296,12 @@ For the current unmanaged Codex session, do not claim this proof yet. Instead:
 1. keep the foreground stay-afloat loop running to preserve route truth;
 2. enroll the credited fallback account;
 3. prove `route explain` and `stay-afloat next` select the expected account;
-4. build topology A;
-5. start a broker-owned app-server proof session;
-6. trigger or simulate 401 and observe whether oauth-mux supplies another
-   account without restarting the app-server;
+4. run `codex broker-401-smoke --confirm-broker --json` to prove topology A
+   locally without provider spend;
+5. start a broker-owned app-server proof session for any broader manual
+   app-server behavior that the smoke does not cover;
+6. trigger or simulate quota exhaustion and observe whether oauth-mux supplies
+   another account without restarting the app-server;
 7. separately test quota exhaustion and record whether the switch is same-turn
    or next-turn only.
 

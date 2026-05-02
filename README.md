@@ -107,6 +107,8 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provid
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
@@ -142,6 +144,12 @@ primitive: after external-auth login, oauth-mux can observe
 token tuple when a fallback account exists. This is still a local mediated
 app-server protocol proof, not an unmanaged running Codex TUI hot-swap or
 quota-recovery claim.
+`codex broker-401-smoke --confirm-broker --json` closes the next local proof:
+it starts a broker-owned Codex app-server, points both OpenAI Responses and
+ChatGPT backend traffic at a local mock, returns a 401 to the first turn
+Responses request, answers the app-server refresh request with the next ready
+route, and verifies the retried Responses request uses that fallback token. It
+still does not claim unmanaged TUI hot-swap.
 
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
@@ -265,6 +273,7 @@ oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
+oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair run --profile codex-max --capability codex-max --json
