@@ -267,7 +267,11 @@ For quota-driven account changes, use a different action name, such as
    TUI hot-swap.
 9. Add a no-overclaim quota proof: show that rate-limit snapshots can trigger
    next-turn account selection, but do not claim same-turn quota recovery until
-   Codex exposes or proves that hook.
+   Codex exposes or proves that hook. `oauth-mux codex broker-quota-smoke
+   --profile codex-max --capability codex-max --confirm-broker --json` now
+   proves the first no-spend version: local usage-limit 429 does not produce
+   the 401 refresh hook, fallback app-server login is accepted, and a new
+   brokered thread uses fallback Authorization.
 10. Only after topology A is green, attempt topology B with a remote TUI and
    sidecar broker.
 11. Update website and README claim language only after live dogfood passes.
@@ -282,6 +286,9 @@ For quota-driven account changes, use a different action name, such as
 - The controlled 401 smoke proves the retried local Responses request used the
   fallback route token without printing token, account-id, or raw protocol
   values.
+- The controlled quota smoke proves new-thread fallback after local
+  usage-limit classification. It also records the negative evidence:
+  same-turn and same-thread quota recovery are not proven.
 - Cross-account switching is blocked when forced workspace or profile policy
   forbids it.
 - Quota/rate-limit behavior is separately classified as next-turn account

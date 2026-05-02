@@ -219,6 +219,12 @@ starts a disposable app-server with local mocked Responses and ChatGPT backend
 URLs, forces the first turn Responses request to 401, answers app-server
 refresh with the next ready route, and verifies the retried request used that
 fallback token.
+Use
+`oauth-mux codex broker-quota-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` to prove the no-spend quota fallback boundary. It
+simulates usage-limit 429, confirms that this is not the same hook as 401
+auth-refresh, then verifies fallback Authorization on a new brokered thread.
+That is useful stay-afloat evidence, but not same-thread quota recovery.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

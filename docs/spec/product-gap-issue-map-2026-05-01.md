@@ -244,8 +244,10 @@ these precise provider-proof children.
    `oauth-mux codex broker-smoke --confirm-broker` proves broker-owned
    app-server stdio external-auth login. `oauth-mux codex broker-401-smoke
    --confirm-broker` proves the local mediated 401 retry path with a fallback
-   route. Keep unauthorized-token recovery separate from quota/usage-limit
-   recovery until quota proof tickets are green.
+   route. `oauth-mux codex broker-quota-smoke --confirm-broker` proves the
+   local no-spend quota boundary: new brokered thread fallback works after
+   fallback login, while same-turn and same-thread quota recovery remain
+   unclaimed.
 10. Return to daemon background implementation only after wrapper/install
    decisions and provider proof produce enough real operator evidence. The
    current socket daemon decision is complete under `TIN-867`; future

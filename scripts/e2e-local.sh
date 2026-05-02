@@ -796,6 +796,13 @@ expect_contains "$broker_401_prompt" '"confirmation_required":true' "broker-401-
 expect_contains "$broker_401_prompt" '"requires":"--confirm-broker"' "broker-401-smoke reports required confirmation flag"
 expect_contains "$broker_401_prompt" '"spends_provider_calls":false' "broker-401-smoke confirmation prompt reports no provider spend"
 
+printf 'e2e: codex broker-quota-smoke requires explicit confirmation before starting app-server\n'
+broker_quota_prompt="$(OMUX_CONFIG="$broker_switch_config" OMUX_STATE_DIR="$state_dir" "$bin" codex broker-quota-smoke --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_quota_prompt" '"mode":"codex_app_server_quota_broker_smoke"' "broker-quota-smoke reports quota broker mode"
+expect_contains "$broker_quota_prompt" '"confirmation_required":true' "broker-quota-smoke requires confirmation"
+expect_contains "$broker_quota_prompt" '"requires":"--confirm-broker"' "broker-quota-smoke reports required confirmation flag"
+expect_contains "$broker_quota_prompt" '"spends_provider_calls":false' "broker-quota-smoke confirmation prompt reports no provider spend"
+
 repair_reauth_json="$tmp/repair-run-reauth.json"
 set +e
 OMUX_CONFIG="$reauth_config" \
