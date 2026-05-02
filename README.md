@@ -125,9 +125,13 @@ secret mutation.
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
 a route is selectable, it launches the target through `oauth-mux exec` with the
-selected provider/account/capability pinned. If no route is selectable, it
-prints the mediated repair/handoff text and exits nonzero without running the
-target.
+selected provider/account/capability pinned. `exec` still performs normal
+token/runtime validation before the target starts; if that validation
+reclassifies the selected route, launch re-runs selection and tries the next
+selectable account. If no route remains selectable, launch prints the refreshed
+mediation text and exits nonzero without running the target. If no route is
+selectable at preflight, launch also prints the mediated repair/handoff text
+and exits nonzero without running the target.
 
 `doctor runtime --json` is also no-spend. It checks local runtime prerequisites
 such as upstream binaries, configured account store directories, write access,

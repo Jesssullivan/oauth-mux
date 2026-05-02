@@ -3591,9 +3591,6 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     defer validation_messages.deinit();
     try config.validate(parsed.value, validation_messages.writer());
 
-    var store = health_mod.HealthStore.load(allocator, .{});
-    defer store.deinit();
-
     const selector = cli.Command.RouteArgs{
         .action = .explain,
         .profile = args.profile,
@@ -3609,24 +3606,109 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     });
     defer routes.deinit();
 
-    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
-    defer evaluations.deinit();
-    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+    var attempted_routes = std.ArrayList(RepairPlanRoute).init(allocator);
+    defer attempted_routes.deinit();
 
-    const selected_index = firstSelectableRoute(evaluations.items);
-    if (selected_index == null) {
-        const candidate_index = firstActionableRoute(evaluations.items);
-        try writeStayAfloatMediationText(writer, allocator, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
-        return error.AllAccountsExhausted;
+    var last_exec_error: ?anyerror = null;
+    while (attempted_routes.items.len < routes.items.len) {
+        var store = health_mod.HealthStore.load(allocator, .{});
+        defer store.deinit();
+
+        var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+        defer evaluations.deinit();
+        try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+        const selected_index = firstSelectableRouteNotAttempted(evaluations.items, attempted_routes.items);
+        if (selected_index == null) {
+            const candidate_index = firstActionableRoute(evaluations.items);
+            try writeStayAfloatMediationText(writer, allocator, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
+            if (last_exec_error) |err| return err;
+            return error.AllAccountsExhausted;
+        }
+
+        const selected = evaluations.items[selected_index.?].route;
+        try attempted_routes.append(selected);
+
+        var exec_args = args;
+        exec_args.profile = null;
+        exec_args.provider = selected.provider;
+        exec_args.account = selected.account;
+        exec_args.capability = selected.capability orelse args.capability;
+        runExec(allocator, exec_args) catch |e| {
+            last_exec_error = e;
+            continue;
+        };
     }
 
-    const selected = evaluations.items[selected_index.?].route;
-    var exec_args = args;
-    exec_args.profile = null;
-    exec_args.provider = selected.provider;
-    exec_args.account = selected.account;
-    exec_args.capability = selected.capability orelse args.capability;
-    try runExec(allocator, exec_args);
+    try writeStayAfloatLaunchMediationFromCurrentState(
+        allocator,
+        writer,
+        parsed.value,
+        routes.items,
+        selector,
+    );
+    if (last_exec_error) |err| return err;
+    return error.AllAccountsExhausted;
+}
+
+fn firstSelectableRouteNotAttempted(
+    evaluations: []const RouteEvaluation,
+    attempted_routes: []const RepairPlanRoute,
+) ?usize {
+    for (evaluations, 0..) |evaluation, idx| {
+        if (!evaluation.selectable) continue;
+        if (routeWasAttempted(evaluation.route, attempted_routes)) continue;
+        return idx;
+    }
+    return null;
+}
+
+fn routeWasAttempted(route: RepairPlanRoute, attempted_routes: []const RepairPlanRoute) bool {
+    for (attempted_routes) |attempted| {
+        if (routesEqual(route, attempted)) return true;
+    }
+    return false;
+}
+
+fn routesEqual(a: RepairPlanRoute, b: RepairPlanRoute) bool {
+    return std.mem.eql(u8, a.provider, b.provider) and
+        std.mem.eql(u8, a.account, b.account) and
+        optionalStringsEqual(a.capability, b.capability);
+}
+
+fn optionalStringsEqual(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a) |a_value| {
+        const b_value = b orelse return false;
+        return std.mem.eql(u8, a_value, b_value);
+    }
+    return b == null;
+}
+
+fn writeStayAfloatLaunchMediationFromCurrentState(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    cfg: config.Config,
+    routes: []const RepairPlanRoute,
+    selector: cli.Command.RouteArgs,
+) !void {
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, cfg, &store, routes, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+    const candidate_index = if (selected_index == null) firstActionableRoute(evaluations.items) else null;
+    try writeStayAfloatMediationText(
+        writer,
+        allocator,
+        evaluations.items,
+        selected_index,
+        candidate_index,
+        selector,
+        "oauth-mux stay-afloat launch",
+    );
 }
 
 fn runDaemonTick(

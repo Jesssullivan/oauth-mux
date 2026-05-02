@@ -27,6 +27,7 @@ config="$tmp/config.json"
 state_dir="$tmp/state"
 exec_out="$tmp/exec.out"
 probe_cmd="$tmp/probe-harness.sh"
+probe_mode_file="$tmp/probe-mode"
 reauth_probe_cmd="$tmp/reauth-probe-harness.sh"
 
 mkdir -p "$state_dir" "$tmp/a1-home" "$tmp/a2-home"
@@ -39,6 +40,15 @@ capability="${1:-}"
 
 case "${capability}:${OMUX_ACTIVE_ACCOUNT:-}" in
   expensive:a1)
+    if [ -n "${OMUX_E2E_PROBE_MODE_FILE:-}" ] &&
+      [ -f "$OMUX_E2E_PROBE_MODE_FILE" ] &&
+      grep -q '^expensive:a1:ok$' "$OMUX_E2E_PROBE_MODE_FILE"; then
+      printf 'ok provider=%s account=%s capability=%s\n' \
+        "${OMUX_ACTIVE_PROVIDER:-}" \
+        "${OMUX_ACTIVE_ACCOUNT:-}" \
+        "${OMUX_ACTIVE_CAPABILITY:-}"
+      exit 0
+    fi
     printf '%s\n' 'quota_exhausted: simulated monthly route limit'
     exit 1
     ;;
@@ -197,6 +207,7 @@ omux() {
     OMUX_STATE_DIR="$state_dir" \
     OMUX_E2E_A1_AUTH="$auth_a1" \
     OMUX_E2E_A2_AUTH="$auth_a2" \
+    OMUX_E2E_PROBE_MODE_FILE="$probe_mode_file" \
     "$bin" "$@"
 }
 
@@ -351,6 +362,22 @@ launch_out="$tmp/stay-launch.out"
 OMUX_E2E_EXEC_OUT="$launch_out" omux stay-afloat launch --profile expensive --capability expensive -- sh -c 'printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_EXEC_OUT"'
 launch_result="$(cat "$launch_out")"
 expect_contains "$launch_result" 'a2:omux-e2e-a2' "stay-afloat launch target receives selected fallback account"
+
+printf 'e2e: stay-afloat launch retries next route when exec reclassifies selected account\n'
+printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"
+omux health --reset toy:a1#expensive >/dev/null
+omux health --reset toy:a2#expensive >/dev/null
+stale_a1_probe="$(omux probe --provider toy --account a1 --capability expensive --json)"
+expect_contains "$stale_a1_probe" '"account":"a1"' "stale launch setup records a1 as available"
+stale_a2_probe="$(omux probe --provider toy --account a2 --capability expensive --json)"
+expect_contains "$stale_a2_probe" '"account":"a2"' "stale launch setup records a2 as available"
+rm -f "$probe_mode_file"
+stale_next="$(omux stay-afloat next --profile expensive --capability expensive --json)"
+expect_contains "$stale_next" '"selected":{"provider":"toy","account":"a1"' "stale launch preflight selects a1 from recorded evidence"
+stale_launch_out="$tmp/stay-launch-stale.out"
+OMUX_E2E_EXEC_OUT="$stale_launch_out" omux stay-afloat launch --profile expensive --capability expensive -- sh -c 'printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_EXEC_OUT"'
+stale_launch_result="$(cat "$stale_launch_out")"
+expect_contains "$stale_launch_result" 'a2:omux-e2e-a2' "stay-afloat launch falls through to a2 after a1 reclassification"
 
 printf 'e2e: daemon tick plans stay-afloat without executing work\n'
 daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"

@@ -191,9 +191,14 @@ repair owner, and any user-facing command to run.
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a
 route is selectable. The launched command receives credentials through
-`oauth-mux exec` with the selected provider, account, and capability pinned. If
-the route needs reauth, quota wait, runtime repair, or another handoff, launch
-prints the mediation text and exits nonzero without starting the target.
+`oauth-mux exec` with the selected provider, account, and capability pinned.
+That exec path still validates token and runtime state before target startup;
+if validation reclassifies the selected route, launch re-runs selection and
+tries the next selectable account. If no route remains selectable, launch prints
+refreshed mediation text and exits nonzero without starting the target. If the
+route needs reauth, quota wait, runtime repair, or another handoff at
+preflight, launch also prints mediation text and exits nonzero without starting
+the target.
 
 `oauth-mux repair run` is the explicit repair execution gate. It refuses
 mutation unless `--confirm-repair` is present. Without confirmation, it is safe

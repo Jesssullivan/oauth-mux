@@ -110,8 +110,12 @@ or user-handoff action to mediate before retrying.
 
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
-found from recorded evidence; otherwise it prints the mediation text and exits
-nonzero without starting the target.
+found from recorded evidence. The delegated `exec` path still validates local
+runtime and token state before the target starts; if that reclassifies the
+selected route, launch re-runs selection and tries the next selectable account.
+If no route remains selectable, launch prints refreshed mediation text and exits
+nonzero without starting the target. If no route is selectable at preflight, it
+also prints mediation text and exits nonzero without starting the target.
 
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,

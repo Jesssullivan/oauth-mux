@@ -26,7 +26,11 @@ typed repair/handoff action to mediate first.
 Use `stay-afloat launch -- <command>` when the wrapper should actually start a
 new harness session. It runs the same route preflight, pins the selected account
 for `oauth-mux exec`, and refuses to run the target when repair or user handoff
-is needed.
+is needed. Because the delegated exec path still validates token and runtime
+state before startup, launch can refresh route evidence and try the next
+selectable account when a route that looked selectable at preflight is
+reclassified before the target starts. If no selectable account remains, it
+prints the refreshed mediation text and exits nonzero.
 
 The beta supervised daemon host wraps that same engine:
 
