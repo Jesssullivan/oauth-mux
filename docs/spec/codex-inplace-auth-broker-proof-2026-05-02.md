@@ -60,6 +60,13 @@ Observed surfaces:
   that request. A brokered topology therefore needs oauth-mux to own or
   sidecar the app-server auth-refresh client, not merely rewrite files behind a
   standalone TUI.
+- Local stdio protocol smoke on 2026-05-02 showed
+  `account/login/start` with `type:"chatgptAuthTokens"` is gated behind
+  `initialize.params.capabilities.experimentalApi:true`. Without that
+  capability app-server rejects the request; with it, a fake JWT-shaped token
+  is accepted locally and app-server emits `account/login/completed` plus
+  `account/updated` with `authMode:"chatgptAuthTokens"`. This proves local
+  protocol shape only, not live provider auth or quota recovery.
 
 ## Boundary Correction
 
@@ -196,7 +203,8 @@ A future broker status should be explicit:
   "app_server": {
     "transport": "stdio",
     "codex_version": "0.128.0",
-    "external_auth_active": true
+    "external_auth_active": true,
+    "requires_experimental_api": true
   },
   "refresh_request": {
     "reason": "unauthorized",
@@ -225,6 +233,9 @@ For quota-driven account changes, use a different action name, such as
    bodies.
 4. Add a token-source planner that can report whether an account can supply
    `accessToken`, `chatgptAccountId`, and `chatgptPlanType` for broker use.
+   First slice: `oauth-mux codex broker-plan --profile codex-max --capability
+   codex-max --json` reports this locally and redacts token, account-id,
+   credential-path, and provider-call evidence.
 5. Add a broker command behind an explicit beta name, for example:
 
    ```bash
@@ -236,14 +247,17 @@ For quota-driven account changes, use a different action name, such as
    ```
 
 6. Prove topology A against a disposable app-server process.
-7. Add a controlled 401 proof that switches from one account token to another
+7. Ensure the broker initializes app-server with
+   `capabilities.experimentalApi:true`, then sends
+   `account/login/start.chatgptAuthTokens` from a selected route.
+8. Add a controlled 401 proof that switches from one account token to another
    and records redacted evidence.
-8. Add a no-overclaim quota proof: show that rate-limit snapshots can trigger
+9. Add a no-overclaim quota proof: show that rate-limit snapshots can trigger
    next-turn account selection, but do not claim same-turn quota recovery until
    Codex exposes or proves that hook.
-9. Only after topology A is green, attempt topology B with a remote TUI and
+10. Only after topology A is green, attempt topology B with a remote TUI and
    sidecar broker.
-10. Update website and README claim language only after live dogfood passes.
+11. Update website and README claim language only after live dogfood passes.
 
 ## Acceptance Criteria
 

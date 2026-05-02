@@ -105,6 +105,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat launch --p
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provider codex --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
@@ -126,6 +127,10 @@ launched through `claim.launch_argv`, while `current_process_hotswap`,
 `supervised_restart`, and `per_request_muxing` remain false.
 Codex app-server auth brokering is a separate proof track for mediated Codex
 sessions, not a current public claim.
+`codex broker-plan --json` is the no-spend first slice of that track: it reads
+configured Codex stores locally and reports whether each route can supply the
+external-auth tuple Codex app-server expects, without printing tokens, account
+ids, credential paths, or provider-call evidence.
 
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
@@ -246,6 +251,7 @@ oauth-mux setup codex
 oauth-mux codex canary
 oauth-mux codex live-qa
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
+oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair run --profile codex-max --capability codex-max --json

@@ -114,6 +114,13 @@ app-server auth brokering is now tracked as the first plausible
 current-process proof path for mediated Codex sessions, but it is not a claim
 for unmanaged Codex TUI/CLI processes.
 
+`oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
+is the no-spend broker readiness check. It reads configured Codex auth stores
+locally and reports whether each route can supply `accessToken`,
+`chatgptAccountId`, and `chatgptPlanType` for a future app-server broker. Its
+output is redacted and planning-only; it does not run Codex, contact OpenAI, or
+prove live hot-swap.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local

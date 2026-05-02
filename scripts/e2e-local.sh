@@ -612,6 +612,64 @@ cat >"$reauth_config" <<EOF
   "strategies": {}
 }
 EOF
+
+printf 'e2e: codex broker-plan reports redacted app-server auth readiness\n'
+broker_auth="$tmp/broker-auth.json"
+broker_config="$tmp/broker-config.json"
+broker_jwt='hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig'
+cat >"$broker_auth" <<EOF
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "$broker_jwt",
+    "access_token": "$broker_jwt",
+    "refresh_token": "broker-refresh-token",
+    "account_id": "acct-test"
+  }
+}
+EOF
+cat >"$broker_config" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-1": {
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "codex-max": {
+      "providers": ["codex:max-1#codex-max"]
+    }
+  },
+  "strategies": {}
+}
+EOF
+broker_plan="$(OMUX_CONFIG="$broker_config" OMUX_STATE_DIR="$state_dir" "$bin" codex broker-plan --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_plan" '"mode":"codex_app_server_auth_broker_plan"' "broker-plan reports broker mode"
+expect_contains "$broker_plan" '"requires_experimental_api":true' "broker-plan reports Codex app-server experimental API gate"
+expect_contains "$broker_plan" '"login_method":"account/login/start.chatgptAuthTokens"' "broker-plan reports external-auth login method"
+expect_contains "$broker_plan" '"refresh_method":"account/chatgptAuthTokens/refresh"' "broker-plan reports external-auth refresh method"
+expect_contains "$broker_plan" '"level":"current_process_auth_broker"' "broker-plan reports proof target claim"
+expect_contains "$broker_plan" '"proof_status":"planning_only"' "broker-plan refuses public proof claim"
+expect_contains "$broker_plan" '"ok":true' "broker-plan reports ready route"
+expect_contains "$broker_plan" '"ready_routes":1' "broker-plan counts ready routes"
+expect_contains "$broker_plan" '"selected":{"provider":"codex","account":"max-1","capability":"codex-max"' "broker-plan selects ready route"
+expect_contains "$broker_plan" '"can_supply":true' "broker-plan marks route as supply-capable"
+expect_contains "$broker_plan" '"chatgpt_account_id":true' "broker-plan proves account id presence"
+expect_contains "$broker_plan" '"chatgpt_account_id_source":"tokens.account_id"' "broker-plan reports redacted account id source"
+expect_contains "$broker_plan" '"chatgpt_plan_type":true' "broker-plan proves plan type presence"
+expect_not_contains "$broker_plan" 'acct-test' "broker-plan does not expose account id value"
+expect_not_contains "$broker_plan" "$broker_jwt" "broker-plan does not expose token value"
+expect_not_contains "$broker_plan" 'broker-refresh-token' "broker-plan does not expose refresh token value"
+
 repair_reauth_json="$tmp/repair-run-reauth.json"
 set +e
 OMUX_CONFIG="$reauth_config" \

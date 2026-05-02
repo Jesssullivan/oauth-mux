@@ -7516,6 +7516,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .probe_all => try runCodexProbeAll(allocator, writer, args),
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
+        .broker_plan => try runCodexBrokerPlan(allocator, writer, args),
     }
 }
 
@@ -7613,6 +7614,373 @@ fn runCodexProbeAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Com
         try writer.writeAll("\n=== live probes ===\n");
     }
     try runCodexLiveProbes(allocator, writer, args, !args.json);
+}
+
+const CodexBrokerTokenPlan = struct {
+    can_supply: bool = false,
+    reason: []const u8 = "unknown",
+    secret_readable: bool = false,
+    access_token_present: bool = false,
+    access_token_jwt_parseable: bool = false,
+    chatgpt_account_id_present: bool = false,
+    chatgpt_account_id_source: ?[]const u8 = null,
+    chatgpt_plan_type_present: bool = false,
+    chatgpt_plan_type_source: ?[]const u8 = null,
+};
+
+const CodexBrokerSummary = struct {
+    routes_total: usize = 0,
+    ready_routes: usize = 0,
+    unreadable_routes: usize = 0,
+};
+
+const CodexBrokerAuthJson = struct {
+    auth_mode: ?[]const u8 = null,
+    OPENAI_API_KEY: ?[]const u8 = null,
+    tokens: ?CodexBrokerTokensJson = null,
+};
+
+const CodexBrokerTokensJson = struct {
+    id_token: ?[]const u8 = null,
+    access_token: ?[]const u8 = null,
+    refresh_token: ?[]const u8 = null,
+    account_id: ?[]const u8 = null,
+};
+
+fn runCodexBrokerPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    if (args.json) {
+        try writeCodexBrokerPlanJson(writer, allocator, parsed.value, routes.items, args.profile, capability);
+    } else {
+        try writeCodexBrokerPlanText(writer, allocator, parsed.value, routes.items, args.profile, capability);
+    }
+}
+
+fn writeCodexBrokerPlanJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    routes: []const RepairPlanRoute,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) !void {
+    var route_buf = std.ArrayList(u8).init(allocator);
+    defer route_buf.deinit();
+
+    var summary = CodexBrokerSummary{};
+    var selected: ?RepairPlanRoute = null;
+    var first = true;
+    for (routes) |route| {
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, route);
+        summary.routes_total += 1;
+        if (plan.can_supply) {
+            summary.ready_routes += 1;
+            if (selected == null) selected = route;
+        } else if (!plan.secret_readable) {
+            summary.unreadable_routes += 1;
+        }
+
+        if (!first) try route_buf.append(',');
+        first = false;
+        try writeCodexBrokerRouteJson(route_buf.writer(), route, cfg, plan);
+    }
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_app_server_auth_broker_plan\"");
+    try writer.writeAll(",\"app_server\":{\"transport\":\"stdio\",\"requires_experimental_api\":true,\"login_method\":\"account/login/start.chatgptAuthTokens\",\"refresh_method\":\"account/chatgptAuthTokens/refresh\"}");
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (summary.ready_routes > 0) "true" else "false");
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"prepared_fallback\":true,\"supervised_restart\":false,\"current_process_hotswap\":false,\"per_request_muxing\":false,\"proof_status\":\"planning_only\"}");
+    try writer.writeAll(",\"profile\":");
+    if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.print(",\"routes_total\":{d},\"ready_routes\":{d},\"unreadable_routes\":{d}", .{
+        summary.routes_total,
+        summary.ready_routes,
+        summary.unreadable_routes,
+    });
+    try writer.writeAll(",\"selected\":");
+    if (selected) |route| {
+        try writeRouteSelectionJson(writer, route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"routes\":[");
+    try writer.writeAll(route_buf.items);
+    try writer.writeAll("]}\n");
+}
+
+fn writeCodexBrokerPlanText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    routes: []const RepairPlanRoute,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) !void {
+    try writer.writeAll("oauth-mux Codex app-server broker plan\n\n");
+    if (profile) |value| try writer.print("  profile: {s}\n", .{value});
+    if (capability) |value| try writer.print("  capability: {s}\n", .{value});
+    try writer.writeAll("  claim: current_process_auth_broker proof target; not a public hot-swap claim\n\n");
+
+    if (routes.len == 0) {
+        try writer.writeAll("  no matching Codex routes\n");
+        return;
+    }
+
+    for (routes) |route| {
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, route);
+        try writer.print("  {s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.print("  ready={s} reason={s}", .{ if (plan.can_supply) "yes" else "no", plan.reason });
+        try writer.print(" access_token={s}", .{if (plan.access_token_present) "yes" else "no"});
+        try writer.print(" account_id={s}", .{if (plan.chatgpt_account_id_present) "yes" else "no"});
+        try writer.print(" plan_type={s}\n", .{if (plan.chatgpt_plan_type_present) "yes" else "no"});
+    }
+}
+
+fn writeCodexBrokerRouteJson(
+    writer: anytype,
+    route: RepairPlanRoute,
+    cfg: config.Config,
+    plan: CodexBrokerTokenPlan,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"provider\":");
+    try std.json.stringify(route.provider, .{}, writer);
+    try writer.writeAll(",\"account\":");
+    try std.json.stringify(route.account, .{}, writer);
+    try writer.writeAll(",\"capability\":");
+    if (route.capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"secret_backend\":");
+    if (cfg.providers.map.get(route.provider)) |prov| {
+        if (prov.accounts.map.get(route.account)) |account| {
+            try std.json.stringify(account.secret.backend, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"can_supply\":");
+    try writer.writeAll(if (plan.can_supply) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(plan.reason, .{}, writer);
+    try writer.writeAll(",\"fields\":{\"access_token\":");
+    try writer.writeAll(if (plan.access_token_present) "true" else "false");
+    try writer.writeAll(",\"access_token_jwt_parseable\":");
+    try writer.writeAll(if (plan.access_token_jwt_parseable) "true" else "false");
+    try writer.writeAll(",\"chatgpt_account_id\":");
+    try writer.writeAll(if (plan.chatgpt_account_id_present) "true" else "false");
+    try writer.writeAll(",\"chatgpt_account_id_source\":");
+    if (plan.chatgpt_account_id_source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"chatgpt_plan_type\":");
+    try writer.writeAll(if (plan.chatgpt_plan_type_present) "true" else "false");
+    try writer.writeAll(",\"chatgpt_plan_type_source\":");
+    if (plan.chatgpt_plan_type_source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll("}}");
+}
+
+fn inspectCodexBrokerRoute(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    route: RepairPlanRoute,
+) !CodexBrokerTokenPlan {
+    if (!std.mem.eql(u8, route.provider, "codex")) {
+        return .{ .reason = "non_codex_route" };
+    }
+
+    const prov = cfg.providers.map.get(route.provider) orelse return .{ .reason = "provider_missing" };
+    if (!std.mem.eql(u8, prov.kind, "codex")) return .{ .reason = "provider_kind_not_codex" };
+    const account = prov.accounts.map.get(route.account) orelse return .{ .reason = "account_missing" };
+    const backend = config.resolveSecretBackend(account.secret) catch return .{ .reason = "secret_backend_invalid" };
+    const raw = secret_mod.read(backend, allocator) catch |e| {
+        return .{
+            .reason = codexBrokerSecretReadReason(e),
+        };
+    };
+    defer allocator.free(raw);
+
+    var plan = inspectCodexBrokerAuthJson(allocator, raw);
+    plan.secret_readable = true;
+    return plan;
+}
+
+fn inspectCodexBrokerAuthJson(allocator: std.mem.Allocator, raw: []const u8) CodexBrokerTokenPlan {
+    const parsed = std.json.parseFromSlice(CodexBrokerAuthJson, allocator, raw, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return .{ .secret_readable = true, .reason = "auth_json_invalid" };
+    defer parsed.deinit();
+
+    if (parsed.value.OPENAI_API_KEY != null and parsed.value.tokens == null) {
+        return .{
+            .secret_readable = true,
+            .reason = "api_key_mode_not_supported_for_chatgpt_auth_broker",
+        };
+    }
+
+    const tokens = parsed.value.tokens orelse return .{ .secret_readable = true, .reason = "tokens_missing" };
+    const access_token = nonEmpty(tokens.access_token) orelse return .{ .secret_readable = true, .reason = "access_token_missing" };
+    const access_token_jwt_parseable = jwtPayloadParses(allocator, access_token);
+    const account_id_source = codexAccountIdSource(allocator, tokens);
+    const plan_type_source = codexPlanTypeSource(allocator, tokens);
+    const can_supply = access_token_jwt_parseable and account_id_source != null;
+
+    return .{
+        .secret_readable = true,
+        .can_supply = can_supply,
+        .reason = if (can_supply) "ready" else if (!access_token_jwt_parseable) "access_token_not_jwt" else "chatgpt_account_id_missing",
+        .access_token_present = true,
+        .access_token_jwt_parseable = access_token_jwt_parseable,
+        .chatgpt_account_id_present = account_id_source != null,
+        .chatgpt_account_id_source = account_id_source,
+        .chatgpt_plan_type_present = plan_type_source != null,
+        .chatgpt_plan_type_source = plan_type_source,
+    };
+}
+
+fn codexBrokerSecretReadReason(e: secret_mod.ReadError) []const u8 {
+    return switch (e) {
+        error.NotFound => "secret_not_found",
+        error.AccessDenied => "secret_access_denied",
+        error.DecryptFailed => "secret_decrypt_failed",
+        error.CommandFailed => "secret_command_failed",
+        error.Timeout => "secret_timeout",
+        error.OutOfMemory => "out_of_memory",
+        error.IoError => "secret_io_error",
+    };
+}
+
+fn codexAccountIdSource(allocator: std.mem.Allocator, tokens: CodexBrokerTokensJson) ?[]const u8 {
+    if (nonEmpty(tokens.account_id) != null) return "tokens.account_id";
+    if (jwtAuthStringClaimPresent(allocator, tokens.id_token, "chatgpt_account_id")) return "tokens.id_token.auth.chatgpt_account_id";
+    if (jwtAuthStringClaimPresent(allocator, tokens.access_token, "chatgpt_account_id")) return "tokens.access_token.auth.chatgpt_account_id";
+    return null;
+}
+
+fn codexPlanTypeSource(allocator: std.mem.Allocator, tokens: CodexBrokerTokensJson) ?[]const u8 {
+    if (jwtAuthStringClaimPresent(allocator, tokens.id_token, "chatgpt_plan_type")) return "tokens.id_token.auth.chatgpt_plan_type";
+    if (jwtAuthStringClaimPresent(allocator, tokens.access_token, "chatgpt_plan_type")) return "tokens.access_token.auth.chatgpt_plan_type";
+    return null;
+}
+
+fn jwtAuthStringClaimPresent(allocator: std.mem.Allocator, maybe_jwt: ?[]const u8, field: []const u8) bool {
+    const jwt = nonEmpty(maybe_jwt) orelse return false;
+    const payload = jwtPayloadJsonAlloc(allocator, jwt) catch return false;
+    defer allocator.free(payload);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return false;
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return false,
+    };
+    const auth_value = root.get("https://api.openai.com/auth") orelse return false;
+    const auth = switch (auth_value) {
+        .object => |object| object,
+        else => return false,
+    };
+    return switch (auth.get(field) orelse return false) {
+        .string => |value| value.len != 0,
+        else => false,
+    };
+}
+
+fn jwtPayloadParses(allocator: std.mem.Allocator, jwt: []const u8) bool {
+    const payload = jwtPayloadJsonAlloc(allocator, jwt) catch return false;
+    defer allocator.free(payload);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return false;
+    defer parsed.deinit();
+    return parsed.value == .object;
+}
+
+fn jwtPayloadJsonAlloc(allocator: std.mem.Allocator, jwt: []const u8) ![]u8 {
+    var parts = std.mem.splitScalar(u8, jwt, '.');
+    const header = parts.next() orelse return error.InvalidJwt;
+    const payload = parts.next() orelse return error.InvalidJwt;
+    const signature = parts.next() orelse return error.InvalidJwt;
+    if (header.len == 0 or payload.len == 0 or signature.len == 0 or parts.next() != null) return error.InvalidJwt;
+
+    const decoded_len = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(payload) catch return error.InvalidJwt;
+    const decoded = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(decoded);
+    _ = std.base64.url_safe_no_pad.Decoder.decode(decoded, payload) catch return error.InvalidJwt;
+    return decoded;
+}
+
+fn firstCommaValue(values: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, values, ',');
+    while (it.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len != 0) return trimmed;
+    }
+    return null;
+}
+
+fn nonEmpty(value: ?[]const u8) ?[]const u8 {
+    const present = value orelse return null;
+    return if (present.len == 0) null else present;
+}
+
+test "inspectCodexBrokerAuthJson detects app-server token tuple without exposing values" {
+    const auth_json =
+        \\{
+        \\  "auth_mode": "chatgpt",
+        \\  "tokens": {
+        \\    "id_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "access_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "refresh_token": "redacted-in-test"
+        \\  }
+        \\}
+    ;
+
+    const plan = inspectCodexBrokerAuthJson(std.testing.allocator, auth_json);
+    try std.testing.expect(plan.can_supply);
+    try std.testing.expect(plan.secret_readable);
+    try std.testing.expect(plan.access_token_present);
+    try std.testing.expect(plan.access_token_jwt_parseable);
+    try std.testing.expect(plan.chatgpt_account_id_present);
+    try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_account_id", plan.chatgpt_account_id_source.?);
+    try std.testing.expect(plan.chatgpt_plan_type_present);
+    try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_plan_type", plan.chatgpt_plan_type_source.?);
+}
+
+test "inspectCodexBrokerAuthJson rejects missing account metadata" {
+    const auth_json =
+        \\{
+        \\  "auth_mode": "chatgpt",
+        \\  "tokens": {
+        \\    "access_token": "hdr.e30.sig",
+        \\    "refresh_token": "redacted-in-test"
+        \\  }
+        \\}
+    ;
+
+    const plan = inspectCodexBrokerAuthJson(std.testing.allocator, auth_json);
+    try std.testing.expect(!plan.can_supply);
+    try std.testing.expect(plan.access_token_present);
+    try std.testing.expect(plan.access_token_jwt_parseable);
+    try std.testing.expect(!plan.chatgpt_account_id_present);
+    try std.testing.expectEqualStrings("chatgpt_account_id_missing", plan.reason);
 }
 
 fn runCodexLiveQa(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
