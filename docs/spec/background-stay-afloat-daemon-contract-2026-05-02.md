@@ -63,7 +63,7 @@ The daemon's non-responsibilities are equally important:
 
 ## Seamless Handoff Model
 
-There are three levels of "seamless" support. Public docs and demos must name
+There are four levels of "seamless" support. Public docs and demos must name
 the level being shown.
 
 ### Level 1: prepared fallback
@@ -98,7 +98,24 @@ Required mediation point:
 This can feel seamless to a user when the harness session is restart-tolerant.
 It is still not hot credential reload.
 
-### Level 3: per-request muxing
+### Level 3: current-process auth broker
+
+The upstream harness exposes a reload, external-auth, or account-switch
+protocol that oauth-mux can drive while the harness process remains alive.
+
+Required mediation point:
+
+- a harness-native auth reload or account-switch API;
+- a sidecar client that can answer harness auth-refresh requests;
+- an in-agent adapter or plugin that can accept selected credentials from
+  oauth-mux.
+
+This is not generic process mutation. It is provider-specific cooperation from
+the running harness. For Codex, the first promising candidate is app-server
+external ChatGPT auth tokens, tracked in
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
+
+### Level 4: per-request muxing
 
 Every provider request passes through oauth-mux or an oauth-mux-aware protocol
 surface. The mux can reroute a single request without restarting the harness.
@@ -111,8 +128,8 @@ Required mediation point:
 - a harness-native credential reload or account-switch API.
 
 This is the strongest product shape, but it is provider and harness specific.
-Codex and Claude command-owned sessions should not be advertised at Level 3
-until their reload or proxy semantics are explicitly proven.
+Codex and Claude command-owned sessions should not be advertised at Level 3 or
+Level 4 until their reload, broker, or proxy semantics are explicitly proven.
 
 ## Background Daemon Shape
 
@@ -180,7 +197,11 @@ and stop/status inspection.
 ### Codex
 
 Codex currently behaves as a command-owned session. `CODEX_HOME` selection is
-the main route injection boundary.
+the main route injection boundary for unmanaged CLI launches. A 2026-05-02
+source review found a stronger app-server external-auth path that may support
+current-process auth brokering when Codex is launched under oauth-mux mediation;
+that proof is tracked separately in
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
 
 Supported near-term product shape:
 
@@ -189,7 +210,9 @@ Supported near-term product shape:
   commands with the selected account;
 - a Codex-specific wrapper can relaunch a child Codex process when the selected
   route changes;
-- direct hot-swap inside this already-running Codex session is not promised.
+- app-server auth brokering is a beta proof target, not a public claim yet;
+- direct hot-swap inside an unmanaged already-running Codex session is not
+  promised.
 
 ### Claude
 
@@ -306,9 +329,11 @@ mutating admission.
 
 - Promote `oauth-mux exec` and shell wrappers as Level 1 mediation.
 - Add a Codex wrapper story for selected-account launch and supervised restart.
+- Add a Codex app-server auth-broker proof for Level 3 current-process
+  mediation.
 - Add MCP/in-agent tools for route visibility and handoff surfacing.
 - Consider request-level proxying only where the harness protocol can support
-  Level 3 per-request muxing.
+  Level 4 per-request muxing.
 
 Implementation note, 2026-05-02: `oauth-mux stay-afloat launch` is now the
 Level 1 startup boundary. It preflights from recorded evidence, delegates to
@@ -350,7 +375,7 @@ Not allowed without Level 2 or Level 3 proof:
 If the current Codex session caps out, oauth-mux should be able to identify the
 next selectable Codex route from recorded evidence. It will not automatically
 replace the credentials inside this already-running Codex process unless this
-session was launched through a mediation layer that can relaunch, reload, or
-proxy requests through oauth-mux.
+session was launched through a mediation layer that can relaunch, reload,
+broker auth, or proxy requests through oauth-mux.
 
 That is the gap this contract exists to close.

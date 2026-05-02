@@ -5,12 +5,17 @@ Status: beta operator recipes for the supervised stay-afloat loop.
 These recipes make the current daemon beta dogfoodable without changing the
 public product claim. The loop can keep route-state evidence warm and queue
 user-mediated repair handoffs, but it does not hot-swap credentials inside an
-already-running upstream harness process.
+unmanaged already-running upstream harness process.
 
 The next stronger claim is wrapper-mediated supervised restart, tracked in
 `docs/spec/supervised-harness-restart-contract-2026-05-02.md`. That path needs a
 separate parent-wrapper command because `stay-afloat launch` intentionally uses
 `execve` and cannot observe the target process after startup.
+
+Codex now also has a separate app-server auth-broker proof track:
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. That path may become
+current-process auth switching for Codex sessions launched under oauth-mux
+app-server mediation. It is not the same claim as these generic wrapper recipes.
 
 ## Product Truth
 
@@ -332,8 +337,10 @@ oauth-mux daemon status --json
 
 For Codex, a good dogfood run intentionally includes at least one exhausted
 account and one available account. The expected outcome is prepared fallback for
-the next mediated action, not hot replacement of credentials inside the current
-Codex process.
+the next mediated action, not hot replacement of credentials inside an
+unmanaged current Codex process. For app-server broker dogfood, use the Codex
+broker proof spec and keep auth-recovery proof separate from quota-exhaustion
+proof.
 
 For Claude and Figma, do not claim parity until provider-mediated repair
 contracts distinguish quota exhaustion, auth death, scope insufficiency, local

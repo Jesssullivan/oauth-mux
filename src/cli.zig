@@ -182,10 +182,12 @@ pub const Command = union(enum) {
         probe_all,
         config_candidate,
         config_merge,
+        broker_plan,
     };
 
     pub const CodexArgs = struct {
         action: CodexAction = .canary,
+        profile: ?[]const u8 = null,
         account: ?[]const u8 = null,
         accounts: []const u8 = "max-1,max-2,max-3",
         capabilities: []const u8 = "codex-mini,codex-max",
@@ -877,6 +879,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .config_candidate;
         } else if (eql(args[0], "config-merge")) {
             result.action = .config_merge;
+        } else if (eql(args[0], "broker-plan")) {
+            result.action = .broker_plan;
         } else {
             result.action = .canary;
             option_start = 0;
@@ -892,7 +896,10 @@ fn parseCodex(args: []const []const u8) Command {
 fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, option_start: usize) void {
     var i = option_start;
     while (i < args.len) : (i += 1) {
-        if (eql(args[i], "--account")) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--account")) {
             i += 1;
             if (i < args.len) result.account = args[i];
         } else if (eql(args[i], "--accounts")) {
@@ -1053,6 +1060,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
         \\      Probe every selected Codex account/capability route.
         \\
+        \\  codex broker-plan [--profile name] [--capability c] [--json]
+        \\      Inspect whether Codex routes can supply app-server external auth tokens.
+        \\
         \\  codex config-candidate [--output path] [--store-root path] [--json]
         \\      Write a non-overwriting Codex Max config candidate.
         \\
@@ -1091,6 +1101,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
         \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
+        \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex config-candidate [--output path] [--store-root path] [--json]
         \\  oauth-mux codex config-merge [--candidate path] [--backup path] [--json]
         \\  oauth-mux codex bootstrap-dirs [--accounts a,b,c] [--store-root path]
@@ -1284,6 +1295,20 @@ test "parse codex config merge" {
             try std.testing.expect(codex.action == .config_merge);
             try std.testing.expectEqualStrings("/tmp/candidate.json", codex.candidate.?);
             try std.testing.expectEqualStrings("/tmp/config.backup.json", codex.backup.?);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex broker plan" {
+    const args = [_][]const u8{ "codex", "broker-plan", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .broker_plan);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
             try std.testing.expect(codex.json);
         },
         else => return error.Unexpected,
@@ -1775,7 +1800,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all broker-plan config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run supervise start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host beta supervised stay-afloat loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'

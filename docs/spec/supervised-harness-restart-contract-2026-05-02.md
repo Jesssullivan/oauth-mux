@@ -2,7 +2,8 @@
 Date: 2026-05-02
 
 Issue context: Linear `TIN-911`, GitHub `#123`, parent `TIN-738` / GitHub
-`#67`.
+`#67`. Parallel higher-upside proof: Linear `TIN-913`, GitHub `#125`,
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
 
 ## State
 
@@ -23,9 +24,15 @@ shape:
 - the claim still correctly kept `current_process_hotswap:false`,
   `supervised_restart:false`, and `per_request_muxing:false`.
 
-The next claim level is therefore not "background daemon magically fixes the
-current process." It is "oauth-mux owns a wrapper process that can restart a
-harness under another selected account after a typed failure."
+The next portable claim level is therefore not "background daemon magically
+fixes the current process." It is "oauth-mux owns a wrapper process that can
+restart a harness under another selected account after a typed failure."
+
+For Codex specifically, a later source review found an app-server external-auth
+broker path that may allow current-process account switching for sessions
+launched under oauth-mux mediation. That does not invalidate this contract:
+supervised restart remains the generic fallback for unmanaged harnesses and for
+providers without a proven reload/broker API.
 
 ## Claim Levels
 
@@ -79,11 +86,14 @@ and only for the wrapper-owned process.
 
 ### Level 3: current_process_hotswap
 
-Not implemented.
+Not implemented in oauth-mux.
 
-This requires direct support from the upstream harness or an oauth-mux-aware
-plugin/adapter inside that running process. A parent daemon cannot replace
-tokens that a child process has already loaded unless the child cooperates.
+This requires direct support from the upstream harness, an oauth-mux-aware
+plugin/adapter inside that running process, or a sidecar protocol the harness
+already trusts. A parent daemon cannot replace tokens that a child process has
+already loaded unless the child cooperates. Codex app-server external auth is
+the first candidate for such cooperation and is tracked separately from this
+restart contract.
 
 ### Level 4: per_request_muxing
 
@@ -179,8 +189,9 @@ When the extra paid Codex account is ready:
    oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
    ```
 
-4. Do not count the original Codex session as a successful handoff. It was not
-   started under the supervised wrapper and cannot be mutated from outside.
+4. Do not count the original unmanaged Codex session as a successful handoff.
+   It was not started under the supervised wrapper or the app-server broker
+   topology and cannot be mutated by file swapping from outside.
 
 5. After `stay-afloat supervise` exists, repeat the test with a wrapper-owned
    Codex process and record whether the wrapper can restart into the credited
@@ -211,4 +222,3 @@ When the extra paid Codex account is ready:
   relaunch command for user confirmation.
 - Whether Windows should support `stay-afloat supervise` immediately through
   `std.process.Child`, even while `daemon supervise` remains unsupported there.
-

@@ -190,6 +190,14 @@ repair owner, and any user-facing command to run. The same response includes a
 `claim` object. `claim.level:"prepared_fallback"` means oauth-mux can start the
 next harness process through `claim.launch_argv`; it is not a current-process
 hot swap, supervised restart, or per-request muxing claim.
+Codex app-server auth brokering is tracked separately as a possible
+current-process proof for mediated Codex sessions; unmanaged Codex launches
+should still be treated as prepared fallback only.
+Use
+`oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
+to inspect whether enrolled Codex stores can supply the app-server
+external-auth tuple for that future broker path. It is local, redacted,
+planning-only, and does not prove live hot-swap.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

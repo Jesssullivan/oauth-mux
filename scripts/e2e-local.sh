@@ -14,14 +14,24 @@ fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-e2e.XXXXXX")"
 daemon_pid=""
+short_runtime_dirs=""
 cleanup() {
   if [ -n "${daemon_pid:-}" ]; then
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
   rm -rf "$tmp"
+  if [ -n "$short_runtime_dirs" ]; then
+    rm -rf $short_runtime_dirs
+  fi
 }
 trap cleanup EXIT
+
+short_runtime_dir() {
+  dir="$(mktemp -d "/tmp/oauth-mux-e2e-runtime.XXXXXX")"
+  short_runtime_dirs="${short_runtime_dirs}${short_runtime_dirs:+ }$dir"
+  printf '%s\n' "$dir"
+}
 
 config="$tmp/config.json"
 state_dir="$tmp/state"
@@ -433,10 +443,10 @@ expect_contains "$daemon_loop" '"tick_index":1' "daemon tick loop includes secon
 expect_contains "$daemon_loop" '"executed":false' "daemon tick loop remains planning-only"
 
 printf 'e2e: daemon foreground status and stop stay inside temp runtime\n'
-daemon_runtime="$tmp/daemon-runtime"
+daemon_runtime="$(short_runtime_dir)"
 daemon_state="$tmp/daemon-state"
 daemon_log="$tmp/daemon.log"
-mkdir -p "$daemon_runtime" "$daemon_state"
+mkdir -p "$daemon_state"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$daemon_state" \
   XDG_RUNTIME_DIR="$daemon_runtime" \
@@ -472,9 +482,8 @@ expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status report
 expect_contains "$daemon_stopped" '"wrapper_contract":"foreground_tick"' "daemon status reports wrapper contract when stopped"
 
 printf 'e2e: supervised stay-afloat daemon loop reports beta host status\n'
-supervised_runtime="$tmp/supervised-runtime"
+supervised_runtime="$(short_runtime_dir)"
 supervised_log="$tmp/supervised-daemon.log"
-mkdir -p "$supervised_runtime"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$state_dir" \
   XDG_RUNTIME_DIR="$supervised_runtime" \
@@ -603,6 +612,64 @@ cat >"$reauth_config" <<EOF
   "strategies": {}
 }
 EOF
+
+printf 'e2e: codex broker-plan reports redacted app-server auth readiness\n'
+broker_auth="$tmp/broker-auth.json"
+broker_config="$tmp/broker-config.json"
+broker_jwt='hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig'
+cat >"$broker_auth" <<EOF
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "$broker_jwt",
+    "access_token": "$broker_jwt",
+    "refresh_token": "broker-refresh-token",
+    "account_id": "acct-test"
+  }
+}
+EOF
+cat >"$broker_config" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-1": {
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "codex-max": {
+      "providers": ["codex:max-1#codex-max"]
+    }
+  },
+  "strategies": {}
+}
+EOF
+broker_plan="$(OMUX_CONFIG="$broker_config" OMUX_STATE_DIR="$state_dir" "$bin" codex broker-plan --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_plan" '"mode":"codex_app_server_auth_broker_plan"' "broker-plan reports broker mode"
+expect_contains "$broker_plan" '"requires_experimental_api":true' "broker-plan reports Codex app-server experimental API gate"
+expect_contains "$broker_plan" '"login_method":"account/login/start.chatgptAuthTokens"' "broker-plan reports external-auth login method"
+expect_contains "$broker_plan" '"refresh_method":"account/chatgptAuthTokens/refresh"' "broker-plan reports external-auth refresh method"
+expect_contains "$broker_plan" '"level":"current_process_auth_broker"' "broker-plan reports proof target claim"
+expect_contains "$broker_plan" '"proof_status":"planning_only"' "broker-plan refuses public proof claim"
+expect_contains "$broker_plan" '"ok":true' "broker-plan reports ready route"
+expect_contains "$broker_plan" '"ready_routes":1' "broker-plan counts ready routes"
+expect_contains "$broker_plan" '"selected":{"provider":"codex","account":"max-1","capability":"codex-max"' "broker-plan selects ready route"
+expect_contains "$broker_plan" '"can_supply":true' "broker-plan marks route as supply-capable"
+expect_contains "$broker_plan" '"chatgpt_account_id":true' "broker-plan proves account id presence"
+expect_contains "$broker_plan" '"chatgpt_account_id_source":"tokens.account_id"' "broker-plan reports redacted account id source"
+expect_contains "$broker_plan" '"chatgpt_plan_type":true' "broker-plan proves plan type presence"
+expect_not_contains "$broker_plan" 'acct-test' "broker-plan does not expose account id value"
+expect_not_contains "$broker_plan" "$broker_jwt" "broker-plan does not expose token value"
+expect_not_contains "$broker_plan" 'broker-refresh-token' "broker-plan does not expose refresh token value"
+
 repair_reauth_json="$tmp/repair-run-reauth.json"
 set +e
 OMUX_CONFIG="$reauth_config" \

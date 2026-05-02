@@ -109,7 +109,17 @@ an exact `exec_argv` when already afloat, otherwise it returns the typed repair
 or user-handoff action to mediate before retrying. It also returns `claim`:
 `prepared_fallback` means use `claim.launch_argv` for a fresh harness process,
 while current-process hot swap, supervised restart, and per-request muxing are
-explicitly false until those product levels are implemented and proven.
+explicitly false until those product levels are implemented and proven. Codex
+app-server auth brokering is now tracked as the first plausible
+current-process proof path for mediated Codex sessions, but it is not a claim
+for unmanaged Codex TUI/CLI processes.
+
+`oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
+is the no-spend broker readiness check. It reads configured Codex auth stores
+locally and reports whether each route can supply `accessToken`,
+`chatgptAccountId`, and `chatgptPlanType` for a future app-server broker. Its
+output is redacted and planning-only; it does not run Codex, contact OpenAI, or
+prove live hot-swap.
 
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is

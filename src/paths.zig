@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const env = @import("env.zig");
 
 pub const app_name = "oauth-mux";
+const unix_socket_path_soft_limit = 100;
 
 pub fn configDir(allocator: std.mem.Allocator) ![]const u8 {
     if (try env.get(allocator, "OMUX_CONFIG_DIR")) |dir| {
@@ -54,7 +55,19 @@ pub fn healthFilePath(allocator: std.mem.Allocator) ![]const u8 {
 pub fn socketPath(allocator: std.mem.Allocator) ![]const u8 {
     const dir = try runtimeDir(allocator);
     defer allocator.free(dir);
-    return std.fs.path.join(allocator, &.{ dir, "daemon.sock" });
+    return socketPathFromRuntimeDir(allocator, dir);
+}
+
+fn socketPathFromRuntimeDir(allocator: std.mem.Allocator, dir: []const u8) ![]const u8 {
+    const path = try std.fs.path.join(allocator, &.{ dir, "daemon.sock" });
+    if (comptime builtin.os.tag == .windows) return path;
+    if (path.len < unix_socket_path_soft_limit) return path;
+
+    defer allocator.free(path);
+    const uid = (try env.get(allocator, "UID")) orelse try allocator.dupe(u8, "0");
+    defer allocator.free(uid);
+    const hash = std.hash.Wyhash.hash(0, path);
+    return std.fmt.allocPrint(allocator, "/tmp/{s}-{s}/{x}.sock", .{ app_name, uid, hash });
 }
 
 fn xdgOrMacOS(
@@ -123,4 +136,19 @@ test "absolutePath keeps absolute and expands relative paths" {
         try std.testing.expect(std.fs.path.isAbsolute(result));
         try std.testing.expect(std.mem.endsWith(u8, result, "relative/path"));
     }
+}
+
+test "socketPathFromRuntimeDir keeps Unix socket paths under the platform limit" {
+    if (comptime builtin.os.tag == .windows) return;
+
+    const allocator = std.testing.allocator;
+    const result = try socketPathFromRuntimeDir(
+        allocator,
+        "/tmp/oauth-mux-e2e.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    defer allocator.free(result);
+
+    try std.testing.expect(result.len < unix_socket_path_soft_limit);
+    try std.testing.expect(std.mem.startsWith(u8, result, "/tmp/oauth-mux-"));
+    try std.testing.expect(std.mem.endsWith(u8, result, ".sock"));
 }
