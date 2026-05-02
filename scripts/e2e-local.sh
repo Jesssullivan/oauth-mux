@@ -811,6 +811,38 @@ expect_not_contains "$broker_session_plan" "$broker_jwt" "broker-session-plan do
 expect_not_contains "$broker_session_plan" 'broker-session-refresh-token' "broker-session-plan does not expose refresh token value"
 expect_not_contains "$broker_session_plan" 'broker-session-spare-token' "broker-session-plan does not expose spare refresh token value"
 
+printf 'e2e: codex revalidate-exhausted requires spend confirmation before mutating route health\n'
+broker_revalidate_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex revalidate-exhausted --profile codex-max --capability codex-max --account max-1 --json 2>/dev/null || true)"
+expect_contains "$broker_revalidate_prompt" '"mode":"codex_exhausted_route_revalidation"' "revalidate-exhausted reports mode"
+expect_contains "$broker_revalidate_prompt" '"confirmation_required":true' "revalidate-exhausted requires confirmation"
+expect_contains "$broker_revalidate_prompt" '"spends_provider_calls":true' "revalidate-exhausted reports provider spend"
+expect_contains "$broker_revalidate_prompt" '"mutates_route_health":true' "revalidate-exhausted reports route-health mutation"
+
+printf 'e2e: codex revalidate-exhausted re-probes an exhausted route without manual health reset\n'
+broker_revalidate_state="$tmp/broker-revalidate-state"
+mkdir -p "$broker_revalidate_state"
+cp "$broker_session_state/health.json" "$broker_revalidate_state/health.json"
+broker_revalidate="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_revalidate_state" "$bin" codex revalidate-exhausted --profile codex-max --capability codex-max --account max-1 --confirm-spend --json)"
+expect_contains "$broker_revalidate" '"mode":"codex_exhausted_route_revalidation"' "revalidate-exhausted reports mode after confirmation"
+expect_contains "$broker_revalidate" '"ok":true' "revalidate-exhausted succeeds with provider evidence"
+expect_contains "$broker_revalidate" '"proof_status":"spend_gated_exhausted_route_revalidation"' "revalidate-exhausted scopes proof status"
+expect_contains "$broker_revalidate" '"provider_originated_evidence":true' "revalidate-exhausted records provider-originated evidence"
+expect_contains "$broker_revalidate" '"manual_health_reset_required":false' "revalidate-exhausted avoids manual reset requirement"
+expect_contains "$broker_revalidate" '"next_turn_route_selection_refreshed":true' "revalidate-exhausted reports route selection refresh"
+expect_contains "$broker_revalidate" '"next_turn_route_state_fallback":false' "revalidate-exhausted does not overclaim fallback proof"
+expect_contains "$broker_revalidate" '"routes_probed":1' "revalidate-exhausted probes one targeted route"
+expect_contains "$broker_revalidate" '"routes_available_after":1' "revalidate-exhausted records available route after probe"
+expect_contains "$broker_revalidate" '"previous_selected":{"provider":"codex","account":"max-2","capability":"codex-max"' "revalidate-exhausted records previous selection"
+expect_contains "$broker_revalidate" '"selected":{"provider":"codex","account":"max-1","capability":"codex-max"' "revalidate-exhausted selects newly available route"
+expect_contains "$broker_revalidate" '"health_key":"codex:max-1#codex-max"' "revalidate-exhausted reports health key"
+expect_contains "$broker_revalidate" '"availability":"available"' "revalidate-exhausted stores availability"
+expect_contains "$broker_revalidate" '"tokens_printed":false' "revalidate-exhausted redaction reports token suppression"
+expect_not_contains "$broker_revalidate" 'acct-session-fallback' "revalidate-exhausted does not expose fallback account id value"
+expect_not_contains "$broker_revalidate" 'acct-session-spare' "revalidate-exhausted does not expose spare account id value"
+expect_not_contains "$broker_revalidate" "$broker_jwt" "revalidate-exhausted does not expose token value"
+expect_not_contains "$broker_revalidate" 'broker-session-refresh-token' "revalidate-exhausted does not expose refresh token value"
+expect_not_contains "$broker_revalidate" 'broker-session-spare-token' "revalidate-exhausted does not expose spare refresh token value"
+
 printf 'e2e: codex broker-fallback-drill requires explicit confirmation before mutating route health\n'
 broker_fallback_drill_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-2 --json)"
 expect_contains "$broker_fallback_drill_prompt" '"mode":"codex_broker_fallback_drill"' "broker-fallback-drill reports drill mode"

@@ -256,6 +256,10 @@ these precise provider-proof children.
    live one-turn broker-owned session proof and remains spend-gated. Its
    bounded `--stdin` beta keeps one broker-owned app-server session open across
    line-delimited live turns while still suppressing transcript content.
+   `oauth-mux codex revalidate-exhausted --confirm-spend` is the spend-gated
+   hygiene path after billing or credit changes: it re-probes only routes
+   already blocked by recorded quota/rate evidence and persists the new provider
+   result, instead of requiring a manual health reset.
    `oauth-mux codex broker-fallback-drill --from-account ...
    --confirm-drill` is the controlled operator drill for fallback observation:
    it marks a route quota-exhausted in local route health and verifies the next

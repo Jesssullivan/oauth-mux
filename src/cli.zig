@@ -179,6 +179,7 @@ pub const Command = union(enum) {
         onboard,
         canary,
         live_qa,
+        revalidate_exhausted,
         probe_all,
         config_candidate,
         config_merge,
@@ -887,6 +888,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .canary;
         } else if (eql(args[0], "live-qa")) {
             result.action = .live_qa;
+        } else if (eql(args[0], "revalidate-exhausted")) {
+            result.action = .revalidate_exhausted;
         } else if (eql(args[0], "probe-all")) {
             result.action = .probe_all;
         } else if (eql(args[0], "config-candidate")) {
@@ -1102,6 +1105,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\      Run confirmed Codex route probes and record route evidence.
         \\
+        \\  codex revalidate-exhausted [--profile name] [--capability c] [--account a] --confirm-spend [--json]
+        \\      Re-probe exhausted Codex routes after external billing or credit changes.
+        \\
         \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
         \\      Probe every selected Codex account/capability route.
         \\
@@ -1169,6 +1175,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
         \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
         \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
+        \\  oauth-mux codex revalidate-exhausted [--profile name] [--capability c] [--account a] --confirm-spend [--json]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
         \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
@@ -1189,7 +1196,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\
         \\Safety:
         \\  canary is no-spend unless --live is provided.
-        \\  live-qa, probe-all, and canary --live run real provider probes.
+        \\  live-qa, revalidate-exhausted, probe-all, and canary --live run real provider probes.
         \\  broker-smoke, broker-refresh-smoke, broker-401-smoke,
         \\  broker-quota-smoke, broker-session-smoke, and broker-run read a
         \\  selected Codex route secret and send it only to a broker-owned
@@ -1197,7 +1204,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  account-id values.
         \\  broker-fallback-drill mutates only oauth-mux route health; it does
         \\  not spend provider calls or print secrets.
-        \\  live-qa and broker-run require --confirm-spend or
+        \\  live-qa, revalidate-exhausted, and broker-run require --confirm-spend or
         \\  OMUX_LIVE_QA_CONFIRM=spend-real-calls.
         \\  --help and -h are non-mutating for every Codex subcommand.
         \\
@@ -1341,6 +1348,22 @@ test "parse codex live qa confirmation" {
             try std.testing.expect(codex.action == .live_qa);
             try std.testing.expectEqualStrings("max-1,max-3", codex.accounts);
             try std.testing.expectEqualStrings("codex-mini", codex.capabilities);
+            try std.testing.expect(codex.confirm_spend);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex revalidate exhausted" {
+    const args = [_][]const u8{ "codex", "revalidate-exhausted", "--profile", "codex-max", "--capability", "codex-max", "--account", "max-3", "--confirm-spend", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .revalidate_exhausted);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expectEqualStrings("max-3", codex.account.?);
             try std.testing.expect(codex.confirm_spend);
             try std.testing.expect(codex.json);
         },
@@ -2023,7 +2046,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa revalidate-exhausted probe-all broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run supervise start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host beta supervised stay-afloat loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
