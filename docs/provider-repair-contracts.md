@@ -34,7 +34,10 @@ The action now has three distinct identity fields:
 `stay-afloat next --json` wraps the same action contract in a single
 agent-facing decision. Selectable routes return `ready_for_exec:true` with an
 exact `exec_argv`; non-selectable routes return `ready_for_exec:false` with the
-typed repair action, mediation, owner, and command fields shown above.
+typed repair action, mediation, owner, and command fields shown above. The
+response also includes `claim` so callers can tell that current support is
+prepared process-start fallback through `claim.launch_argv`, not in-process
+credential replacement.
 
 The repair owner values are:
 
