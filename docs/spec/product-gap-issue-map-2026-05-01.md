@@ -239,9 +239,12 @@ these precise provider-proof children.
    status, supervised tick loop, wrapper recipes, and mediation adapters before
    making seamless handoff claims.
 9. Work `TIN-913` / GitHub `#125` as the Codex app-server auth-broker proof
-   track before assuming restart is
-   the only viable Codex current-process path. Keep unauthorized-token recovery
-   separate from quota/usage-limit recovery.
+   track before assuming restart is the only viable Codex current-process path.
+   `oauth-mux codex broker-plan` proves local credential tuple readiness, and
+   `oauth-mux codex broker-smoke --confirm-broker` proves broker-owned
+   app-server stdio external-auth login. Keep unauthorized-token recovery
+   separate from quota/usage-limit recovery until the 401 and quota proof
+   tickets are green.
 10. Return to daemon background implementation only after wrapper/install
    decisions and provider proof produce enough real operator evidence. The
    current socket daemon decision is complete under `TIN-867`; future

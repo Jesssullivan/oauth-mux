@@ -106,6 +106,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile 
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provider codex --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair run --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
@@ -131,6 +132,10 @@ sessions, not a current public claim.
 configured Codex stores locally and reports whether each route can supply the
 external-auth tuple Codex app-server expects, without printing tokens, account
 ids, credential paths, or provider-call evidence.
+`codex broker-smoke --confirm-broker --json` is the next local proof: it starts
+a broker-owned Codex app-server stdio child, sends the selected route token to
+that child only, and verifies initialize/login/account-update milestones while
+still suppressing token, account-id, and raw protocol output.
 
 `stay-afloat launch -- <command>` is the target execution boundary for new
 harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
@@ -252,6 +257,7 @@ oauth-mux codex canary
 oauth-mux codex live-qa
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
+oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair run --profile codex-max --capability codex-max --json

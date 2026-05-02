@@ -198,6 +198,13 @@ Use
 to inspect whether enrolled Codex stores can supply the app-server
 external-auth tuple for that future broker path. It is local, redacted,
 planning-only, and does not prove live hot-swap.
+Use
+`oauth-mux codex broker-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` after broker-plan is ready to prove a broker-owned
+Codex app-server stdio login. It sends the selected route token only to the
+child app-server, verifies initialize/login/account-update milestones, and
+prints no token, account-id, or raw protocol values. It is still not an
+unmanaged current TUI hot-swap or quota-recovery claim.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

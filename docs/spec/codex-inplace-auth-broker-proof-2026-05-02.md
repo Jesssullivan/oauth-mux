@@ -236,20 +236,21 @@ For quota-driven account changes, use a different action name, such as
    First slice: `oauth-mux codex broker-plan --profile codex-max --capability
    codex-max --json` reports this locally and redacts token, account-id,
    credential-path, and provider-call evidence.
-5. Add a broker command behind an explicit beta name, for example:
+5. Add a broker command behind an explicit beta name:
 
    ```bash
-   oauth-mux codex broker \
+   oauth-mux codex broker-smoke \
      --profile codex-max \
      --capability codex-max \
-     --transport stdio \
+     --confirm-broker \
      --json
    ```
 
-6. Prove topology A against a disposable app-server process.
-7. Ensure the broker initializes app-server with
-   `capabilities.experimentalApi:true`, then sends
-   `account/login/start.chatgptAuthTokens` from a selected route.
+6. Prove topology A against a disposable app-server process. The first
+   implementation is `broker-smoke`: it starts `codex app-server --listen
+   stdio://`, initializes app-server with `capabilities.experimentalApi:true`,
+   sends `account/login/start.chatgptAuthTokens` from a selected route, and
+   reports only redacted protocol milestones.
 8. Add a controlled 401 proof that switches from one account token to another
    and records redacted evidence.
 9. Add a no-overclaim quota proof: show that rate-limit snapshots can trigger

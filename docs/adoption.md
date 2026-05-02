@@ -121,6 +121,15 @@ locally and reports whether each route can supply `accessToken`,
 output is redacted and planning-only; it does not run Codex, contact OpenAI, or
 prove live hot-swap.
 
+`oauth-mux codex broker-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` is the next proof step. It starts a broker-owned Codex
+app-server child over stdio, initializes it with `experimentalApi`, sends the
+selected route's ChatGPT auth token to that child, and verifies the external
+auth login notifications. It still does not claim unmanaged TUI hot-swap,
+per-request muxing, quota recovery, or live 401 repair; it is a local protocol
+smoke for mediated app-server sessions and its output suppresses token,
+account-id, and raw protocol values.
+
 `oauth-mux stay-afloat launch -- <command>` is the matching startup command for
 users and wrappers. It executes the target only after a selectable route is
 found from recorded evidence. The delegated `exec` path still validates local
