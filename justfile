@@ -168,7 +168,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh'
     @echo "all checks passed"
 
 e2e:
@@ -221,6 +221,12 @@ daemon-tick PROFILE="codex-max" CAPABILITY="codex-max": build
 
 daemon-loop PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="2" INTERVAL_MS="0": build
     ./zig-out/bin/oauth-mux daemon tick --loop --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}} --profile {{PROFILE}} --capability {{CAPABILITY}} --json
+
+daemon-supervise PROFILE="codex-max" CAPABILITY="codex-max" INTERVAL_MS="60000": build
+    ./zig-out/bin/oauth-mux daemon supervise --profile {{PROFILE}} --capability {{CAPABILITY}} --interval-ms {{INTERVAL_MS}}
+
+daemon-supervise-smoke PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="3" INTERVAL_MS="500": build
+    ./zig-out/bin/oauth-mux daemon supervise --profile {{PROFILE}} --capability {{CAPABILITY}} --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}}
 
 # ── Shell integration ──
 
