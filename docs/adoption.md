@@ -42,6 +42,7 @@ oauth-mux config validate
 oauth-mux discover --json
 oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
+oauth-mux stay-afloat next --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat handoffs --json
 oauth-mux stay-afloat refresh --profile <profile> --capability <capability> --json
@@ -91,16 +92,21 @@ oauth-mux codex live-qa --confirm-spend
 oauth-mux codex probe-all --capability codex-mini --json
 ```
 
-`doctor runtime`, `route explain`, `route select`, `stay-afloat --once`, and
-bounded `stay-afloat --loop` are no-spend surfaces when run without
-`--execute`. They only use local runtime checks plus recorded liveness, so they
-are safe for agents to run before deciding whether a live probe or user-driven
-reauth is warranted. `stay-afloat --execute` is the beta foreground execution
-boundary: it can run one admitted non-interactive action or queue an interactive
-handoff event. Prefer scoped runtime checks such as
+`doctor runtime`, `route explain`, `route select`, `stay-afloat next`,
+`stay-afloat --once`, and bounded `stay-afloat --loop` are no-spend surfaces
+when run without `--execute`. They only use local runtime checks plus recorded
+liveness, so they are safe for agents to run before deciding whether a live
+probe or user-driven reauth is warranted. `stay-afloat --execute` is the beta
+foreground execution boundary: it can run one admitted non-interactive action
+or queue an interactive handoff event. Prefer scoped runtime checks such as
 `oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
 when dogfooding a specific stay-afloat route; global runtime doctor is still
 useful for support bundles and full-machine cleanup.
+
+`oauth-mux stay-afloat next --json` is the simplest agent handoff: it returns
+an exact `exec_argv` when already afloat, otherwise it returns the typed repair
+or user-handoff action to mediate before retrying.
+
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,
 recorded liveness, and safe next commands without reading credential values.

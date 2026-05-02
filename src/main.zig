@@ -143,6 +143,13 @@ pub fn main() !void {
             };
         },
 
+        .stay_afloat_next => |route_args| {
+            runStayAfloatNext(allocator, stdout, route_args) catch |e| {
+                log.err("stay-afloat next: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .stay_afloat => |tick_args| {
             runDaemonTick(allocator, stdout, tick_args, "oauth-mux stay-afloat") catch |e| {
                 log.err("stay-afloat: {s}", .{@errorName(e)});
@@ -2408,6 +2415,7 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
         "oauth-mux probe --profile <profile> --capability <capability> --json",
         "oauth-mux route explain --profile <profile> --capability <capability> --json",
         "oauth-mux route select --profile <profile> --capability <capability> --json",
+        "oauth-mux stay-afloat next --profile <profile> --capability <capability> --json",
         "oauth-mux repair-plan --profile <profile> --capability <capability> --json",
         "oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json",
         "oauth-mux repair run --profile <profile> --capability <capability> --json",
@@ -3529,6 +3537,40 @@ fn runRoute(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Rou
     if (args.action == .select and selected_index == null) return error.AllAccountsExhausted;
 }
 
+fn runStayAfloatNext(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.RouteArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+    const candidate_index = if (selected_index == null) firstActionableRoute(evaluations.items) else null;
+
+    if (args.json) {
+        try writeStayAfloatNextJson(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args);
+    } else {
+        try writeStayAfloatNextText(writer, allocator, evaluations.items, selected_index, candidate_index, args);
+    }
+}
+
 fn runDaemonTick(
     allocator: std.mem.Allocator,
     writer: anytype,
@@ -4013,6 +4055,14 @@ fn firstSelectableRoute(evaluations: []const RouteEvaluation) ?usize {
     return null;
 }
 
+fn firstActionableRoute(evaluations: []const RouteEvaluation) ?usize {
+    for (evaluations, 0..) |evaluation, idx| {
+        if (evaluation.action.kind != .none) return idx;
+    }
+    if (evaluations.len > 0) return 0;
+    return null;
+}
+
 fn routeSelectable(runtime: types.RuntimeReadiness, health: ?health_mod.AccountHealth) bool {
     const current = health orelse return false;
     return types.selectable(current.liveness, runtime);
@@ -4088,6 +4138,48 @@ fn writeRouteText(
     }
 }
 
+fn writeStayAfloatNextText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    candidate_index: ?usize,
+    args: cli.Command.RouteArgs,
+) !void {
+    try writer.writeAll("oauth-mux stay-afloat next\n\n");
+    if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
+    if (args.provider) |provider_name| try writer.print("  provider: {s}\n", .{provider_name});
+    if (args.account) |account| try writer.print("  account: {s}\n", .{account});
+    if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
+
+    if (selected_index) |idx| {
+        const selected = evaluations[idx].route;
+        try writer.writeAll("  ready_for_exec: true\n");
+        try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
+        if (selected.capability) |capability| try writer.print("#{s}", .{capability});
+        try writer.writeAll("\n  exec: ");
+        try writeStayAfloatExecCommandText(writer, selected);
+        try writer.writeByte('\n');
+        return;
+    }
+
+    try writer.writeAll("  ready_for_exec: false\n");
+    if (candidate_index) |idx| {
+        const candidate = evaluations[idx];
+        try writer.print("  next_action: {s} {s}\n", .{ @tagName(candidate.action.kind), candidate.action.message });
+        if (try repairCommandAlloc(allocator, candidate.action.command, candidate.route)) |command| {
+            defer allocator.free(command);
+            try writer.print("  command: {s}\n", .{command});
+        }
+        if (try runtimeDiagnosticCommandAlloc(allocator, candidate.action, candidate.route)) |command| {
+            defer allocator.free(command);
+            try writer.print("  diagnostic: {s}\n", .{command});
+        }
+    } else {
+        try writer.writeAll("  next_action: none no matching routes\n");
+    }
+}
+
 fn writeRouteJson(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -4121,6 +4213,109 @@ fn writeRouteJson(
         try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, selected);
     }
     try writer.writeAll("]}\n");
+}
+
+fn writeStayAfloatNextJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    candidate_index: ?usize,
+    args: cli.Command.RouteArgs,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"action\":\"next\"");
+    try writer.writeAll(",\"policy\":");
+    try writePolicyJson(writer, cfg.policy);
+    try writer.writeAll(",\"profile\":");
+    if (args.profile) |profile_name| try std.json.stringify(profile_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"provider\":");
+    if (args.provider) |provider_name| try std.json.stringify(provider_name, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"account\":");
+    if (args.account) |account| try std.json.stringify(account, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (args.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (selected_index != null) "true" else "false");
+    try writer.writeAll(",\"ready_for_exec\":");
+    try writer.writeAll(if (selected_index != null) "true" else "false");
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| {
+        try writeRouteSelectionJson(writer, evaluations[idx].route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"next_action\":");
+    try writeStayAfloatNextActionJson(writer, allocator, evaluations, selected_index, candidate_index);
+    try writer.writeAll(",\"routes\":[");
+    for (evaluations, 0..) |evaluation, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        const selected = if (selected_index) |selected| idx == selected else false;
+        try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, selected);
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeStayAfloatNextActionJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    candidate_index: ?usize,
+) !void {
+    if (selected_index) |idx| {
+        const route = evaluations[idx].route;
+        try writer.writeAll("{\"kind\":\"exec\",\"reason\":\"route_selectable\",\"agent_safe\":true,\"runs_target\":false,\"route\":");
+        try writeRouteSelectionJson(writer, route);
+        try writer.writeAll(",\"exec_argv\":");
+        try writeStayAfloatExecArgvJson(writer, route);
+        try writer.writeAll(",\"target_placeholder\":\"<command>\"}");
+        return;
+    }
+
+    if (candidate_index) |idx| {
+        const evaluation = evaluations[idx];
+        try writer.writeAll("{\"kind\":\"repair\",\"reason\":\"no_selectable_route\",\"agent_safe\":true,\"runs_target\":false,\"route\":");
+        try writeRouteSelectionJson(writer, evaluation.route);
+        try writer.writeAll(",\"action\":");
+        try writeRepairActionJson(writer, allocator, evaluation.action, evaluation.route);
+        try writer.writeByte('}');
+        return;
+    }
+
+    try writer.writeAll("{\"kind\":\"none\",\"reason\":\"no_matching_routes\",\"agent_safe\":true,\"runs_target\":false}");
+}
+
+fn writeStayAfloatExecArgvJson(writer: anytype, route: RepairPlanRoute) !void {
+    var first = true;
+    try writer.writeByte('[');
+    try writeJsonArrayString(writer, &first, "oauth-mux");
+    try writeJsonArrayString(writer, &first, "exec");
+    try writeJsonArrayString(writer, &first, "--provider");
+    try writeJsonArrayString(writer, &first, route.provider);
+    try writeJsonArrayString(writer, &first, "--account");
+    try writeJsonArrayString(writer, &first, route.account);
+    if (route.capability) |capability| {
+        try writeJsonArrayString(writer, &first, "--capability");
+        try writeJsonArrayString(writer, &first, capability);
+    }
+    try writeJsonArrayString(writer, &first, "--");
+    try writeJsonArrayString(writer, &first, "<command>");
+    try writer.writeByte(']');
+}
+
+fn writeJsonArrayString(writer: anytype, first: *bool, value: []const u8) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try std.json.stringify(value, .{}, writer);
+}
+
+fn writeStayAfloatExecCommandText(writer: anytype, route: RepairPlanRoute) !void {
+    try writer.print("oauth-mux exec --provider {s} --account {s}", .{ route.provider, route.account });
+    if (route.capability) |capability| try writer.print(" --capability {s}", .{capability});
+    try writer.writeAll(" -- <command>");
 }
 
 fn writeRouteSelectionJson(writer: anytype, route: RepairPlanRoute) !void {
@@ -6373,6 +6568,7 @@ fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
 
     ctx.profile_name = args.profile;
     ctx.provider_name = args.provider;
+    ctx.account_name = args.account;
     ctx.capability_name = args.capability;
     ctx.target_argv = args.target_argv;
 
@@ -8890,6 +9086,113 @@ test "route select picks first ready live route and explains skipped quota route
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selected\":{\"provider\":\"toy\",\"account\":\"a2\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"available\"") != null);
+}
+
+test "stay-afloat next emits exact exec argv for selected fallback" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "a1": { "secret": { "backend": "env", "variable": "TOY_A1" } },
+        \\        "a2": { "secret": { "backend": "env", "variable": "TOY_A2" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "work": {
+        \\      "providers": ["toy:a1#chat", "toy:a2#chat"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    store.recordCapabilityHttpStatus("toy", "a1", "chat", 429, 7200);
+    _ = try store.getOrCreate("toy:a2#chat");
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "work" });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(std.testing.allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected = firstSelectableRoute(evaluations.items).?;
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeStayAfloatNextJson(buf.writer(), std.testing.allocator, parsed.value, evaluations.items, selected, null, .{
+        .profile = "work",
+        .capability = "chat",
+        .json = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"action\":\"next\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"next_action\":{\"kind\":\"exec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"exec_argv\":[\"oauth-mux\",\"exec\",\"--provider\",\"toy\",\"--account\",\"a2\",\"--capability\",\"chat\",\"--\",\"<command>\"]") != null);
+}
+
+test "stay-afloat next emits mediated repair action when no route is selectable" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "config_dir": "/tmp/oauth-mux-test/max-1",
+        \\          "secret": { "backend": "file", "path": "/tmp/oauth-mux-test/max-1/auth.json" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "needs-reauth": {
+        \\      "providers": ["codex:max-1#codex-max"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const evaluations = [_]RouteEvaluation{.{
+        .route = route,
+        .runtime = .{ .needs_reauth = .{ .methods = &.{"upstream_cli_login"}, .reason = "session_file_missing" } },
+        .health = null,
+        .budget = .spend_provider,
+        .action = reauthAction(route, provider_schema.codex_def),
+        .selectable = false,
+        .skip_reason = "needs_reauth",
+    }};
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeStayAfloatNextJson(buf.writer(), std.testing.allocator, parsed.value, &evaluations, null, 0, .{
+        .profile = "needs-reauth",
+        .capability = "codex-max",
+        .json = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"next_action\":{\"kind\":\"repair\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mediation\":\"user_handoff\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
 }
 
 test "route explain treats unrecorded health as probe needed" {

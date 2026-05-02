@@ -100,6 +100,7 @@ mutating auth state:
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route explain --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provider codex --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
@@ -112,6 +113,13 @@ oauth-mux daemon events --json
 `route select` and `route explain` are no-spend stay-afloat commands. They use
 recorded route liveness plus runtime readiness; unrecorded routes are reported
 as `probe_needed` instead of being treated as available.
+
+`stay-afloat next --json` is the agent-facing bridge from route state to action.
+When a route is selectable, it returns `ready_for_exec:true` plus an exact
+`exec_argv` pinned to provider, account, and capability. When no route is
+selectable, it returns `ready_for_exec:false` plus the typed repair or handoff
+action without running probes, auth flows, provider calls, target commands, or
+secret mutation.
 
 `doctor runtime --json` is also no-spend. It checks local runtime prerequisites
 such as upstream binaries, configured account store directories, write access,

@@ -18,6 +18,7 @@ pub const Command = union(enum) {
     repair_plan: RepairPlanArgs,
     repair_run: RepairRunArgs,
     route: RouteArgs,
+    stay_afloat_next: RouteArgs,
     stay_afloat: DaemonTickArgs,
     stay_afloat_handoff: HandoffArgs,
     config_validate,
@@ -39,6 +40,7 @@ pub const Command = union(enum) {
     pub const ExecArgs = struct {
         profile: ?[]const u8 = null,
         provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
         capability: ?[]const u8 = null,
         strategy: ?[]const u8 = null,
         target_argv: []const []const u8 = &.{},
@@ -313,6 +315,9 @@ fn parseExec(args: []const []const u8) Command {
         } else if (eql(args[i], "--provider")) {
             i += 1;
             if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
         } else if (eql(args[i], "--capability")) {
             i += 1;
             if (i < args.len) result.capability = args[i];
@@ -696,6 +701,7 @@ fn parseDaemonTick(args: []const []const u8) Command {
 }
 
 fn parseStayAfloat(args: []const []const u8) Command {
+    if (args.len > 0 and eql(args[0], "next")) return parseStayAfloatNext(args[1..]);
     if (args.len > 0 and eql(args[0], "handoffs")) return parseDaemonHandoffs(args[1..]);
     if (args.len > 0 and eql(args[0], "handoff")) return parseStayAfloatHandoff(args[1..]);
     if (args.len > 0 and eql(args[0], "refresh")) {
@@ -706,6 +712,29 @@ fn parseStayAfloat(args: []const []const u8) Command {
         return .{ .stay_afloat = tick };
     }
     return .{ .stay_afloat = parseDaemonTickArgs(args) };
+}
+
+fn parseStayAfloatNext(args: []const []const u8) Command {
+    var result = Command.RouteArgs{ .action = .explain };
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .stay_afloat_next = result };
 }
 
 fn parseStayAfloatHandoff(args: []const []const u8) Command {
@@ -912,7 +941,7 @@ pub fn printUsage(writer: anytype) !void {
         \\Usage: oauth-mux <command> [options]
         \\
         \\Commands:
-        \\  exec [--profile <name>] [--provider <name>] [--capability <name>] -- <cmd> [args...]
+        \\  exec [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] -- <cmd> [args...]
         \\      Execute a command with muxed OAuth credentials injected.
         \\
         \\  env [--profile <name>] [--provider <name>] [--capability <name>] [--shell fish|zsh|bash|ksh]
@@ -968,6 +997,8 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  stay-afloat [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run the portable stay-afloat planner/executor without service-manager assumptions.
+        \\  stay-afloat next [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
+        \\      Show the next mediated action: exec argv when afloat, otherwise typed repair/handoff.
         \\  stay-afloat refresh [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run one execute tick to refresh route evidence after user-mediated auth.
         \\  stay-afloat handoffs [--json] [--limit <n>] [--all]
@@ -1075,11 +1106,13 @@ pub fn printCodexUsage(writer: anytype) !void {
 }
 
 test "parse exec with profile and target" {
-    const args = [_][]const u8{ "exec", "--profile", "work", "--capability", "codex-max", "--", "claude", "chat" };
+    const args = [_][]const u8{ "exec", "--profile", "work", "--provider", "codex", "--account", "max-2", "--capability", "codex-max", "--", "claude", "chat" };
     const cmd = parse(&args);
     switch (cmd) {
         .exec => |exec| {
             try std.testing.expectEqualStrings("work", exec.profile.?);
+            try std.testing.expectEqualStrings("codex", exec.provider.?);
+            try std.testing.expectEqualStrings("max-2", exec.account.?);
             try std.testing.expectEqualStrings("codex-max", exec.capability.?);
             try std.testing.expectEqual(@as(usize, 2), exec.target_argv.len);
             try std.testing.expectEqualStrings("claude", exec.target_argv[0]);
@@ -1528,6 +1561,21 @@ test "parse stay-afloat once json selector" {
     }
 }
 
+test "parse stay-afloat next json selector" {
+    const args = [_][]const u8{ "stay-afloat", "next", "--profile", "codex-max", "--account", "max-2", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat_next => |route| {
+            try std.testing.expect(route.action == .explain);
+            try std.testing.expectEqualStrings("codex-max", route.profile.?);
+            try std.testing.expectEqualStrings("max-2", route.account.?);
+            try std.testing.expectEqualStrings("codex-max", route.capability.?);
+            try std.testing.expect(route.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon run stay-afloat supervisor" {
     const args = [_][]const u8{ "daemon", "run", "--stay-afloat", "--profile", "codex-max", "--capability", "codex-max", "--iterations", "2", "--interval-ms", "0" };
     const cmd = parse(&args);
@@ -1648,7 +1696,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l profile -s p -d 'Profile name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe route stay-afloat' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec probe route stay-afloat' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -a runtime -d 'Runtime readiness checks'
@@ -1690,7 +1738,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'handoffs handoff refresh' -d 'Stay-afloat subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'next handoffs handoff refresh' -d 'Stay-afloat subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from handoff' -a 'ack clear' -d 'Handoff action'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'

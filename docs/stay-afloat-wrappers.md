@@ -12,9 +12,15 @@ already-running upstream harness process.
 The supported contract is still the portable tick engine:
 
 ```bash
+oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
+
+Use `stay-afloat next --json` before launching a harness from an agent or
+wrapper. It does not spend provider calls or mutate auth state; it either
+returns an exact `oauth-mux exec` argv for the selected route or returns the
+typed repair/handoff action to mediate first.
 
 The beta supervised daemon host wraps that same engine:
 
