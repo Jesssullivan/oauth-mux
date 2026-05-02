@@ -43,6 +43,7 @@ oauth-mux discover --json
 oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat next --profile <profile> --capability <capability> --json
+oauth-mux stay-afloat launch --profile <profile> --capability <capability> -- <command>
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat handoffs --json
 oauth-mux stay-afloat refresh --profile <profile> --capability <capability> --json
@@ -106,6 +107,11 @@ useful for support bundles and full-machine cleanup.
 `oauth-mux stay-afloat next --json` is the simplest agent handoff: it returns
 an exact `exec_argv` when already afloat, otherwise it returns the typed repair
 or user-handoff action to mediate before retrying.
+
+`oauth-mux stay-afloat launch -- <command>` is the matching startup command for
+users and wrappers. It executes the target only after a selectable route is
+found from recorded evidence; otherwise it prints the mediation text and exits
+nonzero without starting the target.
 
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,

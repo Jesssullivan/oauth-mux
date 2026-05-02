@@ -101,6 +101,7 @@ mutating auth state:
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route explain --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux route select --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provider codex --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
@@ -120,6 +121,13 @@ When a route is selectable, it returns `ready_for_exec:true` plus an exact
 selectable, it returns `ready_for_exec:false` plus the typed repair or handoff
 action without running probes, auth flows, provider calls, target commands, or
 secret mutation.
+
+`stay-afloat launch -- <command>` is the target execution boundary for new
+harness sessions. It uses the same no-spend preflight as `stay-afloat next`; if
+a route is selectable, it launches the target through `oauth-mux exec` with the
+selected provider/account/capability pinned. If no route is selectable, it
+prints the mediated repair/handoff text and exits nonzero without running the
+target.
 
 `doctor runtime --json` is also no-spend. It checks local runtime prerequisites
 such as upstream binaries, configured account store directories, write access,

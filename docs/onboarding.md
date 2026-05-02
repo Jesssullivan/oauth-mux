@@ -171,6 +171,7 @@ To inspect the stay-afloat decision loop without running a canary:
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux route select --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
+oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-mini --capability codex-mini --json
 ```
@@ -186,6 +187,13 @@ does not probe or mutate. If a route is selectable, it returns
 capability for `oauth-mux exec`. If no route is selectable, it returns
 `ready_for_exec:false` and embeds the typed repair action, mediation mode,
 repair owner, and any user-facing command to run.
+
+`stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
+the same preflight as `stay-afloat next`, then starts the target only when a
+route is selectable. The launched command receives credentials through
+`oauth-mux exec` with the selected provider, account, and capability pinned. If
+the route needs reauth, quota wait, runtime repair, or another handoff, launch
+prints the mediation text and exits nonzero without starting the target.
 
 `oauth-mux repair run` is the explicit repair execution gate. It refuses
 mutation unless `--confirm-repair` is present. Without confirmation, it is safe

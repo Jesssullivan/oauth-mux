@@ -346,6 +346,12 @@ expect_contains "$stay_next" '"selected":{"provider":"toy","account":"a2"' "stay
 expect_contains "$stay_next" '"next_action":{"kind":"exec"' "stay-afloat next returns exec mediation"
 expect_contains "$stay_next" '"exec_argv":["oauth-mux","exec","--provider","toy","--account","a2","--capability","expensive","--","<command>"]' "stay-afloat next returns exact exec argv"
 
+printf 'e2e: stay-afloat launch executes target with selected fallback account\n'
+launch_out="$tmp/stay-launch.out"
+OMUX_E2E_EXEC_OUT="$launch_out" omux stay-afloat launch --profile expensive --capability expensive -- sh -c 'printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_EXEC_OUT"'
+launch_result="$(cat "$launch_out")"
+expect_contains "$launch_result" 'a2:omux-e2e-a2' "stay-afloat launch target receives selected fallback account"
+
 printf 'e2e: daemon tick plans stay-afloat without executing work\n'
 daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"
 expect_contains "$daemon_tick" '"mode":"once"' "daemon tick reports one-shot mode"
@@ -573,6 +579,26 @@ expect_contains "$stay_next_reauth" '"kind":"reauth"' "stay-afloat next reauth r
 expect_contains "$stay_next_reauth" '"mediation":"user_handoff"' "stay-afloat next reauth reports user handoff"
 expect_contains "$stay_next_reauth" '"repair_owner":"upstream_cli_login"' "stay-afloat next reauth reports upstream owner"
 expect_contains "$stay_next_reauth" '"command":"oauth-mux codex login-device max-1"' "stay-afloat next reauth reports upstream command"
+test ! -e "$tmp/reauth-home/auth.json"
+
+printf 'e2e: stay-afloat launch refuses target when user-mediated reauth is needed\n'
+stay_launch_reauth_out="$tmp/stay-launch-reauth.out"
+stay_launch_should_not_run="$tmp/stay-launch-should-not-run"
+set +e
+OMUX_CONFIG="$reauth_config" \
+  OMUX_STATE_DIR="$state_dir" \
+  "$bin" stay-afloat launch --profile needs-reauth --capability codex-max -- sh -c "touch '$stay_launch_should_not_run'" >"$stay_launch_reauth_out" 2>"$tmp/stay-launch-reauth.stderr"
+stay_launch_reauth_status=$?
+set -e
+if [ "$stay_launch_reauth_status" -eq 0 ]; then
+  printf 'e2e assertion failed: stay-afloat launch should refuse a reauth-needed route\n' >&2
+  exit 1
+fi
+stay_launch_reauth="$(cat "$stay_launch_reauth_out")"
+expect_contains "$stay_launch_reauth" 'ready_for_exec: false' "stay-afloat launch refusal reports not ready"
+expect_contains "$stay_launch_reauth" 'next_action: reauth' "stay-afloat launch refusal reports reauth action"
+expect_contains "$stay_launch_reauth" 'command: oauth-mux codex login-device max-1' "stay-afloat launch refusal reports upstream command"
+test ! -e "$stay_launch_should_not_run"
 test ! -e "$tmp/reauth-home/auth.json"
 
 printf 'e2e: daemon tick execute queues interactive reauth handoff\n'
