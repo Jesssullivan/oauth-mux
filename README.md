@@ -1,4 +1,4 @@
-# oauth-mux
+# WIP!  Not ready for the masses yet. 
 
 **Site:** https://omux.xoxd.ai — typed-fallback model, install paths, and the live provider matrix.  
 **Source:** github.com/Jesssullivan/oauth-mux
