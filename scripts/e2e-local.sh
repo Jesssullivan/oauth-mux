@@ -385,6 +385,11 @@ expect_contains "$daemon_tick" '"mode":"once"' "daemon tick reports one-shot mod
 expect_contains "$daemon_tick" '"executed":false' "daemon tick does not execute probes or repair"
 expect_contains "$daemon_tick" '"afloat":true' "daemon tick reports profile afloat"
 expect_contains "$daemon_tick" '"selected":{"provider":"toy","account":"a2"' "daemon tick selects fallback account a2"
+expect_contains "$daemon_tick" '"claim":{"claim_version":1,"level":"prepared_fallback"' "daemon tick reports prepared fallback claim"
+expect_contains "$daemon_tick" '"max_supported_level":"prepared_fallback"' "daemon tick reports maximum supported claim level"
+expect_contains "$daemon_tick" '"current_process_hotswap":false' "daemon tick refuses current-process hot-swap claim"
+expect_contains "$daemon_tick" '"per_request_muxing":false' "daemon tick refuses per-request muxing claim"
+expect_contains "$daemon_tick" '"launch_argv":["oauth-mux","stay-afloat","launch","--profile","expensive","--capability","expensive","--","<command>"]' "daemon tick reports wrapper launch argv"
 expect_contains "$daemon_tick" '"action":"wait_for_quota"' "daemon tick includes wait action for exhausted route"
 expect_contains "$daemon_tick" '"schedule_reason":"wait_until"' "daemon tick exposes quota reset schedule reason"
 expect_contains "$daemon_tick" '"next_tick_reason":"wait_until"' "daemon tick summary exposes earliest schedule reason"
@@ -405,6 +410,8 @@ expect_contains "$daemon_status_snapshot" '"status":"not_running"' "daemon statu
 expect_contains "$daemon_status_snapshot" '"hosts_stay_afloat":false' "daemon status still does not claim to host stay-afloat"
 expect_contains "$daemon_status_snapshot" '"stay_afloat":{"version":' "daemon status includes latest stay-afloat snapshot"
 expect_contains "$daemon_status_snapshot" '"contract":"foreground_tick_snapshot"' "daemon snapshot reports foreground tick contract"
+expect_contains "$daemon_status_snapshot" '"claim":{"claim_version":1,"level":"prepared_fallback"' "daemon status exposes latest stay-afloat claim"
+expect_contains "$daemon_status_snapshot" '"current_process_hotswap":false' "daemon status refuses hot-swap claim"
 expect_contains "$daemon_status_snapshot" '"selected":{"provider":"toy","account":"a2"' "daemon snapshot carries selected fallback route"
 
 printf 'e2e: bounded daemon tick loop emits repeated planning snapshots\n'

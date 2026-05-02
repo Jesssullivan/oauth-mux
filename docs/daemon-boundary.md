@@ -75,6 +75,12 @@ rather than introducing separate behavior.
 includes the latest redacted stay-afloat tick snapshot under `stay_afloat` when
 one exists, so wrappers can inspect prepared fallback state without treating
 the socket stub as the production supervisor.
+That snapshot includes `claim.level`. `prepared_fallback` means the next
+mediated launch can select an account; it does not mean an already-running
+harness process will be hot-swapped. The same claim object keeps
+`current_process_hotswap:false`, `supervised_restart:false`, and
+`per_request_muxing:false` until a specific wrapper, restart path, proxy, or
+in-agent adapter proves those stronger levels.
 
 ## Allowed Now
 
@@ -125,6 +131,10 @@ the socket stub as the production supervisor.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
   as the lower-level wrapper-author spelling for the same bounded foreground
   loop.
+- `claim.level:"prepared_fallback"` in `stay-afloat` / `daemon tick` JSON and
+  in the latest `daemon status --json` snapshot when a route is selectable.
+  Wrappers should pair that with the emitted `claim.launch_argv` and should not
+  infer current-process hot-swap or per-request muxing.
 - `oauth-mux daemon run --stay-afloat --profile <profile> --capability
   <capability>` as the first opt-in beta host for the same tick engine. It
   reports `stay_afloat_loop.hosted:true` while running, but

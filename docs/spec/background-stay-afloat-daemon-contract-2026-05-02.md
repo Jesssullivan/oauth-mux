@@ -249,6 +249,12 @@ Implementation note, 2026-05-02: this slice now writes
 stay-afloat/daemon tick. `oauth-mux daemon status --json` exposes the latest
 snapshot under `stay_afloat` while still reporting
 `production_supported:false` and `hosts_stay_afloat:false`.
+The snapshot now includes a `claim` object. `claim.level:"prepared_fallback"`
+is Level 1: route state is warm enough for the next mediated
+`stay-afloat launch` / `exec` boundary. The object explicitly keeps
+`current_process_hotswap:false`, `supervised_restart:false`, and
+`per_request_muxing:false` so agents and websites do not overclaim daemon
+behavior from a healthy snapshot.
 
 ### D2: supervised stay-afloat loop
 
@@ -287,6 +293,12 @@ and soak proof promote the product surface.
 - Add MCP/in-agent tools for route visibility and handoff surfacing.
 - Consider request-level proxying only where the harness protocol can support
   Level 3 per-request muxing.
+
+Implementation note, 2026-05-02: `oauth-mux stay-afloat launch` is now the
+Level 1 startup boundary. It preflights from recorded evidence, delegates to
+`exec` for normal validation, retries the next selectable route if launch-time
+validation reclassifies the first route, and refuses to start the target when
+no route remains selectable.
 
 ### D5: paid cohort soak
 

@@ -54,13 +54,23 @@ fields shaped like:
   },
   "transport": "foreground_supervised_loop",
   "socket": null,
-  "stay_afloat": {}
+  "stay_afloat": {
+    "claim": {
+      "level": "prepared_fallback",
+      "current_process_hotswap": false,
+      "supervised_restart": false,
+      "per_request_muxing": false
+    }
+  }
 }
 ```
 
 `production_supported:false` and `hosts_stay_afloat:false` are intentional. The
 beta loop is useful for dogfooding, wrapper integration, and soak proof, but it
 is not yet the production background daemon claim tracked by GitHub #67.
+`claim.level:"prepared_fallback"` means the next mediated launch can select an
+account through `stay-afloat launch`; it does not claim current-process
+hot-swap, supervised restart, or per-request muxing.
 
 ## Smoke And Soak
 
