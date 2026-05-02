@@ -246,6 +246,13 @@ account ids, or raw protocol output.
 For a bounded beta broker-owned session loop, pipe line-delimited prompts and
 replace `--prompt ...` with `--stdin`. The same spend gate applies, and
 transcript content remains suppressed in normal output.
+Use
+`oauth-mux codex broker-fallback-drill --profile codex-max --capability
+codex-max --from-account max-3 --confirm-drill --json` when you need to observe
+fallback deliberately. It records the named route as quota-exhausted in local
+route health, then verifies broker-owned selection moves to a distinct fallback
+route. This is no-spend and useful for operator drills, but it is controlled
+route-state evidence, not provider-originated quota exhaustion.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

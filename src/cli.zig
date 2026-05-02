@@ -186,6 +186,7 @@ pub const Command = union(enum) {
         broker_session_plan,
         broker_session_smoke,
         broker_run,
+        broker_fallback_drill,
         broker_smoke,
         broker_refresh_smoke,
         broker_401_smoke,
@@ -204,9 +205,11 @@ pub const Command = union(enum) {
         live: bool = false,
         confirm_spend: bool = false,
         confirm_broker: bool = false,
+        confirm_drill: bool = false,
         json: bool = false,
         prompt: ?[]const u8 = null,
         model: ?[]const u8 = null,
+        from_account: ?[]const u8 = null,
         stdin_prompts: bool = false,
         output: ?[]const u8 = null,
         candidate: ?[]const u8 = null,
@@ -898,6 +901,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .broker_session_smoke;
         } else if (eql(args[0], "broker-run")) {
             result.action = .broker_run;
+        } else if (eql(args[0], "broker-fallback-drill")) {
+            result.action = .broker_fallback_drill;
         } else if (eql(args[0], "broker-smoke")) {
             result.action = .broker_smoke;
         } else if (eql(args[0], "broker-refresh-smoke")) {
@@ -951,6 +956,9 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
         } else if (eql(args[i], "--model")) {
             i += 1;
             if (i < args.len) result.model = args[i];
+        } else if (eql(args[i], "--from-account")) {
+            i += 1;
+            if (i < args.len) result.from_account = args[i];
         } else if (eql(args[i], "--stdin")) {
             result.stdin_prompts = true;
         } else if (eql(args[i], "--device")) {
@@ -963,6 +971,8 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
             result.confirm_spend = true;
         } else if (eql(args[i], "--confirm-broker")) {
             result.confirm_broker = true;
+        } else if (eql(args[i], "--confirm-drill")) {
+            result.confirm_drill = true;
         } else if (eql(args[i], "--json")) {
             result.json = true;
         } else if (result.account == null and !std.mem.startsWith(u8, args[i], "-")) {
@@ -1107,6 +1117,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--json]
         \\      Run one or more live broker-owned Codex app-server turns from the session plan.
         \\
+        \\  codex broker-fallback-drill [--profile name] [--capability c] --from-account name --confirm-drill [--json]
+        \\      Mark one Codex route quota-exhausted locally and prove the next broker-owned route selection.
+        \\
         \\  codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\      Start a broker-owned Codex app-server stdio session and verify external auth login.
         \\
@@ -1161,6 +1174,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--json]
+        \\  oauth-mux codex broker-fallback-drill [--profile name] [--capability c] --from-account name --confirm-drill [--json]
         \\  oauth-mux codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-refresh-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-401-smoke [--profile name] [--capability c] --confirm-broker [--json]
@@ -1181,6 +1195,8 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  selected Codex route secret and send it only to a broker-owned
         \\  Codex app-server child process; they do not print token or
         \\  account-id values.
+        \\  broker-fallback-drill mutates only oauth-mux route health; it does
+        \\  not spend provider calls or print secrets.
         \\  live-qa and broker-run require --confirm-spend or
         \\  OMUX_LIVE_QA_CONFIRM=spend-real-calls.
         \\  --help and -h are non-mutating for every Codex subcommand.
@@ -1440,6 +1456,22 @@ test "parse codex broker run stdin" {
             try std.testing.expectEqualStrings("codex-max", codex.capabilities);
             try std.testing.expect(codex.stdin_prompts);
             try std.testing.expect(codex.confirm_spend);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex broker fallback drill" {
+    const args = [_][]const u8{ "codex", "broker-fallback-drill", "--profile", "codex-max", "--capability", "codex-max", "--from-account", "max-3", "--confirm-drill", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .broker_fallback_drill);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expectEqualStrings("max-3", codex.from_account.?);
+            try std.testing.expect(codex.confirm_drill);
             try std.testing.expect(codex.json);
         },
         else => return error.Unexpected,
@@ -1991,7 +2023,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all broker-plan broker-session-plan broker-session-smoke broker-run broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa probe-all broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run supervise start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host beta supervised stay-afloat loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'

@@ -811,6 +811,37 @@ expect_not_contains "$broker_session_plan" "$broker_jwt" "broker-session-plan do
 expect_not_contains "$broker_session_plan" 'broker-session-refresh-token' "broker-session-plan does not expose refresh token value"
 expect_not_contains "$broker_session_plan" 'broker-session-spare-token' "broker-session-plan does not expose spare refresh token value"
 
+printf 'e2e: codex broker-fallback-drill requires explicit confirmation before mutating route health\n'
+broker_fallback_drill_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-2 --json)"
+expect_contains "$broker_fallback_drill_prompt" '"mode":"codex_broker_fallback_drill"' "broker-fallback-drill reports drill mode"
+expect_contains "$broker_fallback_drill_prompt" '"confirmation_required":true' "broker-fallback-drill requires confirmation"
+expect_contains "$broker_fallback_drill_prompt" '"requires":"--confirm-drill"' "broker-fallback-drill reports required confirmation flag"
+expect_contains "$broker_fallback_drill_prompt" '"spends_provider_calls":false' "broker-fallback-drill confirmation reports no provider spend"
+expect_contains "$broker_fallback_drill_prompt" '"mutates_route_health":true' "broker-fallback-drill confirmation reports route-health mutation"
+
+printf 'e2e: codex broker-fallback-drill marks selected route exhausted and selects fallback route\n'
+broker_fallback_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-2 --confirm-drill --json)"
+expect_contains "$broker_fallback_drill" '"mode":"codex_broker_fallback_drill"' "broker-fallback-drill reports drill mode after confirmation"
+expect_contains "$broker_fallback_drill" '"ok":true' "broker-fallback-drill succeeds when distinct fallback exists"
+expect_contains "$broker_fallback_drill" '"spends_provider_calls":false' "broker-fallback-drill remains no-spend"
+expect_contains "$broker_fallback_drill" '"mutates_route_health":true' "broker-fallback-drill reports route-health mutation"
+expect_contains "$broker_fallback_drill" '"proof_status":"controlled_route_state_fallback_drill"' "broker-fallback-drill scopes proof status"
+expect_contains "$broker_fallback_drill" '"provider_originated_quota":false' "broker-fallback-drill does not claim provider-originated quota"
+expect_contains "$broker_fallback_drill" '"drilled":{"provider":"codex","account":"max-2","capability":"codex-max"' "broker-fallback-drill reports drilled route"
+expect_contains "$broker_fallback_drill" '"classification":"quota_exhausted"' "broker-fallback-drill records quota classification"
+expect_contains "$broker_fallback_drill" '"previous_selected":{"provider":"codex","account":"max-2","capability":"codex-max"' "broker-fallback-drill records previous selected route"
+expect_contains "$broker_fallback_drill" '"selected":{"provider":"codex","account":"max-3","capability":"codex-max"' "broker-fallback-drill selects fallback route"
+expect_contains "$broker_fallback_drill" '"fallback_route_is_distinct":true' "broker-fallback-drill reports distinct fallback"
+expect_contains "$broker_fallback_drill" '"route_role":"quota_blocked"' "broker-fallback-drill shows drilled route blocked"
+expect_contains "$broker_fallback_drill" '"route_role":"selected"' "broker-fallback-drill shows fallback route selected"
+expect_contains "$broker_fallback_drill" '"tokens_printed":false' "broker-fallback-drill redaction reports token suppression"
+expect_contains "$broker_fallback_drill" '"account_id_printed":false' "broker-fallback-drill redaction reports account id suppression"
+expect_not_contains "$broker_fallback_drill" 'acct-session-fallback' "broker-fallback-drill does not expose fallback account id value"
+expect_not_contains "$broker_fallback_drill" 'acct-session-spare' "broker-fallback-drill does not expose spare account id value"
+expect_not_contains "$broker_fallback_drill" "$broker_jwt" "broker-fallback-drill does not expose token value"
+expect_not_contains "$broker_fallback_drill" 'broker-session-refresh-token' "broker-fallback-drill does not expose refresh token value"
+expect_not_contains "$broker_fallback_drill" 'broker-session-spare-token' "broker-fallback-drill does not expose spare refresh token value"
+
 printf 'e2e: codex broker-session-smoke requires explicit confirmation before starting app-server\n'
 broker_session_smoke_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-smoke --profile codex-max --capability codex-max --json)"
 expect_contains "$broker_session_smoke_prompt" '"mode":"codex_broker_owned_session_smoke"' "broker-session-smoke reports session smoke mode"

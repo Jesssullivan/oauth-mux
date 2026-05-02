@@ -109,6 +109,7 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --pr
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt 'Reply with oauth-mux broker-run ok.' --confirm-spend --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-3 --confirm-drill --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
@@ -155,6 +156,12 @@ For a bounded beta session loop, pipe line-delimited prompts to `codex
 broker-run --stdin --confirm-spend --json`; the command keeps one broker-owned
 app-server session open and reports prompt/turn counts without printing
 transcript content.
+`codex broker-fallback-drill --from-account ... --confirm-drill --json` is the
+controlled no-spend way to observe route-state fallback. It records the named
+Codex route as quota-exhausted in local oauth-mux health, then verifies the next
+broker-owned route selection chooses a distinct fallback route. This mutates
+route health and intentionally does not claim provider-originated quota
+exhaustion, same-thread quota recovery, or unmanaged TUI hot-swap.
 `codex broker-smoke --confirm-broker --json` is the next local proof: it starts
 a broker-owned Codex app-server stdio child, sends the selected route token to
 that child only, and verifies initialize/login/account-update milestones while
@@ -300,6 +307,7 @@ oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-run --profile codex-max --capability codex-max --prompt 'Reply with oauth-mux broker-run ok.' --confirm-spend --json
+oauth-mux codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-3 --confirm-drill --json
 oauth-mux codex broker-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-refresh-smoke --profile codex-max --capability codex-max --confirm-broker --json
 oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max --confirm-broker --json
