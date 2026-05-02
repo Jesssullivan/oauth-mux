@@ -207,6 +207,7 @@ pub const Command = union(enum) {
         json: bool = false,
         prompt: ?[]const u8 = null,
         model: ?[]const u8 = null,
+        stdin_prompts: bool = false,
         output: ?[]const u8 = null,
         candidate: ?[]const u8 = null,
         backup: ?[]const u8 = null,
@@ -950,6 +951,8 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
         } else if (eql(args[i], "--model")) {
             i += 1;
             if (i < args.len) result.model = args[i];
+        } else if (eql(args[i], "--stdin")) {
+            result.stdin_prompts = true;
         } else if (eql(args[i], "--device")) {
             result.device = true;
         } else if (eql(args[i], "--status-only")) {
@@ -1101,8 +1104,8 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\      Run a local multi-turn broker-owned Codex session smoke from the session plan.
         \\
-        \\  codex broker-run [--profile name] [--capability c] --prompt text --confirm-spend [--model m] [--json]
-        \\      Run one live broker-owned Codex app-server turn from the session plan.
+        \\  codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--json]
+        \\      Run one or more live broker-owned Codex app-server turns from the session plan.
         \\
         \\  codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\      Start a broker-owned Codex app-server stdio session and verify external auth login.
@@ -1157,7 +1160,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex broker-run [--profile name] [--capability c] --prompt text --confirm-spend [--model m] [--json]
+        \\  oauth-mux codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--json]
         \\  oauth-mux codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-refresh-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-401-smoke [--profile name] [--capability c] --confirm-broker [--json]
@@ -1420,6 +1423,22 @@ test "parse codex broker run" {
             try std.testing.expectEqualStrings("codex-max", codex.capabilities);
             try std.testing.expectEqualStrings("hello", codex.prompt.?);
             try std.testing.expectEqualStrings("gpt-5.5", codex.model.?);
+            try std.testing.expect(codex.confirm_spend);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex broker run stdin" {
+    const args = [_][]const u8{ "codex", "broker-run", "--profile", "codex-max", "--capability", "codex-max", "--stdin", "--confirm-spend", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .broker_run);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expect(codex.stdin_prompts);
             try std.testing.expect(codex.confirm_spend);
             try std.testing.expect(codex.json);
         },

@@ -253,7 +253,9 @@ these precise provider-proof children.
    broker-session-smoke --confirm-broker` exercises that plan as a local
    multi-turn broker-owned app-server session against mocked backend endpoints.
    `oauth-mux codex broker-run --prompt ... --confirm-spend` is the matching
-   live one-turn broker-owned session proof and remains spend-gated.
+   live one-turn broker-owned session proof and remains spend-gated. Its
+   bounded `--stdin` beta keeps one broker-owned app-server session open across
+   line-delimited live turns while still suppressing transcript content.
 10. Return to daemon background implementation only after wrapper/install
    decisions and provider proof produce enough real operator evidence. The
    current socket daemon decision is complete under `TIN-867`; future

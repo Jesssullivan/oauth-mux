@@ -824,6 +824,9 @@ expect_contains "$broker_run_prompt" '"mode":"codex_broker_owned_session_live_ru
 expect_contains "$broker_run_prompt" '"confirmation_required":true' "broker-run requires confirmation"
 expect_contains "$broker_run_prompt" '"requires":"--confirm-spend or OMUX_LIVE_QA_CONFIRM=spend-real-calls"' "broker-run reports spend confirmation gate"
 expect_contains "$broker_run_prompt" '"spends_provider_calls":true' "broker-run confirmation prompt reports provider spend"
+broker_run_stdin_prompt="$(printf 'one\ntwo\n' | OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-run --profile codex-max --capability codex-max --stdin --json 2>/dev/null || true)"
+expect_contains "$broker_run_stdin_prompt" '"mode":"codex_broker_owned_session_live_run"' "broker-run stdin reports live broker mode"
+expect_contains "$broker_run_stdin_prompt" '"confirmation_required":true' "broker-run stdin requires confirmation before reading live prompts"
 
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
