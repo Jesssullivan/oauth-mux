@@ -212,6 +212,13 @@ session can answer `account/chatgptAuthTokens/refresh` after login with the
 next ready route when a fallback account exists. This is the first local proof
 for the live 401 repair primitive; it does not yet prove automatic repair of an
 already-running unmanaged Codex process.
+Use
+`oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max
+--confirm-broker --json` to prove the no-spend mediated 401 retry loop. It
+starts a disposable app-server with local mocked Responses and ChatGPT backend
+URLs, forces the first turn Responses request to 401, answers app-server
+refresh with the next ready route, and verifies the retried request used that
+fallback token.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
 the same preflight as `stay-afloat next`, then starts the target only when a

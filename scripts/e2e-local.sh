@@ -789,6 +789,13 @@ expect_not_contains "$broker_refresh_smoke" 'acct-fallback' "broker-refresh-smok
 expect_not_contains "$broker_refresh_smoke" "$broker_jwt" "broker-refresh-smoke does not expose token value"
 expect_not_contains "$broker_refresh_smoke" 'broker-refresh-token' "broker-refresh-smoke does not expose refresh token value"
 
+printf 'e2e: codex broker-401-smoke requires explicit confirmation before starting app-server\n'
+broker_401_prompt="$(OMUX_CONFIG="$broker_switch_config" OMUX_STATE_DIR="$state_dir" "$bin" codex broker-401-smoke --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_401_prompt" '"mode":"codex_app_server_401_broker_smoke"' "broker-401-smoke reports 401 broker mode"
+expect_contains "$broker_401_prompt" '"confirmation_required":true' "broker-401-smoke requires confirmation"
+expect_contains "$broker_401_prompt" '"requires":"--confirm-broker"' "broker-401-smoke reports required confirmation flag"
+expect_contains "$broker_401_prompt" '"spends_provider_calls":false' "broker-401-smoke confirmation prompt reports no provider spend"
+
 repair_reauth_json="$tmp/repair-run-reauth.json"
 set +e
 OMUX_CONFIG="$reauth_config" \
