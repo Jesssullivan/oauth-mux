@@ -412,6 +412,12 @@ daemon_status_snapshot="$(omux daemon status --json)"
 expect_contains "$daemon_status_snapshot" '"status":"not_running"' "daemon status remains stopped after foreground tick"
 expect_contains "$daemon_status_snapshot" '"hosts_stay_afloat":false' "daemon status still does not claim to host stay-afloat"
 expect_contains "$daemon_status_snapshot" '"stay_afloat":{"version":' "daemon status includes latest stay-afloat snapshot"
+expect_contains "$daemon_status_snapshot" '"stay_afloat_snapshot":{"present":true,"parseable":true' "daemon status reports parseable stay-afloat snapshot metadata"
+expect_contains "$daemon_status_snapshot" '"stale_after_seconds":300' "daemon status reports snapshot staleness threshold"
+expect_contains "$daemon_status_snapshot" '"stale":false' "daemon status reports fresh stay-afloat snapshot"
+expect_contains "$daemon_status_snapshot" '"reason":"fresh"' "daemon status reports fresh snapshot reason"
+expect_contains "$daemon_status_snapshot" '"loop_started_at":null' "daemon status reports no active loop correlation while stopped"
+expect_contains "$daemon_status_snapshot" '"current_loop_observed":null' "daemon status reports no active loop observation while stopped"
 expect_contains "$daemon_status_snapshot" '"contract":"foreground_tick_snapshot"' "daemon snapshot reports foreground tick contract"
 expect_contains "$daemon_status_snapshot" '"claim":{"claim_version":1,"level":"prepared_fallback"' "daemon status exposes latest stay-afloat claim"
 expect_contains "$daemon_status_snapshot" '"current_process_hotswap":false' "daemon status refuses hot-swap claim"
@@ -478,13 +484,17 @@ supervised_status=""
 for _ in $(seq 1 200); do
   supervised_status="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon status --json || true)"
   case "$supervised_status" in
-    *'"status":"running"'*'"stay_afloat_loop":{"hosted":true'*'"stay_afloat":{"version":'*) break ;;
+    *'"status":"running"'*'"stay_afloat_loop":{"hosted":true'*'"stay_afloat":{"version":'*'"current_loop_observed":true'*) break ;;
   esac
 done
 expect_contains "$supervised_status" '"status":"running"' "supervised daemon status reports running"
 expect_contains "$supervised_status" '"contract":"experimental_supervised_loop"' "supervised daemon status reports beta contract"
 expect_contains "$supervised_status" '"hosts_stay_afloat":false' "supervised daemon does not claim production stay-afloat"
 expect_contains "$supervised_status" '"stay_afloat_loop":{"hosted":true' "supervised daemon reports hosted beta loop"
+expect_contains "$supervised_status" '"stay_afloat_snapshot":{"present":true,"parseable":true' "supervised daemon reports parseable stay-afloat snapshot metadata"
+expect_contains "$supervised_status" '"current_loop_observed":true' "supervised daemon status proves active loop has written a snapshot"
+expect_contains "$supervised_status" '"stale":false' "supervised daemon reports fresh stay-afloat snapshot"
+expect_contains "$supervised_status" '"reason":"fresh"' "supervised daemon reports fresh snapshot reason"
 expect_contains "$supervised_status" '"selector":{"profile":"expensive","provider":null,"account":null,"capability":"expensive"}' "supervised daemon reports hosted selector"
 expect_contains "$supervised_status" '"once":false' "supervised daemon reports loop mode metadata"
 expect_contains "$supervised_status" '"iterations":200' "supervised daemon reports requested iteration bound"
@@ -511,6 +521,7 @@ supervised_stopped="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_r
 expect_contains "$supervised_stopped" '"status":"not_running"' "supervised daemon status reports stopped"
 expect_contains "$supervised_stopped" '"stay_afloat_loop":{"hosted":false' "supervised daemon clears hosted loop metadata after stop"
 expect_contains "$supervised_stopped" '"stay_afloat":{"version":' "supervised daemon leaves latest redacted snapshot visible after stop"
+expect_contains "$supervised_stopped" '"stay_afloat_snapshot":{"present":true,"parseable":true' "supervised daemon leaves snapshot metadata visible after stop"
 
 printf 'e2e: daemon tick execute runs one admitted command probe\n'
 omux health --reset toy:a1 >/dev/null

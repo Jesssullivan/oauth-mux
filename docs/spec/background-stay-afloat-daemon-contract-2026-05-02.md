@@ -249,6 +249,12 @@ Implementation note, 2026-05-02: this slice now writes
 stay-afloat/daemon tick. `oauth-mux daemon status --json` exposes the latest
 snapshot under `stay_afloat` while still reporting
 `production_supported:false` and `hosts_stay_afloat:false`.
+Status also emits a sibling `stay_afloat_snapshot` metadata object with
+presence, parseability, `last_tick_at`, `age_seconds`, a 300 second staleness
+threshold, active-loop correlation, `stale`, and `reason`. This lets wrappers
+and agents distinguish a fresh prepared-fallback claim from a missing,
+malformed, stale, or pre-current-loop local snapshot before making launch or
+repair decisions.
 The snapshot now includes a `claim` object. `claim.level:"prepared_fallback"`
 is Level 1: route state is warm enough for the next mediated
 `stay-afloat launch` / `exec` boundary. The object explicitly keeps

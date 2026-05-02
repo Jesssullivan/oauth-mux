@@ -70,6 +70,17 @@ fields shaped like:
   },
   "transport": "foreground_supervised_loop",
   "socket": null,
+  "stay_afloat_snapshot": {
+    "present": true,
+    "parseable": true,
+    "last_tick_at": 1777752000,
+    "age_seconds": 2,
+    "loop_started_at": 1777751998,
+    "current_loop_observed": true,
+    "stale_after_seconds": 300,
+    "stale": false,
+    "reason": "fresh"
+  },
   "stay_afloat": {
     "claim": {
       "level": "prepared_fallback",
@@ -131,6 +142,11 @@ Good soak evidence includes:
 - `transport:"foreground_supervised_loop"` and `socket:null`.
 - A redacted `stay_afloat` snapshot with selected route, fallback, repair, or
   handoff state.
+- `stay_afloat_snapshot.present:true`, `parseable:true`, `stale:false`, and
+  `current_loop_observed:true` while the beta loop is active. Missing, empty,
+  malformed, stale, or `before_current_loop` metadata means the wrapper should
+  run or wait for a fresh foreground tick before trusting prepared fallback
+  state.
 - `status:"not_running"` after `oauth-mux daemon stop`.
 - No hidden browser/device auth.
 - No provider-spend probes unless the operator opted into a spend-capable

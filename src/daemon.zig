@@ -6,6 +6,7 @@ const repair_state = @import("repair_state.zig");
 const builtin = @import("builtin");
 
 const Pid = if (builtin.os.tag == .windows) u32 else std.posix.pid_t;
+const stay_afloat_snapshot_stale_after_s: i64 = 300;
 
 pub const DaemonError = error{
     AlreadyRunning,
@@ -37,6 +38,22 @@ pub const StayAfloatRunMetadata = struct {
     iterations: u32 = 1,
     interval_ms: u64 = 60_000,
     execute: bool = true,
+};
+
+const SnapshotFreshness = struct {
+    present: bool,
+    parseable: bool,
+    last_tick_at: ?i64 = null,
+    age_seconds: ?i64 = null,
+    loop_started_at: ?i64 = null,
+    current_loop_observed: ?bool = null,
+    stale_after_seconds: i64 = stay_afloat_snapshot_stale_after_s,
+    stale: bool = true,
+    reason: []const u8,
+};
+
+const StatusLoopInfo = struct {
+    started_at: ?i64 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator) DaemonError!void {
@@ -189,8 +206,8 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
         if (json) {
             try writer.writeAll("{\"status\":\"running\"");
             try writeStatusContractJson(writer, loop_hosted);
-            try writeStatusLoopJson(allocator, writer, loop_hosted);
-            try writeStatusSnapshotJson(allocator, writer);
+            const loop_info = try writeStatusLoopJson(allocator, writer, loop_hosted);
+            try writeStatusSnapshotJson(allocator, writer, loop_info.started_at);
             try writer.print(",\"pid\":{d},\"transport\":", .{pid});
             try std.json.stringify(if (loop_hosted) "foreground_supervised_loop" else "unix_socket", .{}, writer);
             try writer.writeAll(",\"socket\":");
@@ -208,8 +225,8 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
         if (json) {
             try writer.writeAll("{\"status\":\"not_running\"");
             try writeStatusContractJson(writer, false);
-            try writeStatusLoopJson(allocator, writer, false);
-            try writeStatusSnapshotJson(allocator, writer);
+            const loop_info = try writeStatusLoopJson(allocator, writer, false);
+            try writeStatusSnapshotJson(allocator, writer, loop_info.started_at);
             try writer.writeAll("}\n");
         } else {
             try writer.writeAll("daemon: not running\n");
@@ -228,7 +245,7 @@ fn writeStatusContractJson(writer: anytype, loop_hosted: bool) !void {
     try writer.writeAll(if (builtin.os.tag == .windows) "false" else "true");
 }
 
-fn writeStatusLoopJson(allocator: std.mem.Allocator, writer: anytype, loop_hosted: bool) !void {
+fn writeStatusLoopJson(allocator: std.mem.Allocator, writer: anytype, loop_hosted: bool) !StatusLoopInfo {
     try writer.writeAll(",\"stay_afloat_loop\":");
     if (loop_hosted) {
         const metadata = try readMetadataAlloc(allocator);
@@ -237,27 +254,146 @@ fn writeStatusLoopJson(allocator: std.mem.Allocator, writer: anytype, loop_hoste
             const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
             if (trimmed.len != 0 and trimmed[0] == '{') {
                 try writer.writeAll(trimmed);
-                return;
+                return .{ .started_at = jsonObjectI64(allocator, trimmed, "started_at") };
             }
         }
     }
     try writer.writeAll("{\"hosted\":false,\"production_supported\":false}");
+    return .{};
 }
 
-fn writeStatusSnapshotJson(allocator: std.mem.Allocator, writer: anytype) !void {
+fn writeStatusSnapshotJson(allocator: std.mem.Allocator, writer: anytype, loop_started_at: ?i64) !void {
     try writer.writeAll(",\"stay_afloat\":");
+    const now = std.time.timestamp();
     const snapshot = try repair_state.readDaemonSnapshotAlloc(allocator);
-    if (snapshot) |bytes| {
+    const freshness = if (snapshot) |bytes| blk: {
         defer allocator.free(bytes);
         const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-        if (trimmed.len == 0) {
-            try writer.writeAll("null");
-        } else {
+        const classified = snapshotFreshnessFromBytes(allocator, trimmed, now, loop_started_at);
+        if (trimmed.len != 0 and classified.parseable) {
             try writer.writeAll(trimmed);
+        } else {
+            try writer.writeAll("null");
         }
-    } else {
+        break :blk classified;
+    } else blk: {
         try writer.writeAll("null");
-    }
+        break :blk missingSnapshotFreshness();
+    };
+
+    try writer.writeAll(",\"stay_afloat_snapshot\":");
+    try writeSnapshotFreshnessJson(writer, freshness);
+}
+
+fn snapshotFreshnessFromBytes(
+    allocator: std.mem.Allocator,
+    trimmed: []const u8,
+    now: i64,
+    loop_started_at: ?i64,
+) SnapshotFreshness {
+    if (trimmed.len == 0) return .{
+        .present = false,
+        .parseable = false,
+        .loop_started_at = loop_started_at,
+        .current_loop_observed = if (loop_started_at == null) null else false,
+        .reason = "empty",
+    };
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch {
+        return .{
+            .present = true,
+            .parseable = false,
+            .loop_started_at = loop_started_at,
+            .current_loop_observed = if (loop_started_at == null) null else false,
+            .reason = "malformed",
+        };
+    };
+    defer parsed.deinit();
+
+    const obj = switch (parsed.value) {
+        .object => |obj| obj,
+        else => return .{
+            .present = true,
+            .parseable = true,
+            .loop_started_at = loop_started_at,
+            .current_loop_observed = if (loop_started_at == null) null else false,
+            .reason = "missing_last_tick_at",
+        },
+    };
+
+    const last_tick_at = switch (obj.get("last_tick_at") orelse return .{
+        .present = true,
+        .parseable = true,
+        .loop_started_at = loop_started_at,
+        .current_loop_observed = if (loop_started_at == null) null else false,
+        .reason = "missing_last_tick_at",
+    }) {
+        .integer => |value| value,
+        else => return .{
+            .present = true,
+            .parseable = true,
+            .loop_started_at = loop_started_at,
+            .current_loop_observed = if (loop_started_at == null) null else false,
+            .reason = "invalid_last_tick_at",
+        },
+    };
+
+    const age = if (last_tick_at > now) 0 else now - last_tick_at;
+    const stale = age > stay_afloat_snapshot_stale_after_s;
+    const current_loop_observed = if (loop_started_at) |started_at| last_tick_at >= started_at else null;
+    return .{
+        .present = true,
+        .parseable = true,
+        .last_tick_at = last_tick_at,
+        .age_seconds = age,
+        .loop_started_at = loop_started_at,
+        .current_loop_observed = current_loop_observed,
+        .stale = stale,
+        .reason = if (stale) "stale" else if (current_loop_observed == false) "before_current_loop" else "fresh",
+    };
+}
+
+fn missingSnapshotFreshness() SnapshotFreshness {
+    return .{
+        .present = false,
+        .parseable = false,
+        .reason = "missing",
+    };
+}
+
+fn writeSnapshotFreshnessJson(writer: anytype, freshness: SnapshotFreshness) !void {
+    try writer.writeAll("{\"present\":");
+    try writer.writeAll(if (freshness.present) "true" else "false");
+    try writer.writeAll(",\"parseable\":");
+    try writer.writeAll(if (freshness.parseable) "true" else "false");
+    try writer.writeAll(",\"last_tick_at\":");
+    if (freshness.last_tick_at) |last_tick_at| try writer.print("{d}", .{last_tick_at}) else try writer.writeAll("null");
+    try writer.writeAll(",\"age_seconds\":");
+    if (freshness.age_seconds) |age_seconds| try writer.print("{d}", .{age_seconds}) else try writer.writeAll("null");
+    try writer.writeAll(",\"loop_started_at\":");
+    if (freshness.loop_started_at) |started_at| try writer.print("{d}", .{started_at}) else try writer.writeAll("null");
+    try writer.writeAll(",\"current_loop_observed\":");
+    if (freshness.current_loop_observed) |observed| try writer.writeAll(if (observed) "true" else "false") else try writer.writeAll("null");
+    try writer.writeAll(",\"stale_after_seconds\":");
+    try writer.print("{d}", .{freshness.stale_after_seconds});
+    try writer.writeAll(",\"stale\":");
+    try writer.writeAll(if (freshness.stale) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(freshness.reason, .{}, writer);
+    try writer.writeAll("}");
+}
+
+fn jsonObjectI64(allocator: std.mem.Allocator, bytes: []const u8, field: []const u8) ?i64 {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    const obj = switch (parsed.value) {
+        .object => |obj| obj,
+        else => return null,
+    };
+    return switch (obj.get(field) orelse return null) {
+        .integer => |value| value,
+        else => null,
+    };
 }
 
 fn isRunning(allocator: std.mem.Allocator) bool {
@@ -468,6 +604,77 @@ test "status json exposes socket daemon contract" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"wrapper_contract\":\"foreground_tick\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat_loop\":{\"hosted\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat_snapshot\":") != null);
+}
+
+test "stay-afloat snapshot freshness reports fresh and stale snapshots" {
+    const fresh = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1000}", 1100, null);
+    try std.testing.expect(fresh.present);
+    try std.testing.expect(fresh.parseable);
+    try std.testing.expectEqual(@as(?i64, 1000), fresh.last_tick_at);
+    try std.testing.expectEqual(@as(?i64, 100), fresh.age_seconds);
+    try std.testing.expect(!fresh.stale);
+    try std.testing.expectEqualStrings("fresh", fresh.reason);
+
+    const stale = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1000}", 1301, null);
+    try std.testing.expect(stale.present);
+    try std.testing.expect(stale.parseable);
+    try std.testing.expectEqual(@as(?i64, 301), stale.age_seconds);
+    try std.testing.expect(stale.stale);
+    try std.testing.expectEqualStrings("stale", stale.reason);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeSnapshotFreshnessJson(buf.writer(), fresh);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"present\":true,\"parseable\":true,\"last_tick_at\":1000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"age_seconds\":100") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"loop_started_at\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"current_loop_observed\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale_after_seconds\":300") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"reason\":\"fresh\"") != null);
+}
+
+test "stay-afloat snapshot freshness reports missing and malformed snapshots" {
+    const missing = missingSnapshotFreshness();
+    try std.testing.expect(!missing.present);
+    try std.testing.expect(!missing.parseable);
+    try std.testing.expect(missing.stale);
+    try std.testing.expectEqualStrings("missing", missing.reason);
+
+    const empty = snapshotFreshnessFromBytes(std.testing.allocator, "", 1100, null);
+    try std.testing.expect(!empty.present);
+    try std.testing.expect(!empty.parseable);
+    try std.testing.expect(empty.stale);
+    try std.testing.expectEqualStrings("empty", empty.reason);
+
+    const malformed = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":", 1100, null);
+    try std.testing.expect(malformed.present);
+    try std.testing.expect(!malformed.parseable);
+    try std.testing.expect(malformed.stale);
+    try std.testing.expectEqualStrings("malformed", malformed.reason);
+
+    const missing_tick = snapshotFreshnessFromBytes(std.testing.allocator, "{\"version\":\"test\"}", 1100, null);
+    try std.testing.expect(missing_tick.present);
+    try std.testing.expect(missing_tick.parseable);
+    try std.testing.expect(missing_tick.stale);
+    try std.testing.expectEqualStrings("missing_last_tick_at", missing_tick.reason);
+}
+
+test "stay-afloat snapshot freshness identifies snapshots before active loop" {
+    const before_loop = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1000}", 1100, 1050);
+    try std.testing.expect(before_loop.present);
+    try std.testing.expect(before_loop.parseable);
+    try std.testing.expectEqual(@as(?i64, 1050), before_loop.loop_started_at);
+    try std.testing.expectEqual(@as(?bool, false), before_loop.current_loop_observed);
+    try std.testing.expect(!before_loop.stale);
+    try std.testing.expectEqualStrings("before_current_loop", before_loop.reason);
+
+    const current_loop = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1100}", 1100, 1050);
+    try std.testing.expectEqual(@as(?i64, 1050), current_loop.loop_started_at);
+    try std.testing.expectEqual(@as(?bool, true), current_loop.current_loop_observed);
+    try std.testing.expect(!current_loop.stale);
+    try std.testing.expectEqualStrings("fresh", current_loop.reason);
 }
 
 test "stay-afloat metadata json exposes selector and cadence" {

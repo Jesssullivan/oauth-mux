@@ -74,7 +74,13 @@ rather than introducing separate behavior.
 `hosts_stay_afloat:false`, and `wrapper_contract:"foreground_tick"`. It also
 includes the latest redacted stay-afloat tick snapshot under `stay_afloat` when
 one exists, so wrappers can inspect prepared fallback state without treating
-the socket stub as the production supervisor.
+the socket stub as the production supervisor. The sibling
+`stay_afloat_snapshot` object reports whether that snapshot is present,
+parseable, when it was last ticked, its age in seconds, the 300 second staleness
+threshold, active-loop correlation, and a fresh/stale reason. Wrappers should
+treat stale, missing, empty, malformed, or `before_current_loop` snapshots as
+evidence to run or wait for a new foreground tick instead of trusting an old
+prepared-fallback claim.
 That snapshot includes `claim.level`. `prepared_fallback` means the next
 mediated launch can select an account; it does not mean an already-running
 harness process will be hot-swapped. The same claim object keeps
