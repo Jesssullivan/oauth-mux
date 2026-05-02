@@ -201,7 +201,9 @@ portable foreground tick for dogfood and wrappers. No `systemctl`, `launchctl`,
 service manager, browser auth, provider spend, or secret mutation is assumed
 unless policy and CLI flags explicitly admit it. Tick JSON includes route-level
 `next_tick_after` and `schedule_reason` fields, plus top-level summary wake-up
-hints, so wrappers can sleep or back off without guessing. Tick JSON and the
+hints, so wrappers can sleep or back off without guessing. The built-in loop
+uses the earliest summary wake-up hint between ticks, bounded by
+`--interval-ms`, without changing daemon admission policy. Tick JSON and the
 latest `daemon status --json` snapshot also include `claim.level`. A
 `prepared_fallback` claim means the next mediated `stay-afloat launch` can pick
 a route; it does not claim current-process hot-swap, supervised restart, or

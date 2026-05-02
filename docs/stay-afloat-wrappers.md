@@ -39,6 +39,12 @@ oauth-mux daemon run --stay-afloat --profile codex-max --capability codex-max --
 oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
 ```
 
+The loop uses route scheduler hints when sleeping: the earliest
+`next_tick_after` in the tick summary can wake the next pass before the fixed
+cadence, while `--interval-ms` remains the maximum sleep. This keeps quota reset,
+handoff, and runtime repair rechecks responsive without granting extra provider
+budget or mutation rights.
+
 While the beta loop is running, `oauth-mux daemon status --json` should report
 fields shaped like:
 
