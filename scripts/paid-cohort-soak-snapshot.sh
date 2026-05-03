@@ -80,6 +80,28 @@ run_artifact() {
   fi
 }
 
+run_confirmation_artifact() {
+  local label="$1"
+  local output_name="$2"
+  shift 2
+
+  local output_file="$out_dir/$output_name"
+  local log_file="$out_dir/${output_name}.stderr.log"
+
+  printf '\n=== %s ===\n' "$label" | tee -a "$summary"
+  set +e
+  "$@" >"$output_file" 2> >(redact >"$log_file")
+  local status="$?"
+  set -e
+
+  if grep -q '"confirmation_required":true' "$output_file"; then
+    printf 'wrote %s (confirmation gate, status %s)\n' "$output_name" "$status" | tee -a "$summary"
+  else
+    printf 'failed (%s): %s did not report confirmation_required\n' "$status" "$label" | tee -a "$summary" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 run_text_artifact() {
   local label="$1"
   local output_name="$2"
@@ -106,17 +128,21 @@ run_artifact "route explain" "route-explain.json" "$bin" route explain --profile
 
 if [ "$provider" = "codex" ]; then
   run_artifact "codex broker-session-plan" "broker-session-plan.json" "$bin" codex broker-session-plan --profile "$profile" --capability "$capability" --json
+  run_confirmation_artifact "codex revalidate-exhausted spend gate" "revalidate-exhausted.confirmation.json" "$bin" codex revalidate-exhausted --profile "$profile" --capability "$capability" --json
+  run_confirmation_artifact "codex broker-run spend gate" "broker-run.confirmation.json" "$bin" codex broker-run --profile "$profile" --capability "$capability" --prompt "oauth-mux soak confirmation gate" --json
 else
   printf '\n=== broker-session-plan ===\n' | tee -a "$summary"
   printf 'skipped: broker-session-plan is Codex-specific\n' | tee "$out_dir/broker-session-plan.skipped.txt" | tee -a "$summary" >/dev/null
 fi
 
+run_artifact "stay-afloat next" "stay-afloat-next.json" "$bin" stay-afloat next --profile "$profile" --capability "$capability" --json
 run_artifact "stay-afloat once" "stay-afloat-once.json" "$bin" stay-afloat --once --profile "$profile" --capability "$capability" --json
 run_artifact "stay-afloat loop" "stay-afloat-loop.json" "$bin" stay-afloat --loop --iterations "$loop_iterations" --interval-ms "$loop_interval_ms" --profile "$profile" --capability "$capability" --json
 
 {
   printf '\nSpend-gated commands intentionally not run.\n'
-  printf 'Use codex revalidate-exhausted or live-provider QA only from an explicit operator-confirmed spend path.\n'
+  printf 'The confirmation artifacts prove the spend gates remain closed without --confirm-spend.\n'
+  printf 'Use codex revalidate-exhausted, broker-run, or live-provider QA only from an explicit operator-confirmed spend path.\n'
 } | tee -a "$summary"
 
 if [ "$failures" -ne 0 ]; then
