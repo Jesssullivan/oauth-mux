@@ -120,8 +120,9 @@ a claim for unmanaged Codex TUI/CLI processes.
 is the no-spend broker readiness check. It reads configured Codex auth stores
 locally and reports whether each route can supply `accessToken`,
 `chatgptAccountId`, and `chatgptPlanType` for a future app-server broker. Its
-output is redacted and planning-only; it does not run Codex, contact OpenAI, or
-prove live hot-swap.
+output is redacted and planning-only; it does not run Codex, contact OpenAI,
+read route liveness, claim prepared fallback, or prove live hot-swap. Use
+`broker-session-plan` for route-aware broker-owned session selection.
 
 `oauth-mux codex broker-smoke --profile codex-max --capability codex-max
 --confirm-broker --json` is the next proof step. It starts a broker-owned Codex

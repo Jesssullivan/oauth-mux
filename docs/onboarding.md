@@ -201,7 +201,9 @@ Use
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 to inspect whether enrolled Codex stores can supply the app-server
 external-auth tuple for that future broker path. It is local, redacted,
-planning-only, and does not prove live hot-swap.
+planning-only, does not read route liveness, and does not prove prepared
+fallback or live hot-swap. Use `broker-session-plan` for route-aware broker
+session selection.
 Use
 `oauth-mux codex broker-smoke --profile codex-max --capability codex-max
 --confirm-broker --json` after broker-plan is ready to prove a broker-owned

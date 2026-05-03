@@ -143,7 +143,9 @@ sessions, not a current public claim.
 `codex broker-plan --json` is the no-spend first slice of that track: it reads
 configured Codex stores locally and reports whether each route can supply the
 external-auth tuple Codex app-server expects, without printing tokens, account
-ids, credential paths, or provider-call evidence.
+ids, credential paths, or provider-call evidence. It is auth-material-only:
+it does not read route liveness, does not make a prepared-fallback claim, and
+is superseded by `codex broker-session-plan` for stay-afloat route decisions.
 `codex broker-session-plan --json` combines that broker readiness with recorded
 route liveness. It reports the selected broker-owned session route, immediate
 selectable fallback routes, quota-blocked routes, and the explicit claim
