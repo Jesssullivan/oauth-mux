@@ -157,6 +157,13 @@ pub fn main() !void {
             };
         },
 
+        .stay_afloat_supervise => |supervise_args| {
+            runStayAfloatSupervise(allocator, stdout, supervise_args) catch |e| {
+                log.err("stay-afloat supervise: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .stay_afloat => |tick_args| {
             runDaemonTick(allocator, stdout, tick_args, "oauth-mux stay-afloat") catch |e| {
                 log.err("stay-afloat: {s}", .{@errorName(e)});
@@ -3649,6 +3656,248 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     );
     if (last_exec_error) |err| return err;
     return error.AllAccountsExhausted;
+}
+
+const SuperviseAttempt = struct {
+    route: RepairPlanRoute,
+    term: std.process.Child.Term,
+    restart_admitted: bool,
+};
+
+fn runStayAfloatSupervise(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.SuperviseArgs,
+) !void {
+    if (args.target_argv.len == 0) {
+        log.err("stay-afloat supervise: no target command specified (use -- before the command)", .{});
+        return error.ConfigValidationError;
+    }
+
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    const selector = cli.Command.RouteArgs{
+        .action = .explain,
+        .profile = args.profile,
+        .provider = args.provider,
+        .account = args.account,
+        .capability = args.capability,
+    };
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = selector.profile,
+        .provider = selector.provider,
+        .account = selector.account,
+        .capability = selector.capability,
+    });
+    defer routes.deinit();
+
+    var attempted_routes = std.ArrayList(RepairPlanRoute).init(allocator);
+    defer attempted_routes.deinit();
+    var attempts = std.ArrayList(SuperviseAttempt).init(allocator);
+    defer attempts.deinit();
+
+    var restart_count: u32 = 0;
+    var reason: []const u8 = "no_attempt";
+
+    while (true) {
+        var store = health_mod.HealthStore.load(allocator, .{});
+        defer store.deinit();
+
+        var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+        defer evaluations.deinit();
+        try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+        const selected_index = firstSelectableRouteNotAttempted(evaluations.items, attempted_routes.items);
+        if (selected_index == null) {
+            reason = if (attempts.items.len == 0) "no_selectable_route" else "no_fallback_route";
+            break;
+        }
+
+        const selected = evaluations.items[selected_index.?].route;
+        try attempted_routes.append(selected);
+
+        var env_map = buildPinnedExecEnvMap(allocator, parsed.value, &store, selected, args) catch {
+            reason = "preflight_reclassified_route";
+            continue;
+        };
+        defer env_map.deinit();
+
+        var child = std.process.Child.init(args.target_argv, allocator);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = if (args.json) .Ignore else .Inherit;
+        child.stderr_behavior = if (args.json) .Ignore else .Inherit;
+        child.env_map = &env_map;
+
+        const term = child.spawnAndWait() catch return error.ExecFailed;
+        const restart_admitted = superviseRestartAdmitted(args, term, restart_count);
+        try attempts.append(.{
+            .route = selected,
+            .term = term,
+            .restart_admitted = restart_admitted,
+        });
+
+        if (restart_admitted) {
+            restart_count += 1;
+            reason = "restart_admitted";
+            continue;
+        }
+
+        reason = if (superviseTermSucceeded(term)) "target_completed" else "target_failed";
+        break;
+    }
+
+    if (args.json) {
+        try writeStayAfloatSuperviseJson(writer, args, attempts.items, restart_count, reason);
+    } else {
+        try writeStayAfloatSuperviseText(writer, args, attempts.items, restart_count, reason);
+    }
+}
+
+fn buildPinnedExecEnvMap(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    route: RepairPlanRoute,
+    args: cli.Command.SuperviseArgs,
+) !std.process.EnvMap {
+    var ctx = pipeline.Context.init(allocator, cfg, store);
+    defer ctx.deinit();
+
+    ctx.provider_name = route.provider;
+    ctx.account_name = route.account;
+    ctx.capability_name = route.capability orelse args.capability;
+    ctx.target_argv = args.target_argv;
+
+    pipeline.runExec(&ctx) catch |e| {
+        store.persist();
+        return e;
+    };
+
+    var env_map = try std.process.getEnvMap(allocator);
+    errdefer env_map.deinit();
+    for (ctx.env_pairs.items) |pair| {
+        try env_map.put(pair[0], pair[1]);
+    }
+    try env_map.put("OMUX_VERSION", cli.version);
+    store.persist();
+    return env_map;
+}
+
+fn superviseRestartAdmitted(
+    args: cli.Command.SuperviseArgs,
+    term: std.process.Child.Term,
+    restart_count: u32,
+) bool {
+    const expected = args.restart_on_exit_code orelse return false;
+    if (restart_count >= args.max_restarts) return false;
+    return switch (term) {
+        .Exited => |code| code == expected,
+        else => false,
+    };
+}
+
+fn superviseTermSucceeded(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn superviseTermKind(term: std.process.Child.Term) []const u8 {
+    return switch (term) {
+        .Exited => "exited",
+        .Signal => "signal",
+        .Stopped => "stopped",
+        .Unknown => "unknown",
+    };
+}
+
+fn superviseTermCode(term: std.process.Child.Term) u32 {
+    return switch (term) {
+        .Exited => |code| code,
+        .Signal => |signal| signal,
+        .Stopped => |signal| signal,
+        .Unknown => |code| code,
+    };
+}
+
+fn writeStayAfloatSuperviseJson(
+    writer: anytype,
+    args: cli.Command.SuperviseArgs,
+    attempts: []const SuperviseAttempt,
+    restart_count: u32,
+    reason: []const u8,
+) !void {
+    const ok = attempts.len > 0 and superviseTermSucceeded(attempts[attempts.len - 1].term);
+    const prepared_fallback = attempts.len > 0;
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"stay_afloat_supervise\",\"ok\":");
+    try writer.writeAll(if (ok) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(reason, .{}, writer);
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":");
+    try std.json.stringify(if (restart_count > 0) "supervised_restart" else "supervised_process", .{}, writer);
+    try writer.writeAll(",\"prepared_fallback\":");
+    try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"supervised_restart\":");
+    try writer.writeAll(if (restart_count > 0) "true" else "false");
+    try writer.writeAll(",\"wrapper_owned_process\":true,\"restart_classification_source\":");
+    try std.json.stringify(if (args.restart_on_exit_code != null) "operator_exit_code" else "none", .{}, writer);
+    try writer.writeAll(",\"route_health_recorded\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"max_restarts\":");
+    try writer.print("{d}", .{args.max_restarts});
+    try writer.writeAll(",\"restart_on_exit_code\":");
+    if (args.restart_on_exit_code) |code| try writer.print("{d}", .{code}) else try writer.writeAll("null");
+    try writer.writeAll(",\"restart_count\":");
+    try writer.print("{d}", .{restart_count});
+    try writer.writeAll(",\"attempts\":[");
+    for (attempts, 0..) |attempt, idx| {
+        if (idx != 0) try writer.writeByte(',');
+        try writer.writeByte('{');
+        try writer.writeAll("\"selected\":");
+        try writeRouteSelectionJson(writer, attempt.route);
+        try writer.writeAll(",\"term\":{\"kind\":");
+        try std.json.stringify(superviseTermKind(attempt.term), .{}, writer);
+        try writer.writeAll(",\"code\":");
+        try writer.print("{d}", .{superviseTermCode(attempt.term)});
+        try writer.writeAll("},\"restart_admitted\":");
+        try writer.writeAll(if (attempt.restart_admitted) "true" else "false");
+        try writer.writeByte('}');
+    }
+    try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"captured_output_printed\":false,\"raw_protocol_printed\":false}}\n");
+}
+
+fn writeStayAfloatSuperviseText(
+    writer: anytype,
+    args: cli.Command.SuperviseArgs,
+    attempts: []const SuperviseAttempt,
+    restart_count: u32,
+    reason: []const u8,
+) !void {
+    const ok = attempts.len > 0 and superviseTermSucceeded(attempts[attempts.len - 1].term);
+    try writer.writeAll("oauth-mux stay-afloat supervise\n\n");
+    try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{reason});
+    try writer.print("  max restarts: {d}\n", .{args.max_restarts});
+    try writer.writeAll("  restart on exit code: ");
+    if (args.restart_on_exit_code) |code| try writer.print("{d}\n", .{code}) else try writer.writeAll("not configured\n");
+    try writer.print("  restart count: {d}\n", .{restart_count});
+    for (attempts, 0..) |attempt, idx| {
+        try writer.print("  attempt {d}: {s}:{s}", .{ idx + 1, attempt.route.provider, attempt.route.account });
+        if (attempt.route.capability) |cap| try writer.print("#{s}", .{cap});
+        try writer.print(" {s}:{d} restart_admitted={s}\n", .{
+            superviseTermKind(attempt.term),
+            superviseTermCode(attempt.term),
+            if (attempt.restart_admitted) "true" else "false",
+        });
+    }
+    try writer.writeAll("  boundary: wrapper-owned child restart only; no current-process hot-swap or per-request muxing\n");
 }
 
 fn firstSelectableRouteNotAttempted(

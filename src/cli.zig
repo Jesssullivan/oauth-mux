@@ -20,6 +20,7 @@ pub const Command = union(enum) {
     route: RouteArgs,
     stay_afloat_next: RouteArgs,
     stay_afloat_launch: ExecArgs,
+    stay_afloat_supervise: SuperviseArgs,
     stay_afloat: DaemonTickArgs,
     stay_afloat_handoff: HandoffArgs,
     config_validate,
@@ -45,6 +46,17 @@ pub const Command = union(enum) {
         capability: ?[]const u8 = null,
         strategy: ?[]const u8 = null,
         target_argv: []const []const u8 = &.{},
+    };
+
+    pub const SuperviseArgs = struct {
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+        target_argv: []const []const u8 = &.{},
+        max_restarts: u32 = 1,
+        restart_on_exit_code: ?u8 = null,
+        json: bool = false,
     };
 
     pub const EnvArgs = struct {
@@ -725,6 +737,7 @@ fn parseDaemonTick(args: []const []const u8) Command {
 
 fn parseStayAfloat(args: []const []const u8) Command {
     if (args.len > 0 and eql(args[0], "launch")) return .{ .stay_afloat_launch = parseExecArgs(args[1..]) };
+    if (args.len > 0 and eql(args[0], "supervise")) return parseStayAfloatSupervise(args[1..]);
     if (args.len > 0 and eql(args[0], "next")) return parseStayAfloatNext(args[1..]);
     if (args.len > 0 and eql(args[0], "handoffs")) return parseDaemonHandoffs(args[1..]);
     if (args.len > 0 and eql(args[0], "handoff")) return parseStayAfloatHandoff(args[1..]);
@@ -736,6 +749,41 @@ fn parseStayAfloat(args: []const []const u8) Command {
         return .{ .stay_afloat = tick };
     }
     return .{ .stay_afloat = parseDaemonTickArgs(args) };
+}
+
+fn parseStayAfloatSupervise(args: []const []const u8) Command {
+    var result = Command.SuperviseArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--")) {
+            if (i + 1 < args.len) {
+                result.target_argv = args[i + 1 ..];
+            }
+            break;
+        }
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--max-restarts")) {
+            i += 1;
+            if (i < args.len) result.max_restarts = std.fmt.parseInt(u32, args[i], 10) catch result.max_restarts;
+        } else if (eql(args[i], "--restart-on-exit-code")) {
+            i += 1;
+            if (i < args.len) result.restart_on_exit_code = std.fmt.parseInt(u8, args[i], 10) catch result.restart_on_exit_code;
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .stay_afloat_supervise = result };
 }
 
 fn parseStayAfloatNext(args: []const []const u8) Command {
@@ -1065,6 +1113,8 @@ pub fn printUsage(writer: anytype) !void {
         \\      Show the next mediated action: exec argv when afloat, otherwise typed repair/handoff.
         \\  stay-afloat launch [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] -- <cmd> [args...]
         \\      Launch a target only when route evidence selects an exact account; otherwise print mediation and exit nonzero.
+        \\  stay-afloat supervise [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--max-restarts <n>] [--restart-on-exit-code <code>] [--json] -- <cmd> [args...]
+        \\      Spawn a wrapper-owned child and restart on an operator-classified exit code.
         \\  stay-afloat refresh [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run one execute tick to refresh route evidence after user-mediated auth.
         \\  stay-afloat handoffs [--json] [--limit <n>] [--all]
@@ -1879,6 +1929,26 @@ test "parse stay-afloat launch selector and target" {
     }
 }
 
+test "parse stay-afloat supervise selector restart policy and target" {
+    const args = [_][]const u8{ "stay-afloat", "supervise", "--profile", "codex-max", "--provider", "codex", "--account", "max-2", "--capability", "codex-max", "--max-restarts", "2", "--restart-on-exit-code", "42", "--json", "--", "codex", "--ask-for-approval=never" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .stay_afloat_supervise => |supervise| {
+            try std.testing.expectEqualStrings("codex-max", supervise.profile.?);
+            try std.testing.expectEqualStrings("codex", supervise.provider.?);
+            try std.testing.expectEqualStrings("max-2", supervise.account.?);
+            try std.testing.expectEqualStrings("codex-max", supervise.capability.?);
+            try std.testing.expectEqual(@as(u32, 2), supervise.max_restarts);
+            try std.testing.expectEqual(@as(u8, 42), supervise.restart_on_exit_code.?);
+            try std.testing.expect(supervise.json);
+            try std.testing.expectEqual(@as(usize, 2), supervise.target_argv.len);
+            try std.testing.expectEqualStrings("codex", supervise.target_argv[0]);
+            try std.testing.expectEqualStrings("--ask-for-approval=never", supervise.target_argv[1]);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon run stay-afloat supervisor" {
     const args = [_][]const u8{ "daemon", "run", "--stay-afloat", "--profile", "codex-max", "--capability", "codex-max", "--iterations", "2", "--interval-ms", "0" };
     const cmd = parse(&args);
@@ -2041,7 +2111,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'next launch handoffs handoff refresh' -d 'Stay-afloat subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'next launch supervise handoffs handoff refresh' -d 'Stay-afloat subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from handoff' -a 'ack clear' -d 'Handoff action'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'
@@ -2050,6 +2120,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l interval-ms -d 'Milliseconds between ticks' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l limit -d 'Limit handoff count' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l all -d 'Include historical handoff events'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l max-restarts -d 'Maximum supervised child restarts' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l restart-on-exit-code -d 'Exit code that admits supervised restart' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'

@@ -151,6 +151,12 @@ proxy, or in-agent adapter proves those stronger levels.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
   as the lower-level wrapper-author spelling for the same bounded foreground
   loop.
+- `oauth-mux stay-afloat supervise --max-restarts <n>
+  --restart-on-exit-code <code> -- <command>` as the beta wrapper-owned restart
+  path. It can claim `supervised_restart:true` only after oauth-mux spawned the
+  child, observed the configured exit code, and restarted on another selectable
+  route. It does not promote the socket daemon or claim current-process
+  hot-swap.
 - `claim.level:"prepared_fallback"` in `stay-afloat` / `daemon tick` JSON and
   in the latest `daemon status --json` snapshot when a route is selectable.
   Wrappers should pair that with the emitted `claim.launch_argv` and should not

@@ -229,6 +229,12 @@ selected route, launch re-runs selection and tries the next selectable account.
 If no route remains selectable, launch prints refreshed mediation text and exits
 nonzero without starting the target. If no route is selectable at preflight, it
 also prints mediation text and exits nonzero without starting the target.
+`oauth-mux stay-afloat supervise --max-restarts <n>
+--restart-on-exit-code <code> -- <command>` is the wrapper-owned restart beta.
+It keeps oauth-mux as the parent process, injects the selected route into a
+child, and restarts on a distinct selectable route only for the configured exit
+code. This is useful for harnesses or test wrappers that can make failures
+typed; it is not unmanaged in-process token replacement.
 
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,
