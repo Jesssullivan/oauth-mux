@@ -56,6 +56,10 @@ Source checkouts prove this path without touching real operator state:
 just first-run-e2e
 ```
 
+When checking unreleased behavior from source, use `just run -- ...` or
+`./zig-out/bin/oauth-mux` after `just build` so local observations match repo
+`main` rather than an older installed package.
+
 For Codex subscription users working from a source checkout today:
 
 ```bash

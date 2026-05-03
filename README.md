@@ -44,6 +44,11 @@ just release
 runs Zig tests, builds the binary, validates every example config, and runs the
 synthetic local E2E harness.
 
+When validating behavior from a source checkout on `main`, prefer the freshly
+built repo binary (`just run -- ...` or `./zig-out/bin/oauth-mux` after
+`just build`). Installed packages may trail unreleased command surfaces and
+operator text.
+
 ## Quick Checks
 
 Discover the redacted, agent-safe inventory:

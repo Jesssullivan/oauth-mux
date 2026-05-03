@@ -69,16 +69,29 @@ Primary sources:
 
 ### Codex: `TIN-893`
 
-Use the existing three Max-capable accounts as the high-usage cohort. Add one
-lower-tier OAuth account to prove tier and usage contrast.
+Use the current four Max-capable account-scoped routes as the high-usage
+cohort. Keep one lower-tier OAuth account as a separate proof target for tier
+and usage contrast.
+
+Current dogfood truth as of 2026-05-03:
+
+- `max-1#codex-max` revalidated from provider evidence and is selectable.
+- `max-4#codex-max` is selectable fallback.
+- `max-2#codex-max` and `max-3#codex-max` still return provider quota
+  exhaustion.
+- No logout or reauth was required when capacity changed; spend-gated
+  `codex revalidate-exhausted` refreshed route health from provider evidence.
+- Dashboard credit/Spark availability must not be generalized to
+  `codex-max`; route health remains capability-scoped.
 
 Suggested labels:
 
 | Label | Intended shape | Proof value |
 | --- | --- | --- |
-| `codex-max-1` | Existing Max-capable account | Quota exhaustion, weekly reset, and fallback history. |
-| `codex-max-2` | Existing Max-capable account | Independent Max-capable route with the same capability names. |
-| `codex-max-3` | Existing active/API-backed route | Available fallback when other Max routes are exhausted. |
+| `codex-max-1` | Max-capable account | Revalidated selected route after capacity change. |
+| `codex-max-2` | Max-capable account | Fresh quota-exhausted provider evidence. |
+| `codex-max-3` | Max-capable account with mini/Spark availability | Capability-scoped contrast: mini/Spark can pass while Max remains exhausted. |
+| `codex-max-4` | Max-capable account | Selectable fallback route behind `max-1`. |
 | `codex-plus-1` | New lower-tier ChatGPT OAuth account | Tier/usage contrast against Max; proves lower-tier accounts do not poison Max route health. |
 
 Do not model the lower-tier account as a broken Max account. Expected outcomes
@@ -103,7 +116,7 @@ Spendful proof remains behind explicit confirmation:
 ```bash
 OMUX_LIVE_QA_CONFIRM=spend-real-calls \
 OMUX_LIVE_QA_PROVIDER=codex \
-OMUX_LIVE_QA_ACCOUNTS=max-1,max-2,max-3,codex-plus-1 \
+OMUX_LIVE_QA_ACCOUNTS=max-1,max-2,max-3,max-4,codex-plus-1 \
 OMUX_LIVE_QA_CAPABILITIES=codex-mini,codex-max \
   just live-qa
 ```

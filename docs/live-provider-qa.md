@@ -224,8 +224,9 @@ paid cohort, not a default CI lane.
 
 Target shapes:
 
-- Codex: existing three Max-capable accounts plus one lower-tier OAuth account
-  to prove tier and usage contrast.
+- Codex: the current dogfood lane has four Max-capable routes. Keep lower-tier
+  OAuth as a separate contrast target; do not infer Max availability from
+  dashboard or Spark/mini credit text.
 - Claude Code: three isolated account/billing shapes across Pro, Max, and a
   team/API-billed route where available.
 - Figma: three token/resource shapes across PAT, OAuth bearer, and

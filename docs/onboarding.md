@@ -46,7 +46,7 @@ oauth-mux enroll figma --account <name> --mode pat --confirm-enroll --json
 oauth-mux discover
 ```
 
-Codex Max three-account starter:
+Codex Max starter plus fourth-account enrollment:
 
 ```bash
 oauth-mux init --codex-max
