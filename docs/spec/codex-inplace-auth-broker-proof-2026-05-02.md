@@ -281,7 +281,9 @@ For quota-driven account changes, use a different action name, such as
    and reports selected, fallback, quota-blocked, and auth-unready routes for
    the future broker-owned session UX. Its `resilience` object explicitly marks
    whether the selected broker session has a spare fallback route or is a
-   single-route-at-risk state.
+   single-route-at-risk state. `resilience_actions` turns that state into an
+   operator todo list: revalidate exhausted routes, enroll another account, or
+   wait for quota reset.
 11. Add a no-spend broker-owned session smoke:
    `oauth-mux codex broker-session-smoke --profile codex-max --capability
    codex-max --confirm-broker --json` uses the session plan's selected and
@@ -301,7 +303,7 @@ For quota-driven account changes, use a different action name, such as
    the failed prompt plus remaining queued prompts. This is the honest
    next-session stay-afloat path; it is not same-thread recovery. The output
    includes the post-failure resilience state so operators can see when the
-   fallback route is now the last selectable route.
+   fallback route is now the last selectable route and which actions are left.
 14. Add a controlled fallback observation drill:
    `oauth-mux codex broker-fallback-drill --profile codex-max --capability
    codex-max --from-account max-3 --confirm-drill --json` records the named

@@ -163,7 +163,9 @@ reports the selected route, immediate selectable fallbacks, quota-blocked broker
 routes, and the same explicit no-hot-swap/no-same-thread quota boundary. Its
 `resilience` object is the operator shortcut: `spare_fallback_ready:false` with
 `single_route_at_risk:true` means the selected broker session can start, but no
-second route is currently ready behind it.
+second route is currently ready behind it. In that state, `resilience_actions`
+is the todo list: revalidate exhausted routes behind an explicit spend gate,
+enroll another Codex account, or wait for quota reset.
 
 `oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max
 --confirm-broker --json` is the matching no-spend multi-turn UX smoke. It uses
@@ -178,7 +180,7 @@ provider and emits redacted protocol evidence without printing prompt text,
 assistant output, tokens, account ids, or raw app-server protocol. A live
 quota/rate-limit failure is recorded as route-health evidence and the output
 reports the next selected route plus the post-failure broker-session resilience
-state.
+state and actions.
 For a bounded beta multi-turn session, pass `--stdin` instead of `--prompt` and
 pipe one prompt per line. The session stays broker-owned and redacted; the
 output reports prompt counts and completed turns, not transcript content. Add
