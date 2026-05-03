@@ -48,6 +48,7 @@ mkdir -p "$out"
 ./zig-out/bin/oauth-mux providers list --json >"$out/providers.json"
 ./zig-out/bin/oauth-mux route explain --profile codex-max --capability codex-max --json >"$out/route-explain.json"
 ./zig-out/bin/oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json >"$out/broker-session-plan.json"
+./zig-out/bin/oauth-mux stay-afloat next --profile codex-max --capability codex-max --json >"$out/stay-afloat-next.json"
 ./zig-out/bin/oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json >"$out/stay-afloat-once.json"
 ```
 
@@ -76,6 +77,12 @@ Do not run spend-gated commands from unattended loops. If a route has no spare
 fallback, record the `resilience_actions` and decide manually whether to
 revalidate, enroll another account, or wait for reset.
 
+The daily no-spend snapshot may also include confirmation-gate artifacts such
+as `revalidate-exhausted.confirmation.json` or
+`broker-run.confirmation.json`. Those files are expected to report
+`confirmation_required:true`; they prove the operator gate is still closed and
+are not evidence that provider calls ran.
+
 ## Artifact Rules
 
 Artifacts may be local under `dist/soak/<timestamp>/...` or hosted workflow
@@ -93,8 +100,12 @@ Minimum complete Codex soak snapshot:
 - `providers.json`;
 - `route-explain.json`;
 - `broker-session-plan.json`;
+- `stay-afloat-next.json`;
 - `stay-afloat-once.json`;
 - `stay-afloat-loop.json` when wrapper behavior is part of the claim;
+- `revalidate-exhausted.confirmation.json` and
+  `broker-run.confirmation.json` when the snapshot needs to prove spend gates
+  are closed;
 - `revalidate-exhausted.json` only when the operator intentionally spent a
   route revalidation call.
 
