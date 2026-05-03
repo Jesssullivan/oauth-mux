@@ -3676,6 +3676,14 @@ const SuperviseChildResult = struct {
     captured_stderr_bytes: usize = 0,
 };
 
+const SuperviseCaptureLimit = 512 * 1024;
+
+const SuperviseStreamCapture = struct {
+    buffer: []u8,
+    len: usize = 0,
+    read_error: ?anyerror = null,
+};
+
 fn runStayAfloatSupervise(
     allocator: std.mem.Allocator,
     writer: anytype,
@@ -3683,6 +3691,10 @@ fn runStayAfloatSupervise(
 ) !void {
     if (args.target_argv.len == 0) {
         log.err("stay-afloat supervise: no target command specified (use -- before the command)", .{});
+        return error.ConfigValidationError;
+    }
+    if (args.stream_capture and !args.restart_on_codex_usage_limit) {
+        log.err("stay-afloat supervise: --stream-capture requires --restart-on-codex-usage-limit", .{});
         return error.ConfigValidationError;
     }
 
@@ -3791,6 +3803,10 @@ fn runSupervisedChild(
         return .{ .term = try child.spawnAndWait() };
     }
 
+    if (args.stream_capture) {
+        return runSupervisedChildStreamingPipe(allocator, &child, args);
+    }
+
     try child.spawn();
 
     var stdout_buf = std.ArrayListUnmanaged(u8){};
@@ -3798,7 +3814,7 @@ fn runSupervisedChild(
     var stderr_buf = std.ArrayListUnmanaged(u8){};
     defer stderr_buf.deinit(allocator);
 
-    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 512 * 1024) catch |e| {
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, SuperviseCaptureLimit) catch |e| {
         _ = child.kill() catch null;
         return e;
     };
@@ -3813,6 +3829,74 @@ fn runSupervisedChild(
         .captured_stdout_bytes = stdout_buf.items.len,
         .captured_stderr_bytes = stderr_buf.items.len,
     };
+}
+
+fn runSupervisedChildStreamingPipe(
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    args: cli.Command.SuperviseArgs,
+) !SuperviseChildResult {
+    try child.spawn();
+
+    const stdout_storage = try allocator.alloc(u8, SuperviseCaptureLimit);
+    defer allocator.free(stdout_storage);
+    const stderr_storage = try allocator.alloc(u8, SuperviseCaptureLimit);
+    defer allocator.free(stderr_storage);
+
+    var stdout_capture = SuperviseStreamCapture{ .buffer = stdout_storage };
+    var stderr_capture = SuperviseStreamCapture{ .buffer = stderr_storage };
+
+    const stdout_file = child.stdout.?;
+    const stderr_file = child.stderr.?;
+
+    const parent_stdout = std.io.getStdOut();
+    const parent_stderr = std.io.getStdErr();
+    const stdout_target = if (args.json) parent_stderr else parent_stdout;
+
+    const stdout_thread = try std.Thread.spawn(.{}, readSupervisedChildStream, .{ stdout_file, &stdout_capture, stdout_target });
+    const stderr_thread = try std.Thread.spawn(.{}, readSupervisedChildStream, .{ stderr_file, &stderr_capture, parent_stderr });
+
+    stdout_thread.join();
+    stderr_thread.join();
+    const term = try child.wait();
+
+    if (stdout_capture.read_error) |err| return err;
+    if (stderr_capture.read_error) |err| return err;
+
+    const stdout_items = stdout_capture.buffer[0..stdout_capture.len];
+    const stderr_items = stderr_capture.buffer[0..stderr_capture.len];
+    const classification: ?[]const u8 = if (superviseOutputLooksLikeCodexUsageLimit(stdout_items) or superviseOutputLooksLikeCodexUsageLimit(stderr_items))
+        "codex_usage_limit"
+    else
+        null;
+    return .{
+        .term = term,
+        .output_classification = classification,
+        .captured_stdout_bytes = stdout_capture.len,
+        .captured_stderr_bytes = stderr_capture.len,
+    };
+}
+
+fn readSupervisedChildStream(
+    input: std.fs.File,
+    capture: *SuperviseStreamCapture,
+    output: std.fs.File,
+) void {
+    var chunk: [4096]u8 = undefined;
+    while (true) {
+        const n = input.read(&chunk) catch |err| {
+            capture.read_error = err;
+            return;
+        };
+        if (n == 0) return;
+        const remaining = capture.buffer.len - capture.len;
+        const copy_len = @min(n, remaining);
+        if (copy_len > 0) {
+            @memcpy(capture.buffer[capture.len..][0..copy_len], chunk[0..copy_len]);
+            capture.len += copy_len;
+        }
+        output.writeAll(chunk[0..n]) catch {};
+    }
 }
 
 fn buildPinnedExecEnvMap(
@@ -3923,7 +4007,7 @@ fn recordStayAfloatSuperviseEvent(
         .reason = reason,
         .ok = superviseTermSucceeded(term),
         .executed = true,
-        .interactive = false,
+        .interactive = args.stream_capture,
         .mutating = route_health_recorded,
     }) catch return false;
     return true;
@@ -3934,6 +4018,11 @@ fn superviseRestartClassificationSource(args: cli.Command.SuperviseArgs) []const
     if (args.restart_on_codex_usage_limit) return "codex_usage_limit_output";
     if (args.restart_on_exit_code != null) return "operator_exit_code";
     return "none";
+}
+
+fn superviseCaptureTransport(args: cli.Command.SuperviseArgs) []const u8 {
+    if (!args.restart_on_codex_usage_limit) return if (args.json) "none" else "inherit";
+    return if (args.stream_capture) "streaming_pipe" else "buffered_pipe";
 }
 
 fn superviseTermSucceeded(term: std.process.Child.Term) bool {
@@ -3993,6 +4082,10 @@ fn writeStayAfloatSuperviseJson(
     if (args.restart_on_exit_code) |code| try writer.print("{d}", .{code}) else try writer.writeAll("null");
     try writer.writeAll(",\"restart_on_codex_usage_limit\":");
     try writer.writeAll(if (args.restart_on_codex_usage_limit) "true" else "false");
+    try writer.writeAll(",\"capture_transport\":");
+    try std.json.stringify(superviseCaptureTransport(args), .{}, writer);
+    try writer.writeAll(",\"live_child_output_streamed\":");
+    try writer.writeAll(if (args.stream_capture and args.restart_on_codex_usage_limit) "true" else "false");
     try writer.writeAll(",\"restart_count\":");
     try writer.print("{d}", .{restart_count});
     try writer.writeAll(",\"attempts\":[");
@@ -4019,7 +4112,9 @@ fn writeStayAfloatSuperviseJson(
         try writer.writeAll(if (attempt.restart_admitted) "true" else "false");
         try writer.writeByte('}');
     }
-    try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"captured_output_printed\":false,\"raw_protocol_printed\":false}}\n");
+    try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"captured_output_in_json\":false,\"captured_output_printed\":false,\"live_child_output_streamed\":");
+    try writer.writeAll(if (args.stream_capture and args.restart_on_codex_usage_limit) "true" else "false");
+    try writer.writeAll(",\"raw_protocol_printed\":false}}\n");
 }
 
 fn writeStayAfloatSuperviseText(
@@ -4037,6 +4132,8 @@ fn writeStayAfloatSuperviseText(
     try writer.writeAll("  restart on exit code: ");
     if (args.restart_on_exit_code) |code| try writer.print("{d}\n", .{code}) else try writer.writeAll("not configured\n");
     try writer.print("  restart on Codex usage limit: {s}\n", .{if (args.restart_on_codex_usage_limit) "true" else "false"});
+    try writer.print("  capture transport: {s}\n", .{superviseCaptureTransport(args)});
+    try writer.print("  live child output streamed: {s}\n", .{if (args.stream_capture and args.restart_on_codex_usage_limit) "true" else "false"});
     try writer.print("  restart count: {d}\n", .{restart_count});
     for (attempts, 0..) |attempt, idx| {
         try writer.print("  attempt {d}: {s}:{s}", .{ idx + 1, attempt.route.provider, attempt.route.account });

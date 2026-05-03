@@ -260,7 +260,9 @@ selectable route only when the child exits with the operator-classified code.
 For Codex dogfood, `--restart-on-codex-usage-limit` captures child output,
 matches the native usage-limit screen, records the selected route as
 quota-exhausted, appends a redacted supervise event, and restarts on the next
-route. Captured provider text is not printed. The JSON claim can set
+route. Captured provider text is not printed unless `--stream-capture` is also
+set with that classifier; that opt-in mode tees child output while keeping
+JSON/events redacted and machine-readable. The JSON claim can set
 `supervised_restart:true` for that wrapper-owned child path; it still does not
 claim current-process hot-swap, unmanaged TUI handoff, or per-request muxing.
 

@@ -230,6 +230,8 @@ proxy, or in-agent adapter proves those stronger levels.
 - Automatic subscription-spending checks without explicit daemon policy.
 - Silent token refresh for providers whose refresh semantics are owned by an
   upstream CLI.
+- Treating `stay-afloat supervise --stream-capture` as PTY/raw-terminal support;
+  it is a tee-based pipe capture path only.
 - Silent execution of interactive repair-plan commands.
 - Any release gate that depends on a long-running daemon.
 - Treating `systemctl`, `launchctl`, Homebrew services, cron, or Windows

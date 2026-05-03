@@ -252,6 +252,10 @@ For Codex dogfood, add `--restart-on-codex-usage-limit`. That mode captures
 child output, classifies the native usage-limit screen, records the selected
 route as quota-exhausted, appends a redacted `stay_afloat_supervise` event, and
 restarts on the next selectable route. Captured provider output remains hidden.
+Add `--stream-capture` with that classifier when dogfood needs visible child
+output: oauth-mux tees the child stream while keeping bounded classifier
+buffers and redacted artifacts. In `--json` mode, the live child stream goes to
+stderr so stdout stays machine-readable.
 
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,
