@@ -240,7 +240,9 @@ these precise provider-proof children.
    making seamless handoff claims.
 9. Work `TIN-913` / GitHub `#125` as the Codex app-server auth-broker proof
    track before assuming restart is the only viable Codex current-process path.
-   `oauth-mux codex broker-plan` proves local credential tuple readiness, and
+   `oauth-mux codex broker-plan` proves local credential tuple readiness only;
+   it does not read route liveness or claim prepared fallback. Use
+   `oauth-mux codex broker-session-plan` for route-aware selection.
    `oauth-mux codex broker-smoke --confirm-broker` proves broker-owned
    app-server stdio external-auth login. `oauth-mux codex broker-401-smoke
    --confirm-broker` proves the local mediated 401 retry path with a fallback

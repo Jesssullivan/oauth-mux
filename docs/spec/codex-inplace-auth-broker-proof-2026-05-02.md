@@ -236,7 +236,9 @@ For quota-driven account changes, use a different action name, such as
    `accessToken`, `chatgptAccountId`, and `chatgptPlanType` for broker use.
    First slice: `oauth-mux codex broker-plan --profile codex-max --capability
    codex-max --json` reports this locally and redacts token, account-id,
-   credential-path, and provider-call evidence.
+   credential-path, and provider-call evidence. It is auth-material-only and
+   does not read route liveness or claim prepared fallback; use
+   `oauth-mux codex broker-session-plan` for route-aware session selection.
 5. Add a broker command behind an explicit beta name:
 
    ```bash

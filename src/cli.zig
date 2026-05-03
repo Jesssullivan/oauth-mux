@@ -1115,7 +1115,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Probe every selected Codex account/capability route.
         \\
         \\  codex broker-plan [--profile name] [--capability c] [--json]
-        \\      Inspect whether Codex routes can supply app-server external auth tokens.
+        \\      Inspect local app-server auth material only; use broker-session-plan for route-aware selection.
         \\
         \\  codex broker-session-plan [--profile name] [--capability c] [--json]
         \\      Plan a broker-owned Codex session from route liveness and auth-broker readiness.

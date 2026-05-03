@@ -8270,7 +8270,12 @@ fn writeCodexBrokerPlanJson(
     try writer.writeAll(",\"app_server\":{\"transport\":\"stdio\",\"requires_experimental_api\":true,\"login_method\":\"account/login/start.chatgptAuthTokens\",\"refresh_method\":\"account/chatgptAuthTokens/refresh\"}");
     try writer.writeAll(",\"ok\":");
     try writer.writeAll(if (summary.ready_routes > 0) "true" else "false");
-    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"prepared_fallback\":true,\"supervised_restart\":false,\"current_process_hotswap\":false,\"per_request_muxing\":false,\"proof_status\":\"planning_only\"}");
+    try writer.writeAll(",\"route_liveness_considered\":false");
+    try writer.writeAll(",\"selected_basis\":\"auth_material_only\"");
+    try writer.writeAll(",\"superseded_by\":\"codex broker-session-plan\"");
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"auth_material_readiness\",\"auth_broker_ready\":");
+    try writer.writeAll(if (summary.ready_routes > 0) "true" else "false");
+    try writer.writeAll(",\"route_liveness_considered\":false,\"prepared_fallback\":false,\"broker_owned_session\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false,\"proof_status\":\"auth_material_planning_only\",\"superseded_by\":\"codex broker-session-plan\"}");
     try writer.writeAll(",\"profile\":");
     if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
@@ -8302,7 +8307,8 @@ fn writeCodexBrokerPlanText(
     try writer.writeAll("oauth-mux Codex app-server broker plan\n\n");
     if (profile) |value| try writer.print("  profile: {s}\n", .{value});
     if (capability) |value| try writer.print("  capability: {s}\n", .{value});
-    try writer.writeAll("  claim: current_process_auth_broker proof target; not a public hot-swap claim\n\n");
+    try writer.writeAll("  claim: auth material readiness only; route liveness is not considered\n");
+    try writer.writeAll("  superseded by: oauth-mux codex broker-session-plan --profile <profile> --capability <capability> --json\n\n");
 
     if (routes.len == 0) {
         try writer.writeAll("  no matching Codex routes\n");
