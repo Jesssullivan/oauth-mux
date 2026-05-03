@@ -3858,8 +3858,10 @@ fn writeDaemonTickSnapshot(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"resilience\":");
+    try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"claim\":");
-    try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index));
+    try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
     try writer.writeByte('}');
@@ -3872,6 +3874,38 @@ fn selectedRoute(evaluations: []const RouteEvaluation, selected_index: ?usize) ?
         if (idx < evaluations.len) return evaluations[idx].route;
     }
     return null;
+}
+
+fn selectableFallbackRouteCount(evaluations: []const RouteEvaluation, selected_index: ?usize) usize {
+    var count: usize = 0;
+    for (evaluations, 0..) |evaluation, idx| {
+        if (!evaluation.selectable) continue;
+        if (selected_index) |selected| {
+            if (idx == selected) continue;
+        }
+        count += 1;
+    }
+    return count;
+}
+
+fn writeRouteResilienceJson(
+    writer: anytype,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+) !void {
+    const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    const selected = selected_index != null;
+    try writer.writeByte('{');
+    try writer.writeAll("\"selected_route_ready\":");
+    try writer.writeAll(if (selected) "true" else "false");
+    try writer.print(",\"selectable_fallback_routes\":{d}", .{fallback_count});
+    try writer.writeAll(",\"spare_fallback_ready\":");
+    try writer.writeAll(if (selected and fallback_count > 0) "true" else "false");
+    try writer.writeAll(",\"single_route_at_risk\":");
+    try writer.writeAll(if (selected and fallback_count == 0) "true" else "false");
+    try writer.writeAll(",\"state\":");
+    try std.json.stringify(if (!selected) "not_afloat" else if (fallback_count > 0) "afloat_with_spare_fallback" else "afloat_without_spare_fallback", .{}, writer);
+    try writer.writeByte('}');
 }
 
 const StayAfloatSelector = struct {
@@ -3903,6 +3937,7 @@ fn writeStayAfloatClaimJson(
     writer: anytype,
     selector: StayAfloatSelector,
     route: ?RepairPlanRoute,
+    selectable_fallback_routes: usize,
 ) !void {
     const prepared = route != null;
     try writer.writeAll("{\"claim_version\":1");
@@ -3911,6 +3946,11 @@ fn writeStayAfloatClaimJson(
     try writer.writeAll(",\"max_supported_level\":\"prepared_fallback\"");
     try writer.writeAll(",\"prepared_fallback\":");
     try writer.writeAll(if (prepared) "true" else "false");
+    try writer.print(",\"selectable_fallback_routes\":{d}", .{selectable_fallback_routes});
+    try writer.writeAll(",\"spare_fallback_ready\":");
+    try writer.writeAll(if (prepared and selectable_fallback_routes > 0) "true" else "false");
+    try writer.writeAll(",\"single_route_at_risk\":");
+    try writer.writeAll(if (prepared and selectable_fallback_routes == 0) "true" else "false");
     try writer.writeAll(",\"requires_mediation\":true");
     try writer.writeAll(",\"mediation_point\":\"stay-afloat launch\"");
     try writer.writeAll(",\"target_boundary\":\"process_start\"");
@@ -4469,6 +4509,8 @@ fn writeRouteJson(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"resilience\":");
+    try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"routes\":[");
     for (evaluations, 0..) |evaluation, idx| {
         if (idx > 0) try writer.writeByte(',');
@@ -4510,8 +4552,10 @@ fn writeStayAfloatNextJson(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"resilience\":");
+    try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"claim\":");
-    try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index));
+    try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"next_action\":");
     try writeStayAfloatNextActionJson(writer, allocator, evaluations, selected_index, candidate_index);
     try writer.writeAll(",\"routes\":[");
@@ -4811,8 +4855,10 @@ fn writeDaemonTickJsonObject(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"resilience\":");
+    try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"claim\":");
-    try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index));
+    try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
     try writeDaemonTickStatsJson(writer, stats);
     try writer.writeAll(",\"executions\":");
@@ -13912,6 +13958,7 @@ test "route select picks first ready live route and explains skipped quota route
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selected\":{\"provider\":\"toy\",\"account\":\"a2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"available\"") != null);
 }
@@ -13966,7 +14013,9 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"action\":\"next\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"prepared_fallback\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"spare_fallback_ready\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"current_process_hotswap\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"launch_argv\":[\"oauth-mux\",\"stay-afloat\",\"launch\",\"--profile\",\"work\",\"--capability\",\"chat\",\"--\",\"<command>\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"next_action\":{\"kind\":\"exec\"") != null);
@@ -14019,6 +14068,7 @@ test "stay-afloat next emits mediated repair action when no route is selectable"
     });
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":false,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":false,\"state\":\"not_afloat\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"mediation_required\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"prepared_fallback\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"launch_argv\":[\"oauth-mux\",\"stay-afloat\",\"launch\",\"--profile\",\"needs-reauth\",\"--capability\",\"codex-max\",\"--\",\"<command>\"]") != null);
