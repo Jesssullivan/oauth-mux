@@ -3661,7 +3661,19 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
 const SuperviseAttempt = struct {
     route: RepairPlanRoute,
     term: std.process.Child.Term,
+    output_classification: ?[]const u8 = null,
     restart_admitted: bool,
+    route_health_recorded: bool = false,
+    event_recorded: bool = false,
+    captured_stdout_bytes: usize = 0,
+    captured_stderr_bytes: usize = 0,
+};
+
+const SuperviseChildResult = struct {
+    term: std.process.Child.Term,
+    output_classification: ?[]const u8 = null,
+    captured_stdout_bytes: usize = 0,
+    captured_stderr_bytes: usize = 0,
 };
 
 fn runStayAfloatSupervise(
@@ -3727,18 +3739,24 @@ fn runStayAfloatSupervise(
         };
         defer env_map.deinit();
 
-        var child = std.process.Child.init(args.target_argv, allocator);
-        child.stdin_behavior = .Inherit;
-        child.stdout_behavior = if (args.json) .Ignore else .Inherit;
-        child.stderr_behavior = if (args.json) .Ignore else .Inherit;
-        child.env_map = &env_map;
+        const child_result = runSupervisedChild(allocator, &env_map, args) catch return error.ExecFailed;
+        const route_health_recorded = if (superviseOutputClassificationIsCodexUsageLimit(child_result.output_classification))
+            recordStayAfloatSuperviseRouteHealth(&store, selected)
+        else
+            false;
+        if (route_health_recorded) store.persist();
 
-        const term = child.spawnAndWait() catch return error.ExecFailed;
-        const restart_admitted = superviseRestartAdmitted(args, term, restart_count);
+        const restart_admitted = superviseRestartAdmitted(args, child_result.term, child_result.output_classification, restart_count);
+        const event_recorded = recordStayAfloatSuperviseEvent(allocator, args, selected, child_result.term, child_result.output_classification, route_health_recorded, restart_admitted);
         try attempts.append(.{
             .route = selected,
-            .term = term,
+            .term = child_result.term,
+            .output_classification = child_result.output_classification,
             .restart_admitted = restart_admitted,
+            .route_health_recorded = route_health_recorded,
+            .event_recorded = event_recorded,
+            .captured_stdout_bytes = child_result.captured_stdout_bytes,
+            .captured_stderr_bytes = child_result.captured_stderr_bytes,
         });
 
         if (restart_admitted) {
@@ -3747,7 +3765,7 @@ fn runStayAfloatSupervise(
             continue;
         }
 
-        reason = if (superviseTermSucceeded(term)) "target_completed" else "target_failed";
+        reason = if (superviseTermSucceeded(child_result.term)) "target_completed" else "target_failed";
         break;
     }
 
@@ -3756,6 +3774,45 @@ fn runStayAfloatSupervise(
     } else {
         try writeStayAfloatSuperviseText(writer, args, attempts.items, restart_count, reason);
     }
+}
+
+fn runSupervisedChild(
+    allocator: std.mem.Allocator,
+    env_map: *std.process.EnvMap,
+    args: cli.Command.SuperviseArgs,
+) !SuperviseChildResult {
+    var child = std.process.Child.init(args.target_argv, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = if (args.restart_on_codex_usage_limit) .Pipe else if (args.json) .Ignore else .Inherit;
+    child.stderr_behavior = if (args.restart_on_codex_usage_limit) .Pipe else if (args.json) .Ignore else .Inherit;
+    child.env_map = env_map;
+
+    if (!args.restart_on_codex_usage_limit) {
+        return .{ .term = try child.spawnAndWait() };
+    }
+
+    try child.spawn();
+
+    var stdout_buf = std.ArrayListUnmanaged(u8){};
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayListUnmanaged(u8){};
+    defer stderr_buf.deinit(allocator);
+
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 512 * 1024) catch |e| {
+        _ = child.kill() catch null;
+        return e;
+    };
+    const term = try child.wait();
+    const classification: ?[]const u8 = if (superviseOutputLooksLikeCodexUsageLimit(stdout_buf.items) or superviseOutputLooksLikeCodexUsageLimit(stderr_buf.items))
+        "codex_usage_limit"
+    else
+        null;
+    return .{
+        .term = term,
+        .output_classification = classification,
+        .captured_stdout_bytes = stdout_buf.items.len,
+        .captured_stderr_bytes = stderr_buf.items.len,
+    };
 }
 
 fn buildPinnedExecEnvMap(
@@ -3791,14 +3848,92 @@ fn buildPinnedExecEnvMap(
 fn superviseRestartAdmitted(
     args: cli.Command.SuperviseArgs,
     term: std.process.Child.Term,
+    output_classification: ?[]const u8,
     restart_count: u32,
 ) bool {
-    const expected = args.restart_on_exit_code orelse return false;
     if (restart_count >= args.max_restarts) return false;
+    if (args.restart_on_codex_usage_limit and superviseOutputClassificationIsCodexUsageLimit(output_classification)) return true;
+    const expected = args.restart_on_exit_code orelse return false;
     return switch (term) {
         .Exited => |code| code == expected,
         else => false,
     };
+}
+
+fn superviseOutputClassificationIsCodexUsageLimit(classification: ?[]const u8) bool {
+    return if (classification) |value| std.mem.eql(u8, value, "codex_usage_limit") else false;
+}
+
+fn superviseOutputLooksLikeCodexUsageLimit(output: []const u8) bool {
+    return containsAsciiIgnoreCase(output, "you've hit your usage limit") or
+        containsAsciiIgnoreCase(output, "usage limit has been reached") or
+        containsAsciiIgnoreCase(output, "usage_limit_reached") or
+        containsAsciiIgnoreCase(output, "UsageLimitReached") or
+        containsAsciiIgnoreCase(output, "UsageLimitExceeded");
+}
+
+fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var idx: usize = 0;
+    while (idx + needle.len <= haystack.len) : (idx += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[idx .. idx + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn recordStayAfloatSuperviseRouteHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) bool {
+    const key = repairPlanRouteHealthKey(route);
+    const classification = types.HttpClassification{ .quota_exhausted = .{ .retry_after_s = 7200 } };
+    store.recordHttpClassification(key.slice(), 429, classification);
+    store.recordProbeEvidence(
+        key.slice(),
+        .supervised_child_output,
+        health_mod.retryAfterFromClassification(classification),
+        health_mod.hintClassFromClassification(classification),
+        health_mod.decisionFromClassification(classification),
+    );
+    return true;
+}
+
+fn recordStayAfloatSuperviseEvent(
+    allocator: std.mem.Allocator,
+    args: cli.Command.SuperviseArgs,
+    route: RepairPlanRoute,
+    term: std.process.Child.Term,
+    output_classification: ?[]const u8,
+    route_health_recorded: bool,
+    restart_admitted: bool,
+) bool {
+    const outcome = if (restart_admitted)
+        "restart_admitted"
+    else if (superviseTermSucceeded(term))
+        "target_completed"
+    else
+        "target_failed";
+    const reason = output_classification orelse if (args.restart_on_exit_code != null) "operator_exit_code" else "child_exit";
+    repair_state.appendEvent(allocator, .{
+        .kind = "stay_afloat_supervise",
+        .profile = args.profile,
+        .provider = route.provider,
+        .account = route.account,
+        .capability = route.capability orelse args.capability,
+        .action = "supervise",
+        .outcome = outcome,
+        .reason = reason,
+        .ok = superviseTermSucceeded(term),
+        .executed = true,
+        .interactive = false,
+        .mutating = route_health_recorded,
+    }) catch return false;
+    return true;
+}
+
+fn superviseRestartClassificationSource(args: cli.Command.SuperviseArgs) []const u8 {
+    if (args.restart_on_exit_code != null and args.restart_on_codex_usage_limit) return "operator_exit_code_or_codex_usage_limit_output";
+    if (args.restart_on_codex_usage_limit) return "codex_usage_limit_output";
+    if (args.restart_on_exit_code != null) return "operator_exit_code";
+    return "none";
 }
 
 fn superviseTermSucceeded(term: std.process.Child.Term) bool {
@@ -3848,12 +3983,16 @@ fn writeStayAfloatSuperviseJson(
     try writer.writeAll(",\"supervised_restart\":");
     try writer.writeAll(if (restart_count > 0) "true" else "false");
     try writer.writeAll(",\"wrapper_owned_process\":true,\"restart_classification_source\":");
-    try std.json.stringify(if (args.restart_on_exit_code != null) "operator_exit_code" else "none", .{}, writer);
-    try writer.writeAll(",\"route_health_recorded\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try std.json.stringify(superviseRestartClassificationSource(args), .{}, writer);
+    try writer.writeAll(",\"route_health_recorded\":");
+    try writer.writeAll(if (superviseAttemptsRecordedRouteHealth(attempts)) "true" else "false");
+    try writer.writeAll(",\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"max_restarts\":");
     try writer.print("{d}", .{args.max_restarts});
     try writer.writeAll(",\"restart_on_exit_code\":");
     if (args.restart_on_exit_code) |code| try writer.print("{d}", .{code}) else try writer.writeAll("null");
+    try writer.writeAll(",\"restart_on_codex_usage_limit\":");
+    try writer.writeAll(if (args.restart_on_codex_usage_limit) "true" else "false");
     try writer.writeAll(",\"restart_count\":");
     try writer.print("{d}", .{restart_count});
     try writer.writeAll(",\"attempts\":[");
@@ -3866,7 +4005,17 @@ fn writeStayAfloatSuperviseJson(
         try std.json.stringify(superviseTermKind(attempt.term), .{}, writer);
         try writer.writeAll(",\"code\":");
         try writer.print("{d}", .{superviseTermCode(attempt.term)});
-        try writer.writeAll("},\"restart_admitted\":");
+        try writer.writeAll("},\"output_classification\":");
+        if (attempt.output_classification) |classification| try std.json.stringify(classification, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"captured_stdout_bytes\":");
+        try writer.print("{d}", .{attempt.captured_stdout_bytes});
+        try writer.writeAll(",\"captured_stderr_bytes\":");
+        try writer.print("{d}", .{attempt.captured_stderr_bytes});
+        try writer.writeAll(",\"route_health_recorded\":");
+        try writer.writeAll(if (attempt.route_health_recorded) "true" else "false");
+        try writer.writeAll(",\"event_recorded\":");
+        try writer.writeAll(if (attempt.event_recorded) "true" else "false");
+        try writer.writeAll(",\"restart_admitted\":");
         try writer.writeAll(if (attempt.restart_admitted) "true" else "false");
         try writer.writeByte('}');
     }
@@ -3887,17 +4036,29 @@ fn writeStayAfloatSuperviseText(
     try writer.print("  max restarts: {d}\n", .{args.max_restarts});
     try writer.writeAll("  restart on exit code: ");
     if (args.restart_on_exit_code) |code| try writer.print("{d}\n", .{code}) else try writer.writeAll("not configured\n");
+    try writer.print("  restart on Codex usage limit: {s}\n", .{if (args.restart_on_codex_usage_limit) "true" else "false"});
     try writer.print("  restart count: {d}\n", .{restart_count});
     for (attempts, 0..) |attempt, idx| {
         try writer.print("  attempt {d}: {s}:{s}", .{ idx + 1, attempt.route.provider, attempt.route.account });
         if (attempt.route.capability) |cap| try writer.print("#{s}", .{cap});
-        try writer.print(" {s}:{d} restart_admitted={s}\n", .{
+        try writer.print(" {s}:{d} restart_admitted={s}", .{
             superviseTermKind(attempt.term),
             superviseTermCode(attempt.term),
             if (attempt.restart_admitted) "true" else "false",
         });
+        if (attempt.output_classification) |classification| try writer.print(" classification={s}", .{classification});
+        if (attempt.route_health_recorded) try writer.writeAll(" route_health_recorded=true");
+        if (attempt.event_recorded) try writer.writeAll(" event_recorded=true");
+        try writer.writeByte('\n');
     }
     try writer.writeAll("  boundary: wrapper-owned child restart only; no current-process hot-swap or per-request muxing\n");
+}
+
+fn superviseAttemptsRecordedRouteHealth(attempts: []const SuperviseAttempt) bool {
+    for (attempts) |attempt| {
+        if (attempt.route_health_recorded) return true;
+    }
+    return false;
 }
 
 fn firstSelectableRouteNotAttempted(
@@ -14709,6 +14870,12 @@ test "seedLiveQaCapabilities deduplicates requested coverage keys" {
 
     coverage.getPtr("codex-max").?.* = true;
     try std.testing.expectEqual(@as(usize, 1), countLiveQaCoveredCapabilities(&coverage));
+}
+
+test "supervise Codex usage-limit output classifier recognizes native screen" {
+    try std.testing.expect(superviseOutputLooksLikeCodexUsageLimit("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage"));
+    try std.testing.expect(superviseOutputLooksLikeCodexUsageLimit("{\"type\":\"usage_limit_reached\"}"));
+    try std.testing.expect(!superviseOutputLooksLikeCodexUsageLimit("ordinary child failure"));
 }
 
 // Pull in all module tests
