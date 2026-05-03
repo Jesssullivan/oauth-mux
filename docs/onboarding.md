@@ -247,7 +247,11 @@ limiting, oauth-mux records route-health evidence and shows the next selected
 route.
 For a bounded beta broker-owned session loop, pipe line-delimited prompts and
 replace `--prompt ...` with `--stdin`. The same spend gate applies, and
-transcript content remains suppressed in normal output.
+transcript content remains suppressed in normal output. Add
+`--continue-on-failure` to let oauth-mux record the failed route, rerun
+planning, and start a fresh broker-owned session on the selected fallback. This
+replays the failed prompt plus remaining queued prompts, but it is still
+next-session continuation rather than same-thread recovery.
 Use
 `oauth-mux codex revalidate-exhausted --profile codex-max --capability
 codex-max --confirm-spend --json` after credits, plan, or billing changes. It

@@ -212,6 +212,7 @@ pub const Command = union(enum) {
         model: ?[]const u8 = null,
         from_account: ?[]const u8 = null,
         stdin_prompts: bool = false,
+        continue_on_failure: bool = false,
         output: ?[]const u8 = null,
         candidate: ?[]const u8 = null,
         backup: ?[]const u8 = null,
@@ -964,6 +965,8 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
             if (i < args.len) result.from_account = args[i];
         } else if (eql(args[i], "--stdin")) {
             result.stdin_prompts = true;
+        } else if (eql(args[i], "--continue-on-failure")) {
+            result.continue_on_failure = true;
         } else if (eql(args[i], "--device")) {
             result.device = true;
         } else if (eql(args[i], "--status-only")) {
@@ -1120,8 +1123,8 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\      Run a local multi-turn broker-owned Codex session smoke from the session plan.
         \\
-        \\  codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--json]
-        \\      Run one or more live broker-owned Codex app-server turns from the session plan.
+        \\  codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--continue-on-failure] [--json]
+        \\      Run live broker-owned Codex app-server turns from the session plan.
         \\
         \\  codex broker-fallback-drill [--profile name] [--capability c] --from-account name --confirm-drill [--json]
         \\      Mark one Codex route quota-exhausted locally and prove the next broker-owned route selection.
@@ -1180,7 +1183,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--json]
+        \\  oauth-mux codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--continue-on-failure] [--json]
         \\  oauth-mux codex broker-fallback-drill [--profile name] [--capability c] --from-account name --confirm-drill [--json]
         \\  oauth-mux codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
         \\  oauth-mux codex broker-refresh-smoke [--profile name] [--capability c] --confirm-broker [--json]
@@ -1202,7 +1205,9 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  selected Codex route secret and send it only to a broker-owned
         \\  Codex app-server child process; they do not print token or
         \\  account-id values.
-        \\  broker-run may persist live quota/rate-limit evidence to route health.
+        \\  broker-run may persist live quota/rate-limit evidence to route health
+        \\  and, with --continue-on-failure, start a fresh broker-owned session on
+        \\  the next selected route.
         \\  broker-fallback-drill mutates only oauth-mux route health; it does
         \\  not spend provider calls or print secrets.
         \\  live-qa, revalidate-exhausted, and broker-run require --confirm-spend or
@@ -1471,7 +1476,7 @@ test "parse codex broker run" {
 }
 
 test "parse codex broker run stdin" {
-    const args = [_][]const u8{ "codex", "broker-run", "--profile", "codex-max", "--capability", "codex-max", "--stdin", "--confirm-spend", "--json" };
+    const args = [_][]const u8{ "codex", "broker-run", "--profile", "codex-max", "--capability", "codex-max", "--stdin", "--continue-on-failure", "--confirm-spend", "--json" };
     const cmd = parse(&args);
     switch (cmd) {
         .codex => |codex| {
@@ -1479,6 +1484,7 @@ test "parse codex broker run stdin" {
             try std.testing.expectEqualStrings("codex-max", codex.profile.?);
             try std.testing.expectEqualStrings("codex-max", codex.capabilities);
             try std.testing.expect(codex.stdin_prompts);
+            try std.testing.expect(codex.continue_on_failure);
             try std.testing.expect(codex.confirm_spend);
             try std.testing.expect(codex.json);
         },

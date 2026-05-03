@@ -257,7 +257,10 @@ these precise provider-proof children.
    bounded `--stdin` beta keeps one broker-owned app-server session open across
    line-delimited live turns while still suppressing transcript content. Live
    quota/rate-limit failures are persisted as route-health evidence and the
-   output reports the next selected route.
+   output reports the next selected route. With `--continue-on-failure`, the
+   command starts a fresh broker-owned session on that selected fallback and
+   replays the failed prompt plus remaining queued prompts. This is the honest
+   next-session stay-afloat path; it does not imply same-thread recovery.
    `oauth-mux codex revalidate-exhausted --confirm-spend` is the spend-gated
    hygiene path after billing or credit changes: it re-probes only routes
    already blocked by recorded quota/rate evidence and persists the new provider
