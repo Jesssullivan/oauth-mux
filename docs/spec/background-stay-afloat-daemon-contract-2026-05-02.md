@@ -237,7 +237,12 @@ Supported near-term product shape:
   commands with the selected account;
 - a Codex-specific wrapper can relaunch a child Codex process when the selected
   route changes;
-- app-server auth brokering is a beta proof target, not a public claim yet;
+- broker-owned app-server sessions are proven for scoped Codex commands
+  (`broker-session-plan`, `broker-session-smoke`, and spend-gated
+  `broker-run`) under `claim.level:"broker_owned_app_server"`;
+- `codex managed` is the native managed-entrypoint path for route-local
+  `CODEX_HOME` launch/resume hygiene, including explicit resume-id diagnostics
+  before child exec;
 - direct hot-swap inside an unmanaged already-running Codex session is not
   promised.
 
@@ -355,8 +360,10 @@ mutating admission.
 ### D4: mediation adapters
 
 - Promote `oauth-mux exec` and shell wrappers as Level 1 mediation.
-- Add a Codex wrapper story for selected-account launch and supervised restart.
-- Add a Codex app-server auth-broker proof for Level 3 broker-owned mediation.
+- Keep the Codex wrapper story scoped to selected-account launch and
+  supervised restart until interactive PTY dogfood is green.
+- Extend the shipped Codex app-server auth-broker proof for Level 3
+  broker-owned mediation; do not rename it current-process auth brokering.
 - Add MCP/in-agent tools for route visibility and handoff surfacing.
 - Consider request-level proxying only where the harness protocol can support
   Level 5 per-request muxing.

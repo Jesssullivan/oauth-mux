@@ -88,13 +88,15 @@ exit with typed non-dead `liveness` is still accepted unless
 `OMUX_LIVE_QA_REQUIRE_AVAILABLE=1`; missing or unreadable credentials classify
 as `dead` and fail the run by default.
 
-Operator-provided Codex state on 2026-04-28:
+Historical operator-provided Codex state on 2026-04-28:
 
 - `max-1#codex-max` and `max-2#codex-max` are expected to classify as
   `live/quota_exhausted` until weekly limits refresh.
 - `max-3` is expected to remain active for API-backed usage.
 - These are not auth-dead accounts; the useful proof is preserving the
   distinction between weekly quota exhaustion and usable fallback routes.
+This three-route snapshot is retained only to explain earlier artifacts. Use
+the current four-route section below for operator decisions and website copy.
 
 Current four-route Codex dogfood state on 2026-05-03:
 

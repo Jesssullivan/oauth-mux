@@ -30,9 +30,9 @@ in-session quota fallback remains tracked by GitHub `#131` / Linear `TIN-916`.
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
 | Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy was rechecked on 2026-05-03 and now uses the public `jesssullivan/omux` tap. |
-| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. `TIN-897` defines the mediation boundary for seamless handoff claims; `TIN-898` adds the first opt-in beta supervised loop without changing default policy or production claims. |
-| Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex is live-proven; non-Codex proof is capability-level or still needs operator proof. |
-| Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | A one-month paid cohort is now tracked for Codex lower-tier contrast, Claude subscription/billing shapes, Figma token/seat/plan shapes, and a foreground stay-afloat soak gate. |
+| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898`, `TIN-940` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing. The active claim matrix lives in `docs/daemon-boundary.md`; managed Codex launch/resume, broker-owned app-server sessions, and supervised restart beta are separate claim levels. |
+| Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex route selection and broker-owned sessions are live-proven for scoped commands; true seamless active-session handoff is not. Non-Codex proof is capability-level or still needs operator proof. |
+| Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | Codex has a current four-route paid cohort: `max-1` selected, `max-4` spare fallback, and `max-2`/`max-3` quota-exhausted for `codex-max`. Claude, Figma, and long-window soak evidence remain separate gates. |
 
 ## Homebrew Boundary
 
@@ -49,9 +49,10 @@ Current truth:
   `oauth-mux.rb` and `SHA256SUMS`, not local `dist/out` output.
 - A historical live check of `https://omux.xoxd.ai/` on 2026-05-01 still
   found `brew install tinyland-inc/tools/oauth-mux`. A 2026-05-03 recheck of
-  the live site shows the public `jesssullivan/omux` tap instead. Keep any
-  remaining `#66` / `TIN-858` work scoped to release-copy or artifact cleanup,
-  not the live website tap string.
+  the live site shows the public `jesssullivan/omux` tap, the current
+  four-route Codex Max state, and an explicit provider-originated fallback
+  proof lane. Keep any remaining `#66` / `TIN-858` work scoped to release-copy
+  or artifact cleanup, not the live website tap string.
 
 The decision record is
 `docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The live website now
@@ -253,28 +254,32 @@ these precise provider-proof children.
 
 ## Immediate Execution Order
 
-1. Keep provider-neutral account inventory and enrollment planning aligned with
-   the account-enrollment contract, so agents can inspect N configured accounts
-   and explain setup before route, repair, handoff, or live-proof decisions.
-2. Use the Codex, Claude, and Figma confirmed enrollment paths as the
-   consent/mutation reference before adding MCP mutation tools.
-3. Update website/release copy to use the public `jesssullivan/omux` Homebrew
-   tap and close `#66` / `TIN-858` after those surfaces are aligned.
-4. Finish `TIN-862` by adding Linear OAuth bearer proof. GitHub identity and
-   Linear API-key identity are locally proven; Linear OAuth `identity` remains
-   `needs_operator_proof`.
-5. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
+1. Keep `TIN-940` open until active docs and site-copy evidence agree with the
+   May 3 dogfood truth: foreground prepared fallback, scoped broker-owned
+   sessions, managed Codex launch/resume, and no unmanaged active-session
+   handoff claim.
+2. Continue `TIN-937` for interactive supervised restart with PTY capture; the
+   restart classifier exists, but polished interactive dogfood is not done.
+3. Continue `TIN-936` for Codex session-store portability and explicit import
+   policy; `codex managed --resume <id>` now diagnoses route-local ownership
+   but does not copy or import sessions.
+4. Continue `TIN-938` only if the managed local entrypoint is insufficient and
+   a remote app-server sidecar can preserve oauth-mux mediation.
+5. Draft `TIN-939` upstream usage-limit handoff proposal after the local
+   session-store and wrapper semantics are clean.
+6. Continue `TIN-861` and `TIN-863` on their remaining hard shapes: Claude
    quota/repair semantics and MCP resource-bound bearer-token proof.
-6. Start `TIN-892` paid proof once billing choices are confirmed. Use
+7. Continue `TIN-892` paid proof as billing choices are confirmed. Use
    `docs/spec/paid-multi-account-proof-cohort-2026-05-01.md` as the cohort
    matrix and keep provider-level promotion conservative.
-7. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
+8. Work provider proof in narrow slices: `TIN-876` Vercel, `TIN-877` Figma,
    `TIN-878` FlakeHub/Determinate, and `TIN-879` Gemini.
-8. Work `TIN-897` as the daemon promotion contract: define daemon snapshot
+9. Work `TIN-897` as the daemon promotion contract: define daemon snapshot
    status, supervised tick loop, wrapper recipes, and mediation adapters before
    making seamless handoff claims.
-9. Work `TIN-913` / GitHub `#125` as the Codex app-server auth-broker proof
-   track before assuming restart is the only viable Codex current-process path.
+10. Keep `TIN-913` / GitHub `#125` as the Codex app-server auth-broker proof
+   record; broker-owned app-server paths are viable, but still separate from
+   unmanaged current-process auth brokering.
    `oauth-mux codex broker-plan` proves local credential tuple readiness only;
    it does not read route liveness or claim prepared fallback. Use
    `oauth-mux codex broker-session-plan` for route-aware selection.

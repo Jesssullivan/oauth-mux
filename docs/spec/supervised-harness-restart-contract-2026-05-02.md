@@ -5,6 +5,14 @@ Issue context: Linear `TIN-911`, GitHub `#123`, parent `TIN-738` / GitHub
 `#67`. Parallel higher-upside proof: Linear `TIN-913`, GitHub `#125`,
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
 
+Update, 2026-05-03: this contract is still the right wrapper-owned restart
+boundary, but the route examples below are historical. Current Codex Max
+dogfood has four routes: `max-1#codex-max` selected after spend-gated
+revalidation, `max-4#codex-max` spare fallback, and `max-2#codex-max` /
+`max-3#codex-max` provider quota-exhausted. The usage-limit classifier and
+restart engine exist for wrapper-owned children; interactive PTY capture and
+real usage-limit restart dogfood remain tracked by TIN-937 / GitHub #162.
+
 ## State
 
 `oauth-mux` can now keep route evidence warm, expose fresh daemon snapshots,
