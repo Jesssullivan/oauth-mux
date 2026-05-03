@@ -793,6 +793,9 @@ cat >"$broker_auth_session_spare" <<EOF
 EOF
 cp "$broker_auth_session_fallback" "$broker_session_max2_home/auth.json"
 cp "$broker_auth_session_spare" "$broker_session_max3_home/auth.json"
+cat >"$broker_session_max2_home/session_index.jsonl" <<'EOF'
+{"id":"managed-good-session","thread_name":"managed-thread","updated_at":1}
+EOF
 cat >"$broker_session_config" <<EOF
 {
   "version": 1,
@@ -928,9 +931,26 @@ managed_resume_plan="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_ses
 expect_contains "$managed_resume_plan" '"mode":"codex_managed_session_plan"' "managed --json returns a non-executing plan"
 expect_contains "$managed_resume_plan" '"requested":true' "managed --json reports resume request"
 expect_contains "$managed_resume_plan" '"resume_last":true' "managed --json reports resume-last"
+expect_contains "$managed_resume_plan" '"status":"resume_last_unchecked"' "managed --json leaves resume-last to native Codex"
 expect_contains "$managed_resume_plan" '"include_non_interactive":true' "managed --json reports include-non-interactive"
 expect_contains "$managed_resume_plan" '"passthrough_arg_count":2' "managed --json counts forwarded Codex args without printing them"
 expect_not_contains "$managed_resume_plan" 'gpt-5.5' "managed --json does not print forwarded model arg"
+
+managed_resume_found="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume managed-good-session --json)"
+expect_contains "$managed_resume_found" '"ok":true' "managed explicit resume plan succeeds when id is in selected route store"
+expect_contains "$managed_resume_found" '"checked":true' "managed explicit resume plan checks selected route store"
+expect_contains "$managed_resume_found" '"found_in_selected_store":true' "managed explicit resume plan reports route-local match"
+expect_contains "$managed_resume_found" '"status":"found_in_selected_store"' "managed explicit resume plan reports found status"
+expect_contains "$managed_resume_found" '"session_index_match":true' "managed explicit resume plan uses session index evidence"
+expect_contains "$managed_resume_found" '"resume_id_printed":false' "managed explicit resume plan suppresses resume id"
+expect_not_contains "$managed_resume_found" 'managed-good-session' "managed explicit resume plan does not print resume id value"
+
+managed_resume_missing="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume missing-session --json)"
+expect_contains "$managed_resume_missing" '"ok":false' "managed explicit resume plan fails when id is missing from selected route store"
+expect_contains "$managed_resume_missing" '"found_in_selected_store":false' "managed explicit resume plan reports missing route-local id"
+expect_contains "$managed_resume_missing" '"status":"not_found_in_selected_store"' "managed explicit resume plan reports missing status"
+expect_contains "$managed_resume_missing" '"unmanaged_cross_route_resume":false' "managed explicit resume plan refuses cross-route import claim"
+expect_not_contains "$managed_resume_missing" 'missing-session' "managed explicit resume plan does not print missing resume id value"
 
 printf 'e2e: codex managed launches native Codex with selected route-local CODEX_HOME\n'
 managed_launch_out="$tmp/managed-launch.out"
@@ -940,6 +960,25 @@ expect_contains "$managed_launch" 'account=max-2' "managed launch injects select
 expect_contains "$managed_launch" 'capability=codex-max' "managed launch injects selected capability"
 expect_contains "$managed_launch" "codex_home=$broker_session_max2_home" "managed launch injects selected route CODEX_HOME"
 expect_contains "$managed_launch" 'args=[--no-alt-screen]' "managed launch forwards Codex args after --"
+
+printf 'e2e: codex managed refuses wrong-route explicit resume before launching child\n'
+managed_resume_launch_out="$tmp/managed-resume-launch.out"
+PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_resume_launch_out" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume managed-good-session -- --no-alt-screen
+managed_resume_launch="$(cat "$managed_resume_launch_out")"
+expect_contains "$managed_resume_launch" 'args=[resume][managed-good-session][--no-alt-screen]' "managed launch forwards route-local explicit resume after positive diagnostic"
+managed_refusal_out="$tmp/managed-refusal.out"
+managed_should_not_run="$tmp/managed-should-not-run.out"
+if PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_should_not_run" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume missing-session >"$managed_refusal_out" 2>/dev/null; then
+  printf 'e2e assertion failed: managed explicit missing resume should refuse before launch\n' >&2
+  exit 1
+fi
+managed_refusal="$(cat "$managed_refusal_out")"
+expect_contains "$managed_refusal" 'status: not_found_in_selected_store' "managed missing explicit resume reports route-local diagnostic"
+expect_contains "$managed_refusal" 'resume_id_printed: false' "managed missing explicit resume suppresses id in text output"
+if [ -f "$managed_should_not_run" ]; then
+  printf 'e2e assertion failed: managed explicit missing resume launched child unexpectedly\n' >&2
+  exit 1
+fi
 
 printf 'e2e: codex revalidate-exhausted requires spend confirmation before mutating route health\n'
 broker_revalidate_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex revalidate-exhausted --profile codex-max --capability codex-max --account max-1 --json 2>/dev/null || true)"

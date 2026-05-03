@@ -211,6 +211,10 @@ route-local resume, run
 --resume-last --include-non-interactive`. This resumes only within the selected
 route store; it does not import an unmanaged session from another account store
 or prove same-thread quota handoff.
+For a known session id, use `--resume <id>`. oauth-mux performs a no-spend
+selected-store diagnostic before launch and refuses if the route-local
+`CODEX_HOME` does not appear to own the id. Normal output reports status and
+evidence flags, not the resume id, credential paths, or store path.
 Use
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 to inspect whether enrolled Codex stores can supply the app-server

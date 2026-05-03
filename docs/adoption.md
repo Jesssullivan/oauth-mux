@@ -129,8 +129,12 @@ oauth-mux. `oauth-mux codex managed --profile codex-max --capability codex-max
 --` is the matching entrypoint; it selects a route, injects the selected
 route-local `CODEX_HOME`, and execs native `codex`. Add `--resume-last
 --include-non-interactive` only for sessions created in that same selected
-route store. This is managed process launch/resume, not an unmanaged in-place
-handoff claim.
+route store. For explicit `--resume <id>`, oauth-mux checks the selected
+route-local Codex store for local evidence before launch and refuses without
+starting native Codex when the id appears to belong elsewhere or nowhere. The
+diagnostic checks index/filename/state-store bytes and does not print the
+resume id or store path. This is managed process launch/resume, not an
+unmanaged in-place handoff claim.
 
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 is the no-spend broker readiness check. It reads configured Codex auth stores

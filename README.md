@@ -154,8 +154,12 @@ selected store. `codex managed --profile ... --capability ... --` is the
 matching launch command; it uses the same route selection as `stay-afloat
 launch` and then execs native `codex`. Use `--resume-last
 --include-non-interactive` when resuming a session that was created under the
-same route-local store. This is managed process launch, not import or rescue of
-an unmanaged already-running Codex session.
+same route-local store. With explicit `--resume <id>`, the plan and launch path
+first check the selected route-local store for local evidence of that id
+(`session_index.jsonl`, rollout filenames, and Codex state-store bytes). If the
+id is not found, `codex managed` refuses before starting native Codex and does
+not print the id or store path. This is a diagnostic guard for route-local
+resume, not import or rescue of an unmanaged already-running Codex session.
 Codex app-server auth brokering is a separate proof track for mediated Codex
 sessions, not a current public claim for unmanaged Codex processes. Broker-owned
 Codex session surfaces use `claim.level:"broker_owned_app_server"`; reserve
