@@ -39,6 +39,7 @@ dist/build/
 dist/out/
 dist/live-qa/
 dist/codex-canary/
+dist/soak/
 *.tar.gz
 *.deb
 *.rpm
