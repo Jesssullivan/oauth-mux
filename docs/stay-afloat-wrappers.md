@@ -1,23 +1,41 @@
-# Stay-Afloat Wrapper Recipes
+# Stay-Afloat Wrapper Recipes — Diagnostic / Level 1–2 Only
 
-Status: beta operator recipes for the supervised stay-afloat loop and
-wrapper-owned child restart.
+Status: diagnostic and route-warming recipes. **NOT THE PRODUCT.**
 
-These recipes make the current daemon beta dogfoodable without changing the
-public product claim. The loop can keep route-state evidence warm and queue
-user-mediated repair handoffs, but it does not hot-swap credentials inside an
-unmanaged already-running upstream harness process.
+> The product entrypoint is `oauth-mux codex` (and future
+> `oauth-mux <harness>` adapters) per
+> `docs/spec/broker-mcp-contract-2026-05-03.md` and
+> `docs/spec/codex-adapter-contract-2026-05-03.md`. Those adapters target
+> Level 3 (`next_turn_seamless`) — same harness process, no restart, no
+> prompt, account A exhausts and account B continues.
+>
+> Everything below is Level 1 (`prepared_fallback`) or Level 2
+> (`broker_owned` for adapter-launched sessions, or
+> `observed_child_process` for `stay-afloat observe`). It does not hit
+> the success metric, and it must not be framed as if it does.
 
-The next stronger claim is wrapper-mediated supervised restart, tracked in
-`docs/spec/supervised-harness-restart-contract-2026-05-02.md`. The first slice
-is now `stay-afloat supervise`: a parent-wrapper command that spawns a child
-instead of using `execve`, observes the child exit, and can restart on another
-selected route when the operator gives a typed exit-code classifier.
+These recipes make the current daemon beta dogfoodable. The loop can keep
+route-state evidence warm and queue user-mediated repair handoffs. It does
+not hot-swap credentials inside an unmanaged already-running upstream
+harness process — the broker adapters do.
 
-Codex now also has a separate app-server auth-broker proof track:
-`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. That path may become
-current-process auth switching for Codex sessions launched under oauth-mux
-app-server mediation. It is not the same claim as these generic wrapper recipes.
+Wrapper-mediated restart is not a stay-afloat claim of any level.
+`stay-afloat observe` is a parent-wrapper diagnostic command: it spawns a
+child instead of using `execve`, observes typed failures, records route
+evidence, and stops. It does not relaunch a fallback child. Restart is not
+acceptable seamless stay-afloat behavior; the broker adapters in
+`oauth-mux codex` are the in-place swap path.
+The historical wrapper contract lives at
+`docs/spec/observed-child-diagnostic-contract-2026-05-02.md`; it is
+diagnostic failure-observation history, not a product restart plan, and
+the supervised-restart-named file at
+`docs/spec/supervised-harness-restart-contract-2026-05-02.md` has been
+demoted to an obsolescence pointer.
+
+Codex's in-process auth-broker work is tracked at
+`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` and
+`docs/spec/codex-adapter-contract-2026-05-03.md`. The adapter spec is the
+load-bearing one; the in-place proof spec is the source-evidence record.
 
 ## Product Truth
 
@@ -29,7 +47,7 @@ oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
 oauth-mux codex managed-plan --profile codex-max --capability codex-max --json
 oauth-mux codex managed --profile codex-max --capability codex-max -- --no-alt-screen
 oauth-mux codex managed --profile codex-max --capability codex-max --resume-last --include-non-interactive
-oauth-mux stay-afloat supervise --profile codex-max --capability codex-max --max-restarts 1 --restart-on-exit-code 42 -- codex
+oauth-mux stay-afloat observe --profile codex-max --capability codex-max --classify-codex-usage-limit --stream-capture -- codex
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
@@ -57,34 +75,34 @@ store before native Codex starts; missing ids fail with a redacted diagnostic
 instead of launching the wrong account. It still cannot import or rescue an
 unmanaged already-running Codex session.
 
-Use `stay-afloat supervise --max-restarts <n> --restart-on-exit-code <code>
--- <command>` when oauth-mux should own the child process boundary. The generic
-path restarts only when the child exits with the configured code, skips the
-already-attempted route for that supervise run, and emits redacted JSON/text
-evidence with `claim.supervised_restart:true` only after an actual wrapper-owned
-restart occurred.
+Use `stay-afloat observe --classify-exit-code <code>
+-- <command>` when oauth-mux should observe the child process boundary. The
+legacy restart-shaped flags now admit classification only; the command does
+not relaunch the child or attempt fallback execution. Its claim remains
+diagnostic: `claim.supervised_restart` stays false because restart is not
+acceptable seamless stay-afloat behavior.
 
-For Codex dogfood, add `--restart-on-codex-usage-limit`. That path captures
+For Codex dogfood, add `--classify-codex-usage-limit`. That path captures
 child stdout/stderr, classifies known Codex usage-limit text, records the
-selected route as quota-exhausted with `last_probe.source:"supervised_child_output"`,
-appends a redacted `stay_afloat_supervise` event, and restarts on the next
-selectable route. Captured output is not printed; JSON reports byte counts and
-the redacted `output_classification:"codex_usage_limit"` value only. This is
-still wrapper-owned restart mediation, not same-thread recovery or unmanaged
-TUI hot-swap.
+selected route as quota-exhausted with `last_probe.source:"observed_child_output"`,
+appends a redacted `stay_afloat_observe` event, and stops. Captured output is
+not printed; JSON reports byte counts and the redacted
+`output_classification:"codex_usage_limit"` value only. This is wrapper-owned
+failure observation, not same-thread recovery, unmanaged TUI hot-swap, or an
+acceptable product handoff.
 
 For interactive dogfood where the operator must see the child output while the
 classifier still runs, add `--stream-capture` with
-`--restart-on-codex-usage-limit`. This tees child output back to the terminal
+`--classify-codex-usage-limit`. This tees child output back to the terminal
 while retaining bounded classifier buffers. With `--json`, child output is
 streamed to stderr so stdout remains parseable JSON. This is a streaming pipe
 path, not a PTY/raw-terminal claim.
 
-The beta supervised daemon host wraps that same engine:
+The beta foreground loop host wraps that same engine:
 
 ```bash
 oauth-mux daemon run --stay-afloat --profile codex-max --capability codex-max --interval-ms 60000
-oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+oauth-mux daemon loop --profile codex-max --capability codex-max --interval-ms 60000
 ```
 
 The loop uses route scheduler hints when sleeping: the earliest
@@ -99,12 +117,12 @@ fields shaped like:
 ```json
 {
   "status": "running",
-  "contract": "experimental_supervised_loop",
+  "contract": "experimental_foreground_tick_loop",
   "production_supported": false,
   "hosts_stay_afloat": false,
   "stay_afloat_loop": {
     "hosted": true,
-    "mode": "stay_afloat_supervisor",
+    "mode": "stay_afloat_tick_loop",
     "selector": {
       "profile": "codex-max",
       "provider": null,
@@ -116,7 +134,7 @@ fields shaped like:
     "interval_ms": 60000,
     "execution_mode": "execute"
   },
-  "transport": "foreground_supervised_loop",
+  "transport": "foreground_tick_loop",
   "socket": null,
   "stay_afloat_snapshot": {
     "present": true,
@@ -151,20 +169,26 @@ already-running Codex session does not seamlessly hand off through this daemon
 surface. The wrapper recipes should be treated as route-warming and launch
 mediation, not active-session rescue.
 
+The only success metric for true Codex stay-afloat is stricter: a normal
+running `codex` process with oauth-mux in the background must survive quota
+exhaustion by moving the active session to another credited account without
+logout, manual resume, restart, or lost thread. None of the wrapper recipes
+claim that behavior.
+
 ## Smoke And Soak
 
 Use a bounded loop first. It should write a redacted snapshot and exit without
 leaving a daemon pid behind:
 
 ```bash
-oauth-mux daemon supervise --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
+oauth-mux daemon loop --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
 oauth-mux daemon status --json
 ```
 
 Then run the long-lived beta host:
 
 ```bash
-oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+oauth-mux daemon loop --profile codex-max --capability codex-max --interval-ms 60000
 ```
 
 Inspect it from another shell:
@@ -185,13 +209,13 @@ oauth-mux daemon status --json
 Good soak evidence includes:
 
 - `status:"running"` while the wrapper is active.
-- `contract:"experimental_supervised_loop"` while the beta host is active.
+- `contract:"experimental_foreground_tick_loop"` while the beta host is active.
 - `stay_afloat_loop.hosted:true` while the beta host is active.
 - `stay_afloat_loop.selector` matches the profile/provider/account/capability
-  you meant to supervise.
+  you meant to run.
 - `stay_afloat_loop.interval_ms` and `stay_afloat_loop.execution_mode` match the
   cadence and admission boundary you meant to run.
-- `transport:"foreground_supervised_loop"` and `socket:null`.
+- `transport:"foreground_tick_loop"` and `socket:null`.
 - A redacted `stay_afloat` snapshot with selected route, fallback, repair, or
   handoff state.
 - `stay_afloat_snapshot.present:true`, `parseable:true`, `stale:false`, and
@@ -210,13 +234,13 @@ Use this when a user, CI job, terminal multiplexer, or external supervisor owns
 process lifetime:
 
 ```bash
-exec oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+exec oauth-mux daemon loop --profile codex-max --capability codex-max --interval-ms 60000
 ```
 
 For a bounded proof in a PR or release lane:
 
 ```bash
-oauth-mux daemon supervise --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
+oauth-mux daemon loop --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
 oauth-mux daemon status --json
 ```
 
@@ -242,7 +266,7 @@ Create `~/Library/LaunchAgents/dev.xoxd.omux.codex-max.plist`:
   <array>
     <string>/opt/homebrew/bin/oauth-mux</string>
     <string>daemon</string>
-    <string>supervise</string>
+    <string>loop</string>
     <string>--profile</string>
     <string>codex-max</string>
     <string>--capability</string>
@@ -290,7 +314,7 @@ Documentation=https://github.com/Jesssullivan/oauth-mux/issues/67
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+ExecStart=/usr/local/bin/oauth-mux daemon loop --profile codex-max --capability codex-max --interval-ms 60000
 Restart=on-failure
 RestartSec=15s
 
@@ -320,8 +344,8 @@ machines can use the plain shell contract instead.
 
 ## Windows Current Lane
 
-The current supervised daemon pid/status host is not implemented on Windows.
-Windows packages should not claim `oauth-mux daemon supervise` as supported
+The current foreground loop daemon pid/status host is not implemented on Windows.
+Windows packages should not claim `oauth-mux daemon loop` as supported
 until stop/status/process control is implemented there.
 
 For now, use the portable foreground loop under Task Scheduler, PowerShell,
@@ -357,14 +381,14 @@ backgrounding inside the container entrypoint; let the container runtime own the
 process:
 
 ```bash
-oauth-mux daemon supervise --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
+oauth-mux daemon loop --profile codex-max --capability codex-max --iterations 3 --interval-ms 500
 oauth-mux daemon status --json
 ```
 
 Container entrypoint shape:
 
 ```bash
-exec oauth-mux daemon supervise --profile codex-max --capability codex-max --interval-ms 60000
+exec oauth-mux daemon loop --profile codex-max --capability codex-max --interval-ms 60000
 ```
 
 Rollback is container or job termination plus an explicit status check in the

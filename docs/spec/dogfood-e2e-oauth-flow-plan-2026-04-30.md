@@ -11,7 +11,7 @@ plan. Current Codex dogfood truth has moved to
 `docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md`. The live `codex-max`
 cohort is now four routes: `max-1` selected, `max-4` spare fallback, and
 `max-2`/`max-3` provider quota-exhausted for `codex-max`. Broker-owned session
-surfaces and supervised restart surfaces exist, but true provider-owned
+surfaces and diagnostic child-capture surfaces exist, but true provider-owned
 active-session seamless handoff remains unproven.
 
 ## Current State
@@ -91,8 +91,8 @@ These are the adoption blockers that should stay visible:
 
 7. Historical stay-afloat automation gap.
    This was true for the first adoption plan. Since then, prepared fallback,
-   bounded foreground loops, broker-owned Codex sessions, supervised restart
-   wrappers, exhausted-route revalidation, and controlled fallback drills have
+   bounded foreground loops, broker-owned Codex sessions, diagnostic child
+   capture, exhausted-route revalidation, and controlled fallback drills have
    landed. The remaining hard gap is narrower and more important: native
    provider-owned active-session handoff, same-thread quota recovery, and
    unmanaged TUI hot-swap remain unproven.

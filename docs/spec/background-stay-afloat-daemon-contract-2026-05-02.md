@@ -70,7 +70,8 @@ The daemon's non-responsibilities are equally important:
 - no assumption that `systemctl`, `launchctl`, Homebrew services, cron, or
   Windows Services define product semantics;
 - no claim that an already-running harness process can be hot-swapped unless
-  that harness has a proven reload, restart, proxy, or in-agent mediation path.
+  that harness has a proven live reload, auth-broker, proxy, or in-agent
+  mediation path.
 
 ## Seamless Handoff Model
 
@@ -95,19 +96,19 @@ Required mediation point:
 If an account caps out during a long-running upstream process, Level 1 prepares
 the next launch or command. It does not mutate the already-running process.
 
-### Level 2: supervised restart or relaunch
+### Level 2: diagnostic child-boundary observation
 
-The wrapper owns the harness process and can restart it with a new selected
-route when the current route becomes unusable.
+The wrapper owns a child process and can classify its failure, persist redacted
+route evidence, and stop. This is useful instrumentation, but it is not a
+product stay-afloat level because the active session is already lost.
 
 Required mediation point:
 
 - an oauth-mux-owned command wrapper;
-- an editor/agent integration that can restart a child harness;
-- a CLI launcher that treats route selection as part of process startup.
+- bounded child-output capture;
+- conservative failure classification and route-health mutation.
 
-This can feel seamless to a user when the harness session is restart-tolerant.
-It is still not hot credential reload.
+This must not be described as seamless, even when the next route is known.
 
 ### Level 3: broker-owned app-server
 
@@ -235,8 +236,10 @@ Supported near-term product shape:
 - daemon keeps Codex route evidence and handoffs warm;
 - `oauth-mux exec --profile codex-max -- codex ...` launches future Codex
   commands with the selected account;
-- a Codex-specific wrapper can relaunch a child Codex process when the selected
-  route changes;
+- the seamless in-place account-swap path is the `oauth-mux codex` adapter
+  defined in `docs/spec/codex-adapter-contract-2026-05-03.md`; restart of
+  a child Codex process is NOT a product behavior and is removed from this
+  contract;
 - broker-owned app-server sessions are proven for scoped Codex commands
   (`broker-session-plan`, `broker-session-smoke`, and spend-gated
   `broker-run`) under `claim.level:"broker_owned_app_server"`;
@@ -297,7 +300,7 @@ quota.
 - Persist the latest stay-afloat tick summary as a redacted daemon snapshot.
 - Add status JSON fields for `last_tick_at`, `next_tick_after`,
   `next_tick_reason`, `afloat`, `selected`, and `handoff_pending`.
-- Keep `production_supported:false` until a supervised loop exists.
+- Keep `production_supported:false` until a foreground loop exists.
 
 Implementation note, 2026-05-02: this slice now writes
 `daemon-snapshot.json` under the oauth-mux state directory after each
@@ -317,7 +320,7 @@ is Level 1: route state is warm enough for the next mediated
 `per_request_muxing:false` so agents and websites do not overclaim daemon
 behavior from a healthy snapshot.
 
-### D2: supervised stay-afloat loop
+### D2: foreground stay-afloat loop
 
 - Add an opt-in daemon mode that hosts the foreground tick engine.
 - Stop cleanly.
@@ -329,13 +332,13 @@ Implementation note, 2026-05-02: the beta loop is available as:
 
 ```bash
 oauth-mux daemon run --stay-afloat --profile <profile> --capability <capability>
-oauth-mux daemon supervise --profile <profile> --capability <capability>
+oauth-mux daemon loop --profile <profile> --capability <capability>
 ```
 
 It writes the normal daemon pid file, records beta loop metadata under the
 runtime directory, runs the same stay-afloat tick engine with execute mode
 enabled, and updates the redacted `stay_afloat` status snapshot after each
-tick. `daemon status --json` reports `contract:"experimental_supervised_loop"`
+tick. `daemon status --json` reports `contract:"experimental_foreground_tick_loop"`
 and `stay_afloat_loop.hosted:true` while the loop is running. The same
 `stay_afloat_loop` object includes the hosted selector, interval, iteration
 bound, and execution mode so dogfood status can prove which route set is being
@@ -360,8 +363,8 @@ mutating admission.
 ### D4: mediation adapters
 
 - Promote `oauth-mux exec` and shell wrappers as Level 1 mediation.
-- Keep the Codex wrapper story scoped to selected-account launch and
-  supervised restart until interactive PTY dogfood is green.
+- Keep the Codex wrapper story scoped to selected-account launch and diagnostic
+  failure capture. Restart/relaunch is not an acceptable stay-afloat behavior.
 - Extend the shipped Codex app-server auth-broker proof for Level 3
   broker-owned mediation; do not rename it current-process auth brokering.
 - Add MCP/in-agent tools for route visibility and handoff surfacing.

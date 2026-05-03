@@ -116,7 +116,9 @@ an exact `exec_argv` when already afloat, otherwise it returns the typed repair
 or user-handoff action to mediate before retrying. It also returns `claim`:
 `prepared_fallback` means use `claim.launch_argv` for a fresh harness process,
 while current-process hot swap, supervised restart, and per-request muxing are
-explicitly false until those product levels are implemented and proven.
+explicitly false. Restart is not a product level; true active-session
+stay-afloat requires the running harness to accept a live handoff without
+logout, resume, restart, or lost thread.
 `resilience.spare_fallback_ready:false` / `claim.single_route_at_risk:true`
 means the selected route can launch but no other selectable route is currently
 ready behind it. Codex app-server auth brokering is now tracked as the first
@@ -242,16 +244,14 @@ selected route, launch re-runs selection and tries the next selectable account.
 If no route remains selectable, launch prints refreshed mediation text and exits
 nonzero without starting the target. If no route is selectable at preflight, it
 also prints mediation text and exits nonzero without starting the target.
-`oauth-mux stay-afloat supervise --max-restarts <n>
---restart-on-exit-code <code> -- <command>` is the wrapper-owned restart beta.
-It keeps oauth-mux as the parent process, injects the selected route into a
-child, and restarts on a distinct selectable route only for the configured exit
-code. This is useful for harnesses or test wrappers that can make failures
-typed; it is not unmanaged in-process token replacement.
-For Codex dogfood, add `--restart-on-codex-usage-limit`. That mode captures
+`oauth-mux stay-afloat observe --classify-exit-code <code> -- <command>` is a diagnostic child-boundary
+surface. It keeps oauth-mux as the parent process, injects the selected route
+into a child, observes typed failure, and stops. The legacy restart-shaped flags
+do not make restart an acceptable stay-afloat path.
+For Codex dogfood, add `--classify-codex-usage-limit`. That mode captures
 child output, classifies the native usage-limit screen, records the selected
-route as quota-exhausted, appends a redacted `stay_afloat_supervise` event, and
-restarts on the next selectable route. Captured provider output remains hidden.
+route as quota-exhausted, appends a redacted `stay_afloat_observe` event, and
+stops without relaunching a fallback child. Captured provider output remains hidden.
 Add `--stream-capture` with that classifier when dogfood needs visible child
 output: oauth-mux tees the child stream while keeping bounded classifier
 buffers and redacted artifacts. In `--json` mode, the live child stream goes to

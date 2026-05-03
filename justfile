@@ -227,11 +227,11 @@ daemon-tick PROFILE="codex-max" CAPABILITY="codex-max": build
 daemon-loop PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="2" INTERVAL_MS="0": build
     ./zig-out/bin/oauth-mux daemon tick --loop --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}} --profile {{PROFILE}} --capability {{CAPABILITY}} --json
 
-daemon-supervise PROFILE="codex-max" CAPABILITY="codex-max" INTERVAL_MS="60000": build
-    ./zig-out/bin/oauth-mux daemon supervise --profile {{PROFILE}} --capability {{CAPABILITY}} --interval-ms {{INTERVAL_MS}}
+daemon-loop-host PROFILE="codex-max" CAPABILITY="codex-max" INTERVAL_MS="60000": build
+    ./zig-out/bin/oauth-mux daemon loop --profile {{PROFILE}} --capability {{CAPABILITY}} --interval-ms {{INTERVAL_MS}}
 
-daemon-supervise-smoke PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="3" INTERVAL_MS="500": build
-    ./zig-out/bin/oauth-mux daemon supervise --profile {{PROFILE}} --capability {{CAPABILITY}} --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}}
+daemon-loop-smoke PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="3" INTERVAL_MS="500": build
+    ./zig-out/bin/oauth-mux daemon loop --profile {{PROFILE}} --capability {{CAPABILITY}} --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}}
 
 # ── Shell integration ──
 

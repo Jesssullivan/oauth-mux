@@ -1,12 +1,31 @@
 # oauth-mux — Agent Instructions
 
+## Product Anchor (read first)
+
+The product success metric is in `docs/spec/broker-mcp-contract-2026-05-03.md`:
+
+> The user runs `oauth-mux <harness>` (e.g. `oauth-mux codex`). The harness
+> behaves like the real one. The active subscription account exhausts its
+> quota. Another credited account is **seamlessly substituted in place**.
+> The harness process is not restarted. The user is not prompted.
+
+The Codex implementation of that bar is in
+`docs/spec/codex-adapter-contract-2026-05-03.md`. Restart, supervised
+relaunch, and `prepared_fallback` are NOT the product — they are
+diagnostic / Level 1–2 infrastructure. If a spec sentence, ticket goal,
+commit message, or PR description frames any of those as "the success" or
+"the fallback if seamless mux is hard," it is wrong by construction;
+delete and re-anchor on the broker contract.
+
 ## Source of Truth Hierarchy
 
 1. This file (AGENTS.md)
-2. `justfile` — operator entrypoint for all build/test/release tasks
-3. `flake.nix` — Nix devShell and package definitions
-4. `build.zig` / `build.zig.zon` — Zig build system
-5. `src/` — implementation
+2. `docs/spec/broker-mcp-contract-2026-05-03.md` — the product anchor
+3. `docs/spec/codex-adapter-contract-2026-05-03.md` — Codex adapter spec
+4. `justfile` — operator entrypoint for all build/test/release tasks
+5. `flake.nix` — Nix devShell and package definitions
+6. `build.zig` / `build.zig.zon` — Zig build system
+7. `src/` — implementation
 
 ## Build
 

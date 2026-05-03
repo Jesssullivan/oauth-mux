@@ -209,13 +209,13 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
             const loop_info = try writeStatusLoopJson(allocator, writer, loop_hosted);
             try writeStatusSnapshotJson(allocator, writer, loop_info.started_at);
             try writer.print(",\"pid\":{d},\"transport\":", .{pid});
-            try std.json.stringify(if (loop_hosted) "foreground_supervised_loop" else "unix_socket", .{}, writer);
+            try std.json.stringify(if (loop_hosted) "foreground_tick_loop" else "unix_socket", .{}, writer);
             try writer.writeAll(",\"socket\":");
             if (loop_hosted) try writer.writeAll("null") else try std.json.stringify(sock, .{}, writer);
             try writer.writeAll("}\n");
         } else {
             if (loop_hosted) {
-                try writer.print("daemon: running supervised stay-afloat loop (pid {d})\n", .{pid});
+                try writer.print("daemon: running foreground stay-afloat tick loop (pid {d})\n", .{pid});
             } else {
                 try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
             }
@@ -237,7 +237,7 @@ pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
 
 fn writeStatusContractJson(writer: anytype, loop_hosted: bool) !void {
     try writer.writeAll(",\"contract\":");
-    try std.json.stringify(if (loop_hosted) "experimental_supervised_loop" else "experimental_socket_stub", .{}, writer);
+    try std.json.stringify(if (loop_hosted) "experimental_foreground_tick_loop" else "experimental_socket_stub", .{}, writer);
     try writer.writeAll(",\"production_supported\":false");
     try writer.writeAll(",\"hosts_stay_afloat\":false");
     try writer.writeAll(",\"wrapper_contract\":\"foreground_tick\"");
@@ -532,7 +532,7 @@ fn writeStayAfloatMetadata(path: []const u8, metadata: StayAfloatRunMetadata) !v
 
 fn writeStayAfloatMetadataJson(writer: anytype, metadata: StayAfloatRunMetadata) !void {
     try writer.writeAll("{\"hosted\":true");
-    try writer.writeAll(",\"mode\":\"stay_afloat_supervisor\"");
+    try writer.writeAll(",\"mode\":\"stay_afloat_tick_loop\"");
     try writer.writeAll(",\"contract\":\"beta_foreground_tick_host\"");
     try writer.writeAll(",\"production_supported\":false");
     try writer.writeAll(",\"selector\":{");
@@ -574,7 +574,8 @@ fn hasStayAfloatMetadata(allocator: std.mem.Allocator) bool {
     if (metadata) |bytes| {
         defer allocator.free(bytes);
         return std.mem.indexOf(u8, bytes, "\"hosted\":true") != null and
-            std.mem.indexOf(u8, bytes, "\"mode\":\"stay_afloat_supervisor\"") != null;
+            (std.mem.indexOf(u8, bytes, "\"mode\":\"stay_afloat_tick_loop\"") != null or
+                std.mem.indexOf(u8, bytes, "\"mode\":\"stay_afloat_supervisor\"") != null);
     }
     return false;
 }
