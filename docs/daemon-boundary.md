@@ -214,10 +214,11 @@ proxy, or in-agent adapter proves those stronger levels.
 | Command surface | Claim level | Boundary | Spend | Route health mutation | Provider-originated evidence | Same-thread support | Unmanaged TUI support |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `stay-afloat next`, `stay-afloat launch`, `daemon tick` | `prepared_fallback` | next mediated process start | no | no by default | no | no | no |
-| `codex managed-plan`, `codex managed` | `managed_codex_process` | native Codex started under selected route-local `CODEX_HOME` | child-dependent for launch | no by default | child-dependent | no | managed launch only |
+| `codex managed-plan`, `codex managed` | `managed_codex_process` | native Codex started under selected route-local `CODEX_HOME`; explicit resume ids are preflighted against that store | child-dependent for launch | no by default | child-dependent | no | managed launch only |
 | `codex broker-session-plan` | `broker_owned_app_server` | planning for oauth-mux-owned Codex app-server | no | no | no | no | no |
 | `codex broker-session-smoke` | `broker_owned_app_server` | local mocked broker-owned app-server | no | no | simulated only | new thread only | no |
 | `codex broker-run` | `broker_owned_app_server` | live broker-owned app-server | yes, after confirmation | on classified live failure | yes when provider failure occurs | no | no |
+| `codex revalidate-exhausted` | `prepared_fallback` route-health refresh | spend-gated recheck of routes already recorded exhausted/rate-limited | yes, after confirmation | yes, from fresh probe | yes | no | no |
 | `codex broker-fallback-drill` | `controlled_route_health_drill` | local route-health mutation | no | yes | no | no | no |
 | `stay-afloat supervise` | `supervised_process` or `supervised_restart` after restart | wrapper-owned child process | child-dependent | on classified child failure | yes when child emits it | no | wrapper-launched child only |
 | future native hook | `current_process_auth_broker` | already-running provider process with supported auth-update hook | hook-dependent | hook-dependent | hook-dependent | unproven | unproven |
