@@ -149,7 +149,10 @@ is superseded by `codex broker-session-plan` for stay-afloat route decisions.
 `codex broker-session-plan --json` combines that broker readiness with recorded
 route liveness. It reports the selected broker-owned session route, immediate
 selectable fallback routes, quota-blocked routes, and the explicit claim
-boundary without starting Codex or probing providers.
+boundary without starting Codex or probing providers. Read
+`resilience.spare_fallback_ready` and `resilience.single_route_at_risk` to
+distinguish a ready session with another route behind it from a ready session
+that will need revalidation, waiting, or a new account after its next failure.
 `codex broker-session-smoke --confirm-broker --json` takes the next no-spend UX
 step: it uses the session plan's selected and fallback routes, starts a local
 broker-owned app-server session against mocked Responses/ChatGPT endpoints, and
@@ -160,7 +163,8 @@ starts a broker-owned app-server against Codex's default live provider, sends
 one prompt, and reports only redacted protocol evidence; prompt text, assistant
 output, tokens, account ids, and raw protocol output are not printed. If the
 app-server reports a live quota or rate-limit failure, broker-run records that
-as route-health evidence and reports the next selected route.
+as route-health evidence and reports the next selected route plus the
+post-failure broker-session resilience state.
 For a bounded beta session loop, pipe line-delimited prompts to `codex
 broker-run --stdin --confirm-spend --json`; the command keeps one broker-owned
 app-server session open and reports prompt/turn counts without printing

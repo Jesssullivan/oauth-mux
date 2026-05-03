@@ -279,7 +279,9 @@ For quota-driven account changes, use a different action name, such as
    `oauth-mux codex broker-session-plan --profile codex-max --capability
    codex-max --json` joins recorded route liveness with broker auth readiness
    and reports selected, fallback, quota-blocked, and auth-unready routes for
-   the future broker-owned session UX.
+   the future broker-owned session UX. Its `resilience` object explicitly marks
+   whether the selected broker session has a spare fallback route or is a
+   single-route-at-risk state.
 11. Add a no-spend broker-owned session smoke:
    `oauth-mux codex broker-session-smoke --profile codex-max --capability
    codex-max --confirm-broker --json` uses the session plan's selected and
@@ -297,7 +299,9 @@ For quota-driven account changes, use a different action name, such as
    quota/rate-limit failure, reruns broker-session planning, starts a fresh
    broker-owned app-server session on the selected fallback route, and replays
    the failed prompt plus remaining queued prompts. This is the honest
-   next-session stay-afloat path; it is not same-thread recovery.
+   next-session stay-afloat path; it is not same-thread recovery. The output
+   includes the post-failure resilience state so operators can see when the
+   fallback route is now the last selectable route.
 14. Add a controlled fallback observation drill:
    `oauth-mux codex broker-fallback-drill --profile codex-max --capability
    codex-max --from-account max-3 --confirm-drill --json` records the named
