@@ -78,6 +78,11 @@ codex-max-setup: build
 codex-max-canary: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex canary
 
+paid-cohort-soak-snapshot: build
+    ./scripts/paid-cohort-soak-snapshot.sh
+
+codex-max-soak-snapshot: paid-cohort-soak-snapshot
+
 codex-max-live-qa: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex live-qa
 
