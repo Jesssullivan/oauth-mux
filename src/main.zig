@@ -8404,6 +8404,139 @@ fn writeCodexBrokerSessionResilienceJson(
     try writer.writeByte('}');
 }
 
+fn writeCodexBrokerProfileCapabilityCommandJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    suffix: []const u8,
+) !void {
+    var command = std.ArrayList(u8).init(allocator);
+    defer command.deinit();
+    try command.writer().writeAll(base);
+    try command.writer().writeAll(" --profile ");
+    try command.writer().writeAll(profile orelse "<profile>");
+    try command.writer().writeAll(" --capability ");
+    try command.writer().writeAll(capability orelse "<capability>");
+    if (suffix.len != 0) {
+        try command.writer().writeByte(' ');
+        try command.writer().writeAll(suffix);
+    }
+    try std.json.stringify(command.items, .{}, writer);
+}
+
+fn writeCodexBrokerSessionRiskActionJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    kind: []const u8,
+    reason: []const u8,
+    spends_provider_calls: bool,
+    mutates_route_health: bool,
+    mutates_user_config: bool,
+    confirmation_required: bool,
+    include_profile_capability: bool,
+    command_base: ?[]const u8,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    command_suffix: []const u8,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"kind\":");
+    try std.json.stringify(kind, .{}, writer);
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(reason, .{}, writer);
+    try writer.writeAll(",\"agent_safe\":");
+    try writer.writeAll(if (!spends_provider_calls and !mutates_route_health and !mutates_user_config) "true" else "false");
+    try writer.writeAll(",\"spends_provider_calls\":");
+    try writer.writeAll(if (spends_provider_calls) "true" else "false");
+    try writer.writeAll(",\"mutates_route_health\":");
+    try writer.writeAll(if (mutates_route_health) "true" else "false");
+    try writer.writeAll(",\"mutates_user_config\":");
+    try writer.writeAll(if (mutates_user_config) "true" else "false");
+    try writer.writeAll(",\"confirmation_required\":");
+    try writer.writeAll(if (confirmation_required) "true" else "false");
+    try writer.writeAll(",\"command\":");
+    if (command_base) |base| {
+        if (include_profile_capability) {
+            try writeCodexBrokerProfileCapabilityCommandJson(writer, allocator, base, profile, capability, command_suffix);
+        } else {
+            var command = std.ArrayList(u8).init(allocator);
+            defer command.deinit();
+            try command.writer().writeAll(base);
+            if (command_suffix.len != 0) {
+                try command.writer().writeByte(' ');
+                try command.writer().writeAll(command_suffix);
+            }
+            try std.json.stringify(command.items, .{}, writer);
+        }
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeByte('}');
+}
+
+fn writeCodexBrokerSessionRiskActionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    session_start_ready: bool,
+    selectable_fallback_routes: usize,
+) !void {
+    try writer.writeByte('[');
+    if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, selectable_fallback_routes)) {
+        try writeCodexBrokerSessionRiskActionJson(
+            writer,
+            allocator,
+            "revalidate_exhausted_routes",
+            "selected_route_has_no_spare_fallback",
+            true,
+            true,
+            false,
+            true,
+            true,
+            "oauth-mux codex revalidate-exhausted",
+            profile,
+            capability,
+            "--confirm-spend --json",
+        );
+        try writer.writeByte(',');
+        try writeCodexBrokerSessionRiskActionJson(
+            writer,
+            allocator,
+            "enroll_codex_account",
+            "no_spare_fallback_route_ready",
+            false,
+            false,
+            true,
+            true,
+            false,
+            "oauth-mux enroll codex --account <name> --confirm-enroll --json",
+            null,
+            null,
+            "",
+        );
+        try writer.writeByte(',');
+        try writeCodexBrokerSessionRiskActionJson(
+            writer,
+            allocator,
+            "wait_for_quota_reset",
+            "blocked_routes_may_become_available_after_reset",
+            false,
+            false,
+            false,
+            false,
+            false,
+            null,
+            null,
+            null,
+            "",
+        );
+    }
+    try writer.writeByte(']');
+}
+
 const codex_fallback_drill_retry_after_s: u32 = 7200;
 
 fn runCodexBrokerFallbackDrill(
@@ -8788,6 +8921,8 @@ fn writeCodexBrokerSessionPlanJson(
     if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"resilience\":");
     try writeCodexBrokerSessionResilienceJson(writer, session_start_ready, summary.selectable_fallback_routes);
+    try writer.writeAll(",\"resilience_actions\":");
+    try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, capability, session_start_ready, summary.selectable_fallback_routes);
     try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"unreadable_routes\":{d},\"selectable_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
         summary.routes_total,
         summary.broker_ready_routes,
@@ -8833,6 +8968,9 @@ fn writeCodexBrokerSessionPlanText(
     try writer.print("  selectable_fallback_routes: {d}\n", .{summary.selectable_fallback_routes});
     try writer.print("  spare_fallback_ready: {s}\n", .{if (codexBrokerSessionSpareFallbackReady(selected_index != null, summary.selectable_fallback_routes)) "true" else "false"});
     try writer.print("  single_route_at_risk: {s}\n", .{if (codexBrokerSessionSingleRouteAtRisk(selected_index != null, summary.selectable_fallback_routes)) "true" else "false"});
+    if (codexBrokerSessionSingleRouteAtRisk(selected_index != null, summary.selectable_fallback_routes)) {
+        try writer.writeAll("  next: revalidate exhausted routes, wait for reset, or enroll another Codex account\n");
+    }
 
     if (selected_index) |idx| {
         const selected = evaluations[idx].route;
@@ -9302,7 +9440,7 @@ fn runCodexBrokerRun(
     }
 
     if (args.json) {
-        try writeCodexBrokerRunJson(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, after_failure_summary, args.continue_on_failure, continuation);
+        try writeCodexBrokerRunJson(writer, allocator, selected.?.route, args.profile, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, after_failure_summary, args.continue_on_failure, continuation);
     } else {
         try writeCodexBrokerRunText(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, args.continue_on_failure, continuation);
     }
@@ -9401,7 +9539,9 @@ fn codexBrokerPromptsTotalChars(prompts: []const []const u8) usize {
 
 fn writeCodexBrokerRunJson(
     writer: anytype,
+    allocator: std.mem.Allocator,
     route: RepairPlanRoute,
+    profile: ?[]const u8,
     capability: ?[]const u8,
     model: []const u8,
     prompt_source: []const u8,
@@ -9451,6 +9591,8 @@ fn writeCodexBrokerRunJson(
     try writer.print(",\"prompt_count\":{d},\"prompt_chars_total\":{d}", .{ prompts.len, prompt_chars_total });
     try writer.writeAll(",\"resilience\":");
     try writeCodexBrokerSessionResilienceJson(writer, session_start_ready, summary.selectable_fallback_routes);
+    try writer.writeAll(",\"resilience_actions\":");
+    try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, capability, session_start_ready, summary.selectable_fallback_routes);
     try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
         summary.routes_total,
         summary.broker_ready_routes,
@@ -9493,6 +9635,8 @@ fn writeCodexBrokerRunJson(
         if (after_failure_summary) |after_summary| {
             try writer.writeAll(",\"resilience\":");
             try writeCodexBrokerSessionResilienceJson(writer, after_failure_selected_index != null, after_summary.selectable_fallback_routes);
+            try writer.writeAll(",\"resilience_actions\":");
+            try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, capability, after_failure_selected_index != null, after_summary.selectable_fallback_routes);
             try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
                 after_summary.routes_total,
                 after_summary.broker_ready_routes,
@@ -9592,6 +9736,9 @@ fn writeCodexBrokerRunText(
     try writer.print("  prepared fallback: {s}\n", .{if (codexBrokerSessionSpareFallbackReady(true, summary.selectable_fallback_routes)) "true" else "false"});
     try writer.print("  spare fallback ready: {s}\n", .{if (codexBrokerSessionSpareFallbackReady(true, summary.selectable_fallback_routes)) "true" else "false"});
     try writer.print("  single route at risk: {s}\n", .{if (codexBrokerSessionSingleRouteAtRisk(true, summary.selectable_fallback_routes)) "true" else "false"});
+    if (codexBrokerSessionSingleRouteAtRisk(true, summary.selectable_fallback_routes)) {
+        try writer.writeAll("  next: revalidate exhausted routes, wait for reset, or enroll another Codex account\n");
+    }
     try writer.print("  continue on failure: {s}\n", .{if (continue_on_failure) "true" else "false"});
     try writer.print("  ok: {s}\n", .{if (codexBrokerRunOverallOk(result, prompts.len, continuation)) "true" else "false"});
     try writer.print("  reason: {s}\n", .{codexBrokerRunOverallReason(result, prompts.len, continuation)});
