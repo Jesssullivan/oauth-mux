@@ -118,12 +118,13 @@ runtime diagnostics into OAuth liveness or automatic repair evidence.
 
 The `TIN-897` background-daemon artifact is
 `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md`. It defines
-four levels of seamless muxing: prepared fallback for the next mediated
-action, supervised restart/relaunch, current-process auth brokering, and true
-per-request muxing. The current product is aiming first at prepared fallback
-plus daemon-warmed route state. It must not claim hot-swap of an
-already-running Codex, Claude, or Figma harness unless that harness has a
-proven reload, broker, restart, proxy, or in-agent mediation path.
+the stay-afloat claim ladder: prepared fallback for the next mediated action,
+broker-owned app-server sessions, supervised restart/relaunch, reserved
+current-process auth brokering, and true per-request muxing. The current
+product is aiming first at prepared fallback plus daemon-warmed route state. It
+must not claim hot-swap of an already-running Codex, Claude, or Figma harness
+unless that harness has a proven reload, broker, restart, proxy, or in-agent
+mediation path.
 `TIN-898` adds `daemon run --stay-afloat` / `daemon supervise` as an opt-in
 beta host for the same foreground tick engine. Status can report
 `stay_afloat_loop.hosted:true`, but production support remains false until
@@ -137,10 +138,12 @@ The `TIN-913` / GitHub `#125` Codex app-server auth-broker artifact is
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. It records the
 source-backed opportunity discovered after the supervised-restart contract:
 Codex app-server can accept external ChatGPT auth tokens and request refreshed
-tokens from a client after `401 Unauthorized`. That may become the first
-`current_process_auth_broker` proof for sessions launched under oauth-mux
-mediation. It does not prove quota-exhaustion same-turn handoff and does not
-change claims for unmanaged Codex TUI/CLI processes.
+tokens from a client after `401 Unauthorized`. oauth-mux now labels those
+mediated app-server surfaces as `broker_owned_app_server`; reserve
+`current_process_auth_broker` for a future provider/native hook outside that
+broker-owned boundary. The broker proof does not prove quota-exhaustion
+same-turn handoff and does not change claims for unmanaged Codex TUI/CLI
+processes.
 
 The account-enrollment artifact is
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. It defines the

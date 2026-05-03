@@ -144,7 +144,10 @@ launched through `claim.launch_argv`, while `current_process_hotswap`,
 behind it"; an afloat profile with no spare route is still usable, but the next
 quota/rate-limit failure may need revalidation or waiting.
 Codex app-server auth brokering is a separate proof track for mediated Codex
-sessions, not a current public claim.
+sessions, not a current public claim for unmanaged Codex processes. Broker-owned
+Codex session surfaces use `claim.level:"broker_owned_app_server"`; reserve
+`current_process_auth_broker` for a provider/native hook that updates an
+already-running process outside that broker-owned boundary.
 `codex broker-plan --json` is the no-spend first slice of that track: it reads
 configured Codex stores locally and reports whether each route can supply the
 external-auth tuple Codex app-server expects, without printing tokens, account
@@ -154,7 +157,8 @@ is superseded by `codex broker-session-plan` for stay-afloat route decisions.
 `codex broker-session-plan --json` combines that broker readiness with recorded
 route liveness. It reports the selected broker-owned session route, immediate
 selectable fallback routes, quota-blocked routes, and the explicit claim
-boundary without starting Codex or probing providers. Read
+boundary without starting Codex or probing providers. Planning output reports
+`next_thread_quota_fallback_ready` rather than fallback proof. Read
 `resilience.spare_fallback_ready` and `resilience.single_route_at_risk` to
 distinguish a ready session with another route behind it from a ready session
 that will need revalidation, waiting, or a new account after its next failure.
@@ -166,7 +170,7 @@ waiting for quota reset. JSON clients read those actions from
 `codex broker-session-smoke --confirm-broker --json` takes the next no-spend UX
 step: it uses the session plan's selected and fallback routes, starts a local
 broker-owned app-server session against mocked Responses/ChatGPT endpoints, and
-proves new-thread fallback after simulated quota exhaustion.
+proves `next_thread_quota_fallback_proven` after simulated quota exhaustion.
 `codex broker-run --prompt ... --confirm-spend --json` is the explicit live
 one-turn proof for that UX path. It uses the session plan's selected route,
 starts a broker-owned app-server against Codex's default live provider, sends

@@ -70,22 +70,27 @@ Observed surfaces:
 
 ## Boundary Correction
 
-There are now four distinct stay-afloat claim levels:
+There are now five distinct stay-afloat claim levels:
 
 1. `prepared_fallback`: already shipped. The next mediated launch can select a
    healthy account.
-2. `supervised_restart`: not implemented. oauth-mux owns a child process and
-   can restart it under another route after typed failure evidence.
-3. `current_process_auth_broker`: implemented only for broker-owned Codex
-   app-server proof paths. The upstream harness exposes a reload, external-auth,
-   or account-switch protocol that oauth-mux can drive while the harness process
-   remains alive.
-4. `per_request_muxing`: not implemented. Every model/provider request passes
+2. `supervised_restart`: implemented as a wrapper-owned beta. oauth-mux owns a
+   child process and can restart it under another route after typed failure
+   evidence.
+3. `broker_owned_app_server`: implemented for Codex app-server proof paths where
+   oauth-mux owns the app-server mediation point. This is the current claim
+   level for broker-session planning, local smokes, live broker-run, and
+   next-session continuation.
+4. `current_process_auth_broker`: reserved for a proven provider/native hook
+   that updates an already-running process outside the broker-owned boundary.
+   Do not use it for unmanaged Codex TUI hot-swap.
+5. `per_request_muxing`: not implemented. Every model/provider request passes
    through oauth-mux or an oauth-mux-aware adapter.
 
-Codex app-server external auth belongs to level 3 if proven. A regular Codex
-TUI or `codex exec` process launched without that mediation point remains level
-1 or level 2 only.
+Codex app-server external auth belongs to `broker_owned_app_server` when
+oauth-mux starts or sidecars the app-server. A regular Codex TUI or `codex
+exec` process launched without that mediation point remains level 1 or level 2
+only.
 
 ## Product Semantics
 
@@ -193,12 +198,15 @@ A future broker status should be explicit:
 
 ```json
 {
-  "mode": "codex_app_server_auth_broker",
+  "mode": "codex_broker_owned_session_live_run",
   "claim": {
-    "level": "current_process_auth_broker",
+    "level": "broker_owned_app_server",
+    "broker_owned_session": true,
+    "current_process_auth_broker": false,
     "prepared_fallback": true,
     "supervised_restart": false,
-    "current_process_hotswap": true,
+    "current_process_hotswap": false,
+    "unmanaged_tui_hotswap": false,
     "per_request_muxing": false
   },
   "app_server": {

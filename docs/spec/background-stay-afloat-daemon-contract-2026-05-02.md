@@ -63,7 +63,7 @@ The daemon's non-responsibilities are equally important:
 
 ## Seamless Handoff Model
 
-There are four levels of "seamless" support. Public docs and demos must name
+There are five levels of "seamless" support. Public docs and demos must name
 the level being shown.
 
 ### Level 1: prepared fallback
@@ -98,10 +98,28 @@ Required mediation point:
 This can feel seamless to a user when the harness session is restart-tolerant.
 It is still not hot credential reload.
 
-### Level 3: current-process auth broker
+### Level 3: broker-owned app-server
+
+oauth-mux owns a provider app-server or sidecar process and can drive its
+external-auth, account-switch, or resume protocol. This is stronger than a
+plain wrapper, but it is still not a claim about an unmanaged already-running
+TUI.
+
+Required mediation point:
+
+- an oauth-mux-owned app-server child or sidecar;
+- a remote/local client attached to that app-server;
+- redacted protocol evidence proving oauth-mux owns the auth-refresh client.
+
+For Codex, this is the current broker-owned app-server proof level. It is
+tracked in `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` and uses
+`claim.level:"broker_owned_app_server"`.
+
+### Level 4: current-process auth broker
 
 The upstream harness exposes a reload, external-auth, or account-switch
-protocol that oauth-mux can drive while the harness process remains alive.
+protocol that oauth-mux can drive while an already-running provider process
+remains alive outside the broker-owned boundary.
 
 Required mediation point:
 
@@ -111,11 +129,10 @@ Required mediation point:
   oauth-mux.
 
 This is not generic process mutation. It is provider-specific cooperation from
-the running harness. For Codex, the first promising candidate is app-server
-external ChatGPT auth tokens, tracked in
-`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
+the running harness. Do not use this claim level for broker-owned Codex
+app-server sessions or unmanaged TUI hot-swap.
 
-### Level 4: per-request muxing
+### Level 5: per-request muxing
 
 Every provider request passes through oauth-mux or an oauth-mux-aware protocol
 surface. The mux can reroute a single request without restarting the harness.
@@ -129,7 +146,7 @@ Required mediation point:
 
 This is the strongest product shape, but it is provider and harness specific.
 Codex and Claude command-owned sessions should not be advertised at Level 3 or
-Level 4 until their reload, broker, or proxy semantics are explicitly proven.
+higher until their broker, reload, or proxy semantics are explicitly proven.
 
 ## Background Daemon Shape
 
@@ -198,10 +215,9 @@ and stop/status inspection.
 
 Codex currently behaves as a command-owned session. `CODEX_HOME` selection is
 the main route injection boundary for unmanaged CLI launches. A 2026-05-02
-source review found a stronger app-server external-auth path that may support
-current-process auth brokering when Codex is launched under oauth-mux mediation;
-that proof is tracked separately in
-`docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
+source review found a stronger app-server external-auth path for sessions where
+oauth-mux owns the app-server mediation point. That broker-owned proof is
+tracked separately in `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`.
 
 Supported near-term product shape:
 
@@ -329,11 +345,10 @@ mutating admission.
 
 - Promote `oauth-mux exec` and shell wrappers as Level 1 mediation.
 - Add a Codex wrapper story for selected-account launch and supervised restart.
-- Add a Codex app-server auth-broker proof for Level 3 current-process
-  mediation.
+- Add a Codex app-server auth-broker proof for Level 3 broker-owned mediation.
 - Add MCP/in-agent tools for route visibility and handoff surfacing.
 - Consider request-level proxying only where the harness protocol can support
-  Level 4 per-request muxing.
+  Level 5 per-request muxing.
 
 Implementation note, 2026-05-02: `oauth-mux stay-afloat launch` is now the
 Level 1 startup boundary. It preflights from recorded evidence, delegates to
@@ -362,7 +377,7 @@ Allowed after D2 and soak evidence:
 - background daemon keeps route state and handoffs warm for proven profiles;
 - optional wrappers can keep the daemon process running on tested platforms.
 
-Not allowed without Level 2 or Level 3 proof:
+Not allowed without Level 2, Level 3, or Level 4 proof:
 
 - "oauth-mux will seamlessly hot-swap this already-running Codex session";
 - "background daemon silently reauths provider-owned CLI sessions";

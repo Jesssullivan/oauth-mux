@@ -175,6 +175,12 @@ proxy, or in-agent adapter proves those stronger levels.
   same explicit choices: revalidate exhausted routes, enroll another account, or
   wait for reset. JSON clients read `resilience_actions`; text output prints the
   matching `next:` hint.
+- Broker-owned Codex app-server commands use
+  `claim.level:"broker_owned_app_server"` when oauth-mux owns the app-server
+  mediation point. This is intentionally distinct from
+  `current_process_auth_broker`, which remains reserved for a proven
+  provider/native hook that updates an already-running process outside the
+  broker-owned boundary.
 - `oauth-mux daemon run --stay-afloat --profile <profile> --capability
   <capability>` as the first opt-in beta host for the same tick engine. It
   reports `stay_afloat_loop.hosted:true` plus the hosted selector, cadence, and
@@ -195,6 +201,19 @@ proxy, or in-agent adapter proves those stronger levels.
   This is provider-ownership-gated and does not apply to Codex or other
   upstream-CLI-owned stores.
 - Future manual QA where daemon activity is bounded and visible.
+
+## Command Claim Matrix
+
+| Command surface | Claim level | Boundary | Spend | Route health mutation | Provider-originated evidence | Same-thread support | Unmanaged TUI support |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `stay-afloat next`, `stay-afloat launch`, `daemon tick` | `prepared_fallback` | next mediated process start | no | no by default | no | no | no |
+| `codex broker-session-plan` | `broker_owned_app_server` | planning for oauth-mux-owned Codex app-server | no | no | no | no | no |
+| `codex broker-session-smoke` | `broker_owned_app_server` | local mocked broker-owned app-server | no | no | simulated only | new thread only | no |
+| `codex broker-run` | `broker_owned_app_server` | live broker-owned app-server | yes, after confirmation | on classified live failure | yes when provider failure occurs | no | no |
+| `codex broker-fallback-drill` | `controlled_route_health_drill` | local route-health mutation | no | yes | no | no | no |
+| `stay-afloat supervise` | `supervised_process` or `supervised_restart` after restart | wrapper-owned child process | child-dependent | on classified child failure | yes when child emits it | no | wrapper-launched child only |
+| future native hook | `current_process_auth_broker` | already-running provider process with supported auth-update hook | hook-dependent | hook-dependent | hook-dependent | unproven | unproven |
+| future request proxy | `per_request_muxing` | each provider request routed through oauth-mux | request-dependent | request-dependent | request-dependent | unproven | unproven |
 
 ## Not Allowed Yet
 
