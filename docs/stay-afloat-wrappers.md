@@ -1,6 +1,7 @@
 # Stay-Afloat Wrapper Recipes
 
-Status: beta operator recipes for the supervised stay-afloat loop.
+Status: beta operator recipes for the supervised stay-afloat loop and
+wrapper-owned child restart.
 
 These recipes make the current daemon beta dogfoodable without changing the
 public product claim. The loop can keep route-state evidence warm and queue
@@ -8,9 +9,10 @@ user-mediated repair handoffs, but it does not hot-swap credentials inside an
 unmanaged already-running upstream harness process.
 
 The next stronger claim is wrapper-mediated supervised restart, tracked in
-`docs/spec/supervised-harness-restart-contract-2026-05-02.md`. That path needs a
-separate parent-wrapper command because `stay-afloat launch` intentionally uses
-`execve` and cannot observe the target process after startup.
+`docs/spec/supervised-harness-restart-contract-2026-05-02.md`. The first slice
+is now `stay-afloat supervise`: a parent-wrapper command that spawns a child
+instead of using `execve`, observes the child exit, and can restart on another
+selected route when the operator gives a typed exit-code classifier.
 
 Codex now also has a separate app-server auth-broker proof track:
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. That path may become
@@ -24,6 +26,7 @@ The supported contract is still the portable tick engine:
 ```bash
 oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
+oauth-mux stay-afloat supervise --profile codex-max --capability codex-max --max-restarts 1 --restart-on-exit-code 42 -- codex
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 ```
@@ -41,6 +44,15 @@ state before startup, launch can refresh route evidence and try the next
 selectable account when a route that looked selectable at preflight is
 reclassified before the target starts. If no selectable account remains, it
 prints the refreshed mediation text and exits nonzero.
+
+Use `stay-afloat supervise --max-restarts <n> --restart-on-exit-code <code>
+-- <command>` when oauth-mux should own the child process boundary. The first
+implementation is intentionally conservative: it does not parse arbitrary
+provider output and it does not persist route-health evidence from a generic
+child failure. It restarts only when the child exits with the configured code,
+skips the already-attempted route for that supervise run, and emits redacted
+JSON/text evidence with `claim.supervised_restart:true` only after an actual
+wrapper-owned restart occurred.
 
 The beta supervised daemon host wraps that same engine:
 

@@ -350,6 +350,15 @@ For quota-driven account changes, use a different action name, such as
   answer. Manual logout/login restored future route readiness, but it did not
   prove in-place fallback. Keep this distinct from broker-owned next-session
   continuation.
+- The upstream Codex OSS shape matches that boundary. In `openai/codex`,
+  `UsageLimitReached` is a distinct, non-retryable core error mapped to
+  `CodexErrorInfo::UsageLimitExceeded`; the app-server
+  `account/chatgptAuthTokens/refresh` path is tested for 401 unauthorized
+  refresh, not quota handoff. Relevant source surfaces:
+  <https://github.com/openai/codex/blob/main/codex-rs/protocol/src/error.rs>,
+  <https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs>,
+  and
+  <https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/account.rs>.
 - Exhausted route revalidation is spend-gated. It exists for external billing,
   plan, or credit changes: bypass only recorded exhausted route-health blocks,
   re-probe the provider, and persist the fresh capability evidence. It removes

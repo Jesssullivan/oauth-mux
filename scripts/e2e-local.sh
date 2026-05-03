@@ -398,6 +398,32 @@ OMUX_E2E_EXEC_OUT="$stale_launch_out" omux stay-afloat launch --profile expensiv
 stale_launch_result="$(cat "$stale_launch_out")"
 expect_contains "$stale_launch_result" 'a2:omux-e2e-a2' "stay-afloat launch falls through to a2 after a1 reclassification"
 
+printf 'e2e: stay-afloat supervise restarts wrapper-owned child on classified exit code\n'
+printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"
+omux health --reset toy:a1#expensive >/dev/null
+omux health --reset toy:a2#expensive >/dev/null
+supervise_a1_probe="$(omux probe --provider toy --account a1 --capability expensive --json)"
+expect_contains "$supervise_a1_probe" '"account":"a1"' "supervise setup records a1 as available"
+supervise_a2_probe="$(omux probe --provider toy --account a2 --capability expensive --json)"
+expect_contains "$supervise_a2_probe" '"account":"a2"' "supervise setup records a2 as available"
+supervise_out="$tmp/stay-supervise.out"
+supervise_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_out" omux stay-afloat supervise --profile expensive --capability expensive --max-restarts 1 --restart-on-exit-code 42 --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then exit 42; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"')"
+supervise_result="$(cat "$supervise_out")"
+expect_contains "$supervise_result" 'a2:omux-e2e-a2' "stay-afloat supervise restarts child on selected fallback"
+expect_contains "$supervise_json" '"mode":"stay_afloat_supervise"' "stay-afloat supervise reports mode"
+expect_contains "$supervise_json" '"ok":true' "stay-afloat supervise reports success after restart"
+expect_contains "$supervise_json" '"level":"supervised_restart"' "stay-afloat supervise claims wrapper restart only after restart"
+expect_contains "$supervise_json" '"supervised_restart":true' "stay-afloat supervise sets supervised restart claim"
+expect_contains "$supervise_json" '"current_process_hotswap":false' "stay-afloat supervise refuses current-process hot swap"
+expect_contains "$supervise_json" '"restart_count":1' "stay-afloat supervise reports restart count"
+expect_contains "$supervise_json" '"restart_admitted":true' "stay-afloat supervise reports admitted restart attempt"
+expect_contains "$supervise_json" '"selected":{"provider":"toy","account":"a2"' "stay-afloat supervise records fallback attempt"
+expect_not_contains "$supervise_json" "omux-e2e-a1" "stay-afloat supervise JSON does not expose first token"
+expect_not_contains "$supervise_json" "omux-e2e-a2" "stay-afloat supervise JSON does not expose fallback token"
+rm -f "$probe_mode_file"
+post_supervise_probe="$(omux probe --profile expensive --capability expensive --json)"
+expect_contains "$post_supervise_probe" '"account":"a2"' "post-supervise setup restores a2 as selected fallback"
+
 printf 'e2e: daemon tick plans stay-afloat without executing work\n'
 daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"
 expect_contains "$daemon_tick" '"mode":"once"' "daemon tick reports one-shot mode"

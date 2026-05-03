@@ -57,15 +57,16 @@ the selected route is reclassified during the final `oauth-mux exec` preflight.
 
 ### Level 2: supervised_restart
 
-Not implemented yet.
+First implementation slice exists.
 
-This requires a distinct parent-wrapper command. Tentative spelling:
+The parent-wrapper command is:
 
 ```bash
 oauth-mux stay-afloat supervise \
   --profile <profile> \
   --capability <capability> \
   --max-restarts <n> \
+  --restart-on-exit-code <code> \
   -- <command>
 ```
 
@@ -81,8 +82,12 @@ must:
 7. relaunch with a different selectable route only when policy admits restart;
 8. stop after a bounded restart count.
 
-This is the first path that can honestly set `claim.supervised_restart:true`,
-and only for the wrapper-owned process.
+The first implementation classifies only an operator-declared exit code. It does
+not parse arbitrary provider output and does not persist route-health evidence
+from generic child failure. This is deliberate: the wrapper can prove
+`claim.supervised_restart:true` for the child it owns after an actual restart,
+while still avoiding claims about in-process token replacement, unmanaged TUI
+handoff, or per-request muxing.
 
 ### Level 3: current_process_hotswap
 
@@ -109,7 +114,7 @@ Generic nonzero exit is not enough to poison a credential. A failing command may
 exit because of user code, network conditions, interrupted terminal state, bad
 flags, or provider auth.
 
-Initial admission should require one of:
+Initial admission requires one of:
 
 - provider-specific classifier evidence from captured stderr/stdout;
 - an explicit wrapper policy such as `--restart-on-exit-code <code>` for test
@@ -118,9 +123,10 @@ Initial admission should require one of:
 - a follow-up `stay-afloat refresh --execute` tick that marks the current route
   degraded, dead, quota-exhausted, or temporarily unavailable.
 
-The first implementation should not parse unlimited output into memory. Use a
-bounded stderr/stdout capture or inherit output by default and require an
-explicit `--classify-output` mode before buffering provider text.
+The current implementation uses the explicit `--restart-on-exit-code` path. It
+inherits child output in text mode and suppresses it in JSON mode, so JSON
+evidence remains redacted. A future provider-specific classifier can add bounded
+stderr/stdout capture, but that must remain opt-in.
 
 ## JSON Shape
 
@@ -201,11 +207,13 @@ When the extra paid Codex account is ready:
 
 1. Keep PR #122's freshness and active-loop correlation as the proof gate.
 2. Add this contract and public docs language before implementing a new command.
-3. Add a toy-provider E2E fixture for wrapper-owned child restart.
-4. Add the `stay-afloat supervise` CLI parser and help text.
+3. Add a toy-provider E2E fixture for wrapper-owned child restart. Done.
+4. Add the `stay-afloat supervise` CLI parser and help text. Done.
 5. Refactor exec environment preparation so `launch` can keep using `execve`
-   while `supervise` can spawn with the same selected env.
-6. Add bounded restart JSON and event logging.
+   while `supervise` can spawn with the same selected env. First spawn path
+   added.
+6. Add bounded restart JSON and event logging. JSON evidence added; event
+   logging remains open.
 7. Run Codex dogfood with one exhausted account and one credited fallback
    account.
 8. Only then consider promoting `claim.supervised_restart:true` for the exact

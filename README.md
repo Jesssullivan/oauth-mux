@@ -232,6 +232,13 @@ selectable account. If no route remains selectable, launch prints the refreshed
 mediation text and exits nonzero without running the target. If no route is
 selectable at preflight, launch also prints the mediated repair/handoff text
 and exits nonzero without running the target.
+`stay-afloat supervise --max-restarts <n> --restart-on-exit-code <code> -- <command>`
+is the first wrapper-owned restart surface. It spawns a child instead of
+`execve` replacement, injects the selected route, and restarts on the next
+selectable route only when the child exits with the operator-classified code.
+The JSON claim can set `supervised_restart:true` for that wrapper-owned child
+path; it still does not claim current-process hot-swap, unmanaged TUI handoff,
+or per-request muxing.
 
 `doctor runtime --json` is also no-spend. It checks local runtime prerequisites
 such as upstream binaries, configured account store directories, write access,
