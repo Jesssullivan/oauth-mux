@@ -28,6 +28,18 @@ schedule live provider spend by default.
 Recommended daily no-spend snapshot for each paid cohort profile:
 
 ```bash
+just paid-cohort-soak-snapshot
+```
+
+This writes redacted artifacts under `dist/soak/<timestamp>/<profile>/` using
+the active operator config and state. Override with `OMUX_SOAK_PROFILE`,
+`OMUX_SOAK_CAPABILITY`, `OMUX_SOAK_PROVIDER`, `OMUX_SOAK_OUT`,
+`OMUX_SOAK_LOOP_ITERATIONS`, or `OMUX_SOAK_LOOP_INTERVAL_MS` when collecting a
+different cohort lane.
+
+Equivalent manual commands:
+
+```bash
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 out="dist/soak/$stamp/codex-max"
 mkdir -p "$out"
