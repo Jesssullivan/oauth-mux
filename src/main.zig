@@ -8371,6 +8371,39 @@ const CodexBrokerSessionSummary = struct {
     auth_unready_routes: usize = 0,
 };
 
+fn codexBrokerSessionSpareFallbackReady(session_start_ready: bool, selectable_fallback_routes: usize) bool {
+    return session_start_ready and selectable_fallback_routes > 0;
+}
+
+fn codexBrokerSessionSingleRouteAtRisk(session_start_ready: bool, selectable_fallback_routes: usize) bool {
+    return session_start_ready and selectable_fallback_routes == 0;
+}
+
+fn codexBrokerSessionResilienceState(session_start_ready: bool, selectable_fallback_routes: usize) []const u8 {
+    if (!session_start_ready) return "not_ready";
+    if (selectable_fallback_routes > 0) return "ready_with_spare_fallback";
+    return "ready_without_spare_fallback";
+}
+
+fn writeCodexBrokerSessionResilienceJson(
+    writer: anytype,
+    session_start_ready: bool,
+    selectable_fallback_routes: usize,
+) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"session_start_ready\":");
+    try writer.writeAll(if (session_start_ready) "true" else "false");
+    try writer.writeAll(",\"selectable_fallback_routes\":");
+    try writer.print("{d}", .{selectable_fallback_routes});
+    try writer.writeAll(",\"spare_fallback_ready\":");
+    try writer.writeAll(if (codexBrokerSessionSpareFallbackReady(session_start_ready, selectable_fallback_routes)) "true" else "false");
+    try writer.writeAll(",\"single_route_at_risk\":");
+    try writer.writeAll(if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, selectable_fallback_routes)) "true" else "false");
+    try writer.writeAll(",\"state\":");
+    try std.json.stringify(codexBrokerSessionResilienceState(session_start_ready, selectable_fallback_routes), .{}, writer);
+    try writer.writeByte('}');
+}
+
 const codex_fallback_drill_retry_after_s: u32 = 7200;
 
 fn runCodexBrokerFallbackDrill(
@@ -8725,7 +8758,7 @@ fn writeCodexBrokerSessionPlanJson(
 ) !void {
     const summary = try summarizeCodexBrokerSessionPlan(allocator, cfg, evaluations, selected_index);
     const session_start_ready = selected_index != null;
-    const prepared_fallback = summary.selectable_fallback_routes > 0;
+    const prepared_fallback = codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes);
 
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
@@ -8740,6 +8773,12 @@ fn writeCodexBrokerSessionPlanJson(
     try writer.writeAll(if (prepared_fallback) "true" else "false");
     try writer.writeAll(",\"next_thread_quota_fallback\":");
     try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"selectable_fallback_routes\":");
+    try writer.print("{d}", .{summary.selectable_fallback_routes});
+    try writer.writeAll(",\"spare_fallback_ready\":");
+    try writer.writeAll(if (codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
+    try writer.writeAll(",\"single_route_at_risk\":");
+    try writer.writeAll(if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
     try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"policy\":");
     try writePolicyJson(writer, cfg.policy);
@@ -8747,6 +8786,8 @@ fn writeCodexBrokerSessionPlanJson(
     if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
     if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"resilience\":");
+    try writeCodexBrokerSessionResilienceJson(writer, session_start_ready, summary.selectable_fallback_routes);
     try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"unreadable_routes\":{d},\"selectable_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
         summary.routes_total,
         summary.broker_ready_routes,
@@ -8790,6 +8831,8 @@ fn writeCodexBrokerSessionPlanText(
     try writer.print("  broker_ready_routes: {d}\n", .{summary.broker_ready_routes});
     try writer.print("  selectable_broker_routes: {d}\n", .{summary.selectable_broker_routes});
     try writer.print("  selectable_fallback_routes: {d}\n", .{summary.selectable_fallback_routes});
+    try writer.print("  spare_fallback_ready: {s}\n", .{if (codexBrokerSessionSpareFallbackReady(selected_index != null, summary.selectable_fallback_routes)) "true" else "false"});
+    try writer.print("  single_route_at_risk: {s}\n", .{if (codexBrokerSessionSingleRouteAtRisk(selected_index != null, summary.selectable_fallback_routes)) "true" else "false"});
 
     if (selected_index) |idx| {
         const selected = evaluations[idx].route;
@@ -9371,7 +9414,8 @@ fn writeCodexBrokerRunJson(
     continue_on_failure: bool,
     continuation: ?CodexBrokerRunContinuation,
 ) !void {
-    const prepared_fallback = summary.selectable_fallback_routes > 0;
+    const session_start_ready = true;
+    const prepared_fallback = codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes);
     const prompt_chars_total = codexBrokerPromptsTotalChars(prompts);
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
@@ -9387,6 +9431,12 @@ fn writeCodexBrokerRunJson(
     try writer.writeAll(if (prompts.len > 1) "true" else "false");
     try writer.writeAll(",\"prepared_fallback\":");
     try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"selectable_fallback_routes\":");
+    try writer.print("{d}", .{summary.selectable_fallback_routes});
+    try writer.writeAll(",\"spare_fallback_ready\":");
+    try writer.writeAll(if (codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
+    try writer.writeAll(",\"single_route_at_risk\":");
+    try writer.writeAll(if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
     try writer.writeAll(",\"next_session_continuation\":");
     try writer.writeAll(if (continuation != null) "true" else "false");
     try writer.writeAll(",\"next_thread_quota_fallback\":false,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
@@ -9399,6 +9449,8 @@ fn writeCodexBrokerRunJson(
     try writer.writeAll(",\"prompt_source\":");
     try std.json.stringify(prompt_source, .{}, writer);
     try writer.print(",\"prompt_count\":{d},\"prompt_chars_total\":{d}", .{ prompts.len, prompt_chars_total });
+    try writer.writeAll(",\"resilience\":");
+    try writeCodexBrokerSessionResilienceJson(writer, session_start_ready, summary.selectable_fallback_routes);
     try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
         summary.routes_total,
         summary.broker_ready_routes,
@@ -9439,6 +9491,8 @@ fn writeCodexBrokerRunJson(
         try writer.writeAll(",\"selected\":");
         if (after_failure_selected_index) |idx| try writeRouteSelectionJson(writer, after_failure_evaluations[idx].route) else try writer.writeAll("null");
         if (after_failure_summary) |after_summary| {
+            try writer.writeAll(",\"resilience\":");
+            try writeCodexBrokerSessionResilienceJson(writer, after_failure_selected_index != null, after_summary.selectable_fallback_routes);
             try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
                 after_summary.routes_total,
                 after_summary.broker_ready_routes,
@@ -9535,7 +9589,9 @@ fn writeCodexBrokerRunText(
     try writer.print("  prompt source: {s}\n", .{prompt_source});
     try writer.print("  prompt count: {d}\n", .{prompts.len});
     try writer.print("  prompt chars total: {d}\n", .{prompt_chars_total});
-    try writer.print("  prepared fallback: {s}\n", .{if (summary.selectable_fallback_routes > 0) "true" else "false"});
+    try writer.print("  prepared fallback: {s}\n", .{if (codexBrokerSessionSpareFallbackReady(true, summary.selectable_fallback_routes)) "true" else "false"});
+    try writer.print("  spare fallback ready: {s}\n", .{if (codexBrokerSessionSpareFallbackReady(true, summary.selectable_fallback_routes)) "true" else "false"});
+    try writer.print("  single route at risk: {s}\n", .{if (codexBrokerSessionSingleRouteAtRisk(true, summary.selectable_fallback_routes)) "true" else "false"});
     try writer.print("  continue on failure: {s}\n", .{if (continue_on_failure) "true" else "false"});
     try writer.print("  ok: {s}\n", .{if (codexBrokerRunOverallOk(result, prompts.len, continuation)) "true" else "false"});
     try writer.print("  reason: {s}\n", .{codexBrokerRunOverallReason(result, prompts.len, continuation)});
