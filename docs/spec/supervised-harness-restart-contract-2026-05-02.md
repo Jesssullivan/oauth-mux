@@ -226,9 +226,13 @@ When the extra paid Codex account is ready:
    processes with `--restart-on-codex-usage-limit`: captured output is hidden,
    route health is recorded as quota-exhausted, and selection moves to the next
    route.
-8. Run Codex dogfood with one exhausted account and one credited fallback
+8. Add an opt-in streaming capture path. Done for tee-based pipe streaming with
+   `--stream-capture`: child output is visible to the operator while bounded
+   classifier buffers and redacted JSON/events are retained. This is not a PTY
+   or raw-terminal claim.
+9. Run Codex dogfood with one exhausted account and one credited fallback
    account.
-9. Only then consider promoting `claim.supervised_restart:true` for the exact
+10. Only then consider promoting `claim.supervised_restart:true` for the exact
    wrapper path that passed.
 
 ## Open Decisions

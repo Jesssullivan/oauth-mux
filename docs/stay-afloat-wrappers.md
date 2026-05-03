@@ -73,6 +73,13 @@ the redacted `output_classification:"codex_usage_limit"` value only. This is
 still wrapper-owned restart mediation, not same-thread recovery or unmanaged
 TUI hot-swap.
 
+For interactive dogfood where the operator must see the child output while the
+classifier still runs, add `--stream-capture` with
+`--restart-on-codex-usage-limit`. This tees child output back to the terminal
+while retaining bounded classifier buffers. With `--json`, child output is
+streamed to stderr so stdout remains parseable JSON. This is a streaming pipe
+path, not a PTY/raw-terminal claim.
+
 The beta supervised daemon host wraps that same engine:
 
 ```bash
