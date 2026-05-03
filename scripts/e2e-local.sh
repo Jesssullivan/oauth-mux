@@ -349,6 +349,7 @@ route_explain="$(omux route explain --profile expensive --capability expensive -
 expect_contains "$route_explain" '"action":"explain"' "route explain reports action"
 expect_contains "$route_explain" '"ok":true' "route explain reports available selection"
 expect_contains "$route_explain" '"selected":{"provider":"toy","account":"a2"' "route explain selects fallback account a2"
+expect_contains "$route_explain" '"resilience_actions":[]' "route explain does not emit Codex-specific actions for toy provider"
 expect_contains "$route_explain" '"skip_reason":"quota_exhausted"' "route explain keeps exhausted reason"
 expect_contains "$route_explain" '"skip_reason":"available"' "route explain marks available selected route"
 expect_contains "$route_explain" '"writeback":{"capability":"readonly","automatic_refresh_admitted":false,"reason":"provider_repair_is_manual_only"}' "route explain reports readonly writeback boundary"
@@ -365,6 +366,7 @@ expect_contains "$stay_next" '"action":"next"' "stay-afloat next reports action"
 expect_contains "$stay_next" '"ready_for_exec":true' "stay-afloat next reports executable route"
 expect_contains "$stay_next" '"selected":{"provider":"toy","account":"a2"' "stay-afloat next selects fallback account a2"
 expect_contains "$stay_next" '"resilience":{"selected_route_ready":true,"selectable_fallback_routes":0,"spare_fallback_ready":false,"single_route_at_risk":true' "stay-afloat next reports no spare fallback"
+expect_contains "$stay_next" '"resilience_actions":[]' "stay-afloat next does not emit Codex-specific actions for toy provider"
 expect_contains "$stay_next" '"claim":{"claim_version":1,"level":"prepared_fallback"' "stay-afloat next reports prepared fallback claim"
 expect_contains "$stay_next" '"single_route_at_risk":true' "stay-afloat next claim reports single-route risk"
 expect_contains "$stay_next" '"current_process_hotswap":false' "stay-afloat next refuses current-process hot swap claim"
@@ -401,6 +403,7 @@ expect_contains "$daemon_tick" '"executed":false' "daemon tick does not execute 
 expect_contains "$daemon_tick" '"afloat":true' "daemon tick reports profile afloat"
 expect_contains "$daemon_tick" '"selected":{"provider":"toy","account":"a2"' "daemon tick selects fallback account a2"
 expect_contains "$daemon_tick" '"resilience":{"selected_route_ready":true,"selectable_fallback_routes":0,"spare_fallback_ready":false,"single_route_at_risk":true' "daemon tick reports no spare fallback"
+expect_contains "$daemon_tick" '"resilience_actions":[]' "daemon tick does not emit Codex-specific actions for toy provider"
 expect_contains "$daemon_tick" '"claim":{"claim_version":1,"level":"prepared_fallback"' "daemon tick reports prepared fallback claim"
 expect_contains "$daemon_tick" '"max_supported_level":"prepared_fallback"' "daemon tick reports maximum supported claim level"
 expect_contains "$daemon_tick" '"current_process_hotswap":false' "daemon tick refuses current-process hot-swap claim"
@@ -419,6 +422,7 @@ expect_contains "$stay_afloat" '"executed":false' "stay-afloat remains planning-
 expect_contains "$stay_afloat" '"afloat":true' "stay-afloat reports profile afloat"
 expect_contains "$stay_afloat" '"selected":{"provider":"toy","account":"a2"' "stay-afloat selects fallback account a2"
 expect_contains "$stay_afloat" '"single_route_at_risk":true' "stay-afloat reports selected route has no spare fallback"
+expect_contains "$stay_afloat" '"resilience_actions":[]' "stay-afloat alias does not emit Codex-specific actions for toy provider"
 expect_contains "$stay_afloat" '"next_tick_reason":"wait_until"' "stay-afloat exposes scheduler summary"
 
 printf 'e2e: daemon status exposes latest stay-afloat snapshot without promoting socket daemon\n'
@@ -896,6 +900,18 @@ expect_contains "$broker_session_plan_after_drill" '"resilience_actions":[{"kind
 expect_contains "$broker_session_plan_after_drill" '"command":"oauth-mux codex revalidate-exhausted --profile codex-max --capability codex-max --confirm-spend --json"' "broker-session-plan after drill includes spend-gated revalidation command"
 expect_contains "$broker_session_plan_after_drill" '"kind":"enroll_codex_account"' "broker-session-plan after drill recommends account enrollment option"
 expect_contains "$broker_session_plan_after_drill" '"kind":"wait_for_quota_reset"' "broker-session-plan after drill includes wait option"
+
+broker_route_explain_after_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" route explain --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_route_explain_after_drill" '"resilience":{"selected_route_ready":true,"selectable_fallback_routes":0,"spare_fallback_ready":false,"single_route_at_risk":true,"state":"afloat_without_spare_fallback"}' "route explain after drill exposes no-spare Codex state"
+expect_contains "$broker_route_explain_after_drill" '"resilience_actions":[{"kind":"revalidate_exhausted_routes"' "route explain after drill recommends exhausted-route revalidation"
+expect_contains "$broker_route_explain_after_drill" '"kind":"enroll_codex_account"' "route explain after drill recommends account enrollment"
+expect_contains "$broker_route_explain_after_drill" '"kind":"wait_for_quota_reset"' "route explain after drill includes wait option"
+
+broker_stay_afloat_after_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" stay-afloat --once --profile codex-max --capability codex-max --json)"
+expect_contains "$broker_stay_afloat_after_drill" '"resilience":{"selected_route_ready":true,"selectable_fallback_routes":0,"spare_fallback_ready":false,"single_route_at_risk":true,"state":"afloat_without_spare_fallback"}' "stay-afloat after drill exposes no-spare Codex state"
+expect_contains "$broker_stay_afloat_after_drill" '"resilience_actions":[{"kind":"revalidate_exhausted_routes"' "stay-afloat after drill recommends exhausted-route revalidation"
+expect_contains "$broker_stay_afloat_after_drill" '"kind":"enroll_codex_account"' "stay-afloat after drill recommends account enrollment"
+expect_contains "$broker_stay_afloat_after_drill" '"kind":"wait_for_quota_reset"' "stay-afloat after drill includes wait option"
 
 printf 'e2e: codex broker-session-smoke requires explicit confirmation before starting app-server\n'
 broker_session_smoke_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-smoke --profile codex-max --capability codex-max --json)"

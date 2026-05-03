@@ -3908,6 +3908,28 @@ fn writeRouteResilienceJson(
     try writer.writeByte('}');
 }
 
+fn writeRouteResilienceActionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) !void {
+    const selected = selected_index orelse {
+        try writer.writeAll("[]");
+        return;
+    };
+    if (selected >= evaluations.len or !std.mem.eql(u8, evaluations[selected].route.provider, "codex")) {
+        try writer.writeAll("[]");
+        return;
+    }
+
+    const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    const action_capability = capability orelse evaluations[selected].route.capability;
+    try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, action_capability, true, fallback_count);
+}
+
 const StayAfloatSelector = struct {
     profile: ?[]const u8 = null,
     provider: ?[]const u8 = null,
@@ -4511,6 +4533,8 @@ fn writeRouteJson(
     }
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
+    try writer.writeAll(",\"resilience_actions\":");
+    try writeRouteResilienceActionsJson(writer, allocator, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"routes\":[");
     for (evaluations, 0..) |evaluation, idx| {
         if (idx > 0) try writer.writeByte(',');
@@ -4554,6 +4578,8 @@ fn writeStayAfloatNextJson(
     }
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
+    try writer.writeAll(",\"resilience_actions\":");
+    try writeRouteResilienceActionsJson(writer, allocator, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"claim\":");
     try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"next_action\":");
@@ -4857,6 +4883,8 @@ fn writeDaemonTickJsonObject(
     }
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
+    try writer.writeAll(",\"resilience_actions\":");
+    try writeRouteResilienceActionsJson(writer, allocator, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"claim\":");
     try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
@@ -14168,6 +14196,7 @@ test "route select picks first ready live route and explains skipped quota route
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selected\":{\"provider\":\"toy\",\"account\":\"a2\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience_actions\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"available\"") != null);
 }
@@ -14223,6 +14252,7 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"action\":\"next\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience_actions\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"prepared_fallback\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"spare_fallback_ready\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"current_process_hotswap\":false") != null);

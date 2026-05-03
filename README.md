@@ -153,9 +153,10 @@ boundary without starting Codex or probing providers. Read
 `resilience.spare_fallback_ready` and `resilience.single_route_at_risk` to
 distinguish a ready session with another route behind it from a ready session
 that will need revalidation, waiting, or a new account after its next failure.
-When the session is single-route-at-risk, `resilience_actions` lists the
-operator-safe todo list: spend-gated exhausted-route revalidation, enrolling
-another Codex account, or waiting for quota reset.
+When the selected Codex route is single-route-at-risk, the broker-session,
+`route explain`, and `stay-afloat` JSON surfaces expose `resilience_actions`:
+spend-gated exhausted-route revalidation, enrolling another Codex account, or
+waiting for quota reset.
 `codex broker-session-smoke --confirm-broker --json` takes the next no-spend UX
 step: it uses the session plan's selected and fallback routes, starts a local
 broker-owned app-server session against mocked Responses/ChatGPT endpoints, and
@@ -293,7 +294,9 @@ latest `daemon status --json` snapshot also include `claim.level`. A
 a route; it does not claim current-process hot-swap, supervised restart, or
 per-request muxing. Use `resilience.spare_fallback_ready` and
 `claim.single_route_at_risk` to tell whether that selected route has another
-ready fallback behind it. A provider-specific auth-broker path, starting with
+ready fallback behind it. For Codex routes, `resilience_actions` carries the
+same revalidate/enroll/wait operator choices surfaced by broker-session
+planning. A provider-specific auth-broker path, starting with
 Codex app-server external auth, must be proven before
 `current_process_hotswap` can be true. `daemon status --json` also reports
 `stay_afloat_snapshot` metadata with presence, parseability, `last_tick_at`,

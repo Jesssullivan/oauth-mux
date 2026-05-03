@@ -163,9 +163,10 @@ reports the selected route, immediate selectable fallbacks, quota-blocked broker
 routes, and the same explicit no-hot-swap/no-same-thread quota boundary. Its
 `resilience` object is the operator shortcut: `spare_fallback_ready:false` with
 `single_route_at_risk:true` means the selected broker session can start, but no
-second route is currently ready behind it. In that state, `resilience_actions`
-is the todo list: revalidate exhausted routes behind an explicit spend gate,
-enroll another Codex account, or wait for quota reset.
+second route is currently ready behind it. For Codex routes, the broker-session,
+`route explain`, and `stay-afloat` JSON surfaces expose `resilience_actions` as
+the todo list: revalidate exhausted routes behind an explicit spend gate, enroll
+another Codex account, or wait for quota reset.
 
 `oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max
 --confirm-broker --json` is the matching no-spend multi-turn UX smoke. It uses
