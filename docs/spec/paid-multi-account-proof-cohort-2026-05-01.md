@@ -81,6 +81,10 @@ Current dogfood truth as of 2026-05-03:
   exhaustion.
 - No logout or reauth was required when capacity changed; spend-gated
   `codex revalidate-exhausted` refreshed route health from provider evidence.
+- Separate from route-health revalidation, a provider-owned live Codex session
+  that hit `You've hit your usage limit` on 2026-05-03 did not perform a
+  native account handoff. Manual logout/login restored future mediated launch
+  readiness; it did not prove in-session fallback.
 - Dashboard credit/Spark availability must not be generalized to
   `codex-max`; route health remains capability-scoped.
 

@@ -108,6 +108,10 @@ is not yet the production background daemon claim tracked by GitHub #67.
 `claim.level:"prepared_fallback"` means the next mediated launch can select an
 account through `stay-afloat launch`; it does not claim current-process
 hot-swap, supervised restart, or per-request muxing.
+Observed usage-limit dogfood on 2026-05-03 confirmed that an unmanaged
+already-running Codex session does not seamlessly hand off through this daemon
+surface. The wrapper recipes should be treated as route-warming and launch
+mediation, not active-session rescue.
 
 ## Smoke And Soak
 

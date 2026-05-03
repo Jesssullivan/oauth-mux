@@ -177,6 +177,7 @@ Not allowed without new evidence:
   resource-token proof separately.
 - "Claude is proven" beyond the exact command/auth, subscription, and quota
   shapes with artifacts.
+- "A provider-owned Codex usage-limit screen proves native account handoff."
 
 ## Promotion Checklist
 

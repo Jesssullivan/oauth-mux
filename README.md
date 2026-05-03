@@ -182,6 +182,12 @@ transcript content. Add `--continue-on-failure` to make a live quota/rate-limit
 failure start a fresh broker-owned session on the next selected route and replay
 the failed prompt plus remaining queued prompts. This is next-session
 continuation, not same-thread recovery.
+Negative live evidence matters here: a provider-owned Codex session that hit
+`You've hit your usage limit` on 2026-05-03 did not emit a native handoff or let
+oauth-mux switch accounts in place. After manual logout/login, `stay-afloat
+next` again reported a prepared next-process route with `max-1` selected and
+`max-4` as spare fallback. Treat native in-session handoff as unproven unless
+Codex exposes a supported hook.
 `codex revalidate-exhausted --confirm-spend --json` is the spend-gated
 post-billing-change check. It finds recorded exhausted Codex routes for the
 selected profile/capability, bypasses only those local health blocks, runs fresh

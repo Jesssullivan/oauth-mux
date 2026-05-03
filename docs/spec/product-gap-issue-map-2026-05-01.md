@@ -128,6 +128,10 @@ proven reload, broker, restart, proxy, or in-agent mediation path.
 beta host for the same foreground tick engine. Status can report
 `stay_afloat_loop.hosted:true`, but production support remains false until
 soak and wrapper proof complete.
+The 2026-05-03 live usage-limit observation strengthens that caution: an
+already-running provider-owned Codex session hit a usage limit and no seamless
+daemon handoff occurred. Manual logout/login restored future mediated launch
+readiness, but did not prove active-session rescue.
 
 The `TIN-913` / GitHub `#125` Codex app-server auth-broker artifact is
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. It records the
@@ -290,6 +294,8 @@ these precise provider-proof children.
 
 - Do not describe the public tap as Homebrew core.
 - Do not make daemon execution a first-run or release gate.
+- Do not describe the current daemon or beta loop as hardened seamless
+  stay-afloat for active provider-owned sessions.
 - Do not claim hot-swap inside an already-running harness without a proven
   reload, auth broker, supervised restart, proxy, or in-agent mediation path.
 - Track wrapper-owned supervised restart separately under

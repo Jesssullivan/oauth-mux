@@ -344,6 +344,12 @@ For quota-driven account changes, use a different action name, such as
   that selected fallback and replay the failed prompt plus remaining queued
   prompts. It still does not prove same-thread recovery or unmanaged TUI
   hot-swap.
+- Native provider-owned Codex usage-limit behavior has negative evidence:
+  on 2026-05-03, an already-running Codex session returned `You've hit your
+  usage limit` and did not emit a provider-native handoff that oauth-mux could
+  answer. Manual logout/login restored future route readiness, but it did not
+  prove in-place fallback. Keep this distinct from broker-owned next-session
+  continuation.
 - Exhausted route revalidation is spend-gated. It exists for external billing,
   plan, or credit changes: bypass only recorded exhausted route-health blocks,
   re-probe the provider, and persist the fresh capability evidence. It removes
