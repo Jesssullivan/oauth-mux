@@ -4,7 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-accounts_csv="${OMUX_CODEX_ACCOUNTS:-max-1,max-2,max-3}"
+default_accounts_csv="max-1,max-2,max-3"
+accounts_csv="${OMUX_CODEX_ACCOUNTS:-$default_accounts_csv}"
 login_mode="${OMUX_CODEX_LOGIN_MODE:-browser}"
 config_path="${OMUX_CONFIG:-$repo_root/examples/codex-max.config.json}"
 bin="${OMUX_BIN:-$repo_root/zig-out/bin/oauth-mux}"
@@ -27,6 +28,9 @@ IFS=',' read -r -a accounts <<<"$accounts_csv"
 
 printf 'oauth-mux Codex Max onboarding\n\n'
 printf 'config: %s\n' "$config_path"
+if [ "$accounts_csv" = "$default_accounts_csv" ]; then
+  printf 'note:   default accounts match the three-route starter config; set OMUX_CODEX_ACCOUNTS=max-1,max-2,max-3,max-4 for the paid cohort\n'
+fi
 printf 'mode:   %s\n\n' "$login_mode"
 
 export OMUX_CONFIG="$config_path"

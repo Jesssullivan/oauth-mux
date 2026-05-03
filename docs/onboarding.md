@@ -458,6 +458,9 @@ thin aliases for installed commands. `just codex-max-setup` is a thin alias for
 installed live QA command. `just codex-max-probe-all` is likewise a thin alias
 for `oauth-mux codex probe-all`. These source helpers intentionally share the
 default oauth-mux state directory so dogfood probes feed later route selection.
+Their default account list matches the three-route starter config; set
+`OMUX_CODEX_ACCOUNTS=max-1,max-2,max-3,max-4` when running them against the
+paid four-route cohort.
 Set `OMUX_STATE_DIR=/tmp/<dir>` explicitly when a run should be isolated for CI
 or artifact collection. Route selection and explanation should be run through
 the installed CLI directly:

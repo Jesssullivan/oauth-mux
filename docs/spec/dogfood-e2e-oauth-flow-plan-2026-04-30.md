@@ -5,12 +5,22 @@ Issue context: `TIN-736` (Expand oauth-mux provider proof beyond Codex),
 `TIN-812` (Dogfood install surfaces), `TIN-814` (non-mutating Codex help),
 `TIN-734` (website launch truth), and `tinyland-inc/lab#197`.
 
+Supersession note, 2026-05-03: this is a historical adoption and install proof
+plan. Current Codex dogfood truth has moved to
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md` and
+`docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md`. The live `codex-max`
+cohort is now four routes: `max-1` selected, `max-4` spare fallback, and
+`max-2`/`max-3` provider quota-exhausted for `codex-max`. Broker-owned session
+surfaces and supervised restart surfaces exist, but true provider-owned
+active-session seamless handoff remains unproven.
+
 ## Current State
 
 `oauth-mux` is no longer speculative for the first target lane. The repo has a
 public canonical source, a public npm package, release assets, installed
 diagnostic commands, typed liveness, route-scoped health, and a live-proven
-three-account Codex path.
+historical three-account Codex path. Treat route matrices in this document as
+dated snapshots unless they are repeated in the current paid-cohort docs.
 
 The next risk is not compiler correctness. The next risk is adoption truth:
 whether a user can arrive from an advertised install command, configure expected
@@ -79,11 +89,13 @@ These are the adoption blockers that should stay visible:
    a product surface until `TIN-738` defines provider ownership, budgets, and
    anti-surprise rules.
 
-7. Stay-afloat automation is not yet built.
-   The mux can fall through from a quota-exhausted Codex route to an available
-   account, but it does not yet automatically repair stale credentials, persist
-   refreshed tokens, or drive browser/device reauth. See
-   `docs/spec/stay-afloat-runtime-daemon-plan-2026-04-30.md`.
+7. Historical stay-afloat automation gap.
+   This was true for the first adoption plan. Since then, prepared fallback,
+   bounded foreground loops, broker-owned Codex sessions, supervised restart
+   wrappers, exhausted-route revalidation, and controlled fallback drills have
+   landed. The remaining hard gap is narrower and more important: native
+   provider-owned active-session handoff, same-thread quota recovery, and
+   unmanaged TUI hot-swap remain unproven.
 
 ## User Story Gates
 
@@ -134,7 +146,7 @@ roots, and no inherited `OMUX_*` overrides. It also verifies the Codex Max
 starter config uses the same resolved store root as Codex setup, so users with
 `XDG_DATA_HOME` or `OMUX_CODEX_STORE_ROOT` do not get split-brain account paths.
 
-### Story B: Codex Subscription User With Three Accounts
+### Story B: Historical Codex Subscription User With Three Accounts
 
 Goal: prove the flagship multi-account subscription use case.
 

@@ -8,6 +8,12 @@ Repository context: the canonical public source repo is
 `Jesssullivan/oauth-mux`; Tinyland remains the release-infrastructure and launch
 partner.
 
+Supersession note, 2026-05-03: this sprint plan is historical. It records the
+first public adoption push, not the current stay-afloat truth. Current docs must
+use the five-level claim ladder, the four-route paid Codex cohort, and the
+negative evidence that provider-owned active-session handoff did not occur at
+the native Codex usage-limit screen.
+
 ## Baseline
 
 `oauth-mux` has crossed the line from architecture experiment to usable public

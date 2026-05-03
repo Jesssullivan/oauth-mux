@@ -1,6 +1,6 @@
 # Install Beta Matrix
 
-Updated: 2026-05-01
+Updated: 2026-05-03
 
 This matrix tracks clean-install proof for the public adoption surfaces. It is
 operator evidence, not a credential runbook: do not paste OAuth stores, `.env`
@@ -17,7 +17,7 @@ files, SOPS plaintext, or token-shaped values here.
 | Homebrew formula | 0.1.6 | macOS arm64 + hosted Ubuntu dry-run | public `jesssullivan/omux` tap | Pass | Clean local uninstall/untap followed by `just homebrew-qa 0.1.6` installed from `Jesssullivan/homebrew-omux`; hosted registry dry-run `25199131583` checked out the public tap and passed the Homebrew lane. |
 | deb package | 0.1.6 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.6 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
-| Codex route dogfood | 0.1.6 | macOS arm64 | public npm one-shot | Pass with degraded route | Published npm binary selected `max-2#codex-max` while recorded liveness kept `max-1#codex-max` quota exhausted. |
+| Codex route dogfood | 0.1.6 | macOS arm64 | public npm one-shot | Pass with degraded route | Historical 2026-05-01 snapshot: published npm binary selected `max-2#codex-max` while recorded liveness kept `max-1#codex-max` quota exhausted. Current paid-cohort truth is `max-1` selected, `max-4` spare fallback, and `max-2`/`max-3` quota-exhausted for `codex-max`. |
 | lab dogfood | 0.1.6 | macOS arm64 | public npm one-shot | Pass | Installed `oauth-mux doctor --json` reports `ok: true` against local config/state. |
 | first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, runtime diagnostics, redacted report, no-spend route explanation/select refusal, and non-mutating Codex help. |
 
@@ -152,7 +152,7 @@ brew test tinyland/tools/oauth-mux: pass
 Production tap PR `tinyland-inc/homebrew-tools#4` merged at `f3016e3`.
 ```
 
-Latest public npm dogfood proof:
+Latest public npm dogfood proof, historical 2026-05-01 snapshot:
 
 ```text
 npm publish workflow run 25195609579: pass
@@ -163,6 +163,12 @@ npx -y oauth-mux@0.1.6 route select --profile codex-max --capability codex-max -
   selected: codex:max-2#codex-max
   max-1#codex-max: quota_exhausted reset@1777987200
 ```
+
+Current paid-cohort truth is tracked in
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md`: `max-1#codex-max`
+is selected after revalidation, `max-4#codex-max` is the spare fallback, and
+`max-2#codex-max` plus `max-3#codex-max` remain provider quota-exhausted for
+`codex-max`.
 
 System package install QA after GitHub Release publication:
 
