@@ -5,6 +5,16 @@ Issue context: follow-up to `TIN-736`, `TIN-815`, and daemon-boundary work
 from `TIN-738`. Linear writes were unavailable during this checkpoint because
 the connected account had exhausted Codex usage until 2026-05-05 13:20.
 
+Supersession note, 2026-05-03: this is a historical runtime-gap plan. Current
+stay-afloat truth is covered by
+`docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md`,
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md`, and
+`docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md`. The active Codex Max
+cohort is four routes: `max-1` selected, `max-4` spare fallback, and
+`max-2`/`max-3` provider quota-exhausted for `codex-max`. Prepared fallback,
+broker-owned sessions, and supervised restart wrappers have landed; true
+provider-owned active-session handoff remains unproven.
+
 ## Correction
 
 The project has proven installability, first-run diagnostics, typed liveness,
@@ -395,13 +405,13 @@ obvious and copy-pastable for humans and agents.
 
 ## Product Gates
 
-### M1: Stay-Afloat One-Shot
+### M1: Historical Stay-Afloat One-Shot
 
 - Add `route select` and `route explain`.
 - Add runtime permission classification.
 - Add a dogfood script that runs real `oauth-mux probe` outside restricted
   sandboxes and stores redacted evidence.
-- Prove current Codex state:
+- Prove the then-current Codex state:
   - `max-1#codex-mini` available;
   - `max-1#codex-max` quota exhausted;
   - `max-2#codex-max` selected as fallback.

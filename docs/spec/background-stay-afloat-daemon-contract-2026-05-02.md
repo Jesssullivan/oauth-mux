@@ -19,10 +19,21 @@ oauth-mux stay-afloat --once --profile <profile> --capability <capability> --jso
 oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --profile <profile> --capability <capability> --json
 ```
 
-The current Codex dogfood state proves that route-scoped fallback works:
-`codex:max-1#codex-max` is parked as quota exhausted until its reset window,
-`codex:max-2#codex-max` is selected, and `codex:max-3#codex-max` remains a
-selectable fallback. That is real product evidence.
+The current Codex dogfood state proves that route-scoped fallback works, but
+the live matrix has moved since the first daemon contract was written. As of
+2026-05-03, the paid `codex-max` cohort has four broker-ready routes:
+`codex:max-1#codex-max` is selected after spend-gated revalidation,
+`codex:max-4#codex-max` is the spare selectable fallback, and
+`codex:max-2#codex-max` plus `codex:max-3#codex-max` have fresh
+provider-originated quota-exhausted evidence for `codex-max`. Mini/Spark
+availability or dashboard credit text must not be generalized to Max-capable
+route availability; trust provider execution evidence per route and
+capability.
+
+Negative evidence is now part of the baseline: a provider-owned Codex session
+that hit the native usage-limit screen on 2026-05-03 did not hand off through
+oauth-mux. Manual logout/login restored future mediated launch readiness, not
+active-session rescue.
 
 The stronger product goal is not proven yet:
 

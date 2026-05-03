@@ -7,14 +7,22 @@ Issue context: Linear `TIN-891`, child of `TIN-738`; GitHub
 ## Baseline
 
 `oauth-mux` can keep a Codex Max profile afloat when it runs in the same
-process boundary that owns the configured Codex account stores. The 2026-05-01
-dogfood check proved the split:
+process boundary that owns the configured Codex account stores. The original
+2026-05-01 dogfood check proved the runtime split:
 
 - inside the current Codex sandbox, all configured Codex stores report
   `unwritable_store`;
 - outside that sandbox, all three stores are runtime-ready;
 - foreground `stay-afloat --once` selects `codex:max-2#codex-max`, keeps
   `max-3` selectable, and parks quota-exhausted `max-1` until its reset.
+
+That bullet list is historical. As of the 2026-05-03 paid-cohort pass, the
+operator matrix has four Codex Max routes: `max-1` is selected after
+spend-gated revalidation, `max-4` is the spare fallback, and `max-2`/`max-3`
+have fresh provider-originated quota-exhausted evidence for `codex-max`.
+Provider-owned active-session handoff was also observed to fail at the native
+usage-limit screen; the broker can prepare the next mediated launch, but this
+contract still must not imply unmanaged in-session hot-swap.
 
 That means the remaining product gap is not provider liveness. It is how a
 wrapper, shell, agent, or user-mediated permission broker should run local

@@ -5,7 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 config_path="${OMUX_CONFIG:-$repo_root/examples/codex-max.config.json}"
-accounts_csv="${OMUX_CODEX_ACCOUNTS:-max-1,max-2,max-3}"
+default_accounts_csv="max-1,max-2,max-3"
+accounts_csv="${OMUX_CODEX_ACCOUNTS:-$default_accounts_csv}"
 capabilities_csv="${OMUX_CODEX_CANARY_CAPABILITIES:-codex-mini,codex-max}"
 store_root="${OMUX_CODEX_STORE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/oauth-mux/codex}"
 state_dir="${OMUX_STATE_DIR:-}"
@@ -52,6 +53,9 @@ summary="$out_dir/summary.txt"
   printf 'accounts:     %s\n' "$accounts_csv"
   printf 'capabilities: %s\n' "$capabilities_csv"
   printf 'artifacts:    %s\n' "$out_dir"
+  if [ "$accounts_csv" = "$default_accounts_csv" ]; then
+    printf 'note:         default accounts match the three-route starter config; set OMUX_CODEX_ACCOUNTS=max-1,max-2,max-3,max-4 for the paid cohort\n'
+  fi
 } | tee "$summary"
 
 printf '\n=== config validate ===\n' | tee -a "$summary"

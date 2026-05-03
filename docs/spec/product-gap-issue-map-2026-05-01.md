@@ -29,7 +29,7 @@ in-session quota fallback remains tracked by GitHub `#131` / Linear `TIN-916`.
 
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
-| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy still needs to stop advertising the private tap. |
+| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy was rechecked on 2026-05-03 and now uses the public `jesssullivan/omux` tap. |
 | Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing for this release line. `TIN-897` defines the mediation boundary for seamless handoff claims; `TIN-898` adds the first opt-in beta supervised loop without changing default policy or production claims. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex is live-proven; non-Codex proof is capability-level or still needs operator proof. |
 | Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | A one-month paid cohort is now tracked for Codex lower-tier contrast, Claude subscription/billing shapes, Figma token/seat/plan shapes, and a foreground stay-afloat soak gate. |
@@ -47,13 +47,15 @@ Current truth:
 - This is not Homebrew core. It is a public Homebrew tap.
 - Formula updates must continue to come from public GitHub Release
   `oauth-mux.rb` and `SHA256SUMS`, not local `dist/out` output.
-- A live check of `https://omux.xoxd.ai/` on 2026-05-01 still found
-  `brew install tinyland-inc/tools/oauth-mux`; `#66` / `TIN-858` stay open
-  until website and release copy use the public `jesssullivan/omux` tap.
+- A historical live check of `https://omux.xoxd.ai/` on 2026-05-01 still
+  found `brew install tinyland-inc/tools/oauth-mux`. A 2026-05-03 recheck of
+  the live site shows the public `jesssullivan/omux` tap instead. Keep any
+  remaining `#66` / `TIN-858` work scoped to release-copy or artifact cleanup,
+  not the live website tap string.
 
 The decision record is
-`docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The website can now
-use public tap wording once it matches this repo truth.
+`docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The live website now
+uses the public tap wording that matches this repo truth.
 
 ## Stay-Afloat Daemon Boundary
 
@@ -77,14 +79,20 @@ Current truth:
   as non-product plumbing for this release line.
 - The default daemon policy refuses provider-spend probes, silent interactive
   auth, and silent mutation.
-- Codex fallback is proven from quota-exhausted `max-1#codex-max` to available
-  `max-2#codex-max`; automatic reauth and background repair are not proven.
-- A 2026-05-01 recheck split the runtime truth cleanly: inside the current
-  Codex sandbox, all three configured Codex account stores report
-  `unwritable_store`; outside that sandbox, all three stores are runtime-ready
-  and `stay-afloat --once --profile codex-max --capability codex-max --json`
-  selects `codex:max-2#codex-max` with `max-3` still selectable. This is a
-  sandbox/runtime-boundary product concern, not OAuth death or quota failure.
+- Codex fallback is proven across several scopes: historical 2026-05-01
+  route-state evidence moved from exhausted `max-1#codex-max` to available
+  `max-2#codex-max`; the current 2026-05-03 four-route cohort selects
+  `max-1#codex-max`, keeps `max-4#codex-max` as spare fallback, and records
+  `max-2#codex-max` plus `max-3#codex-max` as provider quota-exhausted for
+  `codex-max`.
+- The 2026-05-01 sandbox recheck remains useful historical evidence: inside
+  the Codex sandbox, all configured Codex account stores reported
+  `unwritable_store`; outside that sandbox, the stores were runtime-ready and
+  route selection worked. This is a sandbox/runtime-boundary product concern,
+  not OAuth death or quota failure.
+- Automatic reauth, background repair, provider-originated active-session
+  quota fallback, same-thread quota recovery, and unmanaged TUI hot-swap remain
+  unproven.
 
 Remaining daemon split:
 

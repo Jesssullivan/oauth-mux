@@ -28,6 +28,13 @@ and no seamless daemon handoff occurred. Manual logout/login restored future
 `stay-afloat next` readiness, but the daemon did not harden that active session
 into a seamless fallback path.
 
+The current paid Codex Max route matrix is also newer than the original
+2026-04-30 example: `max-1#codex-max` is selected after spend-gated
+revalidation, `max-4#codex-max` is the spare fallback, and `max-2#codex-max`
+plus `max-3#codex-max` remain provider quota-exhausted for `codex-max`.
+Dashboard credit or mini/Spark availability must not be treated as Max route
+availability; use provider execution evidence per route and capability.
+
 `oauth-mux doctor runtime`, `oauth-mux route explain`, `oauth-mux route
 select`, `oauth-mux repair-plan`, and `oauth-mux repair run` are the current
 bridge between dogfooding evidence and future daemon work. They read local
