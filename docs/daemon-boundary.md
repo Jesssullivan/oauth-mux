@@ -22,6 +22,12 @@ exhaustion to `codex:max-2#codex-max`, but it also exposed that runtime
 permission/session ownership and automatic reauth are not solved by the current
 daemon.
 
+The 2026-05-03 usage-limit dogfood keeps the boundary in place as well. An
+already-running provider-owned Codex session hit `You've hit your usage limit`
+and no seamless daemon handoff occurred. Manual logout/login restored future
+`stay-afloat next` readiness, but the daemon did not harden that active session
+into a seamless fallback path.
+
 `oauth-mux doctor runtime`, `oauth-mux route explain`, `oauth-mux route
 select`, `oauth-mux repair-plan`, and `oauth-mux repair run` are the current
 bridge between dogfooding evidence and future daemon work. They read local

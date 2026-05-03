@@ -198,6 +198,12 @@ selected route after a live quota/rate-limit failure. The command replays the
 failed prompt plus remaining queued prompts and reports that this is
 next-session continuation, not same-thread recovery.
 
+Observed native Codex behavior reinforces that boundary: on 2026-05-03, a
+provider-owned Codex session reported `You've hit your usage limit` and did not
+offer an oauth-mux account handoff. Manual logout/login restored route readiness
+for future mediated launches, but it did not prove in-place or same-thread
+fallback.
+
 `oauth-mux codex revalidate-exhausted --profile codex-max --capability
 codex-max --confirm-spend --json` is the operator-safe post-billing-change
 refresh. It targets Codex routes already recorded as quota-exhausted or
