@@ -70,13 +70,14 @@ Observed surfaces:
 
 ## Boundary Correction
 
-There are now five distinct stay-afloat claim levels:
+There are now five distinct stay-afloat claim surfaces:
 
 1. `prepared_fallback`: already shipped. The next mediated launch can select a
    healthy account.
-2. `supervised_restart`: implemented as a wrapper-owned beta. oauth-mux owns a
-   child process and can restart it under another route after typed failure
-   evidence.
+2. `observed_child_process`: implemented as wrapper-owned diagnostic
+   capture. oauth-mux owns a child process, can classify typed failure evidence,
+   records route health, and stops. Restart is not an acceptable stay-afloat
+   success level.
 3. `broker_owned_app_server`: implemented for Codex app-server proof paths where
    oauth-mux owns the app-server mediation point. This is the current claim
    level for broker-session planning, local smokes, live broker-run, and
@@ -233,8 +234,9 @@ For quota-driven account changes, use a different action name, such as
 
 ## Implementation Order
 
-1. Track this separately from `TIN-911` / GitHub `#123`. Supervised restart is
-   still the fallback path for unmanaged harnesses.
+1. Track this separately from `TIN-911` / GitHub `#123`. The wrapper path is
+   diagnostic failure observation only; it is not fallback for unmanaged
+   harnesses.
 2. Add a source-truth fixture for Codex app-server protocol generation:
    `account/login/start` with `chatgptAuthTokens`,
    `account/chatgptAuthTokens/refresh`, and `account/rateLimits/read`.
@@ -367,11 +369,10 @@ For quota-driven account changes, use a different action name, such as
   <https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs>,
   and
   <https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/account.rs>.
-- `stay-afloat supervise --restart-on-codex-usage-limit` is the matching
+- `stay-afloat observe --classify-codex-usage-limit` is the matching
   wrapper-owned instrumentation path. It classifies the usage-limit screen from
-  captured child output, records route health, and restarts on the next route
-  only because oauth-mux owns the child process boundary. It still does not
-  prove same-thread or unmanaged TUI hot-swap.
+  captured child output, records route health, and stops. It still does not
+  prove fallback, same-thread recovery, or unmanaged TUI hot-swap.
 - Exhausted route revalidation is spend-gated. It exists for external billing,
   plan, or credit changes: bypass only recorded exhausted route-health blocks,
   re-probe the provider, and persist the fresh capability evidence. It removes
@@ -384,8 +385,9 @@ For quota-driven account changes, use a different action name, such as
   forbids it.
 - Quota/rate-limit behavior is separately classified as next-turn account
   switching unless same-turn proof exists.
-- Existing `prepared_fallback` and `supervised_restart` claims remain unchanged
-  for unmanaged Codex launches.
+- Existing `prepared_fallback` claims remain unchanged for unmanaged Codex
+  launches; `supervised_restart` remains false because restart is not an
+  acceptable product handoff.
 
 ## Immediate Dogfood Procedure
 

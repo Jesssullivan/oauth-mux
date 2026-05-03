@@ -398,74 +398,92 @@ OMUX_E2E_EXEC_OUT="$stale_launch_out" omux stay-afloat launch --profile expensiv
 stale_launch_result="$(cat "$stale_launch_out")"
 expect_contains "$stale_launch_result" 'a2:omux-e2e-a2' "stay-afloat launch falls through to a2 after a1 reclassification"
 
-printf 'e2e: stay-afloat supervise restarts wrapper-owned child on classified exit code\n'
+printf 'e2e: stay-afloat observe observes wrapper-owned child failure without relaunch\n'
 printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"
 omux health --reset toy:a1#expensive >/dev/null
 omux health --reset toy:a2#expensive >/dev/null
 supervise_a1_probe="$(omux probe --provider toy --account a1 --capability expensive --json)"
-expect_contains "$supervise_a1_probe" '"account":"a1"' "supervise setup records a1 as available"
+expect_contains "$supervise_a1_probe" '"account":"a1"' "observe setup records a1 as available"
 supervise_a2_probe="$(omux probe --provider toy --account a2 --capability expensive --json)"
-expect_contains "$supervise_a2_probe" '"account":"a2"' "supervise setup records a2 as available"
+expect_contains "$supervise_a2_probe" '"account":"a2"' "observe setup records a2 as available"
 supervise_out="$tmp/stay-supervise.out"
-supervise_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_out" omux stay-afloat supervise --profile expensive --capability expensive --max-restarts 1 --restart-on-exit-code 42 --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then exit 42; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"')"
-supervise_result="$(cat "$supervise_out")"
-expect_contains "$supervise_result" 'a2:omux-e2e-a2' "stay-afloat supervise restarts child on selected fallback"
-expect_contains "$supervise_json" '"mode":"stay_afloat_supervise"' "stay-afloat supervise reports mode"
-expect_contains "$supervise_json" '"ok":true' "stay-afloat supervise reports success after restart"
-expect_contains "$supervise_json" '"level":"supervised_restart"' "stay-afloat supervise claims wrapper restart only after restart"
-expect_contains "$supervise_json" '"supervised_restart":true' "stay-afloat supervise sets supervised restart claim"
-expect_contains "$supervise_json" '"current_process_hotswap":false' "stay-afloat supervise refuses current-process hot swap"
-expect_contains "$supervise_json" '"restart_count":1' "stay-afloat supervise reports restart count"
-expect_contains "$supervise_json" '"restart_admitted":true' "stay-afloat supervise reports admitted restart attempt"
-expect_contains "$supervise_json" '"selected":{"provider":"toy","account":"a2"' "stay-afloat supervise records fallback attempt"
-expect_not_contains "$supervise_json" "omux-e2e-a1" "stay-afloat supervise JSON does not expose first token"
-expect_not_contains "$supervise_json" "omux-e2e-a2" "stay-afloat supervise JSON does not expose fallback token"
+supervise_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_out" omux stay-afloat observe --profile expensive --capability expensive --classify-exit-code 42 --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then exit 42; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"')"
+if [ -e "$supervise_out" ]; then
+  supervise_result="$(cat "$supervise_out")"
+else
+  supervise_result=""
+fi
+expect_not_contains "$supervise_result" 'a2:omux-e2e-a2' "stay-afloat observe does not relaunch selected fallback child"
+expect_contains "$supervise_json" '"mode":"stay_afloat_observe"' "stay-afloat observe reports mode"
+expect_contains "$supervise_json" '"ok":false' "stay-afloat observe reports failed child without relaunch success"
+expect_contains "$supervise_json" '"reason":"target_failed"' "stay-afloat observe reports target failure"
+expect_contains "$supervise_json" '"level":"observed_child_process"' "stay-afloat observe reports diagnostic child-observation claim level"
+expect_contains "$supervise_json" '"supervised_restart":false' "stay-afloat observe does not claim supervised restart as acceptable stay-afloat"
+expect_contains "$supervise_json" '"diagnostic_relaunch_observed":false' "stay-afloat observe reports no restart observed"
+expect_contains "$supervise_json" '"acceptable_seamless_behavior":false' "stay-afloat observe rejects restart as seamless behavior"
+expect_contains "$supervise_json" '"current_process_hotswap":false' "stay-afloat observe refuses current-process hot swap"
+expect_contains "$supervise_json" '"relaunch_count":0' "stay-afloat observe reports zero restart count"
+expect_contains "$supervise_json" '"relaunch_enabled":false' "stay-afloat observe reports relaunch disabled"
+expect_contains "$supervise_json" '"relaunch_admitted":false' "stay-afloat observe refuses restart attempt"
+expect_contains "$supervise_json" '"selected":{"provider":"toy","account":"a1"' "stay-afloat observe records observed child route"
+expect_not_contains "$supervise_json" "omux-e2e-a1" "stay-afloat observe JSON does not expose first token"
+expect_not_contains "$supervise_json" "omux-e2e-a2" "stay-afloat observe JSON does not expose fallback token"
 
-printf 'e2e: stay-afloat supervise classifies Codex usage-limit output\n'
+printf 'e2e: stay-afloat observe classifies Codex usage-limit output\n'
 printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"
 omux health --reset toy:a1#expensive >/dev/null
 omux health --reset toy:a2#expensive >/dev/null
 supervise_usage_a1_probe="$(omux probe --provider toy --account a1 --capability expensive --json)"
-expect_contains "$supervise_usage_a1_probe" '"account":"a1"' "usage-limit supervise setup records a1 as available"
+expect_contains "$supervise_usage_a1_probe" '"account":"a1"' "usage-limit observe setup records a1 as available"
 supervise_usage_a2_probe="$(omux probe --provider toy --account a2 --capability expensive --json)"
-expect_contains "$supervise_usage_a2_probe" '"account":"a2"' "usage-limit supervise setup records a2 as available"
+expect_contains "$supervise_usage_a2_probe" '"account":"a2"' "usage-limit observe setup records a2 as available"
 supervise_usage_out="$tmp/stay-supervise-usage-limit.out"
-supervise_usage_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_usage_out" omux stay-afloat supervise --profile expensive --capability expensive --max-restarts 1 --restart-on-codex-usage-limit --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then printf "%s\n" "You'\''ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 2:14 AM." >&2; exit 1; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"')"
-supervise_usage_result="$(cat "$supervise_usage_out")"
-expect_contains "$supervise_usage_result" 'a2:omux-e2e-a2' "usage-limit supervise restarts child on selected fallback"
-expect_contains "$supervise_usage_json" '"ok":true' "usage-limit supervise reports success after restart"
-expect_contains "$supervise_usage_json" '"restart_on_codex_usage_limit":true' "usage-limit supervise reports classifier flag"
-expect_contains "$supervise_usage_json" '"restart_classification_source":"codex_usage_limit_output"' "usage-limit supervise reports output classifier source"
-expect_contains "$supervise_usage_json" '"output_classification":"codex_usage_limit"' "usage-limit supervise records redacted output classification"
-expect_contains "$supervise_usage_json" '"route_health_recorded":true' "usage-limit supervise records route health"
-expect_contains "$supervise_usage_json" '"event_recorded":true' "usage-limit supervise records event evidence"
-expect_contains "$supervise_usage_json" '"restart_count":1' "usage-limit supervise reports restart count"
-expect_contains "$supervise_usage_json" '"selected":{"provider":"toy","account":"a2"' "usage-limit supervise records fallback attempt"
-expect_not_contains "$supervise_usage_json" "You've hit your usage limit" "usage-limit supervise JSON does not print captured provider text"
-expect_not_contains "$supervise_usage_json" "omux-e2e-a1" "usage-limit supervise JSON does not expose first token"
-expect_not_contains "$supervise_usage_json" "omux-e2e-a2" "usage-limit supervise JSON does not expose fallback token"
+supervise_usage_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_usage_out" omux stay-afloat observe --profile expensive --capability expensive --classify-codex-usage-limit --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then printf "%s\n" "You'\''ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 2:14 AM." >&2; exit 1; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"')"
+if [ -e "$supervise_usage_out" ]; then
+  supervise_usage_result="$(cat "$supervise_usage_out")"
+else
+  supervise_usage_result=""
+fi
+expect_not_contains "$supervise_usage_result" 'a2:omux-e2e-a2' "usage-limit observe does not relaunch selected fallback child"
+expect_contains "$supervise_usage_json" '"ok":false' "usage-limit observe reports failed child without relaunch success"
+expect_contains "$supervise_usage_json" '"reason":"diagnostic_failure_recorded"' "usage-limit observe reports recorded diagnostic failure"
+expect_contains "$supervise_usage_json" '"classify_codex_usage_limit":true' "usage-limit observe reports classifier flag"
+expect_contains "$supervise_usage_json" '"classification_source":"codex_usage_limit_output"' "usage-limit observe reports output classifier source"
+expect_contains "$supervise_usage_json" '"output_classification":"codex_usage_limit"' "usage-limit observe records redacted output classification"
+expect_contains "$supervise_usage_json" '"route_health_recorded":true' "usage-limit observe records route health"
+expect_contains "$supervise_usage_json" '"event_recorded":true' "usage-limit observe records event evidence"
+expect_contains "$supervise_usage_json" '"relaunch_count":0' "usage-limit observe reports zero restart count"
+expect_contains "$supervise_usage_json" '"relaunch_admitted":false' "usage-limit observe refuses restart attempt"
+expect_contains "$supervise_usage_json" '"selected":{"provider":"toy","account":"a1"' "usage-limit observe records observed child route"
+expect_not_contains "$supervise_usage_json" "You've hit your usage limit" "usage-limit observe JSON does not print captured provider text"
+expect_not_contains "$supervise_usage_json" "omux-e2e-a1" "usage-limit observe JSON does not expose first token"
+expect_not_contains "$supervise_usage_json" "omux-e2e-a2" "usage-limit observe JSON does not expose fallback token"
 supervise_usage_events="$(omux daemon events --json)"
-expect_contains "$supervise_usage_events" '"kind":"stay_afloat_supervise"' "usage-limit supervise appends durable event"
-expect_contains "$supervise_usage_events" '"reason":"codex_usage_limit"' "usage-limit supervise event records redacted classification"
+expect_contains "$supervise_usage_events" '"kind":"stay_afloat_observe"' "usage-limit observe appends durable event"
+expect_contains "$supervise_usage_events" '"reason":"codex_usage_limit"' "usage-limit observe event records redacted classification"
 supervise_usage_health="$(omux route explain --profile expensive --capability expensive --json)"
-expect_contains "$supervise_usage_health" '"skip_reason":"quota_exhausted"' "usage-limit supervise marks first route quota exhausted"
-expect_contains "$supervise_usage_health" '"source":"supervised_child_output"' "usage-limit supervise records health evidence source"
-expect_contains "$supervise_usage_health" '"selected":{"provider":"toy","account":"a2"' "usage-limit supervise moves selection to fallback"
+expect_contains "$supervise_usage_health" '"skip_reason":"quota_exhausted"' "usage-limit observe marks first route quota exhausted"
+expect_contains "$supervise_usage_health" '"source":"observed_child_output"' "usage-limit observe records health evidence source"
+expect_contains "$supervise_usage_health" '"selected":{"provider":"toy","account":"a2"' "usage-limit observe moves selection to fallback"
 
-printf 'e2e: stay-afloat supervise can stream captured usage-limit output without corrupting JSON\n'
+printf 'e2e: stay-afloat observe can stream captured usage-limit output without corrupting JSON\n'
 printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"
 omux health --reset toy:a1#expensive >/dev/null
 omux health --reset toy:a2#expensive >/dev/null
 supervise_stream_a1_probe="$(omux probe --provider toy --account a1 --capability expensive --json)"
-expect_contains "$supervise_stream_a1_probe" '"account":"a1"' "stream-capture supervise setup records a1 as available"
+expect_contains "$supervise_stream_a1_probe" '"account":"a1"' "stream-capture observe setup records a1 as available"
 supervise_stream_a2_probe="$(omux probe --provider toy --account a2 --capability expensive --json)"
-expect_contains "$supervise_stream_a2_probe" '"account":"a2"' "stream-capture supervise setup records a2 as available"
+expect_contains "$supervise_stream_a2_probe" '"account":"a2"' "stream-capture observe setup records a2 as available"
 supervise_stream_out="$tmp/stay-supervise-stream.out"
 supervise_stream_stderr="$tmp/stay-supervise-stream.stderr"
-supervise_stream_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_stream_out" omux stay-afloat supervise --profile expensive --capability expensive --max-restarts 1 --restart-on-codex-usage-limit --stream-capture --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then printf "%s\n" "You'\''ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 2:14 AM." >&2; exit 1; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"' 2>"$supervise_stream_stderr")"
-supervise_stream_result="$(cat "$supervise_stream_out")"
+supervise_stream_json="$(OMUX_E2E_SUPERVISE_OUT="$supervise_stream_out" omux stay-afloat observe --profile expensive --capability expensive --classify-codex-usage-limit --stream-capture --json -- sh -c 'if [ "$OMUX_ACTIVE_ACCOUNT" = a1 ]; then printf "%s\n" "You'\''ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 2:14 AM." >&2; exit 1; fi; printf "%s:%s" "$OMUX_ACTIVE_ACCOUNT" "$TOY_TOKEN" > "$OMUX_E2E_SUPERVISE_OUT"' 2>"$supervise_stream_stderr")"
+if [ -e "$supervise_stream_out" ]; then
+  supervise_stream_result="$(cat "$supervise_stream_out")"
+else
+  supervise_stream_result=""
+fi
 supervise_stream_visible="$(cat "$supervise_stream_stderr")"
-expect_contains "$supervise_stream_result" 'a2:omux-e2e-a2' "stream-capture supervise restarts child on selected fallback"
+expect_not_contains "$supervise_stream_result" 'a2:omux-e2e-a2' "stream-capture observe does not relaunch selected fallback child"
 expect_contains "$supervise_stream_visible" "You've hit your usage limit" "stream-capture tees provider text to stderr in JSON mode"
 expect_contains "$supervise_stream_json" '"capture_transport":"streaming_pipe"' "stream-capture reports streaming transport"
 expect_contains "$supervise_stream_json" '"live_child_output_streamed":true' "stream-capture reports live child output"
@@ -475,12 +493,12 @@ expect_not_contains "$supervise_stream_json" "You've hit your usage limit" "stre
 expect_not_contains "$supervise_stream_json" "omux-e2e-a1" "stream-capture JSON does not expose first token"
 expect_not_contains "$supervise_stream_json" "omux-e2e-a2" "stream-capture JSON does not expose fallback token"
 supervise_stream_events="$(omux daemon events --json)"
-expect_contains "$supervise_stream_events" '"kind":"stay_afloat_supervise"' "stream-capture supervise appends durable event"
-expect_contains "$supervise_stream_events" '"reason":"codex_usage_limit"' "stream-capture supervise event records redacted classification"
-expect_contains "$supervise_stream_events" '"interactive":true' "stream-capture supervise event records interactive visibility"
+expect_contains "$supervise_stream_events" '"kind":"stay_afloat_observe"' "stream-capture observe appends durable event"
+expect_contains "$supervise_stream_events" '"reason":"codex_usage_limit"' "stream-capture observe event records redacted classification"
+expect_contains "$supervise_stream_events" '"interactive":true' "stream-capture observe event records interactive visibility"
 rm -f "$probe_mode_file"
 post_supervise_probe="$(omux probe --profile expensive --capability expensive --json)"
-expect_contains "$post_supervise_probe" '"account":"a2"' "post-supervise setup restores a2 as selected fallback"
+expect_contains "$post_supervise_probe" '"account":"a2"' "post-observe setup restores a2 as selected fallback"
 
 printf 'e2e: daemon tick plans stay-afloat without executing work\n'
 daemon_tick="$(omux daemon tick --once --profile expensive --capability expensive --json)"
@@ -575,56 +593,56 @@ daemon_stopped="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtim
 expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status reports stopped foreground daemon"
 expect_contains "$daemon_stopped" '"wrapper_contract":"foreground_tick"' "daemon status reports wrapper contract when stopped"
 
-printf 'e2e: supervised stay-afloat daemon loop reports beta host status\n'
-supervised_runtime="$(short_runtime_dir)"
-supervised_log="$tmp/supervised-daemon.log"
+printf 'e2e: foreground stay-afloat daemon loop reports beta host status\n'
+loop_runtime="$(short_runtime_dir)"
+loop_log="$tmp/foreground-loop-daemon.log"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$state_dir" \
-  XDG_RUNTIME_DIR="$supervised_runtime" \
-  "$bin" daemon run --stay-afloat --profile expensive --capability expensive --iterations 200 --interval-ms 50 >"$supervised_log" 2>&1 &
+  XDG_RUNTIME_DIR="$loop_runtime" \
+  "$bin" daemon run --stay-afloat --profile expensive --capability expensive --iterations 200 --interval-ms 50 >"$loop_log" 2>&1 &
 daemon_pid=$!
-supervised_status=""
+loop_status=""
 for _ in $(seq 1 200); do
-  supervised_status="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon status --json || true)"
-  case "$supervised_status" in
+  loop_status="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$loop_runtime" "$bin" daemon status --json || true)"
+  case "$loop_status" in
     *'"status":"running"'*'"stay_afloat_loop":{"hosted":true'*'"stay_afloat":{"version":'*'"current_loop_observed":true'*) break ;;
   esac
 done
-expect_contains "$supervised_status" '"status":"running"' "supervised daemon status reports running"
-expect_contains "$supervised_status" '"contract":"experimental_supervised_loop"' "supervised daemon status reports beta contract"
-expect_contains "$supervised_status" '"hosts_stay_afloat":false' "supervised daemon does not claim production stay-afloat"
-expect_contains "$supervised_status" '"stay_afloat_loop":{"hosted":true' "supervised daemon reports hosted beta loop"
-expect_contains "$supervised_status" '"stay_afloat_snapshot":{"present":true,"parseable":true' "supervised daemon reports parseable stay-afloat snapshot metadata"
-expect_contains "$supervised_status" '"current_loop_observed":true' "supervised daemon status proves active loop has written a snapshot"
-expect_contains "$supervised_status" '"stale":false' "supervised daemon reports fresh stay-afloat snapshot"
-expect_contains "$supervised_status" '"reason":"fresh"' "supervised daemon reports fresh snapshot reason"
-expect_contains "$supervised_status" '"selector":{"profile":"expensive","provider":null,"account":null,"capability":"expensive"}' "supervised daemon reports hosted selector"
-expect_contains "$supervised_status" '"once":false' "supervised daemon reports loop mode metadata"
-expect_contains "$supervised_status" '"iterations":200' "supervised daemon reports requested iteration bound"
-expect_contains "$supervised_status" '"interval_ms":50' "supervised daemon reports cadence metadata"
-expect_contains "$supervised_status" '"execution_mode":"execute"' "supervised daemon reports execute metadata"
-expect_contains "$supervised_status" '"transport":"foreground_supervised_loop"' "supervised daemon status reports foreground loop transport"
-expect_contains "$supervised_status" '"socket":null' "supervised daemon does not claim a socket transport"
-expect_contains "$supervised_status" '"selected":{"provider":"toy","account":"a2"' "supervised daemon snapshot carries selected fallback route"
-OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon stop >/dev/null 2>&1
+expect_contains "$loop_status" '"status":"running"' "foreground loop daemon status reports running"
+expect_contains "$loop_status" '"contract":"experimental_foreground_tick_loop"' "foreground loop daemon status reports beta contract"
+expect_contains "$loop_status" '"hosts_stay_afloat":false' "foreground loop daemon does not claim production stay-afloat"
+expect_contains "$loop_status" '"stay_afloat_loop":{"hosted":true' "foreground loop daemon reports hosted beta loop"
+expect_contains "$loop_status" '"stay_afloat_snapshot":{"present":true,"parseable":true' "foreground loop daemon reports parseable stay-afloat snapshot metadata"
+expect_contains "$loop_status" '"current_loop_observed":true' "foreground loop daemon status proves active loop has written a snapshot"
+expect_contains "$loop_status" '"stale":false' "foreground loop daemon reports fresh stay-afloat snapshot"
+expect_contains "$loop_status" '"reason":"fresh"' "foreground loop daemon reports fresh snapshot reason"
+expect_contains "$loop_status" '"selector":{"profile":"expensive","provider":null,"account":null,"capability":"expensive"}' "foreground loop daemon reports hosted selector"
+expect_contains "$loop_status" '"once":false' "foreground loop daemon reports loop mode metadata"
+expect_contains "$loop_status" '"iterations":200' "foreground loop daemon reports requested iteration bound"
+expect_contains "$loop_status" '"interval_ms":50' "foreground loop daemon reports cadence metadata"
+expect_contains "$loop_status" '"execution_mode":"execute"' "foreground loop daemon reports execute metadata"
+expect_contains "$loop_status" '"transport":"foreground_tick_loop"' "foreground loop daemon status reports foreground loop transport"
+expect_contains "$loop_status" '"socket":null' "foreground loop daemon does not claim a socket transport"
+expect_contains "$loop_status" '"selected":{"provider":"toy","account":"a2"' "foreground loop daemon snapshot carries selected fallback route"
+OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$loop_runtime" "$bin" daemon stop >/dev/null 2>&1
 set +e
 wait "$daemon_pid" 2>/dev/null
-supervised_wait_status=$?
+loop_wait_status=$?
 set -e
 daemon_pid=""
-case "$supervised_wait_status" in
+case "$loop_wait_status" in
   0|143) ;;
   *)
-    printf 'e2e assertion failed: supervised daemon exited unexpectedly with status %s\n' "$supervised_wait_status" >&2
-    printf 'supervised daemon log:\n%s\n' "$(cat "$supervised_log")" >&2
+    printf 'e2e assertion failed: foreground loop daemon exited unexpectedly with status %s\n' "$loop_wait_status" >&2
+    printf 'foreground loop daemon log:\n%s\n' "$(cat "$loop_log")" >&2
     exit 1
     ;;
 esac
-supervised_stopped="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$supervised_runtime" "$bin" daemon status --json)"
-expect_contains "$supervised_stopped" '"status":"not_running"' "supervised daemon status reports stopped"
-expect_contains "$supervised_stopped" '"stay_afloat_loop":{"hosted":false' "supervised daemon clears hosted loop metadata after stop"
-expect_contains "$supervised_stopped" '"stay_afloat":{"version":' "supervised daemon leaves latest redacted snapshot visible after stop"
-expect_contains "$supervised_stopped" '"stay_afloat_snapshot":{"present":true,"parseable":true' "supervised daemon leaves snapshot metadata visible after stop"
+loop_stopped="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$loop_runtime" "$bin" daemon status --json)"
+expect_contains "$loop_stopped" '"status":"not_running"' "foreground loop daemon status reports stopped"
+expect_contains "$loop_stopped" '"stay_afloat_loop":{"hosted":false' "foreground loop daemon clears hosted loop metadata after stop"
+expect_contains "$loop_stopped" '"stay_afloat":{"version":' "foreground loop daemon leaves latest redacted snapshot visible after stop"
+expect_contains "$loop_stopped" '"stay_afloat_snapshot":{"present":true,"parseable":true' "foreground loop daemon leaves snapshot metadata visible after stop"
 
 printf 'e2e: daemon tick execute runs one admitted command probe\n'
 omux health --reset toy:a1 >/dev/null

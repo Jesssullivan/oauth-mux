@@ -30,7 +30,7 @@ in-session quota fallback remains tracked by GitHub `#131` / Linear `TIN-916`.
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
 | Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy was rechecked on 2026-05-03 and now uses the public `jesssullivan/omux` tap. |
-| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898`, `TIN-940` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing. The active claim matrix lives in `docs/daemon-boundary.md`; managed Codex launch/resume, broker-owned app-server sessions, and supervised restart beta are separate claim levels. |
+| Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898`, `TIN-940` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing. The active claim matrix lives in `docs/daemon-boundary.md`; managed Codex launch/resume and broker-owned app-server sessions are scoped proof surfaces. Supervised child capture is diagnostic only, not a product claim level. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex route selection and broker-owned sessions are live-proven for scoped commands; true seamless active-session handoff is not. Non-Codex proof is capability-level or still needs operator proof. |
 | Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | Codex has a current four-route paid cohort: `max-1` selected, `max-4` spare fallback, and `max-2`/`max-3` quota-exhausted for `codex-max`. Claude, Figma, and long-window soak evidence remain separate gates. |
 
@@ -128,13 +128,15 @@ runtime diagnostics into OAuth liveness or automatic repair evidence.
 The `TIN-897` background-daemon artifact is
 `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md`. It defines
 the stay-afloat claim ladder: prepared fallback for the next mediated action,
-broker-owned app-server sessions, supervised restart/relaunch, reserved
-current-process auth brokering, and true per-request muxing. The current
-product is aiming first at prepared fallback plus daemon-warmed route state. It
-must not claim hot-swap of an already-running Codex, Claude, or Figma harness
-unless that harness has a proven reload, broker, restart, proxy, or in-agent
-mediation path.
-`TIN-898` adds `daemon run --stay-afloat` / `daemon supervise` as an opt-in
+diagnostic child-boundary observation, broker-owned app-server sessions,
+reserved current-process auth brokering, and true per-request muxing. The
+current product is aiming first at prepared fallback plus daemon-warmed route
+state, while the only Codex success metric for true stay-afloat remains an
+already-running `codex` process handing off to another credited account without
+logout, manual resume, restart, or lost thread. Do not claim hot-swap of an
+already-running Codex, Claude, or Figma harness unless that harness has a proven
+live reload, auth broker, proxy, or in-agent mediation path.
+`TIN-898` adds `daemon run --stay-afloat` / `daemon loop` as an opt-in
 beta host for the same foreground tick engine. Status can report
 `stay_afloat_loop.hosted:true`, but production support remains false until
 soak and wrapper proof complete.
@@ -258,8 +260,10 @@ these precise provider-proof children.
    May 3 dogfood truth: foreground prepared fallback, scoped broker-owned
    sessions, managed Codex launch/resume, and no unmanaged active-session
    handoff claim.
-2. Continue `TIN-937` for interactive supervised restart with PTY capture; the
-   restart classifier exists, but polished interactive dogfood is not done.
+2. Recast `TIN-937` as diagnostic child-output capture only. Restart/relaunch
+   is not an acceptable stay-afloat path; PTY work is useful only if it helps
+   classify the real provider-owned failure and preserve evidence for the live
+   handoff effort.
 3. Continue `TIN-936` for Codex session-store portability and explicit import
    policy; `codex managed --resume <id>` now diagnoses route-local ownership
    but does not copy or import sessions.
@@ -325,10 +329,11 @@ these precise provider-proof children.
 - Do not describe the current daemon or beta loop as hardened seamless
   stay-afloat for active provider-owned sessions.
 - Do not claim hot-swap inside an already-running harness without a proven
-  reload, auth broker, supervised restart, proxy, or in-agent mediation path.
-- Track wrapper-owned supervised restart separately under
-  `docs/spec/supervised-harness-restart-contract-2026-05-02.md` / `TIN-911` /
-  GitHub `#123`; do not infer it from a fresh daemon snapshot.
+  live reload, auth broker, proxy, or in-agent mediation path that preserves the
+  active session.
+- Treat `docs/spec/observed-child-diagnostic-contract-2026-05-02.md` /
+  `TIN-911` / GitHub `#123` as diagnostic failure-observation history. Do not
+  infer product fallback from a fresh daemon snapshot or child restart.
 - Do not run live probes by default.
 - Do not mutate upstream CLI-owned credential stores.
 - Do not promote a provider to `live_proven` without redacted fixtures and an

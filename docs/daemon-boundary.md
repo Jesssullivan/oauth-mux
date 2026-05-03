@@ -54,8 +54,8 @@ and wrappers should handle `action.diagnostic_command` without promoting the
 socket daemon.
 See `docs/spec/background-stay-afloat-daemon-contract-2026-05-02.md` for the
 `TIN-897` production-daemon contract and the distinction between prepared
-fallback, supervised restart, current-process auth brokering, and true
-per-request muxing.
+fallback, diagnostic child-boundary observation, current-process auth brokering,
+and true per-request muxing.
 See `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` for the Codex
 app-server auth-broker proof track, Linear `TIN-913` / GitHub `#125`.
 See `docs/stay-afloat-wrappers.md` for beta wrapper recipes and soak checks
@@ -103,8 +103,9 @@ That snapshot includes `claim.level`. `prepared_fallback` means the next
 mediated launch can select an account; it does not mean an already-running
 harness process will be hot-swapped. The same claim object keeps
 `current_process_hotswap:false`, `supervised_restart:false`, and
-`per_request_muxing:false` until a specific wrapper, restart path, auth broker,
-proxy, or in-agent adapter proves those stronger levels.
+`per_request_muxing:false`. Restart is not a stronger success level; only a
+live reload, auth broker, proxy, or in-agent adapter that preserves the active
+session can move this beyond prepared fallback.
 
 ## Allowed Now
 
@@ -158,19 +159,16 @@ proxy, or in-agent adapter proves those stronger levels.
 - `oauth-mux daemon tick --loop --iterations <n> --interval-ms <ms> --json`
   as the lower-level wrapper-author spelling for the same bounded foreground
   loop.
-- `oauth-mux stay-afloat supervise --max-restarts <n>
-  --restart-on-exit-code <code> -- <command>` as the beta wrapper-owned restart
-  path. It can claim `supervised_restart:true` only after oauth-mux spawned the
-  child, observed the configured exit code, and restarted on another selectable
-  route. It does not promote the socket daemon or claim current-process
-  hot-swap.
-- `oauth-mux stay-afloat supervise --restart-on-codex-usage-limit -- <command>`
+- `oauth-mux stay-afloat observe --classify-exit-code <code> -- <command>` as a diagnostic child-boundary
+  observation path. It can spawn a selected child, observe the configured exit
+  code, and record redacted evidence. It must not be treated as a product
+  fallback or a `supervised_restart:true` claim.
+- `oauth-mux stay-afloat observe --classify-codex-usage-limit -- <command>`
   as a Codex-specific instrumentation path for wrapper-owned sessions. It
   captures child output, classifies the native usage-limit screen without
   printing the captured text, records route health as quota-exhausted, appends a
-  redacted `stay_afloat_supervise` event, and then restarts on the next
-  selectable route. This still requires oauth-mux to own the child process
-  boundary.
+  redacted `stay_afloat_observe` event, and stops. This proves failure
+  observation, not fallback.
 - `claim.level:"prepared_fallback"` in `stay-afloat` / `daemon tick` JSON and
   in the latest `daemon status --json` snapshot when a route is selectable.
   Wrappers should pair that with the emitted `claim.launch_argv` and should not
@@ -220,7 +218,7 @@ proxy, or in-agent adapter proves those stronger levels.
 | `codex broker-run` | `broker_owned_app_server` | live broker-owned app-server | yes, after confirmation | on classified live failure | yes when provider failure occurs | no | no |
 | `codex revalidate-exhausted` | `prepared_fallback` route-health refresh | spend-gated recheck of routes already recorded exhausted/rate-limited | yes, after confirmation | yes, from fresh probe | yes | no | no |
 | `codex broker-fallback-drill` | `controlled_route_health_drill` | local route-health mutation | no | yes | no | no | no |
-| `stay-afloat supervise` | `supervised_process` or `supervised_restart` after restart | wrapper-owned child process | child-dependent | on classified child failure | yes when child emits it | no | wrapper-launched child only |
+| `stay-afloat observe` | `observed_child_process` | wrapper-owned child process | child-dependent | on classified child failure | yes when child emits it | no | no relaunch; diagnostic only |
 | future native hook | `current_process_auth_broker` | already-running provider process with supported auth-update hook | hook-dependent | hook-dependent | hook-dependent | unproven | unproven |
 | future request proxy | `per_request_muxing` | each provider request routed through oauth-mux | request-dependent | request-dependent | request-dependent | unproven | unproven |
 
@@ -230,7 +228,7 @@ proxy, or in-agent adapter proves those stronger levels.
 - Automatic subscription-spending checks without explicit daemon policy.
 - Silent token refresh for providers whose refresh semantics are owned by an
   upstream CLI.
-- Treating `stay-afloat supervise --stream-capture` as PTY/raw-terminal support;
+- Treating `stay-afloat observe --stream-capture` as PTY/raw-terminal support;
   it is a tee-based pipe capture path only.
 - Silent execution of interactive repair-plan commands.
 - Any release gate that depends on a long-running daemon.
@@ -255,17 +253,17 @@ The daemon can become a supported operator feature when:
 9. live-provider QA covers timeout, auth failure, quota exhaustion, and
    transient rate-limit behavior.
 
-The stronger "seamless muxing" claim also requires a mediation point. A
-background daemon can keep route state and reauth handoffs warm, but it cannot
-hot-swap credentials already loaded into an upstream harness process unless
-that harness supports live reload, auth brokering, supervised restart,
-proxying, or an oauth-mux-aware in-agent adapter. Until that proof exists,
-user-facing copy should describe prepared fallback for the next mediated
-action, not transparent replacement of the current process. The supervised
-restart path is tracked in
-`docs/spec/supervised-harness-restart-contract-2026-05-02.md`; it must remain a
-separate wrapper-owned process claim, not a daemon status inference. The Codex
-app-server auth-broker proof is tracked in
+The stronger "seamless muxing" claim has one success metric for Codex: normal
+`codex` keeps running, oauth-mux runs in the background, the active account
+exhausts, and the same active session moves to another credited account without
+logout, manual resume, restart, or lost thread. A background daemon can keep
+route state and reauth handoffs warm, but it cannot hot-swap credentials already
+loaded into an upstream harness process unless that harness supports live
+reload, auth brokering, proxying, or an oauth-mux-aware in-agent adapter. Until
+that proof exists, user-facing copy should describe prepared fallback for the
+next mediated action, not transparent replacement of the current process.
+`stay-afloat observe` is diagnostic failure observation only, not a product
+handoff path. The Codex app-server auth-broker proof is tracked in
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` under Linear
 `TIN-913` / GitHub `#125`; it is a
 provider-specific current-process proof target, not a generic daemon claim.

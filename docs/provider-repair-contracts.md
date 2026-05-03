@@ -11,7 +11,7 @@ into one generic failure.
 ## JSON Contract
 
 `repair-plan`, `route explain`, `stay-afloat next`, `daemon tick`,
-`stay-afloat`, and `daemon supervise` route objects expose an `action` object.
+`stay-afloat`, and `daemon loop` route objects expose an `action` object.
 The action now has three distinct identity fields:
 
 ```json

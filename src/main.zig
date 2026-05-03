@@ -157,9 +157,9 @@ pub fn main() !void {
             };
         },
 
-        .stay_afloat_supervise => |supervise_args| {
-            runStayAfloatSupervise(allocator, stdout, supervise_args) catch |e| {
-                log.err("stay-afloat supervise: {s}", .{@errorName(e)});
+        .stay_afloat_observe => |observe_args| {
+            runStayAfloatObserve(allocator, stdout, observe_args) catch |e| {
+                log.err("stay-afloat observe: {s}", .{@errorName(e)});
                 std.process.exit(exitCodeFromPipelineError(e));
             };
         },
@@ -184,7 +184,7 @@ pub fn main() !void {
 
         .daemon_run => |run_args| {
             if (run_args.stay_afloat) {
-                runSupervisedStayAfloat(allocator, stdout, run_args.tick) catch |e| {
+                runForegroundStayAfloatLoop(allocator, stdout, run_args.tick) catch |e| {
                     log.err("daemon stay-afloat: {s}", .{@errorName(e)});
                     std.process.exit(types.ExitCode.general_error.int());
                 };
@@ -3658,43 +3658,43 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     return error.AllAccountsExhausted;
 }
 
-const SuperviseAttempt = struct {
+const ObserveAttempt = struct {
     route: RepairPlanRoute,
     term: std.process.Child.Term,
     output_classification: ?[]const u8 = null,
-    restart_admitted: bool,
+    relaunch_admitted: bool,
     route_health_recorded: bool = false,
     event_recorded: bool = false,
     captured_stdout_bytes: usize = 0,
     captured_stderr_bytes: usize = 0,
 };
 
-const SuperviseChildResult = struct {
+const ObserveChildResult = struct {
     term: std.process.Child.Term,
     output_classification: ?[]const u8 = null,
     captured_stdout_bytes: usize = 0,
     captured_stderr_bytes: usize = 0,
 };
 
-const SuperviseCaptureLimit = 512 * 1024;
+const ObserveCaptureLimit = 512 * 1024;
 
-const SuperviseStreamCapture = struct {
+const ObserveStreamCapture = struct {
     buffer: []u8,
     len: usize = 0,
     read_error: ?anyerror = null,
 };
 
-fn runStayAfloatSupervise(
+fn runStayAfloatObserve(
     allocator: std.mem.Allocator,
     writer: anytype,
-    args: cli.Command.SuperviseArgs,
+    args: cli.Command.ObserveArgs,
 ) !void {
     if (args.target_argv.len == 0) {
-        log.err("stay-afloat supervise: no target command specified (use -- before the command)", .{});
+        log.err("stay-afloat observe: no target command specified (use -- before the command)", .{});
         return error.ConfigValidationError;
     }
-    if (args.stream_capture and !args.restart_on_codex_usage_limit) {
-        log.err("stay-afloat supervise: --stream-capture requires --restart-on-codex-usage-limit", .{});
+    if (args.stream_capture and !args.classify_codex_usage_limit) {
+        log.err("stay-afloat observe: --stream-capture requires --classify-codex-usage-limit", .{});
         return error.ConfigValidationError;
     }
 
@@ -3722,10 +3722,10 @@ fn runStayAfloatSupervise(
 
     var attempted_routes = std.ArrayList(RepairPlanRoute).init(allocator);
     defer attempted_routes.deinit();
-    var attempts = std.ArrayList(SuperviseAttempt).init(allocator);
+    var attempts = std.ArrayList(ObserveAttempt).init(allocator);
     defer attempts.deinit();
 
-    var restart_count: u32 = 0;
+    const relaunch_count: u32 = 0;
     var reason: []const u8 = "no_attempt";
 
     while (true) {
@@ -3751,60 +3751,62 @@ fn runStayAfloatSupervise(
         };
         defer env_map.deinit();
 
-        const child_result = runSupervisedChild(allocator, &env_map, args) catch return error.ExecFailed;
-        const route_health_recorded = if (superviseOutputClassificationIsCodexUsageLimit(child_result.output_classification))
-            recordStayAfloatSuperviseRouteHealth(&store, selected)
+        const child_result = runObservedChild(allocator, &env_map, args) catch return error.ExecFailed;
+        const route_health_recorded = if (observeOutputClassificationIsCodexUsageLimit(child_result.output_classification))
+            recordStayAfloatObserveRouteHealth(&store, selected)
         else
             false;
         if (route_health_recorded) store.persist();
 
-        const restart_admitted = superviseRestartAdmitted(args, child_result.term, child_result.output_classification, restart_count);
-        const event_recorded = recordStayAfloatSuperviseEvent(allocator, args, selected, child_result.term, child_result.output_classification, route_health_recorded, restart_admitted);
+        // Relaunching the child is diagnostic evidence of session loss, not an
+        // acceptable stay-afloat behavior. Keep the classifier and route-health
+        // mutation, but never relaunch from this command.
+        const relaunch_admitted = false;
+        const event_recorded = recordStayAfloatObserveEvent(allocator, args, selected, child_result.term, child_result.output_classification, route_health_recorded);
         try attempts.append(.{
             .route = selected,
             .term = child_result.term,
             .output_classification = child_result.output_classification,
-            .restart_admitted = restart_admitted,
+            .relaunch_admitted = relaunch_admitted,
             .route_health_recorded = route_health_recorded,
             .event_recorded = event_recorded,
             .captured_stdout_bytes = child_result.captured_stdout_bytes,
             .captured_stderr_bytes = child_result.captured_stderr_bytes,
         });
 
-        if (restart_admitted) {
-            restart_count += 1;
-            reason = "restart_admitted";
-            continue;
-        }
-
-        reason = if (superviseTermSucceeded(child_result.term)) "target_completed" else "target_failed";
+        reason = if (observeTermSucceeded(child_result.term))
+            "target_completed"
+        else if (route_health_recorded)
+            "diagnostic_failure_recorded"
+        else
+            "target_failed";
         break;
     }
 
     if (args.json) {
-        try writeStayAfloatSuperviseJson(writer, args, attempts.items, restart_count, reason);
+        try writeStayAfloatObserveJson(writer, args, attempts.items, relaunch_count, reason);
     } else {
-        try writeStayAfloatSuperviseText(writer, args, attempts.items, restart_count, reason);
+        try writeStayAfloatObserveText(writer, args, attempts.items, relaunch_count, reason);
     }
 }
 
-fn runSupervisedChild(
+fn runObservedChild(
     allocator: std.mem.Allocator,
     env_map: *std.process.EnvMap,
-    args: cli.Command.SuperviseArgs,
-) !SuperviseChildResult {
+    args: cli.Command.ObserveArgs,
+) !ObserveChildResult {
     var child = std.process.Child.init(args.target_argv, allocator);
     child.stdin_behavior = .Inherit;
-    child.stdout_behavior = if (args.restart_on_codex_usage_limit) .Pipe else if (args.json) .Ignore else .Inherit;
-    child.stderr_behavior = if (args.restart_on_codex_usage_limit) .Pipe else if (args.json) .Ignore else .Inherit;
+    child.stdout_behavior = if (args.classify_codex_usage_limit) .Pipe else if (args.json) .Ignore else .Inherit;
+    child.stderr_behavior = if (args.classify_codex_usage_limit) .Pipe else if (args.json) .Ignore else .Inherit;
     child.env_map = env_map;
 
-    if (!args.restart_on_codex_usage_limit) {
+    if (!args.classify_codex_usage_limit) {
         return .{ .term = try child.spawnAndWait() };
     }
 
     if (args.stream_capture) {
-        return runSupervisedChildStreamingPipe(allocator, &child, args);
+        return runObservedChildStreamingPipe(allocator, &child, args);
     }
 
     try child.spawn();
@@ -3814,12 +3816,12 @@ fn runSupervisedChild(
     var stderr_buf = std.ArrayListUnmanaged(u8){};
     defer stderr_buf.deinit(allocator);
 
-    child.collectOutput(allocator, &stdout_buf, &stderr_buf, SuperviseCaptureLimit) catch |e| {
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, ObserveCaptureLimit) catch |e| {
         _ = child.kill() catch null;
         return e;
     };
     const term = try child.wait();
-    const classification: ?[]const u8 = if (superviseOutputLooksLikeCodexUsageLimit(stdout_buf.items) or superviseOutputLooksLikeCodexUsageLimit(stderr_buf.items))
+    const classification: ?[]const u8 = if (observeOutputLooksLikeCodexUsageLimit(stdout_buf.items) or observeOutputLooksLikeCodexUsageLimit(stderr_buf.items))
         "codex_usage_limit"
     else
         null;
@@ -3831,20 +3833,20 @@ fn runSupervisedChild(
     };
 }
 
-fn runSupervisedChildStreamingPipe(
+fn runObservedChildStreamingPipe(
     allocator: std.mem.Allocator,
     child: *std.process.Child,
-    args: cli.Command.SuperviseArgs,
-) !SuperviseChildResult {
+    args: cli.Command.ObserveArgs,
+) !ObserveChildResult {
     try child.spawn();
 
-    const stdout_storage = try allocator.alloc(u8, SuperviseCaptureLimit);
+    const stdout_storage = try allocator.alloc(u8, ObserveCaptureLimit);
     defer allocator.free(stdout_storage);
-    const stderr_storage = try allocator.alloc(u8, SuperviseCaptureLimit);
+    const stderr_storage = try allocator.alloc(u8, ObserveCaptureLimit);
     defer allocator.free(stderr_storage);
 
-    var stdout_capture = SuperviseStreamCapture{ .buffer = stdout_storage };
-    var stderr_capture = SuperviseStreamCapture{ .buffer = stderr_storage };
+    var stdout_capture = ObserveStreamCapture{ .buffer = stdout_storage };
+    var stderr_capture = ObserveStreamCapture{ .buffer = stderr_storage };
 
     const stdout_file = child.stdout.?;
     const stderr_file = child.stderr.?;
@@ -3853,8 +3855,8 @@ fn runSupervisedChildStreamingPipe(
     const parent_stderr = std.io.getStdErr();
     const stdout_target = if (args.json) parent_stderr else parent_stdout;
 
-    const stdout_thread = try std.Thread.spawn(.{}, readSupervisedChildStream, .{ stdout_file, &stdout_capture, stdout_target });
-    const stderr_thread = try std.Thread.spawn(.{}, readSupervisedChildStream, .{ stderr_file, &stderr_capture, parent_stderr });
+    const stdout_thread = try std.Thread.spawn(.{}, readObservedChildStream, .{ stdout_file, &stdout_capture, stdout_target });
+    const stderr_thread = try std.Thread.spawn(.{}, readObservedChildStream, .{ stderr_file, &stderr_capture, parent_stderr });
 
     stdout_thread.join();
     stderr_thread.join();
@@ -3865,7 +3867,7 @@ fn runSupervisedChildStreamingPipe(
 
     const stdout_items = stdout_capture.buffer[0..stdout_capture.len];
     const stderr_items = stderr_capture.buffer[0..stderr_capture.len];
-    const classification: ?[]const u8 = if (superviseOutputLooksLikeCodexUsageLimit(stdout_items) or superviseOutputLooksLikeCodexUsageLimit(stderr_items))
+    const classification: ?[]const u8 = if (observeOutputLooksLikeCodexUsageLimit(stdout_items) or observeOutputLooksLikeCodexUsageLimit(stderr_items))
         "codex_usage_limit"
     else
         null;
@@ -3877,9 +3879,9 @@ fn runSupervisedChildStreamingPipe(
     };
 }
 
-fn readSupervisedChildStream(
+fn readObservedChildStream(
     input: std.fs.File,
-    capture: *SuperviseStreamCapture,
+    capture: *ObserveStreamCapture,
     output: std.fs.File,
 ) void {
     var chunk: [4096]u8 = undefined;
@@ -3904,7 +3906,7 @@ fn buildPinnedExecEnvMap(
     cfg: config.Config,
     store: *health_mod.HealthStore,
     route: RepairPlanRoute,
-    args: cli.Command.SuperviseArgs,
+    args: cli.Command.ObserveArgs,
 ) !std.process.EnvMap {
     var ctx = pipeline.Context.init(allocator, cfg, store);
     defer ctx.deinit();
@@ -3929,26 +3931,11 @@ fn buildPinnedExecEnvMap(
     return env_map;
 }
 
-fn superviseRestartAdmitted(
-    args: cli.Command.SuperviseArgs,
-    term: std.process.Child.Term,
-    output_classification: ?[]const u8,
-    restart_count: u32,
-) bool {
-    if (restart_count >= args.max_restarts) return false;
-    if (args.restart_on_codex_usage_limit and superviseOutputClassificationIsCodexUsageLimit(output_classification)) return true;
-    const expected = args.restart_on_exit_code orelse return false;
-    return switch (term) {
-        .Exited => |code| code == expected,
-        else => false,
-    };
-}
-
-fn superviseOutputClassificationIsCodexUsageLimit(classification: ?[]const u8) bool {
+fn observeOutputClassificationIsCodexUsageLimit(classification: ?[]const u8) bool {
     return if (classification) |value| std.mem.eql(u8, value, "codex_usage_limit") else false;
 }
 
-fn superviseOutputLooksLikeCodexUsageLimit(output: []const u8) bool {
+fn observeOutputLooksLikeCodexUsageLimit(output: []const u8) bool {
     return containsAsciiIgnoreCase(output, "you've hit your usage limit") or
         containsAsciiIgnoreCase(output, "usage limit has been reached") or
         containsAsciiIgnoreCase(output, "usage_limit_reached") or
@@ -3966,13 +3953,13 @@ fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn recordStayAfloatSuperviseRouteHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) bool {
+fn recordStayAfloatObserveRouteHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) bool {
     const key = repairPlanRouteHealthKey(route);
     const classification = types.HttpClassification{ .quota_exhausted = .{ .retry_after_s = 7200 } };
     store.recordHttpClassification(key.slice(), 429, classification);
     store.recordProbeEvidence(
         key.slice(),
-        .supervised_child_output,
+        .observed_child_output,
         health_mod.retryAfterFromClassification(classification),
         health_mod.hintClassFromClassification(classification),
         health_mod.decisionFromClassification(classification),
@@ -3980,32 +3967,29 @@ fn recordStayAfloatSuperviseRouteHealth(store: *health_mod.HealthStore, route: R
     return true;
 }
 
-fn recordStayAfloatSuperviseEvent(
+fn recordStayAfloatObserveEvent(
     allocator: std.mem.Allocator,
-    args: cli.Command.SuperviseArgs,
+    args: cli.Command.ObserveArgs,
     route: RepairPlanRoute,
     term: std.process.Child.Term,
     output_classification: ?[]const u8,
     route_health_recorded: bool,
-    restart_admitted: bool,
 ) bool {
-    const outcome = if (restart_admitted)
-        "restart_admitted"
-    else if (superviseTermSucceeded(term))
+    const outcome = if (observeTermSucceeded(term))
         "target_completed"
     else
         "target_failed";
-    const reason = output_classification orelse if (args.restart_on_exit_code != null) "operator_exit_code" else "child_exit";
+    const reason = output_classification orelse if (args.classify_exit_code != null) "operator_exit_code" else "child_exit";
     repair_state.appendEvent(allocator, .{
-        .kind = "stay_afloat_supervise",
+        .kind = "stay_afloat_observe",
         .profile = args.profile,
         .provider = route.provider,
         .account = route.account,
         .capability = route.capability orelse args.capability,
-        .action = "supervise",
+        .action = "observe",
         .outcome = outcome,
         .reason = reason,
-        .ok = superviseTermSucceeded(term),
+        .ok = observeTermSucceeded(term),
         .executed = true,
         .interactive = args.stream_capture,
         .mutating = route_health_recorded,
@@ -4013,26 +3997,26 @@ fn recordStayAfloatSuperviseEvent(
     return true;
 }
 
-fn superviseRestartClassificationSource(args: cli.Command.SuperviseArgs) []const u8 {
-    if (args.restart_on_exit_code != null and args.restart_on_codex_usage_limit) return "operator_exit_code_or_codex_usage_limit_output";
-    if (args.restart_on_codex_usage_limit) return "codex_usage_limit_output";
-    if (args.restart_on_exit_code != null) return "operator_exit_code";
+fn observeClassificationSource(args: cli.Command.ObserveArgs) []const u8 {
+    if (args.classify_exit_code != null and args.classify_codex_usage_limit) return "operator_exit_code_or_codex_usage_limit_output";
+    if (args.classify_codex_usage_limit) return "codex_usage_limit_output";
+    if (args.classify_exit_code != null) return "operator_exit_code";
     return "none";
 }
 
-fn superviseCaptureTransport(args: cli.Command.SuperviseArgs) []const u8 {
-    if (!args.restart_on_codex_usage_limit) return if (args.json) "none" else "inherit";
+fn observeCaptureTransport(args: cli.Command.ObserveArgs) []const u8 {
+    if (!args.classify_codex_usage_limit) return if (args.json) "none" else "inherit";
     return if (args.stream_capture) "streaming_pipe" else "buffered_pipe";
 }
 
-fn superviseTermSucceeded(term: std.process.Child.Term) bool {
+fn observeTermSucceeded(term: std.process.Child.Term) bool {
     return switch (term) {
         .Exited => |code| code == 0,
         else => false,
     };
 }
 
-fn superviseTermKind(term: std.process.Child.Term) []const u8 {
+fn observeTermKind(term: std.process.Child.Term) []const u8 {
     return switch (term) {
         .Exited => "exited",
         .Signal => "signal",
@@ -4041,7 +4025,7 @@ fn superviseTermKind(term: std.process.Child.Term) []const u8 {
     };
 }
 
-fn superviseTermCode(term: std.process.Child.Term) u32 {
+fn observeTermCode(term: std.process.Child.Term) u32 {
     return switch (term) {
         .Exited => |code| code,
         .Signal => |signal| signal,
@@ -4050,44 +4034,45 @@ fn superviseTermCode(term: std.process.Child.Term) u32 {
     };
 }
 
-fn writeStayAfloatSuperviseJson(
+fn writeStayAfloatObserveJson(
     writer: anytype,
-    args: cli.Command.SuperviseArgs,
-    attempts: []const SuperviseAttempt,
-    restart_count: u32,
+    args: cli.Command.ObserveArgs,
+    attempts: []const ObserveAttempt,
+    relaunch_count: u32,
     reason: []const u8,
 ) !void {
-    const ok = attempts.len > 0 and superviseTermSucceeded(attempts[attempts.len - 1].term);
+    const ok = attempts.len > 0 and observeTermSucceeded(attempts[attempts.len - 1].term);
     const prepared_fallback = attempts.len > 0;
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
-    try writer.writeAll(",\"mode\":\"stay_afloat_supervise\",\"ok\":");
+    try writer.writeAll(",\"mode\":\"stay_afloat_observe\",\"ok\":");
     try writer.writeAll(if (ok) "true" else "false");
     try writer.writeAll(",\"reason\":");
     try std.json.stringify(reason, .{}, writer);
-    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":");
-    try std.json.stringify(if (restart_count > 0) "supervised_restart" else "supervised_process", .{}, writer);
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"observed_child_process\"");
     try writer.writeAll(",\"prepared_fallback\":");
     try writer.writeAll(if (prepared_fallback) "true" else "false");
-    try writer.writeAll(",\"supervised_restart\":");
-    try writer.writeAll(if (restart_count > 0) "true" else "false");
-    try writer.writeAll(",\"wrapper_owned_process\":true,\"restart_classification_source\":");
-    try std.json.stringify(superviseRestartClassificationSource(args), .{}, writer);
+    try writer.writeAll(",\"supervised_restart\":false,\"diagnostic_relaunch_observed\":");
+    try writer.writeAll(if (relaunch_count > 0) "true" else "false");
+    try writer.writeAll(",\"acceptable_seamless_behavior\":false");
+    try writer.writeAll(",\"child_process_observed\":true,\"classification_source\":");
+    try std.json.stringify(observeClassificationSource(args), .{}, writer);
     try writer.writeAll(",\"route_health_recorded\":");
-    try writer.writeAll(if (superviseAttemptsRecordedRouteHealth(attempts)) "true" else "false");
+    try writer.writeAll(if (observeAttemptsRecordedRouteHealth(attempts)) "true" else "false");
     try writer.writeAll(",\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
-    try writer.writeAll(",\"max_restarts\":");
-    try writer.print("{d}", .{args.max_restarts});
-    try writer.writeAll(",\"restart_on_exit_code\":");
-    if (args.restart_on_exit_code) |code| try writer.print("{d}", .{code}) else try writer.writeAll("null");
-    try writer.writeAll(",\"restart_on_codex_usage_limit\":");
-    try writer.writeAll(if (args.restart_on_codex_usage_limit) "true" else "false");
+    try writer.writeAll(",\"legacy_max_restarts\":");
+    try writer.print("{d}", .{args.legacy_max_restarts});
+    try writer.writeAll(",\"relaunch_enabled\":false");
+    try writer.writeAll(",\"classify_exit_code\":");
+    if (args.classify_exit_code) |code| try writer.print("{d}", .{code}) else try writer.writeAll("null");
+    try writer.writeAll(",\"classify_codex_usage_limit\":");
+    try writer.writeAll(if (args.classify_codex_usage_limit) "true" else "false");
     try writer.writeAll(",\"capture_transport\":");
-    try std.json.stringify(superviseCaptureTransport(args), .{}, writer);
+    try std.json.stringify(observeCaptureTransport(args), .{}, writer);
     try writer.writeAll(",\"live_child_output_streamed\":");
-    try writer.writeAll(if (args.stream_capture and args.restart_on_codex_usage_limit) "true" else "false");
-    try writer.writeAll(",\"restart_count\":");
-    try writer.print("{d}", .{restart_count});
+    try writer.writeAll(if (args.stream_capture and args.classify_codex_usage_limit) "true" else "false");
+    try writer.writeAll(",\"relaunch_count\":");
+    try writer.print("{d}", .{relaunch_count});
     try writer.writeAll(",\"attempts\":[");
     for (attempts, 0..) |attempt, idx| {
         if (idx != 0) try writer.writeByte(',');
@@ -4095,9 +4080,9 @@ fn writeStayAfloatSuperviseJson(
         try writer.writeAll("\"selected\":");
         try writeRouteSelectionJson(writer, attempt.route);
         try writer.writeAll(",\"term\":{\"kind\":");
-        try std.json.stringify(superviseTermKind(attempt.term), .{}, writer);
+        try std.json.stringify(observeTermKind(attempt.term), .{}, writer);
         try writer.writeAll(",\"code\":");
-        try writer.print("{d}", .{superviseTermCode(attempt.term)});
+        try writer.print("{d}", .{observeTermCode(attempt.term)});
         try writer.writeAll("},\"output_classification\":");
         if (attempt.output_classification) |classification| try std.json.stringify(classification, .{}, writer) else try writer.writeAll("null");
         try writer.writeAll(",\"captured_stdout_bytes\":");
@@ -4108,50 +4093,50 @@ fn writeStayAfloatSuperviseJson(
         try writer.writeAll(if (attempt.route_health_recorded) "true" else "false");
         try writer.writeAll(",\"event_recorded\":");
         try writer.writeAll(if (attempt.event_recorded) "true" else "false");
-        try writer.writeAll(",\"restart_admitted\":");
-        try writer.writeAll(if (attempt.restart_admitted) "true" else "false");
+        try writer.writeAll(",\"relaunch_admitted\":");
+        try writer.writeAll(if (attempt.relaunch_admitted) "true" else "false");
         try writer.writeByte('}');
     }
     try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"captured_output_in_json\":false,\"captured_output_printed\":false,\"live_child_output_streamed\":");
-    try writer.writeAll(if (args.stream_capture and args.restart_on_codex_usage_limit) "true" else "false");
+    try writer.writeAll(if (args.stream_capture and args.classify_codex_usage_limit) "true" else "false");
     try writer.writeAll(",\"raw_protocol_printed\":false}}\n");
 }
 
-fn writeStayAfloatSuperviseText(
+fn writeStayAfloatObserveText(
     writer: anytype,
-    args: cli.Command.SuperviseArgs,
-    attempts: []const SuperviseAttempt,
-    restart_count: u32,
+    args: cli.Command.ObserveArgs,
+    attempts: []const ObserveAttempt,
+    relaunch_count: u32,
     reason: []const u8,
 ) !void {
-    const ok = attempts.len > 0 and superviseTermSucceeded(attempts[attempts.len - 1].term);
-    try writer.writeAll("oauth-mux stay-afloat supervise\n\n");
+    const ok = attempts.len > 0 and observeTermSucceeded(attempts[attempts.len - 1].term);
+    try writer.writeAll("oauth-mux stay-afloat observe\n\n");
     try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
     try writer.print("  reason: {s}\n", .{reason});
-    try writer.print("  max restarts: {d}\n", .{args.max_restarts});
-    try writer.writeAll("  restart on exit code: ");
-    if (args.restart_on_exit_code) |code| try writer.print("{d}\n", .{code}) else try writer.writeAll("not configured\n");
-    try writer.print("  restart on Codex usage limit: {s}\n", .{if (args.restart_on_codex_usage_limit) "true" else "false"});
-    try writer.print("  capture transport: {s}\n", .{superviseCaptureTransport(args)});
-    try writer.print("  live child output streamed: {s}\n", .{if (args.stream_capture and args.restart_on_codex_usage_limit) "true" else "false"});
-    try writer.print("  restart count: {d}\n", .{restart_count});
+    try writer.print("  legacy max restarts: {d} (relaunch disabled)\n", .{args.legacy_max_restarts});
+    try writer.writeAll("  classify exit code: ");
+    if (args.classify_exit_code) |code| try writer.print("{d}\n", .{code}) else try writer.writeAll("not configured\n");
+    try writer.print("  classify Codex usage limit: {s}\n", .{if (args.classify_codex_usage_limit) "true" else "false"});
+    try writer.print("  capture transport: {s}\n", .{observeCaptureTransport(args)});
+    try writer.print("  live child output streamed: {s}\n", .{if (args.stream_capture and args.classify_codex_usage_limit) "true" else "false"});
+    try writer.print("  relaunch count: {d}\n", .{relaunch_count});
     for (attempts, 0..) |attempt, idx| {
         try writer.print("  attempt {d}: {s}:{s}", .{ idx + 1, attempt.route.provider, attempt.route.account });
         if (attempt.route.capability) |cap| try writer.print("#{s}", .{cap});
-        try writer.print(" {s}:{d} restart_admitted={s}", .{
-            superviseTermKind(attempt.term),
-            superviseTermCode(attempt.term),
-            if (attempt.restart_admitted) "true" else "false",
+        try writer.print(" {s}:{d} relaunch_admitted={s}", .{
+            observeTermKind(attempt.term),
+            observeTermCode(attempt.term),
+            if (attempt.relaunch_admitted) "true" else "false",
         });
         if (attempt.output_classification) |classification| try writer.print(" classification={s}", .{classification});
         if (attempt.route_health_recorded) try writer.writeAll(" route_health_recorded=true");
         if (attempt.event_recorded) try writer.writeAll(" event_recorded=true");
         try writer.writeByte('\n');
     }
-    try writer.writeAll("  boundary: wrapper-owned child restart only; no current-process hot-swap or per-request muxing\n");
+    try writer.writeAll("  boundary: diagnostic child observation only; relaunch is disabled and not an acceptable seamless stay-afloat behavior\n");
 }
 
-fn superviseAttemptsRecordedRouteHealth(attempts: []const SuperviseAttempt) bool {
+fn observeAttemptsRecordedRouteHealth(attempts: []const ObserveAttempt) bool {
     for (attempts) |attempt| {
         if (attempt.route_health_recorded) return true;
     }
@@ -4300,7 +4285,7 @@ fn runDaemonTick(
     }
 }
 
-fn runSupervisedStayAfloat(
+fn runForegroundStayAfloatLoop(
     allocator: std.mem.Allocator,
     writer: anytype,
     args: cli.Command.DaemonTickArgs,
@@ -15387,9 +15372,9 @@ test "seedLiveQaCapabilities deduplicates requested coverage keys" {
 }
 
 test "supervise Codex usage-limit output classifier recognizes native screen" {
-    try std.testing.expect(superviseOutputLooksLikeCodexUsageLimit("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage"));
-    try std.testing.expect(superviseOutputLooksLikeCodexUsageLimit("{\"type\":\"usage_limit_reached\"}"));
-    try std.testing.expect(!superviseOutputLooksLikeCodexUsageLimit("ordinary child failure"));
+    try std.testing.expect(observeOutputLooksLikeCodexUsageLimit("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage"));
+    try std.testing.expect(observeOutputLooksLikeCodexUsageLimit("{\"type\":\"usage_limit_reached\"}"));
+    try std.testing.expect(!observeOutputLooksLikeCodexUsageLimit("ordinary child failure"));
 }
 
 // Pull in all module tests

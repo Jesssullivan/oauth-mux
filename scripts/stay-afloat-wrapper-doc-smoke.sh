@@ -14,10 +14,10 @@ expect() {
 test -f "$doc"
 
 expect "oauth-mux daemon run --stay-afloat --profile"
-expect "oauth-mux daemon supervise --profile"
+expect "oauth-mux daemon loop --profile"
 expect "oauth-mux daemon status --json"
 expect "oauth-mux daemon stop"
-expect "supervised-harness-restart-contract-2026-05-02.md"
+expect "observed-child-diagnostic-contract-2026-05-02.md"
 expect "production_supported:false"
 expect "hosts_stay_afloat:false"
 expect "socket:null"

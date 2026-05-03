@@ -12,7 +12,7 @@ stay-afloat truth is covered by
 `docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md`. The active Codex Max
 cohort is four routes: `max-1` selected, `max-4` spare fallback, and
 `max-2`/`max-3` provider quota-exhausted for `codex-max`. Prepared fallback,
-broker-owned sessions, and supervised restart wrappers have landed; true
+broker-owned sessions, and diagnostic child-capture surfaces have landed; true
 provider-owned active-session handoff remains unproven.
 
 ## Correction
