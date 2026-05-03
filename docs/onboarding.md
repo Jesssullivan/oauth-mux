@@ -190,6 +190,10 @@ repair owner, and any user-facing command to run. The same response includes a
 `claim` object. `claim.level:"prepared_fallback"` means oauth-mux can start the
 next harness process through `claim.launch_argv`; it is not a current-process
 hot swap, supervised restart, or per-request muxing claim.
+Check `resilience.spare_fallback_ready` and `claim.single_route_at_risk` before
+calling a profile comfortably afloat: if only one route is selectable, the next
+quota/rate-limit failure may still need revalidation, waiting, or another
+account.
 Codex app-server auth brokering is tracked separately as a possible
 current-process proof for mediated Codex sessions; unmanaged Codex launches
 should still be treated as prepared fallback only.

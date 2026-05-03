@@ -364,7 +364,9 @@ stay_next="$(omux stay-afloat next --profile expensive --capability expensive --
 expect_contains "$stay_next" '"action":"next"' "stay-afloat next reports action"
 expect_contains "$stay_next" '"ready_for_exec":true' "stay-afloat next reports executable route"
 expect_contains "$stay_next" '"selected":{"provider":"toy","account":"a2"' "stay-afloat next selects fallback account a2"
+expect_contains "$stay_next" '"resilience":{"selected_route_ready":true,"selectable_fallback_routes":0,"spare_fallback_ready":false,"single_route_at_risk":true' "stay-afloat next reports no spare fallback"
 expect_contains "$stay_next" '"claim":{"claim_version":1,"level":"prepared_fallback"' "stay-afloat next reports prepared fallback claim"
+expect_contains "$stay_next" '"single_route_at_risk":true' "stay-afloat next claim reports single-route risk"
 expect_contains "$stay_next" '"current_process_hotswap":false' "stay-afloat next refuses current-process hot swap claim"
 expect_contains "$stay_next" '"launch_argv":["oauth-mux","stay-afloat","launch","--profile","expensive","--capability","expensive","--","<command>"]' "stay-afloat next returns launch argv claim"
 expect_contains "$stay_next" '"next_action":{"kind":"exec"' "stay-afloat next returns exec mediation"
@@ -398,6 +400,7 @@ expect_contains "$daemon_tick" '"mode":"once"' "daemon tick reports one-shot mod
 expect_contains "$daemon_tick" '"executed":false' "daemon tick does not execute probes or repair"
 expect_contains "$daemon_tick" '"afloat":true' "daemon tick reports profile afloat"
 expect_contains "$daemon_tick" '"selected":{"provider":"toy","account":"a2"' "daemon tick selects fallback account a2"
+expect_contains "$daemon_tick" '"resilience":{"selected_route_ready":true,"selectable_fallback_routes":0,"spare_fallback_ready":false,"single_route_at_risk":true' "daemon tick reports no spare fallback"
 expect_contains "$daemon_tick" '"claim":{"claim_version":1,"level":"prepared_fallback"' "daemon tick reports prepared fallback claim"
 expect_contains "$daemon_tick" '"max_supported_level":"prepared_fallback"' "daemon tick reports maximum supported claim level"
 expect_contains "$daemon_tick" '"current_process_hotswap":false' "daemon tick refuses current-process hot-swap claim"
@@ -415,6 +418,7 @@ expect_contains "$stay_afloat" '"mode":"once"' "stay-afloat reports one-shot mod
 expect_contains "$stay_afloat" '"executed":false' "stay-afloat remains planning-only by default"
 expect_contains "$stay_afloat" '"afloat":true' "stay-afloat reports profile afloat"
 expect_contains "$stay_afloat" '"selected":{"provider":"toy","account":"a2"' "stay-afloat selects fallback account a2"
+expect_contains "$stay_afloat" '"single_route_at_risk":true' "stay-afloat reports selected route has no spare fallback"
 expect_contains "$stay_afloat" '"next_tick_reason":"wait_until"' "stay-afloat exposes scheduler summary"
 
 printf 'e2e: daemon status exposes latest stay-afloat snapshot without promoting socket daemon\n'

@@ -146,7 +146,10 @@ proxy, or in-agent adapter proves those stronger levels.
 - `claim.level:"prepared_fallback"` in `stay-afloat` / `daemon tick` JSON and
   in the latest `daemon status --json` snapshot when a route is selectable.
   Wrappers should pair that with the emitted `claim.launch_argv` and should not
-  infer current-process hot-swap or per-request muxing.
+  infer current-process hot-swap or per-request muxing. They should also read
+  `resilience.spare_fallback_ready` / `claim.single_route_at_risk`: a selected
+  route without a spare fallback is afloat for the next launch, but not
+  resilient to another immediate quota/rate-limit failure.
 - `oauth-mux daemon run --stay-afloat --profile <profile> --capability
   <capability>` as the first opt-in beta host for the same tick engine. It
   reports `stay_afloat_loop.hosted:true` plus the hosted selector, cadence, and

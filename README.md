@@ -134,6 +134,10 @@ secret mutation. It also returns a `claim` object so agents can distinguish the
 current product level: today `prepared_fallback` means a new process can be
 launched through `claim.launch_argv`, while `current_process_hotswap`,
 `supervised_restart`, and `per_request_muxing` remain false.
+`resilience.spare_fallback_ready` and `claim.single_route_at_risk` distinguish
+"a selected route exists" from "another selectable route is already available
+behind it"; an afloat profile with no spare route is still usable, but the next
+quota/rate-limit failure may need revalidation or waiting.
 Codex app-server auth brokering is a separate proof track for mediated Codex
 sessions, not a current public claim.
 `codex broker-plan --json` is the no-spend first slice of that track: it reads
@@ -278,9 +282,11 @@ uses the earliest summary wake-up hint between ticks, bounded by
 latest `daemon status --json` snapshot also include `claim.level`. A
 `prepared_fallback` claim means the next mediated `stay-afloat launch` can pick
 a route; it does not claim current-process hot-swap, supervised restart, or
-per-request muxing. A provider-specific auth-broker path, starting with Codex
-app-server external auth, must be proven before `current_process_hotswap` can
-be true. `daemon status --json` also reports
+per-request muxing. Use `resilience.spare_fallback_ready` and
+`claim.single_route_at_risk` to tell whether that selected route has another
+ready fallback behind it. A provider-specific auth-broker path, starting with
+Codex app-server external auth, must be proven before
+`current_process_hotswap` can be true. `daemon status --json` also reports
 `stay_afloat_snapshot` metadata with presence, parseability, `last_tick_at`,
 `age_seconds`, active-loop correlation, a 300 second staleness threshold, and a
 fresh/stale reason so wrappers can reject old prepared-fallback claims. When
