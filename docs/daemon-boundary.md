@@ -47,6 +47,8 @@ See `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md` for the Codex
 app-server auth-broker proof track, Linear `TIN-913` / GitHub `#125`.
 See `docs/stay-afloat-wrappers.md` for beta wrapper recipes and soak checks
 tracked by `TIN-899` / GitHub #105.
+See `docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md` for the paid
+cohort soak and public-claim gate tracked by `TIN-895`.
 See `docs/provider-repair-contracts.md` for the provider-mediated action
 contract tracked by `TIN-900` / GitHub #106.
 
