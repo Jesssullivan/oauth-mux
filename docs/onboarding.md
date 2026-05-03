@@ -198,6 +198,20 @@ Codex app-server auth brokering is tracked separately as a possible
 current-process proof for mediated Codex sessions; unmanaged Codex launches
 should still be treated as prepared fallback only.
 Use
+`oauth-mux codex managed-plan --profile codex-max --capability codex-max
+--json` to inspect the native Codex managed-launch boundary without starting
+Codex. It reports the selected route, the route-local `CODEX_HOME` resume
+namespace, and fallback readiness while keeping credential paths and forwarded
+native argv out of output.
+Use
+`oauth-mux codex managed --profile codex-max --capability codex-max --` to
+start native Codex under oauth-mux route selection from the beginning. For
+route-local resume, run
+`oauth-mux codex managed --profile codex-max --capability codex-max
+--resume-last --include-non-interactive`. This resumes only within the selected
+route store; it does not import an unmanaged session from another account store
+or prove same-thread quota handoff.
+Use
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 to inspect whether enrolled Codex stores can supply the app-server
 external-auth tuple for that future broker path. It is local, redacted,

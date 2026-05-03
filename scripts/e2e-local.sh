@@ -753,6 +753,18 @@ broker_session_bin="$tmp/broker-session-bin"
 mkdir -p "$broker_session_state" "$broker_session_max1_home" "$broker_session_max2_home" "$broker_session_max3_home" "$broker_session_bin"
 cat >"$broker_session_bin/codex" <<'EOF'
 #!/bin/sh
+if [ -n "${OMUX_E2E_MANAGED_OUT:-}" ]; then
+  {
+    printf 'account=%s\n' "${OMUX_ACTIVE_ACCOUNT:-}"
+    printf 'capability=%s\n' "${OMUX_ACTIVE_CAPABILITY:-}"
+    printf 'codex_home=%s\n' "${CODEX_HOME:-}"
+    printf 'args='
+    for arg in "$@"; do
+      printf '[%s]' "$arg"
+    done
+    printf '\n'
+  } >"$OMUX_E2E_MANAGED_OUT"
+fi
 exit 0
 EOF
 chmod +x "$broker_session_bin/codex"
@@ -892,6 +904,42 @@ expect_not_contains "$broker_session_plan" 'acct-session-spare' "broker-session-
 expect_not_contains "$broker_session_plan" "$broker_jwt" "broker-session-plan does not expose token value"
 expect_not_contains "$broker_session_plan" 'broker-session-refresh-token' "broker-session-plan does not expose refresh token value"
 expect_not_contains "$broker_session_plan" 'broker-session-spare-token' "broker-session-plan does not expose spare refresh token value"
+
+printf 'e2e: codex managed-plan reports route-local native launch boundary\n'
+managed_plan="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed-plan --profile codex-max --capability codex-max --json)"
+expect_contains "$managed_plan" '"mode":"codex_managed_session_plan"' "managed-plan reports managed session mode"
+expect_contains "$managed_plan" '"spends_provider_calls":false' "managed-plan reports no provider spend"
+expect_contains "$managed_plan" '"mutates_route_health":false' "managed-plan reports no route-health mutation"
+expect_contains "$managed_plan" '"executes_child":false' "managed-plan does not launch child in plan mode"
+expect_contains "$managed_plan" '"level":"managed_codex_process"' "managed-plan reports managed process claim level"
+expect_contains "$managed_plan" '"proof_status":"managed_launch_planning_only"' "managed-plan scopes proof to planning"
+expect_contains "$managed_plan" '"route_local_resume":true' "managed-plan reports route-local resume namespace"
+expect_contains "$managed_plan" '"resume_namespace":"selected_route_codex_home"' "managed-plan names selected CODEX_HOME namespace"
+expect_contains "$managed_plan" '"selected":{"provider":"codex","account":"max-2","capability":"codex-max"' "managed-plan selects first live route"
+expect_contains "$managed_plan" '"prepared_fallback":true' "managed-plan reports prepared fallback"
+expect_contains "$managed_plan" '"path_printed":false' "managed-plan does not print CODEX_HOME path"
+expect_contains "$managed_plan" '"argv_printed":false' "managed-plan does not print native Codex argv"
+expect_contains "$managed_plan" '"unmanaged_cross_route_resume":false' "managed-plan refuses unmanaged cross-route resume claim"
+expect_contains "$managed_plan" '"unmanaged_tui_hotswap":false' "managed-plan keeps unmanaged TUI boundary explicit"
+expect_not_contains "$managed_plan" "$broker_session_max2_home" "managed-plan does not expose selected CODEX_HOME path"
+expect_not_contains "$managed_plan" 'acct-session-fallback' "managed-plan does not expose selected account id value"
+
+managed_resume_plan="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume-last --include-non-interactive --json -- --model gpt-5.5)"
+expect_contains "$managed_resume_plan" '"mode":"codex_managed_session_plan"' "managed --json returns a non-executing plan"
+expect_contains "$managed_resume_plan" '"requested":true' "managed --json reports resume request"
+expect_contains "$managed_resume_plan" '"resume_last":true' "managed --json reports resume-last"
+expect_contains "$managed_resume_plan" '"include_non_interactive":true' "managed --json reports include-non-interactive"
+expect_contains "$managed_resume_plan" '"passthrough_arg_count":2' "managed --json counts forwarded Codex args without printing them"
+expect_not_contains "$managed_resume_plan" 'gpt-5.5' "managed --json does not print forwarded model arg"
+
+printf 'e2e: codex managed launches native Codex with selected route-local CODEX_HOME\n'
+managed_launch_out="$tmp/managed-launch.out"
+PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_launch_out" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max -- --no-alt-screen
+managed_launch="$(cat "$managed_launch_out")"
+expect_contains "$managed_launch" 'account=max-2' "managed launch injects selected account"
+expect_contains "$managed_launch" 'capability=codex-max' "managed launch injects selected capability"
+expect_contains "$managed_launch" "codex_home=$broker_session_max2_home" "managed launch injects selected route CODEX_HOME"
+expect_contains "$managed_launch" 'args=[--no-alt-screen]' "managed launch forwards Codex args after --"
 
 printf 'e2e: codex revalidate-exhausted requires spend confirmation before mutating route health\n'
 broker_revalidate_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex revalidate-exhausted --profile codex-max --capability codex-max --account max-1 --json 2>/dev/null || true)"

@@ -26,6 +26,9 @@ The supported contract is still the portable tick engine:
 ```bash
 oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
+oauth-mux codex managed-plan --profile codex-max --capability codex-max --json
+oauth-mux codex managed --profile codex-max --capability codex-max -- --no-alt-screen
+oauth-mux codex managed --profile codex-max --capability codex-max --resume-last --include-non-interactive
 oauth-mux stay-afloat supervise --profile codex-max --capability codex-max --max-restarts 1 --restart-on-exit-code 42 -- codex
 oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
 oauth-mux daemon tick --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
@@ -44,6 +47,13 @@ state before startup, launch can refresh route evidence and try the next
 selectable account when a route that looked selectable at preflight is
 reclassified before the target starts. If no selectable account remains, it
 prints the refreshed mediation text and exits nonzero.
+
+For native Codex, prefer `codex managed` over a bare `stay-afloat launch -- codex`
+when you want the invocation and resume semantics to be explicit. It uses the
+same selected route boundary, injects the selected route-local `CODEX_HOME`,
+and can forward `resume --last --include-non-interactive` for sessions created
+in that store. It still cannot import or rescue an unmanaged already-running
+Codex session.
 
 Use `stay-afloat supervise --max-restarts <n> --restart-on-exit-code <code>
 -- <command>` when oauth-mux should own the child process boundary. The generic

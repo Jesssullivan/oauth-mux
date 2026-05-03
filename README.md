@@ -110,6 +110,9 @@ OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux stay-afloat launch --p
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux repair-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux accounts list --provider codex --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux doctor runtime --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex managed-plan --profile codex-max --capability codex-max --json
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex managed --profile codex-max --capability codex-max -- --no-alt-screen
+OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex managed --profile codex-max --capability codex-max --resume-last --include-non-interactive
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max --confirm-broker --json
@@ -143,6 +146,16 @@ launched through `claim.launch_argv`, while `current_process_hotswap`,
 "a selected route exists" from "another selectable route is already available
 behind it"; an afloat profile with no spare route is still usable, but the next
 quota/rate-limit failure may need revalidation or waiting.
+`codex managed-plan --json` is the no-spend planning surface for native Codex
+sessions started under oauth-mux from the beginning. It reports the route that
+would launch, the selected route-local `CODEX_HOME` namespace, immediate
+fallback readiness, and the fact that resume IDs are resolved inside that
+selected store. `codex managed --profile ... --capability ... --` is the
+matching launch command; it uses the same route selection as `stay-afloat
+launch` and then execs native `codex`. Use `--resume-last
+--include-non-interactive` when resuming a session that was created under the
+same route-local store. This is managed process launch, not import or rescue of
+an unmanaged already-running Codex session.
 Codex app-server auth brokering is a separate proof track for mediated Codex
 sessions, not a current public claim for unmanaged Codex processes. Broker-owned
 Codex session surfaces use `claim.level:"broker_owned_app_server"`; reserve

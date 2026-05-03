@@ -123,6 +123,15 @@ ready behind it. Codex app-server auth brokering is now tracked as the first
 plausible current-process proof path for mediated Codex sessions, but it is not
 a claim for unmanaged Codex TUI/CLI processes.
 
+`oauth-mux codex managed-plan --profile codex-max --capability codex-max
+--json` is the no-spend plan for native Codex sessions launched under
+oauth-mux. `oauth-mux codex managed --profile codex-max --capability codex-max
+--` is the matching entrypoint; it selects a route, injects the selected
+route-local `CODEX_HOME`, and execs native `codex`. Add `--resume-last
+--include-non-interactive` only for sessions created in that same selected
+route store. This is managed process launch/resume, not an unmanaged in-place
+handoff claim.
+
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 is the no-spend broker readiness check. It reads configured Codex auth stores
 locally and reports whether each route can supply `accessToken`,

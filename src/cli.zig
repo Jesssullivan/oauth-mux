@@ -196,6 +196,8 @@ pub const Command = union(enum) {
         probe_all,
         config_candidate,
         config_merge,
+        managed_plan,
+        managed,
         broker_plan,
         broker_session_plan,
         broker_session_smoke,
@@ -224,6 +226,10 @@ pub const Command = union(enum) {
         prompt: ?[]const u8 = null,
         model: ?[]const u8 = null,
         from_account: ?[]const u8 = null,
+        resume_id: ?[]const u8 = null,
+        resume_last: bool = false,
+        include_non_interactive: bool = false,
+        managed_argv: []const []const u8 = &.{},
         stdin_prompts: bool = false,
         continue_on_failure: bool = false,
         output: ?[]const u8 = null,
@@ -948,6 +954,10 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .config_candidate;
         } else if (eql(args[0], "config-merge")) {
             result.action = .config_merge;
+        } else if (eql(args[0], "managed-plan")) {
+            result.action = .managed_plan;
+        } else if (eql(args[0], "managed")) {
+            result.action = .managed;
         } else if (eql(args[0], "broker-plan")) {
             result.action = .broker_plan;
         } else if (eql(args[0], "broker-session-plan")) {
@@ -981,7 +991,10 @@ fn parseCodex(args: []const []const u8) Command {
 fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, option_start: usize) void {
     var i = option_start;
     while (i < args.len) : (i += 1) {
-        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+        if (eql(args[i], "--")) {
+            result.managed_argv = args[i + 1 ..];
+            break;
+        } else if (eql(args[i], "--profile") or eql(args[i], "-p")) {
             i += 1;
             if (i < args.len) result.profile = args[i];
         } else if (eql(args[i], "--account")) {
@@ -1014,6 +1027,13 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
         } else if (eql(args[i], "--from-account")) {
             i += 1;
             if (i < args.len) result.from_account = args[i];
+        } else if (eql(args[i], "--resume")) {
+            i += 1;
+            if (i < args.len) result.resume_id = args[i];
+        } else if (eql(args[i], "--resume-last")) {
+            result.resume_last = true;
+        } else if (eql(args[i], "--include-non-interactive")) {
+            result.include_non_interactive = true;
         } else if (eql(args[i], "--stdin")) {
             result.stdin_prompts = true;
         } else if (eql(args[i], "--continue-on-failure")) {
@@ -1167,6 +1187,12 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
         \\      Probe every selected Codex account/capability route.
         \\
+        \\  codex managed-plan [--profile name] [--capability c] [--json]
+        \\      Plan a managed native Codex launch with route-local resume semantics.
+        \\
+        \\  codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
+        \\      Launch native Codex through stay-afloat route selection and selected CODEX_HOME.
+        \\
         \\  codex broker-plan [--profile name] [--capability c] [--json]
         \\      Inspect local app-server auth material only; use broker-session-plan for route-aware selection.
         \\
@@ -1233,6 +1259,8 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\  oauth-mux codex revalidate-exhausted [--profile name] [--capability c] [--account a] --confirm-spend [--json]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
+        \\  oauth-mux codex managed-plan [--profile name] [--capability c] [--json]
+        \\  oauth-mux codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
         \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
@@ -1253,6 +1281,9 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\Safety:
         \\  canary is no-spend unless --live is provided.
         \\  live-qa, revalidate-exhausted, probe-all, and canary --live run real provider probes.
+        \\  managed-plan is no-spend. managed launches native Codex under the
+        \\  selected route-local CODEX_HOME, so provider calls depend on the
+        \\  Codex child process and are not made during planning.
         \\  broker-smoke, broker-refresh-smoke, broker-401-smoke,
         \\  broker-quota-smoke, broker-session-smoke, and broker-run read a
         \\  selected Codex route secret and send it only to a broker-owned
@@ -1491,6 +1522,39 @@ test "parse codex broker session plan" {
             try std.testing.expectEqualStrings("codex-max", codex.profile.?);
             try std.testing.expectEqualStrings("codex-max", codex.capabilities);
             try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex managed plan" {
+    const args = [_][]const u8{ "codex", "managed-plan", "--profile", "codex-max", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .managed_plan);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex managed resume last passthrough" {
+    const args = [_][]const u8{ "codex", "managed", "--profile", "codex-max", "--capability", "codex-max", "--resume-last", "--include-non-interactive", "--", "--model", "gpt-5.5", "--no-alt-screen" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .managed);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expect(codex.resume_last);
+            try std.testing.expect(codex.include_non_interactive);
+            try std.testing.expectEqual(@as(usize, 3), codex.managed_argv.len);
+            try std.testing.expectEqualStrings("--model", codex.managed_argv[0]);
+            try std.testing.expectEqualStrings("gpt-5.5", codex.managed_argv[1]);
+            try std.testing.expectEqualStrings("--no-alt-screen", codex.managed_argv[2]);
         },
         else => return error.Unexpected,
     }
@@ -2130,7 +2194,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa revalidate-exhausted probe-all broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run supervise start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host beta supervised stay-afloat loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
