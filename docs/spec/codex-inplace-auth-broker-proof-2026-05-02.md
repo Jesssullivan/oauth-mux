@@ -359,6 +359,11 @@ For quota-driven account changes, use a different action name, such as
   <https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs>,
   and
   <https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/account.rs>.
+- `stay-afloat supervise --restart-on-codex-usage-limit` is the matching
+  wrapper-owned instrumentation path. It classifies the usage-limit screen from
+  captured child output, records route health, and restarts on the next route
+  only because oauth-mux owns the child process boundary. It still does not
+  prove same-thread or unmanaged TUI hot-swap.
 - Exhausted route revalidation is spend-gated. It exists for external billing,
   plan, or credit changes: bypass only recorded exhausted route-health blocks,
   re-probe the provider, and persist the fresh capability evidence. It removes

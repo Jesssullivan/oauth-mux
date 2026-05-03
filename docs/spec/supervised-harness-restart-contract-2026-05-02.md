@@ -212,19 +212,24 @@ When the extra paid Codex account is ready:
 5. Refactor exec environment preparation so `launch` can keep using `execve`
    while `supervise` can spawn with the same selected env. First spawn path
    added.
-6. Add bounded restart JSON and event logging. JSON evidence added; event
-   logging remains open.
-7. Run Codex dogfood with one exhausted account and one credited fallback
+6. Add bounded restart JSON and event logging. Done for exit-code and Codex
+   usage-limit classifiers; events are redacted `stay_afloat_supervise` records.
+7. Add Codex usage-limit output classification. Done for wrapper-owned child
+   processes with `--restart-on-codex-usage-limit`: captured output is hidden,
+   route health is recorded as quota-exhausted, and selection moves to the next
+   route.
+8. Run Codex dogfood with one exhausted account and one credited fallback
    account.
-8. Only then consider promoting `claim.supervised_restart:true` for the exact
+9. Only then consider promoting `claim.supervised_restart:true` for the exact
    wrapper path that passed.
 
 ## Open Decisions
 
 - Whether restart classification should be provider-owned, command-owned, or a
   generic table in config.
-- Whether the first supervised command should capture output or only classify
-  exit codes and refresh-probe evidence.
+- Output capture is now admitted only for the Codex usage-limit classifier and
+  remains redacted. Generic arbitrary provider-output parsing remains out of
+  scope.
 - Whether a long-running terminal UI such as Codex should be restarted
   automatically, or whether the first version should stop and print the exact
   relaunch command for user confirmation.

@@ -235,6 +235,10 @@ It keeps oauth-mux as the parent process, injects the selected route into a
 child, and restarts on a distinct selectable route only for the configured exit
 code. This is useful for harnesses or test wrappers that can make failures
 typed; it is not unmanaged in-process token replacement.
+For Codex dogfood, add `--restart-on-codex-usage-limit`. That mode captures
+child output, classifies the native usage-limit screen, records the selected
+route as quota-exhausted, appends a redacted `stay_afloat_supervise` event, and
+restarts on the next selectable route. Captured provider output remains hidden.
 
 `oauth-mux accounts list --json` is the provider-neutral account inventory
 surface. It reports configured accounts, runtime readiness, capability proof,

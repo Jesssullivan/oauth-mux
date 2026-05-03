@@ -157,6 +157,13 @@ proxy, or in-agent adapter proves those stronger levels.
   child, observed the configured exit code, and restarted on another selectable
   route. It does not promote the socket daemon or claim current-process
   hot-swap.
+- `oauth-mux stay-afloat supervise --restart-on-codex-usage-limit -- <command>`
+  as a Codex-specific instrumentation path for wrapper-owned sessions. It
+  captures child output, classifies the native usage-limit screen without
+  printing the captured text, records route health as quota-exhausted, appends a
+  redacted `stay_afloat_supervise` event, and then restarts on the next
+  selectable route. This still requires oauth-mux to own the child process
+  boundary.
 - `claim.level:"prepared_fallback"` in `stay-afloat` / `daemon tick` JSON and
   in the latest `daemon status --json` snapshot when a route is selectable.
   Wrappers should pair that with the emitted `claim.launch_argv` and should not

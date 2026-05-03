@@ -56,6 +56,7 @@ pub const Command = union(enum) {
         target_argv: []const []const u8 = &.{},
         max_restarts: u32 = 1,
         restart_on_exit_code: ?u8 = null,
+        restart_on_codex_usage_limit: bool = false,
         json: bool = false,
     };
 
@@ -779,6 +780,8 @@ fn parseStayAfloatSupervise(args: []const []const u8) Command {
         } else if (eql(args[i], "--restart-on-exit-code")) {
             i += 1;
             if (i < args.len) result.restart_on_exit_code = std.fmt.parseInt(u8, args[i], 10) catch result.restart_on_exit_code;
+        } else if (eql(args[i], "--restart-on-codex-usage-limit")) {
+            result.restart_on_codex_usage_limit = true;
         } else if (eql(args[i], "--json")) {
             result.json = true;
         }
@@ -1113,7 +1116,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Show the next mediated action: exec argv when afloat, otherwise typed repair/handoff.
         \\  stay-afloat launch [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] -- <cmd> [args...]
         \\      Launch a target only when route evidence selects an exact account; otherwise print mediation and exit nonzero.
-        \\  stay-afloat supervise [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--max-restarts <n>] [--restart-on-exit-code <code>] [--json] -- <cmd> [args...]
+        \\  stay-afloat supervise [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--max-restarts <n>] [--restart-on-exit-code <code>] [--restart-on-codex-usage-limit] [--json] -- <cmd> [args...]
         \\      Spawn a wrapper-owned child and restart on an operator-classified exit code.
         \\  stay-afloat refresh [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Run one execute tick to refresh route evidence after user-mediated auth.
@@ -1930,7 +1933,7 @@ test "parse stay-afloat launch selector and target" {
 }
 
 test "parse stay-afloat supervise selector restart policy and target" {
-    const args = [_][]const u8{ "stay-afloat", "supervise", "--profile", "codex-max", "--provider", "codex", "--account", "max-2", "--capability", "codex-max", "--max-restarts", "2", "--restart-on-exit-code", "42", "--json", "--", "codex", "--ask-for-approval=never" };
+    const args = [_][]const u8{ "stay-afloat", "supervise", "--profile", "codex-max", "--provider", "codex", "--account", "max-2", "--capability", "codex-max", "--max-restarts", "2", "--restart-on-exit-code", "42", "--restart-on-codex-usage-limit", "--json", "--", "codex", "--ask-for-approval=never" };
     const cmd = parse(&args);
     switch (cmd) {
         .stay_afloat_supervise => |supervise| {
@@ -1940,6 +1943,7 @@ test "parse stay-afloat supervise selector restart policy and target" {
             try std.testing.expectEqualStrings("codex-max", supervise.capability.?);
             try std.testing.expectEqual(@as(u32, 2), supervise.max_restarts);
             try std.testing.expectEqual(@as(u8, 42), supervise.restart_on_exit_code.?);
+            try std.testing.expect(supervise.restart_on_codex_usage_limit);
             try std.testing.expect(supervise.json);
             try std.testing.expectEqual(@as(usize, 2), supervise.target_argv.len);
             try std.testing.expectEqualStrings("codex", supervise.target_argv[0]);
@@ -2122,6 +2126,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l all -d 'Include historical handoff events'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l max-restarts -d 'Maximum supervised child restarts' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l restart-on-exit-code -d 'Exit code that admits supervised restart' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l restart-on-codex-usage-limit -d 'Restart when captured child output matches Codex usage-limit text'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'

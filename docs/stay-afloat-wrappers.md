@@ -46,13 +46,20 @@ reclassified before the target starts. If no selectable account remains, it
 prints the refreshed mediation text and exits nonzero.
 
 Use `stay-afloat supervise --max-restarts <n> --restart-on-exit-code <code>
--- <command>` when oauth-mux should own the child process boundary. The first
-implementation is intentionally conservative: it does not parse arbitrary
-provider output and it does not persist route-health evidence from a generic
-child failure. It restarts only when the child exits with the configured code,
-skips the already-attempted route for that supervise run, and emits redacted
-JSON/text evidence with `claim.supervised_restart:true` only after an actual
-wrapper-owned restart occurred.
+-- <command>` when oauth-mux should own the child process boundary. The generic
+path restarts only when the child exits with the configured code, skips the
+already-attempted route for that supervise run, and emits redacted JSON/text
+evidence with `claim.supervised_restart:true` only after an actual wrapper-owned
+restart occurred.
+
+For Codex dogfood, add `--restart-on-codex-usage-limit`. That path captures
+child stdout/stderr, classifies known Codex usage-limit text, records the
+selected route as quota-exhausted with `last_probe.source:"supervised_child_output"`,
+appends a redacted `stay_afloat_supervise` event, and restarts on the next
+selectable route. Captured output is not printed; JSON reports byte counts and
+the redacted `output_classification:"codex_usage_limit"` value only. This is
+still wrapper-owned restart mediation, not same-thread recovery or unmanaged
+TUI hot-swap.
 
 The beta supervised daemon host wraps that same engine:
 
