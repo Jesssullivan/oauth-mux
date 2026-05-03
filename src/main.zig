@@ -8079,6 +8079,13 @@ const CodexBrokerSmokeResult = struct {
     route_health_recorded: bool = false,
 };
 
+const CodexBrokerRunContinuation = struct {
+    route: RepairPlanRoute,
+    prompt_start_index: usize = 0,
+    prompt_count: usize = 0,
+    result: CodexBrokerSmokeResult = .{},
+};
+
 const CodexBroker401HttpObservation = struct {
     request_count: usize = 0,
     responses_request_count: usize = 0,
@@ -9158,10 +9165,51 @@ fn runCodexBrokerRun(
         after_failure_summary = try summarizeCodexBrokerSessionPlan(allocator, parsed.value, after_failure_evaluations.items, after_failure_selected_index);
     }
 
+    var continuation: ?CodexBrokerRunContinuation = null;
+    if (args.continue_on_failure and result.route_health_recorded) {
+        if (after_failure_selected_index) |idx| {
+            const continuation_route = after_failure_evaluations.items[idx].route;
+            if (!sameRepairPlanRouteIdentity(selected.?.route, continuation_route)) {
+                const prompt_start_index = codexBrokerRunContinuationPromptStart(result, prompts.items.len);
+                if (prompt_start_index < prompts.items.len) {
+                    var continuation_credentials = CodexBrokerRouteCredentials{
+                        .route = continuation_route,
+                        .credentials = try loadCodexBrokerCredentialsForRoute(allocator, parsed.value, continuation_route),
+                    };
+                    defer continuation_credentials.deinit(allocator);
+
+                    const continuation_dir = try std.fmt.allocPrint(allocator, "{s}/codex-broker-run-{d}-continue", .{ state_dir, std.time.milliTimestamp() });
+                    defer allocator.free(continuation_dir);
+                    try std.fs.cwd().makePath(continuation_dir);
+                    try writeCodexBrokerLiveAppServerFiles(allocator, continuation_dir, model);
+
+                    var continuation_result = try runCodexAppServerLiveBrokerRun(
+                        allocator,
+                        continuation_credentials.credentials,
+                        continuation_dir,
+                        model,
+                        prompts.items[prompt_start_index..],
+                    );
+                    if (continuation_result.live_provider_failure) |classification| {
+                        recordCodexBrokerRunRouteHealth(&store, continuation_route, classification);
+                        continuation_result.route_health_recorded = true;
+                        store.persist();
+                    }
+                    continuation = .{
+                        .route = continuation_route,
+                        .prompt_start_index = prompt_start_index,
+                        .prompt_count = prompts.items.len - prompt_start_index,
+                        .result = continuation_result,
+                    };
+                }
+            }
+        }
+    }
+
     if (args.json) {
-        try writeCodexBrokerRunJson(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, after_failure_summary);
+        try writeCodexBrokerRunJson(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, after_failure_summary, args.continue_on_failure, continuation);
     } else {
-        try writeCodexBrokerRunText(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index);
+        try writeCodexBrokerRunText(writer, selected.?.route, capability, model, if (args.stdin_prompts) "stdin" else "prompt", prompts.items, summary, result, after_failure_evaluations.items, after_failure_selected_index, args.continue_on_failure, continuation);
     }
 }
 
@@ -9202,6 +9250,23 @@ fn codexBrokerRunOk(result: CodexBrokerSmokeResult, expected_turns: usize) bool 
         !result.protocol.experimental_api_required_error;
 }
 
+fn codexBrokerRunContinuationPromptStart(result: CodexBrokerSmokeResult, prompt_count: usize) usize {
+    if (prompt_count == 0) return 0;
+    const completed = @min(result.protocol.turn_completed_count, prompt_count);
+    if (result.live_provider_failure != null and completed > 0) return completed - 1;
+    return completed;
+}
+
+fn codexBrokerRunOverallOk(
+    result: CodexBrokerSmokeResult,
+    expected_turns: usize,
+    continuation: ?CodexBrokerRunContinuation,
+) bool {
+    if (codexBrokerRunOk(result, expected_turns)) return true;
+    if (continuation) |value| return codexBrokerRunOk(value.result, value.prompt_count);
+    return false;
+}
+
 fn codexBrokerRunProviderFailureReason(classification: types.HttpClassification) []const u8 {
     return switch (classification) {
         .quota_exhausted => "live_quota_exhausted",
@@ -9219,6 +9284,18 @@ fn codexBrokerRunReason(result: CodexBrokerSmokeResult, expected_turns: usize) [
         return if (expected_turns == 1) "live_turn_completed" else "live_session_turns_completed";
     }
     return result.reason;
+}
+
+fn codexBrokerRunOverallReason(
+    result: CodexBrokerSmokeResult,
+    expected_turns: usize,
+    continuation: ?CodexBrokerRunContinuation,
+) []const u8 {
+    if (codexBrokerRunOk(result, expected_turns)) return codexBrokerRunReason(result, expected_turns);
+    if (continuation) |value| {
+        if (codexBrokerRunOk(value.result, value.prompt_count)) return "live_session_continued_after_route_failure";
+    }
+    return codexBrokerRunReason(result, expected_turns);
 }
 
 fn codexBrokerPromptsTotalChars(prompts: []const []const u8) usize {
@@ -9239,23 +9316,27 @@ fn writeCodexBrokerRunJson(
     after_failure_evaluations: []const RouteEvaluation,
     after_failure_selected_index: ?usize,
     after_failure_summary: ?CodexBrokerSessionSummary,
+    continue_on_failure: bool,
+    continuation: ?CodexBrokerRunContinuation,
 ) !void {
     const prepared_fallback = summary.selectable_fallback_routes > 0;
     const prompt_chars_total = codexBrokerPromptsTotalChars(prompts);
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"mode\":\"codex_broker_owned_session_live_run\",\"ok\":");
-    try writer.writeAll(if (codexBrokerRunOk(result, prompts.len)) "true" else "false");
+    try writer.writeAll(if (codexBrokerRunOverallOk(result, prompts.len, continuation)) "true" else "false");
     try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":true,\"mutates_user_config\":false,\"mutates_route_health\":");
     try writer.writeAll(if (result.route_health_recorded) "true" else "false");
     try writer.writeAll(",\"reason\":");
-    try std.json.stringify(codexBrokerRunReason(result, prompts.len), .{}, writer);
+    try std.json.stringify(codexBrokerRunOverallReason(result, prompts.len, continuation), .{}, writer);
     try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"current_process_auth_broker\",\"proof_status\":");
-    try std.json.stringify(if (prompts.len == 1) "live_broker_owned_session_one_turn" else "live_broker_owned_session_loop", .{}, writer);
+    try std.json.stringify(if (continuation != null) "live_broker_owned_next_session_continuation" else if (prompts.len == 1) "live_broker_owned_session_one_turn" else "live_broker_owned_session_loop", .{}, writer);
     try writer.writeAll(",\"broker_owned_session\":true,\"route_selection_source\":\"broker_session_plan\",\"session_start_ready\":true,\"live_provider_turn\":true,\"session_loop\":");
     try writer.writeAll(if (prompts.len > 1) "true" else "false");
     try writer.writeAll(",\"prepared_fallback\":");
     try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"next_session_continuation\":");
+    try writer.writeAll(if (continuation != null) "true" else "false");
     try writer.writeAll(",\"next_thread_quota_fallback\":false,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"selected\":");
     try writeRouteSelectionJson(writer, route);
@@ -9319,10 +9400,44 @@ fn writeCodexBrokerRunJson(
     } else {
         try writer.writeAll("{\"recorded\":false}");
     }
+    try writer.writeAll(",\"continuation\":");
+    try writeCodexBrokerRunContinuationJson(writer, continue_on_failure, continuation);
     try writer.writeAll(",\"protocol\":");
     try writeCodexBrokerProtocolJson(writer, result);
     try writer.writeAll(",\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false,\"prompt_printed\":false,\"assistant_output_printed\":false}");
     try writer.writeAll("}\n");
+}
+
+fn writeCodexBrokerRunContinuationJson(
+    writer: anytype,
+    continue_on_failure: bool,
+    continuation: ?CodexBrokerRunContinuation,
+) !void {
+    if (continuation) |value| {
+        try writer.writeByte('{');
+        try writer.writeAll("\"requested\":true,\"attempted\":true,\"mode\":\"new_broker_owned_session\",\"same_thread\":false,\"same_turn\":false,\"selected\":");
+        try writeRouteSelectionJson(writer, value.route);
+        try writer.print(",\"prompt_start_index\":{d},\"prompt_count\":{d},\"replays_failed_prompt\":true", .{ value.prompt_start_index, value.prompt_count });
+        try writer.writeAll(",\"ok\":");
+        try writer.writeAll(if (codexBrokerRunOk(value.result, value.prompt_count)) "true" else "false");
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(codexBrokerRunReason(value.result, value.prompt_count), .{}, writer);
+        try writer.writeAll(",\"turns_completed\":");
+        try writer.print("{d}", .{value.result.protocol.turn_completed_count});
+        try writer.writeAll(",\"live_failure\":");
+        if (value.result.live_provider_failure) |classification| {
+            try writeCodexBrokerRunFailureJson(writer, classification, value.result.live_provider_failure_source, value.result.route_health_recorded);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"protocol\":");
+        try writeCodexBrokerProtocolJson(writer, value.result);
+        try writer.writeByte('}');
+    } else {
+        try writer.writeAll("{\"requested\":");
+        try writer.writeAll(if (continue_on_failure) "true" else "false");
+        try writer.writeAll(",\"attempted\":false}");
+    }
 }
 
 fn writeCodexBrokerRunFailureJson(
@@ -9356,6 +9471,8 @@ fn writeCodexBrokerRunText(
     result: CodexBrokerSmokeResult,
     after_failure_evaluations: []const RouteEvaluation,
     after_failure_selected_index: ?usize,
+    continue_on_failure: bool,
+    continuation: ?CodexBrokerRunContinuation,
 ) !void {
     const prompt_chars_total = codexBrokerPromptsTotalChars(prompts);
     try writer.writeAll("oauth-mux Codex broker-owned live run\n\n");
@@ -9367,8 +9484,9 @@ fn writeCodexBrokerRunText(
     try writer.print("  prompt count: {d}\n", .{prompts.len});
     try writer.print("  prompt chars total: {d}\n", .{prompt_chars_total});
     try writer.print("  prepared fallback: {s}\n", .{if (summary.selectable_fallback_routes > 0) "true" else "false"});
-    try writer.print("  ok: {s}\n", .{if (codexBrokerRunOk(result, prompts.len)) "true" else "false"});
-    try writer.print("  reason: {s}\n", .{codexBrokerRunReason(result, prompts.len)});
+    try writer.print("  continue on failure: {s}\n", .{if (continue_on_failure) "true" else "false"});
+    try writer.print("  ok: {s}\n", .{if (codexBrokerRunOverallOk(result, prompts.len, continuation)) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{codexBrokerRunOverallReason(result, prompts.len, continuation)});
     if (result.live_provider_failure) |classification| {
         try writer.print("  live failure: {s}", .{codexBrokerRunProviderFailureReason(classification)});
         if (health_mod.retryAfterFromClassification(classification)) |retry_after| try writer.print(" retry_after_s={d}", .{retry_after});
@@ -9382,6 +9500,17 @@ fn writeCodexBrokerRunText(
         } else {
             try writer.writeAll("none\n");
         }
+    }
+    if (continuation) |value| {
+        try writer.writeAll("  continuation: new broker-owned session ");
+        try writer.print("{s}:{s}", .{ value.route.provider, value.route.account });
+        if (value.route.capability) |cap| try writer.print("#{s}", .{cap});
+        try writer.print(" prompt_start_index={d} prompt_count={d} ok={s} reason={s}\n", .{
+            value.prompt_start_index,
+            value.prompt_count,
+            if (codexBrokerRunOk(value.result, value.prompt_count)) "true" else "false",
+            codexBrokerRunReason(value.result, value.prompt_count),
+        });
     }
     try writer.print("  turn_completed: {s}\n", .{if (result.protocol.turn_completed) "true" else "false"});
     try writer.writeAll("  redaction: tokens/account ids/raw protocol/prompt/assistant output not printed\n");

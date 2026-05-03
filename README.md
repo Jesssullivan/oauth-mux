@@ -158,7 +158,10 @@ as route-health evidence and reports the next selected route.
 For a bounded beta session loop, pipe line-delimited prompts to `codex
 broker-run --stdin --confirm-spend --json`; the command keeps one broker-owned
 app-server session open and reports prompt/turn counts without printing
-transcript content.
+transcript content. Add `--continue-on-failure` to make a live quota/rate-limit
+failure start a fresh broker-owned session on the next selected route and replay
+the failed prompt plus remaining queued prompts. This is next-session
+continuation, not same-thread recovery.
 `codex revalidate-exhausted --confirm-spend --json` is the spend-gated
 post-billing-change check. It finds recorded exhausted Codex routes for the
 selected profile/capability, bypasses only those local health blocks, runs fresh

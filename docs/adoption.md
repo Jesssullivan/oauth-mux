@@ -174,7 +174,11 @@ quota/rate-limit failure is recorded as route-health evidence and the output
 reports the next selected route.
 For a bounded beta multi-turn session, pass `--stdin` instead of `--prompt` and
 pipe one prompt per line. The session stays broker-owned and redacted; the
-output reports prompt counts and completed turns, not transcript content.
+output reports prompt counts and completed turns, not transcript content. Add
+`--continue-on-failure` to start a fresh broker-owned session on the next
+selected route after a live quota/rate-limit failure. The command replays the
+failed prompt plus remaining queued prompts and reports that this is
+next-session continuation, not same-thread recovery.
 
 `oauth-mux codex revalidate-exhausted --profile codex-max --capability
 codex-max --confirm-spend --json` is the operator-safe post-billing-change

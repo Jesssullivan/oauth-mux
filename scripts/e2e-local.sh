@@ -953,6 +953,79 @@ if [ "$broker_run_quota_turns" != "1" ]; then
   exit 1
 fi
 
+printf 'e2e: codex broker-run can continue on the next selected route after live quota failure\n'
+mock_codex_app_server_continue="$tmp/mock-codex-app-server-continue"
+cat >"$mock_codex_app_server_continue" <<'EOF'
+#!/bin/sh
+launch_count=1
+if [ -n "${OMUX_E2E_LAUNCH_COUNT:-}" ] && [ -f "$OMUX_E2E_LAUNCH_COUNT" ]; then
+  launch_count="$(cat "$OMUX_E2E_LAUNCH_COUNT")"
+  launch_count=$((launch_count + 1))
+fi
+if [ -n "${OMUX_E2E_LAUNCH_COUNT:-}" ]; then
+  printf '%s\n' "$launch_count" > "$OMUX_E2E_LAUNCH_COUNT"
+fi
+turn_count=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}'
+      ;;
+    *'"method":"account/login/start"'*)
+      printf '%s\n' '{"id":2,"result":{"type":"chatgptAuthTokens"}}'
+      printf '%s\n' '{"method":"account/login/completed","params":{"success":true}}'
+      printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgptAuthTokens","planType":"pro"}}'
+      ;;
+    *'"method":"thread/start"'*)
+      printf '%s\n' '{"id":3,"result":{"thread":{"id":"thread-continue"}}}'
+      ;;
+    *'"method":"turn/start"'*)
+      if [ -n "${OMUX_E2E_TURN_LOG:-}" ]; then
+        printf '%s\n' "$launch_count:$line" >> "$OMUX_E2E_TURN_LOG"
+      fi
+      if [ "$launch_count" = "1" ]; then
+        printf '%s\n' '{"id":4,"result":{}}'
+        printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn-quota","status":"failed","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7200}}}}'
+      else
+        turn_count=$((turn_count + 1))
+        printf '%s\n' '{"id":4,"result":{}}'
+        printf '{"method":"turn/completed","params":{"turn":{"id":"turn-ok-%s","status":"completed"}}}\n' "$turn_count"
+      fi
+      ;;
+  esac
+done
+EOF
+chmod +x "$mock_codex_app_server_continue"
+broker_run_continue_state="$tmp/broker-run-continue-state"
+broker_run_continue_turn_log="$tmp/broker-run-continue-turns.log"
+broker_run_continue_launch_count="$tmp/broker-run-continue-launch-count"
+mkdir -p "$broker_run_continue_state"
+cp "$broker_session_health_before_drill" "$broker_run_continue_state/health.json"
+broker_run_continue="$(printf 'one\ntwo\n' | PATH="$broker_session_bin:$PATH" OMUX_E2E_LAUNCH_COUNT="$broker_run_continue_launch_count" OMUX_E2E_TURN_LOG="$broker_run_continue_turn_log" OMUX_CODEX_APP_SERVER="$mock_codex_app_server_continue" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_run_continue_state" "$bin" codex broker-run --profile codex-max --capability codex-max --stdin --continue-on-failure --confirm-spend --json)"
+expect_contains "$broker_run_continue" '"mode":"codex_broker_owned_session_live_run"' "broker-run continuation reports live mode"
+expect_contains "$broker_run_continue" '"ok":true' "broker-run continuation reports overall success"
+expect_contains "$broker_run_continue" '"reason":"live_session_continued_after_route_failure"' "broker-run continuation reports continuation reason"
+expect_contains "$broker_run_continue" '"proof_status":"live_broker_owned_next_session_continuation"' "broker-run continuation reports proof status"
+expect_contains "$broker_run_continue" '"next_session_continuation":true' "broker-run continuation claim is explicit"
+expect_contains "$broker_run_continue" '"health_key":"codex:max-2#codex-max"' "broker-run continuation records failed selected route"
+expect_contains "$broker_run_continue" '"selected":{"provider":"codex","account":"max-3","capability":"codex-max"' "broker-run continuation chooses fallback route"
+expect_contains "$broker_run_continue" '"continuation":{"requested":true,"attempted":true' "broker-run continuation reports attempted continuation"
+expect_contains "$broker_run_continue" '"mode":"new_broker_owned_session"' "broker-run continuation reports new session mode"
+expect_contains "$broker_run_continue" '"prompt_start_index":0' "broker-run continuation replays failed prompt"
+expect_contains "$broker_run_continue" '"prompt_count":2' "broker-run continuation sends pending prompts"
+expect_contains "$broker_run_continue" '"replays_failed_prompt":true' "broker-run continuation replay is explicit"
+expect_contains "$broker_run_continue" '"turns_completed":2' "broker-run continuation completes fallback turns"
+expect_not_contains "$broker_run_continue" 'acct-session-fallback' "broker-run continuation does not expose selected account id value"
+expect_not_contains "$broker_run_continue" 'acct-session-spare' "broker-run continuation does not expose fallback account id value"
+expect_not_contains "$broker_run_continue" "$broker_jwt" "broker-run continuation does not expose token value"
+broker_run_continue_turns="$(wc -l < "$broker_run_continue_turn_log" | tr -d ' ')"
+if [ "$broker_run_continue_turns" != "3" ]; then
+  printf 'e2e assertion failed: broker-run continuation should send one failed turn plus two fallback turns\n' >&2
+  printf 'turn starts observed: %s\n' "$broker_run_continue_turns" >&2
+  printf 'output was:\n%s\n' "$broker_run_continue" >&2
+  exit 1
+fi
+
 printf 'e2e: codex broker-smoke verifies app-server stdio login without leaking tokens\n'
 mock_codex_app_server="$tmp/mock-codex-app-server"
 cat >"$mock_codex_app_server" <<'EOF'
