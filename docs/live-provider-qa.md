@@ -25,7 +25,7 @@ Probe an account matrix:
 ```bash
 OMUX_LIVE_QA_CONFIRM=spend-real-calls \
 OMUX_LIVE_QA_PROVIDER=codex \
-OMUX_LIVE_QA_ACCOUNTS=max-1,max-2,max-3 \
+OMUX_LIVE_QA_ACCOUNTS=max-1,max-2,max-3,max-4 \
 OMUX_LIVE_QA_CAPABILITIES=codex-mini \
 just live-qa
 ```
@@ -35,13 +35,12 @@ Escalate to higher-cost routes only after the cheaper route is healthy:
 ```bash
 OMUX_LIVE_QA_CONFIRM=spend-real-calls \
 OMUX_LIVE_QA_PROVIDER=codex \
-OMUX_LIVE_QA_ACCOUNTS=max-1,max-2,max-3 \
+OMUX_LIVE_QA_ACCOUNTS=max-1,max-2,max-3,max-4 \
 OMUX_LIVE_QA_CAPABILITIES=codex-max \
 just live-qa
 ```
 
-For the Codex Max three-account path, prefer the canary before any spending
-run:
+For the Codex Max starter path, prefer the canary before any spending run:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json oauth-mux codex canary
@@ -96,6 +95,19 @@ Operator-provided Codex state on 2026-04-28:
 - `max-3` is expected to remain active for API-backed usage.
 - These are not auth-dead accounts; the useful proof is preserving the
   distinction between weekly quota exhaustion and usable fallback routes.
+
+Current four-route Codex dogfood state on 2026-05-03:
+
+- The source example remains the three-route starter config. Add `max-4` to the
+  active operator config with `oauth-mux enroll codex --account max-4
+  --confirm-enroll --json` before using the four-route account matrix.
+- `max-1#codex-max` is selectable again after spend-gated exhausted-route
+  revalidation.
+- `max-4#codex-max` is the spare selectable fallback.
+- `max-2#codex-max` and `max-3#codex-max` still return provider quota
+  exhaustion from fresh probes.
+- Dashboard credit or Spark/mini availability is not generalized to
+  `codex-max`; trust provider execution evidence per route and capability.
 
 Hosted evidence from run `25029923810`:
 
