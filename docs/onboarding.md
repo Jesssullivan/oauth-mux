@@ -238,9 +238,10 @@ Codex or spending provider calls. It joins route liveness with broker token
 readiness and reports which route would start the session plus which broker-ready
 routes are immediate fallbacks. Check `resilience.spare_fallback_ready` and
 `resilience.single_route_at_risk` before treating the session as comfortably
-afloat. When the session is single-route-at-risk, use `resilience_actions` as
-the operator todo list: revalidate exhausted routes, enroll another account, or
-wait for quota reset.
+afloat. When the selected Codex route is single-route-at-risk, use
+`resilience_actions` from broker-session, `route explain`, or `stay-afloat` JSON
+as the operator todo list: revalidate exhausted routes, enroll another account,
+or wait for quota reset.
 Use
 `oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max
 --confirm-broker --json` to exercise that plan as a local multi-turn
