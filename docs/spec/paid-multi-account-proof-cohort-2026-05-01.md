@@ -200,6 +200,9 @@ The Figma proof must intentionally keep these states distinct:
 
 The paid cohort should not promote the background daemon by accident. The
 portable product contract remains foreground and wrapper-friendly:
+`docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md` is the detailed
+operator policy for cadence, artifact names, claim states, and promotion
+blockers.
 
 ```bash
 oauth-mux route explain --profile <profile> --capability <capability> --json

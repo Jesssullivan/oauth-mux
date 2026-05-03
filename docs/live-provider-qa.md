@@ -256,6 +256,9 @@ provider proof and foreground stay-afloat soak evidence. The pass condition is
 not "every account is available"; the pass condition is that every unavailable
 account is typed correctly and at least one route can carry the requested
 capability when the cohort is expected to stay afloat.
+Use `docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md` for the soak
+cadence, required redacted artifacts, claim-state vocabulary, and promotion
+blockers before website or README copy expands.
 
 ## GitHub Workflow
 
