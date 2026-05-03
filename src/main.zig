@@ -3930,6 +3930,20 @@ fn writeRouteResilienceActionsJson(
     try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, action_capability, true, fallback_count);
 }
 
+fn writeRouteResilienceActionsText(
+    writer: anytype,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+) !void {
+    const selected = selected_index orelse return;
+    if (selected >= evaluations.len) return;
+    const route = evaluations[selected].route;
+    if (!std.mem.eql(u8, route.provider, "codex")) return;
+    if (!codexBrokerSessionSingleRouteAtRisk(true, selectableFallbackRouteCount(evaluations, selected_index))) return;
+
+    try writer.writeAll("  next: revalidate exhausted routes, enroll another Codex account, or wait for quota reset\n");
+}
+
 const StayAfloatSelector = struct {
     profile: ?[]const u8 = null,
     provider: ?[]const u8 = null,
@@ -4411,6 +4425,7 @@ fn writeRouteText(
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
         if (selected.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.writeByte('\n');
+        try writeRouteResilienceActionsText(writer, evaluations, selected_index);
     } else {
         try writer.writeAll("  selected: none\n");
     }
@@ -4482,7 +4497,9 @@ fn writeStayAfloatMediationText(
         try writer.writeAll("  ready_for_exec: true\n");
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
         if (selected.capability) |capability| try writer.print("#{s}", .{capability});
-        try writer.writeAll("\n  exec: ");
+        try writer.writeByte('\n');
+        try writeRouteResilienceActionsText(writer, evaluations, selected_index);
+        try writer.writeAll("  exec: ");
         try writeStayAfloatExecCommandText(writer, selected);
         try writer.writeByte('\n');
         return;
@@ -4775,6 +4792,7 @@ fn writeDaemonTickText(
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
         if (selected.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.writeByte('\n');
+        try writeRouteResilienceActionsText(writer, evaluations, selected_index);
     } else {
         try writer.writeAll("  selected: none\n");
     }

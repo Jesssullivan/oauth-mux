@@ -282,9 +282,10 @@ For quota-driven account changes, use a different action name, such as
    the future broker-owned session UX. Its `resilience` object explicitly marks
    whether the selected broker session has a spare fallback route or is a
    single-route-at-risk state. For Codex routes, broker-session, `route
-   explain`, and `stay-afloat` JSON surfaces expose `resilience_actions` to turn
-   that state into an operator todo list: revalidate exhausted routes, enroll
-   another account, or wait for quota reset.
+   explain`, and `stay-afloat` surfaces expose the same operator todo list:
+   revalidate exhausted routes, enroll another account, or wait for quota reset.
+   JSON clients read `resilience_actions`; text output prints the matching
+   `next:` hint.
 11. Add a no-spend broker-owned session smoke:
    `oauth-mux codex broker-session-smoke --profile codex-max --capability
    codex-max --confirm-broker --json` uses the session plan's selected and

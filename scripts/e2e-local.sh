@@ -353,6 +353,8 @@ expect_contains "$route_explain" '"resilience_actions":[]' "route explain does n
 expect_contains "$route_explain" '"skip_reason":"quota_exhausted"' "route explain keeps exhausted reason"
 expect_contains "$route_explain" '"skip_reason":"available"' "route explain marks available selected route"
 expect_contains "$route_explain" '"writeback":{"capability":"readonly","automatic_refresh_admitted":false,"reason":"provider_repair_is_manual_only"}' "route explain reports readonly writeback boundary"
+route_explain_text="$(omux route explain --profile expensive --capability expensive)"
+expect_not_contains "$route_explain_text" 'next: revalidate exhausted routes' "route explain text does not emit Codex-specific actions for toy provider"
 
 printf 'e2e: route select chooses selected fallback without probing\n'
 route_select="$(omux route select --profile expensive --capability expensive --json)"
@@ -912,6 +914,10 @@ expect_contains "$broker_stay_afloat_after_drill" '"resilience":{"selected_route
 expect_contains "$broker_stay_afloat_after_drill" '"resilience_actions":[{"kind":"revalidate_exhausted_routes"' "stay-afloat after drill recommends exhausted-route revalidation"
 expect_contains "$broker_stay_afloat_after_drill" '"kind":"enroll_codex_account"' "stay-afloat after drill recommends account enrollment"
 expect_contains "$broker_stay_afloat_after_drill" '"kind":"wait_for_quota_reset"' "stay-afloat after drill includes wait option"
+broker_route_explain_text_after_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" route explain --profile codex-max --capability codex-max)"
+expect_contains "$broker_route_explain_text_after_drill" 'next: revalidate exhausted routes, enroll another Codex account, or wait for quota reset' "route explain text after drill includes Codex risk actions"
+broker_stay_afloat_text_after_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" stay-afloat --once --profile codex-max --capability codex-max)"
+expect_contains "$broker_stay_afloat_text_after_drill" 'next: revalidate exhausted routes, enroll another Codex account, or wait for quota reset' "stay-afloat text after drill includes Codex risk actions"
 
 printf 'e2e: codex broker-session-smoke requires explicit confirmation before starting app-server\n'
 broker_session_smoke_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-smoke --profile codex-max --capability codex-max --json)"

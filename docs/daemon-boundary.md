@@ -150,9 +150,10 @@ proxy, or in-agent adapter proves those stronger levels.
   `resilience.spare_fallback_ready` / `claim.single_route_at_risk`: a selected
   route without a spare fallback is afloat for the next launch, but not
   resilient to another immediate quota/rate-limit failure. For Codex routes,
-  broker-owned session, `route explain`, and `stay-afloat` JSON surfaces expose
-  `resilience_actions` so wrappers can display the explicit choices: revalidate
-  exhausted routes, enroll another account, or wait for reset.
+  broker-owned session, `route explain`, and `stay-afloat` surfaces expose the
+  same explicit choices: revalidate exhausted routes, enroll another account, or
+  wait for reset. JSON clients read `resilience_actions`; text output prints the
+  matching `next:` hint.
 - `oauth-mux daemon run --stay-afloat --profile <profile> --capability
   <capability>` as the first opt-in beta host for the same tick engine. It
   reports `stay_afloat_loop.hosted:true` plus the hosted selector, cadence, and
