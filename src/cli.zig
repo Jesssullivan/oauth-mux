@@ -1215,7 +1215,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  --help and -h are non-mutating for every Codex subcommand.
         \\
         \\Defaults:
-        \\  accounts:     max-1,max-2,max-3
+        \\  accounts:     max-1,max-2,max-3 (starter; pass --accounts for max-4)
         \\  capabilities: codex-mini,codex-max
         \\  store root:   $XDG_DATA_HOME/oauth-mux/codex or ~/.local/share/oauth-mux/codex
         \\

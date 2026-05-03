@@ -111,7 +111,7 @@ To keep the formula installed after dogfood QA:
 OMUX_HOMEBREW_KEEP_INSTALLED=1 OMUX_HOMEBREW_KEEP_TAP=1 just homebrew-qa 0.1.6
 ```
 
-To include the three-account Codex canary from the installed Homebrew binary:
+To include the starter Codex canary from the installed Homebrew binary:
 
 ```bash
 OMUX_CONFIG=$PWD/examples/codex-max.config.json \

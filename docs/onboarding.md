@@ -411,7 +411,7 @@ definition declares `repair.owner = "oauth_mux_refresh"` and whose backend
 reports `automatic_refresh_admitted: true`. Codex remains upstream-CLI-owned.
 
 If `repair-plan --profile codex-max` reports a config validation error, the
-active config is not the three-account Codex Max shape. That usually means the
+active config is not the starter Codex Max shape. That usually means the
 machine still has an older generic config with only `codex:default`. Generate a
 safe sidecar candidate without modifying the active config:
 
