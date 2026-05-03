@@ -8848,7 +8848,7 @@ fn runCodexManagedPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.
     if (args.json) {
         try writeCodexManagedPlanJson(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability, args);
     } else {
-        try writeCodexManagedPlanText(writer, evaluations.items, selected_index, args.profile, capability, args);
+        try writeCodexManagedPlanText(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability, args);
     }
 }
 
@@ -8856,6 +8856,14 @@ fn runCodexManaged(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
     if (args.json) {
         try runCodexManagedPlan(allocator, writer, args);
         return;
+    }
+
+    if (args.resume_id != null) {
+        const resume_inspection = try inspectCodexManagedResumeForArgs(allocator, args);
+        if (!codexManagedResumeAllowsLaunch(resume_inspection)) {
+            try writeCodexManagedResumeRefusalText(writer, resume_inspection);
+            return error.ConfigValidationError;
+        }
     }
 
     const target_argv = try buildCodexManagedTargetArgv(allocator, args);
@@ -8899,6 +8907,241 @@ fn buildCodexManagedTargetArgv(allocator: std.mem.Allocator, args: cli.Command.C
     return try argv.toOwnedSlice();
 }
 
+const CodexManagedResumeInspection = struct {
+    requested: bool = false,
+    explicit_id: bool = false,
+    resume_last: bool = false,
+    include_non_interactive: bool = false,
+    checked: bool = false,
+    found: bool = false,
+    selected_route_available: bool = false,
+    store_available: bool = false,
+    session_index_checked: bool = false,
+    session_index_match: bool = false,
+    rollout_filenames_checked: bool = false,
+    rollout_filename_match: bool = false,
+    state_store_checked: bool = false,
+    state_store_match: bool = false,
+    path_printed: bool = false,
+    status: []const u8 = "not_requested",
+    diagnostic: []const u8 = "no resume id requested",
+};
+
+fn inspectCodexManagedResumeForArgs(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) !CodexManagedResumeInspection {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+    const selected_route = if (selected_index) |idx| evaluations.items[idx].route else null;
+    return try inspectCodexManagedResume(allocator, parsed.value, selected_route, args);
+}
+
+fn inspectCodexManagedResume(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    selected_route: ?RepairPlanRoute,
+    args: cli.Command.CodexArgs,
+) !CodexManagedResumeInspection {
+    var result = CodexManagedResumeInspection{
+        .requested = args.resume_id != null or args.resume_last,
+        .explicit_id = args.resume_id != null,
+        .resume_last = args.resume_last,
+        .include_non_interactive = args.include_non_interactive,
+    };
+
+    if (!result.requested) return result;
+    if (args.resume_last and args.resume_id == null) {
+        result.status = "resume_last_unchecked";
+        result.diagnostic = "resume --last is resolved by native Codex inside the selected route-local CODEX_HOME";
+        result.selected_route_available = selected_route != null;
+        return result;
+    }
+
+    const resume_id = args.resume_id orelse return result;
+    result.checked = true;
+
+    const route = selected_route orelse {
+        result.status = "selected_route_unavailable";
+        result.diagnostic = "no selectable route is available, so oauth-mux cannot check a route-local Codex resume id";
+        return result;
+    };
+    result.selected_route_available = true;
+
+    const store_dir = try codexManagedRouteConfigDir(allocator, cfg, route) orelse {
+        result.status = "selected_route_missing_store";
+        result.diagnostic = "selected Codex route does not define a CODEX_HOME store for resume lookup";
+        return result;
+    };
+    defer allocator.free(store_dir);
+    result.store_available = true;
+
+    const index_path = try std.fs.path.join(allocator, &.{ store_dir, "session_index.jsonl" });
+    defer allocator.free(index_path);
+    result.session_index_checked = true;
+    result.session_index_match = fileContainsNeedle(allocator, index_path, resume_id) catch false;
+
+    const sessions_dir = try std.fs.path.join(allocator, &.{ store_dir, "sessions" });
+    defer allocator.free(sessions_dir);
+    result.rollout_filenames_checked = true;
+    result.rollout_filename_match = directoryFileNameContainsNeedle(allocator, sessions_dir, resume_id) catch false;
+
+    result.state_store_checked = true;
+    result.state_store_match =
+        (try codexManagedStateFileContainsNeedle(allocator, store_dir, "state_5.sqlite", resume_id)) or
+        (try codexManagedStateFileContainsNeedle(allocator, store_dir, "state_5.sqlite-wal", resume_id));
+
+    result.found = result.session_index_match or result.rollout_filename_match or result.state_store_match;
+    if (result.found) {
+        result.status = "found_in_selected_store";
+        result.diagnostic = "resume id was found in the selected route-local Codex store";
+    } else {
+        result.status = "not_found_in_selected_store";
+        result.diagnostic = "resume id was not found in the selected route-local Codex store; choose the route that owns it or start a new managed session";
+    }
+    return result;
+}
+
+fn codexManagedRouteConfigDir(allocator: std.mem.Allocator, cfg: config.Config, route: RepairPlanRoute) !?[]const u8 {
+    const provider_cfg = cfg.providers.map.get(route.provider) orelse return null;
+    const account = provider_cfg.accounts.map.get(route.account) orelse return null;
+    const config_dir = account.config_dir orelse return null;
+    return try paths.expandTilde(allocator, config_dir);
+}
+
+fn codexManagedStateFileContainsNeedle(
+    allocator: std.mem.Allocator,
+    store_dir: []const u8,
+    filename: []const u8,
+    needle: []const u8,
+) !bool {
+    const path = try std.fs.path.join(allocator, &.{ store_dir, filename });
+    defer allocator.free(path);
+    return fileContainsNeedle(allocator, path, needle) catch false;
+}
+
+fn fileContainsNeedle(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) !bool {
+    if (needle.len == 0) return false;
+    var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
+        else => return err,
+    };
+    defer file.close();
+
+    var previous = std.ArrayList(u8).init(allocator);
+    defer previous.deinit();
+
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+
+        var haystack = std.ArrayList(u8).init(allocator);
+        defer haystack.deinit();
+        try haystack.appendSlice(previous.items);
+        try haystack.appendSlice(buf[0..n]);
+        if (std.mem.indexOf(u8, haystack.items, needle) != null) return true;
+
+        previous.clearRetainingCapacity();
+        const keep = @min(needle.len - 1, haystack.items.len);
+        if (keep != 0) try previous.appendSlice(haystack.items[haystack.items.len - keep ..]);
+    }
+    return false;
+}
+
+fn directoryFileNameContainsNeedle(allocator: std.mem.Allocator, root: []const u8, needle: []const u8) !bool {
+    if (needle.len == 0) return false;
+    var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
+        else => return err,
+    };
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    var inspected: usize = 0;
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        inspected += 1;
+        if (inspected > 20000) return false;
+        if (std.mem.indexOf(u8, entry.basename, needle) != null) return true;
+    }
+    return false;
+}
+
+fn codexManagedResumeAllowsLaunch(inspection: CodexManagedResumeInspection) bool {
+    if (!inspection.requested) return true;
+    if (!inspection.explicit_id) return true;
+    return inspection.found;
+}
+
+fn writeCodexManagedResumeJson(writer: anytype, inspection: CodexManagedResumeInspection) !void {
+    try writer.writeAll("{\"scope\":\"route_local_codex_home\",\"requested\":");
+    try writer.writeAll(if (inspection.requested) "true" else "false");
+    try writer.writeAll(",\"resume_last\":");
+    try writer.writeAll(if (inspection.resume_last) "true" else "false");
+    try writer.writeAll(",\"resume_id_provided\":");
+    try writer.writeAll(if (inspection.explicit_id) "true" else "false");
+    try writer.writeAll(",\"checked\":");
+    try writer.writeAll(if (inspection.checked) "true" else "false");
+    try writer.writeAll(",\"found_in_selected_store\":");
+    try writer.writeAll(if (inspection.found) "true" else "false");
+    try writer.writeAll(",\"selected_route_available\":");
+    try writer.writeAll(if (inspection.selected_route_available) "true" else "false");
+    try writer.writeAll(",\"store_available\":");
+    try writer.writeAll(if (inspection.store_available) "true" else "false");
+    try writer.writeAll(",\"status\":");
+    try std.json.stringify(inspection.status, .{}, writer);
+    try writer.writeAll(",\"include_non_interactive\":");
+    try writer.writeAll(if (inspection.include_non_interactive) "true" else "false");
+    try writer.writeAll(",\"resume_id_printed\":false,\"path_printed\":false,\"unmanaged_cross_route_resume\":false");
+    try writer.writeAll(",\"evidence\":{\"session_index_checked\":");
+    try writer.writeAll(if (inspection.session_index_checked) "true" else "false");
+    try writer.writeAll(",\"session_index_match\":");
+    try writer.writeAll(if (inspection.session_index_match) "true" else "false");
+    try writer.writeAll(",\"rollout_filenames_checked\":");
+    try writer.writeAll(if (inspection.rollout_filenames_checked) "true" else "false");
+    try writer.writeAll(",\"rollout_filename_match\":");
+    try writer.writeAll(if (inspection.rollout_filename_match) "true" else "false");
+    try writer.writeAll(",\"state_store_checked\":");
+    try writer.writeAll(if (inspection.state_store_checked) "true" else "false");
+    try writer.writeAll(",\"state_store_match\":");
+    try writer.writeAll(if (inspection.state_store_match) "true" else "false");
+    try writer.writeAll("},\"diagnostic\":");
+    try std.json.stringify(inspection.diagnostic, .{}, writer);
+    try writer.writeByte('}');
+}
+
+fn writeCodexManagedResumeRefusalText(writer: anytype, inspection: CodexManagedResumeInspection) !void {
+    try writer.writeAll("oauth-mux Codex managed resume diagnostic\n\n");
+    try writer.print("  ok: false\n  status: {s}\n", .{inspection.status});
+    try writer.print("  selected_route_available: {s}\n", .{if (inspection.selected_route_available) "true" else "false"});
+    try writer.writeAll("  resume_id_printed: false\n");
+    try writer.writeAll("  path_printed: false\n");
+    try writer.print("  diagnostic: {s}\n", .{inspection.diagnostic});
+    try writer.writeAll("  next: start a new managed session, or select the account whose route-local CODEX_HOME owns that session id\n");
+}
+
 fn writeCodexManagedPlanJson(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -8912,14 +9155,16 @@ fn writeCodexManagedPlanJson(
     const session_start_ready = selected_index != null;
     const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
     const prepared_fallback = session_start_ready and fallback_count > 0;
-    const resume_requested = args.resume_id != null or args.resume_last;
+    const selected_route = if (selected_index) |idx| evaluations[idx].route else null;
+    const resume_inspection = try inspectCodexManagedResume(allocator, cfg, selected_route, args);
+    const ok = session_start_ready and codexManagedResumeAllowsLaunch(resume_inspection);
 
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"mode\":\"codex_managed_session_plan\"");
     try writer.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"executes_child\":false");
     try writer.writeAll(",\"ok\":");
-    try writer.writeAll(if (session_start_ready) "true" else "false");
+    try writer.writeAll(if (ok) "true" else "false");
     try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"managed_codex_process\",\"proof_status\":\"managed_launch_planning_only\",\"managed_process_launch\":true,\"mediation_point\":\"stay-afloat launch\",\"route_local_resume\":true,\"resume_namespace\":\"selected_route_codex_home\",\"prepared_fallback\":");
     try writer.writeAll(if (prepared_fallback) "true" else "false");
     try writer.writeAll(",\"selectable_fallback_routes\":");
@@ -8930,15 +9175,8 @@ fn writeCodexManagedPlanJson(
     try writer.writeAll(",\"capability\":");
     if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"codex_home\":{\"env\":\"CODEX_HOME\",\"namespace\":\"selected_route_store\",\"path_printed\":false}");
-    try writer.writeAll(",\"resume\":{\"scope\":\"route_local_codex_home\",\"requested\":");
-    try writer.writeAll(if (resume_requested) "true" else "false");
-    try writer.writeAll(",\"resume_last\":");
-    try writer.writeAll(if (args.resume_last) "true" else "false");
-    try writer.writeAll(",\"resume_id_provided\":");
-    try writer.writeAll(if (args.resume_id != null) "true" else "false");
-    try writer.writeAll(",\"include_non_interactive\":");
-    try writer.writeAll(if (args.include_non_interactive) "true" else "false");
-    try writer.writeAll(",\"resume_id_printed\":false,\"unmanaged_cross_route_resume\":false,\"diagnostic\":\"resume ids are resolved by Codex inside the selected route-local CODEX_HOME\"}");
+    try writer.writeAll(",\"resume\":");
+    try writeCodexManagedResumeJson(writer, resume_inspection);
     try writer.writeAll(",\"target\":{\"program\":\"codex\",\"passthrough_arg_count\":");
     try writer.print("{d}", .{args.managed_argv.len});
     try writer.writeAll(",\"argv_printed\":false}");
@@ -8963,6 +9201,8 @@ fn writeCodexManagedPlanJson(
 
 fn writeCodexManagedPlanText(
     writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     profile: ?[]const u8,
@@ -8970,6 +9210,8 @@ fn writeCodexManagedPlanText(
     args: cli.Command.CodexArgs,
 ) !void {
     const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    const selected_route = if (selected_index) |idx| evaluations[idx].route else null;
+    const resume_inspection = try inspectCodexManagedResume(allocator, cfg, selected_route, args);
     try writer.writeAll("oauth-mux Codex managed session plan\n\n");
     if (profile) |value| try writer.print("  profile: {s}\n", .{value});
     if (capability) |value| try writer.print("  capability: {s}\n", .{value});
@@ -8977,6 +9219,8 @@ fn writeCodexManagedPlanText(
     try writer.print("  session_start_ready: {s}\n", .{if (selected_index != null) "true" else "false"});
     try writer.print("  selectable_fallback_routes: {d}\n", .{fallback_count});
     try writer.print("  resume_requested: {s}\n", .{if (args.resume_id != null or args.resume_last) "true" else "false"});
+    try writer.print("  resume_status: {s}\n", .{resume_inspection.status});
+    try writer.print("  resume_found_in_selected_store: {s}\n", .{if (resume_inspection.found) "true" else "false"});
     if (selected_index) |idx| {
         const route = evaluations[idx].route;
         try writer.print("  selected: {s}:{s}", .{ route.provider, route.account });

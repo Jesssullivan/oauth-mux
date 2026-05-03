@@ -148,6 +148,11 @@ started with `oauth-mux codex managed`, not with an unmanaged `codex` process
 that oauth-mux tries to rescue later. Its claim level is `managed_codex_process`
 and its resume namespace is the selected route-local `CODEX_HOME`; it does not
 claim cross-route import, same-thread quota recovery, or unmanaged TUI hot-swap.
+Explicit `--resume <id>` now adds a route-local diagnostic: oauth-mux checks
+the selected store's session index, rollout filenames, and Codex state-store
+bytes before launch, refuses missing ids before child exec, and keeps ids and
+paths out of normal output. This improves wrong-route visibility without
+turning managed launch into seamless active-session handoff.
 
 The `TIN-913` / GitHub `#125` Codex app-server auth-broker artifact is
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. It records the
