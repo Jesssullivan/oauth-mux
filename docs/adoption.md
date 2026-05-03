@@ -85,10 +85,12 @@ oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max 
 ```
 
 Those commands are installed CLI surface, not source-checkout-only helpers.
-The starter Codex shape is three accounts; after enrolling an extra route such
-as `max-4`, use `--accounts max-1,max-2,max-3,max-4` or
-`OMUX_CODEX_ACCOUNTS=max-1,max-2,max-3,max-4` for canary and live-QA helpers.
-Point account stores somewhere explicit with `--store-root <path>`.
+The source example remains a starter shape, but the current paid Codex dogfood
+cohort has four `codex-max` routes. Use
+`--accounts max-1,max-2,max-3,max-4` or
+`OMUX_CODEX_ACCOUNTS=max-1,max-2,max-3,max-4` for canary and live-QA helpers
+when validating that cohort. Point account stores somewhere explicit with
+`--store-root <path>`.
 
 Live probes remain explicit because they can spend subscription calls:
 

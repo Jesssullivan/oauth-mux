@@ -48,7 +48,7 @@ Evidence:
 
 ## Current Baseline
 
-- `origin/main` contains the merged core mux, typed liveness, Codex three-account
+- `origin/main` contains the merged core mux, typed liveness, Codex starter
   path, onboarding docs, live QA harness, registry dry-run scaffolding, and
   CI-only npm publish path.
 - Hosted CI has passed Zig tests, Nix validation, all six cross-compiles, and a
@@ -70,7 +70,7 @@ Evidence:
   cache-first validation.
 - Hosted live-provider QA has workflow support for secret-scoped config,
   Codex CLI bootstrap, and a minimal hosted credential-store bundle. Run
-  `25029923810` completed the Codex three-account matrix with
+  `25029923810` completed the original Codex starter matrix with
   `confirm=spend-real-calls`.
 
 ## Sprint Objective

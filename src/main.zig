@@ -5325,9 +5325,9 @@ fn writeDoctorChecksJson(writer: anytype, stats: DoctorStats, validation_message
             stats.codex_max_configured,
             if (stats.codex_max_configured) "ok" else "warning",
             if (stats.codex_max_configured)
-                "three-account Codex Max mux shape configured"
+                "Codex Max mux shape configured"
             else
-                "Codex is configured but the three-account Codex Max mux shape is missing; run oauth-mux codex config-candidate",
+                "Codex is configured but the Codex Max mux shape is missing; run oauth-mux codex config-candidate",
         );
     }
     try writeDoctorCheckJson(writer, &first, "health_recorded", stats.health_entries > 0, if (stats.health_entries > 0) "ok" else "info", if (stats.health_entries > 0) "health state recorded" else "no health state recorded yet");
