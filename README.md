@@ -154,9 +154,10 @@ boundary without starting Codex or probing providers. Read
 distinguish a ready session with another route behind it from a ready session
 that will need revalidation, waiting, or a new account after its next failure.
 When the selected Codex route is single-route-at-risk, the broker-session,
-`route explain`, and `stay-afloat` JSON surfaces expose `resilience_actions`:
+`route explain`, and `stay-afloat` surfaces expose the same next actions:
 spend-gated exhausted-route revalidation, enrolling another Codex account, or
-waiting for quota reset.
+waiting for quota reset. JSON clients read those actions from
+`resilience_actions`; text output prints the same concise `next:` hint.
 `codex broker-session-smoke --confirm-broker --json` takes the next no-spend UX
 step: it uses the session plan's selected and fallback routes, starts a local
 broker-owned app-server session against mocked Responses/ChatGPT endpoints, and
