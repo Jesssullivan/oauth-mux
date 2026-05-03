@@ -42,7 +42,7 @@ Redacted JSONL cassettes for these two `codex exec --json` outcomes live under:
 test/fixtures/cassettes/codex/
 ```
 
-Live three-account evidence captured on 2026-04-26:
+Historical starter evidence captured on 2026-04-26:
 
 ```text
 just codex-max-login-status-all
@@ -56,6 +56,11 @@ codex-mini: max-1, max-2, max-3 -> 200/use_this/live/available
 just codex-max-probe-all codex-max
 codex-max: max-1, max-2, max-3 -> 200/use_this/live/available
 ```
+
+Supersession note, 2026-05-03: current `codex-max` dogfood is tracked in
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md`. The live cohort now
+has four broker-ready routes, with `max-1` selected, `max-4` spare fallback,
+and `max-2`/`max-3` quota-exhausted for `codex-max`.
 
 Only login status, auth store paths, and mux probe classifications were
 inspected. Token contents were not read or printed.

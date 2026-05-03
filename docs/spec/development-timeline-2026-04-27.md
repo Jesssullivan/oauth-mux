@@ -4,21 +4,28 @@ Updated: 2026-04-28
 
 Issue context: Linear `TIN-491`, GitHub `tinyland-inc/lab#197`.
 
+Supersession note, 2026-05-03: this timeline records the original public
+release arc. Current Codex dogfood has moved from the initial starter path to a
+four-route paid `codex-max` cohort with broker-owned session planning, live
+broker-run, exhausted-route revalidation, controlled fallback drills, and a
+no-spend soak snapshot helper. Same-thread quota recovery and unmanaged TUI
+hot-swap remain unclaimed.
+
 ## Current Stage
 
 `oauth-mux` is now published as a controlled public tool for the first concrete
 use case. `v0.1.2` is the first usable public npm release, the Codex
-three-account path is live-proven through hosted secret-scoped QA, and the full
+starter Codex path is live-proven through hosted secret-scoped QA, and the full
 registry dry-run path has passed for the current release.
 
 The remaining product gap is no longer core selection or publication mechanics.
 The gap is adoption: first-run clarity, website narrative, provider-author
 contribution paths, community feedback, and precise provider-support language.
 
-The current Codex operator state is that all three configured Codex accounts are
-active and classify as `live.available` for both `codex-mini` and `codex-max`.
-Earlier quota-exhaustion permutations remain valuable fixture and QA scenarios:
-they should continue to classify as route-scoped availability, not generic
+The current operator truth has since moved into
+`docs/spec/paid-multi-account-proof-cohort-2026-05-01.md`. Earlier
+quota-exhaustion permutations remain valuable fixture and QA scenarios: they
+should continue to classify as route-scoped availability, not generic
 degradation or auth death.
 
 ## Completed Arc
@@ -115,7 +122,7 @@ degradation or auth death.
 Ready now:
 
 - internal operator experimentation;
-- local three-account Codex Max setup and explicit probe runs;
+- local Codex Max setup and explicit probe runs;
 - schema-only provider authoring against no-secret fixtures;
 - public npm install of `v0.1.2`;
 - hosted live QA for the Codex account matrix;

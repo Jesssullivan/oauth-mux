@@ -6,7 +6,7 @@ Issue context: GitHub `Jesssullivan/oauth-mux#67` and `#68`; Linear `TIN-736`,
 
 ## Baseline
 
-Codex is product-proven for the current three-account path, but the first-run
+Codex is product-proven for the current paid cohort path, but the first-run
 surface is still more provider-specific than the final product should be.
 Claude and Figma have provider definitions and partial proof, but not a boring
 N-account enrollment contract.
@@ -17,9 +17,11 @@ storage quirks.
 
 The paid proof cohort in
 `docs/spec/paid-multi-account-proof-cohort-2026-05-01.md` is the first planned
-stress test for this contract: one lower-tier Codex account added to the
-existing Max cohort, three Claude Code account/billing shapes, and three Figma
-token/resource shapes.
+stress test for this contract: four `codex-max` routes plus lower-tier Codex
+contrast, three Claude Code account/billing shapes, and three Figma
+token/resource shapes. Current Codex route health remains capability-scoped:
+Spark/mini or dashboard-credit availability does not imply `codex-max`
+availability.
 
 ## Product Contract
 
@@ -84,7 +86,7 @@ plan/file metadata modes remain separate route shapes.
 ### Story A: user adds a fourth Codex account
 
 The user wants one more Codex subscription account without breaking the current
-three-account setup.
+paid-cohort setup.
 
 Expected flow:
 

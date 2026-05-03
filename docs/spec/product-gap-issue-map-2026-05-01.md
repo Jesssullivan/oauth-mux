@@ -11,11 +11,19 @@ auth-broker proof `TIN-913` / GitHub `#125`.
 
 ## Baseline
 
-`oauth-mux` v0.1.6 is published and dogfooded for the Codex three-account
-route. The release has public GitHub assets, npm `latest`, `curl | sh`,
+`oauth-mux` v0.1.6 is published and dogfooded for the Codex route-selection
+path. The release has public GitHub assets, npm `latest`, `curl | sh`,
 deb/rpm assets, and a public Jess-owned Homebrew tap. The remaining adoption
 risks are no longer general release mechanics. They are specific product
 boundaries that need separate tracking.
+
+Supersession note, 2026-05-03: the Codex proof ladder now includes
+broker-owned session planning, no-spend local broker smokes, spend-gated
+broker-run live turns, bounded broker-run session loops, exhausted-route
+revalidation, and controlled fallback drills. The current paid `codex-max`
+cohort is four routes: `max-1` selected, `max-4` spare fallback, and
+`max-2`/`max-3` quota-exhausted for `codex-max`. Provider-originated
+in-session quota fallback remains tracked by GitHub `#131` / Linear `TIN-916`.
 
 ## Public Issue Map
 

@@ -17,9 +17,9 @@ tool for the first concrete use case:
 - GitHub Release, npm package layout, Homebrew formula audit, deb/rpm metadata,
   curl installer smoke, and rollback docs have all been exercised through the
   release proof or registry dry-run paths.
-- The Codex three-account path is live-proven through secret-scoped hosted QA.
-  All three current accounts classify as `live.available` across `codex-mini`
-  and `codex-max`.
+- The original Codex starter path is live-proven through secret-scoped hosted
+  QA. Current paid-cohort truth has since moved to
+  `docs/spec/paid-multi-account-proof-cohort-2026-05-01.md`.
 - Installed CLI commands now cover the core Codex flow:
   `oauth-mux codex onboard`, `oauth-mux codex canary`, and
   `oauth-mux codex probe-all`.
@@ -57,7 +57,7 @@ Primary claim:
 
 What to say now:
 
-- real three-account Codex muxing works;
+- real Codex route muxing works;
 - subscription quota exhaustion is a typed availability state, not generic
   failure;
 - the tool is zero external Zig dependencies and ships as static binaries;
@@ -114,7 +114,7 @@ Required sections:
      publication state precisely.
 
 5. First-run flows.
-   - Codex three-account happy path.
+   - Codex paid cohort path.
    - generic provider author path.
    - agent discovery path:
 
