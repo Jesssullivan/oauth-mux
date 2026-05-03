@@ -214,6 +214,7 @@ proxy, or in-agent adapter proves those stronger levels.
 | Command surface | Claim level | Boundary | Spend | Route health mutation | Provider-originated evidence | Same-thread support | Unmanaged TUI support |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `stay-afloat next`, `stay-afloat launch`, `daemon tick` | `prepared_fallback` | next mediated process start | no | no by default | no | no | no |
+| `codex managed-plan`, `codex managed` | `managed_codex_process` | native Codex started under selected route-local `CODEX_HOME` | child-dependent for launch | no by default | child-dependent | no | managed launch only |
 | `codex broker-session-plan` | `broker_owned_app_server` | planning for oauth-mux-owned Codex app-server | no | no | no | no | no |
 | `codex broker-session-smoke` | `broker_owned_app_server` | local mocked broker-owned app-server | no | no | simulated only | new thread only | no |
 | `codex broker-run` | `broker_owned_app_server` | live broker-owned app-server | yes, after confirmation | on classified live failure | yes when provider failure occurs | no | no |

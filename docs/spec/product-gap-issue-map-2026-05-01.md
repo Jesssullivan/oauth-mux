@@ -142,6 +142,13 @@ already-running provider-owned Codex session hit a usage limit and no seamless
 daemon handoff occurred. Manual logout/login restored future mediated launch
 readiness, but did not prove active-session rescue.
 
+The `TIN-934` / GitHub `#160` managed-entrypoint slice addresses the practical
+startup gap: native Codex sessions that need route-local resume should be
+started with `oauth-mux codex managed`, not with an unmanaged `codex` process
+that oauth-mux tries to rescue later. Its claim level is `managed_codex_process`
+and its resume namespace is the selected route-local `CODEX_HOME`; it does not
+claim cross-route import, same-thread quota recovery, or unmanaged TUI hot-swap.
+
 The `TIN-913` / GitHub `#125` Codex app-server auth-broker artifact is
 `docs/spec/codex-inplace-auth-broker-proof-2026-05-02.md`. It records the
 source-backed opportunity discovered after the supervised-restart contract:

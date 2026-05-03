@@ -8019,6 +8019,8 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .probe_all => try runCodexProbeAll(allocator, writer, args),
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
+        .managed_plan => try runCodexManagedPlan(allocator, writer, args),
+        .managed => try runCodexManaged(allocator, writer, args),
         .broker_plan => try runCodexBrokerPlan(allocator, writer, args),
         .broker_session_plan => try runCodexBrokerSessionPlan(allocator, writer, args),
         .broker_session_smoke => try runCodexBrokerSessionSmoke(allocator, writer, args),
@@ -8814,6 +8816,177 @@ fn runCodexBrokerSessionPlan(allocator: std.mem.Allocator, writer: anytype, args
     } else {
         try writeCodexBrokerSessionPlanText(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability);
     }
+}
+
+fn runCodexManagedPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = firstSelectableRoute(evaluations.items);
+
+    if (args.json) {
+        try writeCodexManagedPlanJson(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability, args);
+    } else {
+        try writeCodexManagedPlanText(writer, evaluations.items, selected_index, args.profile, capability, args);
+    }
+}
+
+fn runCodexManaged(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    if (args.json) {
+        try runCodexManagedPlan(allocator, writer, args);
+        return;
+    }
+
+    const target_argv = try buildCodexManagedTargetArgv(allocator, args);
+    defer allocator.free(target_argv);
+
+    const capability = firstCommaValue(args.capabilities);
+    try runStayAfloatLaunch(allocator, writer, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .target_argv = target_argv,
+    });
+}
+
+fn buildCodexManagedTargetArgv(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) ![]const []const u8 {
+    if (args.resume_id != null and args.resume_last) {
+        log.err("codex managed: use either --resume <id> or --resume-last, not both", .{});
+        return error.ConfigValidationError;
+    }
+    if (args.include_non_interactive and args.resume_id == null and !args.resume_last) {
+        log.err("codex managed: --include-non-interactive only applies to --resume or --resume-last", .{});
+        return error.ConfigValidationError;
+    }
+
+    var argv = std.ArrayList([]const u8).init(allocator);
+    errdefer argv.deinit();
+    try argv.append("codex");
+
+    if (args.resume_id != null or args.resume_last) {
+        try argv.append("resume");
+        if (args.resume_last) {
+            try argv.append("--last");
+        } else if (args.resume_id) |resume_id| {
+            try argv.append(resume_id);
+        }
+        if (args.include_non_interactive) try argv.append("--include-non-interactive");
+    }
+
+    for (args.managed_argv) |arg| try argv.append(arg);
+    return try argv.toOwnedSlice();
+}
+
+fn writeCodexManagedPlanJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    args: cli.Command.CodexArgs,
+) !void {
+    const session_start_ready = selected_index != null;
+    const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    const prepared_fallback = session_start_ready and fallback_count > 0;
+    const resume_requested = args.resume_id != null or args.resume_last;
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"mode\":\"codex_managed_session_plan\"");
+    try writer.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false,\"executes_child\":false");
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (session_start_ready) "true" else "false");
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"managed_codex_process\",\"proof_status\":\"managed_launch_planning_only\",\"managed_process_launch\":true,\"mediation_point\":\"stay-afloat launch\",\"route_local_resume\":true,\"resume_namespace\":\"selected_route_codex_home\",\"prepared_fallback\":");
+    try writer.writeAll(if (prepared_fallback) "true" else "false");
+    try writer.writeAll(",\"selectable_fallback_routes\":");
+    try writer.print("{d}", .{fallback_count});
+    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_auth_broker\":false,\"broker_owned_app_server\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"profile\":");
+    if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"capability\":");
+    if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"codex_home\":{\"env\":\"CODEX_HOME\",\"namespace\":\"selected_route_store\",\"path_printed\":false}");
+    try writer.writeAll(",\"resume\":{\"scope\":\"route_local_codex_home\",\"requested\":");
+    try writer.writeAll(if (resume_requested) "true" else "false");
+    try writer.writeAll(",\"resume_last\":");
+    try writer.writeAll(if (args.resume_last) "true" else "false");
+    try writer.writeAll(",\"resume_id_provided\":");
+    try writer.writeAll(if (args.resume_id != null) "true" else "false");
+    try writer.writeAll(",\"include_non_interactive\":");
+    try writer.writeAll(if (args.include_non_interactive) "true" else "false");
+    try writer.writeAll(",\"resume_id_printed\":false,\"unmanaged_cross_route_resume\":false,\"diagnostic\":\"resume ids are resolved by Codex inside the selected route-local CODEX_HOME\"}");
+    try writer.writeAll(",\"target\":{\"program\":\"codex\",\"passthrough_arg_count\":");
+    try writer.print("{d}", .{args.managed_argv.len});
+    try writer.writeAll(",\"argv_printed\":false}");
+    try writer.writeAll(",\"selected\":");
+    if (selected_index) |idx| {
+        try writeRouteSelectionJson(writer, evaluations[idx].route);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"resilience\":");
+    try writeCodexBrokerSessionResilienceJson(writer, session_start_ready, fallback_count);
+    try writer.writeAll(",\"resilience_actions\":");
+    try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, capability, session_start_ready, fallback_count);
+    try writer.writeAll(",\"routes\":[");
+    for (evaluations, 0..) |evaluation, idx| {
+        if (idx > 0) try writer.writeByte(',');
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, selected);
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeCodexManagedPlanText(
+    writer: anytype,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    args: cli.Command.CodexArgs,
+) !void {
+    const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    try writer.writeAll("oauth-mux Codex managed session plan\n\n");
+    if (profile) |value| try writer.print("  profile: {s}\n", .{value});
+    if (capability) |value| try writer.print("  capability: {s}\n", .{value});
+    try writer.writeAll("  claim: planning-only managed_codex_process launch with route-local CODEX_HOME resume namespace\n");
+    try writer.print("  session_start_ready: {s}\n", .{if (selected_index != null) "true" else "false"});
+    try writer.print("  selectable_fallback_routes: {d}\n", .{fallback_count});
+    try writer.print("  resume_requested: {s}\n", .{if (args.resume_id != null or args.resume_last) "true" else "false"});
+    if (selected_index) |idx| {
+        const route = evaluations[idx].route;
+        try writer.print("  selected: {s}:{s}", .{ route.provider, route.account });
+        if (route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.writeByte('\n');
+    } else {
+        try writer.writeAll("  selected: none\n");
+    }
+    try writer.writeAll("  codex_home: selected route store; path not printed\n");
+    try writer.writeAll("  boundary: this plans/launches native Codex under oauth-mux mediation; it does not import unmanaged sessions or prove same-thread quota handoff\n");
 }
 
 const CodexBrokerSessionSummary = struct {
