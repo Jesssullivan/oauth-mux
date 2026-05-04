@@ -39,6 +39,10 @@ pub const RunOptions = struct {
     account: ?[]const u8 = null,
     /// If true, emit NDJSON status frames to stderr.
     json_status: bool = false,
+    /// Optional file path for NDJSON status frames. When set, status
+    /// frames are written here instead of stderr so real Codex terminal
+    /// output cannot corrupt the evidence stream.
+    json_status_file: ?[]const u8 = null,
     /// Args after `--` to forward to codex unchanged.
     forward_argv: []const []const u8 = &.{},
 };
@@ -87,6 +91,15 @@ fn expandTilde(allocator: std.mem.Allocator, p: []const u8) ![]u8 {
 
 pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     const stderr = std.io.getStdErr().writer();
+    const emit_status = opts.json_status or opts.json_status_file != null;
+
+    var status_file: ?std.fs.File = null;
+    defer if (status_file) |*file| file.close();
+    var status_writer = stderr.any();
+    if (opts.json_status_file) |path| {
+        status_file = try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
+        status_writer = status_file.?.writer().any();
+    }
 
     // 1. Load oauth-mux config + populate broker pool.
     const parsed = config_mod.load(allocator) catch |e| {
@@ -136,7 +149,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         allocator,
         &server.pool,
         mat_ctx.vtable(),
-        stderr.any(),
+        status_writer,
     ) catch |e| {
         try stderr.print("oauth-mux codex: proxy bind: {s}\n", .{@errorName(e)});
         return e;
@@ -155,8 +168,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         allocator.free(codex_home);
     }
 
-    if (opts.json_status) {
-        try stderr.print(
+    if (emit_status) {
+        try status_writer.print(
             "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\"}}\n",
             .{ elected.id, proxy_port },
         );
@@ -215,12 +228,12 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     tickleProxy(proxy_port);
     proxy_thread.join();
 
-    if (opts.json_status) {
+    if (emit_status) {
         const exit_code: i32 = switch (term) {
             .Exited => |c| c,
             else => -1,
         };
-        try stderr.print(
+        try status_writer.print(
             "{{\"kind\":\"session_ended\",\"adapter\":\"codex\",\"exit_code\":{d},\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":{any}}}\n",
             .{ exit_code, proxy.peakClaimLevel().toString(), proxy.syntheticSwapSeen() },
         );
@@ -340,6 +353,7 @@ test "RunOptions defaults" {
     const opts = RunOptions{};
     try std.testing.expect(opts.profile == null);
     try std.testing.expect(!opts.json_status);
+    try std.testing.expect(opts.json_status_file == null);
     try std.testing.expectEqual(@as(usize, 0), opts.forward_argv.len);
 }
 

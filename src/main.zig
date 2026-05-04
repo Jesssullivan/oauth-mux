@@ -55,6 +55,7 @@ pub fn main() !void {
                 .profile = adapter_args.profile,
                 .account = adapter_args.account,
                 .json_status = adapter_args.json_status,
+                .json_status_file = adapter_args.json_status_file,
                 .forward_argv = adapter_args.forward_argv,
             }) catch |e| {
                 log.err("codex run: {s}", .{@errorName(e)});
