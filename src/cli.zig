@@ -29,6 +29,7 @@ pub const Command = union(enum) {
     codex: CodexArgs,
     completions: CompletionsArgs,
     daemon_run: DaemonRunArgs,
+    mcp: McpArgs,
     daemon_start,
     daemon_stop,
     daemon_status: DaemonStatusArgs,
@@ -38,6 +39,11 @@ pub const Command = union(enum) {
     version_cmd,
     help,
     codex_help,
+
+    pub const McpArgs = struct {
+        profile: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+    };
 
     pub const ExecArgs = struct {
         profile: ?[]const u8 = null,
@@ -314,6 +320,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
     if (eql(cmd, "codex")) return parseCodex(rest);
+    if (eql(cmd, "mcp")) return parseMcp(rest);
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
     if (eql(cmd, "daemon")) {
         if (rest.len > 0) {
@@ -340,6 +347,21 @@ pub fn parse(args: []const []const u8) Command {
 
 fn parseExec(args: []const []const u8) Command {
     return .{ .exec = parseExecArgs(args) };
+}
+
+fn parseMcp(args: []const []const u8) Command {
+    var result = Command.McpArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") and i + 1 < args.len) {
+            i += 1;
+            result.profile = args[i];
+        } else if (eql(args[i], "--capability") and i + 1 < args.len) {
+            i += 1;
+            result.capability = args[i];
+        }
+    }
+    return .{ .mcp = result };
 }
 
 fn parseExecArgs(args: []const []const u8) Command.ExecArgs {
@@ -1168,6 +1190,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  daemon tick [--once|--loop] [--execute] [--iterations <n>] [--interval-ms <ms>] [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Plan daemon ticks; --execute runs at most one admitted non-interactive action per tick.
+        \\
+        \\  mcp [--profile <name>] [--capability <name>]
+        \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
         \\
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
@@ -2126,6 +2151,18 @@ test "parse daemon tick bounded loop" {
     }
 }
 
+test "parse mcp broker server profile" {
+    const args = [_][]const u8{ "mcp", "--profile", "codex-max", "--capability", "codex-max" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .mcp => |mcp| {
+            try std.testing.expectEqualStrings("codex-max", mcp.profile.?);
+            try std.testing.expectEqualStrings("codex-max", mcp.capability.?);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
@@ -2150,6 +2187,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a setup -d 'First-run setup'
             \\complete -c oauth-mux -n __fish_use_subcommand -a codex -d 'Codex account onboarding'
             \\complete -c oauth-mux -n __fish_use_subcommand -a daemon -d 'Daemon operations'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a mcp -d 'Run broker MCP server'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l profile -s p -d 'Profile name' -r
@@ -2226,6 +2264,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from mcp' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from mcp' -l capability -d 'Route capability' -r
             \\
         );
     } else if (eql(shell_name, "zsh")) {
@@ -2254,6 +2294,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'setup:First-run setup'
             \\    'codex:Codex account onboarding'
             \\    'daemon:Daemon operations'
+            \\    'mcp:Run broker MCP server'
             \\    'version:Print version'
             \\    'completions:Generate completions'
             \\  )
@@ -2266,7 +2307,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts enroll status health discover repair-plan repair route stay-afloat config init setup codex daemon version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts enroll status health discover repair-plan repair route stay-afloat config init setup codex daemon mcp version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\
