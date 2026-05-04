@@ -20,6 +20,22 @@ Source references (codex repo, ref `main` @ `67849d9` 2026-05-03):
 - `codex-rs/exec/src/lib.rs` L1580–1588 — exec rejects external refresh.
 - `codex-rs/tui/src/app/app_server_requests.rs` L136 — TUI silently drops it.
 
+## 0.0 Current Implementation Checkpoint
+
+TIN-948 is a bounded skeleton slice, not the full adapter described by
+the rest of this contract. It adds `oauth-mux codex run`, an
+oauth-mux-owned localhost wire proxy, and a synthetic smoke where a stub
+Codex child keeps the same PID while the proxy observes quota exhaustion,
+marks the selected route unavailable, and sends the next request with a
+different account's fixture credentials.
+
+That smoke is structural evidence only. It uses local stubs and fake
+fixture tokens, makes no provider calls, and keeps the adapter output at
+`claim_level:"broker_owned"` while reporting
+`synthetic_swap_observed:true`. It does **not** claim live
+`next_turn_seamless`, provider-originated quota handling, same-thread
+recovery, or unmanaged Codex TUI hot-swap.
+
 ## 0. Scope
 
 This adapter exists to deliver the `oauth-mux codex` user entrypoint and

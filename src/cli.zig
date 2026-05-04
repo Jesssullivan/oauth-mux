@@ -30,6 +30,7 @@ pub const Command = union(enum) {
     completions: CompletionsArgs,
     daemon_run: DaemonRunArgs,
     mcp: McpArgs,
+    codex_adapter: CodexAdapterArgs,
     daemon_start,
     daemon_stop,
     daemon_status: DaemonStatusArgs,
@@ -43,6 +44,14 @@ pub const Command = union(enum) {
     pub const McpArgs = struct {
         profile: ?[]const u8 = null,
         capability: ?[]const u8 = null,
+    };
+
+    pub const CodexAdapterArgs = struct {
+        profile: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        json_status: bool = false,
+        /// Args after `--` forwarded to codex unchanged.
+        forward_argv: []const []const u8 = &.{},
     };
 
     pub const ExecArgs = struct {
@@ -319,7 +328,13 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
-    if (eql(cmd, "codex")) return parseCodex(rest);
+    if (eql(cmd, "codex")) {
+        // Broker-mediated session entrypoint. Other `codex ...`
+        // subcommands continue through the legacy parser until the
+        // adapter path is ready to replace them.
+        if (rest.len > 0 and eql(rest[0], "run")) return parseCodexAdapter(rest[1..]);
+        return parseCodex(rest);
+    }
     if (eql(cmd, "mcp")) return parseMcp(rest);
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
     if (eql(cmd, "daemon")) {
@@ -347,6 +362,26 @@ pub fn parse(args: []const []const u8) Command {
 
 fn parseExec(args: []const []const u8) Command {
     return .{ .exec = parseExecArgs(args) };
+}
+
+fn parseCodexAdapter(args: []const []const u8) Command {
+    var result = Command.CodexAdapterArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--")) {
+            result.forward_argv = args[i + 1 ..];
+            break;
+        } else if ((eql(args[i], "--profile") or eql(args[i], "-p")) and i + 1 < args.len) {
+            i += 1;
+            result.profile = args[i];
+        } else if (eql(args[i], "--account") and i + 1 < args.len) {
+            i += 1;
+            result.account = args[i];
+        } else if (eql(args[i], "--json-status")) {
+            result.json_status = true;
+        }
+    }
+    return .{ .codex_adapter = result };
 }
 
 fn parseMcp(args: []const []const u8) Command {
@@ -1193,6 +1228,9 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  mcp [--profile <name>] [--capability <name>]
         \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
+        \\
+        \\  codex run [--profile name] [--account provider:account] [--json-status] [-- codex-args...]
+        \\      Run a broker-mediated Codex adapter session with a local wire proxy.
         \\
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
@@ -2163,6 +2201,22 @@ test "parse mcp broker server profile" {
     }
 }
 
+test "parse codex run adapter args" {
+    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--account", "codex:max-1", "--json-status", "--", "--model", "gpt-5.5" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex_adapter => |adapter| {
+            try std.testing.expectEqualStrings("codex-max", adapter.profile.?);
+            try std.testing.expectEqualStrings("codex:max-1", adapter.account.?);
+            try std.testing.expect(adapter.json_status);
+            try std.testing.expectEqual(@as(usize, 2), adapter.forward_argv.len);
+            try std.testing.expectEqualStrings("--model", adapter.forward_argv[0]);
+            try std.testing.expectEqualStrings("gpt-5.5", adapter.forward_argv[1]);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
@@ -2249,7 +2303,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l account -d 'Route account id' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status -d 'Emit redacted adapter status frames'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run loop start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host foreground stay-afloat tick loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'

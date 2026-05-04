@@ -173,7 +173,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-acceptance.sh'
     @echo "all checks passed"
 
 e2e:
@@ -201,6 +201,15 @@ smoke-broker:
 smoke-broker-local:
     zig build
     ./scripts/smoke-broker.sh
+
+# ── Codex adapter synthetic smoke (no provider traffic) ──
+
+smoke-codex-acceptance:
+    nix develop --command just smoke-codex-acceptance-local
+
+smoke-codex-acceptance-local:
+    zig build
+    ./scripts/smoke-codex-acceptance.sh
 
 # ── Config ──
 
