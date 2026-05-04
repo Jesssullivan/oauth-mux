@@ -22,12 +22,15 @@ Source references (codex repo, ref `main` @ `67849d9` 2026-05-03):
 
 ## 0.0 Current Implementation Checkpoint
 
-TIN-948 is a bounded skeleton slice, not the full adapter described by
-the rest of this contract. It adds `oauth-mux codex run`, an
-oauth-mux-owned localhost wire proxy, and a synthetic smoke where a stub
-Codex child keeps the same PID while the proxy observes quota exhaustion,
-marks the selected route unavailable, and sends the next request with a
-different account's fixture credentials.
+TIN-948/TIN-949 are bounded skeleton slices, not the full adapter
+described by the rest of this contract. They add `oauth-mux codex run`,
+an oauth-mux-owned localhost wire proxy, and a synthetic smoke where a
+stub Codex child keeps the same PID while the proxy observes quota
+exhaustion, marks the selected route unavailable, and sends the next
+request with a different account's fixture credentials. Runtime
+`CODEX_HOME` is a per-session overlay copied from the selected account's
+auth source; the adapter does not rewrite the account-local
+`config.toml`.
 
 That smoke is structural evidence only. It uses local stubs and fake
 fixture tokens, makes no provider calls, and keeps the adapter output at

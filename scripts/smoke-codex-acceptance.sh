@@ -78,6 +78,8 @@ EOF
 cat >"$TMP/account-B/auth.json" <<EOF
 {"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-acceptance-B","refresh_token":"RT-B","account_id":"acc-B-id"},"auth_mode":"Chatgpt"}
 EOF
+printf '%s\n' 'preexisting = "account-A"' >"$TMP/account-A/config.toml"
+printf '%s\n' 'preexisting = "account-B"' >"$TMP/account-B/config.toml"
 
 cat >"$TMP/oauth-mux.config.json" <<EOF
 {
@@ -192,8 +194,15 @@ else
     exit 1
 fi
 
+if [[ "$(cat "$TMP/account-A/config.toml")" == 'preexisting = "account-A"' && "$(cat "$TMP/account-B/config.toml")" == 'preexisting = "account-B"' ]]; then
+    echo "  ✓ account-local config.toml files were not clobbered"
+else
+    echo "  ✗ account-local config.toml was clobbered" >&2
+    exit 1
+fi
+
 echo
-echo "smoke-codex-acceptance: all 13 assertions passed."
+echo "smoke-codex-acceptance: all 14 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"

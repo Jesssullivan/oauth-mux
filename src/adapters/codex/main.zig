@@ -8,9 +8,11 @@
 //!   1. broker.populatePool from the active oauth-mux Config (profile
 //!      filtered).
 //!   2. account/select to pick a credited account.
-//!   3. Find that account's per-account CODEX_HOME (already managed by
-//!      oauth-mux at enroll time).
-//!   4. spawn `codex` with CODEX_HOME pointed at that directory.
+//!   3. Resolve that account's auth.json source from the oauth-mux
+//!      account store.
+//!   4. Create a per-session CODEX_HOME overlay with a copied auth.json
+//!      and generated proxy config.toml.
+//!   5. spawn `codex` with CODEX_HOME pointed at that overlay.
 //!      The user sees real codex while oauth-mux keeps owning the
 //!      proxy/broker boundary.
 //!
@@ -48,12 +50,11 @@ pub const RunError = error{
     NoCodexHome,
 };
 
-/// Resolve the per-account CODEX_HOME directory. Order:
-///   1. AccountConfig.config_dir if set.
-///   2. dirname(secret.path) when secret.backend == "file" (the
-///      common case: oauth-mux's enrollment placed auth.json inside
-///      a per-account directory we can use as CODEX_HOME directly).
-fn resolveCodexHome(
+/// Resolve the account's source auth.json path. Order:
+///   1. secret.path when secret.backend == "file" (the normal
+///      oauth-mux enrollment shape).
+///   2. AccountConfig.config_dir/auth.json when config_dir exists.
+fn resolveCodexAuthPath(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     account_id: []const u8,
@@ -65,15 +66,14 @@ fn resolveCodexHome(
     const provider_cfg = cfg.providers.map.get(provider) orelse return null;
     const acct_cfg = provider_cfg.accounts.map.get(account) orelse return null;
 
-    if (acct_cfg.config_dir) |cd| {
-        return try expandTilde(allocator, cd);
-    }
     if (std.mem.eql(u8, acct_cfg.secret.backend, "file")) {
         const path = acct_cfg.secret.path orelse return null;
-        const expanded = try expandTilde(allocator, path);
-        defer allocator.free(expanded);
-        const dir = std.fs.path.dirname(expanded) orelse return null;
-        return try allocator.dupe(u8, dir);
+        return try expandTilde(allocator, path);
+    }
+    if (acct_cfg.config_dir) |cd| {
+        const dir = try expandTilde(allocator, cd);
+        defer allocator.free(dir);
+        return try std.fs.path.join(allocator, &.{ dir, "auth.json" });
     }
     return null;
 }
@@ -116,15 +116,16 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         else => return e,
     };
 
-    // 3. Resolve the per-account CODEX_HOME.
-    const codex_home = (try resolveCodexHome(allocator, parsed.value, elected.id)) orelse {
+    // 3. Resolve the selected account auth source. Runtime CODEX_HOME
+    // is a per-session overlay, never the shared account store.
+    const source_auth_path = (try resolveCodexAuthPath(allocator, parsed.value, elected.id)) orelse {
         try stderr.print(
-            "oauth-mux codex: cannot resolve CODEX_HOME for {s}; account needs config_dir or file secret\n",
+            "oauth-mux codex: cannot resolve auth.json for {s}; account needs config_dir or file secret\n",
             .{elected.id},
         );
         return RunError.NoCodexHome;
     };
-    defer allocator.free(codex_home);
+    defer allocator.free(source_auth_path);
 
     // 4. Bind the wire-layer reverse proxy. The adapter stays alive
     // as the broker/proxy owner while the codex child runs with
@@ -144,9 +145,15 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     proxy.profile = opts.profile;
     const proxy_port = proxy.port();
 
-    // 5. Write a managed config.toml in the per-account CODEX_HOME
-    // pointing model_providers.openai at the local proxy.
-    try writeManagedConfigToml(allocator, codex_home, proxy_port);
+    // 5. Create a per-session CODEX_HOME overlay containing copied
+    // auth material and generated proxy config. This prevents two
+    // concurrent adapter sessions from clobbering the same account
+    // store's config.toml.
+    const codex_home = try makeSessionCodexHome(allocator, source_auth_path, proxy_port);
+    defer {
+        std.fs.cwd().deleteTree(codex_home) catch {};
+        allocator.free(codex_home);
+    }
 
     if (opts.json_status) {
         try stderr.print(
@@ -246,6 +253,65 @@ fn tickleProxy(port: u16) void {
     sock.close();
 }
 
+fn makeSessionCodexHome(
+    allocator: std.mem.Allocator,
+    source_auth_path: []const u8,
+    proxy_port: u16,
+) ![]u8 {
+    const tmp_root = std.process.getEnvVarOwned(allocator, "TMPDIR") catch
+        try allocator.dupe(u8, "/tmp");
+    defer allocator.free(tmp_root);
+    return try createSessionCodexHomeUnder(allocator, tmp_root, source_auth_path, proxy_port);
+}
+
+fn createSessionCodexHomeUnder(
+    allocator: std.mem.Allocator,
+    tmp_root: []const u8,
+    source_auth_path: []const u8,
+    proxy_port: u16,
+) ![]u8 {
+    var nonce: [8]u8 = undefined;
+    std.crypto.random.bytes(&nonce);
+    const hex = std.fmt.bytesToHex(nonce, .lower);
+    const name = try std.fmt.allocPrint(allocator, "oauth-mux-codex-{s}", .{hex[0..]});
+    defer allocator.free(name);
+
+    const session_home = try std.fs.path.join(allocator, &.{ tmp_root, name });
+    errdefer allocator.free(session_home);
+    try std.fs.cwd().makePath(session_home);
+    errdefer std.fs.cwd().deleteTree(session_home) catch {};
+
+    const auth_dst = try std.fs.path.join(allocator, &.{ session_home, "auth.json" });
+    defer allocator.free(auth_dst);
+    try copyFileContents(allocator, source_auth_path, auth_dst);
+
+    if (std.fs.path.dirname(source_auth_path)) |source_dir| {
+        const install_src = try std.fs.path.join(allocator, &.{ source_dir, "installation_id" });
+        defer allocator.free(install_src);
+        const install_dst = try std.fs.path.join(allocator, &.{ session_home, "installation_id" });
+        defer allocator.free(install_dst);
+        copyFileContents(allocator, install_src, install_dst) catch |e| switch (e) {
+            error.FileNotFound => {},
+            else => return e,
+        };
+    }
+
+    try writeManagedConfigToml(allocator, session_home, proxy_port);
+    return session_home;
+}
+
+fn copyFileContents(
+    allocator: std.mem.Allocator,
+    source_path: []const u8,
+    dest_path: []const u8,
+) !void {
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, source_path, 2 * 1024 * 1024);
+    defer allocator.free(bytes);
+    const f = try std.fs.cwd().createFile(dest_path, .{ .mode = 0o600, .truncate = true });
+    defer f.close();
+    try f.writeAll(bytes);
+}
+
 fn writeManagedConfigToml(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -281,4 +347,61 @@ test "expandTilde no-op when no tilde" {
     const a = try expandTilde(std.testing.allocator, "/no/tilde/here");
     defer std.testing.allocator.free(a);
     try std.testing.expectEqualStrings("/no/tilde/here", a);
+}
+
+test "createSessionCodexHomeUnder copies auth and does not clobber source config" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const install = try tmp.dir.createFile("account/installation_id", .{ .mode = 0o600 });
+        defer install.close();
+        try install.writeAll("install-fixture\n");
+    }
+    {
+        const cfg = try tmp.dir.createFile("account/config.toml", .{ .mode = 0o600 });
+        defer cfg.close();
+        try cfg.writeAll("preexisting = true\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+
+    const session_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678);
+    defer {
+        std.fs.cwd().deleteTree(session_home) catch {};
+        std.testing.allocator.free(session_home);
+    }
+
+    const session_auth = try std.fs.path.join(std.testing.allocator, &.{ session_home, "auth.json" });
+    defer std.testing.allocator.free(session_auth);
+    const copied_auth = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_auth, 1024);
+    defer std.testing.allocator.free(copied_auth);
+    try std.testing.expectEqualStrings("{\"tokens\":{\"access_token\":\"fixture\"}}\n", copied_auth);
+
+    const session_install = try std.fs.path.join(std.testing.allocator, &.{ session_home, "installation_id" });
+    defer std.testing.allocator.free(session_install);
+    const copied_install = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_install, 1024);
+    defer std.testing.allocator.free(copied_install);
+    try std.testing.expectEqualStrings("install-fixture\n", copied_install);
+
+    const session_config = try std.fs.path.join(std.testing.allocator, &.{ session_home, "config.toml" });
+    defer std.testing.allocator.free(session_config);
+    const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_config, 4096);
+    defer std.testing.allocator.free(generated_config);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "127.0.0.1:45678") != null);
+
+    const source_config = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "config.toml" });
+    defer std.testing.allocator.free(source_config);
+    const original_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, source_config, 1024);
+    defer std.testing.allocator.free(original_config);
+    try std.testing.expectEqualStrings("preexisting = true\n", original_config);
 }
