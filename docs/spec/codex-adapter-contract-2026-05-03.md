@@ -354,6 +354,7 @@ oauth-mux codex --                                    # explicit args separator 
 oauth-mux codex resume --last                         # forwarded to codex
 oauth-mux codex exec "..."                            # forwarded; Phase 1 may not support exec
 oauth-mux codex --json-status                         # JSON status frames to stderr while running
+oauth-mux codex --json-status-file ./omux.ndjson      # JSON status frames to a file
 ```
 
 `--no-broker` runs bare `codex` directly with no adapter (`execvp`); it
@@ -364,8 +365,11 @@ errors; broker connection failure is a hard error.
 ## 9. JSON Status Frames
 
 When `--json-status` is set, the adapter emits NDJSON to stderr, one frame
-per significant event. Frame shapes are stable under broker
-`surface_version: 1`:
+per significant event. When `--json-status-file <path>` is set, those
+same frames go to the named file instead; this is the required artifact
+path for live acceptance so real Codex terminal output cannot corrupt
+oauth-mux evidence. Frame shapes are stable under broker `surface_version:
+1`:
 
 ```jsonc
 // adapter startup

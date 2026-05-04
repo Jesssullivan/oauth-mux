@@ -50,6 +50,7 @@ pub const Command = union(enum) {
         profile: ?[]const u8 = null,
         account: ?[]const u8 = null,
         json_status: bool = false,
+        json_status_file: ?[]const u8 = null,
         /// Args after `--` forwarded to codex unchanged.
         forward_argv: []const []const u8 = &.{},
     };
@@ -378,6 +379,10 @@ fn parseCodexAdapter(args: []const []const u8) Command {
             i += 1;
             result.account = args[i];
         } else if (eql(args[i], "--json-status")) {
+            result.json_status = true;
+        } else if (eql(args[i], "--json-status-file") and i + 1 < args.len) {
+            i += 1;
+            result.json_status_file = args[i];
             result.json_status = true;
         }
     }
@@ -1229,7 +1234,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  mcp [--profile <name>] [--capability <name>]
         \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
         \\
-        \\  codex run [--profile name] [--account provider:account] [--json-status] [-- codex-args...]
+        \\  codex run [--profile name] [--account provider:account] [--json-status] [--json-status-file path] [-- codex-args...]
         \\      Run a broker-mediated Codex adapter session with a local wire proxy.
         \\
         \\  init [--interactive] [--codex-max]
@@ -2202,13 +2207,14 @@ test "parse mcp broker server profile" {
 }
 
 test "parse codex run adapter args" {
-    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--account", "codex:max-1", "--json-status", "--", "--model", "gpt-5.5" };
+    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--account", "codex:max-1", "--json-status-file", "/tmp/omux-status.ndjson", "--", "--model", "gpt-5.5" };
     const cmd = parse(&args);
     switch (cmd) {
         .codex_adapter => |adapter| {
             try std.testing.expectEqualStrings("codex-max", adapter.profile.?);
             try std.testing.expectEqualStrings("codex:max-1", adapter.account.?);
             try std.testing.expect(adapter.json_status);
+            try std.testing.expectEqualStrings("/tmp/omux-status.ndjson", adapter.json_status_file.?);
             try std.testing.expectEqual(@as(usize, 2), adapter.forward_argv.len);
             try std.testing.expectEqualStrings("--model", adapter.forward_argv[0]);
             try std.testing.expectEqualStrings("gpt-5.5", adapter.forward_argv[1]);
@@ -2307,6 +2313,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l profile -s p -d 'Profile name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l account -d 'Route account id' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status -d 'Emit redacted adapter status frames'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status-file -d 'Write redacted adapter status frames to a file' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run loop start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host foreground stay-afloat tick loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'

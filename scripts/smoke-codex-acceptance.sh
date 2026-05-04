@@ -12,12 +12,12 @@
 #                                      POSTs through the proxy, records
 #                                      its own PID for stability check
 #
-# Drives: oauth-mux codex run --profile codex-max --json-status with:
+# Drives: oauth-mux codex run --profile codex-max --json-status-file with:
 #   OMUX_UPSTREAM_HOST=127.0.0.1:<stub-port>
 #   OMUX_UPSTREAM_SCHEME=http
 #   OMUX_CODEX_BIN=path/to/test-stub-codex.py
 #
-# Asserts the full NDJSON sequence on stderr:
+# Asserts the full NDJSON sequence in the status file:
 #   session_started        (account A elected)
 #   proxy_turn 200 ok      (account A, multiple times)
 #   proxy_turn 429 quota_exhausted (account A)
@@ -54,6 +54,7 @@ TMP="$(mktemp -d -t omux-acceptance.XXXXXX)"
 PORTFILE="$TMP/upstream.port"
 UPLOG="$TMP/upstream.log"
 NDJSON="$TMP/adapter.ndjson"
+ADAPTER_STDERR="$TMP/adapter.stderr"
 STUB_PIDFILE="$TMP/stub-codex.pid"
 STUB_REPORT="$TMP/stub-codex.report"
 
@@ -128,10 +129,12 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STUB_CODEX_TURNS=5 \
   OMUX_STUB_CODEX_PIDFILE="$STUB_PIDFILE" \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
-  "$BIN" codex run --profile codex-max --json-status 2>"$NDJSON" || {
+  "$BIN" codex run --profile codex-max --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
     echo "smoke-codex-acceptance: adapter exited nonzero" >&2
     echo "---NDJSON---" >&2
     cat "$NDJSON" >&2
+    echo "---stderr---" >&2
+    cat "$ADAPTER_STDERR" >&2
     echo "---upstream log---" >&2
     cat "$UPLOG" >&2 || true
     exit 1
@@ -162,6 +165,13 @@ assert_grep "post-swap dropped x-codex-turn-state" '"dropped":"x-codex-turn-stat
 assert_grep "claim_level remains broker_owned" '"claim_level":"broker_owned"' "$NDJSON"
 assert_grep "session_ended final_claim_level broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
 assert_grep "session_ended records synthetic swap" '"kind":"session_ended".*"synthetic_swap_observed":true' "$NDJSON"
+
+if grep -q '"kind":"session_started"' "$ADAPTER_STDERR"; then
+    echo "  ✗ adapter status frames leaked to stderr despite --json-status-file" >&2
+    exit 1
+else
+    echo "  ✓ --json-status-file keeps adapter status frames out of stderr"
+fi
 
 ACCOUNT_HITS=$(grep -oE '"account":"codex:max-[12]"' "$NDJSON" | sort -u | wc -l | tr -d ' ')
 if [[ "$ACCOUNT_HITS" -ge 2 ]]; then
@@ -202,7 +212,7 @@ else
 fi
 
 echo
-echo "smoke-codex-acceptance: all 14 assertions passed."
+echo "smoke-codex-acceptance: all 15 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"
