@@ -16,11 +16,15 @@ const runtime_mod = @import("runtime.zig");
 const secret_mod = @import("secret.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
+const codex_adapter = @import("adapters/codex/main.zig");
 
 comptime {
-    // Pull broker + loader modules into the test build.
+    // Pull broker + adapter modules into the test build.
     _ = broker;
     _ = broker_loader;
+    _ = codex_adapter;
+    _ = @import("adapters/codex/app_server_client.zig");
+    _ = @import("adapters/codex/wire_proxy.zig");
 }
 
 pub fn main() !void {
@@ -42,6 +46,21 @@ pub fn main() !void {
         .version_cmd => try stdout.print("oauth-mux {s}\n", .{cli.version}),
         .help => try cli.printUsage(stdout),
         .codex_help => try cli.printCodexUsage(stdout),
+
+        .codex_adapter => |adapter_args| {
+            // `oauth-mux codex run`: broker-mediated Codex adapter
+            // session. Anchor:
+            // docs/spec/codex-adapter-contract-2026-05-03.md.
+            codex_adapter.run(allocator, .{
+                .profile = adapter_args.profile,
+                .account = adapter_args.account,
+                .json_status = adapter_args.json_status,
+                .forward_argv = adapter_args.forward_argv,
+            }) catch |e| {
+                log.err("codex run: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
 
         .mcp => |mcp_args| {
             // Broker MCP server on stdio. Anchor:
