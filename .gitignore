@@ -43,3 +43,6 @@ dist/soak/
 *.tar.gz
 *.deb
 *.rpm
+
+# Operator wire captures. Commit only reviewed, scrubbed fixtures.
+captures/
