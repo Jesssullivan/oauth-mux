@@ -173,7 +173,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh'
     @echo "all checks passed"
 
 e2e:
@@ -192,6 +192,15 @@ first-run-e2e-local:
 
 live-qa:
     nix develop --command ./scripts/live-provider-qa.sh
+
+# ── Broker MCP smoke (provider-neutral regression catch-net) ──
+
+smoke-broker:
+    nix develop --command just smoke-broker-local
+
+smoke-broker-local:
+    zig build
+    ./scripts/smoke-broker.sh
 
 # ── Config ──
 

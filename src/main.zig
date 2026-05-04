@@ -14,6 +14,14 @@ const daemon = @import("daemon.zig");
 const repair_state = @import("repair_state.zig");
 const runtime_mod = @import("runtime.zig");
 const secret_mod = @import("secret.zig");
+const broker = @import("broker/mod.zig");
+const broker_loader = @import("broker_loader.zig");
+
+comptime {
+    // Pull broker + loader modules into the test build.
+    _ = broker;
+    _ = broker_loader;
+}
 
 pub fn main() !void {
     log.init();
@@ -34,6 +42,44 @@ pub fn main() !void {
         .version_cmd => try stdout.print("oauth-mux {s}\n", .{cli.version}),
         .help => try cli.printUsage(stdout),
         .codex_help => try cli.printCodexUsage(stdout),
+
+        .mcp => |mcp_args| {
+            // Broker MCP server on stdio. Anchor:
+            // docs/spec/broker-mcp-contract-2026-05-03.md.
+            const parsed = config.load(allocator) catch |e| switch (e) {
+                error.FileNotFound => {
+                    log.err("mcp: no oauth-mux config found; run `oauth-mux init` first", .{});
+                    std.process.exit(types.ExitCode.config_error.int());
+                },
+                else => {
+                    log.err("mcp: config load: {s}", .{@errorName(e)});
+                    std.process.exit(types.ExitCode.config_error.int());
+                },
+            };
+            defer parsed.deinit();
+
+            var server = broker.Server.init(allocator);
+            defer server.deinit();
+
+            broker_loader.populatePool(&server.pool, parsed.value, mcp_args.profile) catch |e| {
+                log.err("mcp: pool populate: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+
+            var mat_ctx = broker_loader.ChatgptMaterializerCtx{ .cfg = &parsed.value };
+            server.setMaterializer(mat_ctx.vtable());
+
+            log.info("mcp: broker surface_version={d} accounts={d} profile={s}", .{
+                broker.SURFACE_VERSION,
+                server.pool.accounts.items.len,
+                mcp_args.profile orelse "(none)",
+            });
+
+            server.runStdio() catch |e| {
+                log.err("mcp: server: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
 
         .config_path => {
             const path = try paths.configFilePath(allocator);
