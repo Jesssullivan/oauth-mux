@@ -173,7 +173,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-acceptance.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-cassette-replay.sh'
     @echo "all checks passed"
 
 e2e:
@@ -210,6 +210,14 @@ smoke-codex-acceptance:
 smoke-codex-acceptance-local:
     zig build
     ./scripts/smoke-codex-acceptance.sh
+
+# ── Codex cassette replay smoke (no provider traffic) ──
+
+smoke-codex-cassette-replay:
+    nix develop --command just smoke-codex-cassette-replay-local
+
+smoke-codex-cassette-replay-local:
+    ./scripts/smoke-codex-cassette-replay.sh
 
 # ── Config ──
 
