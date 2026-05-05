@@ -415,9 +415,10 @@ No restart. No prompt. **This is the metric.**
 - Documented policy posture: subscription/account rotation is policy-sensitive
   and must be labeled as operator-owned behavior. We implement the mechanism
   only with explicit account enrollment and redacted evidence; we do not
-  market it as quota evasion. The doc lives in
-  `docs/policy/tos-posture-2026-05-XX.md` and is linked from the
-  `oauth-mux codex` first-run banner.
+  market it as quota evasion. Current posture lives in
+  `docs/policy/tos-posture-2026-05-05.md`; it should not be linked from
+  first-run or public promotion copy until Level 3 is live-proven and the
+  posture is re-reviewed.
 - Paid-cohort soak proof of Level 3 across at least 3 enrolled accounts and
   at least one observed real exhaustion-then-swap.
 
