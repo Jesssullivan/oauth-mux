@@ -98,7 +98,10 @@ both layers, Level 3 is the default and Level 4 is reachable.
 3. Materializes that account's `auth.json`-equivalent tuple.
 4. Writes a temporary, adapter-owned `CODEX_HOME` directory containing the
    selected account's `auth.json` and a generated `config.toml` whose
-   `[model_providers.openai]` block points at the wire-layer proxy.
+   selected custom provider (`model_provider = "oauth_mux_openai"` and
+   `[model_providers.oauth_mux_openai]`) points at the wire-layer proxy.
+   Codex 0.128+ rejects overriding the reserved built-in `openai`
+   provider id.
 5. Binds the wire-layer proxy on `127.0.0.1:<dynamic-port>`, with the
    proxy holding the account pool reference and the broker session id.
 6. Spawns `codex app-server --listen stdio://` as a child, with
@@ -401,10 +404,10 @@ The adapter MUST refuse to start in these conditions:
   user-mediated repair handoff is available.
 - `codex` binary is not on `PATH` or does not respond to `app-server
   --listen stdio://`.
-- The user's `~/.codex/config.toml` already has a non-managed
-  `[model_providers.openai]` block with a custom base_url AND the user
-  did not pass `--allow-config-shadow`. (We will not silently override
-  user config.)
+- The user's `~/.codex/config.toml` already has a non-managed provider
+  block with a custom base_url that would be selected by the session AND
+  the user did not pass `--allow-config-shadow`. (We will not silently
+  override user config.)
 
 The adapter MUST surface, not retry, on these:
 
