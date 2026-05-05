@@ -32,8 +32,9 @@ shape:
   fresh fallback route;
 - `daemon status --json` could prove `current_loop_observed:true`,
   `stale:false`, selected `codex:max-3`, and `claim.level:"prepared_fallback"`;
-- the claim still correctly kept `current_process_hotswap:false`,
-  `supervised_restart:false`, and `per_request_muxing:false`.
+- the claim still correctly kept `current_process_hotswap:false` and
+  `per_request_muxing:false`, with the retired `supervised_restart` field
+  omitted.
 
 The next portable claim level is therefore not "background daemon magically
 fixes the current process" and not "oauth-mux restarts the harness." Restart
@@ -150,7 +151,6 @@ The diagnostic result exposes:
   "claim": {
     "level": "observed_child_process",
     "prepared_fallback": true,
-    "supervised_restart": false,
     "acceptable_seamless_behavior": false,
     "current_process_hotswap": false,
     "per_request_muxing": false
@@ -241,8 +241,8 @@ When the extra paid Codex account is ready:
 9. Run Codex dogfood with one exhausted account and one credited fallback
    account under the real success metric: normal `codex` plus background
    oauth-mux, no restart/logout/manual resume/lost thread.
-10. Never promote `claim.supervised_restart:true`; restart is explicitly not an
-    acceptable success path.
+10. Never reintroduce a `claim.supervised_restart` field; restart is
+    explicitly not an acceptable success path.
 
 ## Open Decisions
 

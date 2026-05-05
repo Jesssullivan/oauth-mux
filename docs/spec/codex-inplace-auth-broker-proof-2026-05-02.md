@@ -205,7 +205,6 @@ A future broker status should be explicit:
     "broker_owned_session": true,
     "current_process_auth_broker": false,
     "prepared_fallback": true,
-    "supervised_restart": false,
     "current_process_hotswap": false,
     "unmanaged_tui_hotswap": false,
     "per_request_muxing": false
@@ -386,8 +385,8 @@ For quota-driven account changes, use a different action name, such as
 - Quota/rate-limit behavior is separately classified as next-turn account
   switching unless same-turn proof exists.
 - Existing `prepared_fallback` claims remain unchanged for unmanaged Codex
-  launches; `supervised_restart` remains false because restart is not an
-  acceptable product handoff.
+  launches; the retired `supervised_restart` field is omitted because restart
+  is not an acceptable product handoff.
 
 ## Immediate Dogfood Procedure
 

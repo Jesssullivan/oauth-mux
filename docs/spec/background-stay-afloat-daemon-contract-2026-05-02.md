@@ -316,9 +316,9 @@ repair decisions.
 The snapshot now includes a `claim` object. `claim.level:"prepared_fallback"`
 is Level 1: route state is warm enough for the next mediated
 `stay-afloat launch` / `exec` boundary. The object explicitly keeps
-`current_process_hotswap:false`, `supervised_restart:false`, and
-`per_request_muxing:false` so agents and websites do not overclaim daemon
-behavior from a healthy snapshot.
+`current_process_hotswap:false` and `per_request_muxing:false` so agents and
+websites do not overclaim daemon behavior from a healthy snapshot. The retired
+`supervised_restart` flag is no longer emitted.
 
 ### D2: foreground stay-afloat loop
 

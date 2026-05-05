@@ -418,7 +418,7 @@ expect_contains "$supervise_json" '"mode":"stay_afloat_observe"' "stay-afloat ob
 expect_contains "$supervise_json" '"ok":false' "stay-afloat observe reports failed child without relaunch success"
 expect_contains "$supervise_json" '"reason":"target_failed"' "stay-afloat observe reports target failure"
 expect_contains "$supervise_json" '"level":"observed_child_process"' "stay-afloat observe reports diagnostic child-observation claim level"
-expect_contains "$supervise_json" '"supervised_restart":false' "stay-afloat observe does not claim supervised restart as acceptable stay-afloat"
+expect_not_contains "$supervise_json" '"supervised_restart"' "stay-afloat observe omits retired supervised restart claim field"
 expect_contains "$supervise_json" '"diagnostic_relaunch_observed":false' "stay-afloat observe reports no restart observed"
 expect_contains "$supervise_json" '"acceptable_seamless_behavior":false' "stay-afloat observe rejects restart as seamless behavior"
 expect_contains "$supervise_json" '"current_process_hotswap":false' "stay-afloat observe refuses current-process hot swap"
