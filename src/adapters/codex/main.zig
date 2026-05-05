@@ -338,8 +338,9 @@ fn writeManagedConfigToml(
     const w = contents.writer(allocator);
     try w.writeAll("# Managed by oauth-mux. Phase 2 wire proxy override.\n");
     try w.writeAll("# Anchor: docs/spec/codex-adapter-contract-2026-05-03.md §4\n\n");
-    try w.print("[model_providers.openai]\n", .{});
-    try w.print("name = \"openai\"\n", .{});
+    try w.writeAll("model_provider = \"oauth_mux_openai\"\n\n");
+    try w.print("[model_providers.oauth_mux_openai]\n", .{});
+    try w.print("name = \"oauth-mux OpenAI proxy\"\n", .{});
     try w.print("base_url = \"http://127.0.0.1:{d}/backend-api/codex\"\n", .{proxy_port});
     try w.writeAll("wire_api = \"responses\"\n");
     try w.writeAll("requires_openai_auth = true\n");
@@ -412,6 +413,9 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_config, 4096);
     defer std.testing.allocator.free(generated_config);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "127.0.0.1:45678") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.openai]") == null);
 
     const source_config = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "config.toml" });
     defer std.testing.allocator.free(source_config);

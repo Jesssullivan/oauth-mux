@@ -6,9 +6,12 @@
 //!
 //! The proxy is the load-bearing piece that lets account swap happen
 //! without restarting the unmodified `codex` child process. It sits at
-//! 127.0.0.1:<dynamic-port> with codex's `[model_providers.openai].base_url`
+//! 127.0.0.1:<dynamic-port> with codex's generated
+//! `model_provider = "oauth_mux_openai"` / custom model provider block
 //! pointed at it (via a generated config.toml in the per-session
-//! CODEX_HOME). On every request:
+//! CODEX_HOME). Codex 0.128+ rejects overriding the reserved built-in
+//! `openai` provider id, so the adapter must select a custom provider id.
+//! On every request:
 //!
 //!   1. Read the inbound request from codex.
 //!   2. Substitute the three account-bound headers (Authorization,
