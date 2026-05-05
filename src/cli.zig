@@ -71,6 +71,7 @@ pub const Command = union(enum) {
         capability: ?[]const u8 = null,
         target_argv: []const []const u8 = &.{},
         legacy_max_restarts: u32 = 0,
+        legacy_restart_aliases_used: bool = false,
         classify_exit_code: ?u8 = null,
         classify_codex_usage_limit: bool = false,
         stream_capture: bool = false,
@@ -807,7 +808,16 @@ fn parseDaemonTick(args: []const []const u8) Command {
 
 fn parseStayAfloat(args: []const []const u8) Command {
     if (args.len > 0 and eql(args[0], "launch")) return .{ .stay_afloat_launch = parseExecArgs(args[1..]) };
-    if (args.len > 0 and (eql(args[0], "observe") or eql(args[0], "supervise"))) return parseStayAfloatObserve(args[1..]);
+    if (args.len > 0 and (eql(args[0], "observe") or eql(args[0], "supervise"))) {
+        var cmd = parseStayAfloatObserve(args[1..]);
+        if (eql(args[0], "supervise")) {
+            switch (cmd) {
+                .stay_afloat_observe => |*observe| observe.legacy_restart_aliases_used = true,
+                else => {},
+            }
+        }
+        return cmd;
+    }
     if (args.len > 0 and eql(args[0], "next")) return parseStayAfloatNext(args[1..]);
     if (args.len > 0 and eql(args[0], "handoffs")) return parseDaemonHandoffs(args[1..]);
     if (args.len > 0 and eql(args[0], "handoff")) return parseStayAfloatHandoff(args[1..]);
@@ -844,12 +854,20 @@ fn parseStayAfloatObserve(args: []const []const u8) Command {
             i += 1;
             if (i < args.len) result.capability = args[i];
         } else if (eql(args[i], "--max-restarts")) {
+            result.legacy_restart_aliases_used = true;
             i += 1;
             if (i < args.len) result.legacy_max_restarts = std.fmt.parseInt(u32, args[i], 10) catch result.legacy_max_restarts;
-        } else if (eql(args[i], "--classify-exit-code") or eql(args[i], "--restart-on-exit-code")) {
+        } else if (eql(args[i], "--classify-exit-code")) {
             i += 1;
             if (i < args.len) result.classify_exit_code = std.fmt.parseInt(u8, args[i], 10) catch result.classify_exit_code;
-        } else if (eql(args[i], "--classify-codex-usage-limit") or eql(args[i], "--restart-on-codex-usage-limit")) {
+        } else if (eql(args[i], "--restart-on-exit-code")) {
+            result.legacy_restart_aliases_used = true;
+            i += 1;
+            if (i < args.len) result.classify_exit_code = std.fmt.parseInt(u8, args[i], 10) catch result.classify_exit_code;
+        } else if (eql(args[i], "--classify-codex-usage-limit")) {
+            result.classify_codex_usage_limit = true;
+        } else if (eql(args[i], "--restart-on-codex-usage-limit")) {
+            result.legacy_restart_aliases_used = true;
             result.classify_codex_usage_limit = true;
         } else if (eql(args[i], "--stream-capture")) {
             result.stream_capture = true;
@@ -2080,6 +2098,7 @@ test "parse stay-afloat observe selector diagnostic policy and target" {
             try std.testing.expect(observe.classify_codex_usage_limit);
             try std.testing.expect(observe.stream_capture);
             try std.testing.expect(observe.json);
+            try std.testing.expect(!observe.legacy_restart_aliases_used);
             try std.testing.expectEqual(@as(usize, 2), observe.target_argv.len);
             try std.testing.expectEqualStrings("codex", observe.target_argv[0]);
             try std.testing.expectEqualStrings("--ask-for-approval=never", observe.target_argv[1]);
@@ -2111,6 +2130,7 @@ test "parse legacy stay-afloat supervise as observe" {
     switch (cmd) {
         .stay_afloat_observe => |observe| {
             try std.testing.expectEqual(@as(u32, 2), observe.legacy_max_restarts);
+            try std.testing.expect(observe.legacy_restart_aliases_used);
             try std.testing.expectEqual(@as(u8, 42), observe.classify_exit_code.?);
             try std.testing.expect(observe.classify_codex_usage_limit);
             try std.testing.expectEqualStrings("codex", observe.target_argv[0]);

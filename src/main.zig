@@ -4141,6 +4141,10 @@ fn writeStayAfloatObserveJson(
     try writer.writeAll(",\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"legacy_max_restarts\":");
     try writer.print("{d}", .{args.legacy_max_restarts});
+    try writer.writeAll(",\"legacy_restart_aliases_used\":");
+    try writer.writeAll(if (args.legacy_restart_aliases_used) "true" else "false");
+    try writer.writeAll(",\"legacy_restart_aliases_effect\":");
+    try std.json.stringify(if (args.legacy_restart_aliases_used) "compatibility_classification_only" else "none", .{}, writer);
     try writer.writeAll(",\"relaunch_enabled\":false");
     try writer.writeAll(",\"classify_exit_code\":");
     if (args.classify_exit_code) |code| try writer.print("{d}", .{code}) else try writer.writeAll("null");
@@ -4193,6 +4197,11 @@ fn writeStayAfloatObserveText(
     try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
     try writer.print("  reason: {s}\n", .{reason});
     try writer.print("  legacy max restarts: {d} (relaunch disabled)\n", .{args.legacy_max_restarts});
+    try writer.print("  legacy restart aliases: {s}", .{if (args.legacy_restart_aliases_used) "true" else "false"});
+    if (args.legacy_restart_aliases_used) {
+        try writer.writeAll(" (compatibility classification only)");
+    }
+    try writer.writeByte('\n');
     try writer.writeAll("  classify exit code: ");
     if (args.classify_exit_code) |code| try writer.print("{d}\n", .{code}) else try writer.writeAll("not configured\n");
     try writer.print("  classify Codex usage limit: {s}\n", .{if (args.classify_codex_usage_limit) "true" else "false"});

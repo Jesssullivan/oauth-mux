@@ -250,7 +250,9 @@ also prints mediation text and exits nonzero without starting the target.
 `oauth-mux stay-afloat observe --classify-exit-code <code> -- <command>` is a diagnostic child-boundary
 surface. It keeps oauth-mux as the parent process, injects the selected route
 into a child, observes typed failure, and stops. The legacy restart-shaped flags
-do not make restart an acceptable stay-afloat path.
+do not make restart an acceptable stay-afloat path; if used, JSON marks them as
+`legacy_restart_aliases_used:true` and scopes their effect to compatibility
+classification only.
 For Codex dogfood, add `--classify-codex-usage-limit`. That mode captures
 child output, classifies the native usage-limit screen, records the selected
 route as quota-exhausted, appends a redacted `stay_afloat_observe` event, and
