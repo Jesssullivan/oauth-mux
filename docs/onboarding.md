@@ -289,6 +289,9 @@ re-probes only routes already recorded as exhausted or rate-limited for that
 capability, updates route health from provider evidence, and avoids hand-resetting
 health keys. If the provider still returns quota exhaustion, the route remains
 blocked even if dashboard copy suggests credits are available elsewhere.
+When a stored quota reset window is already in the past, planning surfaces mark
+the route `revalidation_needed` instead of treating it as actively waiting or
+silently selectable.
 Use
 `oauth-mux codex broker-fallback-drill --profile codex-max --capability
 codex-max --from-account max-3 --confirm-drill --json` when you need to observe

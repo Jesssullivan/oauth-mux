@@ -227,6 +227,9 @@ provider probes, and persists the fresh provider evidence. Use it after credits
 or plan changes instead of manually resetting health keys. It may make a route
 selectable again, or it may confirm that the provider still rejects that exact
 capability.
+Expired local reset windows surface as `revalidation_needed`: the route is no
+longer presented as an active wait, but it also is not trusted until a
+spend-gated revalidation records fresh provider evidence.
 
 `oauth-mux codex broker-fallback-drill --profile codex-max --capability
 codex-max --from-account max-3 --confirm-drill --json` is the controlled

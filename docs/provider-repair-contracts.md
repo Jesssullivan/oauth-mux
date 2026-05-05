@@ -56,6 +56,8 @@ The current typed action kinds are:
 - `none`: route is selectable.
 - `probe_needed`: no recorded evidence exists; probe admission decides whether
   to run.
+- `revalidation_needed`: recorded quota/rate-limit evidence has aged past its
+  reset window; run an explicit provider probe before selecting the route.
 - `fix_runtime`: local binary, permission, sandbox, store, or session shape is
   not ready.
 - `wait_for_repair`: an account-scoped repair lock is active.
