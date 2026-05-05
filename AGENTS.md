@@ -22,10 +22,12 @@ delete and re-anchor on the broker contract.
 1. This file (AGENTS.md)
 2. `docs/spec/broker-mcp-contract-2026-05-03.md` — the product anchor
 3. `docs/spec/codex-adapter-contract-2026-05-03.md` — Codex adapter spec
-4. `justfile` — operator entrypoint for all build/test/release tasks
-5. `flake.nix` — Nix devShell and package definitions
-6. `build.zig` / `build.zig.zon` — Zig build system
-7. `src/` — implementation
+4. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
+   overlays must not hide or fork harness session authority
+5. `justfile` — operator entrypoint for all build/test/release tasks
+6. `flake.nix` — Nix devShell and package definitions
+7. `build.zig` / `build.zig.zon` — Zig build system
+8. `src/` — implementation
 
 ## Build
 

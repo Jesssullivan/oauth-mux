@@ -7,6 +7,7 @@ Anchor docs:
 - `AGENTS.md`
 - `docs/spec/broker-mcp-contract-2026-05-03.md`
 - `docs/spec/codex-adapter-contract-2026-05-03.md`
+- `docs/spec/harness-session-authority-bridge-2026-05-05.md`
 - `docs/spec/codex-wire-evidence-2026-05-03.md`
 
 ## Product Bar
@@ -65,6 +66,9 @@ Not yet proven:
 - Mid-turn recovery.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
   handing off account state.
+- Managed-frame resume parity. The adapter-owned temporary `CODEX_HOME`
+  currently owns auth/config correctly but hides canonical Codex session
+  authority unless a session bridge is added.
 
 ## Quarry Worktree
 
@@ -214,13 +218,20 @@ These need review before public promotion:
    - Multi-session, multi-harness route truth wants daemon-attached state
      later.
 
-5. Bare `codex` path
+5. Session authority bridge
+   - `oauth-mux codex run -- ... resume <id>` must see the same canonical
+     Codex session authority as bare `codex` while keeping auth/config
+     mux-owned.
+   - Full-store copies are rejected; use a bridge/reference model per
+     `docs/spec/harness-session-authority-bridge-2026-05-05.md`.
+
+6. Bare `codex` path
    - The aspirational background daemon plus bare `codex` remains harder
-     than `oauth-mux codex`.
+   than `oauth-mux codex`.
    - Treat as future adapter/sidecar research, not the current acceptance
      gate.
 
-6. Claude adapter
+7. Claude adapter
    - Important to prove broker contract generality.
    - Start only after Codex Level 3 acceptance or after the Codex blocker is
      explicitly parked.
@@ -234,10 +245,12 @@ These need review before public promotion:
    session.
 3. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
    normal 200 flow first, then 401 and 429 only when safely available.
-4. Keep demoting route-warming/restart surfaces from product language.
-5. Start the Claude adapter only after the Codex Level 3 proof is recorded
+4. Add the session-authority bridge for managed Codex resume before
+   promoting managed-frame dogfood as parity with bare Codex.
+5. Keep demoting route-warming/restart surfaces from product language.
+6. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
-6. Re-run `just check-local` after each code/test slice.
+7. Re-run `just check-local` after each code/test slice.
 
 ## Hygiene Pass Notes
 

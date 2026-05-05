@@ -30,6 +30,10 @@ Current evidence review:
   current-main assessment of tests, synthetic evidence, live route truth,
   and remaining Level 3 gaps. It is descriptive only; this broker
   contract remains the product source of truth.
+- `docs/spec/harness-session-authority-bridge-2026-05-05.md` records the
+  managed-frame store split required for normal `resume`/history behavior:
+  oauth-mux owns auth/config overlays, but adapters must retain or bridge
+  harness session authority instead of hiding or copying it wholesale.
 
 ## 0. The One Success Metric
 
@@ -465,10 +469,12 @@ relapse into restart-as-success.
    default.
 3. `docs/spec/codex-adapter-contract-2026-05-03.md` — Codex adapter
    contract for the first harness implementation.
-4. `docs/spec/harness-adapter-pattern-2026-05-03.md` — general adapter
+4. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — harness
+   store-boundary contract for auth/config/session/cache/evidence state.
+5. `docs/spec/harness-adapter-pattern-2026-05-03.md` — general adapter
    pattern for non-Codex harnesses.
-5. `justfile`, `flake.nix`, `build.zig`, `src/`
-6. Other docs/spec/ files. The following are explicitly demoted to
+6. `justfile`, `flake.nix`, `build.zig`, `src/`
+7. Other docs/spec/ files. The following are explicitly demoted to
    historical/diagnostic-only and must carry that label in their preamble:
    - `docs/spec/observed-child-diagnostic-contract-2026-05-02.md`
      (diagnostic child observation only; restart is not a product behavior)
