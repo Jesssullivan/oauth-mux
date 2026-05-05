@@ -21,31 +21,23 @@ prepared fallback, and synthetic smokes are evidence or diagnostics only.
 
 ## Current Live State
 
-Observed on 2026-05-05 around 10:44 EDT:
+Observed on 2026-05-05 around 15:37 EDT:
 
-- Repository: clean on `main...origin/main` at `83b23cf`.
-- Selected live `codex-max` route: `max-4`.
-- Selected route local token claim: `chatgpt_plan_type = "pro"`,
-  subscription active until `2026-06-02T20:12:47Z`, last subscription
-  check `2026-05-02T21:06:42Z`.
-- All four configured Max routes locally claim `pro`; that proves tier
-  metadata only, not available quota.
-- Planner surfaces still mark `max-1`, `max-2`, and `max-3` as
-  `quota_exhausted`.
-- Their stored reset timestamps are in the past:
-  - `max-3`: 2026-05-05 06:15 EDT
-  - `max-1`: 2026-05-05 09:20 EDT
-  - `max-2`: 2026-05-05 10:30 EDT
-- `spare_fallback_ready:false` and `single_route_at_risk:true`.
+- Repository: clean on `main...origin/main` at `59c2f69`.
+- Selected live `codex-max` route: `max-1`.
+- Spend-gated exhausted-route revalidation after the reset window found
+  `max-1`, `max-2`, and `max-3` available again; `max-4` was already
+  selectable.
+- `broker-session-plan` reports `routes_total:4`,
+  `selectable_broker_routes:4`, `selectable_fallback_routes:3`,
+  `spare_fallback_ready:true`, and `single_route_at_risk:false`.
+- `route explain` agrees: `max-1` selected; `max-2`, `max-3`, and
+  `max-4` selectable fallbacks.
 
-Next live action after the operator's expected quota reset window:
-
-```bash
-./zig-out/bin/oauth-mux codex revalidate-exhausted --profile codex-max --capability codex-max --confirm-spend --json
-```
-
-If this revalidates at least one additional `codex-max` route as
-available, run the Level 3 live acceptance path under TIN-951.
+This unblocks fallback capacity for Level 3. It still does not satisfy
+Level 3 acceptance: no provider-originated `usage_limit_reached` event
+has occurred inside a live `oauth-mux codex` session during this
+checkpoint.
 
 ## Mainline Reality
 
@@ -135,9 +127,11 @@ the branch as-is:
 
 5. `docs/spec/test-and-coverage-review-2026-05-03.md`
    - Valuable as an assessment, but stale in counts and conclusions.
-   - Rewrite from current main rather than copying.
-   - It should explicitly separate structural synthetic evidence,
-     cassette replay readiness, and live Level 3 evidence.
+   - Status: rewritten from current main as
+     `docs/spec/test-and-coverage-review-2026-05-05.md`.
+   - The rewrite explicitly separates structural synthetic evidence,
+     cassette replay readiness, live route readiness, and the missing
+     live Level 3 evidence.
 
 6. `docs/policy/tos-posture-2026-05-03.md`
    - Policy posture is needed before public promotion.
@@ -182,9 +176,11 @@ These need review before public promotion:
   contract claim ladder where possible.
 - `broker-*` proof commands: keep as diagnostic regression surfaces, not
   product UX.
-- Expired quota health: TIN-973 / GitHub #183 should make past reset
-  windows show as `revalidation_needed` or equivalent, not indistinct
-  active `quota_exhausted`.
+- Expired quota health: TIN-973 / GitHub #183 landed in PR #185
+  (`562d478`). Past reset windows now surface as
+  `revalidation_needed` instead of indistinct active
+  `quota_exhausted`, and routes remain non-selectable until explicit
+  provider revalidation refreshes truth.
 - Linear/GitHub tracker drift: TIN-941 / GitHub #172 and TIN-948 /
   GitHub #174 were confirmed satisfied by PR #178 (`9a8aea6`) and PR #179
   (`c7c6512`), then closed/marked Done during this hygiene pass.
@@ -229,21 +225,19 @@ These need review before public promotion:
 
 ## Local Todo Order
 
-1. Keep main clean until after the 2:30 PM EDT quota window.
-2. Revalidate exhausted `codex-max` routes with explicit spend
-   confirmation.
-3. If at least one fallback is selectable, run live Level 3 acceptance for
-   TIN-951.
-4. Fix TIN-973 / GitHub #183 so expired quota windows become
-   revalidation-needed in planner output.
-5. Rewrite the test/coverage review from current main and link it from the
-   broker contract as an assessment, not a contract.
-6. Review policy posture doc and add only if it does not market quota
+1. Keep main clean and preserve all four selectable `codex-max` routes.
+2. Run live Level 3 acceptance for TIN-951 only when the operator is
+   ready to spend and there is a realistic way to observe
+   provider-originated quota exhaustion in an active `oauth-mux codex`
+   session.
+3. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
+   normal 200 flow first, then 401 and 429 only when safely available.
+4. Review policy posture doc and add only if it does not market quota
    evasion.
-7. Keep demoting route-warming/restart surfaces from product language.
-8. Start the Claude adapter only after the Codex Level 3 proof is recorded
+5. Keep demoting route-warming/restart surfaces from product language.
+6. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
-9. Re-run `just check-local` after each code/test slice.
+7. Re-run `just check-local` after each code/test slice.
 
 ## Hygiene Pass Notes
 
@@ -258,3 +252,14 @@ These need review before public promotion:
 - Added the current-main concurrent-session smoke to the repo-managed
   local gate.
 - `just check-local` passed with the new smokes included.
+- Spend-gated exhausted-route revalidation after the reset window restored
+  all four `codex-max` routes to selectable state.
+- PR #185 (`562d478`) landed expired-quota `revalidation_needed`
+  semantics and closed GitHub #183 / Linear TIN-973.
+- PR #186 (`2858810`) removed the retired `supervised_restart` claim
+  field.
+- PR #187 (`59c2f69`) reports legacy restart-shaped aliases as
+  compatibility classification only.
+- Rewrote the stale quarry test/coverage review from current main as
+  `docs/spec/test-and-coverage-review-2026-05-05.md` and linked it from
+  the broker contract as a descriptive assessment.

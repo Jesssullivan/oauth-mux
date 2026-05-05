@@ -24,6 +24,13 @@ External anchors used for this contract:
   RFC 7636 PKCE, RFC 8252 native apps, RFC 8693 token exchange, and RFC 9449
   DPoP.
 
+Current evidence review:
+
+- `docs/spec/test-and-coverage-review-2026-05-05.md` is the
+  current-main assessment of tests, synthetic evidence, live route truth,
+  and remaining Level 3 gaps. It is descriptive only; this broker
+  contract remains the product source of truth.
+
 ## 0. The One Success Metric
 
 The product succeeds when, and only when, this is true:

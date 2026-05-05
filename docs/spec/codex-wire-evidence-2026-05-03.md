@@ -235,10 +235,10 @@ The wire proxy:
 - Does NOT swap accounts.
 - Returns the 429 to codex so codex can surface the upgrade prompt.
 
-This behavior is specified but not yet pinned by a dedicated smoke in
-main. `smoke-codex-acceptance` covers the swap-eligible
-`usage_limit_reached` path; a tier-insufficient smoke is a follow-up if
-we need a dedicated regression catch.
+This behavior is pinned by `just smoke-codex-tier-insufficient`.
+`smoke-codex-acceptance` covers the swap-eligible
+`usage_limit_reached` path; the tier-insufficient smoke is the
+non-swap regression catch.
 
 **Bare 429 (no `error.type`)**: rate-limited; classified as
 `rate_limited`. Proxy honors `Retry-After`, optionally swaps if
