@@ -250,7 +250,7 @@ jq -e '
   .profile == "codex-max"
   and (.routes | length) == 3
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
-  and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
+  and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "revalidation_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
   and all(.routes[]; if .action.kind == "fix_runtime" then
     .action.command == null
     and (.action.diagnostic_command | startswith("oauth-mux doctor runtime --provider codex --account "))

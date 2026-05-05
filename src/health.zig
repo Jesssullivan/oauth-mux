@@ -624,6 +624,14 @@ pub const HealthStore = struct {
                         try writeOptI64Field(writer, "window_resets_at", q.window_resets_at);
                         try writeOptU8Field(writer, "usage_pct", q.usage_pct);
                         try writer.print(",\"exhausted_at\":{d}", .{q.exhausted_at});
+                        try writer.writeAll(",\"revalidation_needed\":");
+                        try writer.writeAll(if (quotaWindowRevalidationNeeded(q)) "true" else "false");
+                        try writer.writeAll(",\"reset_window_state\":");
+                        if (q.window_resets_at) |reset| {
+                            try writeJsonString(writer, if (std.time.timestamp() >= reset) "expired" else "active");
+                        } else {
+                            try writeJsonString(writer, "unknown");
+                        }
                     },
                     .cooldown => |c| {
                         try writer.writeAll(",\"availability\":\"cooldown\"");
@@ -905,6 +913,11 @@ pub const HealthStore = struct {
         auth_failure,
     };
 };
+
+fn quotaWindowRevalidationNeeded(quota: types.Availability.QuotaInfo) bool {
+    const reset = quota.window_resets_at orelse return false;
+    return std.time.timestamp() >= reset;
+}
 
 test "HealthStore basic lifecycle" {
     var store = HealthStore.init(std.testing.allocator, .{});

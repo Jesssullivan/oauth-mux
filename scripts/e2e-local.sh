@@ -1113,6 +1113,59 @@ expect_contains "$broker_route_explain_text_after_drill" 'next: revalidate exhau
 broker_stay_afloat_text_after_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" stay-afloat --once --profile codex-max --capability codex-max)"
 expect_contains "$broker_stay_afloat_text_after_drill" 'next: revalidate exhausted routes, enroll another Codex account, or wait for quota reset' "stay-afloat text after drill includes Codex risk actions"
 
+printf 'e2e: expired Codex quota windows surface revalidation-needed\n'
+expired_quota_state="$tmp/broker-expired-quota-state"
+mkdir -p "$expired_quota_state"
+cat >"$expired_quota_state/health.json" <<'EOF'
+{
+  "version": 2,
+  "accounts": [
+    {
+      "key": "codex:max-1#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "quota_exhausted",
+      "last_probe_decision": "try_next_account",
+      "liveness": {
+        "state": "live",
+        "availability": "quota_exhausted",
+        "window_resets_at": 1000,
+        "exhausted_at": 1
+      }
+    },
+    {
+      "key": "codex:max-2#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "quota_exhausted",
+      "last_probe_decision": "try_next_account",
+      "liveness": {
+        "state": "live",
+        "availability": "quota_exhausted",
+        "window_resets_at": 1000,
+        "exhausted_at": 1
+      }
+    },
+    {
+      "key": "codex:max-3#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "none",
+      "last_probe_decision": "use_this",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    }
+  ]
+}
+EOF
+expired_quota_plan="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$expired_quota_state" "$bin" codex broker-session-plan --profile codex-max --capability codex-max --json)"
+expect_contains "$expired_quota_plan" '"selected":{"provider":"codex","account":"max-3"' "expired quota plan keeps stale routes blocked until revalidated"
+expect_contains "$expired_quota_plan" '"skip_reason":"revalidation_needed"' "expired quota plan distinguishes stale quota block"
+expect_contains "$expired_quota_plan" '"kind":"revalidation_needed"' "expired quota plan emits revalidation-needed route action"
+expect_contains "$expired_quota_plan" '"revalidation_needed":true' "expired quota liveness marks revalidation needed"
+expect_contains "$expired_quota_plan" '"reset_window_state":"expired"' "expired quota liveness marks reset window expired"
+expect_contains "$expired_quota_plan" '"route_role":"revalidation_needed"' "expired quota plan uses explicit route role"
+expect_contains "$expired_quota_plan" '"resilience_actions":[{"kind":"revalidate_exhausted_routes"' "expired quota plan still recommends spend-gated revalidation"
+
 printf 'e2e: codex broker-session-smoke requires explicit confirmation before starting app-server\n'
 broker_session_smoke_prompt="$(OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-session-smoke --profile codex-max --capability codex-max --json)"
 expect_contains "$broker_session_smoke_prompt" '"mode":"codex_broker_owned_session_smoke"' "broker-session-smoke reports session smoke mode"

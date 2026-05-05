@@ -2530,6 +2530,7 @@ const RepairCommandKind = enum {
 const RepairActionKind = enum {
     none,
     probe_needed,
+    revalidation_needed,
     fix_runtime,
     wait_for_repair,
     wait_and_retry,
@@ -3438,7 +3439,14 @@ fn repairActionFor(
                 .budget = .free_local,
                 .retry_after_s = rl.retry_after_s,
             },
-            .quota_exhausted => |quota| .{
+            .quota_exhausted => |quota| if (quotaWindowRevalidationNeeded(quota)) .{
+                .kind = .revalidation_needed,
+                .severity = "warning",
+                .message = "quota reset window has passed; revalidate route health before using this route",
+                .mediation = .probe,
+                .command = .probe,
+                .budget = budget,
+            } else .{
                 .kind = .wait_for_quota,
                 .severity = "warning",
                 .message = "quota window is exhausted; use another account until reset",
@@ -3458,6 +3466,11 @@ fn repairActionFor(
         .degraded => |degraded| degradedAction(route, def, degraded.reason, budget),
         .dead => reauthAction(route, def),
     };
+}
+
+fn quotaWindowRevalidationNeeded(quota: types.Availability.QuotaInfo) bool {
+    const reset = quota.window_resets_at orelse return false;
+    return std.time.timestamp() >= reset;
 }
 
 fn degradedAction(
@@ -4960,7 +4973,10 @@ fn routeSkipReason(runtime: types.RuntimeReadiness, health: ?health_mod.AccountH
         .live => |live| switch (live.availability) {
             .available => "available",
             .rate_limited => "rate_limited",
-            .quota_exhausted => "quota_exhausted",
+            .quota_exhausted => |quota| if (quotaWindowRevalidationNeeded(quota))
+                "revalidation_needed"
+            else
+                "quota_exhausted",
             .cooldown => "cooldown",
         },
         .degraded => |degraded| @tagName(degraded.reason),
@@ -7888,6 +7904,14 @@ fn writeLivenessJson(writer: anytype, liveness: types.CredentialLiveness) !void 
                     } else {
                         try writer.writeAll("null");
                     }
+                    try writer.writeAll(",\"revalidation_needed\":");
+                    try writer.writeAll(if (quotaWindowRevalidationNeeded(q)) "true" else "false");
+                    try writer.writeAll(",\"reset_window_state\":");
+                    if (q.window_resets_at) |reset| {
+                        try std.json.stringify(if (std.time.timestamp() >= reset) "expired" else "active", .{}, writer);
+                    } else {
+                        try std.json.stringify("unknown", .{}, writer);
+                    }
                 },
                 .cooldown => |c| try writer.print(",\"availability\":\"cooldown\",\"until\":{d}", .{c.until}),
             }
@@ -8462,6 +8486,7 @@ fn isCodexExhaustedRevalidationCandidate(
     const route_capability = evaluation.route.capability orelse return false;
     if (!std.mem.eql(u8, route_capability, capability)) return false;
     return std.mem.eql(u8, evaluation.skip_reason, "quota_exhausted") or
+        std.mem.eql(u8, evaluation.skip_reason, "revalidation_needed") or
         std.mem.eql(u8, evaluation.skip_reason, "rate_limited");
 }
 
@@ -10072,6 +10097,7 @@ fn codexBrokerSessionRouteRole(evaluation: RouteEvaluation, selected: bool, plan
     if (selected) return "selected";
     if (evaluation.selectable) return "selectable_fallback";
     if (std.mem.eql(u8, evaluation.skip_reason, "quota_exhausted")) return "quota_blocked";
+    if (std.mem.eql(u8, evaluation.skip_reason, "revalidation_needed")) return "revalidation_needed";
     if (std.mem.eql(u8, evaluation.skip_reason, "rate_limited")) return "rate_limited";
     if (std.mem.eql(u8, evaluation.skip_reason, "unrecorded")) return "probe_needed";
     return "not_selectable";
@@ -14928,7 +14954,7 @@ test "repairActionFor classifies quota exhaustion as wait action" {
     const health = health_mod.AccountHealth{
         .liveness = .{ .live = .{
             .availability = .{ .quota_exhausted = .{
-                .window_resets_at = 1_777_777,
+                .window_resets_at = std.time.timestamp() + 7200,
                 .exhausted_at = 1_700_000,
             } },
         } },
@@ -14944,8 +14970,33 @@ test "repairActionFor classifies quota exhaustion as wait action" {
     try std.testing.expectEqual(RepairActionKind.wait_for_quota, action.kind);
     try std.testing.expectEqual(RepairMediation.wait, action.mediation);
     try std.testing.expectEqualStrings("warning", action.severity);
-    try std.testing.expectEqual(@as(?i64, 1_777_777), action.wait_until);
+    try std.testing.expect(action.wait_until.? > std.time.timestamp());
     try std.testing.expect(action.command == .none);
+}
+
+test "repairActionFor surfaces expired quota window as revalidation needed" {
+    const def = provider_schema.ProviderDefinition{
+        .name = "toy",
+        .display_name = "Toy Provider",
+        .repair = .{ .owner = .manual_only },
+    };
+    const health = health_mod.AccountHealth{
+        .liveness = .{ .live = .{
+            .availability = .{ .quota_exhausted = .{
+                .window_resets_at = std.time.timestamp() - 60,
+                .exhausted_at = std.time.timestamp() - 7200,
+            } },
+        } },
+    };
+    const route = RepairPlanRoute{ .provider = "toy", .account = "default", .capability = "chat" };
+    const action = repairActionFor(route, def, .ready, health, .spend_provider);
+
+    try std.testing.expectEqual(RepairActionKind.revalidation_needed, action.kind);
+    try std.testing.expectEqual(RepairMediation.probe, action.mediation);
+    try std.testing.expectEqual(types.ActionBudget.spend_provider, action.budget.?);
+    try std.testing.expectEqual(RepairCommandKind.probe, action.command);
+    try std.testing.expect(action.wait_until == null);
+    try std.testing.expectEqualStrings("revalidation_needed", routeSkipReason(.ready, health));
 }
 
 test "writeRepairActionJson emits codex reauth command without running it" {
