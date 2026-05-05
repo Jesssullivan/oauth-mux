@@ -173,7 +173,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-cassette-replay.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-concurrent-sessions.sh && ./scripts/smoke-codex-tier-insufficient.sh && ./scripts/smoke-codex-all-exhausted.sh && ./scripts/smoke-codex-401-propagation.sh && ./scripts/smoke-codex-cassette-replay.sh'
     @echo "all checks passed"
 
 e2e:
@@ -210,6 +210,38 @@ smoke-codex-acceptance:
 smoke-codex-acceptance-local:
     zig build
     ./scripts/smoke-codex-acceptance.sh
+
+# ── Codex adapter concurrent-session smoke (no provider traffic) ──
+
+smoke-codex-concurrent-sessions:
+    nix develop --command just smoke-codex-concurrent-sessions-local
+
+smoke-codex-concurrent-sessions-local:
+    zig build
+    ./scripts/smoke-codex-concurrent-sessions.sh
+
+# ── Codex adapter negative-path smokes (no provider traffic) ──
+
+smoke-codex-tier-insufficient:
+    nix develop --command just smoke-codex-tier-insufficient-local
+
+smoke-codex-tier-insufficient-local:
+    zig build
+    ./scripts/smoke-codex-tier-insufficient.sh
+
+smoke-codex-all-exhausted:
+    nix develop --command just smoke-codex-all-exhausted-local
+
+smoke-codex-all-exhausted-local:
+    zig build
+    ./scripts/smoke-codex-all-exhausted.sh
+
+smoke-codex-401-propagation:
+    nix develop --command just smoke-codex-401-propagation-local
+
+smoke-codex-401-propagation-local:
+    zig build
+    ./scripts/smoke-codex-401-propagation.sh
 
 # ── Codex cassette replay smoke (no provider traffic) ──
 
