@@ -79,8 +79,9 @@ Use `stay-afloat observe --classify-exit-code <code>
 -- <command>` when oauth-mux should observe the child process boundary. The
 legacy restart-shaped flags now admit classification only; the command does
 not relaunch the child or attempt fallback execution. Its claim remains
-diagnostic: `claim.supervised_restart` stays false because restart is not
-acceptable seamless stay-afloat behavior.
+diagnostic: `acceptable_seamless_behavior:false`, and the retired
+`supervised_restart` claim field is omitted rather than carried as a negative
+product promise.
 
 For Codex dogfood, add `--classify-codex-usage-limit`. That path captures
 child stdout/stderr, classifies known Codex usage-limit text, records the
@@ -151,7 +152,6 @@ fields shaped like:
     "claim": {
       "level": "prepared_fallback",
       "current_process_hotswap": false,
-      "supervised_restart": false,
       "per_request_muxing": false
     }
   }

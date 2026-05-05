@@ -102,8 +102,8 @@ prepared-fallback claim.
 That snapshot includes `claim.level`. `prepared_fallback` means the next
 mediated launch can select an account; it does not mean an already-running
 harness process will be hot-swapped. The same claim object keeps
-`current_process_hotswap:false`, `supervised_restart:false`, and
-`per_request_muxing:false`. Restart is not a stronger success level; only a
+`current_process_hotswap:false` and `per_request_muxing:false`; the retired
+`supervised_restart` field is no longer emitted. Restart is not a stronger success level; only a
 live reload, auth broker, proxy, or in-agent adapter that preserves the active
 session can move this beyond prepared fallback.
 
@@ -162,7 +162,7 @@ session can move this beyond prepared fallback.
 - `oauth-mux stay-afloat observe --classify-exit-code <code> -- <command>` as a diagnostic child-boundary
   observation path. It can spawn a selected child, observe the configured exit
   code, and record redacted evidence. It must not be treated as a product
-  fallback or a `supervised_restart:true` claim.
+  fallback or a restart claim.
 - `oauth-mux stay-afloat observe --classify-codex-usage-limit -- <command>`
   as a Codex-specific instrumentation path for wrapper-owned sessions. It
   captures child output, classifies the native usage-limit screen without

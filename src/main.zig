@@ -4131,7 +4131,7 @@ fn writeStayAfloatObserveJson(
     try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"observed_child_process\"");
     try writer.writeAll(",\"prepared_fallback\":");
     try writer.writeAll(if (prepared_fallback) "true" else "false");
-    try writer.writeAll(",\"supervised_restart\":false,\"diagnostic_relaunch_observed\":");
+    try writer.writeAll(",\"diagnostic_relaunch_observed\":");
     try writer.writeAll(if (relaunch_count > 0) "true" else "false");
     try writer.writeAll(",\"acceptable_seamless_behavior\":false");
     try writer.writeAll(",\"child_process_observed\":true,\"classification_source\":");
@@ -4562,7 +4562,6 @@ fn writeStayAfloatClaimJson(
     try writer.writeAll(",\"mediation_point\":\"stay-afloat launch\"");
     try writer.writeAll(",\"target_boundary\":\"process_start\"");
     try writer.writeAll(",\"current_process_hotswap\":false");
-    try writer.writeAll(",\"supervised_restart\":false");
     try writer.writeAll(",\"per_request_muxing\":false");
     try writer.writeAll(",\"launch_argv\":");
     try writeStayAfloatLaunchArgvJson(writer, selector);
@@ -8906,7 +8905,7 @@ fn writeCodexBrokerPlanJson(
     try writer.writeAll(",\"superseded_by\":\"codex broker-session-plan\"");
     try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"auth_material_readiness\",\"auth_broker_ready\":");
     try writer.writeAll(if (summary.ready_routes > 0) "true" else "false");
-    try writer.writeAll(",\"route_liveness_considered\":false,\"prepared_fallback\":false,\"broker_owned_session\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false,\"proof_status\":\"auth_material_planning_only\",\"superseded_by\":\"codex broker-session-plan\"}");
+    try writer.writeAll(",\"route_liveness_considered\":false,\"prepared_fallback\":false,\"broker_owned_session\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false,\"proof_status\":\"auth_material_planning_only\",\"superseded_by\":\"codex broker-session-plan\"}");
     try writer.writeAll(",\"profile\":");
     if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
@@ -9342,7 +9341,7 @@ fn writeCodexManagedPlanJson(
     try writer.writeAll(if (prepared_fallback) "true" else "false");
     try writer.writeAll(",\"selectable_fallback_routes\":");
     try writer.print("{d}", .{fallback_count});
-    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_auth_broker\":false,\"broker_owned_app_server\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_auth_broker\":false,\"broker_owned_app_server\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"profile\":");
     if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
@@ -9791,7 +9790,7 @@ fn writeCodexBrokerFallbackDrillJson(
     try std.json.stringify(reason, .{}, writer);
     try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"controlled_route_health_drill\",\"proof_status\":\"controlled_route_state_fallback_drill\",\"broker_owned_session\":true,\"route_selection_source\":\"route_health_after_controlled_mutation\",\"provider_originated_quota\":false,\"next_turn_route_state_fallback\":");
     try writer.writeAll(if (ok) "true" else "false");
-    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"profile\":");
     if (profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"capability\":");
@@ -9958,7 +9957,7 @@ fn writeCodexBrokerSessionPlanJson(
     try writer.writeAll(if (codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
     try writer.writeAll(",\"single_route_at_risk\":");
     try writer.writeAll(if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
-    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"policy\":");
     try writePolicyJson(writer, cfg.policy);
     try writer.writeAll(",\"profile\":");
@@ -10245,7 +10244,7 @@ fn writeCodexBrokerSessionSmokeJson(
     try writer.writeAll(",\"confirmed\":true,\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false");
     try writer.writeAll(",\"reason\":");
     try std.json.stringify(codexBrokerSessionSmokeReason(result), .{}, writer);
-    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"broker_owned_app_server\",\"proof_status\":\"local_broker_owned_session_smoke\",\"broker_owned_session\":true,\"auth_broker_scope\":\"broker_owned_app_server\",\"current_process_auth_broker\":false,\"route_selection_source\":\"broker_session_plan\",\"session_start_ready\":true,\"prepared_fallback\":true,\"next_thread_quota_fallback_proven\":true,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"claim\":{\"claim_version\":1,\"level\":\"broker_owned_app_server\",\"proof_status\":\"local_broker_owned_session_smoke\",\"broker_owned_session\":true,\"auth_broker_scope\":\"broker_owned_app_server\",\"current_process_auth_broker\":false,\"route_selection_source\":\"broker_session_plan\",\"session_start_ready\":true,\"prepared_fallback\":true,\"next_thread_quota_fallback_proven\":true,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"selected\":");
     try writeRouteSelectionJson(writer, route);
     try writer.writeAll(",\"fallback_selected\":");
@@ -10626,7 +10625,7 @@ fn writeCodexBrokerRunJson(
     try writer.writeAll(if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, summary.selectable_fallback_routes)) "true" else "false");
     try writer.writeAll(",\"next_session_continuation\":");
     try writer.writeAll(if (continuation != null) "true" else "false");
-    try writer.writeAll(",\"next_thread_quota_fallback_proven\":false,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"supervised_restart\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
+    try writer.writeAll(",\"next_thread_quota_fallback_proven\":false,\"same_turn_quota_recovery\":false,\"same_thread_quota_recovery\":false,\"current_process_hotswap\":false,\"unmanaged_tui_hotswap\":false,\"per_request_muxing\":false}");
     try writer.writeAll(",\"selected\":");
     try writeRouteSelectionJson(writer, route);
     try writer.writeAll(",\"capability\":");
