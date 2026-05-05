@@ -82,6 +82,10 @@ not relaunch the child or attempt fallback execution. Its claim remains
 diagnostic: `acceptable_seamless_behavior:false`, and the retired
 `supervised_restart` claim field is omitted rather than carried as a negative
 product promise.
+If an operator still uses `stay-afloat supervise`, `--max-restarts`,
+`--restart-on-exit-code`, or `--restart-on-codex-usage-limit`, JSON reports
+`legacy_restart_aliases_used:true` with
+`legacy_restart_aliases_effect:"compatibility_classification_only"`.
 
 For Codex dogfood, add `--classify-codex-usage-limit`. That path captures
 child stdout/stderr, classifies known Codex usage-limit text, records the

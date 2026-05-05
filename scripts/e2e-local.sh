@@ -419,6 +419,7 @@ expect_contains "$supervise_json" '"ok":false' "stay-afloat observe reports fail
 expect_contains "$supervise_json" '"reason":"target_failed"' "stay-afloat observe reports target failure"
 expect_contains "$supervise_json" '"level":"observed_child_process"' "stay-afloat observe reports diagnostic child-observation claim level"
 expect_not_contains "$supervise_json" '"supervised_restart"' "stay-afloat observe omits retired supervised restart claim field"
+expect_contains "$supervise_json" '"legacy_restart_aliases_used":false' "stay-afloat observe canonical flags report no legacy restart aliases"
 expect_contains "$supervise_json" '"diagnostic_relaunch_observed":false' "stay-afloat observe reports no restart observed"
 expect_contains "$supervise_json" '"acceptable_seamless_behavior":false' "stay-afloat observe rejects restart as seamless behavior"
 expect_contains "$supervise_json" '"current_process_hotswap":false' "stay-afloat observe refuses current-process hot swap"
@@ -428,6 +429,17 @@ expect_contains "$supervise_json" '"relaunch_admitted":false' "stay-afloat obser
 expect_contains "$supervise_json" '"selected":{"provider":"toy","account":"a1"' "stay-afloat observe records observed child route"
 expect_not_contains "$supervise_json" "omux-e2e-a1" "stay-afloat observe JSON does not expose first token"
 expect_not_contains "$supervise_json" "omux-e2e-a2" "stay-afloat observe JSON does not expose fallback token"
+
+printf 'e2e: legacy stay-afloat supervise aliases are compatibility diagnostics only\n'
+legacy_supervise_json="$(omux stay-afloat supervise --profile expensive --capability expensive --max-restarts 2 --restart-on-exit-code 42 --restart-on-codex-usage-limit --json -- sh -c 'exit 42' || true)"
+expect_contains "$legacy_supervise_json" '"mode":"stay_afloat_observe"' "legacy supervise maps to observe mode"
+expect_contains "$legacy_supervise_json" '"legacy_restart_aliases_used":true' "legacy supervise reports legacy restart aliases"
+expect_contains "$legacy_supervise_json" '"legacy_restart_aliases_effect":"compatibility_classification_only"' "legacy supervise scopes alias effect"
+expect_contains "$legacy_supervise_json" '"legacy_max_restarts":2' "legacy supervise preserves ignored max-restarts value for diagnostics"
+expect_contains "$legacy_supervise_json" '"relaunch_enabled":false' "legacy supervise still keeps relaunch disabled"
+expect_contains "$legacy_supervise_json" '"relaunch_count":0' "legacy supervise reports zero relaunch count"
+expect_contains "$legacy_supervise_json" '"acceptable_seamless_behavior":false' "legacy supervise rejects restart as seamless behavior"
+expect_not_contains "$legacy_supervise_json" '"supervised_restart"' "legacy supervise does not reintroduce supervised restart claim"
 
 printf 'e2e: stay-afloat observe classifies Codex usage-limit output\n'
 printf '%s\n' 'expensive:a1:ok' >"$probe_mode_file"

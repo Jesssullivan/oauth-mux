@@ -140,6 +140,10 @@ The current implementation uses the explicit `--classify-exit-code` path and
 the Codex usage-limit classifier. It inherits child output in text mode and
 suppresses it in JSON mode unless `--stream-capture` is set with the Codex
 classifier, so JSON evidence remains redacted.
+Legacy restart-shaped inputs (`stay-afloat supervise`, `--max-restarts`,
+`--restart-on-exit-code`, and `--restart-on-codex-usage-limit`) remain
+compatibility aliases until a breaking CLI window. JSON reports their use with
+`legacy_restart_aliases_used:true`; it does not relaunch.
 
 ## JSON Shape
 
@@ -170,7 +174,9 @@ The diagnostic result exposes:
     }
   ],
   "relaunch_count": 0,
-  "legacy_max_restarts": 0
+  "legacy_max_restarts": 0,
+  "legacy_restart_aliases_used": false,
+  "legacy_restart_aliases_effect": "none"
 }
 ```
 
