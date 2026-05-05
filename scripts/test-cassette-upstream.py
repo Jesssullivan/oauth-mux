@@ -3,7 +3,7 @@
 chatgpt.com response shapes.
 
 Bridges the cassette gap identified in
-`docs/spec/test-and-coverage-review-2026-05-03.md` section 3: the
+`docs/spec/test-and-coverage-review-2026-05-05.md`: the
 synthetic test-stub-upstream.py uses hand-crafted shapes derived
 from source review, which can drift if upstream adds fields. This
 script replays REAL response bytes captured from chatgpt.com via
