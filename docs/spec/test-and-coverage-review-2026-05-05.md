@@ -133,8 +133,9 @@ inside a live `oauth-mux codex` session during that check.
    scrubbed, fixture-sized JSON.
 3. Keep quarry work as quarry. The stale branch still has useful policy
    and review ideas, but main already supersedes much of its source diff.
-4. Review policy posture before public promotion. Do not market account
-   rotation as unlimited usage or quota evasion.
+4. Keep `docs/policy/tos-posture-2026-05-05.md` current before public
+   promotion. Do not market account rotation as unlimited usage or quota
+   evasion.
 5. Start the Claude adapter only after Codex Level 3 is recorded or the
    Codex blocker is explicitly parked.
 

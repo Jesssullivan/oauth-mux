@@ -135,9 +135,11 @@ the branch as-is:
 
 6. `docs/policy/tos-posture-2026-05-03.md`
    - Policy posture is needed before public promotion.
-   - Review for wording that could be read as quota evasion marketing.
-   - Link from first-run/operator docs only after the mechanism is stated
-     as operator-owned account enrollment and redacted evidence.
+   - Status: rewritten from current official OpenAI sources as
+     `docs/policy/tos-posture-2026-05-05.md`.
+   - The rewrite avoids "unlimited" / bypass framing and says not to
+     link from first-run or public promotion copy until Level 3 is
+     live-proven and the posture is re-reviewed.
 
 ### Already Absorbed or Superseded
 
@@ -232,12 +234,10 @@ These need review before public promotion:
    session.
 3. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
    normal 200 flow first, then 401 and 429 only when safely available.
-4. Review policy posture doc and add only if it does not market quota
-   evasion.
-5. Keep demoting route-warming/restart surfaces from product language.
-6. Start the Claude adapter only after the Codex Level 3 proof is recorded
+4. Keep demoting route-warming/restart surfaces from product language.
+5. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
-7. Re-run `just check-local` after each code/test slice.
+6. Re-run `just check-local` after each code/test slice.
 
 ## Hygiene Pass Notes
 
@@ -263,3 +263,6 @@ These need review before public promotion:
 - Rewrote the stale quarry test/coverage review from current main as
   `docs/spec/test-and-coverage-review-2026-05-05.md` and linked it from
   the broker contract as a descriptive assessment.
+- Rewrote the quarry ToS posture into
+  `docs/policy/tos-posture-2026-05-05.md` from current official OpenAI
+  sources, with public-promotion links gated until Level 3 is live-proven.
