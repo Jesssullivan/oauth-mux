@@ -612,3 +612,11 @@ Truth boundary:
   mux-owned auth overlays either need durable token writeback/import back to the
   selected account store, or repeated 401/refresh-token-failure evidence must
   mark the route auth-unready and select a fallback account on the next launch.
+
+Follow-up implemented:
+
+- The adapter now records unrecovered managed-session 401s as account-credential
+  health only after the child exits and only when the overlay auth did not
+  change. The status stream emits `auth_health_observed` with
+  `quota_claim:false`, and the next `broker-session-plan` should route around
+  that stale auth source when another healthy route exists.

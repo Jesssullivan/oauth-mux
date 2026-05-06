@@ -24,6 +24,7 @@ PORTFILE="$TMP/upstream.port"
 NDJSON="$TMP/adapter.ndjson"
 ADAPTER_STDERR="$TMP/adapter.stderr"
 STUB_REPORT="$TMP/stub-codex.report"
+STUB_BIN_DIR="$TMP/bin"
 
 cleanup() {
     if [[ -n "${UPSTREAM_PID:-}" ]] && kill -0 "$UPSTREAM_PID" 2>/dev/null; then
@@ -34,13 +35,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP/account-A" "$TMP/account-B"
+mkdir -p "$TMP/account-A" "$TMP/account-B" "$STUB_BIN_DIR"
+mkdir -p "$TMP/state"
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s"
 cat >"$TMP/account-A/auth.json" <<EOF
-{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-401-A","refresh_token":"RT-A","account_id":"acc-A-id"},"auth_mode":"Chatgpt"}
+{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"$ID_TOKEN","refresh_token":"RT-A","account_id":"acc-A-id"},"auth_mode":"Chatgpt"}
 EOF
 cat >"$TMP/account-B/auth.json" <<EOF
-{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-401-B","refresh_token":"RT-B","account_id":"acc-B-id"},"auth_mode":"Chatgpt"}
+{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"$ID_TOKEN","refresh_token":"RT-B","account_id":"acc-B-id"},"auth_mode":"Chatgpt"}
 EOF
 
 cat >"$TMP/oauth-mux.config.json" <<EOF
@@ -50,8 +52,8 @@ cat >"$TMP/oauth-mux.config.json" <<EOF
     "codex": {
       "kind": "codex",
       "accounts": {
-        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "$TMP/account-A/auth.json" } },
-        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "$TMP/account-B/auth.json" } }
+        "max-1": { "priority": 30, "config_dir": "$TMP/account-A", "secret": { "backend": "file", "path": "$TMP/account-A/auth.json" } },
+        "max-2": { "priority": 20, "config_dir": "$TMP/account-B", "secret": { "backend": "file", "path": "$TMP/account-B/auth.json" } }
       }
     }
   },
@@ -60,6 +62,30 @@ cat >"$TMP/oauth-mux.config.json" <<EOF
   }
 }
 EOF
+
+cat >"$TMP/state/health.json" <<'EOF'
+{
+  "version": 2,
+  "accounts": [
+    {
+      "key": "codex:max-2#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "none",
+      "last_probe_decision": "use_this",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    }
+  ]
+}
+EOF
+
+cat >"$STUB_BIN_DIR/codex" <<'EOF'
+#!/usr/bin/env sh
+exit 0
+EOF
+chmod +x "$STUB_BIN_DIR/codex"
 
 OMUX_STUB_PORT=0 \
   OMUX_STUB_PORTFILE="$PORTFILE" \
@@ -76,6 +102,7 @@ UPSTREAM_PORT="$(cat "$PORTFILE" | tr -d '[:space:]')"
 echo "smoke-codex-401-propagation: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_PORT always_status=401"
 
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$TMP/state" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
@@ -117,6 +144,7 @@ assert_grep "session_started" '"kind":"session_started"' "$NDJSON"
 assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed":false' "$NDJSON"
 assert_grep "proxy_turn 401 classified auth_unauthorized" '"kind":"proxy_turn".*"status":401.*"classification":"auth_unauthorized"' "$NDJSON"
 assert_grep "proxy_observed_401_codex_handles diagnostic emitted" '"kind":"proxy_observed_401_codex_handles"' "$NDJSON"
+assert_grep "unrecovered 401 recorded as auth health, not quota" '"kind":"auth_health_observed".*"recorded":true.*"reason":"unrecovered_401_no_writeback".*"quota_claim":false' "$NDJSON"
 
 assert_no_grep "no swap fired" '"kind":"proxy_post_swap_turn"' "$NDJSON"
 assert_no_grep "no same-turn retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
@@ -157,6 +185,25 @@ else
     exit 1
 fi
 
+PLAN_AFTER="$(PATH="$STUB_BIN_DIR:$PATH" OMUX_CONFIG="$TMP/oauth-mux.config.json" OMUX_STATE_DIR="$TMP/state" "$BIN" codex broker-session-plan --profile codex-max --capability codex-max --json)"
+SELECTED_AFTER="$(jq -r '.selected.account' <<<"$PLAN_AFTER")"
+if [[ "$SELECTED_AFTER" == "max-2" ]]; then
+    echo "  ✓ next broker-session-plan avoids unrecovered max-1 auth"
+else
+    echo "  ✗ broker-session-plan selected $SELECTED_AFTER after unrecovered max-1 auth" >&2
+    jq . <<<"$PLAN_AFTER" >&2
+    exit 1
+fi
+
+MAX1_SKIP="$(jq -r '.routes[] | select(.account == "max-1") | .skip_reason' <<<"$PLAN_AFTER")"
+if [[ "$MAX1_SKIP" == "token_revoked" ]]; then
+    echo "  ✓ max-1 marked as reauth/try-next credential health"
+else
+    echo "  ✗ max-1 skip_reason after unrecovered auth was $MAX1_SKIP" >&2
+    jq .routes <<<"$PLAN_AFTER" >&2
+    exit 1
+fi
+
 echo
-echo "smoke-codex-401-propagation: all 13 assertions passed."
+echo "smoke-codex-401-propagation: all 16 assertions passed."
 echo "  full ndjson: $NDJSON"

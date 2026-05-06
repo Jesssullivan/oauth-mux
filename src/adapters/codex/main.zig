@@ -31,6 +31,7 @@ const broker = @import("../../broker/mod.zig");
 const broker_types = @import("../../broker/types.zig");
 const broker_loader = @import("../../broker_loader.zig");
 const config_mod = @import("../../config.zig");
+const health_mod = @import("../../health.zig");
 const shell = @import("../../shell.zig");
 const wire_proxy = @import("wire_proxy.zig");
 
@@ -152,6 +153,11 @@ const AuthWritebackObservation = struct {
     source_conflict: bool = false,
     ok: bool = true,
     error_name: ?[]const u8 = null,
+};
+
+const ManagedAuthHealthObservation = struct {
+    recorded: bool = false,
+    reason: []const u8 = "not_observed",
 };
 
 const SessionAuthorityEntryKind = enum {
@@ -381,9 +387,14 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     if (auth_writeback.source_conflict) {
         try stderr.writeAll("oauth-mux codex: auth writeback conflict; not overwriting newer account auth\n");
     }
+    const auth_failure = proxy.authFailureObservation();
+    const auth_health = recordManagedAuthFailureHealth(allocator, auth_failure, auth_writeback);
 
     if (emit_status) {
         try writeAuthWritebackStatus(status_writer, auth_writeback);
+        if (auth_failure.auth_unauthorized_turns > 0) {
+            try writeManagedAuthHealthStatus(status_writer, auth_failure, auth_health);
+        }
         if (resume_request.requested()) {
             const observation = if (codex_home.authority_home) |authority_home|
                 try observeResumeWriteback(allocator, authority_home, if (resume_snapshot) |*snapshot| snapshot else null, resume_request)
@@ -735,6 +746,61 @@ fn writeAuthWritebackStatus(
         try writer.print(",\"error\":\"{s}\"", .{name});
     }
     try writer.writeAll("}\n");
+}
+
+fn recordManagedAuthFailureHealth(
+    allocator: std.mem.Allocator,
+    observation: wire_proxy.AuthFailureObservation,
+    auth_writeback: AuthWritebackObservation,
+) ManagedAuthHealthObservation {
+    if (!observation.unrecovered()) {
+        return .{ .recorded = false, .reason = "recovered_or_absent" };
+    }
+    if (!auth_writeback.ok) {
+        return .{ .recorded = false, .reason = "auth_writeback_observation_failed" };
+    }
+    if (auth_writeback.changed) {
+        return .{ .recorded = false, .reason = "child_auth_changed" };
+    }
+
+    const account_id = observation.account orelse return .{ .recorded = false, .reason = "missing_account" };
+    const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return .{ .recorded = false, .reason = "invalid_account_id" };
+    if (colon == 0 or colon + 1 >= account_id.len) return .{ .recorded = false, .reason = "invalid_account_id" };
+
+    const provider = account_id[0..colon];
+    const account = account_id[colon + 1 ..];
+    const key = health_mod.accountKey(provider, account);
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+    store.recordHttpStatus(key.slice(), 401, null);
+    store.recordProbeEvidence(key.slice(), .broker_run_live, null, .auth_dead, .try_next_account);
+    store.persist();
+
+    return .{ .recorded = true, .reason = "unrecovered_401_no_writeback" };
+}
+
+fn writeManagedAuthHealthStatus(
+    writer: anytype,
+    observation: wire_proxy.AuthFailureObservation,
+    health: ManagedAuthHealthObservation,
+) !void {
+    try writer.writeAll("{\"kind\":\"auth_health_observed\",\"account\":");
+    if (observation.account) |account| {
+        try std.json.stringify(account, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.print(
+        ",\"auth_unauthorized_turns\":{d},\"responses_401_turns\":{d},\"recovered_after_401\":{any},\"recorded\":{any},\"reason\":\"{s}\",\"scope\":\"account_credential\",\"quota_claim\":false,\"token_material_printed\":false,\"path_printed\":false}}\n",
+        .{
+            observation.auth_unauthorized_turns,
+            observation.responses_401_turns,
+            observation.recovered_after_401,
+            health.recorded,
+            health.reason,
+        },
+    );
 }
 
 fn copyFileContents(

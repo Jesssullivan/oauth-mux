@@ -102,4 +102,7 @@ failure, not quota fallback evidence. Status artifacts should also show an
 `auth_writeback` frame; `changed:true,written:true,ok:true` means Codex updated
 managed overlay auth and oauth-mux imported it back to the route's auth source.
 `source_conflict:true` means another writer changed the mux source first, so
-oauth-mux refused to overwrite it.
+oauth-mux refused to overwrite it. When unrecovered 401s occur and no overlay
+auth changed, oauth-mux records account-credential health for the next launch
+and emits `auth_health_observed` with `quota_claim:false`; that does not prove
+the subscription lacks quota.

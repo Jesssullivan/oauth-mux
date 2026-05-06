@@ -39,6 +39,7 @@ cat >"$AUTH_FAILED" <<'EOF'
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 {"kind":"proxy_observed_401_codex_handles","account":"codex:max-1"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":401,"classification":"auth_unauthorized","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
+{"kind":"auth_health_observed","account":"codex:max-1","auth_unauthorized_turns":2,"responses_401_turns":1,"recovered_after_401":false,"recorded":true,"reason":"unrecovered_401_no_writeback","scope":"account_credential","quota_claim":false,"token_material_printed":false,"path_printed":false}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
 
@@ -84,6 +85,16 @@ if [[ "$(jq -r .auth_unauthorized_turns <<<"$AUTH_FAILED_SUMMARY")" != "2" ]]; t
 fi
 if [[ "$(jq -r .responses_401_turns <<<"$AUTH_FAILED_SUMMARY")" != "1" ]]; then
     echo "auth-failed responses 401 count mismatch" >&2
+    echo "$AUTH_FAILED_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .auth_health_recorded_observed <<<"$AUTH_FAILED_SUMMARY")" != "true" ]]; then
+    echo "auth-failed summary should report recorded credential health" >&2
+    echo "$AUTH_FAILED_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .auth_health_quota_claim_observed <<<"$AUTH_FAILED_SUMMARY")" != "false" ]]; then
+    echo "auth-failed summary must not turn auth health into quota evidence" >&2
     echo "$AUTH_FAILED_SUMMARY" >&2
     exit 1
 fi

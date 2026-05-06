@@ -198,6 +198,11 @@ In the current adapter-owned child + wire-proxy topology:
   overwrite that fresher source.
 - Proxy emits `proxy_observed_401_codex_handles` for telemetry.
 - DOES NOT call `pool.markUnauthorized` (would defeat refresh loop).
+- If the managed session exits after unrecovered 401s and the overlay
+  `auth.json` did not change, the adapter records account-credential health
+  for the next launch and emits `auth_health_observed` with
+  `quota_claim:false`. This is a local auth-source repair signal, not quota
+  evidence and not a live account-substitution proof.
 
 _OPERATOR-CONFIRM_: revoke a refresh_token externally, drive a turn,
 verify (a) codex's AuthManager logs RefreshToken, (b) auth.json mtime
