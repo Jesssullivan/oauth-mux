@@ -173,7 +173,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-cli-ux.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-concurrent-sessions.sh && ./scripts/smoke-codex-child-refresh.sh && ./scripts/smoke-codex-tier-insufficient.sh && ./scripts/smoke-codex-all-exhausted.sh && ./scripts/smoke-codex-401-propagation.sh && ./scripts/smoke-codex-cassette-replay.sh && ./scripts/smoke-codex-capture-review.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-cli-ux.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-concurrent-sessions.sh && ./scripts/smoke-codex-child-refresh.sh && ./scripts/smoke-codex-tier-insufficient.sh && ./scripts/smoke-codex-all-exhausted.sh && ./scripts/smoke-codex-401-propagation.sh && ./scripts/smoke-codex-cassette-replay.sh && ./scripts/smoke-codex-capture-review.sh && ./scripts/smoke-github-tracker-comment.sh'
     @echo "all checks passed"
 
 e2e:
@@ -272,6 +272,12 @@ smoke-codex-capture-review:
 
 smoke-codex-capture-review-local:
     ./scripts/smoke-codex-capture-review.sh
+
+smoke-github-tracker-comment:
+    ./scripts/smoke-github-tracker-comment.sh
+
+github-tracker-comment ISSUE BODY_FILE:
+    ./scripts/github-tracker-comment.sh {{ISSUE}} {{BODY_FILE}}
 
 # ── Config ──
 

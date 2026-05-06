@@ -317,6 +317,9 @@ These need review before public promotion:
   write-capable scopes, while the Apps connector identity is independent and
   can read identity but fails issue-comment writes. Treat connector writes as
   a GitHub App permission/installation problem until proven otherwise.
+- GitHub #198 tracks the permission fix. Until the connector can write issue
+  comments, use `scripts/github-tracker-comment.sh` as the local `gh` fallback;
+  it dry-runs auth/body checks and refuses obvious unredacted token shapes.
 - Remaining acceptance gate: provider-originated `usage_limit_reached` inside a
   real managed `oauth-mux codex` session, with redacted status evidence showing
   the same no-visible-429 retry sequence and a stable child process.
