@@ -25,9 +25,10 @@ delete and re-anchor on the broker contract.
 4. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
    overlays must not hide or fork harness session authority
 5. `justfile` — operator entrypoint for all build/test/release tasks
-6. `flake.nix` — Nix devShell and package definitions
-7. `build.zig` / `build.zig.zon` — Zig build system
-8. `src/` — implementation
+6. `README.md` — public-facing current-state summary; subordinate to specs
+7. `flake.nix` — Nix devShell and package definitions
+8. `build.zig` / `build.zig.zon` — Zig build system
+9. `src/` — implementation
 
 ## Build
 

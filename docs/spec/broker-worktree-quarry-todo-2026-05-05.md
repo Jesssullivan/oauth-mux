@@ -23,9 +23,11 @@ prepared fallback, and synthetic smokes are evidence or diagnostics only.
 
 ## Current Live State
 
-Observed on 2026-05-05 around 15:37 EDT:
+Observed on 2026-05-05 around 15:37 EDT, then updated after the first
+brokered-resume dogfood on 2026-05-06:
 
-- Repository: clean on `main...origin/main` at `59c2f69`.
+- Repository: clean on `main`, one local commit ahead of `origin/main` at
+  `954d673` (`Whoohoo brokered Codex resume`) during this checkpoint.
 - Selected live `codex-max` route: `max-1`.
 - Spend-gated exhausted-route revalidation after the reset window found
   `max-1`, `max-2`, and `max-3` available again; `max-4` was already
@@ -41,6 +43,19 @@ Level 3 acceptance: no provider-originated `usage_limit_reached` event
 has occurred inside a live `oauth-mux codex` session during this
 checkpoint.
 
+The brokered-resume dogfood proved a separate prerequisite:
+
+- `oauth-mux codex --profile codex-max resume <session-id>` re-entered a
+  canonical Codex session through the managed frame.
+- Status evidence reported `session_authority:"canonical_bridge"`,
+  `auth_authority:"mux_owned_overlay"`, and `managed_config:"mux_owned_overlay"`.
+- Live `POST /backend-api/codex/responses` turns returned `status:200` through
+  the oauth-mux proxy after the request-framing and same-account child-refresh
+  fixes.
+
+That is meaningful UX/architecture progress. It is not account-exhaustion
+success and must not be described as stay-afloat completion.
+
 ## Mainline Reality
 
 Already merged on main:
@@ -52,6 +67,11 @@ Already merged on main:
 - Synthetic Codex acceptance smoke: account A succeeds, then returns
   `usage_limit_reached`, then account B handles a post-swap turn in one
   stable child PID.
+- Brokered Codex resume through canonical session authority; the managed frame
+  can now resume a real existing Codex session and proxy normal provider turns.
+- Same-account child auth refresh preservation; oauth-mux no longer overwrites
+  a Codex-refreshed bearer for the same account with stale materialized route
+  credentials.
 - Cassette capture/replay tooling; real operator capture data is still
   pending.
 - `--json-status-file` artifact path, so oauth-mux status frames do not
@@ -63,17 +83,16 @@ Already merged on main:
 Not yet proven:
 
 - Live provider-originated Level 3 account swap.
+- Invisible same-turn recovery where a fallback account handles the user turn
+  before Codex sees `usage_limit_reached`.
 - Same-thread continuity across account swap.
 - Mid-turn recovery.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
   handing off account state.
-- Managed-frame resume parity. The adapter-owned temporary `CODEX_HOME`
-  now bridges canonical Codex session authority by reference, but live
-  `resume <id>` / `resume --last` dogfood is still pending before this is
-  treated as parity with bare Codex. The 2026-05-06 UX refactor spec adds
-  the missing command contract: first-class `oauth-mux codex resume ...`,
-  strict `codex run` parsing, status-file parent creation, and PBT/e2e/
-  cassette guards.
+- Managed-frame resume parity beyond explicit-id resume. The adapter-owned
+  temporary `CODEX_HOME` now bridges canonical Codex session authority by
+  reference, and explicit live `resume <id>` dogfood succeeded. `resume --last`
+  and chooser parity remain useful UX checks.
 
 ## Quarry Worktree
 
@@ -214,9 +233,15 @@ These need review before public promotion:
 
 3. 429 recovery mode
    - Main currently proves synthetic between-turn A-to-B behavior.
-   - Still need real evidence for whether same conversation thread survives
-     account swap.
-   - Do not claim mid-turn or same-thread recovery until captured.
+   - The current proxy returns the `429 usage_limit_reached` to Codex, marks
+     account A exhausted, and only elects account B on the next request.
+   - That is below the strict product bar if the failed turn is visible.
+   - P0 implementation target: buffer/classify 429, mark A exhausted, elect B,
+     and either retry the same request upstream with B or synthesize a recovery
+     path before Codex receives the quota failure.
+   - Do not claim seamless stay-afloat until a synthetic smoke proves no 429
+     reaches the Codex child when B succeeds, and live evidence later confirms
+     provider behavior.
 
 4. Daemon-attached broker mode
    - In-process broker is good enough for current adapter smokes.
@@ -230,9 +255,9 @@ These need review before public promotion:
    - Full-store copies are rejected; the current adapter uses a
      bridge/reference model per
      `docs/spec/harness-session-authority-bridge-2026-05-05.md`.
-   - Remaining acceptance: daily-use managed resume UX and live
-     managed-frame resume dogfood per
-     `docs/spec/codex-managed-resume-ux-refactor-2026-05-06.md`.
+   - Explicit live managed-frame resume now works. Continue daily-use checks
+     for `resume --last`, native chooser behavior, and redacted writeback
+     evidence per `docs/spec/codex-managed-resume-ux-refactor-2026-05-06.md`.
 
 6. Bare `codex` path
    - The aspirational background daemon plus bare `codex` remains harder
@@ -248,18 +273,25 @@ These need review before public promotion:
 ## Local Todo Order
 
 1. Keep main clean and preserve all four selectable `codex-max` routes.
-2. Run live Level 3 acceptance for TIN-951 only when the operator is
-   ready to spend and there is a realistic way to observe
-   provider-originated quota exhaustion in an active `oauth-mux codex`
-   session.
+2. Implement the same-turn 429 handoff attempt before treating quota-burn
+   dogfood as acceptance:
+   - synthetic `A -> 429 usage_limit_reached -> immediate B -> 200`;
+   - assert no 429 is delivered to the stub Codex child when B succeeds;
+   - assert one stable child PID and redacted `account_swap` /
+     `proxy_same_turn_retry` status frames;
+   - negative guards for `usage_not_included`, generic 429, 401 propagation,
+     and all-accounts-exhausted.
 3. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
    normal 200 flow first, then 401 and 429 only when safely available.
-4. Run live managed-frame resume dogfood before promoting managed-frame
-   resume as parity with bare Codex.
+4. Run live Level 3 acceptance for TIN-951 only when the operator is ready to
+   spend and there is a realistic way to observe provider-originated quota
+   exhaustion in an active `oauth-mux codex` session.
 5. Keep demoting route-warming/restart surfaces from product language.
-6. Start the Claude adapter only after the Codex Level 3 proof is recorded
+6. Keep extending the test ladder: Zig unit/PBT, shell e2e, cassette replay,
+   live redacted artifacts, and hosted CI.
+7. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
-7. Re-run `just check-local` after each code/test slice.
+8. Re-run `just check-local` after each code/test slice.
 
 ## Hygiene Pass Notes
 

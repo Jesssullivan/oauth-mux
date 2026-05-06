@@ -39,6 +39,19 @@ and `shell_snapshots/` are bridged by reference to canonical Codex session
 authority by default. `docs/spec/harness-session-authority-bridge-2026-05-05.md`
 tracks the remaining live resume acceptance.
 
+Implementation update, 2026-05-06: explicit live brokered resume now works
+through the managed frame and proxy. The status artifact for that dogfood showed
+canonical session authority, mux-owned auth/config, and live
+`POST /backend-api/codex/responses` turns returning `status:200`. This proves
+the managed frame and normal proxy path, not account-exhaustion success.
+
+The current 429 implementation remains next-request recovery: the proxy returns
+`429 usage_limit_reached` to Codex, marks the active account exhausted, and the
+next request elects a different account. That is below the strict product bar if
+the failed turn is visible. The next implementation target is a same-turn
+handoff attempt that retries or recovers before Codex receives the quota
+failure when a fallback account is selectable.
+
 That smoke is structural evidence only. It uses local stubs and fake
 fixture tokens, makes no provider calls, and keeps the adapter output at
 `claim_level:"broker_owned"` while reporting
@@ -391,8 +404,9 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // adapter startup
 { "kind": "session_started", "session_id": "...", "selected_account": "codex:max-1", "claim_level": "broker_owned", "wire_proxy_addr": "127.0.0.1:54321" }
 
-// every account swap
-{ "kind": "account_swap", "from": "codex:max-1", "to": "codex:max-3", "reason": "quota_exhausted", "via": "wire_proxy_429_synth_401", "claim_level": "next_turn_seamless" }
+// target shape for a successful invisible quota handoff; not emitted by the
+// current next-request-only 429 path
+{ "kind": "account_swap", "from": "codex:max-1", "to": "codex:max-3", "reason": "quota_exhausted", "via": "wire_proxy_429_retry", "claim_level": "next_turn_seamless" }
 
 // every refresh
 { "kind": "credential_refresh", "account": "codex:max-1", "trigger": "proactive_exp", "outcome": "ok" }
@@ -404,8 +418,8 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // quota observation that did not trigger a swap
 { "kind": "quota_observed", "account": "codex:max-1", "kind_detail": "rate_limited", "retry_after_s": 12 }
 
-// teardown
-{ "kind": "session_ended", "session_id": "...", "turns": 14, "swaps": 2, "final_claim_level": "next_turn_seamless" }
+// teardown before live quota-handoff proof remains broker_owned
+{ "kind": "session_ended", "session_id": "...", "turns": 14, "swaps": 0, "final_claim_level": "broker_owned" }
 ```
 
 These frames are the only structured surface the adapter publishes. The
@@ -463,10 +477,12 @@ suite for §3 behavior.
 
 - Real interactive `oauth-mux codex` session, two enrolled accounts,
   account A near quota, account B credited. User runs prompts until
-  account A exhausts. Verify: account B continues the session,
-  `claim_level: next_turn_seamless` emitted, `oauth-mux codex` did not
-  prompt the user, the `codex` child process did not restart (verified
-  by `ppid` stability across the swap). This is the metric.
+  account A exhausts. Verify: account B continues the session without a visible
+  quota-failed turn when a fallback account is selectable,
+  `claim_level: next_turn_seamless` is emitted only after that evidence,
+  `oauth-mux codex` did not prompt the user, and the `codex` child process did
+  not restart (verified by `ppid` stability across the swap). This is the
+  metric.
 
 ### 11.5 ToS-honest paid-cohort soak (Phase 3)
 
@@ -518,7 +534,8 @@ The adapter is acceptable when:
    from bare `codex` modulo §5 TUI degradation.
 2. `oauth-mux codex` runs a multi-account session and on observed
    live-account exhaustion swaps to a credited account in the same
-   `codex app-server` child, emitting `claim_level: next_turn_seamless`.
+   `codex app-server` child before Codex receives a visible quota-failed turn,
+   emitting `claim_level: next_turn_seamless` only after that evidence.
 3. The wire-layer proxy correctly classifies every entry of §3's matrix
    against captured fixtures.
 4. The adapter never prints token material, refresh-token bytes, full
