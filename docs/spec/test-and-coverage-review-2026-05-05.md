@@ -6,9 +6,11 @@ Anchor: `docs/spec/broker-mcp-contract-2026-05-03.md`.
 Codex adapter contract: `docs/spec/codex-adapter-contract-2026-05-03.md`.
 
 This review replaces the stale quarry-branch assessment from
-`/Users/jess/git/oauth-mux-broker`. It describes current `main` at
-`59c2f69`, after the route-health truthing, Codex quarry smokes,
-expired-quota revalidation state, and restart-claim demotion work.
+`/Users/jess/git/oauth-mux-broker`. It describes current `main` through
+`954d673` (`Whoohoo brokered Codex resume`), after route-health truthing,
+Codex quarry smokes, expired-quota revalidation state, restart-claim demotion,
+managed resume UX work, request-framing fixes, and same-account child-refresh
+preservation.
 
 ## Product Bar
 
@@ -33,13 +35,17 @@ flags, and synthetic smokes are not success.
 - `scripts/smoke-broker.sh`.
 - `scripts/smoke-codex-acceptance.sh`.
 - `scripts/smoke-codex-concurrent-sessions.sh`.
+- `scripts/smoke-codex-child-refresh.sh`.
 - `scripts/smoke-codex-tier-insufficient.sh`.
 - `scripts/smoke-codex-all-exhausted.sh`.
 - `scripts/smoke-codex-401-propagation.sh`.
 - `scripts/smoke-codex-cassette-replay.sh`.
 
-Validation status for this review: `just check-local` passed on
-2026-05-05 after the doc update.
+Validation status for the current resume/proxy slice: focused local gates have
+passed (`zig build test`, `zig build`, `smoke-codex-cli-ux`,
+`smoke-codex-acceptance`, and `smoke-codex-child-refresh`). A full
+`just check-local` should be rerun before merge/release claims when this review
+changes implementation.
 
 Repo-wide Zig test inventory is broad (`rg '^test "' src` finds 306
 in-file tests). The broker/Codex-adapter subset is materially covered
@@ -50,12 +56,15 @@ The shell smoke suite covers these adapter stories:
 - `smoke-broker`: 22 assertions. Broker MCP method composition:
   handshake, account listing, selection, materialization, quota
   observation, swap, and status.
-- `smoke-codex-acceptance`: 15 assertions. Synthetic Codex A-to-B
+- `smoke-codex-acceptance`: 18 assertions. Synthetic Codex A-to-B
   swap: account A succeeds, then returns `usage_limit_reached`, then
   account B handles the next turn in one stable child PID.
 - `smoke-codex-concurrent-sessions`: 16 assertions. Per-session
   `CODEX_HOME` overlays prevent the old account-local `config.toml`
   clobber race.
+- `smoke-codex-child-refresh`: 12 assertions. Codex child-refresh for the
+  same account is preserved by the proxy, preventing stale materialized-token
+  loops after a native Codex refresh.
 - `smoke-codex-tier-insufficient`: 10 assertions.
   `usage_not_included` is classified as `tier_insufficient`; no swap.
 - `smoke-codex-all-exhausted`: 10 assertions. All accounts exhausted
@@ -87,6 +96,10 @@ inside a live `oauth-mux codex` session during that check.
   tuples, observe quota, swap accounts, and report status in-process.
 - The Codex adapter/proxy skeleton can run synthetic in-session flows
   without restarting its child process.
+- The managed Codex frame can resume a real existing canonical Codex session
+  and proxy normal live `responses` turns successfully.
+- The proxy can preserve a same-account Codex-refreshed bearer instead of
+  forcing stale oauth-mux materialized credentials.
 - Route-health state now distinguishes expired reset windows as
   `revalidation_needed` until explicit provider revalidation refreshes
   truth.
@@ -99,6 +112,8 @@ inside a live `oauth-mux codex` session during that check.
 ## What Current Main Does Not Prove
 
 - Live provider-originated Level 3 account swap.
+- Invisible same-turn recovery where Codex never sees a visible
+  `usage_limit_reached` failure when a fallback account is selectable.
 - Same-thread continuity across account swap.
 - Mid-turn recovery.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
@@ -117,26 +132,44 @@ inside a live `oauth-mux codex` session during that check.
    must not be labeled as Level 3.
 3. **The Codex path depends on wire interposition.** Codex's 401 path
    can refresh; quota is a 429 and must be observed at the wire layer.
-4. **The current child/proxy topology is the user-facing near path.**
+4. **The current 429 implementation is next-request recovery, not invisible
+   same-turn recovery.** It marks account A exhausted after returning the 429
+   and elects account B on the next request. The next P0 must harden this so a
+   selectable fallback can handle the same user turn before Codex receives a
+   visible quota failure.
+5. **The current child/proxy topology is the user-facing near path.**
    `oauth-mux codex` owns the mediation point. Bare `codex` with a
    background daemon remains a harder future sidecar problem.
-5. **Restart diagnostics should keep shrinking.** They are useful for
+6. **Restart diagnostics should keep shrinking.** They are useful for
    incident capture, not for product claims.
 
 ## Next Gates
 
-1. Run the live TIN-951 acceptance only when the operator is ready to
+1. Implement and test stronger same-turn 429 handoff semantics:
+   - synthetic `A -> 429 usage_limit_reached -> immediate B -> 200`;
+   - assert the stub Codex child does not receive a 429 when B succeeds;
+   - assert one stable child PID, redacted status frames, and no restart
+     language;
+   - negative guards for `usage_not_included`, generic 429, 401 propagation,
+     and all-accounts-exhausted.
+2. Extend the deterministic test ladder around that work:
+   - Zig unit/PBT for response classification and swap state-machine
+     invariants;
+   - shell e2e for proxy behavior and CLI/session authority;
+   - cassette replay for real wire-shape drift;
+   - hosted CI before public claims.
+3. Run the live TIN-951 acceptance only when the operator is ready to
    spend and has a credible way to observe provider-originated quota
    exhaustion in an active `oauth-mux codex` session.
-2. Run TIN-950 / GitHub #176 capture for at least one normal 200 turn.
+4. Run TIN-950 / GitHub #176 capture for at least one normal 200 turn.
    Capture 401 and 429 only when safely available. Commit only reviewed,
    scrubbed, fixture-sized JSON.
-3. Keep quarry work as quarry. The stale branch still has useful policy
+5. Keep quarry work as quarry. The stale branch still has useful policy
    and review ideas, but main already supersedes much of its source diff.
-4. Keep `docs/policy/tos-posture-2026-05-05.md` current before public
+6. Keep `docs/policy/tos-posture-2026-05-05.md` current before public
    promotion. Do not market account rotation as unlimited usage or quota
    evasion.
-5. Start the Claude adapter only after Codex Level 3 is recorded or the
+7. Start the Claude adapter only after Codex Level 3 is recorded or the
    Codex blocker is explicitly parked.
 
 ## Definition of Done for This Review
