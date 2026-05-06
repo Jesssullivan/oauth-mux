@@ -32,6 +32,10 @@ Env (set by the smoke harness):
                             a redacted marker to. Used by resume smokes to
                             prove the managed session authority receives
                             child writes.
+  OMUX_STUB_REWRITE_AUTH_JSON — optional auth.json contents to write inside
+                            CODEX_HOME before sending turns. Used to emulate
+                            Codex persisting refreshed ChatGPT tokens in the
+                            managed overlay.
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -145,6 +149,19 @@ def _append_session_marker(codex_home: Path) -> dict:
     }
 
 
+def _rewrite_auth_json(codex_home: Path) -> dict:
+    contents = os.environ.get("OMUX_STUB_REWRITE_AUTH_JSON")
+    if contents is None:
+        return {"checked": False}
+    (codex_home / "auth.json").write_text(contents, encoding="utf-8")
+    return {
+        "checked": True,
+        "written": True,
+        "token_material_printed": False,
+        "path_printed": False,
+    }
+
+
 def main() -> int:
     pid = os.getpid()
     pidfile = Path(os.environ.get("OMUX_STUB_CODEX_PIDFILE", "/tmp/omux-stub-codex.pid"))
@@ -157,6 +174,7 @@ def main() -> int:
     proxy_url = _read_proxy_url(codex_home)
     session_bridge = _session_bridge_report(codex_home)
     session_append = _append_session_marker(codex_home)
+    auth_rewrite = _rewrite_auth_json(codex_home)
 
     started_at = time.time()
     print(
@@ -188,6 +206,7 @@ def main() -> int:
         "active_account_at_start": os.environ.get("OMUX_ACTIVE_ACCOUNT"),
         "session_bridge": session_bridge,
         "session_append": session_append,
+        "auth_rewrite": auth_rewrite,
     }
     report_path.write_text(json.dumps(report, indent=2))
     print(f"stub-codex: pid_stable={report['pid_stable']} turns={turns}", file=sys.stderr, flush=True)

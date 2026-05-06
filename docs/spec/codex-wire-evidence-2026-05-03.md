@@ -183,15 +183,28 @@ In the current adapter-owned child + wire-proxy topology:
 - The proxy propagates the 401 to codex unchanged (streamed response).
 - Codex's RefreshToken path runs entirely inside codex; oauth-mux
   doesn't see it.
-- Proxy's NEXT materialize call re-reads `auth.json` from disk and
-  picks up the refreshed token (no proxy-side state needed).
+- During the same managed session, the proxy preserves Codex's refreshed
+  same-account `Authorization` header instead of re-signing with stale
+  oauth-mux materialized auth. This keeps Codex's native retry path
+  authoritative for 401 recovery.
+- At child exit, the adapter compares the managed overlay `auth.json`
+  with the selected account's mux-owned auth source. If Codex refreshed
+  tokens inside the overlay, oauth-mux imports that changed file back
+  into the selected account source and emits a redacted `auth_writeback`
+  status frame. This prevents the next managed frame from reusing an
+  already-consumed refresh token. The import is compare-and-swap shaped:
+  if another managed session changed the source after this overlay was
+  created, oauth-mux reports `source_conflict:true` and does not
+  overwrite that fresher source.
 - Proxy emits `proxy_observed_401_codex_handles` for telemetry.
 - DOES NOT call `pool.markUnauthorized` (would defeat refresh loop).
 
 _OPERATOR-CONFIRM_: revoke a refresh_token externally, drive a turn,
 verify (a) codex's AuthManager logs RefreshToken, (b) auth.json mtime
-advances after the refresh, (c) the next turn through the proxy uses
-the new access_token.
+advances inside the managed overlay after the refresh, (c) the same
+managed session's retry uses the child refreshed bearer, and (d) the
+post-exit `auth_writeback` frame reports `changed:true` and
+`written:true` without printing path or token material.
 
 ## 5. 429 + `usage_limit_reached` — Frame Sequence
 
