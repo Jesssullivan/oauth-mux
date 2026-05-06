@@ -82,3 +82,14 @@ Next P0: capture and run live evidence for provider-originated
 `429 usage_limit_reached` inside a managed session. Until that proves the same
 no-visible-429 sequence against real `chatgpt.com`, live quota-burn dogfood is
 telemetry, not product acceptance.
+
+Summarize a dogfood status artifact without overclaiming:
+
+```bash
+python3 scripts/summarize-codex-status.py dist/live-qa/<run>/status.ndjson --require-brokered
+```
+
+`verdict:"brokered_without_fallback"` means the session went through oauth-mux
+but did not observe account exhaustion or substitution. The Level 3/4 evidence
+shape requires a `quota_exhausted` proxy turn, a retry/swap event, and a
+successful turn on a distinct fallback account.
