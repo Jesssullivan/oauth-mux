@@ -21,6 +21,9 @@ Real on `main`:
 - Brokered Codex resume has been dogfooded successfully through the proxy:
   `resume <session-id>` reached `POST /backend-api/codex/responses` with
   `status:200`.
+- Current dogfood status evidence includes hundreds of brokered
+  `POST /responses` 200s through `codex:max-1`; it does not yet include a real
+  provider-originated `429 usage_limit_reached` or fallback-account turn.
 - Synthetic smokes prove account A can hit `429 usage_limit_reached`, be
   marked exhausted, and account B can handle the same request in the same child
   process before Codex receives the 429.
