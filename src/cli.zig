@@ -53,6 +53,7 @@ pub const Command = union(enum) {
         isolated_session_store: bool = false,
         json_status: bool = false,
         json_status_file: ?[]const u8 = null,
+        invalid_option: ?[]const u8 = null,
         /// Args after `--` forwarded to codex unchanged.
         forward_argv: []const []const u8 = &.{},
     };
@@ -336,7 +337,10 @@ pub fn parse(args: []const []const u8) Command {
         // Broker-mediated session entrypoint. Other `codex ...`
         // subcommands continue through the legacy parser until the
         // adapter path is ready to replace them.
-        if (rest.len > 0 and eql(rest[0], "run")) return parseCodexAdapter(rest[1..]);
+        if (rest.len == 0) return .{ .codex_adapter = .{} };
+        if (eql(rest[0], "help") or eql(rest[0], "--help") or eql(rest[0], "-h")) return .codex_help;
+        if (eql(rest[0], "run")) return parseCodexAdapter(rest[1..], true);
+        if (!isCodexLegacySubcommand(rest[0])) return parseCodexAdapter(rest, false);
         return parseCodex(rest);
     }
     if (eql(cmd, "mcp")) return parseMcp(rest);
@@ -368,7 +372,7 @@ fn parseExec(args: []const []const u8) Command {
     return .{ .exec = parseExecArgs(args) };
 }
 
-fn parseCodexAdapter(args: []const []const u8) Command {
+fn parseCodexAdapter(args: []const []const u8, strict_run: bool) Command {
     var result = Command.CodexAdapterArgs{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -392,9 +396,43 @@ fn parseCodexAdapter(args: []const []const u8) Command {
             i += 1;
             result.json_status_file = args[i];
             result.json_status = true;
+        } else if (strict_run) {
+            result.invalid_option = args[i];
+            result.forward_argv = &.{};
+            break;
+        } else {
+            result.forward_argv = args[i..];
+            break;
         }
     }
     return .{ .codex_adapter = result };
+}
+
+fn isCodexLegacySubcommand(arg: []const u8) bool {
+    return eql(arg, "bootstrap-dirs") or
+        eql(arg, "setup") or
+        eql(arg, "login") or
+        eql(arg, "login-device") or
+        eql(arg, "login-status") or
+        eql(arg, "login-status-all") or
+        eql(arg, "onboard") or
+        eql(arg, "canary") or
+        eql(arg, "live-qa") or
+        eql(arg, "revalidate-exhausted") or
+        eql(arg, "probe-all") or
+        eql(arg, "config-candidate") or
+        eql(arg, "config-merge") or
+        eql(arg, "managed-plan") or
+        eql(arg, "managed") or
+        eql(arg, "broker-plan") or
+        eql(arg, "broker-session-plan") or
+        eql(arg, "broker-session-smoke") or
+        eql(arg, "broker-run") or
+        eql(arg, "broker-fallback-drill") or
+        eql(arg, "broker-smoke") or
+        eql(arg, "broker-refresh-smoke") or
+        eql(arg, "broker-401-smoke") or
+        eql(arg, "broker-quota-smoke");
 }
 
 fn parseMcp(args: []const []const u8) Command {
@@ -1259,8 +1297,12 @@ pub fn printUsage(writer: anytype) !void {
         \\  mcp [--profile <name>] [--capability <name>]
         \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
         \\
-        \\  codex run [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
+        \\  codex [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
         \\      Run a broker-mediated Codex adapter session with a local wire proxy.
+        \\  codex resume [id|--last]
+        \\      Resume Codex inside the broker-mediated adapter frame.
+        \\  codex run [adapter options] -- [codex-args...]
+        \\      Advanced/testing spelling for the broker-mediated Codex adapter.
         \\
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
@@ -1346,9 +1388,12 @@ pub fn printUsage(writer: anytype) !void {
 
 pub fn printCodexUsage(writer: anytype) !void {
     try writer.writeAll(
-        \\oauth-mux codex — isolated Codex account setup and probes
+        \\oauth-mux codex — broker-mediated Codex sessions, setup, and probes
         \\
         \\Usage:
+        \\  oauth-mux codex [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
+        \\  oauth-mux codex resume [id|--last]
+        \\  oauth-mux codex run [adapter options] -- [codex-args...]
         \\  oauth-mux setup codex [--accounts a,b,c] [--device|--status-only] [--live]
         \\  oauth-mux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
         \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
@@ -2244,11 +2289,104 @@ test "parse codex run adapter args" {
             try std.testing.expect(adapter.isolated_session_store);
             try std.testing.expect(adapter.json_status);
             try std.testing.expectEqualStrings("/tmp/omux-status.ndjson", adapter.json_status_file.?);
+            try std.testing.expect(adapter.invalid_option == null);
             try std.testing.expectEqual(@as(usize, 2), adapter.forward_argv.len);
             try std.testing.expectEqualStrings("--model", adapter.forward_argv[0]);
             try std.testing.expectEqualStrings("gpt-5.5", adapter.forward_argv[1]);
         },
         else => return error.Unexpected,
+    }
+}
+
+test "parse codex top-level resume aliases route to adapter" {
+    const resume_last_args = [_][]const u8{ "codex", "--profile", "codex-max", "--json-status-file", "/tmp/omux.ndjson", "resume", "--last" };
+    const resume_last = parse(&resume_last_args);
+    switch (resume_last) {
+        .codex_adapter => |adapter| {
+            try std.testing.expectEqualStrings("codex-max", adapter.profile.?);
+            try std.testing.expectEqualStrings("/tmp/omux.ndjson", adapter.json_status_file.?);
+            try std.testing.expectEqual(@as(usize, 2), adapter.forward_argv.len);
+            try std.testing.expectEqualStrings("resume", adapter.forward_argv[0]);
+            try std.testing.expectEqualStrings("--last", adapter.forward_argv[1]);
+        },
+        else => return error.Unexpected,
+    }
+
+    const resume_id_args = [_][]const u8{ "codex", "resume", "session-123" };
+    const resume_id = parse(&resume_id_args);
+    switch (resume_id) {
+        .codex_adapter => |adapter| {
+            try std.testing.expectEqual(@as(usize, 2), adapter.forward_argv.len);
+            try std.testing.expectEqualStrings("resume", adapter.forward_argv[0]);
+            try std.testing.expectEqualStrings("session-123", adapter.forward_argv[1]);
+        },
+        else => return error.Unexpected,
+    }
+
+    const resume_chooser_args = [_][]const u8{ "codex", "resume" };
+    const resume_chooser = parse(&resume_chooser_args);
+    switch (resume_chooser) {
+        .codex_adapter => |adapter| {
+            try std.testing.expectEqual(@as(usize, 1), adapter.forward_argv.len);
+            try std.testing.expectEqualStrings("resume", adapter.forward_argv[0]);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex top-level adapter preserves explicit separator" {
+    const args = [_][]const u8{ "codex", "--profile", "codex-max", "--", "--help" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex_adapter => |adapter| {
+            try std.testing.expectEqualStrings("codex-max", adapter.profile.?);
+            try std.testing.expectEqual(@as(usize, 1), adapter.forward_argv.len);
+            try std.testing.expectEqualStrings("--help", adapter.forward_argv[0]);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex run property: args after separator are preserved exactly" {
+    const cases = [_][]const []const u8{
+        &.{ "resume", "--last" },
+        &.{ "resume", "019dea53-49a0-7890-9580-e88decb97af0" },
+        &.{ "--no-alt-screen", "resume", "--last" },
+        &.{ "exec", "--json", "hello" },
+    };
+
+    for (cases) |forward| {
+        var argv: [12][]const u8 = undefined;
+        argv[0] = "codex";
+        argv[1] = "run";
+        argv[2] = "--";
+        for (forward, 0..) |arg, i| argv[3 + i] = arg;
+        const parsed = parse(argv[0 .. 3 + forward.len]);
+        switch (parsed) {
+            .codex_adapter => |adapter| {
+                try std.testing.expectEqual(forward.len, adapter.forward_argv.len);
+                for (forward, 0..) |arg, i| {
+                    try std.testing.expectEqualStrings(arg, adapter.forward_argv[i]);
+                }
+                try std.testing.expect(adapter.invalid_option == null);
+            },
+            else => return error.Unexpected,
+        }
+    }
+}
+
+test "parse codex run property: unknown pre-separator args are never dropped" {
+    const invalid = [_][]const u8{ "resume", "--model", "codex", "--no-alt-screen" };
+    for (invalid) |arg| {
+        const args = [_][]const u8{ "codex", "run", arg, "ignored" };
+        const cmd = parse(&args);
+        switch (cmd) {
+            .codex_adapter => |adapter| {
+                try std.testing.expectEqualStrings(arg, adapter.invalid_option.?);
+                try std.testing.expectEqual(@as(usize, 0), adapter.forward_argv.len);
+            },
+            else => return error.Unexpected,
+        }
     }
 }
 
@@ -2338,13 +2476,13 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l account -d 'Route account id' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l session-home -d 'Canonical Codex session authority home' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l isolated-session-store -d 'Use isolated session authority for this run'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status -d 'Emit redacted adapter status frames'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status-file -d 'Write redacted adapter status frames to a file' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l account -d 'Route account id' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l session-home -d 'Canonical Codex session authority home' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l isolated-session-store -d 'Use isolated session authority for this run'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l json-status -d 'Emit redacted adapter status frames'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l json-status-file -d 'Write redacted adapter status frames to a file' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run loop start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host foreground stay-afloat tick loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'

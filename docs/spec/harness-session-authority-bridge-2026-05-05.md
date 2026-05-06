@@ -6,6 +6,8 @@ oauth-mux owns muxed auth/config state.
 
 Anchor: `docs/spec/broker-mcp-contract-2026-05-03.md`.
 Codex implementation anchor: `docs/spec/codex-adapter-contract-2026-05-03.md`.
+Managed Codex resume UX/refactor plan:
+`docs/spec/codex-managed-resume-ux-refactor-2026-05-06.md`.
 
 ## 0.0 Current Implementation Checkpoint
 
@@ -20,7 +22,9 @@ The synthetic acceptance smoke proves the managed overlay exposes the canonical
 `sessions/`, `history.jsonl`, `session_index.jsonl`, and `shell_snapshots/`
 entries by reference without printing paths. This is structural evidence only.
 The remaining P1 acceptance is live managed-frame resume dogfood with real
-Codex sessions.
+Codex sessions. The 2026-05-06 managed-resume UX refactor plan records the
+daily-use command contract and regression guards required before this is
+treated as parity with bare Codex.
 
 ## 0. Problem
 

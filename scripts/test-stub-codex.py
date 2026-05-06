@@ -23,6 +23,8 @@ Env (set by the smoke harness):
   OMUX_STUB_CANONICAL_SESSION_HOME — optional canonical session authority
                             home; when set, the stub verifies the managed
                             CODEX_HOME exposes sessions by reference.
+  The report records argv after the stub binary so CLI forwarding smokes can
+  assert `oauth-mux codex ...` command shape without provider traffic.
 """
 
 from __future__ import annotations
@@ -134,6 +136,7 @@ def main() -> int:
 
     end_pid = os.getpid()
     report = {
+        "argv": sys.argv[1:],
         "start_pid": pid,
         "end_pid": end_pid,
         "pid_stable": pid == end_pid,
