@@ -24,10 +24,11 @@ prepared fallback, and synthetic smokes are evidence or diagnostics only.
 ## Current Live State
 
 Observed on 2026-05-05 around 15:37 EDT, then updated after the first
-brokered-resume dogfood on 2026-05-06:
+brokered-resume dogfood on 2026-05-06 and a follow-up no-spend check on
+2026-05-06:
 
-- Repository: clean on `main`, one local commit ahead of `origin/main` at
-  `954d673` (`Whoohoo brokered Codex resume`) during this checkpoint.
+- Repository: clean on `main`, synced with `origin/main` at `8a111bf`
+  (`Add GitHub tracker comment fallback`) during this checkpoint.
 - Selected live `codex-max` route: `max-1`.
 - Spend-gated exhausted-route revalidation after the reset window found
   `max-1`, `max-2`, and `max-3` available again; `max-4` was already
@@ -52,6 +53,10 @@ The brokered-resume dogfood proved a separate prerequisite:
 - Live `POST /backend-api/codex/responses` turns returned `status:200` through
   the oauth-mux proxy after the request-framing and same-account child-refresh
   fixes.
+- `dist/live-qa/managed-resume-dogfood-5/status.ndjson` contains 352
+  brokered proxy turns through `codex:max-1`: 347 `POST /responses` 200s and
+  5 `GET codex_other` 200s. It contains no provider-originated 429, no
+  `proxy_same_turn_retry`, and no fallback-account turn.
 
 That is meaningful UX/architecture progress. It is not account-exhaustion
 success and must not be described as stay-afloat completion.
