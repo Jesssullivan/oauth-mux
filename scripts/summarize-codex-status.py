@@ -110,6 +110,7 @@ def summarize(path: Path) -> dict[str, Any]:
     session_started = next((e for e in events if e.get("kind") == "session_started"), {})
     session_ended = next((e for e in reversed(events) if e.get("kind") == "session_ended"), {})
     fallback = find_fallback_sequence(events)
+    auth_health_events = [e for e in events if e.get("kind") == "auth_health_observed"]
     auth_unauthorized_turns = [
         e
         for e in proxy_turns
@@ -146,6 +147,9 @@ def summarize(path: Path) -> dict[str, Any]:
         "responses_401_turns": len(responses_401_turns),
         "auth_failure_observed": auth_failure_observed,
         "auth_recovered_observed": auth_recovered_observed,
+        "auth_health_events": len(auth_health_events),
+        "auth_health_recorded_observed": any(e.get("recorded") is True for e in auth_health_events),
+        "auth_health_quota_claim_observed": any(e.get("quota_claim") is True for e in auth_health_events),
         "same_turn_retry_events": sum(1 for e in events if e.get("kind") == "proxy_same_turn_retry"),
         "same_turn_retry_unavailable_events": sum(
             1 for e in events if e.get("kind") == "proxy_same_turn_retry_unavailable"

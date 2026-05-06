@@ -221,6 +221,9 @@ app-server, the proxy classifies status:
 if status == 401:
     quota/observe(kind=auth_unauthorized, ...)
     return upstream response unchanged
+    # after child exit only: if no same-account recovery and no overlay auth
+    # changed, record account-credential health for next-launch route selection
+    # with quota_claim:false.
 elif status == 429:
     parse body for error.type
     if error.type == "usage_limit_reached":
@@ -418,6 +421,10 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // auth authority import from the managed overlay back to the selected
 // mux-owned account source after Codex refreshes tokens inside CODEX_HOME
 { "kind": "auth_writeback", "auth_authority": "mux_owned_overlay", "overlay_auth_present": true, "source_auth_present": true, "changed": true, "written": true, "source_conflict": false, "ok": true, "token_material_printed": false, "path_printed": false }
+
+// unrecovered 401 classification after child exit; this records credential
+// health for the next broker-owned launch, but it is not quota evidence
+{ "kind": "auth_health_observed", "account": "codex:max-1", "auth_unauthorized_turns": 6, "responses_401_turns": 2, "recovered_after_401": false, "recorded": true, "reason": "unrecovered_401_no_writeback", "scope": "account_credential", "quota_claim": false, "token_material_printed": false, "path_printed": false }
 
 // quota observation that did not trigger a swap
 { "kind": "quota_observed", "account": "codex:max-1", "kind_detail": "rate_limited", "retry_after_s": 12 }

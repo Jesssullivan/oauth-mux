@@ -128,6 +128,8 @@ pub const Proxy = struct {
     /// but is deliberately separate from the live claim ladder.
     synthetic_swap_seen: bool = false,
 
+    auth_failure_tracker: AuthFailureTracker = .{},
+
     pub fn bind(
         allocator: std.mem.Allocator,
         pool: *account_pool_mod.AccountPool,
@@ -166,6 +168,10 @@ pub const Proxy = struct {
 
     pub fn syntheticSwapSeen(self: *const Proxy) bool {
         return self.synthetic_swap_seen;
+    }
+
+    pub fn authFailureObservation(self: *const Proxy) AuthFailureObservation {
+        return self.auth_failure_tracker.observation();
     }
 
     /// Accept one connection, handle one HTTP/1.1 transaction, close.
@@ -324,6 +330,7 @@ pub const Proxy = struct {
         status_and_class: StatusAndClassification,
         delivered_to_codex: bool,
     ) void {
+        self.auth_failure_tracker.observe(account_id, req.path, status_and_class.classification);
         self.logEvent("proxy_turn", .{
             .account = account_id,
             .method = req.method,
@@ -418,6 +425,61 @@ pub const Proxy = struct {
         }
         w.writeAll("}\n") catch return;
         self.log_writer.writeAll(buf.items) catch {};
+    }
+};
+
+pub const AuthFailureObservation = struct {
+    account: ?[]const u8 = null,
+    auth_unauthorized_turns: usize = 0,
+    responses_401_turns: usize = 0,
+    recovered_after_401: bool = false,
+
+    pub fn unrecovered(self: AuthFailureObservation) bool {
+        return self.account != null and
+            self.auth_unauthorized_turns > 0 and
+            !self.recovered_after_401;
+    }
+};
+
+const AuthFailureTracker = struct {
+    account: ?[]const u8 = null,
+    auth_unauthorized_turns: usize = 0,
+    responses_401_turns: usize = 0,
+    recovered_after_401: bool = false,
+
+    fn observe(
+        self: *AuthFailureTracker,
+        account_id: []const u8,
+        path: []const u8,
+        classification: Classification,
+    ) void {
+        switch (classification.kind) {
+            .auth_unauthorized => {
+                self.account = account_id;
+                self.auth_unauthorized_turns += 1;
+                self.recovered_after_401 = false;
+                if (std.mem.eql(u8, pathKind(path), "responses")) {
+                    self.responses_401_turns += 1;
+                }
+            },
+            .ok => {
+                if (self.account) |failed_account| {
+                    if (std.mem.eql(u8, failed_account, account_id) and self.auth_unauthorized_turns > 0) {
+                        self.recovered_after_401 = true;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn observation(self: AuthFailureTracker) AuthFailureObservation {
+        return .{
+            .account = self.account,
+            .auth_unauthorized_turns = self.auth_unauthorized_turns,
+            .responses_401_turns = self.responses_401_turns,
+            .recovered_after_401 = self.recovered_after_401,
+        };
     }
 };
 
@@ -1235,4 +1297,55 @@ test "copyForwardingHeaders preserves the load-bearing 8 + drops hop-by-hop" {
     try std.testing.expect(out.find("Content-Length") == null);
     try std.testing.expect(out.find("Transfer-Encoding") == null);
     try std.testing.expect(out.find("Host") == null);
+}
+
+test "AuthFailureTracker reports unrecovered response 401" {
+    var tracker = AuthFailureTracker{};
+    tracker.observe(
+        "codex:max-1",
+        "/backend-api/codex/responses",
+        .{ .kind = .auth_unauthorized },
+    );
+
+    const observation = tracker.observation();
+    try std.testing.expect(observation.unrecovered());
+    try std.testing.expectEqualStrings("codex:max-1", observation.account.?);
+    try std.testing.expectEqual(@as(usize, 1), observation.auth_unauthorized_turns);
+    try std.testing.expectEqual(@as(usize, 1), observation.responses_401_turns);
+}
+
+test "AuthFailureTracker treats same-account ok as recovery" {
+    var tracker = AuthFailureTracker{};
+    tracker.observe(
+        "codex:max-1",
+        "/backend-api/codex/responses",
+        .{ .kind = .auth_unauthorized },
+    );
+    tracker.observe(
+        "codex:max-1",
+        "/backend-api/codex/responses",
+        .{ .kind = .ok },
+    );
+
+    const observation = tracker.observation();
+    try std.testing.expect(!observation.unrecovered());
+    try std.testing.expect(observation.recovered_after_401);
+}
+
+test "AuthFailureTracker does not treat another account ok as recovery" {
+    var tracker = AuthFailureTracker{};
+    tracker.observe(
+        "codex:max-1",
+        "/backend-api/codex/responses",
+        .{ .kind = .auth_unauthorized },
+    );
+    tracker.observe(
+        "codex:max-2",
+        "/backend-api/codex/responses",
+        .{ .kind = .ok },
+    );
+
+    const observation = tracker.observation();
+    try std.testing.expect(observation.unrecovered());
+    try std.testing.expect(!observation.recovered_after_401);
 }
