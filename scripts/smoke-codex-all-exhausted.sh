@@ -109,7 +109,9 @@ assert_grep "account A had at least one 200 ok" '"kind":"proxy_turn".*"account":
 assert_grep "account B had at least one 200 ok" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "account A returned 429 quota_exhausted" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
 assert_grep "account B returned 429 quota_exhausted" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
-assert_grep "proxy_post_swap_turn fired" '"kind":"proxy_post_swap_turn"' "$NDJSON"
+assert_grep "proxy_same_turn_retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
+assert_grep "fallback quota 429 was not delivered before no-account failure" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":429.*"delivered_to_codex":false' "$NDJSON"
+assert_grep "same-turn retry unavailable after all accounts exhausted" '"kind":"proxy_same_turn_retry_unavailable"' "$NDJSON"
 assert_grep "proxy_no_account_selectable event fired" '"kind":"proxy_no_account_selectable"' "$NDJSON"
 
 if grep -q '"kind":"session_started"' "$ADAPTER_STDERR"; then
@@ -139,5 +141,5 @@ fi
 assert_grep "session_ended final_claim_level broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
 
 echo
-echo "smoke-codex-all-exhausted: all 10 assertions passed."
+echo "smoke-codex-all-exhausted: all 12 assertions passed."
 echo "  full ndjson: $NDJSON"

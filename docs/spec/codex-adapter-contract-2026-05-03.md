@@ -45,12 +45,12 @@ canonical session authority, mux-owned auth/config, and live
 `POST /backend-api/codex/responses` turns returning `status:200`. This proves
 the managed frame and normal proxy path, not account-exhaustion success.
 
-The current 429 implementation remains next-request recovery: the proxy returns
-`429 usage_limit_reached` to Codex, marks the active account exhausted, and the
-next request elects a different account. That is below the strict product bar if
-the failed turn is visible. The next implementation target is a same-turn
-handoff attempt that retries or recovers before Codex receives the quota
-failure when a fallback account is selectable.
+The current 429 implementation now has a synthetic same-turn retry path: the
+proxy buffers `429 usage_limit_reached`, marks the active account exhausted,
+elects a fallback, drops `x-codex-turn-state`, and retries the same request
+before writing a response to Codex. The smoke proves Codex sees only the
+fallback `200` in that synthetic case. Live provider-originated quota evidence
+is still required before promoting the runtime claim.
 
 That smoke is structural evidence only. It uses local stubs and fake
 fixture tokens, makes no provider calls, and keeps the adapter output at
@@ -404,8 +404,8 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // adapter startup
 { "kind": "session_started", "session_id": "...", "selected_account": "codex:max-1", "claim_level": "broker_owned", "wire_proxy_addr": "127.0.0.1:54321" }
 
-// target shape for a successful invisible quota handoff; not emitted by the
-// current next-request-only 429 path
+// target shape for a successful invisible quota handoff; current synthetic
+// tests emit proxy_same_turn_retry while runtime claim stays broker_owned
 { "kind": "account_swap", "from": "codex:max-1", "to": "codex:max-3", "reason": "quota_exhausted", "via": "wire_proxy_429_retry", "claim_level": "next_turn_seamless" }
 
 // every refresh

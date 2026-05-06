@@ -65,8 +65,9 @@ Already merged on main:
 - Per-session `CODEX_HOME` overlay; account-local `config.toml` is not
   clobbered by adapter sessions.
 - Synthetic Codex acceptance smoke: account A succeeds, then returns
-  `usage_limit_reached`, then account B handles a post-swap turn in one
-  stable child PID.
+  `usage_limit_reached`; oauth-mux buffers that 429, marks A exhausted,
+  retries the same request with B, and the stub Codex child sees only 200s in
+  one stable child PID.
 - Brokered Codex resume through canonical session authority; the managed frame
   can now resume a real existing Codex session and proxy normal provider turns.
 - Same-account child auth refresh preservation; oauth-mux no longer overwrites
@@ -83,8 +84,8 @@ Already merged on main:
 Not yet proven:
 
 - Live provider-originated Level 3 account swap.
-- Invisible same-turn recovery where a fallback account handles the user turn
-  before Codex sees `usage_limit_reached`.
+- Live invisible same-turn recovery where a fallback account handles the user
+  turn before Codex sees `usage_limit_reached`.
 - Same-thread continuity across account swap.
 - Mid-turn recovery.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
@@ -232,16 +233,12 @@ These need review before public promotion:
      and quota exhaustion when available.
 
 3. 429 recovery mode
-   - Main currently proves synthetic between-turn A-to-B behavior.
-   - The current proxy returns the `429 usage_limit_reached` to Codex, marks
-     account A exhausted, and only elects account B on the next request.
-   - That is below the strict product bar if the failed turn is visible.
-   - P0 implementation target: buffer/classify 429, mark A exhausted, elect B,
-     and either retry the same request upstream with B or synthesize a recovery
-     path before Codex receives the quota failure.
-   - Do not claim seamless stay-afloat until a synthetic smoke proves no 429
-     reaches the Codex child when B succeeds, and live evidence later confirms
-     provider behavior.
+   - Main now proves synthetic same-turn A-to-B retry behavior.
+   - The proxy buffers `429 usage_limit_reached`, marks account A exhausted,
+     elects B, drops `x-codex-turn-state`, retries the same request, and only
+     writes B's response to Codex when B succeeds.
+   - Do not claim live seamless stay-afloat until provider-originated evidence
+     confirms the same no-visible-429 sequence against real `chatgpt.com`.
 
 4. Daemon-attached broker mode
    - In-process broker is good enough for current adapter smokes.
@@ -273,25 +270,17 @@ These need review before public promotion:
 ## Local Todo Order
 
 1. Keep main clean and preserve all four selectable `codex-max` routes.
-2. Implement the same-turn 429 handoff attempt before treating quota-burn
-   dogfood as acceptance:
-   - synthetic `A -> 429 usage_limit_reached -> immediate B -> 200`;
-   - assert no 429 is delivered to the stub Codex child when B succeeds;
-   - assert one stable child PID and redacted `account_swap` /
-     `proxy_same_turn_retry` status frames;
-   - negative guards for `usage_not_included`, generic 429, 401 propagation,
-     and all-accounts-exhausted.
-3. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
+2. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
    normal 200 flow first, then 401 and 429 only when safely available.
-4. Run live Level 3 acceptance for TIN-951 only when the operator is ready to
+3. Run live Level 3 acceptance for TIN-951 only when the operator is ready to
    spend and there is a realistic way to observe provider-originated quota
    exhaustion in an active `oauth-mux codex` session.
-5. Keep demoting route-warming/restart surfaces from product language.
-6. Keep extending the test ladder: Zig unit/PBT, shell e2e, cassette replay,
+4. Keep demoting route-warming/restart surfaces from product language.
+5. Keep extending the test ladder: Zig unit/PBT, shell e2e, cassette replay,
    live redacted artifacts, and hosted CI.
-7. Start the Claude adapter only after the Codex Level 3 proof is recorded
+6. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
-8. Re-run `just check-local` after each code/test slice.
+7. Re-run `just check-local` after each code/test slice.
 
 ## Hygiene Pass Notes
 

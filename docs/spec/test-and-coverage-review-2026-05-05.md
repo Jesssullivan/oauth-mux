@@ -56,20 +56,21 @@ The shell smoke suite covers these adapter stories:
 - `smoke-broker`: 22 assertions. Broker MCP method composition:
   handshake, account listing, selection, materialization, quota
   observation, swap, and status.
-- `smoke-codex-acceptance`: 18 assertions. Synthetic Codex A-to-B
-  swap: account A succeeds, then returns `usage_limit_reached`, then
-  account B handles the next turn in one stable child PID.
+- `smoke-codex-acceptance`: 20 assertions. Synthetic Codex A-to-B
+  swap: account A succeeds, then returns `usage_limit_reached`; oauth-mux
+  buffers that 429, marks A exhausted, retries the same request with B, and
+  the stub Codex child sees only 200s in one stable child PID.
 - `smoke-codex-concurrent-sessions`: 16 assertions. Per-session
   `CODEX_HOME` overlays prevent the old account-local `config.toml`
   clobber race.
 - `smoke-codex-child-refresh`: 12 assertions. Codex child-refresh for the
   same account is preserved by the proxy, preventing stale materialized-token
   loops after a native Codex refresh.
-- `smoke-codex-tier-insufficient`: 10 assertions.
+- `smoke-codex-tier-insufficient`: 11 assertions.
   `usage_not_included` is classified as `tier_insufficient`; no swap.
-- `smoke-codex-all-exhausted`: 10 assertions. All accounts exhausted
-  returns a clean no-account-selectable failure.
-- `smoke-codex-401-propagation`: 12 assertions. Upstream 401 is left
+- `smoke-codex-all-exhausted`: 12 assertions. All accounts exhausted returns
+  a clean no-account-selectable failure after same-turn retry is unavailable.
+- `smoke-codex-401-propagation`: 13 assertions. Upstream 401 is left
   for Codex's own refresh path; oauth-mux does not prematurely kill the
   route.
 - `smoke-codex-cassette-replay`: 12 assertions. Captured-flow JSON can
@@ -112,7 +113,7 @@ inside a live `oauth-mux codex` session during that check.
 ## What Current Main Does Not Prove
 
 - Live provider-originated Level 3 account swap.
-- Invisible same-turn recovery where Codex never sees a visible
+- Live invisible same-turn recovery where Codex never sees a visible
   `usage_limit_reached` failure when a fallback account is selectable.
 - Same-thread continuity across account swap.
 - Mid-turn recovery.
@@ -132,11 +133,11 @@ inside a live `oauth-mux codex` session during that check.
    must not be labeled as Level 3.
 3. **The Codex path depends on wire interposition.** Codex's 401 path
    can refresh; quota is a 429 and must be observed at the wire layer.
-4. **The current 429 implementation is next-request recovery, not invisible
-   same-turn recovery.** It marks account A exhausted after returning the 429
-   and elects account B on the next request. The next P0 must harden this so a
-   selectable fallback can handle the same user turn before Codex receives a
-   visible quota failure.
+4. **The current 429 implementation has synthetic same-turn retry, not live
+   provider proof.** It buffers a quota 429, marks account A exhausted, elects
+   account B, drops `x-codex-turn-state`, and retries the same request before
+   writing to Codex. The remaining risk is whether real `chatgpt.com` quota
+   events and thread state behave like the synthetic model.
 5. **The current child/proxy topology is the user-facing near path.**
    `oauth-mux codex` owns the mediation point. Bare `codex` with a
    background daemon remains a harder future sidecar problem.
@@ -145,14 +146,14 @@ inside a live `oauth-mux codex` session during that check.
 
 ## Next Gates
 
-1. Implement and test stronger same-turn 429 handoff semantics:
-   - synthetic `A -> 429 usage_limit_reached -> immediate B -> 200`;
-   - assert the stub Codex child does not receive a 429 when B succeeds;
+1. Capture real Codex wire cassettes and live evidence for the same-turn 429
+   path:
+   - provider-originated `A -> 429 usage_limit_reached -> immediate B -> 200`;
+   - assert the live Codex process does not receive a visible 429 when B
+     succeeds;
    - assert one stable child PID, redacted status frames, and no restart
-     language;
-   - negative guards for `usage_not_included`, generic 429, 401 propagation,
-     and all-accounts-exhausted.
-2. Extend the deterministic test ladder around that work:
+     language.
+2. Keep extending the deterministic test ladder around that work:
    - Zig unit/PBT for response classification and swap state-machine
      invariants;
    - shell e2e for proxy behavior and CLI/session authority;

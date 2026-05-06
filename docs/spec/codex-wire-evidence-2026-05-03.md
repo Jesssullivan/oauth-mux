@@ -96,8 +96,8 @@ x-openai-internal-codex-residency: us   # conditional
 ```
 
 `x-codex-turn-state` is the load-bearing one. The wire proxy DROPS
-this header on the post-swap turn (per `wire_proxy.zig`) — every
-other header in this set is forwarded verbatim.
+this header on same-turn retry and post-swap turns (per `wire_proxy.zig`) —
+every other header in this set is forwarded verbatim.
 
 NOT sent (do not forge):
 - `Sec-Fetch-Site` / `Sec-Fetch-Mode` (browser-only)
@@ -204,9 +204,12 @@ The wire proxy:
 - Buffers the response body (small JSON).
 - Classifies as `quota_exhausted` with `resets_at` parsed from body.
 - Calls `pool.markQuotaExhausted(account_id, resets_at)`.
-- Returns the 429 to codex unchanged.
-- On NEXT request from codex, elects a different account.
-- Drops `x-codex-turn-state` on the post-swap turn.
+- If a fallback account is selectable, elects it immediately, drops
+  `x-codex-turn-state`, retries the same request, and returns the fallback
+  response to codex. The original 429 is logged as
+  `delivered_to_codex:false`.
+- If no fallback account is selectable, returns the buffered failure and logs
+  `proxy_same_turn_retry_unavailable`.
 
 _OPERATOR-CONFIRM_: drive an account to weekly quota; capture the
 exact body bytes; verify field names + casing match.

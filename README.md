@@ -22,8 +22,8 @@ Real on `main`:
   `resume <session-id>` reached `POST /backend-api/codex/responses` with
   `status:200`.
 - Synthetic smokes prove account A can hit `429 usage_limit_reached`, be
-  marked exhausted, and account B can handle the next request in the same child
-  process.
+  marked exhausted, and account B can handle the same request in the same child
+  process before Codex receives the 429.
 - Same-account Codex child refresh is preserved so oauth-mux does not pin Codex
   to stale materialized access tokens after a native refresh.
 
@@ -31,16 +31,17 @@ Not proven yet:
 
 - Live provider-originated account exhaustion inside a managed `oauth-mux codex`
   session.
-- Invisible same-turn recovery where Codex never sees the quota failure.
+- Live invisible same-turn recovery where Codex never sees the quota failure.
 - Same-thread continuity across account swap.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly handing
   off accounts.
 - Claude, Cursor, Pi, or other harness adapters.
 
-The current Codex proxy implementation is still a next-request fallback path:
+The current Codex proxy implementation now has a synthetic same-turn retry path:
 it classifies `429 usage_limit_reached`, marks the active account exhausted,
-and the next request elects another account. That is useful progress, but it is
-not the full seamless product bar if the failed turn is visible to the user.
+elects a fallback account, drops `x-codex-turn-state`, and retries the same
+request before writing the response to Codex. That is still not a live product
+claim until real provider-originated quota exhaustion proves the same sequence.
 
 ## Truth Sources
 
@@ -74,7 +75,7 @@ The evidence ladder is:
 - Live QA only after local and cassette layers are green, with explicit spend
   consent and redacted status artifacts.
 
-Next P0: implement and test a stronger `429 usage_limit_reached` handoff path
-where, if a fallback account is selectable, oauth-mux retries or recovers the
-same user turn before Codex receives a visible quota failure. Until that exists
-and is proven, live quota-burn dogfood is telemetry, not product acceptance.
+Next P0: capture and run live evidence for provider-originated
+`429 usage_limit_reached` inside a managed session. Until that proves the same
+no-visible-429 sequence against real `chatgpt.com`, live quota-burn dogfood is
+telemetry, not product acceptance.
