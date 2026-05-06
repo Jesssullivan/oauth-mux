@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Phase 0: capture Codex wire traffic for the broker MCP contract.
+# Capture Codex wire traffic for the broker MCP contract.
 #
 # Anchor: docs/spec/broker-mcp-contract-2026-05-03.md section 5 Phase 0.
-# Goal:   replace assumptions with observed traffic before any Phase 2
-#         wire-proxy code lands.
+# Goal:   replace assumptions with observed traffic and validate the
+#         implemented same-turn quota retry shape against provider reality.
 #
 # Captures HTTP traffic, including any WebSocket upgrade request metadata,
 # to chatgpt.com/backend-api/codex via mitmdump.
@@ -30,6 +30,7 @@ capture-codex-wire.sh - Phase 0 evidence capture for the Codex adapter.
 USAGE
   scripts/capture-codex-wire.sh init             # one-time mitmproxy CA install check
   scripts/capture-codex-wire.sh proxy            # start the HTTP capture proxy in foreground
+  scripts/capture-codex-wire.sh review DIR       # summarize/redaction-check a capture
   scripts/capture-codex-wire.sh help
 
 WORKFLOW
@@ -49,7 +50,9 @@ WORKFLOW
      drive an account to weekly quota exhaustion to capture the 429 +
      usage_limit_reached body.
   4. Stop the proxy with ^C. Find captures under captures/.
-  5. Distill findings into docs/spec/codex-wire-evidence-2026-05-03.md.
+  5. Run:
+       scripts/capture-codex-wire.sh review captures/codex-wire-<TS>
+  6. Distill findings into docs/spec/codex-wire-evidence-2026-05-03.md.
 
 REDACTION
   The mitmproxy addon redacts Authorization, Cookie, and ChatGPT-Account-
@@ -118,9 +121,20 @@ META
     -w "$RUN_DIR/http/flows.binary"
 }
 
+cmd_review() {
+  local dir="${1:-}"
+  if [[ -z "$dir" ]]; then
+    echo "error: review requires a capture directory" >&2
+    exit 64
+  fi
+  require_cmd python3 "install python3"
+  exec python3 "$ROOT/scripts/review-codex-wire-capture.py" "$dir"
+}
+
 case "$cmd" in
   help|-h|--help) usage ;;
   init)           cmd_init ;;
   proxy)          cmd_proxy ;;
+  review)         shift; cmd_review "${1:-}" ;;
   *)              usage; exit 64 ;;
 esac
