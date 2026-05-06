@@ -16,6 +16,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 BROKERED="$TMP/brokered.ndjson"
 FALLBACK="$TMP/fallback.ndjson"
+AUTH_FAILED="$TMP/auth-failed.ndjson"
 
 cat >"$BROKERED" <<'EOF'
 {"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
@@ -30,6 +31,15 @@ cat >"$FALLBACK" <<'EOF'
 {"kind":"proxy_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"quota_exhausted","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":true}
+EOF
+
+cat >"$AUTH_FAILED" <<'EOF'
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"proxy_observed_401_codex_handles","account":"codex:max-1"}
+{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
+{"kind":"proxy_observed_401_codex_handles","account":"codex:max-1"}
+{"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":401,"classification":"auth_unauthorized","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
+{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
 
 BROKERED_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$BROKERED" --require-brokered)"
@@ -58,6 +68,23 @@ fi
 if [[ "$(jq -r .provider_originated_live_fallback_claim <<<"$FALLBACK_SUMMARY")" != "false" ]]; then
     echo "summarizer must not claim provider-originated live fallback from NDJSON shape alone" >&2
     echo "$FALLBACK_SUMMARY" >&2
+    exit 1
+fi
+
+AUTH_FAILED_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$AUTH_FAILED" --require-brokered)"
+if [[ "$(jq -r .verdict <<<"$AUTH_FAILED_SUMMARY")" != "brokered_auth_failed" ]]; then
+    echo "auth-failed verdict mismatch" >&2
+    echo "$AUTH_FAILED_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .auth_unauthorized_turns <<<"$AUTH_FAILED_SUMMARY")" != "2" ]]; then
+    echo "auth-failed 401 count mismatch" >&2
+    echo "$AUTH_FAILED_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .responses_401_turns <<<"$AUTH_FAILED_SUMMARY")" != "1" ]]; then
+    echo "auth-failed responses 401 count mismatch" >&2
+    echo "$AUTH_FAILED_SUMMARY" >&2
     exit 1
 fi
 

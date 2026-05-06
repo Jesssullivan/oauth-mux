@@ -110,12 +110,26 @@ def summarize(path: Path) -> dict[str, Any]:
     session_started = next((e for e in events if e.get("kind") == "session_started"), {})
     session_ended = next((e for e in reversed(events) if e.get("kind") == "session_ended"), {})
     fallback = find_fallback_sequence(events)
+    auth_unauthorized_turns = [
+        e
+        for e in proxy_turns
+        if e.get("status") == 401 or e.get("classification") == "auth_unauthorized"
+    ]
+    ok_turns = [e for e in proxy_turns if e.get("status") == 200]
+    responses_401_turns = [
+        e
+        for e in auth_unauthorized_turns
+        if e.get("path_kind") == "responses"
+    ]
 
     brokered_session = (
         session_started.get("claim_level") == "broker_owned"
         or session_started.get("claim_level") == "broker_owned_app_server"
         or session_ended.get("final_claim_level") == "broker_owned"
     )
+    auth_failure_observed = bool(auth_unauthorized_turns)
+    auth_failed_without_recovery = auth_failure_observed and not ok_turns
+    auth_recovered_observed = auth_failure_observed and bool(ok_turns)
 
     return {
         "path": str(path),
@@ -128,6 +142,10 @@ def summarize(path: Path) -> dict[str, Any]:
         "proxy_turns_by_status": event_key_count(proxy_turns, "status"),
         "proxy_turns_by_path_kind": event_key_count(proxy_turns, "path_kind"),
         "proxy_turns_by_body_class": event_key_count(proxy_turns, "body_class"),
+        "auth_unauthorized_turns": len(auth_unauthorized_turns),
+        "responses_401_turns": len(responses_401_turns),
+        "auth_failure_observed": auth_failure_observed,
+        "auth_recovered_observed": auth_recovered_observed,
         "same_turn_retry_events": sum(1 for e in events if e.get("kind") == "proxy_same_turn_retry"),
         "same_turn_retry_unavailable_events": sum(
             1 for e in events if e.get("kind") == "proxy_same_turn_retry_unavailable"
@@ -140,6 +158,10 @@ def summarize(path: Path) -> dict[str, Any]:
         "verdict": (
             "fallback_sequence_observed"
             if fallback.get("observed")
+            else "brokered_auth_failed"
+            if brokered_session and auth_failed_without_recovery
+            else "brokered_auth_recovered"
+            if brokered_session and auth_recovered_observed
             else "brokered_without_fallback"
             if brokered_session and proxy_turns
             else "insufficient_evidence"
