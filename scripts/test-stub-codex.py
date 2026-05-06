@@ -23,6 +23,11 @@ Env (set by the smoke harness):
   OMUX_STUB_CANONICAL_SESSION_HOME — optional canonical session authority
                             home; when set, the stub verifies the managed
                             CODEX_HOME exposes sessions by reference.
+  OMUX_STUB_CODEX_CHATGPT_ACCOUNT_ID — optional ChatGPT-Account-ID header
+                            to send on every proxy request.
+  OMUX_STUB_CODEX_AUTH_TOKENS — optional comma-separated bearer tokens to
+                            send through Authorization, one per turn. The
+                            last token is reused when turns exceed entries.
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -47,7 +52,17 @@ def _read_proxy_url(codex_home: Path) -> str:
     return m.group(1)
 
 
-def _post(proxy_url: str, body: bytes) -> tuple[int, str]:
+def _auth_token_for_turn(turn: int) -> str | None:
+    raw = os.environ.get("OMUX_STUB_CODEX_AUTH_TOKENS", "")
+    if not raw:
+        return None
+    tokens = [part for part in raw.split(",") if part]
+    if not tokens:
+        return None
+    return tokens[min(turn, len(tokens) - 1)]
+
+
+def _post(proxy_url: str, body: bytes, turn: int) -> tuple[int, str]:
     # base_url is like http://127.0.0.1:NNNN/backend-api/codex
     # We want to POST to that prefix + /responses.
     m = re.match(r"http://([^/]+)(/.*)$", proxy_url)
@@ -56,18 +71,25 @@ def _post(proxy_url: str, body: bytes) -> tuple[int, str]:
         sys.exit(2)
     netloc, prefix = m.group(1), m.group(2)
     conn = http.client.HTTPConnection(netloc, timeout=15)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "stub-codex/0",
+        "x-codex-turn-state": "stub-turn-state-v1",
+        "x-codex-installation-id": "stub-install-1",
+        "OpenAI-Beta": "responses_websockets=2026-02-06",
+    }
+    account_id = os.environ.get("OMUX_STUB_CODEX_CHATGPT_ACCOUNT_ID")
+    auth_token = _auth_token_for_turn(turn)
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
     try:
         conn.request(
             "POST",
             prefix + "/responses",
             body=body,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "stub-codex/0",
-                "x-codex-turn-state": "stub-turn-state-v1",
-                "x-codex-installation-id": "stub-install-1",
-                "OpenAI-Beta": "responses_websockets=2026-02-06",
-            },
+            headers=headers,
         )
         resp = conn.getresponse()
         return resp.status, resp.read().decode("utf-8", errors="replace")
@@ -129,6 +151,7 @@ def main() -> int:
         status, body = _post(
             proxy_url,
             json.dumps({"input": f"stub turn {i}"}).encode("utf-8"),
+            i,
         )
         turn_results.append({"turn": i, "status": status, "body_head": body[:120]})
         print(f"stub-codex: turn {i} -> {status}", file=sys.stderr, flush=True)
