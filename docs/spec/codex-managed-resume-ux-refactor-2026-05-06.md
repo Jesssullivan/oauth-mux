@@ -567,3 +567,48 @@ Remaining Level 3 evidence still required:
   distinct fallback account.
 - Do not treat this brokered-resume success as proof of live account-swap
   success until an actual `proxy_turn` / swap sequence shows it.
+
+## 11. Dogfood Finding: Managed Overlay Auth Can Go Stale Across Restarts
+
+The first dogfood restart after refreshing the oauth-mux executable used:
+
+```bash
+./zig-out/bin/oauth-mux codex --profile codex-max \
+  --json-status-file dist/live-qa/managed-resume-dogfood-6/status.ndjson \
+  resume 019dea53-49a0-7890-9580-e88decb97af0
+```
+
+Evidence:
+
+- The adapter did start a broker-owned managed frame:
+  `session_started`, `auth_authority:"mux_owned_overlay"`,
+  `session_authority:"canonical_bridge"`.
+- The explicit resume target was found before launch and writeback was observed.
+- Every proxied upstream request returned `401 auth_unauthorized`, including
+  the main `POST /backend-api/codex/responses` turns.
+- Codex surfaced the provider refresh-token failure:
+  "Your access token could not be refreshed because your refresh token was
+  already used. Please log out and sign in again."
+- `broker-session-plan`, `doctor runtime`, and `codex login-status-all` still
+  reported `codex:max-1` as locally ready/available because the source
+  `auth.json` remained structurally parseable and the stored route liveness was
+  stale-positive.
+
+Interpretation:
+
+- PR #195's same-account child-auth preservation fixed stale access-token
+  re-signing within one managed session.
+- It did not prove durable refresh-token writeback from the mux-owned
+  `CODEX_HOME` auth overlay back to the route authority used for the next
+  managed launch.
+- A successful long-running managed session can therefore consume/rotate a
+  refresh token inside its overlay, while the next managed launch starts from
+  an older route auth tuple and falls into unrecovered 401.
+
+Truth boundary:
+
+- This is not quota exhaustion and not live account-substitution evidence.
+- This is a P0/P1 auth-authority gap for long-running dogfood reliability:
+  mux-owned auth overlays either need durable token writeback/import back to the
+  selected account store, or repeated 401/refresh-token-failure evidence must
+  mark the route auth-unready and select a fallback account on the next launch.

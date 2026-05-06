@@ -93,3 +93,6 @@ python3 scripts/summarize-codex-status.py dist/live-qa/<run>/status.ndjson --req
 but did not observe account exhaustion or substitution. The Level 3/4 evidence
 shape requires a `quota_exhausted` proxy turn, a retry/swap event, and a
 successful turn on a distinct fallback account.
+`verdict:"brokered_auth_failed"` means the managed frame started, but upstream
+returned unrecovered `401 auth_unauthorized` responses. That is an auth-health
+failure, not quota fallback evidence.
