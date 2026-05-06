@@ -10,8 +10,8 @@
 //!   2. account/select to pick a credited account.
 //!   3. Resolve that account's auth.json source from the oauth-mux
 //!      account store.
-//!   4. Create a per-session CODEX_HOME overlay with a copied auth.json
-//!      and generated proxy config.toml.
+//!   4. Create a per-session CODEX_HOME overlay with copied auth material,
+//!      generated proxy config.toml, and bridged session-authority paths.
 //!   5. spawn `codex` with CODEX_HOME pointed at that overlay.
 //!      The user sees real codex while oauth-mux keeps owning the
 //!      proxy/broker boundary.
@@ -37,6 +37,12 @@ const wire_proxy = @import("wire_proxy.zig");
 pub const RunOptions = struct {
     profile: ?[]const u8 = null,
     account: ?[]const u8 = null,
+    /// Optional canonical Codex session authority home. Defaults to the
+    /// parent CODEX_HOME when set, otherwise ~/.codex.
+    session_home: ?[]const u8 = null,
+    /// If true, do not bridge canonical sessions/history into the
+    /// managed CODEX_HOME overlay.
+    isolated_session_store: bool = false,
     /// If true, emit NDJSON status frames to stderr.
     json_status: bool = false,
     /// Optional file path for NDJSON status frames. When set, status
@@ -52,6 +58,41 @@ pub const RunError = error{
     PoolPopulateFailed,
     NoAccountSelectable,
     NoCodexHome,
+    SessionAuthorityUnavailable,
+};
+
+const SessionAuthorityMode = enum {
+    canonical_bridge,
+    isolated,
+
+    fn toString(self: SessionAuthorityMode) []const u8 {
+        return switch (self) {
+            .canonical_bridge => "canonical_bridge",
+            .isolated => "isolated",
+        };
+    }
+};
+
+const SessionCodexHome = struct {
+    path: []u8,
+    session_authority: SessionAuthorityMode,
+};
+
+const SessionAuthorityEntryKind = enum {
+    directory,
+    file,
+};
+
+const SessionAuthorityEntry = struct {
+    name: []const u8,
+    kind: SessionAuthorityEntryKind,
+};
+
+const codex_session_authority_entries = [_]SessionAuthorityEntry{
+    .{ .name = "sessions", .kind = .directory },
+    .{ .name = "shell_snapshots", .kind = .directory },
+    .{ .name = "history.jsonl", .kind = .file },
+    .{ .name = "session_index.jsonl", .kind = .file },
 };
 
 /// Resolve the account's source auth.json path. Order:
@@ -159,19 +200,27 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     const proxy_port = proxy.port();
 
     // 5. Create a per-session CODEX_HOME overlay containing copied
-    // auth material and generated proxy config. This prevents two
-    // concurrent adapter sessions from clobbering the same account
-    // store's config.toml.
-    const codex_home = try makeSessionCodexHome(allocator, source_auth_path, proxy_port);
+    // auth material, generated proxy config, and canonical session
+    // authority references unless isolation was explicitly requested.
+    // This prevents concurrent adapter sessions from clobbering
+    // auth/config while keeping resume/history behavior aligned with
+    // bare Codex.
+    const codex_home = try makeSessionCodexHome(
+        allocator,
+        source_auth_path,
+        proxy_port,
+        opts.session_home,
+        opts.isolated_session_store,
+    );
     defer {
-        std.fs.cwd().deleteTree(codex_home) catch {};
-        allocator.free(codex_home);
+        std.fs.cwd().deleteTree(codex_home.path) catch {};
+        allocator.free(codex_home.path);
     }
 
     if (emit_status) {
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\"}}\n",
-            .{ elected.id, proxy_port },
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"session_authority\":\"{s}\",\"session_paths_printed\":false}}\n",
+            .{ elected.id, proxy_port, codex_home.session_authority.toString() },
         );
     }
 
@@ -188,7 +237,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     // 7. Build env: copy current, set CODEX_HOME and OMUX_ACTIVE_*.
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
-    try env_map.put("CODEX_HOME", codex_home);
+    try env_map.put("CODEX_HOME", codex_home.path);
     try env_map.put("OMUX_ACTIVE_PROVIDER", "codex");
     const account_only = elected.id[std.mem.indexOfScalar(u8, elected.id, ':').? + 1 ..];
     try env_map.put("OMUX_ACTIVE_ACCOUNT", account_only);
@@ -270,11 +319,15 @@ fn makeSessionCodexHome(
     allocator: std.mem.Allocator,
     source_auth_path: []const u8,
     proxy_port: u16,
-) ![]u8 {
+    session_home_override: ?[]const u8,
+    isolated_session_store: bool,
+) !SessionCodexHome {
     const tmp_root = std.process.getEnvVarOwned(allocator, "TMPDIR") catch
         try allocator.dupe(u8, "/tmp");
     defer allocator.free(tmp_root);
-    return try createSessionCodexHomeUnder(allocator, tmp_root, source_auth_path, proxy_port);
+    const session_authority_home = try resolveCodexSessionAuthorityHome(allocator, session_home_override, isolated_session_store);
+    defer if (session_authority_home) |path| allocator.free(path);
+    return try createSessionCodexHomeUnder(allocator, tmp_root, source_auth_path, proxy_port, session_authority_home);
 }
 
 fn createSessionCodexHomeUnder(
@@ -282,7 +335,8 @@ fn createSessionCodexHomeUnder(
     tmp_root: []const u8,
     source_auth_path: []const u8,
     proxy_port: u16,
-) ![]u8 {
+    session_authority_home: ?[]const u8,
+) !SessionCodexHome {
     var nonce: [8]u8 = undefined;
     std.crypto.random.bytes(&nonce);
     const hex = std.fmt.bytesToHex(nonce, .lower);
@@ -310,7 +364,71 @@ fn createSessionCodexHomeUnder(
     }
 
     try writeManagedConfigToml(allocator, session_home, proxy_port);
-    return session_home;
+    const session_authority = if (session_authority_home) |home| mode: {
+        try bridgeCodexSessionAuthority(allocator, session_home, home);
+        break :mode SessionAuthorityMode.canonical_bridge;
+    } else SessionAuthorityMode.isolated;
+
+    return .{
+        .path = session_home,
+        .session_authority = session_authority,
+    };
+}
+
+fn resolveCodexSessionAuthorityHome(
+    allocator: std.mem.Allocator,
+    session_home_override: ?[]const u8,
+    isolated_session_store: bool,
+) !?[]u8 {
+    if (isolated_session_store) return null;
+    if (session_home_override) |path| return try expandTilde(allocator, path);
+    if (std.process.getEnvVarOwned(allocator, "OMUX_CODEX_SESSION_HOME")) |path| {
+        return path;
+    } else |_| {}
+    if (std.process.getEnvVarOwned(allocator, "CODEX_HOME")) |path| {
+        return path;
+    } else |_| {}
+    const home = try std.process.getEnvVarOwned(allocator, "HOME");
+    defer allocator.free(home);
+    return try std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+fn bridgeCodexSessionAuthority(
+    allocator: std.mem.Allocator,
+    session_home: []const u8,
+    authority_home: []const u8,
+) !void {
+    try ensureCodexSessionAuthority(allocator, authority_home);
+    for (codex_session_authority_entries) |entry| {
+        const target = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
+        defer allocator.free(target);
+        const link = try std.fs.path.join(allocator, &.{ session_home, entry.name });
+        defer allocator.free(link);
+        try std.fs.symLinkAbsolute(target, link, .{ .is_directory = entry.kind == .directory });
+    }
+}
+
+fn ensureCodexSessionAuthority(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+) !void {
+    try std.fs.cwd().makePath(authority_home);
+    for (codex_session_authority_entries) |entry| {
+        const target = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
+        defer allocator.free(target);
+        switch (entry.kind) {
+            .directory => try std.fs.cwd().makePath(target),
+            .file => try ensureFileExists(target),
+        }
+    }
+}
+
+fn ensureFileExists(path: []const u8) !void {
+    const file = std.fs.cwd().openFile(path, .{ .mode = .read_write }) catch |e| switch (e) {
+        error.FileNotFound => try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = false }),
+        else => return e,
+    };
+    file.close();
 }
 
 fn copyFileContents(
@@ -353,6 +471,8 @@ fn writeManagedConfigToml(
 test "RunOptions defaults" {
     const opts = RunOptions{};
     try std.testing.expect(opts.profile == null);
+    try std.testing.expect(opts.session_home == null);
+    try std.testing.expect(!opts.isolated_session_store);
     try std.testing.expect(!opts.json_status);
     try std.testing.expect(opts.json_status_file == null);
     try std.testing.expectEqual(@as(usize, 0), opts.forward_argv.len);
@@ -390,25 +510,26 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
     defer std.testing.allocator.free(auth_path);
 
-    const session_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null);
     defer {
-        std.fs.cwd().deleteTree(session_home) catch {};
-        std.testing.allocator.free(session_home);
+        std.fs.cwd().deleteTree(codex_home.path) catch {};
+        std.testing.allocator.free(codex_home.path);
     }
+    try std.testing.expectEqual(SessionAuthorityMode.isolated, codex_home.session_authority);
 
-    const session_auth = try std.fs.path.join(std.testing.allocator, &.{ session_home, "auth.json" });
+    const session_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
     defer std.testing.allocator.free(session_auth);
     const copied_auth = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_auth, 1024);
     defer std.testing.allocator.free(copied_auth);
     try std.testing.expectEqualStrings("{\"tokens\":{\"access_token\":\"fixture\"}}\n", copied_auth);
 
-    const session_install = try std.fs.path.join(std.testing.allocator, &.{ session_home, "installation_id" });
+    const session_install = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "installation_id" });
     defer std.testing.allocator.free(session_install);
     const copied_install = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_install, 1024);
     defer std.testing.allocator.free(copied_install);
     try std.testing.expectEqualStrings("install-fixture\n", copied_install);
 
-    const session_config = try std.fs.path.join(std.testing.allocator, &.{ session_home, "config.toml" });
+    const session_config = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "config.toml" });
     defer std.testing.allocator.free(session_config);
     const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_config, 4096);
     defer std.testing.allocator.free(generated_config);
@@ -422,4 +543,69 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const original_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, source_config, 1024);
     defer std.testing.allocator.free(original_config);
     try std.testing.expectEqualStrings("preexisting = true\n", original_config);
+}
+
+test "createSessionCodexHomeUnder bridges canonical session authority without copying" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    try tmp.dir.makePath("canonical/sessions/2026/05/05");
+    try tmp.dir.makePath("canonical/shell_snapshots");
+    {
+        const session = try tmp.dir.createFile("canonical/sessions/2026/05/05/session.jsonl", .{ .mode = 0o600 });
+        defer session.close();
+        try session.writeAll("{\"fixture\":true}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path);
+    defer {
+        std.fs.cwd().deleteTree(codex_home.path) catch {};
+        std.testing.allocator.free(codex_home.path);
+    }
+    try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
+
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const sessions_link = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "sessions" });
+    defer std.testing.allocator.free(sessions_link);
+    const sessions_target = try std.fs.readLinkAbsolute(sessions_link, &link_buf);
+    const expected_sessions_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions" });
+    defer std.testing.allocator.free(expected_sessions_target);
+    try std.testing.expectEqualStrings(expected_sessions_target, sessions_target);
+
+    const bridged_session = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "sessions", "2026", "05", "05", "session.jsonl" });
+    defer std.testing.allocator.free(bridged_session);
+    const session_bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, bridged_session, 1024);
+    defer std.testing.allocator.free(session_bytes);
+    try std.testing.expectEqualStrings("{\"fixture\":true}\n", session_bytes);
+
+    const overlay_marker = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "sessions", "managed-write.jsonl" });
+    defer std.testing.allocator.free(overlay_marker);
+    {
+        const marker = try std.fs.cwd().createFile(overlay_marker, .{ .mode = 0o600 });
+        defer marker.close();
+        try marker.writeAll("via overlay\n");
+    }
+    const canonical_marker = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions", "managed-write.jsonl" });
+    defer std.testing.allocator.free(canonical_marker);
+    const marker_bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, canonical_marker, 1024);
+    defer std.testing.allocator.free(marker_bytes);
+    try std.testing.expectEqualStrings("via overlay\n", marker_bytes);
+
+    try std.fs.cwd().deleteTree(codex_home.path);
+    const marker_after_overlay_delete = try std.fs.cwd().readFileAlloc(std.testing.allocator, canonical_marker, 1024);
+    defer std.testing.allocator.free(marker_after_overlay_delete);
+    try std.testing.expectEqualStrings("via overlay\n", marker_after_overlay_delete);
 }

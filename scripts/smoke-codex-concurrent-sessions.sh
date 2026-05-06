@@ -118,7 +118,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STUB_CODEX_TURNS=6 \
   OMUX_STUB_CODEX_PIDFILE="$PIDFILE_A" \
   OMUX_STUB_CODEX_REPORT="$REPORT_A" \
-  "$BIN" codex run --profile codex-max --json-status-file "$NDJSON_A" >"$STDOUT_A" 2>"$STDERR_A" &
+  "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$NDJSON_A" >"$STDOUT_A" 2>"$STDERR_A" &
 PID_A=$!
 
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
@@ -128,7 +128,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STUB_CODEX_TURNS=6 \
   OMUX_STUB_CODEX_PIDFILE="$PIDFILE_B" \
   OMUX_STUB_CODEX_REPORT="$REPORT_B" \
-  "$BIN" codex run --profile codex-max --json-status-file "$NDJSON_B" >"$STDOUT_B" 2>"$STDERR_B" &
+  "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$NDJSON_B" >"$STDOUT_B" 2>"$STDERR_B" &
 PID_B=$!
 
 if wait "$PID_A"; then EXIT_A=0; else EXIT_A=$?; fi

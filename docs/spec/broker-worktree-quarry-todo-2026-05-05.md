@@ -67,8 +67,9 @@ Not yet proven:
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
   handing off account state.
 - Managed-frame resume parity. The adapter-owned temporary `CODEX_HOME`
-  currently owns auth/config correctly but hides canonical Codex session
-  authority unless a session bridge is added.
+  now bridges canonical Codex session authority by reference, but live
+  `resume <id>` / `resume --last` dogfood is still pending before this is
+  treated as parity with bare Codex.
 
 ## Quarry Worktree
 
@@ -222,8 +223,10 @@ These need review before public promotion:
    - `oauth-mux codex run -- ... resume <id>` must see the same canonical
      Codex session authority as bare `codex` while keeping auth/config
      mux-owned.
-   - Full-store copies are rejected; use a bridge/reference model per
+   - Full-store copies are rejected; the current adapter uses a
+     bridge/reference model per
      `docs/spec/harness-session-authority-bridge-2026-05-05.md`.
+   - Remaining acceptance: live managed-frame resume dogfood.
 
 6. Bare `codex` path
    - The aspirational background daemon plus bare `codex` remains harder
@@ -245,8 +248,8 @@ These need review before public promotion:
    session.
 3. Capture real Codex wire cassettes for TIN-950 / GitHub #176:
    normal 200 flow first, then 401 and 429 only when safely available.
-4. Add the session-authority bridge for managed Codex resume before
-   promoting managed-frame dogfood as parity with bare Codex.
+4. Run live managed-frame resume dogfood before promoting managed-frame
+   resume as parity with bare Codex.
 5. Keep demoting route-warming/restart surfaces from product language.
 6. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.

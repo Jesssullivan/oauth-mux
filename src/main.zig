@@ -54,6 +54,8 @@ pub fn main() !void {
             codex_adapter.run(allocator, .{
                 .profile = adapter_args.profile,
                 .account = adapter_args.account,
+                .session_home = adapter_args.session_home,
+                .isolated_session_store = adapter_args.isolated_session_store,
                 .json_status = adapter_args.json_status,
                 .json_status_file = adapter_args.json_status_file,
                 .forward_argv = adapter_args.forward_argv,

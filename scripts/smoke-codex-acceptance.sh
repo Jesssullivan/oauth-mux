@@ -57,6 +57,7 @@ NDJSON="$TMP/adapter.ndjson"
 ADAPTER_STDERR="$TMP/adapter.stderr"
 STUB_PIDFILE="$TMP/stub-codex.pid"
 STUB_REPORT="$TMP/stub-codex.report"
+CANONICAL_SESSION_HOME="$TMP/canonical-codex"
 
 cleanup() {
     if [[ -n "${UPSTREAM_PID:-}" ]] && kill -0 "$UPSTREAM_PID" 2>/dev/null; then
@@ -71,6 +72,7 @@ trap cleanup EXIT
 # and chatgpt_account_is_fedramp=true so credential/materialize
 # exercises the JWT decode path on each account.
 mkdir -p "$TMP/account-A" "$TMP/account-B"
+mkdir -p "$CANONICAL_SESSION_HOME/sessions/2026/05/05" "$CANONICAL_SESSION_HOME/shell_snapshots"
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s"
 
 cat >"$TMP/account-A/auth.json" <<EOF
@@ -81,6 +83,8 @@ cat >"$TMP/account-B/auth.json" <<EOF
 EOF
 printf '%s\n' 'preexisting = "account-A"' >"$TMP/account-A/config.toml"
 printf '%s\n' 'preexisting = "account-B"' >"$TMP/account-B/config.toml"
+printf '%s\n' '{"fixture":"canonical-session"}' >"$CANONICAL_SESSION_HOME/sessions/2026/05/05/session.jsonl"
+touch "$CANONICAL_SESSION_HOME/history.jsonl" "$CANONICAL_SESSION_HOME/session_index.jsonl"
 
 cat >"$TMP/oauth-mux.config.json" <<EOF
 {
@@ -126,6 +130,8 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_CODEX_TURNS=5 \
   OMUX_STUB_CODEX_PIDFILE="$STUB_PIDFILE" \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
@@ -158,6 +164,8 @@ echo "smoke-codex-acceptance: assertions"
 assert_grep "session_started"           '"kind":"session_started"'           "$NDJSON"
 assert_grep "session_started has proxy_port" '"proxy_port":[0-9]+'           "$NDJSON"
 assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed":false' "$NDJSON"
+assert_grep "session_started reports canonical session bridge" '"session_authority":"canonical_bridge"' "$NDJSON"
+assert_grep "session_started redacts session paths" '"session_paths_printed":false' "$NDJSON"
 assert_grep "proxy_turn 200 ok"         '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "proxy_turn 429 quota_exhausted" '"kind":"proxy_turn".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
 assert_grep "proxy_post_swap_turn fired" '"kind":"proxy_post_swap_turn"'     "$NDJSON"
@@ -183,6 +191,19 @@ fi
 
 if [[ ! -s "$STUB_REPORT" ]]; then
     echo "  ✗ stub-codex report missing" >&2
+    exit 1
+fi
+if [[ "$(jq -r .session_bridge.checked "$STUB_REPORT")" == "true" \
+      && "$(jq -r .session_bridge.sessions_samefile "$STUB_REPORT")" == "true" \
+      && "$(jq -r .session_bridge.history_samefile "$STUB_REPORT")" == "true" \
+      && "$(jq -r .session_bridge.session_index_samefile "$STUB_REPORT")" == "true" \
+      && "$(jq -r .session_bridge.shell_snapshots_samefile "$STUB_REPORT")" == "true" \
+      && "$(jq -r .session_bridge.canonical_marker_exists "$STUB_REPORT")" == "true" \
+      && "$(jq -r .session_bridge.paths_printed "$STUB_REPORT")" == "false" ]]; then
+    echo "  ✓ session authority is bridged by reference without path output"
+else
+    echo "  ✗ session authority bridge report failed" >&2
+    cat "$STUB_REPORT" >&2
     exit 1
 fi
 PID_STABLE=$(jq -r .pid_stable "$STUB_REPORT")
@@ -212,7 +233,7 @@ else
 fi
 
 echo
-echo "smoke-codex-acceptance: all 15 assertions passed."
+echo "smoke-codex-acceptance: all 18 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"

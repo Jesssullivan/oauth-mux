@@ -20,6 +20,9 @@ Env (set by the smoke harness):
                             /tmp/omux-stub-codex.pid)
   OMUX_STUB_CODEX_REPORT  — JSON summary path (default
                             /tmp/omux-stub-codex.report)
+  OMUX_STUB_CANONICAL_SESSION_HOME — optional canonical session authority
+                            home; when set, the stub verifies the managed
+                            CODEX_HOME exposes sessions by reference.
 """
 
 from __future__ import annotations
@@ -70,6 +73,36 @@ def _post(proxy_url: str, body: bytes) -> tuple[int, str]:
         conn.close()
 
 
+def _session_bridge_report(codex_home: Path) -> dict:
+    canonical_raw = os.environ.get("OMUX_STUB_CANONICAL_SESSION_HOME")
+    if not canonical_raw:
+        return {"checked": False}
+
+    canonical = Path(canonical_raw)
+    sessions_overlay = codex_home / "sessions"
+    sessions_canonical = canonical / "sessions"
+    history_overlay = codex_home / "history.jsonl"
+    history_canonical = canonical / "history.jsonl"
+    index_overlay = codex_home / "session_index.jsonl"
+    index_canonical = canonical / "session_index.jsonl"
+    snapshots_overlay = codex_home / "shell_snapshots"
+    snapshots_canonical = canonical / "shell_snapshots"
+
+    marker = sessions_overlay / "omux-session-bridge-smoke.jsonl"
+    marker.write_text('{"bridge":"ok"}\n')
+
+    return {
+        "checked": True,
+        "sessions_samefile": os.path.samefile(sessions_overlay, sessions_canonical),
+        "history_samefile": os.path.samefile(history_overlay, history_canonical),
+        "session_index_samefile": os.path.samefile(index_overlay, index_canonical),
+        "shell_snapshots_samefile": os.path.samefile(snapshots_overlay, snapshots_canonical),
+        "marker_written_via_overlay": marker.exists(),
+        "canonical_marker_exists": (sessions_canonical / marker.name).exists(),
+        "paths_printed": False,
+    }
+
+
 def main() -> int:
     pid = os.getpid()
     pidfile = Path(os.environ.get("OMUX_STUB_CODEX_PIDFILE", "/tmp/omux-stub-codex.pid"))
@@ -80,6 +113,7 @@ def main() -> int:
 
     codex_home = Path(os.environ["CODEX_HOME"])
     proxy_url = _read_proxy_url(codex_home)
+    session_bridge = _session_bridge_report(codex_home)
 
     started_at = time.time()
     print(
@@ -107,6 +141,7 @@ def main() -> int:
         "turns": turn_results,
         "codex_home_path_printed": False,
         "active_account_at_start": os.environ.get("OMUX_ACTIVE_ACCOUNT"),
+        "session_bridge": session_bridge,
     }
     report_path.write_text(json.dumps(report, indent=2))
     print(f"stub-codex: pid_stable={report['pid_stable']} turns={turns}", file=sys.stderr, flush=True)

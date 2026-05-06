@@ -49,6 +49,8 @@ pub const Command = union(enum) {
     pub const CodexAdapterArgs = struct {
         profile: ?[]const u8 = null,
         account: ?[]const u8 = null,
+        session_home: ?[]const u8 = null,
+        isolated_session_store: bool = false,
         json_status: bool = false,
         json_status_file: ?[]const u8 = null,
         /// Args after `--` forwarded to codex unchanged.
@@ -379,6 +381,11 @@ fn parseCodexAdapter(args: []const []const u8) Command {
         } else if (eql(args[i], "--account") and i + 1 < args.len) {
             i += 1;
             result.account = args[i];
+        } else if (eql(args[i], "--session-home") and i + 1 < args.len) {
+            i += 1;
+            result.session_home = args[i];
+        } else if (eql(args[i], "--isolated-session-store")) {
+            result.isolated_session_store = true;
         } else if (eql(args[i], "--json-status")) {
             result.json_status = true;
         } else if (eql(args[i], "--json-status-file") and i + 1 < args.len) {
@@ -1252,7 +1259,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  mcp [--profile <name>] [--capability <name>]
         \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
         \\
-        \\  codex run [--profile name] [--account provider:account] [--json-status] [--json-status-file path] [-- codex-args...]
+        \\  codex run [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
         \\      Run a broker-mediated Codex adapter session with a local wire proxy.
         \\
         \\  init [--interactive] [--codex-max]
@@ -2227,12 +2234,14 @@ test "parse mcp broker server profile" {
 }
 
 test "parse codex run adapter args" {
-    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--account", "codex:max-1", "--json-status-file", "/tmp/omux-status.ndjson", "--", "--model", "gpt-5.5" };
+    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--account", "codex:max-1", "--session-home", "/tmp/codex-sessions", "--isolated-session-store", "--json-status-file", "/tmp/omux-status.ndjson", "--", "--model", "gpt-5.5" };
     const cmd = parse(&args);
     switch (cmd) {
         .codex_adapter => |adapter| {
             try std.testing.expectEqualStrings("codex-max", adapter.profile.?);
             try std.testing.expectEqualStrings("codex:max-1", adapter.account.?);
+            try std.testing.expectEqualStrings("/tmp/codex-sessions", adapter.session_home.?);
+            try std.testing.expect(adapter.isolated_session_store);
             try std.testing.expect(adapter.json_status);
             try std.testing.expectEqualStrings("/tmp/omux-status.ndjson", adapter.json_status_file.?);
             try std.testing.expectEqual(@as(usize, 2), adapter.forward_argv.len);
@@ -2332,6 +2341,8 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l profile -s p -d 'Profile name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l account -d 'Route account id' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l session-home -d 'Canonical Codex session authority home' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l isolated-session-store -d 'Use isolated session authority for this run'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status -d 'Emit redacted adapter status frames'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from run' -l json-status-file -d 'Write redacted adapter status frames to a file' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run loop start stop status events handoffs tick' -d 'Daemon subcommand'
