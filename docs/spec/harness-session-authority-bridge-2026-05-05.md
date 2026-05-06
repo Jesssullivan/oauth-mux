@@ -7,6 +7,21 @@ oauth-mux owns muxed auth/config state.
 Anchor: `docs/spec/broker-mcp-contract-2026-05-03.md`.
 Codex implementation anchor: `docs/spec/codex-adapter-contract-2026-05-03.md`.
 
+## 0.0 Current Implementation Checkpoint
+
+The first Codex slice is implemented: `oauth-mux codex run` now builds a
+composed managed `CODEX_HOME` with mux-owned `auth.json` and generated
+`config.toml`, while session-authority entries are bridged by reference.
+Default session authority is the parent `CODEX_HOME` when set, otherwise
+`~/.codex`; `OMUX_CODEX_SESSION_HOME` and `--session-home <path>` can override
+that authority; `--isolated-session-store` opts out for tests/privacy.
+
+The synthetic acceptance smoke proves the managed overlay exposes the canonical
+`sessions/`, `history.jsonl`, `session_index.jsonl`, and `shell_snapshots/`
+entries by reference without printing paths. This is structural evidence only.
+The remaining P1 acceptance is live managed-frame resume dogfood with real
+Codex sessions.
+
 ## 0. Problem
 
 `oauth-mux codex run` currently creates a temporary `CODEX_HOME` overlay so

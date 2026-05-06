@@ -84,7 +84,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
   OMUX_STUB_CODEX_TURNS=5 \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
-  "$BIN" codex run --profile codex-max --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
+  "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
     echo "adapter exited nonzero" >&2
     cat "$NDJSON" >&2 || true
     cat "$ADAPTER_STDERR" >&2 || true

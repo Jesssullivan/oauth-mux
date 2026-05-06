@@ -32,11 +32,12 @@ request with a different account's fixture credentials. Runtime
 auth source; the adapter does not rewrite the account-local
 `config.toml`.
 
-Known gap, 2026-05-05: this overlay currently separates auth/config
-authority correctly but does not yet bridge Codex's canonical session
-authority. A managed run can therefore hide `~/.codex/sessions` from
-`codex resume`. `docs/spec/harness-session-authority-bridge-2026-05-05.md`
-is the P1 plan for fixing that without copying the whole session store.
+Implementation update, 2026-05-05: the overlay now separates auth/config
+authority from session authority. Auth/config remain mux-owned in the
+temporary `CODEX_HOME`; `sessions/`, `history.jsonl`, `session_index.jsonl`,
+and `shell_snapshots/` are bridged by reference to canonical Codex session
+authority by default. `docs/spec/harness-session-authority-bridge-2026-05-05.md`
+tracks the remaining live resume acceptance.
 
 That smoke is structural evidence only. It uses local stubs and fake
 fixture tokens, makes no provider calls, and keeps the adapter output at
@@ -107,9 +108,11 @@ both layers, Level 3 is the default and Level 4 is reachable.
    selected custom provider (`model_provider = "oauth_mux_openai"` and
    `[model_providers.oauth_mux_openai]`) points at the wire-layer proxy.
    Codex 0.128+ rejects overriding the reserved built-in `openai`
-   provider id. Session-authority paths must be bridged per
+   provider id. Session-authority paths are bridged per
    `docs/spec/harness-session-authority-bridge-2026-05-05.md`, not copied
-   wholesale into this overlay.
+   wholesale into this overlay. Operators may pass `--isolated-session-store`
+   for a test/private namespace or `--session-home <path>` for an explicit
+   canonical session authority.
 5. Binds the wire-layer proxy on `127.0.0.1:<dynamic-port>`, with the
    proxy holding the account pool reference and the broker session id.
 6. Spawns `codex app-server --listen stdio://` as a child, with
@@ -360,6 +363,8 @@ fresh attempt). Adapters must accept that policy without retry.
 oauth-mux codex                                       # default: pick from default profile
 oauth-mux codex --profile codex-max                   # specific profile
 oauth-mux codex --account codex:max-1                 # pin to one account (no swap)
+oauth-mux codex --session-home ~/.codex               # explicit session authority
+oauth-mux codex --isolated-session-store              # test/private session namespace
 oauth-mux codex --no-broker                           # bypass: bare codex, no mux (degraded)
 oauth-mux codex --                                    # explicit args separator passes everything to codex
 oauth-mux codex resume --last                         # forwarded to codex
