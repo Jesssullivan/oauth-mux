@@ -51,6 +51,10 @@ pub fn main() !void {
             // `oauth-mux codex run`: broker-mediated Codex adapter
             // session. Anchor:
             // docs/spec/codex-adapter-contract-2026-05-03.md.
+            if (adapter_args.invalid_option) |arg| {
+                log.err("oauth-mux codex run: unknown adapter option \"{s}\". Use `oauth-mux codex <codex-args...>` or `oauth-mux codex run -- <codex-args...>`.", .{arg});
+                std.process.exit(types.ExitCode.general_error.int());
+            }
             codex_adapter.run(allocator, .{
                 .profile = adapter_args.profile,
                 .account = adapter_args.account,

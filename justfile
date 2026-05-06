@@ -173,7 +173,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-concurrent-sessions.sh && ./scripts/smoke-codex-tier-insufficient.sh && ./scripts/smoke-codex-all-exhausted.sh && ./scripts/smoke-codex-401-propagation.sh && ./scripts/smoke-codex-cassette-replay.sh'
+    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-cli-ux.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-concurrent-sessions.sh && ./scripts/smoke-codex-tier-insufficient.sh && ./scripts/smoke-codex-all-exhausted.sh && ./scripts/smoke-codex-401-propagation.sh && ./scripts/smoke-codex-cassette-replay.sh'
     @echo "all checks passed"
 
 e2e:
@@ -203,6 +203,13 @@ smoke-broker-local:
     ./scripts/smoke-broker.sh
 
 # ── Codex adapter synthetic smoke (no provider traffic) ──
+
+smoke-codex-cli-ux:
+    nix develop --command just smoke-codex-cli-ux-local
+
+smoke-codex-cli-ux-local:
+    zig build
+    ./scripts/smoke-codex-cli-ux.sh
 
 smoke-codex-acceptance:
     nix develop --command just smoke-codex-acceptance-local

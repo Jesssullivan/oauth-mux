@@ -138,7 +138,10 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer if (status_file) |*file| file.close();
     var status_writer = stderr.any();
     if (opts.json_status_file) |path| {
-        status_file = try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
+        status_file = openStatusFile(path) catch |e| {
+            try stderr.print("oauth-mux codex: cannot open --json-status-file: {s}\n", .{@errorName(e)});
+            return e;
+        };
         status_writer = status_file.?.writer().any();
     }
 
@@ -293,6 +296,13 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         .Exited => |c| if (c != 0) std.process.exit(c),
         else => std.process.exit(1),
     }
+}
+
+fn openStatusFile(path: []const u8) !std.fs.File {
+    if (std.fs.path.dirname(path)) |dir| {
+        try std.fs.cwd().makePath(dir);
+    }
+    return try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
 }
 
 fn proxyThreadMain(p: *wire_proxy.Proxy, shutdown: *std.atomic.Value(bool)) void {
@@ -482,6 +492,32 @@ test "expandTilde no-op when no tilde" {
     const a = try expandTilde(std.testing.allocator, "/no/tilde/here");
     defer std.testing.allocator.free(a);
     try std.testing.expectEqualStrings("/no/tilde/here", a);
+}
+
+test "openStatusFile property: nested parents are created" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const cases = [_][]const u8{
+        "status.ndjson",
+        "one/status.ndjson",
+        "one/two/status.ndjson",
+        "one/two/three/status.ndjson",
+    };
+
+    for (cases) |relative| {
+        const status_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, relative });
+        defer std.testing.allocator.free(status_path);
+        const file = try openStatusFile(status_path);
+        try file.writeAll("{\"ok\":true}\n");
+        file.close();
+
+        const bytes = try std.fs.cwd().readFileAlloc(std.testing.allocator, status_path, 1024);
+        defer std.testing.allocator.free(bytes);
+        try std.testing.expectEqualStrings("{\"ok\":true}\n", bytes);
+    }
 }
 
 test "createSessionCodexHomeUnder copies auth and does not clobber source config" {

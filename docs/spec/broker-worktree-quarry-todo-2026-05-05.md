@@ -9,6 +9,7 @@ Anchor docs:
 - `docs/spec/codex-adapter-contract-2026-05-03.md`
 - `docs/spec/harness-session-authority-bridge-2026-05-05.md`
 - `docs/spec/codex-wire-evidence-2026-05-03.md`
+- `docs/spec/codex-managed-resume-ux-refactor-2026-05-06.md`
 
 ## Product Bar
 
@@ -69,7 +70,10 @@ Not yet proven:
 - Managed-frame resume parity. The adapter-owned temporary `CODEX_HOME`
   now bridges canonical Codex session authority by reference, but live
   `resume <id>` / `resume --last` dogfood is still pending before this is
-  treated as parity with bare Codex.
+  treated as parity with bare Codex. The 2026-05-06 UX refactor spec adds
+  the missing command contract: first-class `oauth-mux codex resume ...`,
+  strict `codex run` parsing, status-file parent creation, and PBT/e2e/
+  cassette guards.
 
 ## Quarry Worktree
 
@@ -226,7 +230,9 @@ These need review before public promotion:
    - Full-store copies are rejected; the current adapter uses a
      bridge/reference model per
      `docs/spec/harness-session-authority-bridge-2026-05-05.md`.
-   - Remaining acceptance: live managed-frame resume dogfood.
+   - Remaining acceptance: daily-use managed resume UX and live
+     managed-frame resume dogfood per
+     `docs/spec/codex-managed-resume-ux-refactor-2026-05-06.md`.
 
 6. Bare `codex` path
    - The aspirational background daemon plus bare `codex` remains harder

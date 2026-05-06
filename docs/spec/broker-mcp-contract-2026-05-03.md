@@ -34,6 +34,11 @@ Current evidence review:
   managed-frame store split required for normal `resume`/history behavior:
   oauth-mux owns auth/config overlays, but adapters must retain or bridge
   harness session authority instead of hiding or copying it wholesale.
+- `docs/spec/codex-managed-resume-ux-refactor-2026-05-06.md` records the
+  managed Codex daily-use refactor required after the first live resume
+  attempt failed before exercising the bridge: first-class
+  `oauth-mux codex resume ...`, strict parser behavior, status-file parent
+  creation, and regression guards.
 
 ## 0. The One Success Metric
 
