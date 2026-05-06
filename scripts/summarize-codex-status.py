@@ -104,12 +104,77 @@ def find_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def find_auth_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
+    auth_idx: int | None = None
+    retry_idx: int | None = None
+    auth_account: str | None = None
+    retry_event: dict[str, Any] | None = None
+    fallback_turn: dict[str, Any] | None = None
+
+    for idx, event in enumerate(events):
+        if event.get("kind") != "proxy_turn":
+            continue
+        if (
+            event.get("status") == 401
+            and event.get("classification") == "auth_unauthorized"
+        ):
+            auth_idx = idx
+            auth_account = event.get("account")
+            break
+
+    if auth_idx is None:
+        return {
+            "observed": False,
+            "reason": "no auth_unauthorized proxy_turn",
+        }
+
+    for idx in range(auth_idx + 1, len(events)):
+        event = events[idx]
+        if event.get("kind") == "proxy_auth_same_turn_retry":
+            retry_idx = idx
+            retry_event = event
+            break
+
+    if retry_idx is None:
+        return {
+            "observed": False,
+            "reason": "auth_unauthorized without proxy_auth_same_turn_retry",
+            "auth_account": auth_account,
+        }
+
+    for event in events[retry_idx + 1 :]:
+        if event.get("kind") != "proxy_turn":
+            continue
+        if event.get("account") != auth_account and event.get("status") == 200:
+            fallback_turn = event
+            break
+
+    if fallback_turn is None:
+        return {
+            "observed": False,
+            "reason": "auth retry without successful fallback-account turn",
+            "auth_account": auth_account,
+            "retry": retry_event,
+        }
+
+    return {
+        "observed": True,
+        "auth_account": auth_account,
+        "fallback_account": fallback_turn.get("account"),
+        "retry": retry_event,
+        "fallback_status": fallback_turn.get("status"),
+        "fallback_path_kind": fallback_turn.get("path_kind"),
+    }
+
+
 def summarize(path: Path) -> dict[str, Any]:
     events = load_events(path)
     proxy_turns = [e for e in events if e.get("kind") == "proxy_turn"]
     session_started = next((e for e in events if e.get("kind") == "session_started"), {})
     session_ended = next((e for e in reversed(events) if e.get("kind") == "session_ended"), {})
+    session_aborted = next((e for e in reversed(events) if e.get("kind") == "session_aborted"), {})
     fallback = find_fallback_sequence(events)
+    auth_fallback = find_auth_fallback_sequence(events)
     auth_health_events = [e for e in events if e.get("kind") == "auth_health_observed"]
     auth_unauthorized_turns = [
         e
@@ -131,6 +196,34 @@ def summarize(path: Path) -> dict[str, Any]:
     auth_failure_observed = bool(auth_unauthorized_turns)
     auth_failed_without_recovery = auth_failure_observed and not ok_turns
     auth_recovered_observed = auth_failure_observed and bool(ok_turns)
+    terminal_event_observed = bool(session_ended or session_aborted)
+    health_recording_expected_but_missing = (
+        auth_failure_observed
+        and not auth_health_events
+        and not terminal_event_observed
+    )
+
+    if fallback.get("observed"):
+        verdict = "fallback_sequence_observed"
+        next_action = "inspect_live_quota_fallback"
+    elif auth_fallback.get("observed"):
+        verdict = "auth_fallback_sequence_observed"
+        next_action = "continue_managed_dogfood"
+    elif brokered_session and auth_failure_observed and not terminal_event_observed:
+        verdict = "brokered_incomplete_auth_failed"
+        next_action = "inspect_incomplete_run"
+    elif brokered_session and auth_failed_without_recovery:
+        verdict = "brokered_auth_failed"
+        next_action = "reauth_account"
+    elif brokered_session and auth_recovered_observed:
+        verdict = "brokered_auth_recovered"
+        next_action = "continue_managed_dogfood"
+    elif brokered_session and proxy_turns:
+        verdict = "brokered_without_fallback"
+        next_action = "wait_for_quota_event"
+    else:
+        verdict = "insufficient_evidence"
+        next_action = "retry_managed"
 
     return {
         "path": str(path),
@@ -150,26 +243,23 @@ def summarize(path: Path) -> dict[str, Any]:
         "auth_health_events": len(auth_health_events),
         "auth_health_recorded_observed": any(e.get("recorded") is True for e in auth_health_events),
         "auth_health_quota_claim_observed": any(e.get("quota_claim") is True for e in auth_health_events),
+        "terminal_event_observed": terminal_event_observed,
+        "session_aborted_observed": bool(session_aborted),
+        "health_recording_expected_but_missing": health_recording_expected_but_missing,
         "same_turn_retry_events": sum(1 for e in events if e.get("kind") == "proxy_same_turn_retry"),
+        "auth_same_turn_retry_events": sum(1 for e in events if e.get("kind") == "proxy_auth_same_turn_retry"),
+        "auth_retry_unavailable_events": sum(1 for e in events if e.get("kind") == "proxy_auth_retry_unavailable"),
         "same_turn_retry_unavailable_events": sum(
             1 for e in events if e.get("kind") == "proxy_same_turn_retry_unavailable"
         ),
         "post_swap_turn_events": sum(1 for e in events if e.get("kind") == "proxy_post_swap_turn"),
         "fallback_sequence": fallback,
+        "auth_fallback_sequence": auth_fallback,
         "synthetic_swap_observed": bool(session_ended.get("synthetic_swap_observed")),
         "level4_shape_observed": bool(fallback.get("observed")),
         "provider_originated_live_fallback_claim": False,
-        "verdict": (
-            "fallback_sequence_observed"
-            if fallback.get("observed")
-            else "brokered_auth_failed"
-            if brokered_session and auth_failed_without_recovery
-            else "brokered_auth_recovered"
-            if brokered_session and auth_recovered_observed
-            else "brokered_without_fallback"
-            if brokered_session and proxy_turns
-            else "insufficient_evidence"
-        ),
+        "verdict": verdict,
+        "next_action": next_action,
     }
 
 

@@ -405,7 +405,7 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 
 ```jsonc
 // adapter startup
-{ "kind": "session_started", "session_id": "...", "selected_account": "codex:max-1", "claim_level": "broker_owned", "wire_proxy_addr": "127.0.0.1:54321" }
+{ "kind": "session_started", "adapter": "codex", "adapter_version": "0.1.6", "managed_frame_id": "omux-codex-...", "selected_account": "codex:max-1", "proxy_port": 54321, "claim_level": "broker_owned", "status_file_present": true }
 
 // target shape for a successful invisible quota handoff; current synthetic
 // tests emit proxy_same_turn_retry while runtime claim stays broker_owned
@@ -422,8 +422,14 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // mux-owned account source after Codex refreshes tokens inside CODEX_HOME
 { "kind": "auth_writeback", "auth_authority": "mux_owned_overlay", "overlay_auth_present": true, "source_auth_present": true, "changed": true, "written": true, "source_conflict": false, "ok": true, "token_material_printed": false, "path_printed": false }
 
+// selected-account 401 hidden from Codex by same-turn auth fallback. This is
+// auth continuity, not quota exhaustion.
+{ "kind": "proxy_turn", "account": "codex:max-1", "method": "POST", "path_kind": "responses", "status": 401, "classification": "auth_unauthorized", "delivered_to_codex": false }
+{ "kind": "proxy_auth_same_turn_retry", "from": "codex:max-1", "to": "codex:max-2", "reason": "auth_unauthorized", "dropped": "x-codex-turn-state" }
+{ "kind": "proxy_turn", "account": "codex:max-2", "method": "POST", "path_kind": "responses", "status": 200, "classification": "ok", "delivered_to_codex": true }
+
 // unrecovered 401 classification after child exit; this records credential
-// health for the next broker-owned launch, but it is not quota evidence
+// health for the next broker-owned launch, but it is not quota evidence.
 { "kind": "auth_health_observed", "account": "codex:max-1", "auth_unauthorized_turns": 6, "responses_401_turns": 2, "recovered_after_401": false, "recorded": true, "reason": "unrecovered_401_no_writeback", "scope": "account_credential", "quota_claim": false, "token_material_printed": false, "path_printed": false }
 
 // quota observation that did not trigger a swap
@@ -431,6 +437,10 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 
 // teardown before live quota-handoff proof remains broker_owned
 { "kind": "session_ended", "session_id": "...", "turns": 14, "swaps": 0, "final_claim_level": "broker_owned" }
+
+// if the managed frame aborts before normal teardown, it must still emit a
+// terminal status frame when the parent can run cleanup
+{ "kind": "session_aborted", "adapter": "codex", "reason": "child_wait_error", "exit_code": -1, "final_claim_level": "broker_owned", "synthetic_swap_observed": false, "wait_error": "..." }
 ```
 
 These frames are the only structured surface the adapter publishes. The

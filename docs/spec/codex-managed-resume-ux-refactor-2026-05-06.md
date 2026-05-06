@@ -620,3 +620,9 @@ Follow-up implemented:
   change. The status stream emits `auth_health_observed` with
   `quota_claim:false`, and the next `broker-session-plan` should route around
   that stale auth source when another healthy route exists.
+- The proxy now buffers selected-account 401s and, when a different account is
+  selectable, retries the same request against that fallback before Codex sees
+  the 401. Status evidence is `proxy_auth_same_turn_retry` plus a fallback
+  `proxy_turn` with `status:200`; the summarizer reports
+  `verdict:"auth_fallback_sequence_observed"`. This remains separate from live
+  quota fallback evidence.

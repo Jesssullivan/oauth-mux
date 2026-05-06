@@ -76,7 +76,7 @@ The evidence ladder is:
   invariants.
 - Shell e2e/smoke tests for broker MCP, Codex CLI UX, Codex synthetic swap,
   concurrent sessions, same-account child refresh, tier-insufficient handling,
-  all-accounts-exhausted handling, 401 propagation, and cassette replay.
+  all-accounts-exhausted handling, 401 auth fallback, and cassette replay.
 - Cassette replay infrastructure for scrubbed Codex wire captures.
 - Live QA only after local and cassette layers are green, with explicit spend
   consent and redacted status artifacts.
@@ -106,3 +106,7 @@ oauth-mux refused to overwrite it. When unrecovered 401s occur and no overlay
 auth changed, oauth-mux records account-credential health for the next launch
 and emits `auth_health_observed` with `quota_claim:false`; that does not prove
 the subscription lacks quota.
+`verdict:"auth_fallback_sequence_observed"` means the selected account produced
+`401 auth_unauthorized`, oauth-mux retried the same buffered request against a
+different account before Codex saw the 401, and the fallback account returned
+200. That is a managed auth-continuity proof, not quota exhaustion evidence.

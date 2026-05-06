@@ -30,6 +30,7 @@ const std = @import("std");
 const broker = @import("../../broker/mod.zig");
 const broker_types = @import("../../broker/types.zig");
 const broker_loader = @import("../../broker_loader.zig");
+const cli = @import("../../cli.zig");
 const config_mod = @import("../../config.zig");
 const health_mod = @import("../../health.zig");
 const shell = @import("../../shell.zig");
@@ -160,6 +161,13 @@ const ManagedAuthHealthObservation = struct {
     reason: []const u8 = "not_observed",
 };
 
+const FinalSessionStatus = struct {
+    aborted: bool = false,
+    reason: []const u8 = "child_exit",
+    term: ?std.process.Child.Term = null,
+    wait_error: ?[]const u8 = null,
+};
+
 const SessionAuthorityEntryKind = enum {
     directory,
     file,
@@ -283,6 +291,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer proxy.deinit();
     proxy.profile = opts.profile;
     const proxy_port = proxy.port();
+    const managed_frame_id = try std.fmt.allocPrint(allocator, "omux-codex-{d}-{d}", .{ std.time.milliTimestamp(), proxy_port });
+    defer allocator.free(managed_frame_id);
 
     // 5. Create a per-session CODEX_HOME overlay containing copied
     // auth material, generated proxy config, and canonical session
@@ -310,8 +320,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
 
     if (emit_status) {
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"session_authority\":\"{s}\",\"session_paths_printed\":false}}\n",
-            .{ elected.id, proxy_port, codex_home.session_authority.toString() },
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"status_file_present\":{any}}}\n",
+            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.session_authority.toString(), opts.json_status_file != null },
         );
         if (resume_request.requested()) {
             try writeResumePreflightStatus(
@@ -339,6 +349,9 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer env_map.deinit();
     try env_map.put("CODEX_HOME", codex_home.path);
     try env_map.put("OMUX_ACTIVE_PROVIDER", "codex");
+    try env_map.put("OMUX_MANAGED_FRAME_ID", managed_frame_id);
+    try env_map.put("OMUX_CLAIM_LEVEL", "broker_owned");
+    if (opts.json_status_file) |path| try env_map.put("OMUX_STATUS_FILE", path);
     const account_only = elected.id[std.mem.indexOfScalar(u8, elected.id, ':').? + 1 ..];
     try env_map.put("OMUX_ACTIVE_ACCOUNT", account_only);
     if (opts.profile) |p| try env_map.put("OMUX_ACTIVE_PROFILE", p);
@@ -368,7 +381,20 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     const term = child.wait() catch |e| {
         try stderr.print("oauth-mux codex: child wait: {s}\n", .{@errorName(e)});
         shutdown.store(true, .release);
+        tickleProxy(proxy_port);
         proxy_thread.join();
+        try finalizeManagedSession(
+            allocator,
+            stderr,
+            status_writer,
+            emit_status,
+            &proxy,
+            &codex_home,
+            source_auth_path,
+            resume_request,
+            if (resume_snapshot) |*snapshot| snapshot else null,
+            .{ .aborted = true, .reason = "child_wait_error", .wait_error = @errorName(e) },
+        );
         return e;
     };
 
@@ -377,40 +403,18 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     tickleProxy(proxy_port);
     proxy_thread.join();
 
-    const auth_writeback = observeAuthWriteback(allocator, codex_home.path, source_auth_path, codex_home.auth_initial_hash) catch |e| failed: {
-        try stderr.print("oauth-mux codex: auth writeback failed: {s}\n", .{@errorName(e)});
-        break :failed AuthWritebackObservation{
-            .ok = false,
-            .error_name = @errorName(e),
-        };
-    };
-    if (auth_writeback.source_conflict) {
-        try stderr.writeAll("oauth-mux codex: auth writeback conflict; not overwriting newer account auth\n");
-    }
-    const auth_failure = proxy.authFailureObservation();
-    const auth_health = recordManagedAuthFailureHealth(allocator, auth_failure, auth_writeback);
-
-    if (emit_status) {
-        try writeAuthWritebackStatus(status_writer, auth_writeback);
-        if (auth_failure.auth_unauthorized_turns > 0) {
-            try writeManagedAuthHealthStatus(status_writer, auth_failure, auth_health);
-        }
-        if (resume_request.requested()) {
-            const observation = if (codex_home.authority_home) |authority_home|
-                try observeResumeWriteback(allocator, authority_home, if (resume_snapshot) |*snapshot| snapshot else null, resume_request)
-            else
-                ResumeObservation{};
-            try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
-        }
-        const exit_code: i32 = switch (term) {
-            .Exited => |c| c,
-            else => -1,
-        };
-        try status_writer.print(
-            "{{\"kind\":\"session_ended\",\"adapter\":\"codex\",\"exit_code\":{d},\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":{any}}}\n",
-            .{ exit_code, proxy.peakClaimLevel().toString(), proxy.syntheticSwapSeen() },
-        );
-    }
+    try finalizeManagedSession(
+        allocator,
+        stderr,
+        status_writer,
+        emit_status,
+        &proxy,
+        &codex_home,
+        source_auth_path,
+        resume_request,
+        if (resume_snapshot) |*snapshot| snapshot else null,
+        .{ .term = term },
+    );
 
     // Propagate exit code.
     switch (term) {
@@ -424,6 +428,67 @@ fn openStatusFile(path: []const u8) !std.fs.File {
         try std.fs.cwd().makePath(dir);
     }
     return try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
+}
+
+fn finalizeManagedSession(
+    allocator: std.mem.Allocator,
+    stderr: anytype,
+    status_writer: anytype,
+    emit_status: bool,
+    proxy: *wire_proxy.Proxy,
+    codex_home: *const SessionCodexHome,
+    source_auth_path: []const u8,
+    resume_request: ResumeRequest,
+    resume_snapshot: ?*RolloutSnapshot,
+    final_status: FinalSessionStatus,
+) !void {
+    const auth_writeback = observeAuthWriteback(allocator, codex_home.path, source_auth_path, codex_home.auth_initial_hash) catch |e| failed: {
+        try stderr.print("oauth-mux codex: auth writeback failed: {s}\n", .{@errorName(e)});
+        break :failed AuthWritebackObservation{
+            .ok = false,
+            .error_name = @errorName(e),
+        };
+    };
+    if (auth_writeback.source_conflict) {
+        try stderr.writeAll("oauth-mux codex: auth writeback conflict; not overwriting newer account auth\n");
+    }
+    const auth_failure = proxy.authFailureObservation();
+    const auth_health = recordManagedAuthFailureHealth(allocator, auth_failure, auth_writeback);
+
+    if (!emit_status) return;
+
+    try writeAuthWritebackStatus(status_writer, auth_writeback);
+    if (auth_failure.auth_unauthorized_turns > 0) {
+        try writeManagedAuthHealthStatus(status_writer, auth_failure, auth_health);
+    }
+    if (resume_request.requested()) {
+        const observation = if (codex_home.authority_home) |authority_home|
+            try observeResumeWriteback(allocator, authority_home, resume_snapshot, resume_request)
+        else
+            ResumeObservation{};
+        try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
+    }
+
+    const exit_code: i32 = if (final_status.term) |term| switch (term) {
+        .Exited => |c| c,
+        else => -1,
+    } else -1;
+
+    if (final_status.aborted) {
+        try status_writer.print(
+            "{{\"kind\":\"session_aborted\",\"adapter\":\"codex\",\"reason\":\"{s}\",\"exit_code\":{d},\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":{any}",
+            .{ final_status.reason, exit_code, proxy.peakClaimLevel().toString(), proxy.syntheticSwapSeen() },
+        );
+        if (final_status.wait_error) |err| {
+            try status_writer.print(",\"wait_error\":\"{s}\"", .{err});
+        }
+        try status_writer.writeAll("}\n");
+    } else {
+        try status_writer.print(
+            "{{\"kind\":\"session_ended\",\"adapter\":\"codex\",\"exit_code\":{d},\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":{any}}}\n",
+            .{ exit_code, proxy.peakClaimLevel().toString(), proxy.syntheticSwapSeen() },
+        );
+    }
 }
 
 fn proxyThreadMain(p: *wire_proxy.Proxy, shutdown: *std.atomic.Value(bool)) void {

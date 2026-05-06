@@ -33,17 +33,20 @@
 //!      fallback immediately, drop the sticky turn-state header, and retry
 //!      the same request before writing the response to codex. If no fallback
 //!      is selectable, return the buffered failure.
+//!      On auth_unauthorized, try the same fallback shape before Codex sees
+//!      the 401. If fallback is unavailable, return the buffered 401 so Codex
+//!      can still run its native refresh loop.
 //!   7. Stream the final response body verbatim back to codex (SSE works
 //!      because chunked-transfer is forwarded byte-for-byte).
 //!
 //! Phase 2 scope (honestly labelled limitations):
 //!   - Synchronous, single-connection-at-a-time (codex sends one
 //!     request per turn). No request pipelining.
-//!   - **Streaming for 200/3xx/401/5xx; buffered for 429.** SSE turns
+//!   - **Streaming for 200/3xx/5xx; buffered for 401/429.** SSE turns
 //!     stream byte-for-byte from upstream to codex via Connection:close
-//!     framing — the TUI animation moves in real time. 429 responses
-//!     are small JSON and need the body for classification, so they
-//!     stay buffered (with a 64 KiB cap). Phase 2.1 added this.
+//!     framing — the TUI animation moves in real time. 401 and 429 responses
+//!     are small and need a retry decision before any bytes reach Codex, so
+//!     they stay buffered (with a 64 KiB cap).
 //!   - No WebSocket upgrade support; if codex requests a WS upgrade
 //!     we propagate the upstream's response (which on `chatgpt.com`
 //!     is HTTP 426 / falls back to chunked). Phase 2.2 adds WS.
@@ -314,6 +317,65 @@ pub const Proxy = struct {
             final_account = fallback.id;
         }
 
+        if (status_and_class.classification.kind == .auth_unauthorized) auth_retry: {
+            const auth_failed_account = final_account;
+            const fallback = self.pool.elect(self.profile, null, &.{auth_failed_account}) catch |err| {
+                self.logEvent("proxy_auth_retry_unavailable", .{
+                    .from = auth_failed_account,
+                    .err = @errorName(err),
+                });
+                self.logEvent("proxy_observed_401_codex_handles", .{
+                    .account = auth_failed_account,
+                });
+                break :auth_retry;
+            };
+
+            var fallback_tokens = self.materializer.materialize_chatgpt(
+                self.materializer.ctx,
+                a,
+                fallback.id,
+            ) catch |err| {
+                self.logEvent("proxy_auth_materialize_failed", .{
+                    .from = auth_failed_account,
+                    .to = fallback.id,
+                    .err = @errorName(err),
+                });
+                self.logEvent("proxy_observed_401_codex_handles", .{
+                    .account = auth_failed_account,
+                });
+                break :auth_retry;
+            };
+            _ = &fallback_tokens;
+
+            self.pool.markUnauthorized(auth_failed_account) catch |err| {
+                self.logEvent("proxy_auth_mark_unauthorized_failed", .{
+                    .account = auth_failed_account,
+                    .err = @errorName(err),
+                });
+            };
+
+            var retry_headers = HeaderList.init(a);
+            _ = try buildOutboundHeaders(a, &req, &retry_headers, fallback_tokens, true);
+            self.logEvent("proxy_auth_same_turn_retry", .{
+                .from = auth_failed_account,
+                .to = fallback.id,
+                .reason = "auth_unauthorized",
+                .dropped = "x-codex-turn-state",
+            });
+            self.synthetic_swap_seen = true;
+
+            status_and_class = forwardAndStream(a, req, retry_headers, writer) catch |err| {
+                self.logEvent("proxy_upstream_failed", .{ .account = fallback.id, .err = @errorName(err) });
+                try writeStatus(writer, 502, "Upstream Error");
+                return;
+            };
+            self.applyClassification(fallback.id, status_and_class.classification) catch |err| {
+                self.logEvent("proxy_apply_classification_failed", .{ .err = @errorName(err) });
+            };
+            self.logProxyTurn(fallback.id, req, status_and_class, status_and_class.buffered_response == null);
+            final_account = fallback.id;
+        }
+
         if (status_and_class.buffered_response) |buffered| {
             try writeBufferedStoredResponse(writer, buffered);
         }
@@ -360,41 +422,7 @@ pub const Proxy = struct {
                 const until = c.resets_at orelse (now_unix + 60);
                 try self.pool.markRateLimited(account_id, until);
             },
-            .auth_unauthorized => {
-                // DO NOT mark the account dead on a first 401.
-                //
-                // In the adapter-owned child topology, the 401 is
-                // propagated to codex (writeStreamedResponse forwards
-                // the upstream status verbatim). Codex's AuthManager
-                // then runs UnauthorizedRecovery::Reload →
-                // UnauthorizedRecovery::RefreshToken which:
-                //   1. POSTs to https://auth.openai.com/oauth/token
-                //      with the account's refresh_token to mint a
-                //      fresh access_token.
-                //   2. persist_tokens writes the new tokens back to
-                //      auth.json on disk.
-                //   3. Codex retries the original request.
-                //
-                // The proxy preserves the child's refreshed
-                // Authorization header on the NEXT request when the
-                // inbound ChatGPT-Account-ID still matches the
-                // broker-elected account. That lets Codex's native
-                // refresh loop succeed without requiring oauth-mux
-                // to implement refresh-token rotation in this path.
-                //
-                // Marking the account dead here would defeat that
-                // recovery loop by removing the account from the
-                // pool before codex got a chance to refresh.
-                //
-                // True credential death (revoked refresh token,
-                // account deleted) surfaces inside codex via
-                // classify_refresh_token_failure → the user sees
-                // the standard codex re-login prompt; oauth-mux
-                // doesn't need to second-guess that.
-                self.logEvent("proxy_observed_401_codex_handles", .{
-                    .account = account_id,
-                });
-            },
+            .auth_unauthorized => {},
             .tier_insufficient, .provider_5xx => {
                 // Recorded for telemetry only; no pool mutation.
             },
@@ -730,10 +758,11 @@ const StatusAndClassification = struct {
 /// Forward the inbound request to chatgpt.com and write the response
 /// directly to the client writer.
 ///
-/// 429 responses are buffered (small JSON, need body to classify
-/// usage_limit_reached vs usage_not_included).
+/// 401 and 429 responses are buffered so the proxy can decide whether to
+/// retry against a fallback account before any bytes reach Codex. 429 also
+/// needs the body to classify usage_limit_reached vs usage_not_included.
 ///
-/// All other responses (200 streaming SSE, 401, 5xx) are streamed
+/// All other responses (200 streaming SSE, 5xx) are streamed
 /// byte-for-byte from upstream's reader to the client. Connection-close
 /// framing is used so we don't have to re-chunk std.http.Client's
 /// already-decoded body bytes.
@@ -779,9 +808,9 @@ fn forwardAndStream(
 
     const status_u16: u16 = @intFromEnum(http_req.response.status);
 
-    // 429 is the only path that needs the body for classification.
-    // Every other status classifies on the status code alone.
-    if (status_u16 == 429) {
+    // 401 and 429 are retry decision points, so they must be buffered before
+    // anything is written to Codex.
+    if (status_u16 == 401 or status_u16 == 429) {
         // Cap at 64 KiB — chatgpt.com's 429 JSON bodies are small.
         const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
         const classification = classify(a, status_u16, body);

@@ -163,7 +163,10 @@ echo "smoke-codex-acceptance: assertions"
 
 assert_grep "session_started"           '"kind":"session_started"'           "$NDJSON"
 assert_grep "session_started has proxy_port" '"proxy_port":[0-9]+'           "$NDJSON"
+assert_grep "session_started has managed_frame_id" '"managed_frame_id":"omux-codex-' "$NDJSON"
+assert_grep "session_started has adapter version" '"adapter_version":"[0-9]+\.[0-9]+\.[0-9]+"' "$NDJSON"
 assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed":false' "$NDJSON"
+assert_grep "session_started records status file" '"status_file_present":true' "$NDJSON"
 assert_grep "session_started reports canonical session bridge" '"session_authority":"canonical_bridge"' "$NDJSON"
 assert_grep "session_started redacts session paths" '"session_paths_printed":false' "$NDJSON"
 assert_grep "proxy_turn 200 ok"         '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
@@ -192,6 +195,15 @@ fi
 
 if [[ ! -s "$STUB_REPORT" ]]; then
     echo "  ✗ stub-codex report missing" >&2
+    exit 1
+fi
+if [[ "$(jq -r .managed_frame_id_present "$STUB_REPORT")" == "true" \
+      && "$(jq -r .claim_level "$STUB_REPORT")" == "broker_owned" \
+      && "$(jq -r .status_file_present "$STUB_REPORT")" == "true" ]]; then
+    echo "  ✓ child received managed-frame env markers"
+else
+    echo "  ✗ child managed-frame env marker report failed" >&2
+    cat "$STUB_REPORT" >&2
     exit 1
 fi
 if [[ "$(jq -r .session_bridge.checked "$STUB_REPORT")" == "true" \
