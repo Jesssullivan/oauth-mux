@@ -106,9 +106,9 @@ def find_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 def find_auth_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
     auth_idx: int | None = None
-    retry_idx: int | None = None
     auth_account: str | None = None
-    retry_event: dict[str, Any] | None = None
+    retry_events: list[dict[str, Any]] = []
+    terminal_retry_event: dict[str, Any] | None = None
     fallback_turn: dict[str, Any] | None = None
 
     for idx, event in enumerate(events):
@@ -128,40 +128,46 @@ def find_auth_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
             "reason": "no auth_unauthorized proxy_turn",
         }
 
-    for idx in range(auth_idx + 1, len(events)):
-        event = events[idx]
+    for event in events[auth_idx + 1 :]:
         if event.get("kind") == "proxy_auth_same_turn_retry":
-            retry_idx = idx
-            retry_event = event
+            retry_events.append(event)
+            continue
+        if event.get("kind") != "proxy_turn":
+            continue
+        if event.get("status") != 200:
+            continue
+
+        if not retry_events:
+            continue
+        latest_retry = retry_events[-1]
+        if event.get("account") == latest_retry.get("to"):
+            fallback_turn = event
+            terminal_retry_event = latest_retry
             break
 
-    if retry_idx is None:
+    if not retry_events:
         return {
             "observed": False,
             "reason": "auth_unauthorized without proxy_auth_same_turn_retry",
             "auth_account": auth_account,
         }
 
-    for event in events[retry_idx + 1 :]:
-        if event.get("kind") != "proxy_turn":
-            continue
-        if event.get("account") != auth_account and event.get("status") == 200:
-            fallback_turn = event
-            break
-
     if fallback_turn is None:
         return {
             "observed": False,
             "reason": "auth retry without successful fallback-account turn",
             "auth_account": auth_account,
-            "retry": retry_event,
+            "retry": retry_events[-1],
+            "retries": retry_events,
         }
 
     return {
         "observed": True,
         "auth_account": auth_account,
         "fallback_account": fallback_turn.get("account"),
-        "retry": retry_event,
+        "retry": terminal_retry_event,
+        "retries": retry_events,
+        "retry_count": len(retry_events),
         "fallback_status": fallback_turn.get("status"),
         "fallback_path_kind": fallback_turn.get("path_kind"),
     }
