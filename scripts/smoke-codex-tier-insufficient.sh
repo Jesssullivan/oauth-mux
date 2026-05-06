@@ -122,6 +122,7 @@ assert_grep "proxy_turn 200 ok at least once" '"kind":"proxy_turn".*"status":200
 assert_grep "proxy_turn 429 classified tier_insufficient" '"kind":"proxy_turn".*"status":429.*"classification":"tier_insufficient"' "$NDJSON"
 
 assert_no_grep "no swap fired" '"kind":"proxy_post_swap_turn"' "$NDJSON"
+assert_no_grep "no same-turn retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
 assert_no_grep "no quota_exhausted misclassification" '"classification":"quota_exhausted"' "$NDJSON"
 assert_no_grep "claim_level not promoted" '"claim_level":"next_turn_seamless"' "$NDJSON"
 assert_grep "session_ended final_claim_level remains broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
@@ -152,5 +153,5 @@ else
 fi
 
 echo
-echo "smoke-codex-tier-insufficient: all 10 assertions passed."
+echo "smoke-codex-tier-insufficient: all 11 assertions passed."
 echo "  full ndjson: $NDJSON"

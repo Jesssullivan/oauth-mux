@@ -20,8 +20,8 @@
 # Asserts the full NDJSON sequence in the status file:
 #   session_started        (account A elected)
 #   proxy_turn 200 ok      (account A, multiple times)
-#   proxy_turn 429 quota_exhausted (account A)
-#   proxy_post_swap_turn   (A -> B, dropped x-codex-turn-state)
+#   proxy_turn 429 quota_exhausted (account A, not delivered to Codex)
+#   proxy_same_turn_retry  (A -> B, dropped x-codex-turn-state)
 #   proxy_turn 200 ok      (account B, claim_level broker_owned)
 #   session_ended          (final_claim_level broker_owned, synthetic_swap_observed true,
 #                           exit_code 0)
@@ -132,7 +132,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_CODEX_TURNS=5 \
+  OMUX_STUB_CODEX_TURNS=3 \
   OMUX_STUB_CODEX_PIDFILE="$STUB_PIDFILE" \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
   "$BIN" codex run --profile codex-max --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
@@ -168,8 +168,9 @@ assert_grep "session_started reports canonical session bridge" '"session_authori
 assert_grep "session_started redacts session paths" '"session_paths_printed":false' "$NDJSON"
 assert_grep "proxy_turn 200 ok"         '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "proxy_turn 429 quota_exhausted" '"kind":"proxy_turn".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
-assert_grep "proxy_post_swap_turn fired" '"kind":"proxy_post_swap_turn"'     "$NDJSON"
-assert_grep "post-swap dropped x-codex-turn-state" '"dropped":"x-codex-turn-state"' "$NDJSON"
+assert_grep "quota 429 was not delivered to Codex" '"kind":"proxy_turn".*"status":429.*"delivered_to_codex":false' "$NDJSON"
+assert_grep "proxy_same_turn_retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
+assert_grep "same-turn retry dropped x-codex-turn-state" '"dropped":"x-codex-turn-state"' "$NDJSON"
 assert_grep "claim_level remains broker_owned" '"claim_level":"broker_owned"' "$NDJSON"
 assert_grep "session_ended final_claim_level broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
 assert_grep "session_ended records synthetic swap" '"kind":"session_ended".*"synthetic_swap_observed":true' "$NDJSON"
@@ -216,6 +217,14 @@ else
     exit 1
 fi
 
+if jq -e 'all(.turns[]; .status == 200)' "$STUB_REPORT" >/dev/null; then
+    echo "  ✓ stub-codex saw only 200 turns; quota 429 stayed inside proxy"
+else
+    echo "  ✗ stub-codex saw a non-200 turn" >&2
+    cat "$STUB_REPORT" >&2
+    exit 1
+fi
+
 UPSTREAM_ACCT_COUNT=$(jq -r .account_id "$UPLOG" 2>/dev/null | sort -u | wc -l | tr -d ' ' || echo 0)
 if [[ "$UPSTREAM_ACCT_COUNT" -ge 2 ]]; then
     echo "  ✓ stub upstream saw 2+ distinct ChatGPT-Account-IDs (proxy substituted both)"
@@ -233,7 +242,7 @@ else
 fi
 
 echo
-echo "smoke-codex-acceptance: all 18 assertions passed."
+echo "smoke-codex-acceptance: all 20 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"

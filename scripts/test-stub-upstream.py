@@ -33,11 +33,9 @@ This is enough for the proxy to:
   1. classify 200 as ok for the elected account
   2. classify 429+usage_limit_reached as quota_exhausted
   3. mark that account in the pool
-  4. on next request, elect a different account (the broker's
-     account/swap semantics)
-  5. proxy_post_swap_turn fires (proxy notices account change,
-     drops x-codex-turn-state)
-  6. that next request lands on the new account at the stub
+  4. elect a different account immediately when one is selectable
+  5. proxy_same_turn_retry fires and drops x-codex-turn-state
+  6. the retried request lands on the new account at the stub
   7. stub sees the new account_id, returns 200 (per-account counter)
 
 The harness asserts the NDJSON status frames on stderr from

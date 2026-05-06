@@ -29,10 +29,11 @@
 //!   5. Classify the response (200 / 401 / 429+usage_limit_reached /
 //!      429+usage_not_included / other-429 / 5xx).
 //!   6. Report quota/observe to the broker pool. On
-//!      quota_exhausted, mark the current account exhausted —
-//!      the NEXT request from codex will go to a fresh account
-//!      (synthetic between-turn swap evidence in this slice).
-//!   7. Stream the response body verbatim back to codex (SSE works
+//!      quota_exhausted, mark the current account exhausted, elect a
+//!      fallback immediately, drop the sticky turn-state header, and retry
+//!      the same request before writing the response to codex. If no fallback
+//!      is selectable, return the buffered failure.
+//!   7. Stream the final response body verbatim back to codex (SSE works
 //!      because chunked-transfer is forwarded byte-for-byte).
 //!
 //! Phase 2 scope (honestly labelled limitations):
@@ -46,12 +47,12 @@
 //!   - No WebSocket upgrade support; if codex requests a WS upgrade
 //!     we propagate the upstream's response (which on `chatgpt.com`
 //!     is HTTP 426 / falls back to chunked). Phase 2.2 adds WS.
-//!   - Path (a) silent in-flight swap is intentionally NOT done
-//!     (likely blocked by per-sub server-side thread state — see
-//!     codex-adapter-contract §3 reality-check decision). Between-turn
-//!     swap with x-codex-turn-state dropped on the post-swap turn
-//!     IS done; in synthetic tests this demonstrates the structural
-//!     next-turn swap path without making a live provider claim.
+//!   - Same-turn retry is attempted for buffered 429 `usage_limit_reached`
+//!     responses before any bytes are written to codex. The retry drops
+//!     `x-codex-turn-state` because that token is likely tied to the previous
+//!     account's server-side state. Synthetic tests prove the structure; live
+//!     provider-originated quota proof is still required before promoting the
+//!     runtime claim level.
 
 const std = @import("std");
 const broker_types = @import("../../broker/types.zig");
@@ -215,8 +216,7 @@ pub const Proxy = struct {
 
         // ── 3. Build outbound request with substituted headers ──
         var out_headers = HeaderList.init(a);
-        try copyForwardingHeaders(&req.headers, &out_headers);
-        const preserved_child_auth = try setOutboundAuthHeaders(a, &req.headers, &out_headers, tokens);
+        const preserved_child_auth = try buildOutboundHeaders(a, &req, &out_headers, tokens, false);
         if (preserved_child_auth) {
             self.logEvent("proxy_preserved_child_auth", .{
                 .account = elected.id,
@@ -249,7 +249,7 @@ pub const Proxy = struct {
         // fixed. We don't transform the body.
 
         // ── 4. Forward to upstream + stream/buffer response ────
-        const status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
+        var status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
             self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
             try writeStatus(writer, 502, "Upstream Error");
             return;
@@ -259,8 +259,73 @@ pub const Proxy = struct {
         self.applyClassification(elected.id, status_and_class.classification) catch |err| {
             self.logEvent("proxy_apply_classification_failed", .{ .err = @errorName(err) });
         };
+        self.logProxyTurn(elected.id, req, status_and_class, status_and_class.buffered_response == null);
+
+        var final_account = elected.id;
+
+        if (status_and_class.classification.kind == .quota_exhausted) same_turn_retry: {
+            const fallback = self.pool.elect(self.profile, null, &.{elected.id}) catch |err| {
+                self.logEvent("proxy_same_turn_retry_unavailable", .{
+                    .from = elected.id,
+                    .err = @errorName(err),
+                });
+                break :same_turn_retry;
+            };
+
+            var fallback_tokens = self.materializer.materialize_chatgpt(
+                self.materializer.ctx,
+                a,
+                fallback.id,
+            ) catch |err| {
+                self.logEvent("proxy_same_turn_materialize_failed", .{
+                    .from = elected.id,
+                    .to = fallback.id,
+                    .err = @errorName(err),
+                });
+                break :same_turn_retry;
+            };
+            _ = &fallback_tokens;
+
+            var retry_headers = HeaderList.init(a);
+            _ = try buildOutboundHeaders(a, &req, &retry_headers, fallback_tokens, true);
+            self.logEvent("proxy_same_turn_retry", .{
+                .from = elected.id,
+                .to = fallback.id,
+                .reason = "quota_exhausted",
+                .dropped = "x-codex-turn-state",
+            });
+            self.synthetic_swap_seen = true;
+
+            status_and_class = forwardAndStream(a, req, retry_headers, writer) catch |err| {
+                self.logEvent("proxy_upstream_failed", .{ .account = fallback.id, .err = @errorName(err) });
+                try writeStatus(writer, 502, "Upstream Error");
+                return;
+            };
+            self.applyClassification(fallback.id, status_and_class.classification) catch |err| {
+                self.logEvent("proxy_apply_classification_failed", .{ .err = @errorName(err) });
+            };
+            self.logProxyTurn(fallback.id, req, status_and_class, status_and_class.buffered_response == null);
+            final_account = fallback.id;
+        }
+
+        if (status_and_class.buffered_response) |buffered| {
+            try writeBufferedStoredResponse(writer, buffered);
+        }
+
+        // Track previous_account for next-request swap detection.
+        if (self.previous_account) |old| self.allocator.free(old);
+        self.previous_account = self.allocator.dupe(u8, final_account) catch null;
+    }
+
+    fn logProxyTurn(
+        self: *Proxy,
+        account_id: []const u8,
+        req: Request,
+        status_and_class: StatusAndClassification,
+        delivered_to_codex: bool,
+    ) void {
         self.logEvent("proxy_turn", .{
-            .account = elected.id,
+            .account = account_id,
             .method = req.method,
             .path_kind = pathKind(req.path),
             .status = status_and_class.status,
@@ -268,11 +333,8 @@ pub const Proxy = struct {
             .body_class = status_and_class.body_class orelse "none",
             .claim_level = self.peak_claim.toString(),
             .streamed = status_and_class.streamed,
+            .delivered_to_codex = delivered_to_codex,
         });
-
-        // Track previous_account for next-request swap detection.
-        if (self.previous_account) |old| self.allocator.free(old);
-        self.previous_account = self.allocator.dupe(u8, elected.id) catch null;
     }
 
     fn applyClassification(
@@ -566,7 +628,26 @@ fn shouldPreserveChildAuth(
     return std.mem.eql(u8, account_id, elected_account_id);
 }
 
+fn buildOutboundHeaders(
+    a: std.mem.Allocator,
+    req: *const Request,
+    out: *HeaderList,
+    tokens: broker_types.ChatgptAuthTokens,
+    drop_turn_state: bool,
+) !bool {
+    try copyForwardingHeaders(&req.headers, out);
+    const preserved_child_auth = try setOutboundAuthHeaders(a, &req.headers, out, tokens);
+    if (drop_turn_state) out.remove("x-codex-turn-state");
+    return preserved_child_auth;
+}
+
 // ── Forwarding + streaming (uses std.http.Client for TLS) ────────────
+
+const BufferedResponse = struct {
+    status: u16,
+    headers: HeaderList,
+    body: []const u8,
+};
 
 const StatusAndClassification = struct {
     status: u16,
@@ -578,6 +659,10 @@ const StatusAndClassification = struct {
     /// false if it was buffered for classification (429 path) or never
     /// arrived (early failure).
     streamed: bool,
+    /// Present when the response was buffered and has not yet been written to
+    /// Codex. The caller may retry first, then write this only if recovery is
+    /// unavailable or the retry also fails with a buffered response.
+    buffered_response: ?BufferedResponse = null,
 };
 
 /// Forward the inbound request to chatgpt.com and write the response
@@ -637,27 +722,33 @@ fn forwardAndStream(
     if (status_u16 == 429) {
         // Cap at 64 KiB — chatgpt.com's 429 JSON bodies are small.
         const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
-        defer a.free(body);
         const classification = classify(a, status_u16, body);
-        try writeBufferedResponse(client_writer, http_req.response, body);
         return .{
             .status = status_u16,
             .classification = classification,
             .body_class = classification.body_class orelse classifyHttpErrorBody(body),
             .streamed = false,
+            .buffered_response = .{
+                .status = status_u16,
+                .headers = try captureResponseHeaders(a, http_req.response),
+                .body = body,
+            },
         };
     }
 
     if (status_u16 >= 400 and status_u16 < 500 and status_u16 != 401) {
         const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
-        defer a.free(body);
         const classification = classify(a, status_u16, body);
-        try writeBufferedResponse(client_writer, http_req.response, body);
         return .{
             .status = status_u16,
             .classification = classification,
             .body_class = classifyHttpErrorBody(body),
             .streamed = false,
+            .buffered_response = .{
+                .status = status_u16,
+                .headers = try captureResponseHeaders(a, http_req.response),
+                .body = body,
+            },
         };
     }
 
@@ -776,6 +867,19 @@ fn writeForwardingResponseHeaders(writer: anytype, response: std.http.Client.Res
     }
 }
 
+fn captureResponseHeaders(a: std.mem.Allocator, response: std.http.Client.Response) !HeaderList {
+    var headers = HeaderList.init(a);
+    var hi = response.iterateHeaders();
+    while (hi.next()) |h| {
+        if (asciiEqlIgnoreCase(h.name, "connection")) continue;
+        if (asciiEqlIgnoreCase(h.name, "transfer-encoding")) continue;
+        if (asciiEqlIgnoreCase(h.name, "keep-alive")) continue;
+        if (asciiEqlIgnoreCase(h.name, "content-length")) continue;
+        try headers.append(try a.dupe(u8, h.name), try a.dupe(u8, h.value));
+    }
+    return headers;
+}
+
 /// 429 path: write status + headers + Content-Length + buffered body.
 fn writeBufferedResponse(
     writer: anytype,
@@ -787,6 +891,16 @@ fn writeBufferedResponse(
     try writer.print("Content-Length: {d}\r\n", .{body.len});
     try writer.writeAll("Connection: close\r\n\r\n");
     try writer.writeAll(body);
+}
+
+fn writeBufferedStoredResponse(writer: anytype, response: BufferedResponse) !void {
+    try writer.print("HTTP/1.1 {d} \r\n", .{response.status});
+    for (response.headers.items.items) |h| {
+        try writer.print("{s}: {s}\r\n", .{ h.name, h.value });
+    }
+    try writer.print("Content-Length: {d}\r\n", .{response.body.len});
+    try writer.writeAll("Connection: close\r\n\r\n");
+    try writer.writeAll(response.body);
 }
 
 /// Streaming path: write status + headers (no Content-Length, no

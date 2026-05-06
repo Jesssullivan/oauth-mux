@@ -119,6 +119,7 @@ assert_grep "proxy_turn 401 classified auth_unauthorized" '"kind":"proxy_turn".*
 assert_grep "proxy_observed_401_codex_handles diagnostic emitted" '"kind":"proxy_observed_401_codex_handles"' "$NDJSON"
 
 assert_no_grep "no swap fired" '"kind":"proxy_post_swap_turn"' "$NDJSON"
+assert_no_grep "no same-turn retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
 assert_no_grep "no quota_exhausted misclassification" '"classification":"quota_exhausted"' "$NDJSON"
 assert_no_grep "claim_level not promoted" '"claim_level":"next_turn_seamless"' "$NDJSON"
 assert_grep "session_ended final_claim_level remains broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
@@ -157,5 +158,5 @@ else
 fi
 
 echo
-echo "smoke-codex-401-propagation: all 12 assertions passed."
+echo "smoke-codex-401-propagation: all 13 assertions passed."
 echo "  full ndjson: $NDJSON"
