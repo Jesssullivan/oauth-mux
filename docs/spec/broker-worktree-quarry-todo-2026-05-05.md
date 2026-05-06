@@ -307,6 +307,16 @@ These need review before public promotion:
 - Local `gh` posting succeeded after ignoring a stale `GH_TOKEN` environment
   variable and using the valid keyring/CLI auth. Comments posted:
   #131 `4384946494`, #177 `4384947088`, #176 `4384947627`.
+- 2026-05-06 managed-session check: this does not appear to be an
+  `oauth-mux` Codex proxy failure. The managed session exports
+  `OMUX_ACTIVE_PROVIDER=codex`, `OMUX_ACTIVE_ACCOUNT=max-1`, and
+  `OMUX_ACTIVE_PROFILE=codex-max`, but no process-wide `HTTP_PROXY` /
+  `HTTPS_PROXY`. The Codex adapter writes a per-session `config.toml`
+  provider override for `/backend-api/codex`; it does not intercept GitHub
+  connector requests. Local `gh auth status` reports a repo-scoped token with
+  write-capable scopes, while the Apps connector identity is independent and
+  can read identity but fails issue-comment writes. Treat connector writes as
+  a GitHub App permission/installation problem until proven otherwise.
 - Remaining acceptance gate: provider-originated `usage_limit_reached` inside a
   real managed `oauth-mux codex` session, with redacted status evidence showing
   the same no-visible-429 retry sequence and a stable child process.
