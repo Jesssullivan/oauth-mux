@@ -28,6 +28,10 @@ Env (set by the smoke harness):
   OMUX_STUB_CODEX_AUTH_TOKENS — optional comma-separated bearer tokens to
                             send through Authorization, one per turn. The
                             last token is reused when turns exceed entries.
+  OMUX_STUB_APPEND_SESSION — optional path relative to CODEX_HOME to append
+                            a redacted marker to. Used by resume smokes to
+                            prove the managed session authority receives
+                            child writes.
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -127,6 +131,20 @@ def _session_bridge_report(codex_home: Path) -> dict:
     }
 
 
+def _append_session_marker(codex_home: Path) -> dict:
+    rel = os.environ.get("OMUX_STUB_APPEND_SESSION")
+    if not rel:
+        return {"checked": False}
+    target = codex_home / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"stub_resume_write": True, "argv_len": len(sys.argv) - 1}) + "\n")
+    return {
+        "checked": True,
+        "path_printed": False,
+    }
+
+
 def main() -> int:
     pid = os.getpid()
     pidfile = Path(os.environ.get("OMUX_STUB_CODEX_PIDFILE", "/tmp/omux-stub-codex.pid"))
@@ -138,6 +156,7 @@ def main() -> int:
     codex_home = Path(os.environ["CODEX_HOME"])
     proxy_url = _read_proxy_url(codex_home)
     session_bridge = _session_bridge_report(codex_home)
+    session_append = _append_session_marker(codex_home)
 
     started_at = time.time()
     print(
@@ -168,6 +187,7 @@ def main() -> int:
         "codex_home_path_printed": False,
         "active_account_at_start": os.environ.get("OMUX_ACTIVE_ACCOUNT"),
         "session_bridge": session_bridge,
+        "session_append": session_append,
     }
     report_path.write_text(json.dumps(report, indent=2))
     print(f"stub-codex: pid_stable={report['pid_stable']} turns={turns}", file=sys.stderr, flush=True)
