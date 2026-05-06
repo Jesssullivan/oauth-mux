@@ -32,6 +32,12 @@ request with a different account's fixture credentials. Runtime
 auth source; the adapter does not rewrite the account-local
 `config.toml`.
 
+Known gap, 2026-05-05: this overlay currently separates auth/config
+authority correctly but does not yet bridge Codex's canonical session
+authority. A managed run can therefore hide `~/.codex/sessions` from
+`codex resume`. `docs/spec/harness-session-authority-bridge-2026-05-05.md`
+is the P1 plan for fixing that without copying the whole session store.
+
 That smoke is structural evidence only. It uses local stubs and fake
 fixture tokens, makes no provider calls, and keeps the adapter output at
 `claim_level:"broker_owned"` while reporting
@@ -101,7 +107,9 @@ both layers, Level 3 is the default and Level 4 is reachable.
    selected custom provider (`model_provider = "oauth_mux_openai"` and
    `[model_providers.oauth_mux_openai]`) points at the wire-layer proxy.
    Codex 0.128+ rejects overriding the reserved built-in `openai`
-   provider id.
+   provider id. Session-authority paths must be bridged per
+   `docs/spec/harness-session-authority-bridge-2026-05-05.md`, not copied
+   wholesale into this overlay.
 5. Binds the wire-layer proxy on `127.0.0.1:<dynamic-port>`, with the
    proxy holding the account pool reference and the broker session id.
 6. Spawns `codex app-server --listen stdio://` as a child, with
@@ -527,3 +535,7 @@ The adapter is acceptable when:
   Cloudflare-relevant headers to chatgpt.com, or do bare `Authorization +
   ChatGPT-Account-ID` headers suffice? (`bearer_auth_provider.rs` only
   shows the latter; capture confirms.)
+- **A5.** Which Codex files are required for managed resume parity:
+  `sessions/` only, or also `session_index.jsonl`, `history.jsonl`, and
+  `shell_snapshots/`? The answer belongs in the session-authority bridge
+  smoke before live managed-frame resume is treated as parity.

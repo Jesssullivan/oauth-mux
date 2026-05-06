@@ -3,6 +3,8 @@ Date: 2026-05-03
 Status: design pattern doc for non-Codex adapters. Anchor:
 `docs/spec/broker-mcp-contract-2026-05-03.md`. Codex-specific worked
 example: `docs/spec/codex-adapter-contract-2026-05-03.md`.
+Store-boundary companion:
+`docs/spec/harness-session-authority-bridge-2026-05-05.md`.
 
 ## What an adapter is, in one sentence
 
@@ -19,7 +21,7 @@ harness's native auth/IPC surface on the other.
 ## What every adapter MUST decide
 
 Every harness has a different surface area. Before writing an adapter,
-answer these eleven questions in a per-harness contract spec (the way
+answer these twelve questions in a per-harness contract spec (the way
 `codex-adapter-contract-2026-05-03.md` answers them for Codex):
 
 1. **Token shape.** What is the credential the harness consumes? Bearer
@@ -59,8 +61,14 @@ answer these eleven questions in a per-harness contract spec (the way
     multiple subscription accounts in rotation? The adapter must honestly
     label this; we implement what is technically possible, we name what
     is policy-controversial, we do not advocate.
+12. **Session authority.** Which local files or service APIs implement
+    resume/history/session continuity? Can the adapter retain that
+    authority while keeping auth/config mux-owned? If the harness exposes
+    only one home directory, follow
+    `docs/spec/harness-session-authority-bridge-2026-05-05.md` before
+    claiming managed-session parity.
 
-If any of these eleven cannot be answered from public source / docs /
+If any of these cannot be answered from public source / docs /
 captured wire evidence, that gap is a Phase 0 capture task before the
 adapter is written. Adapters MUST NOT be written against assumed shapes.
 
@@ -204,7 +212,7 @@ Start a new adapter when, and only when:
    in-place mux meaningfully changes their workflow. (If quotas hit
    monthly, not weekly, a wrapper tells them to manually switch is
    probably enough.)
-2. The eleven questions above are answerable from public source +
+2. The twelve questions above are answerable from public source +
    captured wire evidence.
 3. The harness's architecture maps to A, B, or C, and you are honest
    about which.
