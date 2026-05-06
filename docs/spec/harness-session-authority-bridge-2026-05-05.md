@@ -26,6 +26,15 @@ Codex sessions. The 2026-05-06 managed-resume UX refactor plan records the
 daily-use command contract and regression guards required before this is
 treated as parity with bare Codex.
 
+The 2026-05-06 dogfood-6 auth failure exposed the auth-side counterpart:
+Codex can refresh tokens inside the managed overlay, and the adapter must
+import changed overlay `auth.json` back into the selected mux-owned account
+source before the next managed frame. Current code emits a redacted
+`auth_writeback` frame for that import. This writeback is scoped to the
+oauth-mux account source, not canonical `~/.codex/auth.json`. The import
+does not overwrite a source auth file that changed independently after the
+overlay was created; that conflict is surfaced as `source_conflict:true`.
+
 ## 0. Problem
 
 `oauth-mux codex run` currently creates a temporary `CODEX_HOME` overlay so
@@ -78,7 +87,10 @@ copy into an adapter overlay, but it must not mutate the user's canonical auth
 store unless the user is explicitly enrolling or reauthing that account.
 
 For Codex today: `auth.json` and likely `installation_id` are auth-authority
-inputs for the managed overlay.
+inputs for the managed overlay. If Codex mutates overlay `auth.json` during
+its native 401 refresh path, oauth-mux writes the changed file back to the
+selected account source so route auth does not go stale between managed
+frames.
 
 ### 2.2 Managed Config Overlay
 

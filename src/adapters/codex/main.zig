@@ -77,6 +77,7 @@ const SessionCodexHome = struct {
     path: []u8,
     session_authority: SessionAuthorityMode,
     authority_home: ?[]u8 = null,
+    auth_initial_hash: [32]u8,
 
     fn deinit(self: SessionCodexHome, allocator: std.mem.Allocator) void {
         std.fs.cwd().deleteTree(self.path) catch {};
@@ -141,6 +142,16 @@ const ResumeObservation = struct {
     created: usize = 0,
     explicit_target_found_before: ?bool = null,
     explicit_target_changed: ?bool = null,
+};
+
+const AuthWritebackObservation = struct {
+    overlay_auth_present: bool = false,
+    source_auth_present: bool = false,
+    changed: bool = false,
+    written: bool = false,
+    source_conflict: bool = false,
+    ok: bool = true,
+    error_name: ?[]const u8 = null,
 };
 
 const SessionAuthorityEntryKind = enum {
@@ -360,7 +371,19 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     tickleProxy(proxy_port);
     proxy_thread.join();
 
+    const auth_writeback = observeAuthWriteback(allocator, codex_home.path, source_auth_path, codex_home.auth_initial_hash) catch |e| failed: {
+        try stderr.print("oauth-mux codex: auth writeback failed: {s}\n", .{@errorName(e)});
+        break :failed AuthWritebackObservation{
+            .ok = false,
+            .error_name = @errorName(e),
+        };
+    };
+    if (auth_writeback.source_conflict) {
+        try stderr.writeAll("oauth-mux codex: auth writeback conflict; not overwriting newer account auth\n");
+    }
+
     if (emit_status) {
+        try writeAuthWritebackStatus(status_writer, auth_writeback);
         if (resume_request.requested()) {
             const observation = if (codex_home.authority_home) |authority_home|
                 try observeResumeWriteback(allocator, authority_home, if (resume_snapshot) |*snapshot| snapshot else null, resume_request)
@@ -448,6 +471,7 @@ fn createSessionCodexHomeUnder(
     const auth_dst = try std.fs.path.join(allocator, &.{ session_home, "auth.json" });
     defer allocator.free(auth_dst);
     try copyFileContents(allocator, source_auth_path, auth_dst);
+    const auth_initial_hash = try hashFileContents(allocator, auth_dst);
 
     if (std.fs.path.dirname(source_auth_path)) |source_dir| {
         const install_src = try std.fs.path.join(allocator, &.{ source_dir, "installation_id" });
@@ -470,6 +494,7 @@ fn createSessionCodexHomeUnder(
         .path = session_home,
         .session_authority = session_authority,
         .authority_home = if (session_authority_home) |home| try allocator.dupe(u8, home) else null,
+        .auth_initial_hash = auth_initial_hash,
     };
 }
 
@@ -691,6 +716,27 @@ fn writeResumeWritebackStatus(
     try writer.writeAll(",\"session_id_printed\":false,\"path_printed\":false}\n");
 }
 
+fn writeAuthWritebackStatus(
+    writer: anytype,
+    observation: AuthWritebackObservation,
+) !void {
+    try writer.print(
+        "{{\"kind\":\"auth_writeback\",\"auth_authority\":\"mux_owned_overlay\",\"overlay_auth_present\":{any},\"source_auth_present\":{any},\"changed\":{any},\"written\":{any},\"source_conflict\":{any},\"ok\":{any},\"token_material_printed\":false,\"path_printed\":false",
+        .{
+            observation.overlay_auth_present,
+            observation.source_auth_present,
+            observation.changed,
+            observation.written,
+            observation.source_conflict,
+            observation.ok,
+        },
+    );
+    if (observation.error_name) |name| {
+        try writer.print(",\"error\":\"{s}\"", .{name});
+    }
+    try writer.writeAll("}\n");
+}
+
 fn copyFileContents(
     allocator: std.mem.Allocator,
     source_path: []const u8,
@@ -701,6 +747,110 @@ fn copyFileContents(
     const f = try std.fs.cwd().createFile(dest_path, .{ .mode = 0o600, .truncate = true });
     defer f.close();
     try f.writeAll(bytes);
+}
+
+fn observeAuthWriteback(
+    allocator: std.mem.Allocator,
+    session_home: []const u8,
+    source_auth_path: []const u8,
+    initial_auth_hash: [32]u8,
+) !AuthWritebackObservation {
+    var observation = AuthWritebackObservation{};
+
+    const overlay_auth_path = try std.fs.path.join(allocator, &.{ session_home, "auth.json" });
+    defer allocator.free(overlay_auth_path);
+
+    const overlay_bytes = std.fs.cwd().readFileAlloc(allocator, overlay_auth_path, 2 * 1024 * 1024) catch |e| switch (e) {
+        error.FileNotFound => return observation,
+        else => return e,
+    };
+    defer allocator.free(overlay_bytes);
+    observation.overlay_auth_present = true;
+
+    const overlay_hash = hashBytes(overlay_bytes);
+    observation.changed = !std.mem.eql(u8, overlay_hash[0..], initial_auth_hash[0..]);
+
+    var source_bytes: ?[]u8 = null;
+    defer if (source_bytes) |bytes| allocator.free(bytes);
+    source_bytes = std.fs.cwd().readFileAlloc(allocator, source_auth_path, 2 * 1024 * 1024) catch |e| switch (e) {
+        error.FileNotFound => null,
+        else => return e,
+    };
+    observation.source_auth_present = source_bytes != null;
+
+    if (!observation.changed) return observation;
+
+    if (source_bytes) |bytes| {
+        if (std.mem.eql(u8, overlay_bytes, bytes)) {
+            return observation;
+        }
+        const source_hash = hashBytes(bytes);
+        if (!std.mem.eql(u8, source_hash[0..], initial_auth_hash[0..])) {
+            observation.source_conflict = true;
+            observation.ok = false;
+            return observation;
+        }
+    }
+
+    if (observation.changed) {
+        try writeFileReplaceBytes(allocator, source_auth_path, overlay_bytes);
+        observation.written = true;
+    }
+
+    return observation;
+}
+
+fn hashFileContents(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) ![32]u8 {
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 2 * 1024 * 1024);
+    defer allocator.free(bytes);
+    return hashBytes(bytes);
+}
+
+fn hashBytes(bytes: []const u8) [32]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return digest;
+}
+
+fn writeFileReplaceBytes(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    bytes: []const u8,
+) !void {
+    if (std.fs.path.dirname(path)) |dir| {
+        try std.fs.cwd().makePath(dir);
+    }
+
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp-{x}", .{ path, std.crypto.random.int(u64) });
+    defer allocator.free(tmp_path);
+
+    const is_absolute = std.fs.path.isAbsolute(path);
+    const file = if (is_absolute)
+        try std.fs.createFileAbsolute(tmp_path, .{ .exclusive = true, .mode = 0o600 })
+    else
+        try std.fs.cwd().createFile(tmp_path, .{ .exclusive = true, .mode = 0o600 });
+    errdefer {
+        if (is_absolute) {
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+        } else {
+            std.fs.cwd().deleteFile(tmp_path) catch {};
+        }
+    }
+
+    {
+        defer file.close();
+        try file.writeAll(bytes);
+        try file.sync();
+    }
+
+    if (is_absolute) {
+        try std.fs.renameAbsolute(tmp_path, path);
+    } else {
+        try std.fs.cwd().rename(tmp_path, path);
+    }
 }
 
 fn writeManagedConfigToml(
@@ -883,6 +1033,121 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const original_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, source_config, 1024);
     defer std.testing.allocator.free(original_config);
     try std.testing.expectEqualStrings("preexisting = true\n", original_config);
+}
+
+test "observeAuthWriteback imports changed overlay auth into mux source" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"old\",\"refresh_token\":\"old-rt\"}}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const overlay_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
+    defer std.testing.allocator.free(overlay_auth);
+    {
+        const auth = try std.fs.cwd().createFile(overlay_auth, .{ .mode = 0o600, .truncate = true });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"new\",\"refresh_token\":\"new-rt\"}}\n");
+    }
+
+    const observation = try observeAuthWriteback(std.testing.allocator, codex_home.path, auth_path, codex_home.auth_initial_hash);
+    try std.testing.expect(observation.overlay_auth_present);
+    try std.testing.expect(observation.source_auth_present);
+    try std.testing.expect(observation.changed);
+    try std.testing.expect(observation.written);
+    try std.testing.expect(!observation.source_conflict);
+    try std.testing.expect(observation.ok);
+    try std.testing.expect(observation.error_name == null);
+
+    const source_auth = try std.fs.cwd().readFileAlloc(std.testing.allocator, auth_path, 1024);
+    defer std.testing.allocator.free(source_auth);
+    try std.testing.expectEqualStrings("{\"tokens\":{\"access_token\":\"new\",\"refresh_token\":\"new-rt\"}}\n", source_auth);
+}
+
+test "observeAuthWriteback leaves unchanged overlay auth alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"same\"}}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const observation = try observeAuthWriteback(std.testing.allocator, codex_home.path, auth_path, codex_home.auth_initial_hash);
+    try std.testing.expect(observation.overlay_auth_present);
+    try std.testing.expect(observation.source_auth_present);
+    try std.testing.expect(!observation.changed);
+    try std.testing.expect(!observation.written);
+    try std.testing.expect(!observation.source_conflict);
+    try std.testing.expect(observation.ok);
+    try std.testing.expect(observation.error_name == null);
+}
+
+test "observeAuthWriteback refuses to overwrite independently changed mux source" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"old\",\"refresh_token\":\"old-rt\"}}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const overlay_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
+    defer std.testing.allocator.free(overlay_auth);
+    {
+        const auth = try std.fs.cwd().createFile(overlay_auth, .{ .mode = 0o600, .truncate = true });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"overlay-new\",\"refresh_token\":\"overlay-rt\"}}\n");
+    }
+    {
+        const auth = try std.fs.cwd().createFile(auth_path, .{ .mode = 0o600, .truncate = true });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"source-new\",\"refresh_token\":\"source-rt\"}}\n");
+    }
+
+    const observation = try observeAuthWriteback(std.testing.allocator, codex_home.path, auth_path, codex_home.auth_initial_hash);
+    try std.testing.expect(observation.overlay_auth_present);
+    try std.testing.expect(observation.source_auth_present);
+    try std.testing.expect(observation.changed);
+    try std.testing.expect(!observation.written);
+    try std.testing.expect(observation.source_conflict);
+    try std.testing.expect(!observation.ok);
+
+    const source_auth = try std.fs.cwd().readFileAlloc(std.testing.allocator, auth_path, 1024);
+    defer std.testing.allocator.free(source_auth);
+    try std.testing.expectEqualStrings("{\"tokens\":{\"access_token\":\"source-new\",\"refresh_token\":\"source-rt\"}}\n", source_auth);
 }
 
 test "createSessionCodexHomeUnder bridges canonical session authority without copying" {

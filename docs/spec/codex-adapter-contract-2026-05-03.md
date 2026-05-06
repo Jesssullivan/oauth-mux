@@ -415,6 +415,10 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 { "kind": "resume_preflight", "mode": "last", "session_authority": "canonical_bridge", "rollouts_before": 42, "session_id_printed": false, "path_printed": false }
 { "kind": "resume_writeback", "mode": "last", "session_authority": "canonical_bridge", "changed_existing": 1, "created": 0, "session_id_printed": false, "path_printed": false }
 
+// auth authority import from the managed overlay back to the selected
+// mux-owned account source after Codex refreshes tokens inside CODEX_HOME
+{ "kind": "auth_writeback", "auth_authority": "mux_owned_overlay", "overlay_auth_present": true, "source_auth_present": true, "changed": true, "written": true, "source_conflict": false, "ok": true, "token_material_printed": false, "path_printed": false }
+
 // quota observation that did not trigger a swap
 { "kind": "quota_observed", "account": "codex:max-1", "kind_detail": "rate_limited", "retry_after_s": 12 }
 

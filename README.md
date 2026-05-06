@@ -29,6 +29,9 @@ Real on `main`:
   process before Codex receives the 429.
 - Same-account Codex child refresh is preserved so oauth-mux does not pin Codex
   to stale materialized access tokens after a native refresh.
+- Managed Codex overlay auth is imported back to the selected mux-owned account
+  source after child exit, so a refreshed `auth.json` is not lost between
+  managed frames.
 
 Not proven yet:
 
@@ -95,4 +98,8 @@ shape requires a `quota_exhausted` proxy turn, a retry/swap event, and a
 successful turn on a distinct fallback account.
 `verdict:"brokered_auth_failed"` means the managed frame started, but upstream
 returned unrecovered `401 auth_unauthorized` responses. That is an auth-health
-failure, not quota fallback evidence.
+failure, not quota fallback evidence. Status artifacts should also show an
+`auth_writeback` frame; `changed:true,written:true,ok:true` means Codex updated
+managed overlay auth and oauth-mux imported it back to the route's auth source.
+`source_conflict:true` means another writer changed the mux source first, so
+oauth-mux refused to overwrite it.

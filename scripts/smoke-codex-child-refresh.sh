@@ -62,6 +62,7 @@ cat >"$TMP/oauth-mux.config.json" <<EOF
   }
 }
 EOF
+REFRESHED_AUTH="{\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"$ID_TOKEN\",\"access_token\":\"CHILD-REFRESHED\",\"refresh_token\":\"RT-A-REFRESHED\",\"account_id\":\"acc-A-id\"},\"auth_mode\":\"Chatgpt\"}"
 
 OMUX_STUB_PORT=0 \
   OMUX_STUB_PORTFILE="$PORTFILE" \
@@ -85,6 +86,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STUB_CODEX_TURNS=2 \
   OMUX_STUB_CODEX_CHATGPT_ACCOUNT_ID="acc-A-id" \
   OMUX_STUB_CODEX_AUTH_TOKENS="CHILD-OLD,CHILD-REFRESHED" \
+  OMUX_STUB_REWRITE_AUTH_JSON="$REFRESHED_AUTH" \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
   "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
     echo "adapter exited nonzero" >&2
@@ -120,6 +122,7 @@ assert_no_grep() {
 
 assert_grep "session_started" '"kind":"session_started"' "$NDJSON"
 assert_grep "same-account child auth was preserved" '"kind":"proxy_preserved_child_auth".*"reason":"same_account_child_refresh"' "$NDJSON"
+assert_grep "overlay auth refresh was imported" '"kind":"auth_writeback".*"changed":true.*"written":true.*"ok":true' "$NDJSON"
 assert_grep "turns stayed 200 ok" '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 TURN_COUNT=$(grep -c '"kind":"proxy_turn"' "$NDJSON" | tr -d ' ')
 if [[ "$TURN_COUNT" -eq 2 ]]; then
@@ -158,6 +161,16 @@ else
     exit 1
 fi
 
+SOURCE_ACCESS_TOKEN=$(jq -r '.tokens.access_token' "$TMP/account-A/auth.json")
+SOURCE_REFRESH_TOKEN=$(jq -r '.tokens.refresh_token' "$TMP/account-A/auth.json")
+if [[ "$SOURCE_ACCESS_TOKEN" == "CHILD-REFRESHED" && "$SOURCE_REFRESH_TOKEN" == "RT-A-REFRESHED" ]]; then
+    echo "  ✓ refreshed overlay auth was written back to mux source"
+else
+    echo "  ✗ mux source auth was not refreshed from overlay" >&2
+    jq '{access_token:.tokens.access_token, refresh_token:.tokens.refresh_token}' "$TMP/account-A/auth.json" >&2
+    exit 1
+fi
+
 DISTINCT_ACCOUNTS=$(jq -r .account_id "$UPSTREAM_LOG" | sort -u | wc -l | tr -d ' ')
 if [[ "$DISTINCT_ACCOUNTS" -eq 1 ]] && [[ "$(jq -r '.[0].account_id' <(jq -s '.' "$UPSTREAM_LOG"))" == "acc-A-id" ]]; then
     echo "  ✓ same elected account stayed selected"
@@ -176,7 +189,15 @@ else
     exit 1
 fi
 
+if [[ "$(jq -r '.auth_rewrite.checked' "$STUB_REPORT")" == "true" ]]; then
+    echo "  ✓ stub emulated Codex overlay auth persistence"
+else
+    echo "  ✗ stub did not rewrite overlay auth" >&2
+    jq .auth_rewrite "$STUB_REPORT" >&2
+    exit 1
+fi
+
 echo
-echo "smoke-codex-child-refresh: all 12 assertions passed."
+echo "smoke-codex-child-refresh: all 15 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPSTREAM_LOG"
