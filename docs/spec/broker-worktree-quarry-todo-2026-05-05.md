@@ -301,10 +301,12 @@ These need review before public promotion:
   selected `codex:max-1`; selectable fallbacks `max-2`, `max-3`, and `max-4`;
   `selectable_broker_routes:4`, `selectable_fallback_routes:3`,
   `spare_fallback_ready:true`, `single_route_at_risk:false`.
-- GitHub issue comment writes for #131, #176, and #177 were attempted from the
-  connector but failed with `403 Resource not accessible by integration`.
-  The issue-ready update is therefore recorded here until it can be posted by
-  a credential with issue-comment permission.
+- GitHub MCP connector issue-comment writes for #131, #176, and #177 failed
+  with `403 Resource not accessible by integration`; the connector needs
+  issue-comment permission before it can be trusted for tracker writes.
+- Local `gh` posting succeeded after ignoring a stale `GH_TOKEN` environment
+  variable and using the valid keyring/CLI auth. Comments posted:
+  #131 `4384946494`, #177 `4384947088`, #176 `4384947627`.
 - Remaining acceptance gate: provider-originated `usage_limit_reached` inside a
   real managed `oauth-mux codex` session, with redacted status evidence showing
   the same no-visible-429 retry sequence and a stable child process.
