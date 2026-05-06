@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 401 propagation smoke: upstream 401 is auth refresh territory owned by
-# Codex. The proxy must classify it, emit the diagnostic event, and
-# propagate the 401 unchanged without rotating accounts.
+# 401 auth fallback smoke: the selected account returns 401 while a fallback
+# account is healthy. The proxy must classify the selected account as auth
+# unhealthy, retry the same request against the fallback before Codex sees the
+# 401, and persist account-credential health without claiming quota.
 
 set -euo pipefail
 
@@ -89,7 +90,8 @@ chmod +x "$STUB_BIN_DIR/codex"
 
 OMUX_STUB_PORT=0 \
   OMUX_STUB_PORTFILE="$PORTFILE" \
-  OMUX_STUB_ALWAYS_STATUS=401 \
+  OMUX_STUB_OK_BEFORE_429=99 \
+  OMUX_STUB_ACCOUNT_STATUS_JSON='{"acc-A-id":401}' \
   python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$TMP/upstream.stderr" &
 UPSTREAM_PID=$!
 
@@ -99,7 +101,7 @@ for _ in {1..40}; do
 done
 [[ -s "$PORTFILE" ]] || { echo "stub upstream did not bind" >&2; exit 1; }
 UPSTREAM_PORT="$(cat "$PORTFILE" | tr -d '[:space:]')"
-echo "smoke-codex-401-propagation: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_PORT always_status=401"
+echo "smoke-codex-401-propagation: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_PORT max-1=401 max-2=200"
 
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$TMP/state" \
@@ -142,12 +144,13 @@ assert_no_grep() {
 
 assert_grep "session_started" '"kind":"session_started"' "$NDJSON"
 assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed":false' "$NDJSON"
-assert_grep "proxy_turn 401 classified auth_unauthorized" '"kind":"proxy_turn".*"status":401.*"classification":"auth_unauthorized"' "$NDJSON"
-assert_grep "proxy_observed_401_codex_handles diagnostic emitted" '"kind":"proxy_observed_401_codex_handles"' "$NDJSON"
+assert_grep "proxy_turn 401 classified auth_unauthorized" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":401.*"classification":"auth_unauthorized".*"delivered_to_codex":false' "$NDJSON"
+assert_grep "proxy_auth_same_turn_retry fired" '"kind":"proxy_auth_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"auth_unauthorized"' "$NDJSON"
+assert_grep "fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "unrecovered 401 recorded as auth health, not quota" '"kind":"auth_health_observed".*"recorded":true.*"reason":"unrecovered_401_no_writeback".*"quota_claim":false' "$NDJSON"
 
-assert_no_grep "no swap fired" '"kind":"proxy_post_swap_turn"' "$NDJSON"
-assert_no_grep "no same-turn retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
+assert_no_grep "401 was not handed to Codex" '"kind":"proxy_observed_401_codex_handles"' "$NDJSON"
+assert_no_grep "quota retry did not fire" '"kind":"proxy_same_turn_retry"' "$NDJSON"
 assert_no_grep "no quota_exhausted misclassification" '"classification":"quota_exhausted"' "$NDJSON"
 assert_no_grep "claim_level not promoted" '"claim_level":"next_turn_seamless"' "$NDJSON"
 assert_grep "session_ended final_claim_level remains broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
@@ -160,26 +163,26 @@ else
 fi
 
 DISTINCT_ACCT=$(grep -oE '"account":"codex:max-[12]"' "$NDJSON" | sort -u | wc -l | tr -d ' ')
-if [[ "$DISTINCT_ACCT" -eq 1 ]]; then
-    echo "  ✓ exactly one account elected throughout"
+if [[ "$DISTINCT_ACCT" -eq 2 ]]; then
+    echo "  ✓ auth fallback used both accounts"
 else
-    echo "  ✗ 401 caused account rotation across $DISTINCT_ACCT accounts" >&2
+    echo "  ✗ expected auth fallback across two accounts; saw distinct=$DISTINCT_ACCT" >&2
     grep -oE '"account":"codex:max-[12]"' "$NDJSON" | sort -u >&2
     exit 1
 fi
 
-GOT_401=$(jq -r '.turns | map(select(.status == 401)) | length' "$STUB_REPORT")
-if [[ "$GOT_401" -eq 4 ]]; then
-    echo "  ✓ stub-codex saw all 4 turns return 401"
+GOT_200=$(jq -r '.turns | map(select(.status == 200)) | length' "$STUB_REPORT")
+if [[ "$GOT_200" -eq 4 ]]; then
+    echo "  ✓ stub-codex saw all 4 turns return 200"
 else
-    echo "  ✗ stub-codex saw $GOT_401 401s (expected 4)" >&2
+    echo "  ✗ stub-codex saw $GOT_200 200s (expected 4)" >&2
     jq .turns "$STUB_REPORT" >&2
     exit 1
 fi
 
 PID_STABLE=$(jq -r .pid_stable "$STUB_REPORT")
 if [[ "$PID_STABLE" == "true" ]]; then
-    echo "  ✓ stub-codex PID stable through 401 storm"
+    echo "  ✓ stub-codex PID stable through auth fallback"
 else
     echo "  ✗ PID changed across 401s" >&2
     exit 1
@@ -205,5 +208,5 @@ else
 fi
 
 echo
-echo "smoke-codex-401-propagation: all 16 assertions passed."
+echo "smoke-codex-401-propagation: all assertions passed."
 echo "  full ndjson: $NDJSON"

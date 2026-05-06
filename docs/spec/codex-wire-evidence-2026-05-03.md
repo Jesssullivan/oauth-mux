@@ -180,13 +180,21 @@ fixture shape.
   L136 + `exec/src/lib.rs` L1580–1588).
 
 In the current adapter-owned child + wire-proxy topology:
-- The proxy propagates the 401 to codex unchanged (streamed response).
-- Codex's RefreshToken path runs entirely inside codex; oauth-mux
-  doesn't see it.
+- The proxy buffers 401 responses so it can make an evidence-preserving
+  auth decision before Codex sees the failure.
+- If another account is selectable, the proxy marks the failed account
+  unauthorized in the in-process pool, drops `x-codex-turn-state`, and retries
+  the same request against the fallback account. It emits
+  `proxy_auth_same_turn_retry`. This is auth-continuity evidence, not quota
+  exhaustion evidence.
+- If no fallback account is selectable, the proxy returns the buffered 401 to
+  codex unchanged and emits `proxy_observed_401_codex_handles`.
+- Codex's RefreshToken path can still run entirely inside codex on the no-
+  fallback path.
 - During the same managed session, the proxy preserves Codex's refreshed
   same-account `Authorization` header instead of re-signing with stale
   oauth-mux materialized auth. This keeps Codex's native retry path
-  authoritative for 401 recovery.
+  authoritative when Codex receives and recovers from a 401 itself.
 - At child exit, the adapter compares the managed overlay `auth.json`
   with the selected account's mux-owned auth source. If Codex refreshed
   tokens inside the overlay, oauth-mux imports that changed file back
@@ -196,8 +204,9 @@ In the current adapter-owned child + wire-proxy topology:
   if another managed session changed the source after this overlay was
   created, oauth-mux reports `source_conflict:true` and does not
   overwrite that fresher source.
-- Proxy emits `proxy_observed_401_codex_handles` for telemetry.
-- DOES NOT call `pool.markUnauthorized` (would defeat refresh loop).
+- `pool.markUnauthorized` is called only after fallback credentials have
+  materialized for a replacement account. Without a selectable fallback, the
+  proxy leaves the failed account to Codex's native refresh loop.
 - If the managed session exits after unrecovered 401s and the overlay
   `auth.json` did not change, the adapter records account-credential health
   for the next launch and emits `auth_health_observed` with

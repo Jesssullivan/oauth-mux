@@ -36,6 +36,7 @@ Env (set by the smoke harness):
                             CODEX_HOME before sending turns. Used to emulate
                             Codex persisting refreshed ChatGPT tokens in the
                             managed overlay.
+  OMUX_STUB_CODEX_TURN_DELAY_MS — optional delay between turns (default 50).
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -169,6 +170,7 @@ def main() -> int:
 
     report_path = Path(os.environ.get("OMUX_STUB_CODEX_REPORT", "/tmp/omux-stub-codex.report"))
     turns = int(os.environ.get("OMUX_STUB_CODEX_TURNS", "5"))
+    turn_delay_ms = int(os.environ.get("OMUX_STUB_CODEX_TURN_DELAY_MS", "50"))
 
     codex_home = Path(os.environ["CODEX_HOME"])
     proxy_url = _read_proxy_url(codex_home)
@@ -192,7 +194,7 @@ def main() -> int:
         )
         turn_results.append({"turn": i, "status": status, "body_head": body[:120]})
         print(f"stub-codex: turn {i} -> {status}", file=sys.stderr, flush=True)
-        time.sleep(0.05)
+        time.sleep(turn_delay_ms / 1000)
 
     end_pid = os.getpid()
     report = {
@@ -204,6 +206,9 @@ def main() -> int:
         "turns": turn_results,
         "codex_home_path_printed": False,
         "active_account_at_start": os.environ.get("OMUX_ACTIVE_ACCOUNT"),
+        "managed_frame_id_present": bool(os.environ.get("OMUX_MANAGED_FRAME_ID")),
+        "claim_level": os.environ.get("OMUX_CLAIM_LEVEL"),
+        "status_file_present": bool(os.environ.get("OMUX_STATUS_FILE")),
         "session_bridge": session_bridge,
         "session_append": session_append,
         "auth_rewrite": auth_rewrite,

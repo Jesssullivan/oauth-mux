@@ -72,6 +72,15 @@ ERROR_TYPE = os.environ.get("OMUX_STUB_429_TYPE", "usage_limit_reached")
 # verify proxy classification + behavior end-to-end.
 ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 
+# OMUX_STUB_ACCOUNT_STATUS_JSON maps ChatGPT-Account-ID values to forced
+# status codes, e.g. {"acc-A-id":401}. Accounts not listed follow the normal
+# OK_BEFORE_429 flow. This lets smokes model a dead active account with a
+# healthy fallback account.
+try:
+    ACCOUNT_STATUS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STATUS_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_STATUS = {}
+
 
 # Per-account request counter. Reset only on process restart.
 ACCOUNT_REQ_COUNT: dict[str, int] = {}
@@ -125,6 +134,15 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         return _hash10(a) if a else "<missing>"
 
     def _classify_for_account(self) -> tuple[int, dict]:
+        acct = self._account_id()
+        if acct in ACCOUNT_STATUS:
+            try:
+                code = int(ACCOUNT_STATUS[acct])
+            except (TypeError, ValueError):
+                code = 500
+            ACCOUNT_REQ_COUNT[acct] = ACCOUNT_REQ_COUNT.get(acct, 0) + 1
+            return code, {"detail": f"forced status {code} for account"}
+
         # OMUX_STUB_ALWAYS_STATUS short-circuits everything: return
         # this exact status with a minimal JSON body. Counters still
         # advance so per-account log records remain unique.
@@ -133,10 +151,9 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
                 code = int(ALWAYS_STATUS)
             except ValueError:
                 code = 500
-            ACCOUNT_REQ_COUNT[self._account_id()] = ACCOUNT_REQ_COUNT.get(self._account_id(), 0) + 1
+            ACCOUNT_REQ_COUNT[acct] = ACCOUNT_REQ_COUNT.get(acct, 0) + 1
             return code, {"detail": f"forced status {code}"}
 
-        acct = self._account_id()
         n = ACCOUNT_REQ_COUNT.get(acct, 0)
         ACCOUNT_REQ_COUNT[acct] = n + 1
         if n < OK_BEFORE_429:
