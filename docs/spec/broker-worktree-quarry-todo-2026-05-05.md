@@ -284,6 +284,31 @@ These need review before public promotion:
 
 ## Hygiene Pass Notes
 
+2026-05-06:
+
+- PR/local commit `5161b23` changed the Codex proxy from next-request-only
+  quota recovery to synthetic same-turn retry:
+  `A -> 429 usage_limit_reached -> mark A exhausted -> elect B -> drop
+  x-codex-turn-state -> retry same request -> B 200`.
+- `scripts/smoke-codex-acceptance.sh` now asserts the stub Codex child sees
+  only 200s when a fallback account succeeds; the original quota 429 is logged
+  as `delivered_to_codex:false`.
+- Negative-path guards now assert no same-turn retry on
+  `usage_not_included` or 401, and all-accounts-exhausted reports
+  `proxy_same_turn_retry_unavailable` plus a clean no-account-selectable path.
+- Full `just check-local` passed after the proxy and smoke updates.
+- No-spend live route readiness, run with normal local filesystem access:
+  selected `codex:max-1`; selectable fallbacks `max-2`, `max-3`, and `max-4`;
+  `selectable_broker_routes:4`, `selectable_fallback_routes:3`,
+  `spare_fallback_ready:true`, `single_route_at_risk:false`.
+- GitHub issue comment writes for #131, #176, and #177 were attempted from the
+  connector but failed with `403 Resource not accessible by integration`.
+  The issue-ready update is therefore recorded here until it can be posted by
+  a credential with issue-comment permission.
+- Remaining acceptance gate: provider-originated `usage_limit_reached` inside a
+  real managed `oauth-mux codex` session, with redacted status evidence showing
+  the same no-visible-429 retry sequence and a stable child process.
+
 2026-05-05:
 
 - Added the tier-insufficient, all-exhausted, and 401-propagation Codex
