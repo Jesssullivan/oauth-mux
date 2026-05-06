@@ -506,3 +506,64 @@ Regression guard:
 - `scripts/smoke-codex-child-refresh.sh` drives two synthetic same-account
   turns with different child bearer tokens and asserts that the upstream sees
   the bearer change without an account swap or a stale 401 loop.
+
+## 9. Dogfood Finding: Splash Screen Is Not Resume Evidence
+
+The second real managed `resume --last` dogfood after the same-account refresh
+fix completed a provider turn through the proxy, but the Codex TUI still
+looked like a fresh startup screen. That is not enough evidence either way:
+Codex can resume a rollout without replaying enough transcript in the visible
+startup pane to make the operator confident.
+
+Correct evidence:
+
+- Before launching the child, oauth-mux snapshots the bridged Codex session
+  authority.
+- After the child exits, oauth-mux reports whether an existing rollout was
+  changed, whether a fresh rollout was created, and whether an explicit resume
+  target changed.
+- The status frame continues to redact session ids and paths.
+
+Regression guard:
+
+- `scripts/smoke-codex-cli-ux.sh` now requires managed resume aliases to emit
+  `resume_preflight` and `resume_writeback` frames, and the stub child appends
+  through the bridged session authority so the adapter proves writeback
+  observation instead of relying on terminal appearance.
+
+## 10. Dogfood Finding: Brokered Resume Works, Cloudflare 400 Was Framing
+
+The first successful brokered resume proof used:
+
+```bash
+./zig-out/bin/oauth-mux codex --profile codex-max \
+  --json-status-file dist/live-qa/managed-resume-dogfood-5/status.ndjson \
+  resume 019dea53-49a0-7890-9580-e88decb97af0
+```
+
+Evidence:
+
+- The process environment reported `OMUX_ACTIVE_PROVIDER=codex`,
+  `OMUX_ACTIVE_ACCOUNT=max-1`, and `OMUX_ACTIVE_PROFILE=codex-max`.
+- The managed `CODEX_HOME` overlay was active.
+- `resume_preflight` found the explicit canonical rollout before launch.
+- `proxy_turn` frames showed the main
+  `POST /backend-api/codex/responses` path as `status:200`,
+  `classification:"ok"`, and `body_class:"none"`.
+
+The prior `dogfood-4` run had already proven that explicit resume writeback
+worked, but the main `responses` POST returned Cloudflare `400 Bad Request`.
+The likely root cause was proxy request framing: oauth-mux forwarded inbound
+`Content-Length` and set `Host` as extra headers while `std.http.Client` was
+also responsible for those fields. The proxy now drops inbound `Host`,
+`Content-Length`, and `Transfer-Encoding` and lets `std.http.Client` own
+request framing.
+
+Remaining Level 3 evidence still required:
+
+- Observe a real provider-originated `429 usage_limit_reached` for the active
+  account inside this managed session.
+- Confirm oauth-mux records the quota event and the next turn selects a
+  distinct fallback account.
+- Do not treat this brokered-resume success as proof of live account-swap
+  success until an actual `proxy_turn` / swap sequence shows it.

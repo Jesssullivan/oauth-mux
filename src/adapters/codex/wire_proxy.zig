@@ -217,8 +217,6 @@ pub const Proxy = struct {
         var out_headers = HeaderList.init(a);
         try copyForwardingHeaders(&req.headers, &out_headers);
         const preserved_child_auth = try setOutboundAuthHeaders(a, &req.headers, &out_headers, tokens);
-        const host_for_header = upstreamHost(a);
-        try out_headers.set("Host", host_for_header);
         if (preserved_child_auth) {
             self.logEvent("proxy_preserved_child_auth", .{
                 .account = elected.id,
@@ -263,8 +261,11 @@ pub const Proxy = struct {
         };
         self.logEvent("proxy_turn", .{
             .account = elected.id,
+            .method = req.method,
+            .path_kind = pathKind(req.path),
             .status = status_and_class.status,
             .classification = @tagName(status_and_class.classification.kind),
+            .body_class = status_and_class.body_class orelse "none",
             .claim_level = self.peak_claim.toString(),
             .streamed = status_and_class.streamed,
         });
@@ -494,16 +495,28 @@ fn readChunked(a: std.mem.Allocator, reader: anytype) ![]u8 {
     return try out.toOwnedSlice(a);
 }
 
-/// Forward selected headers from inbound to outbound; drop hop-by-hop
-/// headers and the three we substitute. Per RFC 7230 §6.1, hop-by-hop
-/// headers MUST NOT be forwarded by intermediaries.
+/// Forward selected headers from inbound to outbound. Drop hop-by-hop
+/// headers, the three account-bound headers we substitute, and wire
+/// framing headers owned by std.http.Client (Host, Content-Length,
+/// Transfer-Encoding). Per RFC 7230 §6.1, hop-by-hop headers MUST NOT
+/// be forwarded by intermediaries.
 fn copyForwardingHeaders(in: *const HeaderList, out: *HeaderList) !void {
     const skip_substituted = [_][]const u8{
-        "authorization",       "chatgpt-account-id", "x-openai-fedramp",
+        "authorization",
+        "chatgpt-account-id",
+        "x-openai-fedramp",
+        // std.http.Client owns request framing:
+        "host",
+        "content-length",
         // hop-by-hop:
-        "connection",          "keep-alive",         "proxy-authenticate",
-        "proxy-authorization", "te",                 "trailers",
-        "transfer-encoding",   "upgrade",            "host",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
     };
     outer: for (in.items.items) |h| {
         for (skip_substituted) |s| {
@@ -558,6 +571,9 @@ fn shouldPreserveChildAuth(
 const StatusAndClassification = struct {
     status: u16,
     classification: Classification,
+    /// Redacted body classification for non-2xx diagnostic evidence.
+    /// Never contains raw response bytes.
+    body_class: ?[]const u8 = null,
     /// True if the body was streamed verbatim to the client (no buffer);
     /// false if it was buffered for classification (429 path) or never
     /// arrived (early failure).
@@ -624,12 +640,53 @@ fn forwardAndStream(
         defer a.free(body);
         const classification = classify(a, status_u16, body);
         try writeBufferedResponse(client_writer, http_req.response, body);
-        return .{ .status = status_u16, .classification = classification, .streamed = false };
+        return .{
+            .status = status_u16,
+            .classification = classification,
+            .body_class = classification.body_class orelse classifyHttpErrorBody(body),
+            .streamed = false,
+        };
+    }
+
+    if (status_u16 >= 400 and status_u16 < 500 and status_u16 != 401) {
+        const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
+        defer a.free(body);
+        const classification = classify(a, status_u16, body);
+        try writeBufferedResponse(client_writer, http_req.response, body);
+        return .{
+            .status = status_u16,
+            .classification = classification,
+            .body_class = classifyHttpErrorBody(body),
+            .streamed = false,
+        };
     }
 
     const classification = classify(a, status_u16, &.{});
     try writeStreamedResponse(client_writer, http_req.response, http_req.reader());
     return .{ .status = status_u16, .classification = classification, .streamed = true };
+}
+
+fn pathKind(path: []const u8) []const u8 {
+    if (std.mem.eql(u8, path, "/backend-api/codex/responses")) return "responses";
+    if (std.mem.startsWith(u8, path, "/backend-api/codex/responses?")) return "responses";
+    if (std.mem.eql(u8, path, "/backend-api/codex/responses/compact")) return "responses_compact";
+    if (std.mem.startsWith(u8, path, "/backend-api/codex/responses/compact?")) return "responses_compact";
+    if (std.mem.indexOf(u8, path, "/backend-api/codex/memories/trace_summarize") != null) return "memories_trace_summarize";
+    if (std.mem.indexOf(u8, path, "responses_websockets") != null) return "responses_websocket";
+    if (std.mem.startsWith(u8, path, "/backend-api/codex/")) return "codex_other";
+    return "unknown";
+}
+
+fn classifyHttpErrorBody(body: []const u8) []const u8 {
+    if (body.len == 0) return "empty";
+    if (std.mem.indexOf(u8, body, "cloudflare") != null) {
+        if (std.mem.indexOf(u8, body, "400 Bad Request") != null) return "cloudflare_bad_request";
+        if (std.mem.indexOf(u8, body, "403 Forbidden") != null) return "cloudflare_forbidden";
+        return "cloudflare_html";
+    }
+    if (std.mem.indexOf(u8, body, "\"error\"") != null) return "json_error";
+    if (std.mem.indexOf(u8, body, "<html") != null or std.mem.indexOf(u8, body, "<!DOCTYPE html") != null) return "html_error";
+    return "other";
 }
 
 fn parseMethod(s: []const u8) std.http.Method {
@@ -766,6 +823,28 @@ test "classify 200 OK -> .ok" {
 test "classify 401 -> auth_unauthorized" {
     const c = classify(std.testing.allocator, 401, "{}");
     try std.testing.expectEqual(broker_types.QuotaKind.auth_unauthorized, c.kind);
+}
+
+test "pathKind redacts Codex endpoint paths into stable classes" {
+    try std.testing.expectEqualStrings("responses", pathKind("/backend-api/codex/responses"));
+    try std.testing.expectEqualStrings("responses", pathKind("/backend-api/codex/responses?after=1"));
+    try std.testing.expectEqualStrings("responses_compact", pathKind("/backend-api/codex/responses/compact"));
+    try std.testing.expectEqualStrings("responses_compact", pathKind("/backend-api/codex/responses/compact?after=1"));
+    try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/codex/memories/trace_summarize"));
+    try std.testing.expectEqualStrings("codex_other", pathKind("/backend-api/codex/unknown/shape"));
+    try std.testing.expectEqualStrings("unknown", pathKind("/not-codex"));
+}
+
+test "classifyHttpErrorBody identifies Cloudflare 400 without exposing body" {
+    const body =
+        \\<html>
+        \\<head><title>400 Bad Request</title></head>
+        \\<body><center><h1>400 Bad Request</h1></center><hr><center>cloudflare</center></body>
+        \\</html>
+    ;
+    try std.testing.expectEqualStrings("cloudflare_bad_request", classifyHttpErrorBody(body));
+    try std.testing.expectEqualStrings("json_error", classifyHttpErrorBody("{\"error\":{\"type\":\"x\"}}"));
+    try std.testing.expectEqualStrings("empty", classifyHttpErrorBody(""));
 }
 
 test "shouldPreserveChildAuth preserves refreshed bearer for same elected account only" {
@@ -931,10 +1010,11 @@ test "copyForwardingHeaders property: 50 random header sets preserve load-bearin
     // x-codex-installation-id, x-codex-turn-state, x-codex-turn-metadata,
     // OpenAI-Beta, traceparent, tracestate) MUST always survive
     // copyForwardingHeaders. The three substituted (Authorization,
-    // ChatGPT-Account-ID, X-OpenAI-Fedramp) and the hop-by-hop set
-    // MUST always be dropped. Catches the regression where someone
-    // adds a new "drop" rule that accidentally matches a load-bearing
-    // header by case-insensitive prefix.
+    // ChatGPT-Account-ID, X-OpenAI-Fedramp), proxy-owned framing
+    // headers, and the hop-by-hop set MUST always be dropped. Catches
+    // the regression where someone adds a new "drop" rule that
+    // accidentally matches a load-bearing header by case-insensitive
+    // prefix.
     var prng = std.Random.DefaultPrng.init(0xBEEF1234);
     const r = prng.random();
 
@@ -953,6 +1033,7 @@ test "copyForwardingHeaders property: 50 random header sets preserve load-bearin
         "ChatGPT-Account-ID",
         "X-OpenAI-Fedramp",
         "Connection",
+        "Content-Length",
         "Transfer-Encoding",
         "Host",
         "Keep-Alive",
@@ -967,7 +1048,7 @@ test "copyForwardingHeaders property: 50 random header sets preserve load-bearin
 
         // Always include all 8 load-bearing.
         for (load_bearing) |h| try in.append(h, "x");
-        // Always include all 8 must-drop.
+        // Always include all must-drop headers.
         for (must_drop) |h| try in.append(h, "y");
         // Add 0..3 noise headers.
         const noise_count = r.uintLessThan(usize, noise.len + 1);
@@ -1012,6 +1093,7 @@ test "copyForwardingHeaders preserves the load-bearing 8 + drops hop-by-hop" {
     try in.append("ChatGPT-Account-ID", "leaked");
     try in.append("X-OpenAI-Fedramp", "true");
     try in.append("Connection", "keep-alive");
+    try in.append("Content-Length", "123");
     try in.append("Transfer-Encoding", "chunked");
     try in.append("Host", "example");
 
@@ -1036,6 +1118,7 @@ test "copyForwardingHeaders preserves the load-bearing 8 + drops hop-by-hop" {
 
     // hop-by-hop are dropped
     try std.testing.expect(out.find("Connection") == null);
+    try std.testing.expect(out.find("Content-Length") == null);
     try std.testing.expect(out.find("Transfer-Encoding") == null);
     try std.testing.expect(out.find("Host") == null);
 }

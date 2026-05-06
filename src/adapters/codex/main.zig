@@ -76,6 +76,71 @@ const SessionAuthorityMode = enum {
 const SessionCodexHome = struct {
     path: []u8,
     session_authority: SessionAuthorityMode,
+    authority_home: ?[]u8 = null,
+
+    fn deinit(self: SessionCodexHome, allocator: std.mem.Allocator) void {
+        std.fs.cwd().deleteTree(self.path) catch {};
+        allocator.free(self.path);
+        if (self.authority_home) |home| allocator.free(home);
+    }
+};
+
+const ResumeMode = enum {
+    none,
+    chooser,
+    last,
+    explicit,
+
+    fn toString(self: ResumeMode) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .chooser => "chooser",
+            .last => "last",
+            .explicit => "explicit",
+        };
+    }
+};
+
+const ResumeRequest = struct {
+    mode: ResumeMode = .none,
+    explicit_id: ?[]const u8 = null,
+
+    fn requested(self: ResumeRequest) bool {
+        return self.mode != .none;
+    }
+};
+
+const RolloutEntry = struct {
+    size: u64,
+    mtime: i128,
+};
+
+const RolloutSnapshot = struct {
+    allocator: std.mem.Allocator,
+    entries: std.StringHashMapUnmanaged(RolloutEntry) = .{},
+
+    fn init(allocator: std.mem.Allocator) RolloutSnapshot {
+        return .{ .allocator = allocator };
+    }
+
+    fn deinit(self: *RolloutSnapshot) void {
+        var it = self.entries.keyIterator();
+        while (it.next()) |key| self.allocator.free(key.*);
+        self.entries.deinit(self.allocator);
+    }
+
+    fn count(self: *const RolloutSnapshot) usize {
+        return self.entries.count();
+    }
+};
+
+const ResumeObservation = struct {
+    rollouts_before: usize = 0,
+    rollouts_after: usize = 0,
+    changed_existing: usize = 0,
+    created: usize = 0,
+    explicit_target_found_before: ?bool = null,
+    explicit_target_changed: ?bool = null,
 };
 
 const SessionAuthorityEntryKind = enum {
@@ -215,9 +280,15 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         opts.session_home,
         opts.isolated_session_store,
     );
-    defer {
-        std.fs.cwd().deleteTree(codex_home.path) catch {};
-        allocator.free(codex_home.path);
+    defer codex_home.deinit(allocator);
+
+    const resume_request = detectResumeRequest(opts.forward_argv);
+    var resume_snapshot: ?RolloutSnapshot = null;
+    defer if (resume_snapshot) |*snapshot| snapshot.deinit();
+    if (resume_request.requested()) {
+        if (codex_home.authority_home) |authority_home| {
+            resume_snapshot = try snapshotRollouts(allocator, authority_home);
+        }
     }
 
     if (emit_status) {
@@ -225,6 +296,15 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"session_authority\":\"{s}\",\"session_paths_printed\":false}}\n",
             .{ elected.id, proxy_port, codex_home.session_authority.toString() },
         );
+        if (resume_request.requested()) {
+            try writeResumePreflightStatus(
+                status_writer,
+                resume_request,
+                codex_home.session_authority,
+                if (resume_snapshot) |*snapshot| snapshot.count() else 0,
+                if (resume_snapshot) |*snapshot| findExplicitResumeTarget(snapshot, resume_request.explicit_id) != null else null,
+            );
+        }
     }
 
     // 6. Build argv: `codex` plus any forwarded user args.
@@ -281,6 +361,13 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     proxy_thread.join();
 
     if (emit_status) {
+        if (resume_request.requested()) {
+            const observation = if (codex_home.authority_home) |authority_home|
+                try observeResumeWriteback(allocator, authority_home, if (resume_snapshot) |*snapshot| snapshot else null, resume_request)
+            else
+                ResumeObservation{};
+            try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
+        }
         const exit_code: i32 = switch (term) {
             .Exited => |c| c,
             else => -1,
@@ -382,6 +469,7 @@ fn createSessionCodexHomeUnder(
     return .{
         .path = session_home,
         .session_authority = session_authority,
+        .authority_home = if (session_authority_home) |home| try allocator.dupe(u8, home) else null,
     };
 }
 
@@ -439,6 +527,168 @@ fn ensureFileExists(path: []const u8) !void {
         else => return e,
     };
     file.close();
+}
+
+fn detectResumeRequest(argv: []const []const u8) ResumeRequest {
+    var i: usize = 0;
+    while (i < argv.len) : (i += 1) {
+        if (!std.mem.eql(u8, argv[i], "resume")) continue;
+        if (i + 1 >= argv.len) return .{ .mode = .chooser };
+        const next = argv[i + 1];
+        if (std.mem.eql(u8, next, "--last") or std.mem.eql(u8, next, "-l")) {
+            return .{ .mode = .last };
+        }
+        if (std.mem.startsWith(u8, next, "-")) {
+            return .{ .mode = .chooser };
+        }
+        return .{ .mode = .explicit, .explicit_id = next };
+    }
+    return .{};
+}
+
+fn snapshotRollouts(allocator: std.mem.Allocator, authority_home: []const u8) !RolloutSnapshot {
+    var snapshot = RolloutSnapshot.init(allocator);
+    errdefer snapshot.deinit();
+    const sessions_dir = try std.fs.path.join(allocator, &.{ authority_home, "sessions" });
+    defer allocator.free(sessions_dir);
+    try snapshotRolloutsUnder(allocator, sessions_dir, &snapshot);
+    return snapshot;
+}
+
+fn snapshotRolloutsUnder(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    snapshot: *RolloutSnapshot,
+) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |e| switch (e) {
+        error.FileNotFound => return,
+        else => return e,
+    };
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        defer allocator.free(path);
+        switch (entry.kind) {
+            .directory => try snapshotRolloutsUnder(allocator, path, snapshot),
+            .file, .sym_link => {
+                if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+                const stat = std.fs.cwd().statFile(path) catch continue;
+                const owned_path = try allocator.dupe(u8, path);
+                errdefer allocator.free(owned_path);
+                try snapshot.entries.put(allocator, owned_path, .{
+                    .size = stat.size,
+                    .mtime = stat.mtime,
+                });
+            },
+            else => {},
+        }
+    }
+}
+
+fn findExplicitResumeTarget(snapshot: *const RolloutSnapshot, explicit_id: ?[]const u8) ?[]const u8 {
+    const id = explicit_id orelse return null;
+    var it = snapshot.entries.keyIterator();
+    while (it.next()) |path| {
+        if (std.mem.indexOf(u8, path.*, id) != null) return path.*;
+    }
+    return null;
+}
+
+fn observeResumeWriteback(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    before: ?*const RolloutSnapshot,
+    request: ResumeRequest,
+) !ResumeObservation {
+    var after = try snapshotRollouts(allocator, authority_home);
+    defer after.deinit();
+
+    var observation = ResumeObservation{
+        .rollouts_before = if (before) |snapshot| snapshot.count() else 0,
+        .rollouts_after = after.count(),
+        .explicit_target_found_before = if (request.explicit_id != null and before != null)
+            findExplicitResumeTarget(before.?, request.explicit_id) != null
+        else
+            null,
+        .explicit_target_changed = if (request.explicit_id != null) false else null,
+    };
+
+    var it = after.entries.iterator();
+    while (it.next()) |after_entry| {
+        if (before) |snapshot| {
+            if (snapshot.entries.get(after_entry.key_ptr.*)) |before_entry| {
+                const changed = before_entry.size != after_entry.value_ptr.size or
+                    before_entry.mtime != after_entry.value_ptr.mtime;
+                if (changed) {
+                    observation.changed_existing += 1;
+                    if (request.explicit_id) |id| {
+                        if (std.mem.indexOf(u8, after_entry.key_ptr.*, id) != null) {
+                            observation.explicit_target_changed = true;
+                        }
+                    }
+                }
+            } else {
+                observation.created += 1;
+            }
+        } else {
+            observation.created += 1;
+        }
+    }
+
+    return observation;
+}
+
+fn writeOptionalBool(writer: anytype, value: ?bool) !void {
+    if (value) |v| {
+        try writer.writeAll(if (v) "true" else "false");
+    } else {
+        try writer.writeAll("null");
+    }
+}
+
+fn writeResumePreflightStatus(
+    writer: anytype,
+    request: ResumeRequest,
+    authority: SessionAuthorityMode,
+    rollouts_before: usize,
+    explicit_target_found_before: ?bool,
+) !void {
+    try writer.print(
+        "{{\"kind\":\"resume_preflight\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"rollouts_before\":{d},\"explicit_id_provided\":{s},\"explicit_target_found_before\":",
+        .{
+            request.mode.toString(),
+            authority.toString(),
+            rollouts_before,
+            if (request.explicit_id != null) "true" else "false",
+        },
+    );
+    try writeOptionalBool(writer, explicit_target_found_before);
+    try writer.writeAll(",\"session_id_printed\":false,\"path_printed\":false}\n");
+}
+
+fn writeResumeWritebackStatus(
+    writer: anytype,
+    request: ResumeRequest,
+    authority: SessionAuthorityMode,
+    observation: ResumeObservation,
+) !void {
+    try writer.print(
+        "{{\"kind\":\"resume_writeback\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"rollouts_before\":{d},\"rollouts_after\":{d},\"changed_existing\":{d},\"created\":{d},\"explicit_target_found_before\":",
+        .{
+            request.mode.toString(),
+            authority.toString(),
+            observation.rollouts_before,
+            observation.rollouts_after,
+            observation.changed_existing,
+            observation.created,
+        },
+    );
+    try writeOptionalBool(writer, observation.explicit_target_found_before);
+    try writer.writeAll(",\"explicit_target_changed\":");
+    try writeOptionalBool(writer, observation.explicit_target_changed);
+    try writer.writeAll(",\"session_id_printed\":false,\"path_printed\":false}\n");
 }
 
 fn copyFileContents(
@@ -520,6 +770,63 @@ test "openStatusFile property: nested parents are created" {
     }
 }
 
+test "detectResumeRequest classifies forwarded Codex resume shapes" {
+    const none = detectResumeRequest(&.{ "--model", "gpt-5.5" });
+    try std.testing.expectEqual(ResumeMode.none, none.mode);
+
+    const chooser = detectResumeRequest(&.{"resume"});
+    try std.testing.expectEqual(ResumeMode.chooser, chooser.mode);
+
+    const last = detectResumeRequest(&.{ "--no-alt-screen", "resume", "--last" });
+    try std.testing.expectEqual(ResumeMode.last, last.mode);
+
+    const short_last = detectResumeRequest(&.{ "resume", "-l" });
+    try std.testing.expectEqual(ResumeMode.last, short_last.mode);
+
+    const explicit = detectResumeRequest(&.{ "resume", "019dea53-49a0-7890-9580-e88decb97af0" });
+    try std.testing.expectEqual(ResumeMode.explicit, explicit.mode);
+    try std.testing.expectEqualStrings("019dea53-49a0-7890-9580-e88decb97af0", explicit.explicit_id.?);
+}
+
+test "resume writeback observation reports existing rollout changes without printing paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("canonical/sessions/2026/05/06");
+    {
+        const rollout = try tmp.dir.createFile("canonical/sessions/2026/05/06/rollout-managed-good-session.jsonl", .{ .mode = 0o600 });
+        defer rollout.close();
+        try rollout.writeAll("{\"fixture\":true}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+    const rollout_path = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions", "2026", "05", "06", "rollout-managed-good-session.jsonl" });
+    defer std.testing.allocator.free(rollout_path);
+
+    var before = try snapshotRollouts(std.testing.allocator, canonical_path);
+    defer before.deinit();
+    try std.testing.expectEqual(@as(usize, 1), before.count());
+
+    {
+        const rollout = try std.fs.cwd().openFile(rollout_path, .{ .mode = .write_only });
+        defer rollout.close();
+        try rollout.seekFromEnd(0);
+        try rollout.writeAll("{\"managed\":true}\n");
+    }
+
+    const request = ResumeRequest{ .mode = .explicit, .explicit_id = "managed-good-session" };
+    const observation = try observeResumeWriteback(std.testing.allocator, canonical_path, &before, request);
+    try std.testing.expectEqual(@as(usize, 1), observation.rollouts_before);
+    try std.testing.expectEqual(@as(usize, 1), observation.rollouts_after);
+    try std.testing.expectEqual(@as(usize, 1), observation.changed_existing);
+    try std.testing.expectEqual(@as(usize, 0), observation.created);
+    try std.testing.expectEqual(true, observation.explicit_target_found_before.?);
+    try std.testing.expectEqual(true, observation.explicit_target_changed.?);
+}
+
 test "createSessionCodexHomeUnder copies auth and does not clobber source config" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -547,10 +854,7 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     defer std.testing.allocator.free(auth_path);
 
     const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null);
-    defer {
-        std.fs.cwd().deleteTree(codex_home.path) catch {};
-        std.testing.allocator.free(codex_home.path);
-    }
+    defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.isolated, codex_home.session_authority);
 
     const session_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
@@ -607,10 +911,7 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
     defer std.testing.allocator.free(canonical_path);
 
     const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path);
-    defer {
-        std.fs.cwd().deleteTree(codex_home.path) catch {};
-        std.testing.allocator.free(codex_home.path);
-    }
+    defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
 
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;

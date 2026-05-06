@@ -397,6 +397,10 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // every refresh
 { "kind": "credential_refresh", "account": "codex:max-1", "trigger": "proactive_exp", "outcome": "ok" }
 
+// resume authority preflight and writeback evidence
+{ "kind": "resume_preflight", "mode": "last", "session_authority": "canonical_bridge", "rollouts_before": 42, "session_id_printed": false, "path_printed": false }
+{ "kind": "resume_writeback", "mode": "last", "session_authority": "canonical_bridge", "changed_existing": 1, "created": 0, "session_id_printed": false, "path_printed": false }
+
 // quota observation that did not trigger a swap
 { "kind": "quota_observed", "account": "codex:max-1", "kind_detail": "rate_limited", "retry_after_s": 12 }
 
