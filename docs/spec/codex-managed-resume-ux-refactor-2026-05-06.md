@@ -476,3 +476,33 @@ This refactor is done when:
 7. TIN-979 is not closed until the live dogfood passes.
 8. No doc or claim uses managed resume success as a substitute for Level 3
    live account-swap success.
+
+## 8. Dogfood Finding: Same-Account 401 Refresh Loop
+
+The first real managed `resume --last` dogfood after PR #194 did not prove
+resume parity. Status evidence showed the adapter started with
+`session_authority:"canonical_bridge"` and selected `codex:max-1`, then the
+wire proxy observed repeated upstream `401` responses.
+
+Root cause:
+
+- Codex can refresh the selected account inside the managed overlay after a
+  `401`.
+- The proxy was still re-signing every upstream request from oauth-mux's
+  materialized route credential.
+- That meant Codex's refreshed child `Authorization` header was ignored, so
+  the next request could keep using the stale materialized access token.
+
+Correct behavior:
+
+- If inbound `ChatGPT-Account-ID` still matches the broker-elected account,
+  preserve the child's inbound `Authorization` header. This lets Codex's
+  native same-account refresh loop work.
+- If oauth-mux elects a different account, substitute the elected account's
+  materialized `Authorization` / `ChatGPT-Account-ID` as before.
+
+Regression guard:
+
+- `scripts/smoke-codex-child-refresh.sh` drives two synthetic same-account
+  turns with different child bearer tokens and asserts that the upstream sees
+  the bearer change without an account swap or a stale 401 loop.

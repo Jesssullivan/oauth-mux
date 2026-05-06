@@ -16,7 +16,11 @@
 //!   1. Read the inbound request from codex.
 //!   2. Substitute the three account-bound headers (Authorization,
 //!      ChatGPT-Account-ID, X-OpenAI-Fedramp) with the broker's
-//!      currently-elected account's values.
+//!      currently-elected account's values, except when Codex has
+//!      refreshed the same elected account inside the managed overlay.
+//!      In that same-account case, preserve the child's refreshed
+//!      Authorization so the proxy does not pin Codex to a stale
+//!      materialized access token.
 //!   3. Forward all other headers UNCHANGED — including the eight
 //!      load-bearing ones from §4.2 (User-Agent, originator,
 //!      x-codex-installation-id, x-codex-turn-state,
@@ -212,13 +216,15 @@ pub const Proxy = struct {
         // ── 3. Build outbound request with substituted headers ──
         var out_headers = HeaderList.init(a);
         try copyForwardingHeaders(&req.headers, &out_headers);
-        try out_headers.set("Authorization", try std.fmt.allocPrint(a, "Bearer {s}", .{tokens.access_token}));
-        try out_headers.set("ChatGPT-Account-ID", tokens.account_id);
-        if (tokens.fedramp) {
-            try out_headers.set("X-OpenAI-Fedramp", "true");
-        }
+        const preserved_child_auth = try setOutboundAuthHeaders(a, &req.headers, &out_headers, tokens);
         const host_for_header = upstreamHost(a);
         try out_headers.set("Host", host_for_header);
+        if (preserved_child_auth) {
+            self.logEvent("proxy_preserved_child_auth", .{
+                .account = elected.id,
+                .reason = "same_account_child_refresh",
+            });
+        }
 
         // Detect account change since the previous request. If this is
         // a post-swap turn, drop x-codex-turn-state — the token is the
@@ -299,10 +305,12 @@ pub const Proxy = struct {
                 //      auth.json on disk.
                 //   3. Codex retries the original request.
                 //
-                // The proxy's NEXT materialize call re-reads
-                // auth.json and picks up the fresh access_token —
-                // so the retried request succeeds without oauth-mux
-                // doing any refresh work itself.
+                // The proxy preserves the child's refreshed
+                // Authorization header on the NEXT request when the
+                // inbound ChatGPT-Account-ID still matches the
+                // broker-elected account. That lets Codex's native
+                // refresh loop succeed without requiring oauth-mux
+                // to implement refresh-token rotation in this path.
                 //
                 // Marking the account dead here would defeat that
                 // recovery loop by removing the account from the
@@ -503,6 +511,46 @@ fn copyForwardingHeaders(in: *const HeaderList, out: *HeaderList) !void {
         }
         try out.append(h.name, h.value);
     }
+}
+
+fn setOutboundAuthHeaders(
+    a: std.mem.Allocator,
+    inbound: *const HeaderList,
+    out: *HeaderList,
+    tokens: broker_types.ChatgptAuthTokens,
+) !bool {
+    if (shouldPreserveChildAuth(
+        inbound.find("ChatGPT-Account-ID"),
+        inbound.find("Authorization"),
+        tokens.account_id,
+    )) {
+        try out.set("Authorization", inbound.find("Authorization").?);
+        try out.set("ChatGPT-Account-ID", inbound.find("ChatGPT-Account-ID").?);
+        if (inbound.find("X-OpenAI-Fedramp")) |fedramp| {
+            try out.set("X-OpenAI-Fedramp", fedramp);
+        } else if (tokens.fedramp) {
+            try out.set("X-OpenAI-Fedramp", "true");
+        }
+        return true;
+    }
+
+    try out.set("Authorization", try std.fmt.allocPrint(a, "Bearer {s}", .{tokens.access_token}));
+    try out.set("ChatGPT-Account-ID", tokens.account_id);
+    if (tokens.fedramp) {
+        try out.set("X-OpenAI-Fedramp", "true");
+    }
+    return false;
+}
+
+fn shouldPreserveChildAuth(
+    inbound_account_id: ?[]const u8,
+    inbound_authorization: ?[]const u8,
+    elected_account_id: []const u8,
+) bool {
+    const account_id = inbound_account_id orelse return false;
+    const authorization = inbound_authorization orelse return false;
+    if (authorization.len == 0) return false;
+    return std.mem.eql(u8, account_id, elected_account_id);
 }
 
 // ── Forwarding + streaming (uses std.http.Client for TLS) ────────────
@@ -718,6 +766,48 @@ test "classify 200 OK -> .ok" {
 test "classify 401 -> auth_unauthorized" {
     const c = classify(std.testing.allocator, 401, "{}");
     try std.testing.expectEqual(broker_types.QuotaKind.auth_unauthorized, c.kind);
+}
+
+test "shouldPreserveChildAuth preserves refreshed bearer for same elected account only" {
+    try std.testing.expect(shouldPreserveChildAuth("acct-1", "Bearer refreshed", "acct-1"));
+    try std.testing.expect(!shouldPreserveChildAuth("acct-1", "Bearer refreshed", "acct-2"));
+    try std.testing.expect(!shouldPreserveChildAuth("acct-1", null, "acct-1"));
+    try std.testing.expect(!shouldPreserveChildAuth(null, "Bearer refreshed", "acct-1"));
+    try std.testing.expect(!shouldPreserveChildAuth("acct-1", "", "acct-1"));
+}
+
+test "setOutboundAuthHeaders preserves child auth for same account and substitutes on swap" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var inbound = HeaderList.init(a);
+    try inbound.append("Authorization", "Bearer child-refreshed");
+    try inbound.append("ChatGPT-Account-ID", "acct-1");
+    try inbound.append("X-OpenAI-Fedramp", "false");
+
+    var same_out = HeaderList.init(a);
+    const same_tokens = broker_types.ChatgptAuthTokens{
+        .access_token = "materialized-stale",
+        .account_id = "acct-1",
+        .fedramp = true,
+    };
+    const preserved = try setOutboundAuthHeaders(a, &inbound, &same_out, same_tokens);
+    try std.testing.expect(preserved);
+    try std.testing.expectEqualStrings("Bearer child-refreshed", same_out.find("Authorization").?);
+    try std.testing.expectEqualStrings("acct-1", same_out.find("ChatGPT-Account-ID").?);
+    try std.testing.expectEqualStrings("false", same_out.find("X-OpenAI-Fedramp").?);
+
+    var swap_out = HeaderList.init(a);
+    const swap_tokens = broker_types.ChatgptAuthTokens{
+        .access_token = "materialized-next",
+        .account_id = "acct-2",
+        .fedramp = false,
+    };
+    const swapped = try setOutboundAuthHeaders(a, &inbound, &swap_out, swap_tokens);
+    try std.testing.expect(!swapped);
+    try std.testing.expectEqualStrings("Bearer materialized-next", swap_out.find("Authorization").?);
+    try std.testing.expectEqualStrings("acct-2", swap_out.find("ChatGPT-Account-ID").?);
 }
 
 test "classify 503 -> provider_5xx" {
