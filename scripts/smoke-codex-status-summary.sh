@@ -18,6 +18,7 @@ BROKERED="$TMP/brokered.ndjson"
 FALLBACK="$TMP/fallback.ndjson"
 AUTH_FAILED="$TMP/auth-failed.ndjson"
 AUTH_FALLBACK="$TMP/auth-fallback.ndjson"
+AUTH_FALLBACK_CHAIN="$TMP/auth-fallback-chain.ndjson"
 INCOMPLETE="$TMP/incomplete.ndjson"
 
 cat >"$BROKERED" <<'EOF'
@@ -52,6 +53,15 @@ cat >"$AUTH_FALLBACK" <<'EOF'
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 {"kind":"auth_health_observed","account":"codex:max-1","auth_unauthorized_turns":1,"responses_401_turns":1,"recovered_after_401":false,"recorded":true,"reason":"unrecovered_401_no_writeback","scope":"account_credential","quota_claim":false,"token_material_printed":false,"path_printed":false}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":true}
+EOF
+
+cat >"$AUTH_FALLBACK_CHAIN" <<'EOF'
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
+{"kind":"proxy_auth_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"auth_unauthorized","dropped":"x-codex-turn-state"}
+{"kind":"proxy_turn","account":"codex:max-2","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
+{"kind":"proxy_auth_same_turn_retry","from":"codex:max-2","to":"codex:max-3","reason":"auth_unauthorized","dropped":"x-codex-turn-state"}
+{"kind":"proxy_turn","account":"codex:max-3","method":"GET","path_kind":"codex_other","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 EOF
 
 cat >"$INCOMPLETE" <<'EOF'
@@ -131,9 +141,36 @@ if [[ "$(jq -r .auth_fallback_sequence.fallback_account <<<"$AUTH_FALLBACK_SUMMA
     echo "$AUTH_FALLBACK_SUMMARY" >&2
     exit 1
 fi
+if [[ "$(jq -r .auth_fallback_sequence.retry.to <<<"$AUTH_FALLBACK_SUMMARY")" != "codex:max-2" ]]; then
+    echo "auth-fallback terminal retry mismatch" >&2
+    echo "$AUTH_FALLBACK_SUMMARY" >&2
+    exit 1
+fi
 if [[ "$(jq -r .auth_health_quota_claim_observed <<<"$AUTH_FALLBACK_SUMMARY")" != "false" ]]; then
     echo "auth-fallback summary must not claim quota" >&2
     echo "$AUTH_FALLBACK_SUMMARY" >&2
+    exit 1
+fi
+
+AUTH_FALLBACK_CHAIN_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$AUTH_FALLBACK_CHAIN" --require-brokered)"
+if [[ "$(jq -r .verdict <<<"$AUTH_FALLBACK_CHAIN_SUMMARY")" != "auth_fallback_sequence_observed" ]]; then
+    echo "auth-fallback-chain verdict mismatch" >&2
+    echo "$AUTH_FALLBACK_CHAIN_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .auth_fallback_sequence.fallback_account <<<"$AUTH_FALLBACK_CHAIN_SUMMARY")" != "codex:max-3" ]]; then
+    echo "auth-fallback-chain account mismatch" >&2
+    echo "$AUTH_FALLBACK_CHAIN_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .auth_fallback_sequence.retry.to <<<"$AUTH_FALLBACK_CHAIN_SUMMARY")" != "codex:max-3" ]]; then
+    echo "auth-fallback-chain terminal retry mismatch" >&2
+    echo "$AUTH_FALLBACK_CHAIN_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .auth_fallback_sequence.retry_count <<<"$AUTH_FALLBACK_CHAIN_SUMMARY")" != "2" ]]; then
+    echo "auth-fallback-chain retry count mismatch" >&2
+    echo "$AUTH_FALLBACK_CHAIN_SUMMARY" >&2
     exit 1
 fi
 
