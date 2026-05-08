@@ -17,13 +17,15 @@ deb/rpm assets, and a public Jess-owned Homebrew tap. The remaining adoption
 risks are no longer general release mechanics. They are specific product
 boundaries that need separate tracking.
 
-Supersession note, 2026-05-03: the Codex proof ladder now includes
+Supersession note, 2026-05-07: the Codex proof ladder now includes
 broker-owned session planning, no-spend local broker smokes, spend-gated
 broker-run live turns, bounded broker-run session loops, exhausted-route
-revalidation, and controlled fallback drills. The current paid `codex-max`
-cohort is four routes: `max-1` selected, `max-4` spare fallback, and
-`max-2`/`max-3` quota-exhausted for `codex-max`. Provider-originated
-in-session quota fallback remains tracked by GitHub `#131` / Linear `TIN-916`.
+revalidation, controlled fallback drills, managed resume, and a live
+dogfood-9 auth-continuity fallback. After the 2026-05-05 spend-gated
+revalidation, no-spend planning recorded four selectable `codex-max` routes.
+Dogfood-9 then launched on `max-1`, observed auth failures, and continued
+useful live traffic on `max-4`. Provider-originated in-session quota fallback
+remains tracked by GitHub `#131` / Linear `TIN-916`.
 
 ## Public Issue Map
 
@@ -32,7 +34,7 @@ in-session quota fallback remains tracked by GitHub `#131` / Linear `TIN-916`.
 | Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy was rechecked on 2026-05-03 and now uses the public `jesssullivan/omux` tap. |
 | Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898`, `TIN-940` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing. The active claim matrix lives in `docs/daemon-boundary.md`; managed Codex launch/resume and broker-owned app-server sessions are scoped proof surfaces. Supervised child capture is diagnostic only, not a product claim level. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Codex route selection and broker-owned sessions are live-proven for scoped commands; true seamless active-session handoff is not. Non-Codex proof is capability-level or still needs operator proof. |
-| Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | Codex has a current four-route paid cohort: `max-1` selected, `max-4` spare fallback, and `max-2`/`max-3` quota-exhausted for `codex-max`. Claude, Figma, and long-window soak evidence remain separate gates. |
+| Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | Codex has a four-route paid cohort. After 2026-05-05 revalidation, all four `codex-max` routes were recorded selectable; dogfood-9 later proved managed auth-continuity fallback from selected `max-1` to live traffic on `max-4`. Claude, Figma, quota handoff, and long-window soak evidence remain separate gates. |
 
 ## Homebrew Boundary
 
@@ -82,10 +84,10 @@ Current truth:
   auth, and silent mutation.
 - Codex fallback is proven across several scopes: historical 2026-05-01
   route-state evidence moved from exhausted `max-1#codex-max` to available
-  `max-2#codex-max`; the current 2026-05-03 four-route cohort selects
-  `max-1#codex-max`, keeps `max-4#codex-max` as spare fallback, and records
-  `max-2#codex-max` plus `max-3#codex-max` as provider quota-exhausted for
-  `codex-max`.
+  `max-2#codex-max`; 2026-05-05 spend-gated revalidation restored all four
+  `codex-max` routes as selectable; dogfood-9 proved managed auth-continuity
+  fallback from selected `max-1` to successful live traffic on `max-4`.
+  Provider-originated quota fallback remains unproven.
 - The 2026-05-01 sandbox recheck remains useful historical evidence: inside
   the Codex sandbox, all configured Codex account stores reported
   `unwritable_store`; outside that sandbox, the stores were runtime-ready and

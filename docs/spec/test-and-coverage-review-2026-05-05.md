@@ -7,10 +7,11 @@ Codex adapter contract: `docs/spec/codex-adapter-contract-2026-05-03.md`.
 
 This review replaces the stale quarry-branch assessment from
 `/Users/jess/git/oauth-mux-broker`. It describes current `main` through
-`954d673` (`Whoohoo brokered Codex resume`), after route-health truthing,
-Codex quarry smokes, expired-quota revalidation state, restart-claim demotion,
-managed resume UX work, request-framing fixes, and same-account child-refresh
-preservation.
+`9cdf5a3` (`Add Codex dogfood status monitor helper (#209)`), after
+route-health truthing, Codex quarry smokes, expired-quota revalidation state,
+restart-claim demotion, managed resume UX work, request-framing fixes,
+same-account child-refresh preservation, auth fallback chain summarization,
+managed auth-health recording, and the dogfood-9 live auth-continuity event.
 
 ## Product Bar
 
@@ -91,6 +92,24 @@ That unblocks fallback capacity for TIN-951 / GitHub #177. It does not
 prove Level 3, because no provider-originated quota event was observed
 inside a live `oauth-mux codex` session during that check.
 
+## Dogfood-9 Auth Continuity
+
+`dist/live-qa/managed-resume-dogfood-9/status.ndjson` is the strongest current
+live managed-session artifact, but it is an auth-continuity artifact, not a
+quota artifact.
+
+The run launched with `selected_account:"codex:max-1"` and
+`session_authority:"canonical_bridge"`. The selected account returned
+`401 auth_unauthorized`, oauth-mux retried the same buffered request through
+`codex:max-2` and `codex:max-3`, and `codex:max-4` returned `200`. Subsequent
+useful live `POST /responses` traffic continued through `codex:max-4`.
+
+The summarizer verdict is `auth_fallback_sequence_observed`. That means
+managed same-turn auth failure stay-afloat worked in a real dogfood session.
+It does not close TIN-916 / GitHub #131 or TIN-951 / GitHub #177, because the
+artifact has no `429`, no `usage_limit_reached`, no `quota_exhausted`, and no
+quota swap/retry event.
+
 ## What Current Main Proves
 
 - The broker MCP core can select accounts, materialize Codex credential
@@ -99,6 +118,9 @@ inside a live `oauth-mux codex` session during that check.
   without restarting its child process.
 - The managed Codex frame can resume a real existing canonical Codex session
   and proxy normal live `responses` turns successfully.
+- The managed Codex proxy can keep a real session afloat across selected-route
+  auth failure by retrying the buffered request on a fallback account before
+  Codex sees the 401.
 - The proxy can preserve a same-account Codex-refreshed bearer instead of
   forcing stale oauth-mux materialized credentials.
 - Route-health state now distinguishes expired reset windows as
@@ -113,6 +135,8 @@ inside a live `oauth-mux codex` session during that check.
 ## What Current Main Does Not Prove
 
 - Live provider-originated Level 3 account swap.
+- Live provider-originated quota fallback. Dogfood-9 proves auth fallback, not
+  quota fallback.
 - Live invisible same-turn recovery where Codex never sees a visible
   `usage_limit_reached` failure when a fallback account is selectable.
 - Same-thread continuity across account swap.
