@@ -23,12 +23,11 @@ prepared fallback, and synthetic smokes are evidence or diagnostics only.
 
 ## Current Live State
 
-Observed on 2026-05-05 around 15:37 EDT, then updated after the first
-brokered-resume dogfood on 2026-05-06 and a follow-up no-spend check on
-2026-05-06:
+Observed on 2026-05-05 around 15:37 EDT, then updated after brokered-resume
+dogfood on 2026-05-06 and dogfood-9 auth-continuity evidence on 2026-05-07:
 
-- Repository: clean on `main`, synced with `origin/main` at `8a111bf`
-  (`Add GitHub tracker comment fallback`) during this checkpoint.
+- Repository: clean on `main`, synced with `origin/main` at `9cdf5a3`
+  (`Add Codex dogfood status monitor helper (#209)`) during this checkpoint.
 - Selected live `codex-max` route: `max-1`.
 - Spend-gated exhausted-route revalidation after the reset window found
   `max-1`, `max-2`, and `max-3` available again; `max-4` was already
@@ -53,13 +52,16 @@ The brokered-resume dogfood proved a separate prerequisite:
 - Live `POST /backend-api/codex/responses` turns returned `status:200` through
   the oauth-mux proxy after the request-framing and same-account child-refresh
   fixes.
-- `dist/live-qa/managed-resume-dogfood-5/status.ndjson` contains 352
-  brokered proxy turns through `codex:max-1`: 347 `POST /responses` 200s and
-  5 `GET codex_other` 200s. It contains no provider-originated 429, no
-  `proxy_same_turn_retry`, and no fallback-account turn.
+- `dist/live-qa/managed-resume-dogfood-5/status.ndjson` proved brokered
+  resume and ordinary selected-route 200s.
+- `dist/live-qa/managed-resume-dogfood-9/status.ndjson` proved live managed
+  auth-continuity fallback: launched on `codex:max-1`, observed selected-route
+  `401 auth_unauthorized`, retried through `max-2` and `max-3`, and continued
+  successful live traffic through `codex:max-4`.
 
-That is meaningful UX/architecture progress. It is not account-exhaustion
-success and must not be described as stay-afloat completion.
+That is meaningful UX/architecture progress and a real auth failure
+stay-afloat event. It is not quota-exhaustion success and must not be described
+as Level 3 quota handoff completion.
 
 ## Mainline Reality
 
@@ -75,6 +77,9 @@ Already merged on main:
   one stable child PID.
 - Brokered Codex resume through canonical session authority; the managed frame
   can now resume a real existing Codex session and proxy normal provider turns.
+- Brokered auth-continuity dogfood: selected-route 401s can be hidden from
+  Codex by same-turn retry across fallback accounts, with subsequent useful
+  traffic on `codex:max-4`.
 - Same-account child auth refresh preservation; oauth-mux no longer overwrites
   a Codex-refreshed bearer for the same account with stale materialized route
   credentials.
@@ -89,6 +94,8 @@ Already merged on main:
 Not yet proven:
 
 - Live provider-originated Level 3 account swap.
+- Live provider-originated quota fallback. Dogfood-9 is auth fallback, not
+  quota fallback.
 - Live invisible same-turn recovery where a fallback account handles the user
   turn before Codex sees `usage_limit_reached`.
 - Same-thread continuity across account swap.
@@ -286,6 +293,8 @@ These need review before public promotion:
 6. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
 7. Re-run `just check-local` after each code/test slice.
+8. Keep dogfood-9 monitoring active while it remains useful, but interpret it
+   as burning `codex:max-4` after auth fallback, not `codex:max-1`.
 
 ## Hygiene Pass Notes
 

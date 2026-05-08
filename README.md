@@ -21,9 +21,12 @@ Real on `main`:
 - Brokered Codex resume has been dogfooded successfully through the proxy:
   `resume <session-id>` reached `POST /backend-api/codex/responses` with
   `status:200`.
-- Current dogfood status evidence includes hundreds of brokered
-  `POST /responses` 200s through `codex:max-1`; it does not yet include a real
-  provider-originated `429 usage_limit_reached` or fallback-account turn.
+- Current dogfood status evidence includes a managed auth-continuity handoff:
+  dogfood-9 launched with `codex:max-1`, observed selected-account
+  `401 auth_unauthorized`, retried the buffered request across `max-2` and
+  `max-3`, and continued with successful `POST /responses` traffic through
+  `codex:max-4`. It does not yet include a real provider-originated
+  `429 usage_limit_reached` or quota fallback turn.
 - Synthetic smokes prove account A can hit `429 usage_limit_reached`, be
   marked exhausted, and account B can handle the same request in the same child
   process before Codex receives the 429.
@@ -110,3 +113,5 @@ the subscription lacks quota.
 `401 auth_unauthorized`, oauth-mux retried the same buffered request against a
 different account before Codex saw the 401, and the fallback account returned
 200. That is a managed auth-continuity proof, not quota exhaustion evidence.
+In the dogfood-9 artifact, that selected account was `codex:max-1` and the
+successful live wire traffic moved to `codex:max-4`.
