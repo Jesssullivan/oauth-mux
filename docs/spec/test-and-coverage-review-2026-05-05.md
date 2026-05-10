@@ -6,12 +6,15 @@ Anchor: `docs/spec/broker-mcp-contract-2026-05-03.md`.
 Codex adapter contract: `docs/spec/codex-adapter-contract-2026-05-03.md`.
 
 This review replaces the stale quarry-branch assessment from
-`/Users/jess/git/oauth-mux-broker`. It describes current `main` through
+`<local-quarry-worktree>`. It describes current `main` through
 `9cdf5a3` (`Add Codex dogfood status monitor helper (#209)`), after
 route-health truthing, Codex quarry smokes, expired-quota revalidation state,
 restart-claim demotion, managed resume UX work, request-framing fixes,
 same-account child-refresh preservation, auth fallback chain summarization,
-managed auth-health recording, and the dogfood-9 live auth-continuity event.
+managed auth-health recording, and dogfood-9's live auth-continuity event
+followed by failed live quota handoff. It is superseded for current Codex
+quota-handoff evidence by
+`docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`.
 
 ## Product Bar
 
@@ -26,77 +29,41 @@ flags, and synthetic smokes are not success.
 
 ## Current Evidence Stack
 
-`just check-local` currently runs:
+`just check-local` delegates to `scripts/check-local.sh`. That script is the
+executable source of truth for the no-network local validation chain; do not
+copy its full command list into specs. At a high level it covers:
 
-- `zig build test` and `zig build`.
-- Config validation for every `examples/*.config.json`.
-- `scripts/e2e-local.sh`.
-- `scripts/first-run-e2e.sh`.
-- `scripts/stay-afloat-wrapper-doc-smoke.sh`.
-- `scripts/smoke-broker.sh`.
-- `scripts/smoke-codex-acceptance.sh`.
-- `scripts/smoke-codex-concurrent-sessions.sh`.
-- `scripts/smoke-codex-child-refresh.sh`.
-- `scripts/smoke-codex-tier-insufficient.sh`.
-- `scripts/smoke-codex-all-exhausted.sh`.
-- `scripts/smoke-codex-401-propagation.sh`.
-- `scripts/smoke-codex-cassette-replay.sh`.
+- `zig build test`, `zig build`, and config validation for every
+  `examples/*.config.json`.
+- Local first-run, stay-afloat, broker MCP, Codex managed CLI UX, synthetic
+  handoff, concurrent-session, child-refresh, tier, all-exhausted, 401,
+  cassette replay/review, status-summary, and tracker-comment smokes.
 
-Validation status for the current resume/proxy slice: focused local gates have
-passed (`zig build test`, `zig build`, `smoke-codex-cli-ux`,
-`smoke-codex-acceptance`, and `smoke-codex-child-refresh`). A full
-`just check-local` should be rerun before merge/release claims when this review
-changes implementation.
+Run `just check-local` before merge/release claims when this review changes
+implementation or claim language.
 
 Repo-wide Zig test inventory is broad (`rg '^test "' src` finds 306
-in-file tests). The broker/Codex-adapter subset is materially covered
-by in-file tests plus seven shell smokes.
-
-The shell smoke suite covers these adapter stories:
-
-- `smoke-broker`: 22 assertions. Broker MCP method composition:
-  handshake, account listing, selection, materialization, quota
-  observation, swap, and status.
-- `smoke-codex-acceptance`: 20 assertions. Synthetic Codex A-to-B
-  swap: account A succeeds, then returns `usage_limit_reached`; oauth-mux
-  buffers that 429, marks A exhausted, retries the same request with B, and
-  the stub Codex child sees only 200s in one stable child PID.
-- `smoke-codex-concurrent-sessions`: 16 assertions. Per-session
-  `CODEX_HOME` overlays prevent the old account-local `config.toml`
-  clobber race.
-- `smoke-codex-child-refresh`: 12 assertions. Codex child-refresh for the
-  same account is preserved by the proxy, preventing stale materialized-token
-  loops after a native Codex refresh.
-- `smoke-codex-tier-insufficient`: 11 assertions.
-  `usage_not_included` is classified as `tier_insufficient`; no swap.
-- `smoke-codex-all-exhausted`: 12 assertions. All accounts exhausted returns
-  a clean no-account-selectable failure after same-turn retry is unavailable.
-- `smoke-codex-401-propagation`: 13 assertions. Upstream 401 is left
-  for Codex's own refresh path; oauth-mux does not prematurely kill the
-  route.
-- `smoke-codex-cassette-replay`: 12 assertions. Captured-flow JSON can
-  be replayed by `(method, path)` with diagnostic misses.
+in-file tests). The broker/Codex-adapter subset is materially covered by
+in-file tests plus the shell smoke chain in `scripts/check-local.sh`.
 
 ## Live Route Truth
 
-As of 2026-05-05 15:37 EDT, no-spend route surfaces report:
+Historical snapshots in this review explain why earlier work was opened or
+closed. Current Codex route truth and account-state vocabulary live in
+`docs/qa-handoff-matrix.md`; live provider runbook details live in
+`docs/live-provider-qa.md`.
 
-- `codex-max` selected route: `max-1`.
-- Selectable fallbacks: `max-2`, `max-3`, and `max-4`.
-- `selectable_broker_routes:4`.
-- `selectable_fallback_routes:3`.
-- `spare_fallback_ready:true`.
-- `single_route_at_risk:false`.
+The 2026-05-08 installed-runtime artifacts proved managed load/resume quota
+handoff. The 2026-05-09 engineered artifact proved the stricter managed-session
+handoff shape after successful primary-route traffic. Same-thread semantics,
+mid-turn streaming recovery, unmanaged bare-`codex` daemon handoff, and
+non-Codex harness behavior remain separate proof lanes.
 
-That unblocks fallback capacity for TIN-951 / GitHub #177. It does not
-prove Level 3, because no provider-originated quota event was observed
-inside a live `oauth-mux codex` session during that check.
-
-## Dogfood-9 Auth Continuity
+## Dogfood-9 Auth Continuity Plus Failed Quota Handoff
 
 `dist/live-qa/managed-resume-dogfood-9/status.ndjson` is the strongest current
-live managed-session artifact, but it is an auth-continuity artifact, not a
-quota artifact.
+live managed-session artifact, but it is failed stay-afloat evidence, not a
+successful quota handoff.
 
 The run launched with `selected_account:"codex:max-1"` and
 `session_authority:"canonical_bridge"`. The selected account returned
@@ -104,11 +71,42 @@ The run launched with `selected_account:"codex:max-1"` and
 `codex:max-2` and `codex:max-3`, and `codex:max-4` returned `200`. Subsequent
 useful live `POST /responses` traffic continued through `codex:max-4`.
 
-The summarizer verdict is `auth_fallback_sequence_observed`. That means
-managed same-turn auth failure stay-afloat worked in a real dogfood session.
-It does not close TIN-916 / GitHub #131 or TIN-951 / GitHub #177, because the
-artifact has no `429`, no `usage_limit_reached`, no `quota_exhausted`, and no
-quota swap/retry event.
+Later in the same artifact, `codex:max-4` returned provider-originated
+`429 usage_limit_reached` / `quota_exhausted`, and oauth-mux reported
+`proxy_same_turn_retry_unavailable` / `NoAccountSelectable` instead of
+substituting another credited account. The correct summarizer verdict is
+`quota_handoff_failed`; this keeps TIN-916 / GitHub #131 and TIN-951 /
+GitHub #177 open.
+
+## 2026-05-08 Managed Load Quota Handoff
+
+`<oauth-mux-state>/codex/status/managed-1778273610565.ndjson`
+and `managed-1778271585359.ndjson` are installed-runtime managed Codex
+artifacts, not repo-local wrapper runs. They show `codex:default` returning
+provider-originated `429 usage_limit_reached` on `POST /responses`; oauth-mux
+records the quota event, keeps the 429 from Codex, drops
+`x-codex-turn-state`, retries the same request on `codex:max-2`, and receives
+`status:200`.
+
+The updated status oracle reports
+`verdict:"successful_live_quota_handoff"` for these artifacts. This upgrades
+the managed load/resume claim, but it does not close same-thread, mid-turn, or
+bare unmanaged `codex` claims.
+
+## 2026-05-09 Engineered Managed-Session Quota Handoff
+
+`<oauth-mux-state>/codex/status/managed-1778362718969.ndjson` is an
+installed-runtime managed Codex artifact from the low-weekly engineered burn.
+It shows successful `codex:max-2` `responses` turns before
+provider-originated `429 usage_limit_reached`; oauth-mux records quota, keeps
+the 429 from Codex, drops `x-codex-turn-state`, retries on `codex:max-3`, and
+receives `status:200`.
+
+The reviewed proof bundle is
+`docs/evidence/codex-engineered-quota-handoff-20260509/`. This closes the
+engineered managed-session quota handoff shape. It does not close same-thread
+continuity semantics, mid-turn streaming recovery, unmanaged bare-`codex`
+daemon handoff, or non-Codex harness behavior.
 
 ## What Current Main Proves
 
@@ -121,6 +119,13 @@ quota swap/retry event.
 - The managed Codex proxy can keep a real session afloat across selected-route
   auth failure by retrying the buffered request on a fallback account before
   Codex sees the 401.
+- The managed Codex proxy can keep a real resume/load turn afloat across
+  provider-originated `usage_limit_reached` by retrying the buffered request on
+  a fallback account before Codex sees the 429.
+- The managed Codex proxy can keep an engineered live session afloat after an
+  initially successful primary route reaches provider-originated
+  `usage_limit_reached`, by retrying the same buffered request on a fallback
+  route that returns 200.
 - The proxy can preserve a same-account Codex-refreshed bearer instead of
   forcing stale oauth-mux materialized credentials.
 - Route-health state now distinguishes expired reset windows as
@@ -134,11 +139,6 @@ quota swap/retry event.
 
 ## What Current Main Does Not Prove
 
-- Live provider-originated Level 3 account swap.
-- Live provider-originated quota fallback. Dogfood-9 proves auth fallback, not
-  quota fallback.
-- Live invisible same-turn recovery where Codex never sees a visible
-  `usage_limit_reached` failure when a fallback account is selectable.
 - Same-thread continuity across account swap.
 - Mid-turn recovery.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
@@ -157,11 +157,13 @@ quota swap/retry event.
    must not be labeled as Level 3.
 3. **The Codex path depends on wire interposition.** Codex's 401 path
    can refresh; quota is a 429 and must be observed at the wire layer.
-4. **The current 429 implementation has synthetic same-turn retry, not live
-   provider proof.** It buffers a quota 429, marks account A exhausted, elects
-   account B, drops `x-codex-turn-state`, and retries the same request before
-   writing to Codex. The remaining risk is whether real `chatgpt.com` quota
-   events and thread state behave like the synthetic model.
+4. **The current 429 implementation has live managed Codex proof, not full
+   same-thread proof.** It buffers a quota 429, marks account A exhausted,
+   elects account B, drops `x-codex-turn-state`, and retries the same request
+   before writing to Codex. Real `chatgpt.com` quota events have now passed
+   that path both on load/resume and in the engineered 2026-05-09 managed
+   session where the primary route returned successful traffic before
+   exhaustion.
 5. **The current child/proxy topology is the user-facing near path.**
    `oauth-mux codex` owns the mediation point. Bare `codex` with a
    background daemon remains a harder future sidecar problem.
@@ -170,22 +172,21 @@ quota swap/retry event.
 
 ## Next Gates
 
-1. Capture real Codex wire cassettes and live evidence for the same-turn 429
-   path:
-   - provider-originated `A -> 429 usage_limit_reached -> immediate B -> 200`;
-   - assert the live Codex process does not receive a visible 429 when B
-     succeeds;
-   - assert one stable child PID, redacted status frames, and no restart
-     language.
+1. Preserve the 2026-05-08 and 2026-05-09 installed-runtime same-turn 429
+   evidence and turn it into deterministic regression coverage:
+   - assert provider-originated A `429 usage_limit_reached`;
+   - assert immediate B -> 200 and no visible 429 when B succeeds;
+   - assert redacted status frames, terminal evidence, and no restart language.
 2. Keep extending the deterministic test ladder around that work:
    - Zig unit/PBT for response classification and swap state-machine
      invariants;
    - shell e2e for proxy behavior and CLI/session authority;
    - cassette replay for real wire-shape drift;
    - hosted CI before public claims.
-3. Run the live TIN-951 acceptance only when the operator is ready to
-   spend and has a credible way to observe provider-originated quota
-   exhaustion in an active `oauth-mux codex` session.
+3. Run the next live acceptance only when the operator is ready to spend and
+   has a credible way to preserve additional provider-originated quota
+   permutations, such as all-fallbacks-exhausted, tier-insufficient fallback,
+   reset repair, and mid-turn streaming cases.
 4. Run TIN-950 / GitHub #176 capture for at least one normal 200 turn.
    Capture 401 and 429 only when safely available. Commit only reviewed,
    scrubbed, fixture-sized JSON.

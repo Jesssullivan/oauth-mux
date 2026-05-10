@@ -15,7 +15,13 @@
           overlays = [ zig-overlay.overlays.default ];
         };
         zig = pkgs.zigpkgs."0.14.1";
-        version = "0.1.0";
+        version =
+          let
+            lines = pkgs.lib.splitString "\n" (builtins.readFile ./build.zig.zon);
+            matches = builtins.filter (match: match != null)
+              (map (line: builtins.match ".*\\.version[[:space:]]*=[[:space:]]*\"([^\"]+)\".*" line) lines);
+          in
+          builtins.head (builtins.head matches);
       in
       {
         packages = {

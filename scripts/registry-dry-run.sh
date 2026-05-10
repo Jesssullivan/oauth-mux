@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-version="${1:-${VERSION:-0.1.0}}"
+version="${1:-${VERSION:-$("$repo_root/scripts/project-version.sh")}}"
 version="${version#v}"
 
 if [ "${OMUX_REGISTRY_DRY_RUN_CONFIRM:-}" != "registry-dry-run" ]; then

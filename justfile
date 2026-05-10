@@ -1,6 +1,7 @@
 # oauth-mux — OAuth fallback muxing for AI harness subscriptions
 
 zig := "nix develop --command zig"
+release_version := `./scripts/project-version.sh`
 
 default:
     @just --list
@@ -112,16 +113,16 @@ release-all:
     {{zig}} build release
     @echo "all release builds complete"
 
-release-local VERSION="0.1.0":
+release-local VERSION=release_version:
     nix develop --command ./scripts/release-local.sh {{VERSION}}
 
-release-smoke VERSION="0.1.0":
+release-smoke VERSION=release_version:
     nix develop --command ./scripts/release-smoke.sh {{VERSION}}
 
-release-handoff VERSION="0.1.0":
+release-handoff VERSION=release_version:
     nix develop --command ./scripts/release-handoff.sh {{VERSION}}
 
-registry-dry-run VERSION="0.1.0":
+registry-dry-run VERSION=release_version:
     nix develop --command ./scripts/registry-dry-run.sh {{VERSION}}
 
 system-package-qa VERSION="0.1.6":
@@ -133,10 +134,10 @@ homebrew-qa VERSION="0.1.6":
 npm-deprecate-plan VERSION="0.1.1":
     OMUX_NPM_DEPRECATE_PLAN_ONLY=1 nix develop --command ./scripts/npm-ci-deprecate.sh {{VERSION}}
 
-release-proof VERSION="0.1.0":
+release-proof VERSION=release_version:
     nix develop --command just release-proof-local {{VERSION}}
 
-release-proof-local VERSION="0.1.0":
+release-proof-local VERSION=release_version:
     ./scripts/release-local.sh {{VERSION}}
     ./scripts/release-smoke.sh {{VERSION}}
     ./scripts/release-handoff.sh {{VERSION}}
@@ -173,7 +174,7 @@ check:
     nix develop --command just check-local
 
 check-local:
-    sh -c 'zig build test && zig build && for cfg in examples/*.config.json; do OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate; done && ./scripts/e2e-local.sh && ./scripts/first-run-e2e.sh && ./scripts/stay-afloat-wrapper-doc-smoke.sh && ./scripts/smoke-broker.sh && ./scripts/smoke-codex-cli-ux.sh && ./scripts/smoke-codex-acceptance.sh && ./scripts/smoke-codex-concurrent-sessions.sh && ./scripts/smoke-codex-child-refresh.sh && ./scripts/smoke-codex-tier-insufficient.sh && ./scripts/smoke-codex-all-exhausted.sh && ./scripts/smoke-codex-401-propagation.sh && ./scripts/smoke-codex-cassette-replay.sh && ./scripts/smoke-codex-capture-review.sh && ./scripts/smoke-codex-status-summary.sh && ./scripts/smoke-github-tracker-comment.sh'
+    ./scripts/check-local.sh
     @echo "all checks passed"
 
 e2e:

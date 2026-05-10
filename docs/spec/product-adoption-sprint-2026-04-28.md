@@ -94,12 +94,22 @@ Required sections:
 
      ```bash
      npm install -g oauth-mux
-     oauth-mux codex onboard
-     oauth-mux codex probe-all --capability codex-max --json
+     oauth-mux init --codex-max
+     oauth-mux codex resume
+     oauth-mux codex status-latest --json
      ```
 
-   - show a compact redacted JSON excerpt with `live.available`,
-     `live.quota_exhausted`, and `dead.auth_permanently_failed`.
+   - show a compact redacted JSON excerpt with
+     `verdict:"successful_live_quota_handoff"`, `config_passthrough:true`,
+     `session_authority:"canonical_bridge"`, and
+     `launch_timing.child_spawn_elapsed_ms`.
+   - avoid implying same-thread continuity or unmanaged bare-`codex` daemon
+     hot-swap.
+   - link `docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md` and
+     `docs/evidence/codex-engineered-quota-handoff-20260509/README.md`
+     anywhere the page discusses the proven managed Codex quota handoff.
+     Keep same-thread continuity and unmanaged bare-`codex` daemon handoff as
+     separate open proof lanes.
 
 2. Problem statement.
    - Developers increasingly carry multiple personal, work, team, subscription,
@@ -110,17 +120,33 @@ Required sections:
 
 3. How fallback works.
    - `CredentialLiveness = live | degraded | dead`.
-   - `Availability = available | rate_limited | quota_exhausted | cooldown`.
+   - `Availability = available | rate_limited | quota_exhausted |
+     tier_insufficient | credential_unavailable | cooldown`.
    - explain route-scoped keys such as `codex:max-1#codex-max`.
+   - for Codex, distinguish managed `oauth-mux codex` frames from unmanaged
+     bare `codex` processes.
 
 4. Install surface.
-   - npm now.
-   - GitHub Release tarballs now.
-   - Homebrew/deb/rpm/curl lanes are release-staged and dry-runed; mark public
-     publication state precisely.
+   - npm public package now.
+   - GitHub Release tarballs and checksum-verified `install.sh` now.
+   - public Homebrew tap now:
+     `brew install jesssullivan/omux/oauth-mux`.
+   - deb/rpm packages now, with hosted install QA for published release
+     assets.
+   - Nix package and user-local dogfood lanes for source-tree validation.
+   - Keep the current lane contract in `docs/release-install-lanes.md` and use
+     `docs/release-runbook.md` only for detailed historical evidence.
 
 5. First-run flows.
    - Codex paid cohort path.
+   - managed Codex daily path:
+
+     ```bash
+     oauth-mux codex
+     oauth-mux codex resume
+     oauth-mux codex resume --last
+     ```
+
    - generic provider author path.
    - agent discovery path:
 
@@ -135,9 +161,17 @@ Required sections:
    - no committed credential stores;
    - no raw token output in discovery/health;
    - explicit live probes only when they may spend calls.
+   - status artifacts report classes/counts, not credential paths, session ids,
+     token material, or raw user config values.
 
 7. Provider status matrix.
-   - `live-proven`: Codex.
+   - `live-proven`: managed Codex load/resume quota handoff and the
+     engineered 2026-05-09 managed-session exhaustion handoff
+     (`codex:max-2` -> `codex:max-3`, provider
+     `usage_limit_reached` -> fallback 200).
+   - `pending`: same-thread continuity semantics across account boundaries,
+     mid-turn streaming recovery, unmanaged bare-`codex` daemon handoff, and
+     broader auth/quota/tier permutations.
    - `schema-modeled`: Claude, GitHub, Linear, Vercel, Figma, FlakeHub, MCP HTTP
      resource servers.
    - `seeking proof`: each provider that needs real QA or official endpoint
@@ -161,11 +195,11 @@ Useful website artifacts:
 - a "copy this into an agent" snippet that tells an AI assistant how to inspect
   the mux safely.
 
-## v0.1.3 Onboarding Scope
+## Onboarding Scope
 
-The next implementation release should optimize first-run trust and support.
+The implementation line should keep optimizing first-run trust and support.
 
-Candidate CLI additions:
+First-run surfaces:
 
 - `oauth-mux doctor --json`
   - validates binary version, config path, state path, provider definitions,
@@ -232,7 +266,7 @@ Complete before broad posting:
 - GitHub issue templates exist for bug, provider request, and security-sensitive
   report guidance;
 - `doctor` or an equivalent redacted diagnostic flow exists;
-- `v0.1.3` is published or staged with dry-run evidence;
+- the current release version is published or staged with dry-run evidence;
 - package install smoke is run from a fresh project;
 - provider support language is precise.
 
@@ -251,9 +285,10 @@ Target users who can give concrete feedback:
 Launch post angle:
 
 > I built a tiny Zig CLI for typed OAuth fallback across AI harness accounts.
-> The first live-proven path is three Codex subscriptions. The part I most want
-> feedback on is the provider schema and liveness algebra: does it model your
-> harness's auth/rate/quota failure modes cleanly?
+> The first live-proven path is managed Codex quota handoff across labeled
+> subscription routes. The part I most want feedback on is the provider schema
+> and liveness algebra: does it model your harness's auth/rate/quota failure
+> modes cleanly?
 
 ### Pass 2: Public Noise
 
@@ -336,7 +371,7 @@ Each post should link to:
 Close `TIN-491` only after the planning doc is merged and the split tickets
 exist. Follow-up work should be tracked independently:
 
-1. `v0.1.3 onboarding and doctor UX`.
+1. `Onboarding and doctor UX`.
 2. `Website and launch narrative`.
 3. `Adoption outreach and feedback loop`.
 4. `Provider expansion beyond Codex`.

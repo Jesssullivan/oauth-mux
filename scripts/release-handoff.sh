@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-version="${1:-${VERSION:-0.1.0}}"
+version="${1:-${VERSION:-$("$repo_root/scripts/project-version.sh")}}"
 version="${version#v}"
 
 out_dir="$repo_root/dist/out/v${version}"

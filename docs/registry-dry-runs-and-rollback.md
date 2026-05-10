@@ -4,6 +4,8 @@ Registry publication is intentionally separate from release artifact proof.
 `just release-proof <version>` proves the release tree and handoff without
 publication credentials. Authenticated registry dry-runs are CI/operator gates
 and non-publishing.
+For the DRY lane map across worktree, Nix, GitHub Release, npm, Homebrew,
+curl, deb, and rpm installers, see `docs/release-install-lanes.md`.
 
 npm publication is CI-only. Do not run `npm publish` from a workstation. The
 publish workflow stages the same release derivation, then publishes the
@@ -15,25 +17,28 @@ source repository.
 Stage and prove artifacts:
 
 ```bash
-just release-proof 0.1.0
+version="$(scripts/project-version.sh)"
+just release-proof "$version"
 ```
 
 Run a plan-only dry-run report:
 
 ```bash
+version="$(scripts/project-version.sh)"
 OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run \
 OMUX_REGISTRY_LANES=plan \
-just registry-dry-run 0.1.0
+just registry-dry-run "$version"
 ```
 
 Run authenticated lanes:
 
 ```bash
+version="$(scripts/project-version.sh)"
 OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run \
 OMUX_REGISTRY_LANES=github,npm,homebrew,system \
 NPM_TOKEN_FILE=/path/to/npm-token \
 OMUX_HOMEBREW_TAP_DIR=/path/to/homebrew-tap \
-just registry-dry-run 0.1.0
+just registry-dry-run "$version"
 ```
 
 The npm dry-run lane resolves auth in this order: `NPM_TOKEN`,

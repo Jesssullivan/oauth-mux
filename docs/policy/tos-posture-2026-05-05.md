@@ -97,8 +97,14 @@ The current product bar is still technical, not legal:
 > provider-originated quota exhaustion. Another credited, operator-enrolled
 > account continues in place without restart or prompt.
 
-That bar is not yet live-proven. Synthetic smokes, route readiness,
-`prepared_fallback`, and restart diagnostics remain partial evidence only.
+That managed Codex bar is now live-proven for installed
+`oauth-mux codex resume` artifacts, including an engineered 2026-05-09 run
+where a route returned successful turns before provider-originated
+`usage_limit_reached`, oauth-mux retried the same buffered request on a
+credited route, and the fallback returned 200. Synthetic smokes, route
+readiness, `prepared_fallback`, restart diagnostics, unmanaged bare-`codex`
+daemon handoff, and non-Codex harnesses remain separate partial or unproven
+claims.
 
 ## Operator Decision Points
 

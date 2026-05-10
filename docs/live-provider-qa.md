@@ -2,6 +2,7 @@
 
 Live provider QA is manual and secret-scoped because provider probes can spend
 real subscription calls.
+The canonical route-state and handoff matrix is `docs/qa-handoff-matrix.md`.
 
 ## Local Run
 
@@ -98,7 +99,7 @@ Historical operator-provided Codex state on 2026-04-28:
 This three-route snapshot is retained only to explain earlier artifacts. Use
 the current four-route section below for operator decisions and website copy.
 
-Current four-route Codex dogfood state on 2026-05-03:
+Historical four-route Codex dogfood state on 2026-05-03:
 
 - The source example remains the three-route starter config. Add `max-4` to the
   active operator config with `oauth-mux enroll codex --account max-4
@@ -118,8 +119,22 @@ Hosted evidence from run `25029923810`:
 - `codex-max`: `max-1` and `max-2` returned `live/quota_exhausted` and
   `decision=try_next_account`; `max-3` returned `live/available` and
   `decision=use_this`.
-- The uploaded artifact contains valid per-probe JSON files and separate
-  redacted probe logs.
+
+Current post-handoff Codex Max route truth moves with operator auth and reset
+windows. Use `docs/qa-handoff-matrix.md` as the canonical current-state matrix
+and refresh no-spend truth with:
+
+```bash
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux accounts list --provider codex --json
+```
+
+After the 2026-05-09 engineered handoff burn, the important durable claim is
+not any one account's later availability state; it is that managed Codex quota
+handoff from `codex:max-2` to `codex:max-3` is preserved in
+`docs/evidence/codex-engineered-quota-handoff-20260509/`. Do not describe the
+pool as afloat unless current no-spend route truth shows a selectable primary
+and fallback.
 
 Hosted evidence from PR-branch run `25134175687` on 2026-04-29:
 

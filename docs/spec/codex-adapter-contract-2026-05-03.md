@@ -45,19 +45,57 @@ canonical session authority, mux-owned auth/config, and live
 `POST /backend-api/codex/responses` turns returning `status:200`. This proves
 the managed frame and normal proxy path, not account-exhaustion success.
 
-The current 429 implementation now has a synthetic same-turn retry path: the
-proxy buffers `429 usage_limit_reached`, marks the active account exhausted,
-elects a fallback, drops `x-codex-turn-state`, and retries the same request
-before writing a response to Codex. The smoke proves Codex sees only the
-fallback `200` in that synthetic case. Live provider-originated quota evidence
-is still required before promoting the runtime claim.
+Implementation update, 2026-05-08: installed managed resume/load now has
+provider-originated quota handoff evidence. In
+`managed-1778271585359.ndjson` and `managed-1778273610565.ndjson`, the proxy
+observed real `429 usage_limit_reached` on `codex:default`, recorded durable
+quota evidence, elected `codex:max-2`, dropped `x-codex-turn-state`, retried
+the same `responses` request, and received `status:200` before Codex saw the
+429. The status oracle reports `verdict:"successful_live_quota_handoff"`.
 
-That smoke is structural evidence only. It uses local stubs and fake
+The smoke suite remains structural evidence. It uses local stubs and fake
 fixture tokens, makes no provider calls, and keeps the adapter output at
-`claim_level:"broker_owned"` while reporting
-`synthetic_swap_observed:true`. It does **not** claim live
-`next_turn_seamless`, provider-originated quota handling, same-thread
-recovery, or unmanaged Codex TUI hot-swap.
+`claim_level:"broker_owned"` while reporting synthetic swap shape. The live
+artifacts promote the managed load/resume quota claim, but they do **not**
+claim same-thread continuity, mid-turn recovery, or unmanaged Codex TUI
+hot-swap.
+
+Implementation update, 2026-05-09: the engineered managed-session proof now
+exists. The installed `oauth-mux codex resume <id>` artifact preserved in
+`docs/evidence/codex-engineered-quota-handoff-20260509/` shows successful
+`codex:max-2` traffic before provider-originated `usage_limit_reached`,
+oauth-mux retrying the same buffered request on `codex:max-3`, and fallback
+`status:200` before the 429 was delivered to Codex. This closes the managed
+Codex live quota handoff shape; same-thread provider semantics, mid-turn
+streaming recovery, unmanaged daemon handoff, and non-Codex adapters remain
+separate claims.
+
+Implementation update, 2026-05-09: managed `oauth-mux codex resume` chooser
+mode now validates canonical session authority before spawning Codex. The
+managed overlay keeps auth/config mux-owned and session/history state bridged
+by reference. If the chooser-required authority entries are unavailable,
+oauth-mux emits a redacted `resume_authority_check` diagnostic and exits before
+child spawn instead of opening an empty native chooser. Managed launches also
+emit redacted `launch_timing` phase events through `child_spawn`; these are
+startup diagnostics, not quota-handoff evidence.
+
+Implementation update, 2026-05-09: the managed overlay now preserves canonical
+Codex `config.toml` behavior settings when a canonical config is present, while
+stripping oauth-mux-owned provider-selection conflicts before appending the
+managed proxy provider. This protects `/experimental` / `[features]`, MCP,
+hooks/rules, approval/sandbox, profiles, model defaults, and custom
+non-managed provider definitions from being silently shadowed by the temporary
+`CODEX_HOME`. Config authority is independent from session authority:
+`OMUX_CODEX_CONFIG_HOME` wins, then parent `CODEX_HOME`, then `~/.codex`.
+`--session-home`, `OMUX_CODEX_SESSION_HOME`, and
+`--isolated-session-store` affect session state, not native behavior config.
+Profile-scoped `model_provider` lines are removed, stale
+`[model_providers.oauth_mux_openai]` tables and subtables are removed, and
+forwarded Codex `--config` / `-c` assignments that attempt to override
+`model_provider`, `*.model_provider`, or `model_providers.oauth_mux_openai*`
+fail before child spawn with a redacted `config_passthrough_check` status
+event. Track remaining edge-layer work in
+<https://github.com/Jesssullivan/oauth-mux/issues/211>.
 
 ## 0. Scope
 
@@ -121,7 +159,10 @@ both layers, Level 3 is the default and Level 4 is reachable.
    selected custom provider (`model_provider = "oauth_mux_openai"` and
    `[model_providers.oauth_mux_openai]`) points at the wire-layer proxy.
    Codex 0.128+ rejects overriding the reserved built-in `openai`
-   provider id. Session-authority paths are bridged per
+   provider id. The generated config preserves canonical user behavior
+   settings and strips only mux-owned provider-selection conflicts. Unsafe
+   forwarded `--config` / `-c` provider overrides fail before child spawn with
+   redacted status. Session-authority paths are bridged per
    `docs/spec/harness-session-authority-bridge-2026-05-05.md`, not copied
    wholesale into this overlay. Operators may pass `--isolated-session-store`
    for a test/private namespace or `--session-home <path>` for an explicit
@@ -441,6 +482,7 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // if the managed frame aborts before normal teardown, it must still emit a
 // terminal status frame when the parent can run cleanup
 { "kind": "session_aborted", "adapter": "codex", "reason": "child_wait_error", "exit_code": -1, "final_claim_level": "broker_owned", "synthetic_swap_observed": false, "wait_error": "..." }
+{ "kind": "session_aborted", "adapter": "codex", "reason": "child_signal", "exit_code": -1, "term_kind": "signal", "term_code": 9, "signal_name": "SIGKILL", "final_claim_level": "broker_owned", "synthetic_swap_observed": false }
 ```
 
 These frames are the only structured surface the adapter publishes. The
@@ -456,10 +498,10 @@ The adapter MUST refuse to start in these conditions:
   user-mediated repair handoff is available.
 - `codex` binary is not on `PATH` or does not respond to `app-server
   --listen stdio://`.
-- The user's `~/.codex/config.toml` already has a non-managed provider
-  block with a custom base_url that would be selected by the session AND
-  the user did not pass `--allow-config-shadow`. (We will not silently
-  override user config.)
+- A detected canonical Codex config that cannot be safely preserved should be
+  treated as a config-parity risk. The adapter must merge/copy native behavior
+  settings and apply only the oauth-mux proxy-provider override, or refuse with
+  a typed redacted diagnostic rather than silently shadowing user config.
 
 The adapter MUST surface, not retry, on these:
 

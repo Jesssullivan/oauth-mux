@@ -1,7 +1,7 @@
 # Codex Managed Resume UX Refactor
 Date: 2026-05-06
-Status: P0/P1 planning contract. This is a refactor and regression plan,
-not an implementation record.
+Status: implementation-backed refactor contract. Original P0/P1 planning
+items remain here, with current-main truth notes appended as findings.
 
 Anchors:
 
@@ -67,22 +67,35 @@ Already real on `main`:
 
 - `oauth-mux codex run` creates a temporary `CODEX_HOME` with mux-owned
   `auth.json` and generated `config.toml`.
+- First-class `oauth-mux codex resume`, `resume --last`, and
+  `resume <session-id>` route through the managed adapter frame without raw
+  `codex run -- ...` spelling.
 - `sessions/`, `history.jsonl`, `session_index.jsonl`, and
   `shell_snapshots/` are bridged by reference to canonical Codex session
   authority by default.
 - `--session-home`, `OMUX_CODEX_SESSION_HOME`, and
   `--isolated-session-store` exist.
+- `oauth-mux codex resume` with no id preserves the native chooser. Before
+  spawning Codex, oauth-mux verifies the overlay exposes required canonical
+  session-authority entries and emits a redacted `resume_authority_check`
+  diagnostic if parity is unavailable.
+- Managed config preserves canonical Codex behavior settings while replacing
+  mux-owned provider keys. Forwarded `--config` / `-c` provider overrides are
+  rejected before child spawn with redacted `config_passthrough_check` status.
+- Managed launches emit `launch_timing` status phases through `child_spawn` for
+  startup latency diagnosis.
 - Synthetic smokes prove the bridge structure and write-through behavior.
 - Synthetic smokes prove A -> `usage_limit_reached` -> B swap through the
   adapter/proxy in one stable child PID.
+- Installed-runtime dogfood has produced managed load/resume quota handoff
+  evidence and an engineered managed-session quota handoff artifact; see
+  `docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md` and
+  `docs/evidence/codex-engineered-quota-handoff-20260509/`.
 
 Not real yet:
 
-- Live managed-frame `resume <id>` parity.
-- Live managed-frame `resume --last` parity.
-- Provider-originated live Level 3 account swap in a real interactive
-  `oauth-mux codex` session.
 - Same-thread continuity across account swap.
+- Mid-turn streaming recovery after partial response delivery.
 - Bare `codex` plus background oauth-mux seamless handoff.
 
 ## 3. UX Contract
@@ -116,6 +129,11 @@ Adapter-owned options are consumed by oauth-mux:
   friendlier than file paths
 
 Harness-owned args are forwarded exactly, in order, without reinterpretation.
+The only exception is mux-owned provider configuration: forwarded Codex
+`--config` / `-c` assignments that override `model_provider`,
+`*.model_provider`, or `model_providers.oauth_mux_openai*` MUST fail before
+child spawn with a redacted typed diagnostic. Other Codex config overrides
+remain harness-owned and are forwarded.
 
 ### 3.3 Parser Rules
 
@@ -238,8 +256,16 @@ Session bridge tests:
 
 - Overlay points session-authority entries at canonical authority by reference.
 - `auth.json` and `config.toml` remain mux-owned overlay files.
-- Missing `history.jsonl` or `session_index.jsonl` is created in canonical
-  authority, not copied into an isolated fork.
+- Missing chooser-required authority entries are not manufactured inside the
+  managed overlay. For chooser mode they produce a pre-spawn diagnostic; for
+  non-chooser launches native Codex owns any normal first-run initialization.
+- For chooser mode, missing canonical session-authority entries fail before
+  child spawn with a redacted `resume_authority_check` status event. The
+  adapter must not create placeholder authority entries that would make native
+  Codex show an empty or misleading chooser.
+- Chooser mode does not recursively snapshot `sessions/` before launch. Native
+  Codex owns chooser enumeration; oauth-mux only validates that the managed
+  overlay exposes the required authority paths by reference.
 
 ### 5.2 Property-Based Tests
 
@@ -626,3 +652,94 @@ Follow-up implemented:
   `proxy_turn` with `status:200`; the summarizer reports
   `verdict:"auth_fallback_sequence_observed"`. This remains separate from live
   quota fallback evidence.
+
+## 12. Dogfood Finding: Live Quota Was Observed, Handoff Failed
+
+Dogfood-9 is not a successful managed quota stay-afloat artifact. It first
+proved auth continuity by retrying selected-account `401 auth_unauthorized`
+responses from `codex:max-1` through `max-2` and `max-3`, then continuing
+with successful traffic on `codex:max-4`.
+
+Later in the same managed frame, `codex:max-4` returned provider-originated
+`429 usage_limit_reached` / `classification:"quota_exhausted"`. oauth-mux did
+not substitute another credited account; status evidence ended with
+`proxy_same_turn_retry_unavailable` / `NoAccountSelectable` instead of a
+distinct-account `200` fallback turn.
+
+Correct interpretation:
+
+- `verdict:"quota_handoff_failed"` is the status-oracle result for this
+  artifact.
+- TIN-916 / GitHub #131 and TIN-951 / GitHub #177 remain open.
+- Future live dogfood must enter through an actually installed `oauth-mux`
+  executable on PATH: `oauth-mux codex resume <id>`. Repo-local
+  `./zig-out/bin/oauth-mux`, extra dogfood wrapper scripts, and arg-clad
+  launch helpers are not acceptance evidence.
+- A future acceptance artifact must show quota/rate evidence on account A,
+  durable route evidence, same-process retry or swap to account B, and a
+  successful response on B without logout, login, restart, or manual resume.
+
+## 13. 2026-05-08 Finding: Managed Load Quota Handoff Succeeded
+
+Two installed-runtime managed resume/load artifacts now satisfy the narrower
+managed quota-handoff evidence shape:
+
+- `<oauth-mux-state>/codex/status/managed-1778271585359.ndjson`
+- `<oauth-mux-state>/codex/status/managed-1778273610565.ndjson`
+
+Both were entered through installed `oauth-mux codex resume <id>`, selected
+`codex:default`, observed provider-originated `429 usage_limit_reached` on
+`POST /backend-api/codex/responses`, recorded quota, dropped
+`x-codex-turn-state`, retried the same request on `codex:max-2`, and received
+`status:200` from the fallback account before Codex saw the 429. The updated
+status oracle reports `verdict:"successful_live_quota_handoff"`.
+
+The 2026-05-09 installed-runtime engineered artifact
+`<oauth-mux-state>/codex/status/managed-1778362718969.ndjson` satisfies the
+stricter managed-session evidence shape: successful `codex:max-2` traffic,
+provider-originated `usage_limit_reached`, same-request retry to
+`codex:max-3`, and fallback `status:200`. The reviewed proof bundle is
+`docs/evidence/codex-engineered-quota-handoff-20260509/`.
+
+Correct interpretation:
+
+- Managed load/resume quota fallback is live-proven for Codex.
+- Dogfood-9 remains historical failed-quota evidence and should keep its
+  original verdict.
+- Same-thread continuity, mid-turn recovery, unmanaged `codex` hot-swap, and
+  non-Codex harnesses remain unclaimed.
+
+## 14. 2026-05-09 Finding: Chooser Authority And Startup Timing
+
+Current main now has the managed-resume chooser guard this spec originally
+called for:
+
+- `oauth-mux codex resume` forwards exactly `["resume"]` into the managed
+  frame so native Codex keeps chooser ownership.
+- Before child spawn, oauth-mux checks that the mux-owned overlay exposes the
+  required canonical session-authority entries by reference:
+  `sessions/`, `shell_snapshots/`, `history.jsonl`, and
+  `session_index.jsonl`.
+- If chooser parity is unavailable, oauth-mux emits
+  `kind:"resume_authority_check", ok:false` with only counts and a typed
+  diagnostic, then exits before spawning Codex. It does not print paths,
+  tokens, or session ids.
+- If chooser parity is available, oauth-mux emits the same event with
+  `ok:true` and launches Codex.
+- `--isolated-session-store` remains an explicit opt-out from canonical
+  chooser parity.
+
+Startup timing is now status evidence, not user-facing terminal noise.
+Managed launches emit redacted `launch_timing` events for config/health load,
+route election, auth refresh/preflight, proxy bind, overlay creation,
+resume-authority check, binary resolution, env build, and child spawn.
+`oauth-mux codex status-latest --json` and
+`scripts/summarize-codex-status.py` both summarize this as:
+
+```json
+{"launch_timing":{"events":9,"child_spawn_elapsed_ms":19,"total_elapsed_ms":19}}
+```
+
+The exact millisecond values are diagnostic. They are not a product claim, but
+they protect the fast-visible-TUI requirement: chooser mode must not do a
+recursive rollout scan before child spawn.

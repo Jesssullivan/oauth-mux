@@ -45,6 +45,7 @@ def find_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
     quota_idx: int | None = None
     retry_idx: int | None = None
     quota_account: str | None = None
+    quota_turn: dict[str, Any] | None = None
     retry_event: dict[str, Any] | None = None
     fallback_turn: dict[str, Any] | None = None
 
@@ -54,9 +55,10 @@ def find_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
         if (
             event.get("status") == 429
             and event.get("classification") == "quota_exhausted"
-        ):
+            ):
             quota_idx = idx
             quota_account = event.get("account")
+            quota_turn = event
             break
 
     if quota_idx is None:
@@ -97,10 +99,84 @@ def find_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "observed": True,
         "quota_account": quota_account,
+        "quota_turn": quota_turn,
         "fallback_account": fallback_turn.get("account"),
         "retry": retry_event,
         "fallback_status": fallback_turn.get("status"),
         "fallback_path_kind": fallback_turn.get("path_kind"),
+    }
+
+
+def find_quota_handoff_failure(events: list[dict[str, Any]]) -> dict[str, Any]:
+    quota_idx: int | None = None
+    quota_account: str | None = None
+    failure_event: dict[str, Any] | None = None
+
+    for idx, event in enumerate(events):
+        if event.get("kind") != "proxy_turn":
+            continue
+        if (
+            event.get("status") == 429
+            and event.get("classification") == "quota_exhausted"
+        ):
+            quota_idx = idx
+            quota_account = event.get("account")
+            break
+
+    if quota_idx is None:
+        return {
+            "observed": False,
+            "reason": "no quota_exhausted proxy_turn",
+        }
+
+    for event in events[quota_idx + 1 :]:
+        kind = event.get("kind")
+        if (
+            kind == "proxy_turn"
+            and event.get("account") != quota_account
+            and event.get("status") == 200
+        ):
+            return {
+                "observed": False,
+                "reason": "quota_handoff_succeeded_before_terminal_failure",
+                "quota_account": quota_account,
+            }
+        if kind == "quota_handoff_failed_no_account_selectable":
+            failure_event = event
+            break
+        if kind == "proxy_same_turn_retry_unavailable" and failure_event is None:
+            failure_event = event
+            continue
+        if kind == "proxy_no_account_selectable":
+            failure_event = event
+            break
+
+    if failure_event is None:
+        return {
+            "observed": False,
+            "reason": "quota_exhausted without terminal no-account evidence",
+            "quota_account": quota_account,
+        }
+
+    raw_rejections = failure_event.get("rejections")
+    rejections = raw_rejections if isinstance(raw_rejections, list) else []
+    reason = failure_event.get("reason")
+    if not isinstance(reason, str):
+        reason = failure_event.get("err")
+    if not isinstance(reason, str):
+        reason = "no_account_selectable"
+
+    return {
+        "observed": True,
+        "quota_account": quota_account,
+        "reason": reason,
+        "event": failure_event,
+        "rejections": rejections,
+        "user_visible_failure_likely": bool(
+            failure_event.get("user_visible_failure_likely")
+        )
+        or failure_event.get("kind")
+        in {"proxy_no_account_selectable", "quota_handoff_failed_no_account_selectable"},
     }
 
 
@@ -176,10 +252,20 @@ def find_auth_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
 def summarize(path: Path) -> dict[str, Any]:
     events = load_events(path)
     proxy_turns = [e for e in events if e.get("kind") == "proxy_turn"]
+    launch_timing_events = [e for e in events if e.get("kind") == "launch_timing"]
     session_started = next((e for e in events if e.get("kind") == "session_started"), {})
     session_ended = next((e for e in reversed(events) if e.get("kind") == "session_ended"), {})
     session_aborted = next((e for e in reversed(events) if e.get("kind") == "session_aborted"), {})
+    terminal_event = next(
+        (
+            e
+            for e in reversed(events)
+            if e.get("kind") in ("session_ended", "session_aborted")
+        ),
+        {},
+    )
     fallback = find_fallback_sequence(events)
+    quota_failure = find_quota_handoff_failure(events)
     auth_fallback = find_auth_fallback_sequence(events)
     auth_health_events = [e for e in events if e.get("kind") == "auth_health_observed"]
     auth_unauthorized_turns = [
@@ -192,6 +278,11 @@ def summarize(path: Path) -> dict[str, Any]:
         e
         for e in auth_unauthorized_turns
         if e.get("path_kind") == "responses"
+    ]
+    quota_turns = [
+        e
+        for e in proxy_turns
+        if e.get("status") == 429 and e.get("classification") == "quota_exhausted"
     ]
 
     brokered_session = (
@@ -208,10 +299,31 @@ def summarize(path: Path) -> dict[str, Any]:
         and not auth_health_events
         and not terminal_event_observed
     )
+    provider_originated_live_fallback_claim = bool(
+        fallback.get("observed")
+        and fallback.get("fallback_status") == 200
+        and isinstance(fallback.get("quota_turn"), dict)
+        and fallback["quota_turn"].get("body_class") == "usage_limit_reached"
+    )
+    launch_elapsed_values = [
+        e.get("elapsed_ms")
+        for e in launch_timing_events
+        if isinstance(e.get("elapsed_ms"), int)
+    ]
+    child_spawn_event = next(
+        (e for e in launch_timing_events if e.get("phase") == "child_spawn"),
+        {},
+    )
 
-    if fallback.get("observed"):
-        verdict = "fallback_sequence_observed"
-        next_action = "inspect_live_quota_fallback"
+    if provider_originated_live_fallback_claim:
+        verdict = "successful_live_quota_handoff"
+        next_action = "capture_or_close_live_quota_acceptance"
+    elif fallback.get("observed"):
+        verdict = "quota_handoff_observed"
+        next_action = "inspect_quota_handoff_origin"
+    elif quota_failure.get("observed"):
+        verdict = "quota_handoff_failed"
+        next_action = "repair_route_health_or_add_fallback_account"
     elif auth_fallback.get("observed"):
         verdict = "auth_fallback_sequence_observed"
         next_action = "continue_managed_dogfood"
@@ -249,8 +361,27 @@ def summarize(path: Path) -> dict[str, Any]:
         "auth_health_events": len(auth_health_events),
         "auth_health_recorded_observed": any(e.get("recorded") is True for e in auth_health_events),
         "auth_health_quota_claim_observed": any(e.get("quota_claim") is True for e in auth_health_events),
+        "quota_event_observed": bool(quota_turns),
+        "quota_handoff_observed": bool(fallback.get("observed")),
+        "quota_handoff_failed_reason": quota_failure.get("reason")
+        if quota_failure.get("observed")
+        else None,
+        "quota_handoff_failure": quota_failure,
+        "no_account_selectable_rejections": quota_failure.get("rejections", [])
+        if quota_failure.get("observed")
+        else [],
+        "user_visible_failure_likely": bool(
+            quota_failure.get("user_visible_failure_likely")
+        ),
         "terminal_event_observed": terminal_event_observed,
         "session_aborted_observed": bool(session_aborted),
+        "terminal_event": {
+            "kind": terminal_event.get("kind"),
+            "exit_code": terminal_event.get("exit_code"),
+            "term_kind": terminal_event.get("term_kind"),
+            "term_code": terminal_event.get("term_code"),
+            "signal_name": terminal_event.get("signal_name"),
+        },
         "health_recording_expected_but_missing": health_recording_expected_but_missing,
         "same_turn_retry_events": sum(1 for e in events if e.get("kind") == "proxy_same_turn_retry"),
         "auth_same_turn_retry_events": sum(1 for e in events if e.get("kind") == "proxy_auth_same_turn_retry"),
@@ -259,11 +390,20 @@ def summarize(path: Path) -> dict[str, Any]:
             1 for e in events if e.get("kind") == "proxy_same_turn_retry_unavailable"
         ),
         "post_swap_turn_events": sum(1 for e in events if e.get("kind") == "proxy_post_swap_turn"),
+        "launch_timing": {
+            "events": len(launch_timing_events),
+            "child_spawn_elapsed_ms": child_spawn_event.get("elapsed_ms")
+            if isinstance(child_spawn_event.get("elapsed_ms"), int)
+            else None,
+            "total_elapsed_ms": max(launch_elapsed_values)
+            if launch_elapsed_values
+            else None,
+        },
         "fallback_sequence": fallback,
         "auth_fallback_sequence": auth_fallback,
-        "synthetic_swap_observed": bool(session_ended.get("synthetic_swap_observed")),
+        "synthetic_swap_observed": bool(terminal_event.get("synthetic_swap_observed")),
         "level4_shape_observed": bool(fallback.get("observed")),
-        "provider_originated_live_fallback_claim": False,
+        "provider_originated_live_fallback_claim": provider_originated_live_fallback_claim,
         "verdict": verdict,
         "next_action": next_action,
     }

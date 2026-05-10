@@ -113,7 +113,7 @@ pub fn generatePkce() PkceChallenge {
 pub fn refreshUrl(kind: types.ProviderKind) ?[]const u8 {
     return switch (kind) {
         .claude => "https://claude.ai/api/auth/oauth/token",
-        .codex => "https://auth0.openai.com/oauth/token",
+        .codex => "https://auth.openai.com/oauth/token",
         .gemini => "https://oauth2.googleapis.com/token",
         .vercel => null, // discovered via OIDC metadata
         .github => null, // tokens don't expire
@@ -159,7 +159,7 @@ test "refreshUrl returns expected endpoints" {
         refreshUrl(.claude).?,
     );
     try std.testing.expectEqualStrings(
-        "https://auth0.openai.com/oauth/token",
+        "https://auth.openai.com/oauth/token",
         refreshUrl(.codex).?,
     );
     try std.testing.expect(refreshUrl(.github) == null);

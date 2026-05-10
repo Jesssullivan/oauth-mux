@@ -61,6 +61,25 @@ def _read_proxy_url(codex_home: Path) -> str:
     return m.group(1)
 
 
+def _config_report(codex_home: Path) -> dict:
+    cfg = (codex_home / "config.toml").read_text()
+    return {
+        "checked": True,
+        "proxy_provider_selected": 'model_provider = "oauth_mux_openai"' in cfg,
+        "proxy_provider_present": "[model_providers.oauth_mux_openai]" in cfg,
+        "user_feature_apps": "apps = true" in cfg,
+        "user_feature_memories": "memories = true" in cfg,
+        "user_feature_multi_agent": "multi_agent = true" in cfg,
+        "user_experimental_legacy": "experimental_legacy_flag = true" in cfg,
+        "user_mcp_server": "[mcp_servers.design]" in cfg,
+        "user_approval_policy": 'approval_policy = "on-request"' in cfg,
+        "user_sandbox_mode": 'sandbox_mode = "workspace-write"' in cfg,
+        "profile_model_provider_absent": 'model_provider = "profile_provider"' not in cfg,
+        "stale_mux_provider_absent": "https://stale.invalid" not in cfg,
+        "path_printed": False,
+    }
+
+
 def _auth_token_for_turn(turn: int) -> str | None:
     raw = os.environ.get("OMUX_STUB_CODEX_AUTH_TOKENS", "")
     if not raw:
@@ -174,6 +193,7 @@ def main() -> int:
 
     codex_home = Path(os.environ["CODEX_HOME"])
     proxy_url = _read_proxy_url(codex_home)
+    config_report = _config_report(codex_home)
     session_bridge = _session_bridge_report(codex_home)
     session_append = _append_session_marker(codex_home)
     auth_rewrite = _rewrite_auth_json(codex_home)
@@ -209,6 +229,7 @@ def main() -> int:
         "managed_frame_id_present": bool(os.environ.get("OMUX_MANAGED_FRAME_ID")),
         "claim_level": os.environ.get("OMUX_CLAIM_LEVEL"),
         "status_file_present": bool(os.environ.get("OMUX_STATUS_FILE")),
+        "config": config_report,
         "session_bridge": session_bridge,
         "session_append": session_append,
         "auth_rewrite": auth_rewrite,

@@ -718,8 +718,9 @@ pub const codex_def = ProviderDefinition{
     .display_name = "Codex CLI",
     .extension_mode = .command_adapter,
     .auth = .{
-        .token_endpoint = "https://auth0.openai.com/oauth/token",
+        .token_endpoint = "https://auth.openai.com/oauth/token",
         .device_authorization_endpoint = "https://auth.openai.com/deviceauth/usercode",
+        .client_id = "app_EMoamEEZ73f0CkXaXp7hrann",
     },
     .credential = .{
         .access_token_path = "tokens.access_token",

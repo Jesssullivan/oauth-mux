@@ -305,6 +305,7 @@ expect_contains "$accounts_json" '"provider":"toy"' "accounts list includes toy 
 expect_contains "$accounts_json" '"account":"a1"' "accounts list includes account a1"
 expect_contains "$accounts_json" '"account":"a2"' "accounts list includes account a2"
 expect_contains "$accounts_json" '"state":"configured"' "accounts list distinguishes configured without liveness evidence"
+expect_contains "$accounts_json" '"auth_identity":{"checked":false,"present":false,"reason":"provider_not_codex"' "accounts list includes redacted auth identity inventory"
 expect_contains "$accounts_json" '"runtime":{"state":"ready"}' "accounts list includes runtime readiness"
 expect_contains "$accounts_json" '"name":"cheap","proof_status":"needs_operator_proof"' "accounts list reports capability proof status"
 expect_contains "$accounts_json" '"health_recorded":false' "accounts list reports missing liveness evidence"
@@ -312,6 +313,9 @@ expect_contains "$accounts_json" '"selectable":false' "accounts list refuses sel
 expect_contains "$accounts_json" '"oauth-mux repair-plan --provider <provider> --account <account> --capability <capability> --json"' "accounts list advertises safe repair plan"
 expect_not_contains "$accounts_json" "omux-e2e-a1" "accounts list does not expose env secret value"
 expect_not_contains "$accounts_json" "omux-e2e-a2" "accounts list does not expose env secret value"
+expect_not_contains "$accounts_json" '"raw_email_printed":true' "accounts list does not expose raw auth email"
+expect_not_contains "$accounts_json" '"token_material_printed":true' "accounts list does not expose token material"
+expect_not_contains "$accounts_json" '"path_printed":true' "accounts list does not expose concrete auth paths"
 
 printf 'e2e: enroll plan reports non-mutating provider-neutral setup plan\n'
 enroll_plan_json="$(omux enroll plan toy --account a3 --json)"
@@ -582,7 +586,15 @@ for _ in $(seq 1 200); do
   case "$daemon_status" in
     *'"status":"running"'*) break ;;
   esac
+  sleep 0.01
 done
+case "$daemon_status" in
+  *'"status":"running"'*) ;;
+  *)
+    printf 'daemon foreground log before status assertion:\n' >&2
+    cat "$daemon_log" >&2 || true
+    ;;
+esac
 expect_contains "$daemon_status" '"status":"running"' "daemon status reports foreground daemon running"
 expect_contains "$daemon_status" '"socket":' "daemon status reports socket path"
 expect_contains "$daemon_status" '"contract":"experimental_socket_stub"' "daemon status reports socket contract"
@@ -619,6 +631,7 @@ for _ in $(seq 1 200); do
   case "$loop_status" in
     *'"status":"running"'*'"stay_afloat_loop":{"hosted":true'*'"stay_afloat":{"version":'*'"current_loop_observed":true'*) break ;;
   esac
+  sleep 0.01
 done
 expect_contains "$loop_status" '"status":"running"' "foreground loop daemon status reports running"
 expect_contains "$loop_status" '"contract":"experimental_foreground_tick_loop"' "foreground loop daemon status reports beta contract"

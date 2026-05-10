@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-version="${1:-${VERSION:-0.1.0}}"
+version="${1:-${VERSION:-$("$repo_root/scripts/project-version.sh")}}"
 version="${version#v}"
 
 out_dir="$repo_root/dist/out/v${version}"
@@ -19,21 +19,21 @@ required_artifacts=(
   "oauth-mux-aarch64-macos.tar.gz"
   "oauth-mux-x86_64-windows.tar.gz"
   "oauth-mux-aarch64-windows.tar.gz"
-  "oauth-mux_0.1.0_amd64.deb"
-  "oauth-mux_0.1.0_arm64.deb"
-  "oauth-mux-0.1.0-1.x86_64.rpm"
-  "oauth-mux-0.1.0-1.aarch64.rpm"
+  "oauth-mux_${version}_amd64.deb"
+  "oauth-mux_${version}_arm64.deb"
+  "oauth-mux-${version}-1.x86_64.rpm"
+  "oauth-mux-${version}-1.aarch64.rpm"
   "install.sh"
 )
 
 required_npm_tarballs=(
-  "oauth-mux-0.1.0.tgz"
-  "oauth-mux-darwin-arm64-0.1.0.tgz"
-  "oauth-mux-darwin-x64-0.1.0.tgz"
-  "oauth-mux-linux-arm64-0.1.0.tgz"
-  "oauth-mux-linux-x64-0.1.0.tgz"
-  "oauth-mux-windows-arm64-0.1.0.tgz"
-  "oauth-mux-windows-x64-0.1.0.tgz"
+  "oauth-mux-${version}.tgz"
+  "oauth-mux-darwin-arm64-${version}.tgz"
+  "oauth-mux-darwin-x64-${version}.tgz"
+  "oauth-mux-linux-arm64-${version}.tgz"
+  "oauth-mux-linux-x64-${version}.tgz"
+  "oauth-mux-windows-arm64-${version}.tgz"
+  "oauth-mux-windows-x64-${version}.tgz"
 )
 
 hash_file() {
@@ -65,7 +65,6 @@ if [ ! -d "$out_dir" ]; then
 fi
 
 for artifact in "${required_artifacts[@]}"; do
-  artifact="${artifact/0.1.0/${version}}"
   require_file "$artifacts_dir/$artifact"
 done
 
@@ -109,7 +108,6 @@ fi
 printf 'checking npm tarballs...\n'
 require_command npm
 for tarball in "${required_npm_tarballs[@]}"; do
-  tarball="${tarball/0.1.0/${version}}"
   require_file "$npm_tgz_dir/$tarball"
 done
 

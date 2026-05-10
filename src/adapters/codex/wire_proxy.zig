@@ -60,10 +60,27 @@
 const std = @import("std");
 const broker_types = @import("../../broker/types.zig");
 const account_pool_mod = @import("../../broker/account_pool.zig");
+const health_mod = @import("../../health.zig");
+const core_types = @import("../../types.zig");
 
 const DEFAULT_UPSTREAM_HOST = "chatgpt.com";
 const DEFAULT_UPSTREAM_SCHEME = "https";
 const UPSTREAM_BASE_PATH = "/backend-api/codex";
+
+pub const RouteState = enum {
+    available,
+    auth_failed,
+    quota_exhausted,
+    rate_limited,
+    tier_insufficient,
+    credential_unavailable,
+};
+
+const CandidateRejection = struct {
+    account: []const u8,
+    state: RouteState,
+    reason: []const u8,
+};
 
 /// Resolve the upstream host. `OMUX_UPSTREAM_HOST` overrides for
 /// in-session integration tests (the smoke harness binds a stub
@@ -120,10 +137,10 @@ pub const Proxy = struct {
     /// Owned by self.allocator.
     previous_account: ?[]const u8 = null,
 
-    /// The strongest claim level this skeleton is allowed to publish.
-    /// TIN-948 is synthetic structural evidence only, so the adapter
-    /// stays at `.broker_owned`. Live provider-originated acceptance
-    /// can promote this in a later slice.
+    /// The strongest claim level this adapter publishes in status frames.
+    /// Live handoff proof is recorded as typed evidence events; claim-level
+    /// promotion remains separate until the broader same-thread semantics are
+    /// settled.
     peak_claim: broker_types.ClaimLevel = .broker_owned,
 
     /// True once the proxy observed an account change inside one
@@ -157,6 +174,7 @@ pub const Proxy = struct {
         self.server.deinit();
         if (self.previous_account) |a| self.allocator.free(a);
         self.previous_account = null;
+        self.auth_failure_tracker.deinit(self.allocator);
     }
 
     pub fn port(self: *const Proxy) u16 {
@@ -204,185 +222,159 @@ pub const Proxy = struct {
             return;
         };
 
-        // ── 2. Elect an account ─────────────────────────────────
-        const elected = self.pool.elect(self.profile, null, &.{}) catch {
-            self.logEvent("proxy_no_account_selectable", .{});
-            try writeStatus(writer, 503, "No Account Selectable");
-            return;
-        };
+        var attempted = std.ArrayListUnmanaged([]const u8){};
+        var rejections = std.ArrayListUnmanaged(CandidateRejection){};
+        var final_account: ?[]const u8 = null;
+        var pending_buffered: ?BufferedResponse = null;
+        var pending_failure_kind: ?broker_types.QuotaKind = null;
+        var pending_failure_account: ?[]const u8 = null;
+        var prior_attempt_account: ?[]const u8 = null;
 
-        var tokens = self.materializer.materialize_chatgpt(
-            self.materializer.ctx,
-            a,
-            elected.id,
-        ) catch |err| {
-            self.logEvent("proxy_materialize_failed", .{ .account = elected.id, .err = @errorName(err) });
-            try writeStatus(writer, 500, "Materialize Failed");
-            return;
-        };
-        // tokens lives in arena `a`; deinit-on-arena-drop.
-        _ = &tokens;
-
-        // ── 3. Build outbound request with substituted headers ──
-        var out_headers = HeaderList.init(a);
-        const preserved_child_auth = try buildOutboundHeaders(a, &req, &out_headers, tokens, false);
-        if (preserved_child_auth) {
-            self.logEvent("proxy_preserved_child_auth", .{
-                .account = elected.id,
-                .reason = "same_account_child_refresh",
-            });
-        }
-
-        // Detect account change since the previous request. If this is
-        // a post-swap turn, drop x-codex-turn-state — the token is the
-        // server-side sticky-routing handle for the prior account's
-        // conversation thread; carrying it across a swap is the most
-        // likely way to break the post-swap turn (issue
-        // openai/codex#16894). Dropping it forces a fresh thread on
-        // the new account, which is the explicit Phase 2 default
-        // (synthetic next-turn swap structure, NOT Level 5 thread continuity).
-        const account_changed = if (self.previous_account) |prev|
-            !std.mem.eql(u8, prev, elected.id)
-        else
-            false;
-        if (account_changed) {
-            out_headers.remove("x-codex-turn-state");
-            self.logEvent("proxy_post_swap_turn", .{
-                .from = self.previous_account.?,
-                .to = elected.id,
-                .dropped = "x-codex-turn-state",
-            });
-            self.synthetic_swap_seen = true;
-        }
-        // Inbound body length is preserved; chunked → chunked, fixed →
-        // fixed. We don't transform the body.
-
-        // ── 4. Forward to upstream + stream/buffer response ────
-        var status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
-            self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
-            try writeStatus(writer, 502, "Upstream Error");
-            return;
-        };
-
-        // ── 5. Apply classification + log ──────────────────────
-        self.applyClassification(elected.id, status_and_class.classification) catch |err| {
-            self.logEvent("proxy_apply_classification_failed", .{ .err = @errorName(err) });
-        };
-        self.logProxyTurn(elected.id, req, status_and_class, status_and_class.buffered_response == null);
-
-        var final_account = elected.id;
-
-        if (status_and_class.classification.kind == .quota_exhausted) same_turn_retry: {
-            const fallback = self.pool.elect(self.profile, null, &.{elected.id}) catch |err| {
-                self.logEvent("proxy_same_turn_retry_unavailable", .{
-                    .from = elected.id,
-                    .err = @errorName(err),
-                });
-                break :same_turn_retry;
-            };
-
-            var fallback_tokens = self.materializer.materialize_chatgpt(
-                self.materializer.ctx,
-                a,
-                fallback.id,
-            ) catch |err| {
-                self.logEvent("proxy_same_turn_materialize_failed", .{
-                    .from = elected.id,
-                    .to = fallback.id,
-                    .err = @errorName(err),
-                });
-                break :same_turn_retry;
-            };
-            _ = &fallback_tokens;
-
-            var retry_headers = HeaderList.init(a);
-            _ = try buildOutboundHeaders(a, &req, &retry_headers, fallback_tokens, true);
-            self.logEvent("proxy_same_turn_retry", .{
-                .from = elected.id,
-                .to = fallback.id,
-                .reason = "quota_exhausted",
-                .dropped = "x-codex-turn-state",
-            });
-            self.synthetic_swap_seen = true;
-
-            status_and_class = forwardAndStream(a, req, retry_headers, writer) catch |err| {
-                self.logEvent("proxy_upstream_failed", .{ .account = fallback.id, .err = @errorName(err) });
-                try writeStatus(writer, 502, "Upstream Error");
+        while (true) {
+            // ── 2. Elect an account ─────────────────────────────
+            const elected = self.pool.elect(self.profile, null, attempted.items) catch |err| {
+                appendPoolRejections(a, self.pool, &attempted, &rejections) catch {};
+                const pending_kind = pending_failure_kind;
+                if (pending_kind != null and pending_kind.? == .auth_unauthorized and pending_buffered != null) {
+                    self.logEvent("proxy_auth_retry_unavailable", .{
+                        .from = pending_failure_account orelse "",
+                        .err = @errorName(err),
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                    });
+                    self.logEvent("proxy_observed_401_codex_handles", .{
+                        .account = pending_failure_account orelse "",
+                    });
+                    try writeBufferedStoredResponse(writer, pending_buffered.?);
+                } else if (pending_kind != null and (pending_kind.? == .quota_exhausted or pending_kind.? == .rate_limited)) {
+                    self.logEvent("proxy_same_turn_retry_unavailable", .{
+                        .from = pending_failure_account orelse "",
+                        .err = @errorName(err),
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                    });
+                    self.logEvent("quota_handoff_failed_no_account_selectable", .{
+                        .from = pending_failure_account orelse "",
+                        .reason = @tagName(pending_kind.?),
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                        .user_visible_failure_likely = true,
+                    });
+                    self.logEvent("proxy_no_account_selectable", .{
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                    });
+                    try writeNoAccountSelectableResponse(a, writer, rejections.items);
+                } else {
+                    self.logEvent("proxy_no_account_selectable", .{
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                    });
+                    try writeNoAccountSelectableResponse(a, writer, rejections.items);
+                }
                 return;
             };
-            self.applyClassification(fallback.id, status_and_class.classification) catch |err| {
-                self.logEvent("proxy_apply_classification_failed", .{ .err = @errorName(err) });
-            };
-            self.logProxyTurn(fallback.id, req, status_and_class, status_and_class.buffered_response == null);
-            final_account = fallback.id;
-        }
+            appendAttempt(a, &attempted, elected.id) catch {};
 
-        if (status_and_class.classification.kind == .auth_unauthorized) auth_retry: {
-            const auth_failed_account = final_account;
-            const fallback = self.pool.elect(self.profile, null, &.{auth_failed_account}) catch |err| {
-                self.logEvent("proxy_auth_retry_unavailable", .{
-                    .from = auth_failed_account,
-                    .err = @errorName(err),
-                });
-                self.logEvent("proxy_observed_401_codex_handles", .{
-                    .account = auth_failed_account,
-                });
-                break :auth_retry;
-            };
-
-            var fallback_tokens = self.materializer.materialize_chatgpt(
+            var tokens = self.materializer.materialize_chatgpt(
                 self.materializer.ctx,
                 a,
-                fallback.id,
+                elected.id,
             ) catch |err| {
-                self.logEvent("proxy_auth_materialize_failed", .{
-                    .from = auth_failed_account,
-                    .to = fallback.id,
-                    .err = @errorName(err),
+                appendRejection(a, &rejections, elected.id, .credential_unavailable, @errorName(err)) catch {};
+                self.logEvent("proxy_materialize_failed", .{ .account = elected.id, .err = @errorName(err) });
+                self.pool.markUnauthorized(elected.id) catch {};
+                self.recordDurableRouteState(elected.id, .credential_unavailable, 0, null);
+                pending_failure_kind = null;
+                pending_failure_account = elected.id;
+                prior_attempt_account = elected.id;
+                continue;
+            };
+            // tokens lives in arena `a`; deinit-on-arena-drop.
+            _ = &tokens;
+
+            // ── 3. Build outbound request with substituted headers ──
+            const retrying_inside_turn = prior_attempt_account != null;
+            var out_headers = HeaderList.init(a);
+            const preserved_child_auth = try buildOutboundHeaders(a, &req, &out_headers, tokens, retrying_inside_turn);
+            if (preserved_child_auth) {
+                self.logEvent("proxy_preserved_child_auth", .{
+                    .account = elected.id,
+                    .reason = "same_account_child_refresh",
                 });
-                self.logEvent("proxy_observed_401_codex_handles", .{
-                    .account = auth_failed_account,
+            }
+
+            // Detect account change since the previous request. If this is
+            // a post-swap turn, drop x-codex-turn-state — the token is the
+            // server-side sticky-routing handle for the prior account's
+            // conversation thread; carrying it across a swap is the most
+            // likely way to break the post-swap turn (issue
+            // openai/codex#16894). Dropping it forces a fresh thread on
+            // the new account, which is the explicit Phase 2 default
+            // (synthetic next-turn swap structure, NOT Level 5 thread continuity).
+            const account_changed = if (self.previous_account) |prev|
+                !std.mem.eql(u8, prev, elected.id)
+            else
+                false;
+            if (account_changed) {
+                out_headers.remove("x-codex-turn-state");
+                self.logEvent("proxy_post_swap_turn", .{
+                    .from = self.previous_account.?,
+                    .to = elected.id,
+                    .dropped = "x-codex-turn-state",
                 });
-                break :auth_retry;
-            };
-            _ = &fallback_tokens;
+                self.synthetic_swap_seen = true;
+            }
 
-            self.pool.markUnauthorized(auth_failed_account) catch |err| {
-                self.logEvent("proxy_auth_mark_unauthorized_failed", .{
-                    .account = auth_failed_account,
-                    .err = @errorName(err),
-                });
+            if (retrying_inside_turn) {
+                self.logRetryEvent(prior_attempt_account.?, elected.id, pending_failure_kind orelse .quota_exhausted);
+                self.synthetic_swap_seen = true;
+            }
+
+            // Inbound body length is preserved; chunked → chunked, fixed →
+            // fixed. We don't transform the body.
+
+            // ── 4. Forward to upstream + stream/buffer response ────
+            const status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
+                appendRejection(a, &rejections, elected.id, .credential_unavailable, @errorName(err)) catch {};
+                self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
+                self.recordDurableRouteState(elected.id, .credential_unavailable, 0, null);
+                pending_failure_kind = null;
+                pending_failure_account = elected.id;
+                prior_attempt_account = elected.id;
+                continue;
             };
 
-            var retry_headers = HeaderList.init(a);
-            _ = try buildOutboundHeaders(a, &req, &retry_headers, fallback_tokens, true);
-            self.logEvent("proxy_auth_same_turn_retry", .{
-                .from = auth_failed_account,
-                .to = fallback.id,
-                .reason = "auth_unauthorized",
-                .dropped = "x-codex-turn-state",
-            });
-            self.synthetic_swap_seen = true;
-
-            status_and_class = forwardAndStream(a, req, retry_headers, writer) catch |err| {
-                self.logEvent("proxy_upstream_failed", .{ .account = fallback.id, .err = @errorName(err) });
-                try writeStatus(writer, 502, "Upstream Error");
-                return;
+            // ── 5. Apply classification + log ──────────────────────
+            self.applyClassification(elected.id, status_and_class.classification) catch |err| {
+                self.logEvent("proxy_apply_classification_failed", .{ .account = elected.id, .err = @errorName(err) });
             };
-            self.applyClassification(fallback.id, status_and_class.classification) catch |err| {
-                self.logEvent("proxy_apply_classification_failed", .{ .err = @errorName(err) });
-            };
-            self.logProxyTurn(fallback.id, req, status_and_class, status_and_class.buffered_response == null);
-            final_account = fallback.id;
-        }
 
-        if (status_and_class.buffered_response) |buffered| {
-            try writeBufferedStoredResponse(writer, buffered);
+            const should_retry = shouldRetrySameTurn(status_and_class.classification.kind);
+            self.logProxyTurn(elected.id, req, status_and_class, !should_retry);
+            final_account = elected.id;
+
+            if (!should_retry) {
+                if (status_and_class.buffered_response) |buffered| {
+                    try writeBufferedStoredResponse(writer, buffered);
+                }
+                break;
+            }
+
+            const state = routeStateFromClassification(status_and_class.classification.kind);
+            appendRejection(a, &rejections, elected.id, state, @tagName(status_and_class.classification.kind)) catch {};
+            pending_buffered = status_and_class.buffered_response;
+            pending_failure_kind = status_and_class.classification.kind;
+            pending_failure_account = elected.id;
+            prior_attempt_account = elected.id;
+            continue;
         }
 
         // Track previous_account for next-request swap detection.
-        if (self.previous_account) |old| self.allocator.free(old);
-        self.previous_account = self.allocator.dupe(u8, final_account) catch null;
+        if (final_account) |account| {
+            if (self.previous_account) |old| self.allocator.free(old);
+            self.previous_account = self.allocator.dupe(u8, account) catch null;
+        }
     }
 
     fn logProxyTurn(
@@ -392,7 +384,7 @@ pub const Proxy = struct {
         status_and_class: StatusAndClassification,
         delivered_to_codex: bool,
     ) void {
-        self.auth_failure_tracker.observe(account_id, req.path, status_and_class.classification);
+        self.auth_failure_tracker.observe(self.allocator, account_id, req.path, status_and_class.classification);
         self.logEvent("proxy_turn", .{
             .account = account_id,
             .method = req.method,
@@ -412,6 +404,7 @@ pub const Proxy = struct {
         c: Classification,
     ) !void {
         const now_unix = std.time.timestamp();
+        self.recordDurableClassification(account_id, c, now_unix);
         switch (c.kind) {
             .ok => self.pool.refreshTimeBased(now_unix),
             .quota_exhausted => {
@@ -422,11 +415,103 @@ pub const Proxy = struct {
                 const until = c.resets_at orelse (now_unix + 60);
                 try self.pool.markRateLimited(account_id, until);
             },
-            .auth_unauthorized => {},
+            .auth_unauthorized => try self.pool.markUnauthorized(account_id),
             .tier_insufficient, .provider_5xx => {
                 // Recorded for telemetry only; no pool mutation.
             },
         }
+    }
+
+    fn logRetryEvent(
+        self: *Proxy,
+        from: []const u8,
+        to: []const u8,
+        reason: broker_types.QuotaKind,
+    ) void {
+        if (reason == .auth_unauthorized) {
+            self.logEvent("proxy_auth_same_turn_retry", .{
+                .from = from,
+                .to = to,
+                .reason = @tagName(reason),
+                .dropped = "x-codex-turn-state",
+            });
+            return;
+        }
+
+        self.logEvent("proxy_same_turn_retry", .{
+            .from = from,
+            .to = to,
+            .reason = @tagName(reason),
+            .dropped = "x-codex-turn-state",
+        });
+    }
+
+    fn recordDurableClassification(
+        self: *Proxy,
+        account_id: []const u8,
+        c: Classification,
+        now_unix: i64,
+    ) void {
+        if (c.kind == .ok) return;
+        const state = routeStateFromClassification(c.kind);
+        const status: u16 = switch (c.kind) {
+            .ok => 200,
+            .auth_unauthorized => 401,
+            .quota_exhausted, .rate_limited, .tier_insufficient => 429,
+            .provider_5xx => 500,
+        };
+        const retry_after_s = retryAfterSeconds(now_unix, c.resets_at, c.kind);
+        self.recordDurableRouteState(account_id, state, status, retry_after_s);
+    }
+
+    fn recordDurableRouteState(
+        self: *Proxy,
+        account_id: []const u8,
+        state: RouteState,
+        status: u16,
+        retry_after_s: ?u32,
+    ) void {
+        _ = self;
+        const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return;
+        if (colon == 0 or colon + 1 >= account_id.len) return;
+        const provider = account_id[0..colon];
+        const account = account_id[colon + 1 ..];
+        const key = health_mod.accountKey(provider, account);
+
+        var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
+        defer store.deinit();
+
+        const classification: core_types.HttpClassification = switch (state) {
+            .available => .success,
+            .auth_failed => .{ .dead = .token_revoked },
+            .quota_exhausted => .{ .quota_exhausted = .{ .retry_after_s = retry_after_s orelse 7 * 24 * 60 * 60 } },
+            .rate_limited => .{ .rate_limited = .{
+                .retry_after_s = retry_after_s orelse 60,
+                .window = .unknown,
+            } },
+            .tier_insufficient => .{ .degraded = .tier_insufficient },
+            .credential_unavailable => .{ .dead = .auth_permanently_failed },
+        };
+
+        store.recordHttpClassification(key.slice(), status, classification);
+        store.recordProbeEvidence(
+            key.slice(),
+            .broker_run_live,
+            retry_after_s,
+            switch (state) {
+                .available => .none,
+                .auth_failed, .credential_unavailable => .auth_dead,
+                .quota_exhausted => .quota_exhausted,
+                .rate_limited => .rate_limit,
+                .tier_insufficient => .tier_insufficient,
+            },
+            switch (state) {
+                .available => .use_this,
+                .rate_limited => .wait_and_retry,
+                .auth_failed, .quota_exhausted, .tier_insufficient, .credential_unavailable => .try_next_account,
+            },
+        );
+        store.persist();
     }
 
     fn logEvent(self: *Proxy, kind: []const u8, fields: anytype) void {
@@ -456,44 +541,189 @@ pub const Proxy = struct {
     }
 };
 
+fn shouldRetrySameTurn(kind: broker_types.QuotaKind) bool {
+    return switch (kind) {
+        .quota_exhausted, .rate_limited, .auth_unauthorized => true,
+        .ok, .tier_insufficient, .provider_5xx => false,
+    };
+}
+
+fn routeStateFromClassification(kind: broker_types.QuotaKind) RouteState {
+    return switch (kind) {
+        .ok => .available,
+        .auth_unauthorized => .auth_failed,
+        .quota_exhausted => .quota_exhausted,
+        .rate_limited => .rate_limited,
+        .tier_insufficient => .tier_insufficient,
+        .provider_5xx => .credential_unavailable,
+    };
+}
+
+fn retryAfterSeconds(now_unix: i64, resets_at: ?i64, kind: broker_types.QuotaKind) ?u32 {
+    const reset = resets_at orelse return switch (kind) {
+        .quota_exhausted => 7 * 24 * 60 * 60,
+        .rate_limited => 60,
+        else => null,
+    };
+    if (reset <= now_unix) return 0;
+    const delta = reset - now_unix;
+    return @intCast(@min(delta, std.math.maxInt(u32)));
+}
+
+fn containsAccount(items: []const []const u8, account_id: []const u8) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item, account_id)) return true;
+    }
+    return false;
+}
+
+fn appendAttempt(
+    allocator: std.mem.Allocator,
+    attempted: *std.ArrayListUnmanaged([]const u8),
+    account_id: []const u8,
+) !void {
+    if (containsAccount(attempted.items, account_id)) return;
+    try attempted.append(allocator, account_id);
+}
+
+fn rejectionIndex(rejections: []const CandidateRejection, account_id: []const u8) ?usize {
+    for (rejections, 0..) |rejection, idx| {
+        if (std.mem.eql(u8, rejection.account, account_id)) return idx;
+    }
+    return null;
+}
+
+fn appendRejection(
+    allocator: std.mem.Allocator,
+    rejections: *std.ArrayListUnmanaged(CandidateRejection),
+    account_id: []const u8,
+    state: RouteState,
+    reason: []const u8,
+) !void {
+    if (rejectionIndex(rejections.items, account_id)) |idx| {
+        rejections.items[idx] = .{ .account = account_id, .state = state, .reason = reason };
+        return;
+    }
+    try rejections.append(allocator, .{ .account = account_id, .state = state, .reason = reason });
+}
+
+fn appendPoolRejections(
+    allocator: std.mem.Allocator,
+    pool: *const account_pool_mod.AccountPool,
+    attempted: *const std.ArrayListUnmanaged([]const u8),
+    rejections: *std.ArrayListUnmanaged(CandidateRejection),
+) !void {
+    for (pool.accounts.items) |account| {
+        if (rejectionIndex(rejections.items, account.id) != null) continue;
+        if (containsAccount(attempted.items, account.id)) {
+            try appendRejection(allocator, rejections, account.id, .credential_unavailable, "attempted_without_success");
+            continue;
+        }
+        const state = routeStateFromPoolAccount(account);
+        const reason = poolAccountRejectionReason(account, state);
+        try appendRejection(allocator, rejections, account.id, state, reason);
+    }
+}
+
+fn routeStateFromPoolAccount(account: account_pool_mod.AccountSummary) RouteState {
+    if (!account.selectable) {
+        if (account.liveness == .dead) return .auth_failed;
+        if (account.availability == .quota_exhausted) return .quota_exhausted;
+        if (account.availability == .rate_limited) return .rate_limited;
+        return .credential_unavailable;
+    }
+    return switch (account.availability) {
+        .available => .available,
+        .quota_exhausted => .quota_exhausted,
+        .rate_limited => .rate_limited,
+        .cooldown, .unknown => .credential_unavailable,
+    };
+}
+
+fn poolAccountRejectionReason(account: account_pool_mod.AccountSummary, state: RouteState) []const u8 {
+    if (!account.selectable) return switch (state) {
+        .auth_failed => "auth_failed",
+        .quota_exhausted => "quota_exhausted",
+        .rate_limited => "rate_limited",
+        .tier_insufficient => "tier_insufficient",
+        .credential_unavailable => "not_selectable",
+        .available => "not_selectable",
+    };
+    return switch (state) {
+        .available => "not_attempted",
+        .auth_failed => "auth_failed",
+        .quota_exhausted => "quota_exhausted",
+        .rate_limited => "rate_limited",
+        .tier_insufficient => "tier_insufficient",
+        .credential_unavailable => "credential_unavailable",
+    };
+}
+
 pub const AuthFailureObservation = struct {
     account: ?[]const u8 = null,
+    accounts: []const AuthAccountObservation = &.{},
     auth_unauthorized_turns: usize = 0,
     responses_401_turns: usize = 0,
     recovered_after_401: bool = false,
 
     pub fn unrecovered(self: AuthFailureObservation) bool {
-        return self.account != null and
-            self.auth_unauthorized_turns > 0 and
-            !self.recovered_after_401;
+        for (self.accounts) |account| {
+            if (account.unrecovered()) return true;
+        }
+        return false;
     }
 };
 
-const AuthFailureTracker = struct {
-    account: ?[]const u8 = null,
+pub const AuthAccountObservation = struct {
+    account: []const u8,
     auth_unauthorized_turns: usize = 0,
     responses_401_turns: usize = 0,
     recovered_after_401: bool = false,
 
+    pub fn unrecovered(self: AuthAccountObservation) bool {
+        return self.auth_unauthorized_turns > 0 and !self.recovered_after_401;
+    }
+};
+
+const AuthFailureTracker = struct {
+    accounts: std.ArrayListUnmanaged(AuthAccountObservation) = .{},
+
+    fn deinit(self: *AuthFailureTracker, allocator: std.mem.Allocator) void {
+        self.accounts.deinit(allocator);
+    }
+
+    fn getOrCreate(
+        self: *AuthFailureTracker,
+        allocator: std.mem.Allocator,
+        account_id: []const u8,
+    ) !*AuthAccountObservation {
+        for (self.accounts.items) |*entry| {
+            if (std.mem.eql(u8, entry.account, account_id)) return entry;
+        }
+        try self.accounts.append(allocator, .{ .account = account_id });
+        return &self.accounts.items[self.accounts.items.len - 1];
+    }
+
     fn observe(
         self: *AuthFailureTracker,
+        allocator: std.mem.Allocator,
         account_id: []const u8,
         path: []const u8,
         classification: Classification,
     ) void {
         switch (classification.kind) {
             .auth_unauthorized => {
-                self.account = account_id;
-                self.auth_unauthorized_turns += 1;
-                self.recovered_after_401 = false;
+                const entry = self.getOrCreate(allocator, account_id) catch return;
+                entry.auth_unauthorized_turns += 1;
+                entry.recovered_after_401 = false;
                 if (std.mem.eql(u8, pathKind(path), "responses")) {
-                    self.responses_401_turns += 1;
+                    entry.responses_401_turns += 1;
                 }
             },
             .ok => {
-                if (self.account) |failed_account| {
-                    if (std.mem.eql(u8, failed_account, account_id) and self.auth_unauthorized_turns > 0) {
-                        self.recovered_after_401 = true;
+                for (self.accounts.items) |*entry| {
+                    if (std.mem.eql(u8, entry.account, account_id) and entry.auth_unauthorized_turns > 0) {
+                        entry.recovered_after_401 = true;
                     }
                 }
             },
@@ -502,11 +732,22 @@ const AuthFailureTracker = struct {
     }
 
     fn observation(self: AuthFailureTracker) AuthFailureObservation {
+        var total_auth: usize = 0;
+        var total_responses: usize = 0;
+        var first_unrecovered: ?[]const u8 = null;
+        var any_recovered = false;
+        for (self.accounts.items) |entry| {
+            total_auth += entry.auth_unauthorized_turns;
+            total_responses += entry.responses_401_turns;
+            if (entry.recovered_after_401) any_recovered = true;
+            if (first_unrecovered == null and entry.unrecovered()) first_unrecovered = entry.account;
+        }
         return .{
-            .account = self.account,
-            .auth_unauthorized_turns = self.auth_unauthorized_turns,
-            .responses_401_turns = self.responses_401_turns,
-            .recovered_after_401 = self.recovered_after_401,
+            .account = first_unrecovered,
+            .accounts = self.accounts.items,
+            .auth_unauthorized_turns = total_auth,
+            .responses_401_turns = total_responses,
+            .recovered_after_401 = any_recovered,
         };
     }
 };
@@ -944,6 +1185,41 @@ fn writeStatus(writer: anytype, code: u16, reason: []const u8) !void {
     try writer.writeAll("Content-Length: 0\r\nConnection: close\r\n\r\n");
 }
 
+fn writeNoAccountSelectableResponse(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    rejections: []const CandidateRejection,
+) !void {
+    var body = std.ArrayListUnmanaged(u8){};
+    defer body.deinit(allocator);
+    const w = body.writer(allocator);
+
+    try w.writeAll("{\"error\":{\"type\":\"oauth_mux_no_account_selectable\",\"code\":\"oauth_mux_no_account_selectable\",\"message\":");
+    try std.json.stringify(
+        "oauth-mux: no selectable Codex fallback account; route repair is required. Inspect the redacted status artifact or run oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json.",
+        .{},
+        w,
+    );
+    try w.writeAll(",\"rejections\":[");
+    for (rejections, 0..) |rejection, idx| {
+        if (idx != 0) try w.writeByte(',');
+        try w.writeAll("{\"account\":");
+        try std.json.stringify(rejection.account, .{}, w);
+        try w.writeAll(",\"state\":");
+        try std.json.stringify(@tagName(rejection.state), .{}, w);
+        try w.writeAll(",\"reason\":");
+        try std.json.stringify(rejection.reason, .{}, w);
+        try w.writeByte('}');
+    }
+    try w.writeAll("]}}\n");
+
+    try writer.writeAll("HTTP/1.1 503 Service Unavailable\r\n");
+    try writer.writeAll("Content-Type: application/json\r\n");
+    try writer.print("Content-Length: {d}\r\n", .{body.items.len});
+    try writer.writeAll("Connection: close\r\n\r\n");
+    try writer.writeAll(body.items);
+}
+
 /// Write headers that are safe to forward to the client unchanged.
 /// Drops hop-by-hop headers (RFC 7230 §6.1) and transfer-coding
 /// metadata since we manage framing ourselves below.
@@ -1184,6 +1460,24 @@ test "writeStatus writes a complete HTTP/1.1 status response" {
     try std.testing.expect(std.mem.endsWith(u8, out, "\r\n\r\n"));
 }
 
+test "writeNoAccountSelectableResponse emits parseable route-repair JSON" {
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const rejections = [_]CandidateRejection{
+        .{ .account = "codex:default", .state = .quota_exhausted, .reason = "quota_exhausted" },
+        .{ .account = "codex:max-2", .state = .auth_failed, .reason = "auth_unauthorized" },
+    };
+
+    try writeNoAccountSelectableResponse(std.testing.allocator, fbs.writer(), &rejections);
+    const out = fbs.getWritten();
+    try std.testing.expect(std.mem.startsWith(u8, out, "HTTP/1.1 503 Service Unavailable\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "Content-Type: application/json\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"type\":\"oauth_mux_no_account_selectable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"account\":\"codex:default\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"state\":\"quota_exhausted\"") != null);
+    try std.testing.expect(std.mem.endsWith(u8, out, "]}}\n"));
+}
+
 test "HeaderList.remove drops matching headers, case-insensitive" {
     var hl = HeaderList.init(std.testing.allocator);
     defer hl.items.deinit(std.testing.allocator);
@@ -1330,7 +1624,9 @@ test "copyForwardingHeaders preserves the load-bearing 8 + drops hop-by-hop" {
 
 test "AuthFailureTracker reports unrecovered response 401" {
     var tracker = AuthFailureTracker{};
+    defer tracker.deinit(std.testing.allocator);
     tracker.observe(
+        std.testing.allocator,
         "codex:max-1",
         "/backend-api/codex/responses",
         .{ .kind = .auth_unauthorized },
@@ -1345,12 +1641,15 @@ test "AuthFailureTracker reports unrecovered response 401" {
 
 test "AuthFailureTracker treats same-account ok as recovery" {
     var tracker = AuthFailureTracker{};
+    defer tracker.deinit(std.testing.allocator);
     tracker.observe(
+        std.testing.allocator,
         "codex:max-1",
         "/backend-api/codex/responses",
         .{ .kind = .auth_unauthorized },
     );
     tracker.observe(
+        std.testing.allocator,
         "codex:max-1",
         "/backend-api/codex/responses",
         .{ .kind = .ok },
@@ -1363,12 +1662,15 @@ test "AuthFailureTracker treats same-account ok as recovery" {
 
 test "AuthFailureTracker does not treat another account ok as recovery" {
     var tracker = AuthFailureTracker{};
+    defer tracker.deinit(std.testing.allocator);
     tracker.observe(
+        std.testing.allocator,
         "codex:max-1",
         "/backend-api/codex/responses",
         .{ .kind = .auth_unauthorized },
     );
     tracker.observe(
+        std.testing.allocator,
         "codex:max-2",
         "/backend-api/codex/responses",
         .{ .kind = .ok },
@@ -1377,4 +1679,42 @@ test "AuthFailureTracker does not treat another account ok as recovery" {
     const observation = tracker.observation();
     try std.testing.expect(observation.unrecovered());
     try std.testing.expect(!observation.recovered_after_401);
+}
+
+test "AuthFailureTracker keeps unrecovered auth failures per account" {
+    var tracker = AuthFailureTracker{};
+    defer tracker.deinit(std.testing.allocator);
+
+    tracker.observe(std.testing.allocator, "codex:max-1", "/backend-api/codex/responses", .{ .kind = .auth_unauthorized });
+    tracker.observe(std.testing.allocator, "codex:max-2", "/backend-api/codex/responses", .{ .kind = .auth_unauthorized });
+    tracker.observe(std.testing.allocator, "codex:max-3", "/backend-api/codex/responses", .{ .kind = .ok });
+
+    const observation = tracker.observation();
+    try std.testing.expect(observation.unrecovered());
+    try std.testing.expectEqual(@as(usize, 2), observation.accounts.len);
+    try std.testing.expectEqual(@as(usize, 2), observation.auth_unauthorized_turns);
+    try std.testing.expectEqualStrings("codex:max-1", observation.accounts[0].account);
+    try std.testing.expectEqualStrings("codex:max-2", observation.accounts[1].account);
+}
+
+test "appendPoolRejections emits complete terminal candidate vector" {
+    var pool = account_pool_mod.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{ .id = "codex:max-1", .selectable = false, .liveness = .live, .availability = .quota_exhausted });
+    try pool.add(.{ .id = "codex:max-2", .selectable = false, .liveness = .dead, .availability = .available });
+    try pool.add(.{ .id = "codex:max-3", .selectable = true, .liveness = .live, .availability = .rate_limited });
+
+    var attempted = std.ArrayListUnmanaged([]const u8){};
+    defer attempted.deinit(std.testing.allocator);
+    try appendAttempt(std.testing.allocator, &attempted, "codex:max-1");
+
+    var rejections = std.ArrayListUnmanaged(CandidateRejection){};
+    defer rejections.deinit(std.testing.allocator);
+    try appendRejection(std.testing.allocator, &rejections, "codex:max-1", .quota_exhausted, "quota_exhausted");
+    try appendPoolRejections(std.testing.allocator, &pool, &attempted, &rejections);
+
+    try std.testing.expectEqual(@as(usize, 3), rejections.items.len);
+    try std.testing.expectEqual(RouteState.quota_exhausted, rejections.items[0].state);
+    try std.testing.expectEqual(RouteState.auth_failed, rejections.items[1].state);
+    try std.testing.expectEqual(RouteState.rate_limited, rejections.items[2].state);
 }
