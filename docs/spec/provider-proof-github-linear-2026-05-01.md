@@ -6,8 +6,9 @@ Issue context: Linear `TIN-862`, parent `TIN-736`; GitHub
 
 ## Baseline
 
-Codex is live-proven. GitHub and Linear are schema-modeled with admitted
-low-impact identity probes. Provider-level status should remain
+Managed Codex quota handoff is live-proven for installed `oauth-mux codex`
+frames. GitHub and Linear are schema-modeled with admitted low-impact identity
+probes. Provider-level status should remain
 `needs_operator_proof` until the intended auth modes have redacted evidence, but
 individual capabilities can now carry narrower proof status when a local or
 public proof exists.

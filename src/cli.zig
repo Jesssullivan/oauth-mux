@@ -1,7 +1,8 @@
 const std = @import("std");
 const types = @import("types.zig");
+const build_options = @import("build_options");
 
-pub const version = "0.1.6";
+pub const version = build_options.version;
 
 pub const Command = union(enum) {
     exec: ExecArgs,
@@ -219,6 +220,7 @@ pub const Command = union(enum) {
         config_merge,
         managed_plan,
         managed,
+        status_latest,
         broker_plan,
         broker_session_plan,
         broker_session_smoke,
@@ -256,6 +258,7 @@ pub const Command = union(enum) {
         output: ?[]const u8 = null,
         candidate: ?[]const u8 = null,
         backup: ?[]const u8 = null,
+        status_file: ?[]const u8 = null,
     };
 
     pub const CompletionsArgs = struct {
@@ -424,6 +427,7 @@ fn isCodexLegacySubcommand(arg: []const u8) bool {
         eql(arg, "config-merge") or
         eql(arg, "managed-plan") or
         eql(arg, "managed") or
+        eql(arg, "status-latest") or
         eql(arg, "broker-plan") or
         eql(arg, "broker-session-plan") or
         eql(arg, "broker-session-smoke") or
@@ -1086,6 +1090,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .managed_plan;
         } else if (eql(args[0], "managed")) {
             result.action = .managed;
+        } else if (eql(args[0], "status-latest")) {
+            result.action = .status_latest;
         } else if (eql(args[0], "broker-plan")) {
             result.action = .broker_plan;
         } else if (eql(args[0], "broker-session-plan")) {
@@ -1146,6 +1152,9 @@ fn parseCodexOptions(result: *Command.CodexArgs, args: []const []const u8, optio
         } else if (eql(args[i], "--backup")) {
             i += 1;
             if (i < args.len) result.backup = args[i];
+        } else if (eql(args[i], "--status-file")) {
+            i += 1;
+            if (i < args.len) result.status_file = args[i];
         } else if (eql(args[i], "--prompt")) {
             i += 1;
             if (i < args.len) result.prompt = args[i];
@@ -1331,6 +1340,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
         \\      Launch native Codex through stay-afloat route selection and selected CODEX_HOME.
         \\
+        \\  codex status-latest [--status-file path] [--json]
+        \\      Summarize a Codex managed status artifact; defaults to the latest state artifact.
+        \\
         \\  codex broker-plan [--profile name] [--capability c] [--json]
         \\      Inspect local app-server auth material only; use broker-session-plan for route-aware selection.
         \\
@@ -1402,6 +1414,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
         \\  oauth-mux codex managed-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
+        \\  oauth-mux codex status-latest [--status-file path] [--json]
         \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
@@ -1676,6 +1689,19 @@ test "parse codex managed plan" {
             try std.testing.expect(codex.action == .managed_plan);
             try std.testing.expectEqualStrings("codex-max", codex.profile.?);
             try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse codex status latest" {
+    const args = [_][]const u8{ "codex", "status-latest", "--status-file", "/tmp/status.ndjson", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .status_latest);
+            try std.testing.expectEqualStrings("/tmp/status.ndjson", codex.status_file.?);
             try std.testing.expect(codex.json);
         },
         else => return error.Unexpected,
@@ -2476,7 +2502,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed status-latest broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l profile -s p -d 'Profile name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l account -d 'Route account id' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l session-home -d 'Canonical Codex session authority home' -r

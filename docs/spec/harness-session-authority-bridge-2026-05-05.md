@@ -11,20 +11,23 @@ Managed Codex resume UX/refactor plan:
 
 ## 0.0 Current Implementation Checkpoint
 
-The first Codex slice is implemented: `oauth-mux codex run` now builds a
-composed managed `CODEX_HOME` with mux-owned `auth.json` and generated
-`config.toml`, while session-authority entries are bridged by reference.
-Default session authority is the parent `CODEX_HOME` when set, otherwise
-`~/.codex`; `OMUX_CODEX_SESSION_HOME` and `--session-home <path>` can override
-that authority; `--isolated-session-store` opts out for tests/privacy.
+The Codex bridge is implemented for the first-class `oauth-mux codex` managed
+frame. The adapter builds a composed managed `CODEX_HOME` with mux-owned
+`auth.json` and generated proxy `config.toml`, while session-authority entries
+are bridged by reference. Default session authority is the parent `CODEX_HOME`
+when set, otherwise `~/.codex`; `OMUX_CODEX_SESSION_HOME` and
+`--session-home <path>` can override that authority; `--isolated-session-store`
+opts out for tests/privacy.
 
-The synthetic acceptance smoke proves the managed overlay exposes the canonical
-`sessions/`, `history.jsonl`, `session_index.jsonl`, and `shell_snapshots/`
-entries by reference without printing paths. This is structural evidence only.
-The remaining P1 acceptance is live managed-frame resume dogfood with real
-Codex sessions. The 2026-05-06 managed-resume UX refactor plan records the
-daily-use command contract and regression guards required before this is
-treated as parity with bare Codex.
+The synthetic acceptance smoke proves the managed overlay exposes
+`sessions/`, `history.jsonl`, `session_index.jsonl`, and `shell_snapshots/` by
+reference without printing paths. `oauth-mux codex resume` with no id now runs
+the native chooser path only after a pre-spawn authority check verifies those
+entries are available; missing authority emits redacted `resume_authority_check`
+status and exits before spawning Codex. Installed-runtime dogfood has also
+proven managed resume/load through the proxy, including live quota handoff
+evidence tracked in
+`docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`.
 
 The 2026-05-06 dogfood-6 auth failure exposed the auth-side counterpart:
 Codex can refresh tokens inside the managed overlay, and the adapter must
@@ -106,6 +109,18 @@ oauth-mux owns this boundary. For Codex, this is the generated
 localhost proxy base URL. The adapter must not write that configuration into
 the canonical `~/.codex/config.toml` by default.
 
+Managed config is not permission to erase harness behavior settings. For Codex,
+the temporary overlay must preserve or deliberately reapply unrelated native
+config such as `[features]`, legacy `experimental_*` keys, MCP servers, hooks,
+rules, approval/sandbox policy, profiles, and model defaults. The known Codex
+gap is tracked as <https://github.com/Jesssullivan/oauth-mux/issues/211>; the
+initial implementation is landed. Config authority follows
+`OMUX_CODEX_CONFIG_HOME`, then parent `CODEX_HOME`, then `~/.codex`, and is
+independent from session authority. oauth-mux removes provider-selection
+conflicts, including profile-scoped `model_provider`, then appends the managed
+proxy provider. Forwarded `--config` / `-c` attempts to override mux-owned
+provider keys fail before child spawn with redacted status.
+
 ### 2.3 Session Authority Store
 
 User-visible conversation/session continuity:
@@ -128,8 +143,9 @@ For Codex today, candidate session-authority files are:
 - `~/.codex/history.jsonl`
 - `~/.codex/shell_snapshots/`
 
-The exact set must be proven by fixtures and live resume checks before
-implementation is called complete.
+The current required set is pinned by fixture smoke coverage and pre-spawn
+chooser authority checks. Add new entries only with evidence that native Codex
+requires them for chooser/resume parity.
 
 ### 2.4 Cache, Log, and Runtime State
 

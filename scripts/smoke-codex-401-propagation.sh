@@ -69,6 +69,26 @@ cat >"$TMP/state/health.json" <<'EOF'
   "version": 2,
   "accounts": [
     {
+      "key": "codex:max-1#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "none",
+      "last_probe_decision": "use_this",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    },
+    {
+      "key": "codex:max-1",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "none",
+      "last_probe_decision": "use_this",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    },
+    {
       "key": "codex:max-2#codex-max",
       "last_probe_source": "capability_probe",
       "last_probe_hint_class": "none",

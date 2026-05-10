@@ -544,7 +544,9 @@ fn writeAccountListJsonEntry(
             try std.json.stringify(tag, .{}, writer);
         }
     }
-    try writer.writeAll("],\"runtime\":");
+    try writer.writeAll("],\"auth_identity\":");
+    try writeAccountAuthIdentityJson(writer, allocator, account, kind);
+    try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessJson(writer, info.readiness);
     try writer.writeAll(",\"writeback\":");
     try writeAccountWritebackJson(writer, account, def);
@@ -593,6 +595,202 @@ fn writeAccountCapabilityJson(
     try writer.writeAll(",\"action\":");
     try writeRepairActionJson(writer, allocator, action, route);
     try writer.writeByte('}');
+}
+
+const AccountAuthIdentity = struct {
+    checked: bool = false,
+    present: bool = false,
+    reason: []const u8 = "not_checked",
+    source: ?[]const u8 = null,
+    email_hint: ?[]u8 = null,
+    account_id_hash: ?[]u8 = null,
+    account_id_source: ?[]const u8 = null,
+    plan_type_present: bool = false,
+    plan_type_source: ?[]const u8 = null,
+
+    fn deinit(self: AccountAuthIdentity, allocator: std.mem.Allocator) void {
+        if (self.email_hint) |value| allocator.free(value);
+        if (self.account_id_hash) |value| allocator.free(value);
+    }
+};
+
+fn writeAccountAuthIdentityJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    account: config.AccountConfig,
+    kind: ?types.ProviderKind,
+) !void {
+    const identity = try accountAuthIdentity(allocator, account, kind);
+    defer identity.deinit(allocator);
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"checked\":");
+    try writer.writeAll(if (identity.checked) "true" else "false");
+    try writer.writeAll(",\"present\":");
+    try writer.writeAll(if (identity.present) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(identity.reason, .{}, writer);
+    try writer.writeAll(",\"source\":");
+    if (identity.source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"email_hint\":");
+    if (identity.email_hint) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"email_redaction\":\"local_part_masked\"");
+    try writer.writeAll(",\"account_id_hash\":");
+    if (identity.account_id_hash) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"account_id_hash_algo\":\"sha256_12hex\"");
+    try writer.writeAll(",\"account_id_source\":");
+    if (identity.account_id_source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"plan_type_present\":");
+    try writer.writeAll(if (identity.plan_type_present) "true" else "false");
+    try writer.writeAll(",\"plan_type_source\":");
+    if (identity.plan_type_source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"path_printed\":false,\"token_material_printed\":false,\"raw_email_printed\":false}");
+}
+
+fn accountAuthIdentity(
+    allocator: std.mem.Allocator,
+    account: config.AccountConfig,
+    kind: ?types.ProviderKind,
+) !AccountAuthIdentity {
+    if (kind == null or kind.? != .codex) return .{ .reason = "provider_not_codex" };
+    if (!std.mem.eql(u8, account.secret.backend, "file")) {
+        return .{ .checked = false, .reason = "secret_backend_not_read_for_inventory" };
+    }
+
+    const raw = try readCodexAuthJsonForInventory(allocator, account) orelse {
+        return .{ .checked = true, .reason = "auth_json_unavailable" };
+    };
+    defer allocator.free(raw);
+    return inspectCodexAccountAuthIdentity(allocator, raw);
+}
+
+fn readCodexAuthJsonForInventory(allocator: std.mem.Allocator, account: config.AccountConfig) !?[]u8 {
+    if (account.secret.path) |path| {
+        const expanded = try paths.expandTilde(allocator, path);
+        defer allocator.free(expanded);
+        return std.fs.cwd().readFileAlloc(allocator, expanded, 2 * 1024 * 1024) catch |e| switch (e) {
+            error.FileNotFound, error.AccessDenied => null,
+            else => return e,
+        };
+    }
+    const config_dir = account.config_dir orelse return null;
+    const expanded_dir = try paths.expandTilde(allocator, config_dir);
+    defer allocator.free(expanded_dir);
+    const auth_path = try std.fs.path.join(allocator, &.{ expanded_dir, "auth.json" });
+    defer allocator.free(auth_path);
+    return std.fs.cwd().readFileAlloc(allocator, auth_path, 2 * 1024 * 1024) catch |e| switch (e) {
+        error.FileNotFound, error.AccessDenied => null,
+        else => return e,
+    };
+}
+
+fn inspectCodexAccountAuthIdentity(allocator: std.mem.Allocator, raw: []const u8) !AccountAuthIdentity {
+    const parsed = std.json.parseFromSlice(CodexBrokerAuthJson, allocator, raw, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return .{ .checked = true, .reason = "auth_json_invalid" };
+    defer parsed.deinit();
+
+    const tokens = parsed.value.tokens orelse return .{ .checked = true, .reason = "tokens_missing" };
+    const email = try codexEmailValueAlloc(allocator, tokens);
+    defer if (email) |value| allocator.free(value);
+    const account_id = try codexAccountIdValueAlloc(allocator, tokens);
+    defer if (account_id) |value| allocator.free(value);
+    const account_id_source = codexAccountIdSource(allocator, tokens);
+    const plan_type_source = codexPlanTypeSource(allocator, tokens);
+    const present = email != null or account_id != null or plan_type_source != null;
+
+    return .{
+        .checked = true,
+        .present = present,
+        .reason = if (present) "identity_claims_present" else "identity_claims_missing",
+        .source = "codex_auth_json_tokens",
+        .email_hint = if (email) |value| try maskEmailHint(allocator, value) else null,
+        .account_id_hash = if (account_id) |value| try shortSha256HexAlloc(allocator, value) else null,
+        .account_id_source = account_id_source,
+        .plan_type_present = plan_type_source != null,
+        .plan_type_source = plan_type_source,
+    };
+}
+
+fn codexEmailValueAlloc(allocator: std.mem.Allocator, tokens: CodexBrokerTokensJson) !?[]u8 {
+    if (try jwtStringClaimAlloc(allocator, tokens.id_token, "email")) |value| return value;
+    if (try jwtStringClaimAlloc(allocator, tokens.access_token, "email")) |value| return value;
+    if (try jwtAuthStringClaimAlloc(allocator, tokens.id_token, "email")) |value| return value;
+    if (try jwtAuthStringClaimAlloc(allocator, tokens.access_token, "email")) |value| return value;
+    return null;
+}
+
+fn jwtStringClaimAlloc(allocator: std.mem.Allocator, maybe_jwt: ?[]const u8, field: []const u8) !?[]u8 {
+    const jwt = nonEmpty(maybe_jwt) orelse return null;
+    const payload = jwtPayloadJsonAlloc(allocator, jwt) catch return null;
+    defer allocator.free(payload);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return null,
+    };
+    return switch (root.get(field) orelse return null) {
+        .string => |value| if (value.len == 0) null else try allocator.dupe(u8, value),
+        else => null,
+    };
+}
+
+fn maskEmailHint(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
+    const at = std.mem.indexOfScalar(u8, email, '@') orelse return try allocator.dupe(u8, "<non-email-identity>");
+    const local = email[0..at];
+    const domain = email[at + 1 ..];
+    if (local.len == 0 or domain.len == 0) return try allocator.dupe(u8, "<invalid-email-identity>");
+    return try std.fmt.allocPrint(allocator, "{c}***@{s}", .{ local[0], domain });
+}
+
+fn shortSha256HexAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(value, &digest, .{});
+    const out = try allocator.alloc(u8, 12);
+    _ = std.fmt.bufPrint(out, "{x}", .{std.fmt.fmtSliceHexLower(digest[0..6])}) catch unreachable;
+    return out;
+}
+
+test "maskEmailHint masks local part and keeps domain for account inventory" {
+    const masked = try maskEmailHint(std.testing.allocator, "jess@example.com");
+    defer std.testing.allocator.free(masked);
+    try std.testing.expectEqualStrings("j***@example.com", masked);
+}
+
+test "shortSha256HexAlloc emits stable twelve character account id hash" {
+    const hashed = try shortSha256HexAlloc(std.testing.allocator, "acct-test");
+    defer std.testing.allocator.free(hashed);
+    try std.testing.expectEqual(@as(usize, 12), hashed.len);
+    try std.testing.expectEqualStrings("660d25a9d7ee", hashed);
+}
+
+test "inspectCodexAccountAuthIdentity reports redacted auth-bound identity hints" {
+    const auth_json =
+        \\{
+        \\  "auth_mode": "chatgpt",
+        \\  "tokens": {
+        \\    "id_token": "hdr.eyJlbWFpbCI6Implc3NAZXhhbXBsZS5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "access_token": "redacted-in-test",
+        \\    "refresh_token": "redacted-in-test"
+        \\  }
+        \\}
+    ;
+
+    const identity = try inspectCodexAccountAuthIdentity(std.testing.allocator, auth_json);
+    defer identity.deinit(std.testing.allocator);
+
+    try std.testing.expect(identity.checked);
+    try std.testing.expect(identity.present);
+    try std.testing.expectEqualStrings("identity_claims_present", identity.reason);
+    try std.testing.expectEqualStrings("codex_auth_json_tokens", identity.source.?);
+    try std.testing.expectEqualStrings("j***@example.com", identity.email_hint.?);
+    try std.testing.expectEqualStrings("660d25a9d7ee", identity.account_id_hash.?);
+    try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_account_id", identity.account_id_source.?);
+    try std.testing.expect(identity.plan_type_present);
+    try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_plan_type", identity.plan_type_source.?);
 }
 
 fn accountsProviderMatches(args: cli.Command.AccountsArgs, provider_name: []const u8, provider_kind: []const u8) bool {
@@ -8207,6 +8405,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
         .managed_plan => try runCodexManagedPlan(allocator, writer, args),
         .managed => try runCodexManaged(allocator, writer, args),
+        .status_latest => try runCodexStatusLatest(allocator, writer, args),
         .broker_plan => try runCodexBrokerPlan(allocator, writer, args),
         .broker_session_plan => try runCodexBrokerSessionPlan(allocator, writer, args),
         .broker_session_smoke => try runCodexBrokerSessionSmoke(allocator, writer, args),
@@ -8659,7 +8858,7 @@ fn writeCodexRevalidateExhaustedText(
     }
     try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
     try writer.print("  reason: {s}\n", .{reason});
-    try writer.writeAll("  boundary: spend-gated provider revalidation; same-turn and same-thread quota recovery remain unproven\n");
+    try writer.writeAll("  boundary: spend-gated provider revalidation; managed handoff is not proven by this command, and same-thread quota recovery remains unproven\n");
 }
 
 const CodexBrokerTokenPlan = struct {
@@ -9064,6 +9263,516 @@ fn runCodexManaged(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
         .capability = capability,
         .target_argv = target_argv,
     });
+}
+
+const CodexStatusSummary = struct {
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    events: u64 = 0,
+    brokered_session_observed: bool = false,
+    selected_account: ?[]const u8 = null,
+    session_authority: ?[]const u8 = null,
+    proxy_turns: u64 = 0,
+    auth_unauthorized_turns: u64 = 0,
+    responses_401_turns: u64 = 0,
+    auth_health_events: u64 = 0,
+    auth_health_recorded_observed: bool = false,
+    auth_health_quota_claim_observed: bool = false,
+    quota_event_observed: bool = false,
+    quota_handoff_observed: bool = false,
+    quota_handoff_failed_reason: ?[]const u8 = null,
+    user_visible_failure_likely: bool = false,
+    terminal_event_observed: bool = false,
+    session_aborted_observed: bool = false,
+    same_turn_retry_events: u64 = 0,
+    auth_same_turn_retry_events: u64 = 0,
+    auth_retry_unavailable_events: u64 = 0,
+    same_turn_retry_unavailable_events: u64 = 0,
+    post_swap_turn_events: u64 = 0,
+    launch_timing_events: u64 = 0,
+    launch_timing_total_ms: ?i64 = null,
+    launch_timing_child_spawn_ms: ?i64 = null,
+    terminal_event_kind: ?[]const u8 = null,
+    terminal_exit_code: ?i64 = null,
+    terminal_term_kind: ?[]const u8 = null,
+    terminal_term_code: ?i64 = null,
+    terminal_signal_name: ?[]const u8 = null,
+    provider_originated_live_fallback_claim: bool = false,
+    verdict: []const u8 = "insufficient_evidence",
+    next_action: []const u8 = "retry_managed",
+    proxy_turns_by_account: std.StringHashMap(u64),
+    proxy_turns_by_status: std.StringHashMap(u64),
+    proxy_turns_by_path_kind: std.StringHashMap(u64),
+    proxy_turns_by_body_class: std.StringHashMap(u64),
+
+    fn init(allocator: std.mem.Allocator, path: []const u8) CodexStatusSummary {
+        return .{
+            .allocator = allocator,
+            .path = path,
+            .proxy_turns_by_account = std.StringHashMap(u64).init(allocator),
+            .proxy_turns_by_status = std.StringHashMap(u64).init(allocator),
+            .proxy_turns_by_path_kind = std.StringHashMap(u64).init(allocator),
+            .proxy_turns_by_body_class = std.StringHashMap(u64).init(allocator),
+        };
+    }
+
+    fn deinit(self: *CodexStatusSummary) void {
+        if (self.selected_account) |value| self.allocator.free(value);
+        if (self.session_authority) |value| self.allocator.free(value);
+        if (self.terminal_event_kind) |value| self.allocator.free(value);
+        if (self.terminal_term_kind) |value| self.allocator.free(value);
+        if (self.terminal_signal_name) |value| self.allocator.free(value);
+        freeStringCountKeys(self.allocator, &self.proxy_turns_by_account);
+        freeStringCountKeys(self.allocator, &self.proxy_turns_by_status);
+        freeStringCountKeys(self.allocator, &self.proxy_turns_by_path_kind);
+        freeStringCountKeys(self.allocator, &self.proxy_turns_by_body_class);
+        self.proxy_turns_by_account.deinit();
+        self.proxy_turns_by_status.deinit();
+        self.proxy_turns_by_path_kind.deinit();
+        self.proxy_turns_by_body_class.deinit();
+    }
+};
+
+fn freeStringCountKeys(allocator: std.mem.Allocator, map: *std.StringHashMap(u64)) void {
+    var it = map.iterator();
+    while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+}
+
+const CodexStatusScanState = struct {
+    quota_seen: bool = false,
+    quota_account: ?[]const u8 = null,
+    quota_body_class_usage_limit: bool = false,
+    retry_after_quota: bool = false,
+    auth_seen: bool = false,
+    auth_retry_seen: bool = false,
+    ok_turns: u64 = 0,
+    auth_recovered_observed: bool = false,
+
+    fn deinit(self: *CodexStatusScanState, allocator: std.mem.Allocator) void {
+        if (self.quota_account) |value| allocator.free(value);
+    }
+};
+
+fn runCodexStatusLatest(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const status_path = if (args.status_file) |path|
+        try paths.absolutePath(allocator, path)
+    else
+        try latestCodexStatusPath(allocator);
+    defer allocator.free(status_path);
+
+    var summary = try summarizeCodexStatusFile(allocator, status_path);
+    defer summary.deinit();
+
+    if (args.json) {
+        try writeCodexStatusSummaryJson(writer, summary);
+    } else {
+        try writeCodexStatusSummaryText(writer, summary);
+    }
+}
+
+fn latestCodexStatusPath(allocator: std.mem.Allocator) ![]const u8 {
+    const state_dir = try paths.stateDir(allocator);
+    defer allocator.free(state_dir);
+    const status_dir = try std.fs.path.join(allocator, &.{ state_dir, "codex", "status" });
+    defer allocator.free(status_dir);
+
+    var dir = std.fs.openDirAbsolute(status_dir, .{ .iterate = true }) catch return error.FileNotFound;
+    defer dir.close();
+
+    var best_name: ?[]u8 = null;
+    var best_mtime: i128 = std.math.minInt(i128);
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".ndjson")) continue;
+        const stat = dir.statFile(entry.name) catch continue;
+        if (best_name == null or stat.mtime > best_mtime) {
+            if (best_name) |name| allocator.free(name);
+            best_name = try allocator.dupe(u8, entry.name);
+            best_mtime = stat.mtime;
+        }
+    }
+
+    const name = best_name orelse return error.FileNotFound;
+    defer allocator.free(name);
+    return try std.fs.path.join(allocator, &.{ status_dir, name });
+}
+
+fn summarizeCodexStatusFile(allocator: std.mem.Allocator, path: []const u8) !CodexStatusSummary {
+    const data = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024 * 1024);
+    defer allocator.free(data);
+
+    var summary = CodexStatusSummary.init(allocator, path);
+    errdefer summary.deinit();
+    var scan = CodexStatusScanState{};
+    defer scan.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r\n");
+        if (line.len == 0) continue;
+
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        const object = parsed.value.object;
+        summary.events += 1;
+
+        const kind = jsonString(object.get("kind"));
+        if (kind) |k| {
+            if (std.mem.eql(u8, k, "session_started")) {
+                const claim_level = jsonString(object.get("claim_level"));
+                if (claim_level) |claim| {
+                    if (std.mem.eql(u8, claim, "broker_owned") or std.mem.eql(u8, claim, "broker_owned_app_server")) {
+                        summary.brokered_session_observed = true;
+                    }
+                }
+                summary.selected_account = summary.selected_account orelse try dupeJsonString(allocator, object.get("selected_account"));
+                summary.session_authority = summary.session_authority orelse try dupeJsonString(allocator, object.get("session_authority"));
+            } else if (std.mem.eql(u8, k, "session_ended")) {
+                summary.terminal_event_observed = true;
+                try setCodexTerminalEventSummary(allocator, &summary, object, k);
+                const final_claim = jsonString(object.get("final_claim_level"));
+                if (final_claim) |claim| {
+                    if (std.mem.eql(u8, claim, "broker_owned")) summary.brokered_session_observed = true;
+                }
+            } else if (std.mem.eql(u8, k, "session_aborted")) {
+                summary.terminal_event_observed = true;
+                summary.session_aborted_observed = true;
+                try setCodexTerminalEventSummary(allocator, &summary, object, k);
+            } else if (std.mem.eql(u8, k, "auth_health_observed")) {
+                summary.auth_health_events += 1;
+                summary.auth_health_recorded_observed = summary.auth_health_recorded_observed or (jsonBool(object.get("recorded")) orelse false);
+                summary.auth_health_quota_claim_observed = summary.auth_health_quota_claim_observed or (jsonBool(object.get("quota_claim")) orelse false);
+            } else if (std.mem.eql(u8, k, "proxy_same_turn_retry")) {
+                summary.same_turn_retry_events += 1;
+                if (scan.quota_seen) scan.retry_after_quota = true;
+            } else if (std.mem.eql(u8, k, "proxy_auth_same_turn_retry")) {
+                summary.auth_same_turn_retry_events += 1;
+                if (scan.auth_seen) scan.auth_retry_seen = true;
+            } else if (std.mem.eql(u8, k, "proxy_auth_retry_unavailable")) {
+                summary.auth_retry_unavailable_events += 1;
+            } else if (std.mem.eql(u8, k, "proxy_same_turn_retry_unavailable")) {
+                summary.same_turn_retry_unavailable_events += 1;
+                if (scan.quota_seen and summary.quota_handoff_failed_reason == null) {
+                    summary.quota_handoff_failed_reason = "same_turn_retry_unavailable";
+                }
+            } else if (std.mem.eql(u8, k, "proxy_post_swap_turn")) {
+                summary.post_swap_turn_events += 1;
+            } else if (std.mem.eql(u8, k, "launch_timing")) {
+                summary.launch_timing_events += 1;
+                if (jsonInt(object.get("elapsed_ms"))) |elapsed| {
+                    if (summary.launch_timing_total_ms == null or elapsed > summary.launch_timing_total_ms.?) {
+                        summary.launch_timing_total_ms = elapsed;
+                    }
+                    if (stringEquals(jsonString(object.get("phase")), "child_spawn")) {
+                        summary.launch_timing_child_spawn_ms = elapsed;
+                    }
+                }
+            } else if (std.mem.eql(u8, k, "quota_handoff_failed_no_account_selectable")) {
+                if (scan.quota_seen) {
+                    summary.quota_handoff_failed_reason = "no_account_selectable";
+                    summary.user_visible_failure_likely = summary.user_visible_failure_likely or (jsonBool(object.get("user_visible_failure_likely")) orelse false);
+                }
+            } else if (std.mem.eql(u8, k, "proxy_no_account_selectable")) {
+                if (scan.quota_seen and !summary.quota_handoff_observed) {
+                    summary.quota_handoff_failed_reason = "no_account_selectable";
+                    summary.user_visible_failure_likely = true;
+                }
+            } else if (std.mem.eql(u8, k, "proxy_turn")) {
+                try summarizeProxyTurn(allocator, object, &summary, &scan);
+            }
+        }
+    }
+
+    summary.quota_handoff_observed = summary.provider_originated_live_fallback_claim or summary.quota_handoff_observed;
+    const auth_failed_without_recovery = scan.auth_seen and scan.ok_turns == 0;
+
+    if (summary.provider_originated_live_fallback_claim) {
+        summary.verdict = "successful_live_quota_handoff";
+        summary.next_action = "capture_or_close_live_quota_acceptance";
+    } else if (summary.quota_handoff_observed) {
+        summary.verdict = "quota_handoff_observed";
+        summary.next_action = "inspect_quota_handoff_origin";
+    } else if (summary.quota_handoff_failed_reason != null) {
+        summary.verdict = "quota_handoff_failed";
+        summary.next_action = "repair_route_health_or_add_fallback_account";
+    } else if (scan.auth_recovered_observed and summary.auth_same_turn_retry_events > 0) {
+        summary.verdict = "auth_fallback_sequence_observed";
+        summary.next_action = "continue_managed_dogfood";
+    } else if (summary.brokered_session_observed and scan.auth_seen and !summary.terminal_event_observed) {
+        summary.verdict = "brokered_incomplete_auth_failed";
+        summary.next_action = "inspect_incomplete_run";
+    } else if (summary.brokered_session_observed and auth_failed_without_recovery) {
+        summary.verdict = "brokered_auth_failed";
+        summary.next_action = "reauth_account";
+    } else if (summary.brokered_session_observed and scan.auth_recovered_observed) {
+        summary.verdict = "brokered_auth_recovered";
+        summary.next_action = "continue_managed_dogfood";
+    } else if (summary.brokered_session_observed and summary.proxy_turns > 0) {
+        summary.verdict = "brokered_without_fallback";
+        summary.next_action = "wait_for_quota_event";
+    }
+
+    return summary;
+}
+
+fn setCodexTerminalEventSummary(
+    allocator: std.mem.Allocator,
+    summary: *CodexStatusSummary,
+    object: std.json.ObjectMap,
+    kind: []const u8,
+) !void {
+    try replaceOptionalString(allocator, &summary.terminal_event_kind, kind);
+    summary.terminal_exit_code = jsonInt(object.get("exit_code"));
+    summary.terminal_term_code = jsonInt(object.get("term_code"));
+
+    if (jsonString(object.get("term_kind"))) |term_kind| {
+        try replaceOptionalString(allocator, &summary.terminal_term_kind, term_kind);
+    } else {
+        clearOptionalString(allocator, &summary.terminal_term_kind);
+    }
+
+    if (jsonString(object.get("signal_name"))) |signal_name| {
+        try replaceOptionalString(allocator, &summary.terminal_signal_name, signal_name);
+    } else {
+        clearOptionalString(allocator, &summary.terminal_signal_name);
+    }
+}
+
+fn summarizeProxyTurn(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    summary: *CodexStatusSummary,
+    scan: *CodexStatusScanState,
+) !void {
+    summary.proxy_turns += 1;
+    const account = jsonString(object.get("account"));
+    const status = jsonInt(object.get("status"));
+    const classification = jsonString(object.get("classification"));
+    const path_kind = jsonString(object.get("path_kind"));
+    const body_class = jsonString(object.get("body_class"));
+
+    if (account) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_account, value);
+    if (status) |value| {
+        var buf: [32]u8 = undefined;
+        const key = try std.fmt.bufPrint(&buf, "{d}", .{value});
+        try incrementStringCount(allocator, &summary.proxy_turns_by_status, key);
+    }
+    if (path_kind) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_path_kind, value);
+    if (body_class) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_body_class, value);
+
+    const is_auth = (status != null and status.? == 401) or stringEquals(classification, "auth_unauthorized");
+    if (is_auth) {
+        summary.auth_unauthorized_turns += 1;
+        scan.auth_seen = true;
+        if (stringEquals(path_kind, "responses")) summary.responses_401_turns += 1;
+    }
+
+    const is_quota = status != null and status.? == 429 and stringEquals(classification, "quota_exhausted");
+    if (is_quota) {
+        summary.quota_event_observed = true;
+        if (!scan.quota_seen) {
+            scan.quota_seen = true;
+            if (account) |value| scan.quota_account = try allocator.dupe(u8, value);
+            scan.quota_body_class_usage_limit = stringEquals(body_class, "usage_limit_reached");
+        }
+    }
+
+    if (status != null and status.? == 200) {
+        scan.ok_turns += 1;
+        if (scan.auth_seen and scan.auth_retry_seen) scan.auth_recovered_observed = true;
+        if (scan.quota_seen and scan.retry_after_quota and account != null) {
+            const quota_account = scan.quota_account;
+            if (quota_account == null or !std.mem.eql(u8, quota_account.?, account.?)) {
+                summary.quota_handoff_observed = true;
+                if (scan.quota_body_class_usage_limit) summary.provider_originated_live_fallback_claim = true;
+            }
+        }
+    }
+}
+
+fn incrementStringCount(allocator: std.mem.Allocator, map: *std.StringHashMap(u64), key: []const u8) !void {
+    const found = try map.getOrPut(key);
+    if (found.found_existing) {
+        found.value_ptr.* += 1;
+    } else {
+        found.key_ptr.* = try allocator.dupe(u8, key);
+        found.value_ptr.* = 1;
+    }
+}
+
+fn jsonString(value: ?std.json.Value) ?[]const u8 {
+    const v = value orelse return null;
+    return switch (v) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn dupeJsonString(allocator: std.mem.Allocator, value: ?std.json.Value) !?[]const u8 {
+    const s = jsonString(value) orelse return null;
+    return try allocator.dupe(u8, s);
+}
+
+fn jsonInt(value: ?std.json.Value) ?i64 {
+    const v = value orelse return null;
+    return switch (v) {
+        .integer => |i| i,
+        else => null,
+    };
+}
+
+fn jsonBool(value: ?std.json.Value) ?bool {
+    const v = value orelse return null;
+    return switch (v) {
+        .bool => |b| b,
+        else => null,
+    };
+}
+
+fn stringEquals(value: ?[]const u8, expected: []const u8) bool {
+    const actual = value orelse return false;
+    return std.mem.eql(u8, actual, expected);
+}
+
+fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
+    if (slot.*) |old| allocator.free(old);
+    slot.* = try allocator.dupe(u8, value);
+}
+
+fn clearOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8) void {
+    if (slot.*) |old| allocator.free(old);
+    slot.* = null;
+}
+
+fn writeCodexStatusSummaryJson(writer: anytype, summary: CodexStatusSummary) !void {
+    try writer.writeAll("{\"path\":");
+    try std.json.stringify(summary.path, .{}, writer);
+    try writer.print(",\"events\":{d}", .{summary.events});
+    try writer.writeAll(",\"brokered_session_observed\":");
+    try writer.writeAll(if (summary.brokered_session_observed) "true" else "false");
+    try writer.writeAll(",\"selected_account\":");
+    try writeOptionalJsonString(writer, summary.selected_account);
+    try writer.writeAll(",\"session_authority\":");
+    try writeOptionalJsonString(writer, summary.session_authority);
+    try writer.print(",\"proxy_turns\":{d}", .{summary.proxy_turns});
+    try writer.writeAll(",\"proxy_turns_by_account\":");
+    try writeStringCountJson(writer, summary.proxy_turns_by_account);
+    try writer.writeAll(",\"proxy_turns_by_status\":");
+    try writeStringCountJson(writer, summary.proxy_turns_by_status);
+    try writer.writeAll(",\"proxy_turns_by_path_kind\":");
+    try writeStringCountJson(writer, summary.proxy_turns_by_path_kind);
+    try writer.writeAll(",\"proxy_turns_by_body_class\":");
+    try writeStringCountJson(writer, summary.proxy_turns_by_body_class);
+    try writer.print(",\"auth_unauthorized_turns\":{d}", .{summary.auth_unauthorized_turns});
+    try writer.print(",\"responses_401_turns\":{d}", .{summary.responses_401_turns});
+    try writer.writeAll(",\"auth_failure_observed\":");
+    try writer.writeAll(if (summary.auth_unauthorized_turns > 0) "true" else "false");
+    try writer.writeAll(",\"auth_recovered_observed\":");
+    try writer.writeAll(if (summary.auth_unauthorized_turns > 0 and summary.proxy_turns_by_status.get("200") != null) "true" else "false");
+    try writer.print(",\"auth_health_events\":{d}", .{summary.auth_health_events});
+    try writer.writeAll(",\"auth_health_recorded_observed\":");
+    try writer.writeAll(if (summary.auth_health_recorded_observed) "true" else "false");
+    try writer.writeAll(",\"auth_health_quota_claim_observed\":");
+    try writer.writeAll(if (summary.auth_health_quota_claim_observed) "true" else "false");
+    try writer.writeAll(",\"quota_event_observed\":");
+    try writer.writeAll(if (summary.quota_event_observed) "true" else "false");
+    try writer.writeAll(",\"quota_handoff_observed\":");
+    try writer.writeAll(if (summary.quota_handoff_observed) "true" else "false");
+    try writer.writeAll(",\"quota_handoff_failed_reason\":");
+    try writeOptionalJsonString(writer, summary.quota_handoff_failed_reason);
+    try writer.writeAll(",\"user_visible_failure_likely\":");
+    try writer.writeAll(if (summary.user_visible_failure_likely) "true" else "false");
+    try writer.writeAll(",\"terminal_event_observed\":");
+    try writer.writeAll(if (summary.terminal_event_observed) "true" else "false");
+    try writer.writeAll(",\"session_aborted_observed\":");
+    try writer.writeAll(if (summary.session_aborted_observed) "true" else "false");
+    try writer.writeAll(",\"terminal_event\":{\"kind\":");
+    try writeOptionalJsonString(writer, summary.terminal_event_kind);
+    try writer.writeAll(",\"exit_code\":");
+    if (summary.terminal_exit_code) |code| {
+        try writer.print("{d}", .{code});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"term_kind\":");
+    try writeOptionalJsonString(writer, summary.terminal_term_kind);
+    try writer.writeAll(",\"term_code\":");
+    if (summary.terminal_term_code) |code| {
+        try writer.print("{d}", .{code});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"signal_name\":");
+    try writeOptionalJsonString(writer, summary.terminal_signal_name);
+    try writer.writeAll("}");
+    try writer.print(",\"same_turn_retry_events\":{d}", .{summary.same_turn_retry_events});
+    try writer.print(",\"auth_same_turn_retry_events\":{d}", .{summary.auth_same_turn_retry_events});
+    try writer.print(",\"auth_retry_unavailable_events\":{d}", .{summary.auth_retry_unavailable_events});
+    try writer.print(",\"same_turn_retry_unavailable_events\":{d}", .{summary.same_turn_retry_unavailable_events});
+    try writer.print(",\"post_swap_turn_events\":{d}", .{summary.post_swap_turn_events});
+    try writer.writeAll(",\"launch_timing\":{\"events\":");
+    try writer.print("{d}", .{summary.launch_timing_events});
+    try writer.writeAll(",\"child_spawn_elapsed_ms\":");
+    if (summary.launch_timing_child_spawn_ms) |ms| {
+        try writer.print("{d}", .{ms});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"total_elapsed_ms\":");
+    if (summary.launch_timing_total_ms) |ms| {
+        try writer.print("{d}", .{ms});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll("}");
+    try writer.writeAll(",\"level4_shape_observed\":");
+    try writer.writeAll(if (summary.quota_handoff_observed) "true" else "false");
+    try writer.writeAll(",\"provider_originated_live_fallback_claim\":");
+    try writer.writeAll(if (summary.provider_originated_live_fallback_claim) "true" else "false");
+    try writer.writeAll(",\"verdict\":");
+    try std.json.stringify(summary.verdict, .{}, writer);
+    try writer.writeAll(",\"next_action\":");
+    try std.json.stringify(summary.next_action, .{}, writer);
+    try writer.writeAll("}\n");
+}
+
+fn writeCodexStatusSummaryText(writer: anytype, summary: CodexStatusSummary) !void {
+    try writer.writeAll("oauth-mux Codex status summary\n\n");
+    try writer.print("  path: {s}\n", .{summary.path});
+    try writer.print("  verdict: {s}\n", .{summary.verdict});
+    try writer.print("  next_action: {s}\n", .{summary.next_action});
+    try writer.print("  brokered_session_observed: {s}\n", .{if (summary.brokered_session_observed) "true" else "false"});
+    try writer.print("  selected_account: {s}\n", .{summary.selected_account orelse "null"});
+    try writer.print("  quota_event_observed: {s}\n", .{if (summary.quota_event_observed) "true" else "false"});
+    try writer.print("  quota_handoff_observed: {s}\n", .{if (summary.quota_handoff_observed) "true" else "false"});
+    try writer.print("  proxy_turns: {d}\n", .{summary.proxy_turns});
+    if (summary.launch_timing_events != 0) {
+        try writer.print("  launch_timing_events: {d}\n", .{summary.launch_timing_events});
+        if (summary.launch_timing_child_spawn_ms) |ms| try writer.print("  child_spawn_elapsed_ms: {d}\n", .{ms});
+    }
+}
+
+fn writeOptionalJsonString(writer: anytype, value: ?[]const u8) !void {
+    if (value) |s| {
+        try std.json.stringify(s, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+}
+
+fn writeStringCountJson(writer: anytype, map: std.StringHashMap(u64)) !void {
+    try writer.writeAll("{");
+    var first = true;
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        if (!first) try writer.writeAll(",");
+        first = false;
+        try std.json.stringify(entry.key_ptr.*, .{}, writer);
+        try writer.print(":{d}", .{entry.value_ptr.*});
+    }
+    try writer.writeAll("}");
 }
 
 fn buildCodexManagedTargetArgv(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) ![]const []const u8 {
@@ -15506,6 +16215,68 @@ test "supervise Codex usage-limit output classifier recognizes native screen" {
     try std.testing.expect(observeOutputLooksLikeCodexUsageLimit("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage"));
     try std.testing.expect(observeOutputLooksLikeCodexUsageLimit("{\"type\":\"usage_limit_reached\"}"));
     try std.testing.expect(!observeOutputLooksLikeCodexUsageLimit("ordinary child failure"));
+}
+
+test "Codex status summary keeps quota account across parsed lines" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const status_path = try std.fs.path.join(std.testing.allocator, &.{ root, "status.ndjson" });
+    defer std.testing.allocator.free(status_path);
+
+    var file = try tmp.dir.createFile("status.ndjson", .{});
+    defer file.close();
+    try file.writeAll(
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-2","session_authority":"canonical_bridge"}
+        \\{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":429,"classification":"quota_exhausted","body_class":"usage_limit_reached","delivered_to_codex":false}
+        \\{"kind":"proxy_same_turn_retry","from":"codex:max-2","to":"codex:max-3"}
+        \\{"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
+        \\
+    );
+
+    var summary = try summarizeCodexStatusFile(std.testing.allocator, status_path);
+    defer summary.deinit();
+
+    try std.testing.expect(summary.brokered_session_observed);
+    try std.testing.expect(summary.quota_event_observed);
+    try std.testing.expect(summary.quota_handoff_observed);
+    try std.testing.expect(summary.provider_originated_live_fallback_claim);
+    try std.testing.expectEqualStrings("successful_live_quota_handoff", summary.verdict);
+}
+
+test "Codex status summary preserves child signal terminal evidence" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const status_path = try std.fs.path.join(std.testing.allocator, &.{ root, "status.ndjson" });
+    defer std.testing.allocator.free(status_path);
+
+    var file = try tmp.dir.createFile("status.ndjson", .{});
+    defer file.close();
+    try file.writeAll(
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-3","session_authority":"canonical_bridge"}
+        \\{"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
+        \\{"kind":"session_aborted","adapter":"codex","reason":"child_signal","exit_code":-1,"term_kind":"signal","term_code":9,"signal_name":"SIGKILL","final_claim_level":"broker_owned","synthetic_swap_observed":false}
+        \\
+    );
+
+    var summary = try summarizeCodexStatusFile(std.testing.allocator, status_path);
+    defer summary.deinit();
+
+    try std.testing.expect(summary.brokered_session_observed);
+    try std.testing.expect(summary.terminal_event_observed);
+    try std.testing.expect(summary.session_aborted_observed);
+    try std.testing.expectEqualStrings("session_aborted", summary.terminal_event_kind.?);
+    try std.testing.expectEqual(@as(i64, -1), summary.terminal_exit_code.?);
+    try std.testing.expectEqualStrings("signal", summary.terminal_term_kind.?);
+    try std.testing.expectEqual(@as(i64, 9), summary.terminal_term_code.?);
+    try std.testing.expectEqualStrings("SIGKILL", summary.terminal_signal_name.?);
 }
 
 // Pull in all module tests

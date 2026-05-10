@@ -197,24 +197,44 @@ account.
 Codex app-server auth brokering is tracked separately as a possible
 current-process proof for mediated Codex sessions; unmanaged Codex launches
 should still be treated as prepared fallback only.
-Use
-`oauth-mux codex managed-plan --profile codex-max --capability codex-max
---json` to inspect the native Codex managed-launch boundary without starting
-Codex. It reports the selected route, the route-local `CODEX_HOME` resume
-namespace, and fallback readiness while keeping credential paths and forwarded
-native argv out of output.
-Use
-`oauth-mux codex managed --profile codex-max --capability codex-max --` to
-start native Codex under oauth-mux route selection from the beginning. For
-route-local resume, run
-`oauth-mux codex managed --profile codex-max --capability codex-max
---resume-last --include-non-interactive`. This resumes only within the selected
-route store; it does not import an unmanaged session from another account store
-or prove same-thread quota handoff.
-For a known session id, use `--resume <id>`. oauth-mux performs a no-spend
-selected-store diagnostic before launch and refuses if the route-local
-`CODEX_HOME` does not appear to own the id. Normal output reports status and
-evidence flags, not the resume id, credential paths, or store path.
+For daily managed Codex use, prefer the first-class adapter spelling:
+
+```bash
+oauth-mux codex
+oauth-mux codex resume
+oauth-mux codex resume --last
+oauth-mux codex resume <session-id>
+```
+
+The managed frame preserves native Codex session authority by reference while
+oauth-mux owns auth and the proxy provider override. Resume chooser mode stays
+native: oauth-mux checks the required session-authority entries before child
+spawn and fails with a redacted diagnostic rather than opening an empty
+chooser.
+
+The managed overlay also preserves normal Codex behavior config from the
+canonical config authority (`OMUX_CODEX_CONFIG_HOME`, then parent
+`CODEX_HOME`, then `~/.codex`). `[features]`, legacy `experimental_*`, MCP
+servers, approval/sandbox policy, profiles, model defaults, and custom
+non-managed provider definitions survive. oauth-mux strips only mux-owned
+provider selection conflicts and rejects forwarded `--config` / `-c` provider
+overrides before launching Codex.
+
+Managed Codex live quota handoff is proven for installed
+`oauth-mux codex resume` status artifacts. The 2026-05-09 engineered evidence
+shows successful primary-route traffic, provider-originated
+`usage_limit_reached`, a same-request retry to a distinct fallback route, and a
+fallback `200` before Codex sees the 429. Treat that as a managed-frame proof;
+same-thread continuity semantics, mid-turn streaming recovery, unmanaged
+bare-`codex` daemon handoff, and non-Codex adapters still require separate
+evidence.
+
+`oauth-mux codex managed-plan` and `oauth-mux codex managed` remain diagnostic
+route-local launch surfaces from the earlier implementation path. They can
+still inspect selected-route stores and fallback readiness, but they are not
+the primary daily-use Codex entrypoint now that `oauth-mux codex resume ...`
+owns the managed frame. Treat their resume checks as route-local diagnostics,
+not canonical chooser parity or same-thread quota handoff proof.
 Use
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 to inspect whether enrolled Codex stores can supply the app-server
@@ -565,6 +585,13 @@ templates. It does not include token material.
 it after `providers list --json` when deciding whether the next step is a
 provider-specific setup command, a runtime diagnostic, a route explanation, a
 handoff, or a live proof run.
+For Codex, the optional `auth_identity` object is still redacted but can expose
+enough auth-bound metadata to disambiguate named route stores: masked email
+hint, short account-id hash, claim-source classes, and explicit booleans that
+raw email, token material, and auth paths were not printed. Agents should use
+that surface instead of opening Codex auth files when deciding whether `max-1`
+or another route needs a labeled `oauth-mux codex login-device <account>`
+handoff.
 
 `enroll plan <provider> --json` is safe for agents because it only explains the
 setup sequence. Agents may present steps with `agent_safe:false` to a user or
@@ -620,7 +647,7 @@ login, plan token, file key, or consent gate without guessing.
 
 - Config validates.
 - `accounts list --json` exposes every expected account with redacted runtime
-  and liveness state.
+  and liveness state, plus redacted auth-bound identity hints when available.
 - `enroll plan <provider> --json` describes any remaining setup without running
   it.
 - Confirmed Codex enrollment returns a user-mediated login handoff instead of

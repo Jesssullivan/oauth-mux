@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-status_file="${1:-dist/live-qa/managed-resume-dogfood-9/status.ndjson}"
+status_file="${1:-docs/evidence/codex-managed-quota-handoff-20260508/status-excerpt.ndjson}"
 interval_seconds="${2:-60}"
 out_dir="${3:-$(dirname "$status_file")}"
 

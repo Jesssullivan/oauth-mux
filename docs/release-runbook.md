@@ -1,6 +1,6 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-04-29
+Updated: 2026-05-09
 
 ## Local Quality Gates
 
@@ -16,6 +16,9 @@ This enters the Nix dev shell and runs:
 - binary build
 - every `examples/*.config.json` through `config validate`
 - synthetic local E2E via `scripts/e2e-local.sh`
+
+The lane-level source of truth for installer, package, and local dogfood
+provenance is `docs/release-install-lanes.md`.
 
 The E2E harness is intentionally no-secret and no-network. It creates a
 temporary provider definition, command probe, config, and state directory, then
@@ -39,11 +42,12 @@ just e2e
 Run the full local release staging path:
 
 ```bash
-just release-local 0.1.0
+version="$(scripts/project-version.sh)"
+just release-local "$version"
 ```
 
 This runs the single Zig release graph and stages artifacts under
-`dist/out/v0.1.0/`.
+`dist/out/v<version>/`.
 
 Expected output:
 
@@ -68,7 +72,8 @@ still skip npm or deb/rpm output if those host tools are absent.
 Run the full build-plus-smoke proof:
 
 ```bash
-just release-proof 0.1.0
+version="$(scripts/project-version.sh)"
+just release-proof "$version"
 ```
 
 This runs `release-local` and then checks:
@@ -84,14 +89,15 @@ This runs `release-local` and then checks:
 Generate only the handoff for an already staged tree:
 
 ```bash
-just release-handoff 0.1.0
+version="$(scripts/project-version.sh)"
+just release-handoff "$version"
 ```
 
 This validates the staged publication inputs and writes:
 
-- `dist/out/v0.1.0/handoff/release-handoff.md`
-- `dist/out/v0.1.0/handoff/publish-files.txt`
-- `dist/out/v0.1.0/handoff/SHA256SUMS.full`
+- `dist/out/v<version>/handoff/release-handoff.md`
+- `dist/out/v<version>/handoff/publish-files.txt`
+- `dist/out/v<version>/handoff/SHA256SUMS.full`
 
 The handoff lists GitHub Release attachments, npm publish order, Homebrew tap
 input, deb/rpm files, and full checksums. It does not use registry credentials

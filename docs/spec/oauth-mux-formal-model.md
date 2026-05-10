@@ -1,6 +1,6 @@
 # OAuth Mux Formal Model
 
-Updated: 2026-04-25
+Updated: 2026-05-08
 
 This document defines the working model for `oauth-mux`: a small compiled
 credential mux for AI harnesses that can select, validate, refresh, and inject
@@ -243,6 +243,60 @@ Routing rules:
 Do not punish long-window quota exhaustion the same way as bad credentials.
 Quota exhaustion is expected capacity state, not account corruption.
 
+## Codex Route State Machine
+
+The Codex adapter treats each proxied provider request as a deterministic route
+state transition. A request-local `attempted` set prevents loops; durable
+health is updated before fallback retry.
+
+```text
+RouteState =
+    available
+  | auth_failed
+  | quota_exhausted
+  | rate_limited
+  | tier_insufficient
+  | credential_unavailable
+```
+
+Selection rules:
+
+- Never elect an account already in the request-local `attempted` set.
+- Never elect `auth_failed`, `quota_exhausted`, `rate_limited`,
+  `tier_insufficient`, or `credential_unavailable` unless explicit repair or
+  revalidation evidence has moved it back to `available`.
+- On `401`, mark the account `auth_failed` in the in-memory session view and
+  persist unrecovered account-credential health.
+- On `429 usage_limit_reached`, persist quota evidence, mark the route
+  `quota_exhausted`, drop `x-codex-turn-state`, and retry another eligible
+  account before delivering a response to Codex.
+- On fallback exhaustion, emit a typed terminal failure with a complete
+  redacted rejection vector.
+
+```mermaid
+flowchart TD
+    A[proxy request] --> B{upstream status}
+    B -->|200| C[deliver success]
+    B -->|401| D[mark auth_failed]
+    B -->|429 usage_limit_reached| E[persist quota_exhausted]
+    B -->|429 usage_not_included| F[mark tier_insufficient and surface]
+    B -->|generic 429| G[rate_limited policy]
+    D --> H{eligible fallback?}
+    E --> I[drop x-codex-turn-state]
+    I --> H
+    G --> H
+    H -->|yes| J[retry same buffered request]
+    J --> B
+    H -->|no| K[typed no-account-selectable repair evidence]
+```
+
+The 2026-05-08 installed-runtime artifacts prove the
+`429 usage_limit_reached -> persist quota -> drop turn state -> retry fallback
+-> 200` path for managed Codex resume/load. The 2026-05-09 engineered artifact
+proves the same path after successful primary-route traffic in a managed Codex
+session. Same-thread provider semantics, mid-turn recovery, unmanaged daemon
+handoff, and non-Codex harnesses remain separate proof targets.
+
 ## Operability Semantics
 
 Degraded state means the credential can authenticate but is not currently a
@@ -289,7 +343,7 @@ Provider support is data first:
 {
   "name": "codex",
   "auth": {
-    "token_endpoint": "https://auth0.openai.com/oauth/token",
+    "token_endpoint": "https://auth.openai.com/oauth/token",
     "pkce": true,
     "grant_types": ["authorization_code", "refresh_token"]
   },

@@ -4,6 +4,50 @@
 stack. Lab SOPS, GloriousFlywheel, and Codex Max canaries are proving grounds;
 they must not become requirements for ordinary users.
 
+## README And Site Entry
+
+The first screen of the README and website should answer four questions before
+deep evidence or architecture:
+
+1. What works today?
+   Managed Codex launch/resume, native chooser/session bridge, config
+   passthrough, redacted status artifacts, and live managed Codex quota
+   handoff across enrolled routes.
+2. What is still not claimed?
+   Same-thread provider semantics, mid-turn streaming recovery, unmanaged
+   daemon hot-swap, and non-Codex harness stay-afloat.
+3. How do I try it safely?
+   Install, run no-spend diagnostics, follow labeled auth handoffs, then start
+   `oauth-mux codex resume`.
+4. How can an agent inspect state?
+   Use JSON commands that do not read token values or spend provider calls.
+
+Recommended first-screen command block:
+
+```bash
+npm install -g oauth-mux
+oauth-mux init --codex-max
+oauth-mux doctor
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux codex resume
+```
+
+Recommended agent-safe block:
+
+```bash
+oauth-mux doctor runtime --profile codex-max --capability codex-max --json
+oauth-mux accounts list --provider codex --json
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux codex status-latest --json
+```
+
+Do not put raw emails, account ids, token claims, credential paths, or session
+ids in public screenshots, web copy, or agent prompts.
+
+Use `docs/README.md` as the docs landing page. Website navigation should mirror
+that shape: start with user install/try paths, then agent/operator diagnostics,
+then proof and provider-author material.
+
 ## Install Surfaces
 
 Target install surfaces:
@@ -19,6 +63,25 @@ The public Homebrew tap is `Jesssullivan/homebrew-omux`, documented in
 `docs/spec/homebrew-public-lane-decision-2026-05-01.md`. The older
 `tinyland-inc/homebrew-tools` tap remains private/staged Tinyland
 infrastructure, not public adoption copy.
+The DRY release/install lane contract is `docs/release-install-lanes.md`; keep
+new UX/DX/AX installer copy aligned with that file rather than duplicating
+package-state tables here.
+
+When validating unreleased source behavior, install or invoke the worktree build
+deliberately and record provenance:
+
+```bash
+which -a oauth-mux
+scripts/project-version.sh
+oauth-mux version
+shasum -a 256 ./zig-out/bin/oauth-mux
+shasum -a 256 "$(command -v oauth-mux)"
+```
+
+PATH should resolve to the intended installed test binary. Homebrew install
+checks remain package-lane QA and should not be used as evidence for unreleased
+worktree behavior unless the local formula has been explicitly rebuilt and
+installed.
 
 Each release artifact should be derived from the same CI release tree. npm is
 published only from CI tarballs; workstation `npm publish` is not supported.
@@ -26,31 +89,37 @@ Use npm provenance when the GitHub source repository is public.
 
 ## First User Experience
 
-The happy path should stay small:
+The happy path should stay small and should not ask users to learn every
+diagnostic command before starting Codex.
+
+Human Codex path:
 
 ```bash
-oauth-mux init
+oauth-mux init --codex-max
 oauth-mux doctor
-oauth-mux report --redacted
-oauth-mux providers list
-oauth-mux accounts list
-oauth-mux enroll plan <provider>
-oauth-mux enroll codex --account <name> --confirm-enroll
-oauth-mux enroll claude --account <name> --confirm-enroll
-oauth-mux enroll figma --account <name> --mode pat --confirm-enroll
-oauth-mux config validate
-oauth-mux discover --json
-oauth-mux doctor runtime --json
 oauth-mux route explain --profile <profile> --capability <capability> --json
-oauth-mux stay-afloat next --profile <profile> --capability <capability> --json
-oauth-mux stay-afloat launch --profile <profile> --capability <capability> -- <command>
-oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
-oauth-mux stay-afloat handoffs --json
-oauth-mux stay-afloat refresh --profile <profile> --capability <capability> --json
-oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile <profile> --capability <capability> --json
+oauth-mux codex resume
 ```
 
-Source checkouts prove this path without touching real operator state:
+Agent diagnostic path:
+
+```bash
+oauth-mux doctor runtime --profile <profile> --capability <capability> --json
+oauth-mux accounts list --provider <provider> --json
+oauth-mux route explain --profile <profile> --capability <capability> --json
+oauth-mux repair-plan --profile <profile> --capability <capability> --json
+```
+
+Provider-enrollment path:
+
+```bash
+oauth-mux enroll plan <provider> --json
+oauth-mux enroll codex --account <name> --confirm-enroll --json
+oauth-mux enroll claude --account <name> --confirm-enroll --json
+oauth-mux enroll figma --account <name> --mode pat --confirm-enroll --json
+```
+
+Source checkouts prove the first-run path without touching real operator state:
 
 ```bash
 just first-run-e2e
@@ -60,38 +129,6 @@ When checking unreleased behavior from source, use `just run -- ...` or
 `./zig-out/bin/oauth-mux` after `just build` so local observations match repo
 `main` rather than an older installed package.
 
-For Codex subscription users working from a source checkout today:
-
-```bash
-oauth-mux init --codex-max
-oauth-mux doctor
-oauth-mux doctor runtime --json
-oauth-mux accounts list --provider codex --json
-oauth-mux enroll plan codex --account max-4 --json
-oauth-mux enroll codex --account max-4 --confirm-enroll --json
-oauth-mux enroll plan claude --account work --json
-oauth-mux enroll claude --account work --confirm-enroll --json
-oauth-mux enroll plan figma --account design --mode pat --json
-oauth-mux enroll figma --account design --mode pat --secret-env OMUX_FIGMA_DESIGN_PAT --confirm-enroll --json
-oauth-mux codex login-device max-4
-oauth-mux setup codex
-oauth-mux codex canary
-oauth-mux route explain --profile codex-max --capability codex-max --json
-oauth-mux route select --profile codex-max --capability codex-max --json
-oauth-mux stay-afloat --once --profile codex-max --capability codex-max --json
-oauth-mux stay-afloat handoffs --json
-oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json
-oauth-mux stay-afloat --loop --iterations 2 --interval-ms 0 --profile codex-max --capability codex-max --json
-```
-
-Those commands are installed CLI surface, not source-checkout-only helpers.
-The source example remains a starter shape, but the current paid Codex dogfood
-cohort has four `codex-max` routes. Use
-`--accounts max-1,max-2,max-3,max-4` or
-`OMUX_CODEX_ACCOUNTS=max-1,max-2,max-3,max-4` for canary and live-QA helpers
-when validating that cohort. Point account stores somewhere explicit with
-`--store-root <path>`.
-
 Live probes remain explicit because they can spend subscription calls:
 
 ```bash
@@ -99,6 +136,33 @@ oauth-mux codex live-qa
 oauth-mux codex live-qa --confirm-spend
 oauth-mux codex probe-all --capability codex-mini --json
 ```
+
+For daily Codex use, the first-class managed entrypoint is now:
+
+```bash
+oauth-mux codex
+oauth-mux codex resume
+oauth-mux codex resume --last
+oauth-mux codex resume <session-id>
+```
+
+These commands launch the real Codex CLI inside an oauth-mux managed frame.
+Auth and the proxy provider are mux-owned in a temporary overlay, while Codex
+session authority is bridged by reference to the canonical Codex home unless
+`--isolated-session-store` is set. `oauth-mux codex resume` with no id keeps
+native Codex chooser ownership; oauth-mux only checks before spawn that the
+managed overlay exposes the same required session-authority entries so the
+chooser does not open empty.
+
+Codex behavior config is preserved by default. The managed overlay reads the
+canonical config authority from `OMUX_CODEX_CONFIG_HOME`, then parent
+`CODEX_HOME`, then `~/.codex`, preserving settings such as `[features]`,
+legacy `experimental_*`, MCP servers, approval/sandbox policy, profiles, model
+defaults, and custom non-managed providers. oauth-mux strips the selected
+`model_provider` and stale `[model_providers.oauth_mux_openai]` entries before
+appending its proxy provider. Forwarded Codex `--config` / `-c` assignments
+that try to override mux-owned provider keys fail before child spawn with a
+redacted `config_passthrough_check` status event.
 
 `doctor runtime`, `route explain`, `route select`, `stay-afloat next`,
 `stay-afloat --once`, and bounded `stay-afloat --loop` are no-spend surfaces
@@ -125,18 +189,21 @@ ready behind it. Codex app-server auth brokering is now tracked as the first
 plausible current-process proof path for mediated Codex sessions, but it is not
 a claim for unmanaged Codex TUI/CLI processes.
 
-`oauth-mux codex managed-plan --profile codex-max --capability codex-max
---json` is the no-spend plan for native Codex sessions launched under
-oauth-mux. `oauth-mux codex managed --profile codex-max --capability codex-max
---` is the matching entrypoint; it selects a route, injects the selected
-route-local `CODEX_HOME`, and execs native `codex`. Add `--resume-last
---include-non-interactive` only for sessions created in that same selected
-route store. For explicit `--resume <id>`, oauth-mux checks the selected
-route-local Codex store for local evidence before launch and refuses without
-starting native Codex when the id appears to belong elsewhere or nowhere. The
-diagnostic checks index/filename/state-store bytes and does not print the
-resume id or store path. This is managed process launch/resume, not an
-unmanaged in-place handoff claim.
+`oauth-mux codex managed-plan` and `oauth-mux codex managed` remain older
+diagnostic/planning surfaces for route-local native launch experiments. They
+are not the primary user spelling for managed Codex sessions. Prefer
+`oauth-mux codex resume ...` for the broker-mediated frame that carries the
+current resume chooser, config passthrough, startup timing, and status
+artifact behavior. This is still managed process launch/resume, not an
+unmanaged bare-`codex` in-place daemon handoff claim.
+
+The managed Codex quota handoff claim is now live-proven for installed
+`oauth-mux codex resume` artifacts. The strongest 2026-05-09 evidence shows a
+successful primary route reaching provider-originated `usage_limit_reached`,
+oauth-mux retrying the same buffered request on a distinct fallback route, and
+the fallback returning 200. Public adoption copy may say managed Codex live
+quota handoff is proven, but must not turn that into a same-thread continuity,
+mid-turn streaming recovery, unmanaged daemon, or non-Codex provider claim.
 
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
 is the no-spend broker readiness check. It reads configured Codex auth stores
@@ -379,7 +446,7 @@ foreground supervisor contract is tracked in
 `docs/spec/stay-afloat-supervisor-contract-2026-05-01.md`. Together they cover:
 
 - website structure and public positioning;
-- `v0.1.3` onboarding/doctor/report scope;
+- current onboarding/doctor/report scope;
 - launch sequencing and outreach;
 - provider-author feedback loops;
 - follow-up Linear split from `TIN-491`;

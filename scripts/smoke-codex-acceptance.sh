@@ -51,6 +51,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 TMP="$(mktemp -d -t omux-acceptance.XXXXXX)"
+STATE_DIR="$TMP/state"
 PORTFILE="$TMP/upstream.port"
 UPLOG="$TMP/upstream.log"
 NDJSON="$TMP/adapter.ndjson"
@@ -71,7 +72,7 @@ trap cleanup EXIT
 # 1. Synthetic accounts. id_token JWT payload encodes plan_type=pro
 # and chatgpt_account_is_fedramp=true so credential/materialize
 # exercises the JWT decode path on each account.
-mkdir -p "$TMP/account-A" "$TMP/account-B"
+mkdir -p "$TMP/account-A" "$TMP/account-B" "$STATE_DIR"
 mkdir -p "$CANONICAL_SESSION_HOME/sessions/2026/05/05" "$CANONICAL_SESSION_HOME/shell_snapshots"
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s"
 
@@ -104,6 +105,13 @@ cat >"$TMP/oauth-mux.config.json" <<EOF
 }
 EOF
 
+cat >"$STATE_DIR/health.json" <<'EOF'
+{"version":2,"accounts":[
+  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}},
+  {"key":"codex:max-2#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
+]}
+EOF
+
 # 2. Start stub upstream
 OMUX_STUB_PORT=0 \
   OMUX_STUB_PORTFILE="$PORTFILE" \
@@ -127,6 +135,7 @@ echo "smoke-codex-acceptance: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_POR
 # 3. Run oauth-mux codex run
 echo "smoke-codex-acceptance: running adapter..."
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
@@ -169,6 +178,9 @@ assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed"
 assert_grep "session_started records status file" '"status_file_present":true' "$NDJSON"
 assert_grep "session_started reports canonical session bridge" '"session_authority":"canonical_bridge"' "$NDJSON"
 assert_grep "session_started redacts session paths" '"session_paths_printed":false' "$NDJSON"
+assert_grep "session_started records runtime identity" '"runtime_identity":\{' "$NDJSON"
+assert_grep "runtime identity marks repo-local binary" '"binary_source":"repo_local"' "$NDJSON"
+assert_grep "runtime identity records installed/local mismatch bit" '"installed_local_mismatch_detected":false' "$NDJSON"
 assert_grep "proxy_turn 200 ok"         '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "proxy_turn 429 quota_exhausted" '"kind":"proxy_turn".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
 assert_grep "quota 429 was not delivered to Codex" '"kind":"proxy_turn".*"status":429.*"delivered_to_codex":false' "$NDJSON"
@@ -254,7 +266,7 @@ else
 fi
 
 echo
-echo "smoke-codex-acceptance: all 20 assertions passed."
+echo "smoke-codex-acceptance: all 23 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"

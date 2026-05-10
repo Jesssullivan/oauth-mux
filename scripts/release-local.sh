@@ -4,8 +4,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-version="${1:-${VERSION:-0.1.0}}"
+project_version="$("$repo_root/scripts/project-version.sh")"
+version="${1:-${VERSION:-$project_version}}"
 version="${version#v}"
+if [ "$version" != "$project_version" ]; then
+  printf 'release version %s does not match build.zig.zon version %s\n' "$version" "$project_version" >&2
+  printf 'bump build.zig.zon before staging a differently versioned release\n' >&2
+  exit 2
+fi
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
@@ -104,7 +110,10 @@ sed \
 printf 'rendering npm package workspace...\n'
 root_pkg_dir="$npm_dir/oauth-mux"
 mkdir -p "$root_pkg_dir/bin"
-sed "s|0.1.0|${version}|g" dist/npm/package.json >"$root_pkg_dir/package.json"
+sed -E \
+  -e "s|(\"version\": \")[^\"]+(\")|\\1${version}\\2|" \
+  -e "s|(\"oauth-mux-[^\"]+\": \")[^\"]+(\")|\\1${version}\\2|" \
+  dist/npm/package.json >"$root_pkg_dir/package.json"
 cp dist/npm/install.js "$root_pkg_dir/install.js"
 cp dist/npm/bin/oauth-mux.js "$root_pkg_dir/bin/oauth-mux.js"
 chmod 0755 "$root_pkg_dir/bin/oauth-mux.js"

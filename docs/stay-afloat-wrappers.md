@@ -44,6 +44,8 @@ The supported contract is still the portable tick engine:
 ```bash
 oauth-mux stay-afloat next --profile codex-max --capability codex-max --json
 oauth-mux stay-afloat launch --profile codex-max --capability codex-max -- codex
+oauth-mux codex resume
+oauth-mux codex resume --last
 oauth-mux codex managed-plan --profile codex-max --capability codex-max --json
 oauth-mux codex managed --profile codex-max --capability codex-max -- --no-alt-screen
 oauth-mux codex managed --profile codex-max --capability codex-max --resume-last --include-non-interactive
@@ -56,6 +58,14 @@ Use `stay-afloat next --json` before launching a harness from an agent or
 wrapper. It does not spend provider calls or mutate auth state; it either
 returns an exact `oauth-mux exec` argv for the selected route or returns the
 typed repair/handoff action to mediate first.
+
+For Codex itself, prefer `oauth-mux codex ...` over wrapper-shaped
+`stay-afloat launch -- codex` when the goal is a broker-mediated Codex frame.
+The first-class adapter preserves native resume/chooser behavior, bridges
+canonical session authority, preserves native behavior config, and writes
+redacted managed status artifacts by default. `codex managed-plan` and
+`codex managed` remain diagnostic route-local launch surfaces, not the primary
+daily-use Codex wrapper.
 
 Use `stay-afloat launch -- <command>` when the wrapper should actually start a
 new harness session. It runs the same route preflight, pins the selected account

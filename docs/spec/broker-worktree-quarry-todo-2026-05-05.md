@@ -24,7 +24,9 @@ prepared fallback, and synthetic smokes are evidence or diagnostics only.
 ## Current Live State
 
 Observed on 2026-05-05 around 15:37 EDT, then updated after brokered-resume
-dogfood on 2026-05-06 and dogfood-9 auth-continuity evidence on 2026-05-07:
+dogfood on 2026-05-06, dogfood-9 auth-continuity plus failed-quota evidence
+on 2026-05-07, and installed-runtime managed quota handoff evidence on
+2026-05-08:
 
 - Repository: clean on `main`, synced with `origin/main` at `9cdf5a3`
   (`Add Codex dogfood status monitor helper (#209)`) during this checkpoint.
@@ -38,10 +40,13 @@ dogfood on 2026-05-06 and dogfood-9 auth-continuity evidence on 2026-05-07:
 - `route explain` agrees: `max-1` selected; `max-2`, `max-3`, and
   `max-4` selectable fallbacks.
 
-This unblocks fallback capacity for Level 3. It still does not satisfy
-Level 3 acceptance: no provider-originated `usage_limit_reached` event
-has occurred inside a live `oauth-mux codex` session during this
-checkpoint.
+This unblocked fallback capacity for Level 3. Dogfood-9 then showed the
+route-health view was stale: provider-originated `usage_limit_reached` did
+occur inside a live `oauth-mux codex` session, and oauth-mux still had no
+selectable fallback when `codex:max-4` exhausted. The 2026-05-08 installed
+runtime artifacts then proved the repaired load/resume path: `codex:default`
+exhausted, oauth-mux recorded quota, dropped `x-codex-turn-state`, retried the
+same request on `codex:max-2`, and got `status:200`.
 
 The brokered-resume dogfood proved a separate prerequisite:
 
@@ -55,13 +60,24 @@ The brokered-resume dogfood proved a separate prerequisite:
 - `dist/live-qa/managed-resume-dogfood-5/status.ndjson` proved brokered
   resume and ordinary selected-route 200s.
 - `dist/live-qa/managed-resume-dogfood-9/status.ndjson` proved live managed
-  auth-continuity fallback: launched on `codex:max-1`, observed selected-route
-  `401 auth_unauthorized`, retried through `max-2` and `max-3`, and continued
-  successful live traffic through `codex:max-4`.
+  auth-continuity fallback, then failed the quota stay-afloat bar: it launched
+  on `codex:max-1`, retried selected-route `401 auth_unauthorized` through
+  `max-2` and `max-3`, continued through `codex:max-4`, then observed a real
+  `429 usage_limit_reached` on `codex:max-4` and ended with no selectable
+  fallback.
+- `<oauth-mux-state>/codex/status/managed-1778273610565.ndjson`
+  and `managed-1778271585359.ndjson` proved installed-runtime live quota
+  handoff on managed resume/load from `codex:default` to `codex:max-2`.
+- `<oauth-mux-state>/codex/status/managed-1778362718969.ndjson` proved the
+  engineered managed-session handoff shape: successful `codex:max-2` traffic,
+  provider-originated `usage_limit_reached`, same-request retry to
+  `codex:max-3`, and fallback `status:200`.
 
-That is meaningful UX/architecture progress and a real auth failure
-stay-afloat event. It is not quota-exhaustion success and must not be described
-as Level 3 quota handoff completion.
+That is meaningful UX/architecture progress and real managed load/resume
+quota-handoff evidence. It still must not be broadened into same-thread,
+mid-turn, unmanaged `codex`, or non-Codex harness claims. Use
+`docs/spec/codex-live-acceptance-checklist-2026-05-08.md` for the managed
+Codex closure criteria.
 
 ## Mainline Reality
 
@@ -79,7 +95,15 @@ Already merged on main:
   can now resume a real existing Codex session and proxy normal provider turns.
 - Brokered auth-continuity dogfood: selected-route 401s can be hidden from
   Codex by same-turn retry across fallback accounts, with subsequent useful
-  traffic on `codex:max-4`.
+  traffic on `codex:max-4`; the same artifact later failed quota handoff when
+  `codex:max-4` exhausted quota.
+- Installed-runtime managed quota handoff: selected-route
+  `usage_limit_reached` can be hidden from Codex by same-turn retry to a
+  fallback account, with successful `responses` traffic on `codex:max-2`.
+- Engineered installed-runtime managed quota handoff: after successful
+  primary-route traffic, provider-originated `usage_limit_reached` can be
+  hidden from Codex by same-turn retry to a fallback account, with successful
+  `responses` traffic on `codex:max-3`.
 - Same-account child auth refresh preservation; oauth-mux no longer overwrites
   a Codex-refreshed bearer for the same account with stale materialized route
   credentials.
@@ -93,26 +117,22 @@ Already merged on main:
 
 Not yet proven:
 
-- Live provider-originated Level 3 account swap.
-- Live provider-originated quota fallback. Dogfood-9 is auth fallback, not
-  quota fallback.
-- Live invisible same-turn recovery where a fallback account handles the user
-  turn before Codex sees `usage_limit_reached`.
 - Same-thread continuity across account swap.
 - Mid-turn recovery.
 - Bare `codex` plus a separate background oauth-mux daemon seamlessly
   handing off account state.
-- Managed-frame resume parity beyond explicit-id resume. The adapter-owned
-  temporary `CODEX_HOME` now bridges canonical Codex session authority by
-  reference, and explicit live `resume <id>` dogfood succeeded. `resume --last`
-  and chooser parity remain useful UX checks.
+- Additional live chooser dogfood with multiple real Codex sessions remains
+  useful UX evidence, but the regression guard now exists: `oauth-mux codex
+  resume` forwards native chooser mode, validates canonical session authority
+  before child spawn, and fails redacted if the managed overlay cannot expose
+  the required authority entries.
 
 ## Quarry Worktree
 
 Worktree:
 
 ```text
-/Users/jess/git/oauth-mux-broker  jess/broker-mcp-codex-adapter
+<local-quarry-worktree>  jess/broker-mcp-codex-adapter
 ```
 
 State at review time:
@@ -293,8 +313,8 @@ These need review before public promotion:
 6. Start the Claude adapter only after the Codex Level 3 proof is recorded
    or explicitly parked.
 7. Re-run `just check-local` after each code/test slice.
-8. Keep dogfood-9 monitoring active while it remains useful, but interpret it
-   as burning `codex:max-4` after auth fallback, not `codex:max-1`.
+8. Treat dogfood-9 as failed live quota handoff evidence: it burned
+   `codex:max-4` after auth fallback and did not substitute another route.
 
 ## Hygiene Pass Notes
 
@@ -334,9 +354,10 @@ These need review before public promotion:
 - GitHub #198 tracks the permission fix. Until the connector can write issue
   comments, use `scripts/github-tracker-comment.sh` as the local `gh` fallback;
   it dry-runs auth/body checks and refuses obvious unredacted token shapes.
-- Remaining acceptance gate: provider-originated `usage_limit_reached` inside a
-  real managed `oauth-mux codex` session, with redacted status evidence showing
-  the same no-visible-429 retry sequence and a stable child process.
+- Supersession after the 2026-05-09 installed-runtime proof: the engineered
+  managed-session exhaustion handoff has been captured. Remaining gates are
+  same-thread semantics, mid-turn recovery, unmanaged daemon handoff, and
+  negative/permutation coverage.
 
 2026-05-05:
 

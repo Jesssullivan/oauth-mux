@@ -289,11 +289,11 @@ windows. This is route availability, not auth death.
 just release
 single Zig release graph builds all six documented targets
 
-just release-local 0.1.0
+just release-local <version>
 emits six binary tarballs, SHA256SUMS, Homebrew formula, npm package workspace,
 npm tarballs, nfpm configs, and deb/rpm output
 
-just release-proof 0.1.0
+just release-proof <version>
 stages the release and verifies required artifacts, checksums, archive payloads,
 Homebrew rendering, local npm installation, and installer execution
 ```

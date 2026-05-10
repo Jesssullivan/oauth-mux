@@ -39,6 +39,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 TMP="$(mktemp -d -t omux-concurrent.XXXXXX)"
+STATE_DIR="$TMP/state"
 PORTFILE="$TMP/upstream.port"
 UPLOG="$TMP/upstream.log"
 NDJSON_A="$TMP/adapter-A.ndjson"
@@ -61,7 +62,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP/account-A" "$TMP/account-B"
+mkdir -p "$TMP/account-A" "$TMP/account-B" "$STATE_DIR"
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s"
 
 cat >"$TMP/account-A/auth.json" <<EOF
@@ -91,6 +92,13 @@ cat >"$TMP/oauth-mux.config.json" <<EOF
 }
 EOF
 
+cat >"$STATE_DIR/health.json" <<'EOF'
+{"version":2,"accounts":[
+  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}},
+  {"key":"codex:max-2#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
+]}
+EOF
+
 OMUX_STUB_PORT=0 \
   OMUX_STUB_PORTFILE="$PORTFILE" \
   OMUX_STUB_OK_BEFORE_429=100 \
@@ -112,6 +120,7 @@ echo "smoke-codex-concurrent-sessions: stub upstream pid=$UPSTREAM_PID port=$UPS
 echo "smoke-codex-concurrent-sessions: launching two concurrent sessions..."
 
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
@@ -122,6 +131,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
 PID_A=$!
 
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \

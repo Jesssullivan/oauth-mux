@@ -20,6 +20,7 @@ if ! command -v jq >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
 fi
 
 TMP="$(mktemp -d -t omux-allexh.XXXXXX)"
+STATE_DIR="$TMP/state"
 PORTFILE="$TMP/upstream.port"
 UPLOG="$TMP/upstream.log"
 NDJSON="$TMP/adapter.ndjson"
@@ -35,7 +36,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP/account-A" "$TMP/account-B"
+mkdir -p "$TMP/account-A" "$TMP/account-B" "$STATE_DIR"
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s"
 cat >"$TMP/account-A/auth.json" <<EOF
 {"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-allexh-A","refresh_token":"RT-A","account_id":"acc-A-id"},"auth_mode":"Chatgpt"}
@@ -62,6 +63,13 @@ cat >"$TMP/oauth-mux.config.json" <<EOF
 }
 EOF
 
+cat >"$STATE_DIR/health.json" <<'EOF'
+{"version":2,"accounts":[
+  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}},
+  {"key":"codex:max-2#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
+]}
+EOF
+
 OMUX_STUB_PORT=0 \
   OMUX_STUB_PORTFILE="$PORTFILE" \
   OMUX_STUB_OK_BEFORE_429=1 \
@@ -79,6 +87,7 @@ UPSTREAM_PORT="$(cat "$PORTFILE" | tr -d '[:space:]')"
 echo "smoke-codex-all-exhausted: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_PORT ok_before_429=1"
 
 OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
@@ -126,6 +135,14 @@ if [[ "$GOT_503" -ge 1 ]]; then
     echo "  ✓ stub-codex saw $GOT_503 503 response(s) on all-exhausted turn(s)"
 else
     echo "  ✗ stub-codex did not see any 503" >&2
+    jq .turns "$STUB_REPORT" >&2
+    exit 1
+fi
+GOT_REPAIR_BODY=$(jq -r '[.turns[] | select(.status == 503 and (.body_head | contains("oauth_mux_no_account_selectable")))] | length' "$STUB_REPORT")
+if [[ "$GOT_REPAIR_BODY" -ge 1 ]]; then
+    echo "  ✓ all-exhausted 503 carries typed route-repair body"
+else
+    echo "  ✗ all-exhausted 503 body was not actionable" >&2
     jq .turns "$STUB_REPORT" >&2
     exit 1
 fi

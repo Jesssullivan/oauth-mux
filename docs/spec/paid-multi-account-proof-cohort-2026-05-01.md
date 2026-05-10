@@ -26,6 +26,10 @@ provider:
 
 This lane is about evidence, not broad claims. A paid account only earns a
 public claim after the probe, route, repair, and stay-afloat surfaces agree.
+The current route-state, handoff, reauth, resume, cassette, and account-label
+vocabulary is centralized in `docs/qa-handoff-matrix.md`; keep new cohort
+claims aligned with that matrix instead of duplicating a second state taxonomy
+here.
 
 ## Current Source Facts
 
@@ -73,7 +77,7 @@ Use the current four Max-capable account-scoped routes as the high-usage
 cohort. Keep one lower-tier OAuth account as a separate proof target for tier
 and usage contrast.
 
-Current dogfood truth as of 2026-05-03:
+Historical dogfood truth as of 2026-05-03:
 
 - `max-1#codex-max` revalidated from provider evidence and is selectable.
 - `max-4#codex-max` is selectable fallback.
@@ -88,19 +92,40 @@ Current dogfood truth as of 2026-05-03:
 - Dashboard credit/Spark availability must not be generalized to
   `codex-max`; route health remains capability-scoped.
 
+Current dogfood truth after the 2026-05-09 engineered managed handoff:
+
+- Installed `oauth-mux codex resume <session-id>` has live proof for managed
+  Codex quota handoff: a selected route returned provider-originated
+  `usage_limit_reached`, oauth-mux recorded durable quota evidence, retried the
+  buffered request on a distinct fallback route before Codex saw the 429, and
+  the fallback route returned `status:200`.
+- The strongest preserved proof bundle is
+  `docs/evidence/codex-engineered-quota-handoff-20260509/`.
+- Current no-spend route truth for `codex-max` is intentionally not described
+  as afloat: `max-1`, `max-2`, and `max-4` are quota-exhausted; `max-3` is
+  runtime-ready but recorded `auth_permanently_failed`; there are currently no
+  selectable fallback routes until labeled reauth, reset repair, revalidation,
+  or another credited account restores capacity.
+- Same-thread continuity across account boundaries, mid-turn streaming
+  recovery, unmanaged bare-`codex` daemon handoff, reset-window repair, and
+  broader auth/quota/tier negative permutations remain separate proof lanes.
+
 Suggested labels:
 
 | Label | Intended shape | Proof value |
 | --- | --- | --- |
-| `codex-max-1` | Max-capable account | Revalidated selected route after capacity change. |
-| `codex-max-2` | Max-capable account | Fresh quota-exhausted provider evidence. |
-| `codex-max-3` | Max-capable account with mini/Spark availability | Capability-scoped contrast: mini/Spark can pass while Max remains exhausted. |
-| `codex-max-4` | Max-capable account | Selectable fallback route behind `max-1`. |
+| `codex-max-1` | Max-capable account | Quota/reset-window repair and priority-order regression. |
+| `codex-max-2` | Max-capable account | Low-weekly primary route used for engineered handoff proof; later reset repair. |
+| `codex-max-3` | Max-capable account | High-capacity fallback route used for engineered handoff proof; labeled reauth regression when stale. |
+| `codex-max-4` | Max-capable account | Quota/reset-window repair and all-fallbacks-unavailable regression. |
 | `codex-plus-1` | New lower-tier ChatGPT OAuth account | Tier/usage contrast against Max; proves lower-tier accounts do not poison Max route health. |
 
 Do not model the lower-tier account as a broken Max account. Expected outcomes
 may include `tier_insufficient`, `quota_exhausted`, or `rate_limited` for some
 capabilities and `available` for others.
+Do not record raw email identity, account id, credential paths, or session ids
+in this spec or public tracker comments; route labels and capacity-role labels
+are the public vocabulary.
 
 Required proof:
 

@@ -1,0 +1,135 @@
+# Codex Productionization TODO
+Date: 2026-05-09
+Status: active productionization checklist; subordinate to `AGENTS.md`,
+`docs/spec/broker-mcp-contract-2026-05-03.md`, and
+`docs/spec/codex-adapter-contract-2026-05-03.md`.
+
+## Current Truth
+
+Proven:
+
+- Installed `oauth-mux codex resume <session-id>` can enter a managed Codex
+  session through the broker-owned app-server/proxy path.
+- A real provider-originated `429 usage_limit_reached` on the selected Codex
+  account can be classified as quota exhaustion, durably recorded, retried on a
+  distinct fallback account, and completed with a fallback `200` before Codex
+  sees the 429.
+- The 2026-05-09 engineered proof shows the same managed handoff shape after
+  successful primary-route traffic, from `codex:max-2` to `codex:max-3`.
+- The preserved proof bundles are
+  `docs/evidence/codex-managed-quota-handoff-20260508/` and
+  `docs/evidence/codex-engineered-quota-handoff-20260509/`.
+
+Not proven:
+
+- Same-thread continuity across account swap.
+- Mid-turn streaming recovery after partial response delivery.
+- Bare `codex` plus a background oauth-mux daemon hot-swapping an unmanaged
+  Codex process.
+- Non-Codex harness stay-afloat behavior.
+
+## P0 Operator Surfaces
+
+- [ ] Provide a first-class installed-binary command to summarize the latest
+  Codex status artifact, without requiring users to know the XDG/macOS state
+  path or run a repo script directly.
+- [x] Keep the Python status summarizer as a regression oracle, but stop making
+  it the only operator-facing path.
+- [x] Ensure status artifacts always include runtime identity: binary path,
+  binary source, build id or git SHA, version, command spelling, and installed
+  versus repo-local mismatch state.
+- [x] Add startup phase timing to managed Codex status and summarize
+  `child_spawn_elapsed_ms` through both native `status-latest --json` and the
+  Python regression oracle.
+- [x] Make stale installed-binary ambiguity impossible during dogfood: installed
+  `oauth-mux` must report enough identity to prove which executable handled the
+  run.
+- [ ] Keep `oauth-mux codex resume <id>` as the only live acceptance entry path;
+  repo-local `./zig-out/bin/oauth-mux`, wrappers, and arg-heavy launch helpers
+  are diagnostics only.
+- [x] Preserve native Codex config semantics in the managed overlay (#211
+  initial slice):
+  `/experimental` / `[features]`, MCP, hooks/rules, approval/sandbox, profiles,
+  model defaults, and other user behavior settings must pass through while
+  oauth-mux overrides only the proxy provider keys.
+
+## P0 Proof Work
+
+- [x] Preserve any successful installed-runtime status artifact under
+  `docs/evidence/` after redaction review.
+- [x] Add a managed-resume chooser regression: canonical authority is checked
+  before child spawn, missing authority fails with a redacted diagnostic, and
+  chooser mode avoids recursive rollout snapshotting before launch.
+- [x] Add a managed config passthrough regression with a canonical
+  `config.toml` fixture containing representative `[features]`,
+  `experimental_*`, MCP, approval/sandbox, profile, custom provider, and model
+  defaults. Include profile-scoped provider stripping and pre-spawn rejection
+  for forwarded Codex `--config` / `-c` attempts to override mux-owned provider
+  keys.
+- [x] Capture the engineered in-session exhaustion proof:
+  account A starts available, emits successful `200` turns, reaches
+  provider-originated `usage_limit_reached`, then account B returns `200` in the
+  same managed child process.
+  - 2026-05-09 operator plan: use `codex:max-2` as the low-weekly primary and
+    `codex:max-3` as the high-capacity fallback after user-mediated reauth.
+    Keep `codex:max-1` and `codex:max-4` as quota-exhausted reset-window
+    candidates until after the engineered run, unless the adapter is explicitly
+    pinned with `--account codex:max-2`.
+  - 2026-05-09 19:28 EDT installed route truth: `codex-max` is currently
+    `not_afloat`; `max-2` and `max-3` are recorded auth-dead and need labeled
+    `oauth-mux codex login-device max-2` / `max-3` handoffs before the burn.
+  - The private identity mapping and calendar draft are intentionally local
+    files under `/tmp/`; public tracker/docs should use route names and capacity
+    labels only.
+  - 2026-05-09 result:
+    `docs/evidence/codex-engineered-quota-handoff-20260509/` preserves the
+    redacted installed-runtime proof. The route labels are `codex:max-2` to
+    `codex:max-3`; raw identities remain private operator state.
+- [ ] Run the exhausted ChatGPT quota plus extra API credits permutation and
+  verify API credits do not falsely make a subscription-backed Codex route
+  selectable.
+- [ ] Run all-fallbacks-exhausted live or cassette-backed proof and verify the
+  terminal event is `quota_handoff_failed_no_account_selectable` with a
+  complete redacted rejection vector.
+- [ ] Run reset-window repair proof: exhausted route stays blocked until reset
+  or spend-gated revalidation evidence repairs it.
+
+## P0 Test Hardening
+
+- [ ] Add deterministic route-state tests for 1-4 account pools covering `200`,
+  `401`, `429 usage_limit_reached`, generic `429`, `usage_not_included`,
+  materialization failure, and network failure.
+- [ ] Assert no attempted, auth-dead, quota-exhausted, rate-limited,
+  tier-insufficient, or credential-unavailable account is elected in the same
+  request.
+- [ ] Assert quota evidence is recorded before retry.
+- [ ] Assert terminal no-fallback evidence includes every rejected candidate and
+  redacts sensitive fields.
+- [ ] Add cassette replay for the redacted real `usage_limit_reached` shape from
+  the 2026-05-08 proof when a publishable cassette is available.
+
+## P1 Documentation And Website
+
+- [x] Keep README, specs, issue comments, and website copy aligned on the same
+  truth boundary: managed load/resume quota handoff is proven; engineered
+  managed-session quota handoff is proven as of the 2026-05-09 evidence bundle;
+  same-thread semantics and unmanaged-daemon hot-swap remain open. 2026-05-09
+  pass updated README, onboarding/adoption docs, wrapper docs, tracker notes,
+  and the website-copy plan; no standalone website source directory is present
+  in this checkout.
+- [ ] Add a public proof page or release note that cites only redacted evidence
+  and does not imply same-thread or unmanaged-daemon success.
+- [ ] Update flow charts and logic graphs to show route states:
+  `available`, `auth_failed`, `quota_exhausted`, `rate_limited`,
+  `tier_insufficient`, and `credential_unavailable`.
+- [x] Link the live acceptance checklist from every public or internal page that
+  discusses Codex closure criteria.
+
+## P1 Release Hygiene
+
+- [ ] Keep `just check-local` green in this repo before any release claim.
+- [ ] Keep website `just check`, `just build`, and `just test-e2e` green after
+  public-copy changes.
+- [ ] Split product/code changes and website proof-copy changes into separate
+  commits or PRs when publishing.
+- [ ] Do not close TIN-951/#177 or TIN-916/#131 from synthetic tests alone.

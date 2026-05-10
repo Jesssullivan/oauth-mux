@@ -172,11 +172,19 @@ handoff rather than trying to run browser/device auth silently.
 - configured provider/account identity;
 - provider support and proof status;
 - secret backend name, not secret values;
+- redacted auth-bound identity hints when a provider can expose them safely;
 - account-level runtime readiness;
 - writeback admission;
 - per-capability proof, runtime readiness, recorded liveness, selectability,
   proof requirements, and safe action shape;
 - agent-safe next commands.
+
+For Codex accounts, `auth_identity` may report a masked email hint, a short
+account-id hash, and presence/source booleans for ChatGPT account and plan
+claims. It must not print raw email, token material, auth file paths, session
+ids, or unredacted account ids. This gives agents enough information to ask for
+the right labeled OAuth handoff (`oauth-mux codex login-device <account>`)
+without reading Codex auth files directly.
 
 `enroll plan --json` reports:
 
