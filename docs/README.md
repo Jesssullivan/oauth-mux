@@ -6,6 +6,8 @@ Start here when you need the right document without reading every spec.
 
 - `../README.md`: install commands, current supported path, and no-spend
   diagnostics.
+- `lifecycle.md`: application lifecycle, managed Codex flow, agent-safe control
+  plane, route states, and claim ladder diagrams.
 - `adoption.md`: first-run UX, install surfaces, agent-safe commands, and
   non-Tinyland deployment notes.
 - `onboarding.md`: full onboarding command reference.
