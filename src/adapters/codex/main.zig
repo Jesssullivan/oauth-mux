@@ -85,6 +85,8 @@ const SessionCodexHome = struct {
     config_source_present: bool = false,
     config_passthrough: bool = false,
     config_overridden_keys: usize = 0,
+    experimental_feature_defaults_injected: usize = 0,
+    config_layout: []const u8 = "root_partitioned",
 
     fn deinit(self: SessionCodexHome, allocator: std.mem.Allocator) void {
         std.fs.cwd().deleteTree(self.path) catch {};
@@ -142,6 +144,46 @@ const RolloutSnapshot = struct {
     }
 };
 
+const ResumeLookupSource = enum {
+    state_db,
+    session_index,
+    filename_scan,
+    not_scanned,
+
+    fn toString(self: ResumeLookupSource) []const u8 {
+        return switch (self) {
+            .state_db => "state_db",
+            .session_index => "session_index",
+            .filename_scan => "filename_scan",
+            .not_scanned => "not_scanned",
+        };
+    }
+};
+
+const RolloutTargetSnapshot = struct {
+    allocator: std.mem.Allocator,
+    path: []u8,
+    entry: RolloutEntry,
+
+    fn deinit(self: *RolloutTargetSnapshot) void {
+        self.allocator.free(self.path);
+    }
+};
+
+const ResumePreflightObservation = struct {
+    lookup_source: ResumeLookupSource = .not_scanned,
+    explicit_target_found_before: ?bool = null,
+    target_snapshot: ?RolloutTargetSnapshot = null,
+
+    fn deinit(self: *ResumePreflightObservation) void {
+        if (self.target_snapshot) |*snapshot| snapshot.deinit();
+    }
+
+    fn rolloutsBefore(self: *const ResumePreflightObservation) usize {
+        return if (self.target_snapshot != null) 1 else 0;
+    }
+};
+
 const ResumeObservation = struct {
     rollouts_before: usize = 0,
     rollouts_after: usize = 0,
@@ -149,12 +191,61 @@ const ResumeObservation = struct {
     created: usize = 0,
     explicit_target_found_before: ?bool = null,
     explicit_target_changed: ?bool = null,
+    lookup_source: ResumeLookupSource = .not_scanned,
 };
 
 const ManagedConfigObservation = struct {
     source_present: bool = false,
     passthrough: bool = false,
     overridden_keys: usize = 0,
+    experimental_feature_defaults_injected: usize = 0,
+    layout: []const u8 = "root_partitioned",
+};
+
+const codex_experimental_feature_defaults = [_][]const u8{
+    "terminal_resize_reflow",
+    "memories",
+    "external_migration",
+    "goals",
+    "prevent_idle_sleep",
+};
+
+const CodexExperimentalFeatureDefaults = struct {
+    seen: [codex_experimental_feature_defaults.len]bool = [_]bool{false} ** codex_experimental_feature_defaults.len,
+
+    fn mark(self: *CodexExperimentalFeatureDefaults, key: []const u8) void {
+        const normalized = std.mem.trim(u8, key, " \t\r\n\"'");
+        inline for (codex_experimental_feature_defaults, 0..) |feature, idx| {
+            if (std.mem.eql(u8, normalized, feature)) {
+                self.seen[idx] = true;
+                return;
+            }
+        }
+    }
+
+    fn writeMissingAsTableEntries(self: *CodexExperimentalFeatureDefaults, writer: anytype) !usize {
+        var injected: usize = 0;
+        inline for (codex_experimental_feature_defaults, 0..) |feature, idx| {
+            if (!self.seen[idx]) {
+                try writer.print("{s} = true\n", .{feature});
+                self.seen[idx] = true;
+                injected += 1;
+            }
+        }
+        return injected;
+    }
+
+    fn writeMissingAsRootDotted(self: *CodexExperimentalFeatureDefaults, writer: anytype) !usize {
+        var injected: usize = 0;
+        inline for (codex_experimental_feature_defaults, 0..) |feature, idx| {
+            if (!self.seen[idx]) {
+                try writer.print("features.{s} = true\n", .{feature});
+                self.seen[idx] = true;
+                injected += 1;
+            }
+        }
+        return injected;
+    }
 };
 
 const ConfigOverrideCheck = struct {
@@ -265,12 +356,21 @@ const codex_session_authority_entries = [_]SessionAuthorityEntry{
     .{ .name = "session_index.jsonl", .kind = .file },
 };
 
+const codex_optional_session_authority_entries = [_]SessionAuthorityEntry{
+    .{ .name = "state_5.sqlite", .kind = .file },
+    .{ .name = "state_5.sqlite-wal", .kind = .file },
+    .{ .name = "state_5.sqlite-shm", .kind = .file },
+};
+
 const ResumeAuthorityCheck = struct {
     mode: ResumeMode,
     authority: SessionAuthorityMode,
     required_total: usize = codex_session_authority_entries.len,
     canonical_present: usize = 0,
     overlay_present: usize = 0,
+    state_db_canonical_present: bool = false,
+    state_db_overlay_present: bool = false,
+    state_db_bridged: bool = false,
     ok: bool = false,
     diagnostic: []const u8 = "not_checked",
 };
@@ -476,7 +576,6 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer server.deinit();
     var route_health = health_mod.HealthStore.load(allocator, .{});
     defer route_health.deinit();
-    const codex_auth_repair = broker_loader.repairRefreshableCodexAuthFailures(allocator, parsed.value, &route_health);
     broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
         return RunError.PoolPopulateFailed;
     };
@@ -573,11 +672,13 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         return RunError.ConfigOverrideUnavailable;
     }
 
-    var resume_snapshot: ?RolloutSnapshot = null;
-    defer if (resume_snapshot) |*snapshot| snapshot.deinit();
-    if (resume_request.mode == .explicit or resume_request.mode == .last) {
+    var resume_preflight = ResumePreflightObservation{};
+    defer resume_preflight.deinit();
+    if (resume_request.mode == .explicit) {
         if (codex_home.authority_home) |authority_home| {
-            resume_snapshot = try snapshotRollouts(allocator, authority_home);
+            resume_preflight = try lookupExplicitResumePreflight(allocator, authority_home, resume_request.explicit_id.?);
+        } else {
+            resume_preflight.explicit_target_found_before = false;
         }
     }
 
@@ -597,8 +698,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         const installed_local_mismatch = envFlag("OMUX_INSTALLED_LOCAL_MISMATCH");
 
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"status_file_present\":{any},\"runtime_identity\":{{\"binary_path\":",
-            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.session_authority.toString(), status_file_path != null },
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{\"binary_path\":",
+            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.session_authority.toString(), status_file_path != null },
         );
         try std.json.stringify(binary_path, .{}, status_writer);
         try status_writer.writeAll(",\"binary_source\":");
@@ -611,19 +712,14 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         try std.json.stringify(command_spelling, .{}, status_writer);
         try status_writer.print(",\"installed_local_mismatch_detected\":{any}", .{installed_local_mismatch});
         try status_writer.writeAll("}}\n");
-        if (codex_auth_repair.attempted != 0 or codex_auth_repair.refreshed != 0 or codex_auth_repair.failed != 0) {
-            try status_writer.print(
-                "{{\"kind\":\"codex_auth_refresh_preflight\",\"attempted\":{d},\"refreshed\":{d},\"failed\":{d},\"skipped\":{d},\"contacts_provider_auth\":true,\"mutates_auth_material\":true,\"mutates_route_health\":true,\"spends_provider_calls\":false}}\n",
-                .{ codex_auth_repair.attempted, codex_auth_repair.refreshed, codex_auth_repair.failed, codex_auth_repair.skipped },
-            );
-        }
         if (resume_request.requested()) {
             try writeResumePreflightStatus(
                 status_writer,
                 resume_request,
                 codex_home.session_authority,
-                if (resume_snapshot) |*snapshot| snapshot.count() else 0,
-                if (resume_snapshot) |*snapshot| findExplicitResumeTarget(snapshot, resume_request.explicit_id) != null else null,
+                resume_preflight.rolloutsBefore(),
+                resume_preflight.explicit_target_found_before,
+                resume_preflight.lookup_source,
             );
         }
     }
@@ -694,7 +790,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             &codex_home,
             source_auth_path,
             resume_request,
-            if (resume_snapshot) |*snapshot| snapshot else null,
+            &resume_preflight,
             .{ .aborted = true, .reason = "child_wait_error", .wait_error = @errorName(e) },
         );
         return e;
@@ -714,7 +810,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         &codex_home,
         source_auth_path,
         resume_request,
-        if (resume_snapshot) |*snapshot| snapshot else null,
+        &resume_preflight,
         .{ .term = term },
     );
 
@@ -741,7 +837,7 @@ fn finalizeManagedSession(
     codex_home: *const SessionCodexHome,
     source_auth_path: []const u8,
     resume_request: ResumeRequest,
-    resume_snapshot: ?*RolloutSnapshot,
+    resume_preflight: *const ResumePreflightObservation,
     final_status: FinalSessionStatus,
 ) !void {
     const auth_writeback = observeAuthWriteback(allocator, codex_home.path, source_auth_path, codex_home.auth_initial_hash) catch |e| failed: {
@@ -766,7 +862,7 @@ fn finalizeManagedSession(
     }
     if (resume_request.requested()) {
         const observation = if (codex_home.authority_home) |authority_home|
-            try observeResumeWriteback(allocator, authority_home, resume_snapshot, resume_request)
+            try observeResumeWriteback(allocator, authority_home, resume_preflight, resume_request)
         else
             ResumeObservation{};
         try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
@@ -928,6 +1024,8 @@ fn createSessionCodexHomeUnder(
         .config_source_present = config_observation.source_present,
         .config_passthrough = config_observation.passthrough,
         .config_overridden_keys = config_observation.overridden_keys,
+        .experimental_feature_defaults_injected = config_observation.experimental_feature_defaults_injected,
+        .config_layout = config_observation.layout,
     };
 }
 
@@ -977,6 +1075,14 @@ fn bridgeCodexSessionAuthority(
         defer allocator.free(link);
         try std.fs.symLinkAbsolute(target, link, .{ .is_directory = entry.kind == .directory });
     }
+    for (codex_optional_session_authority_entries) |entry| {
+        const target = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
+        defer allocator.free(target);
+        if (!authorityEntryPresent(target, entry.kind)) continue;
+        const link = try std.fs.path.join(allocator, &.{ session_home, entry.name });
+        defer allocator.free(link);
+        try std.fs.symLinkAbsolute(target, link, .{ .is_directory = entry.kind == .directory });
+    }
 }
 
 fn checkResumeAuthority(
@@ -1005,6 +1111,11 @@ fn checkResumeAuthority(
 
     result.ok = true;
     result.diagnostic = "available";
+    result.state_db_canonical_present = authorityStateDbPresent(allocator, authority_home) catch false;
+    result.state_db_overlay_present = authorityStateDbPresent(allocator, codex_home.path) catch false;
+    result.state_db_bridged = result.state_db_canonical_present and result.state_db_overlay_present;
+
+    var legacy_ok = true;
     for (codex_session_authority_entries) |entry| {
         const canonical = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
         defer allocator.free(canonical);
@@ -1014,16 +1125,18 @@ fn checkResumeAuthority(
         if (authorityEntryPresent(canonical, entry.kind)) {
             result.canonical_present += 1;
         } else {
-            result.ok = false;
+            legacy_ok = false;
             result.diagnostic = "canonical_entry_missing";
         }
         if (authorityEntryPresent(overlay, entry.kind)) {
             result.overlay_present += 1;
         } else {
-            result.ok = false;
+            legacy_ok = false;
             result.diagnostic = "overlay_entry_missing";
         }
     }
+    result.ok = result.state_db_bridged or legacy_ok;
+    if (result.ok) result.diagnostic = if (result.state_db_bridged) "state_db_available" else "available";
     return result;
 }
 
@@ -1033,6 +1146,12 @@ fn authorityEntryPresent(path: []const u8, kind: SessionAuthorityEntryKind) bool
         .directory => stat.kind == .directory,
         .file => stat.kind == .file,
     };
+}
+
+fn authorityStateDbPresent(allocator: std.mem.Allocator, home: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ home, "state_5.sqlite" });
+    defer allocator.free(path);
+    return authorityEntryPresent(path, .file);
 }
 
 fn detectResumeRequest(argv: []const []const u8) ResumeRequest {
@@ -1093,54 +1212,199 @@ fn snapshotRolloutsUnder(
     }
 }
 
-fn findExplicitResumeTarget(snapshot: *const RolloutSnapshot, explicit_id: ?[]const u8) ?[]const u8 {
-    const id = explicit_id orelse return null;
-    var it = snapshot.entries.keyIterator();
-    while (it.next()) |path| {
-        if (std.mem.indexOf(u8, path.*, id) != null) return path.*;
+fn lookupExplicitResumePreflight(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    explicit_id: []const u8,
+) !ResumePreflightObservation {
+    var result = ResumePreflightObservation{
+        .explicit_target_found_before = false,
+    };
+    errdefer result.deinit();
+
+    if (try stateDbContainsResumeId(allocator, authority_home, explicit_id)) {
+        result.lookup_source = .state_db;
+        result.explicit_target_found_before = true;
+        result.target_snapshot = try findRolloutTargetByFilename(allocator, authority_home, explicit_id);
+        return result;
+    }
+
+    if (try sessionIndexContainsResumeId(allocator, authority_home, explicit_id)) {
+        result.lookup_source = .session_index;
+        result.explicit_target_found_before = true;
+        result.target_snapshot = try findRolloutTargetByFilename(allocator, authority_home, explicit_id);
+        return result;
+    }
+
+    result.lookup_source = .filename_scan;
+    if (try findRolloutTargetByFilename(allocator, authority_home, explicit_id)) |target| {
+        result.explicit_target_found_before = true;
+        result.target_snapshot = target;
+    }
+    return result;
+}
+
+fn stateDbContainsResumeId(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    explicit_id: []const u8,
+) !bool {
+    for (codex_optional_session_authority_entries) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
+        defer allocator.free(path);
+        if (try fileContainsNeedleBounded(allocator, path, explicit_id)) return true;
+    }
+    return false;
+}
+
+fn sessionIndexContainsResumeId(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    explicit_id: []const u8,
+) !bool {
+    const path = try std.fs.path.join(allocator, &.{ authority_home, "session_index.jsonl" });
+    defer allocator.free(path);
+    return try fileContainsNeedleBounded(allocator, path, explicit_id);
+}
+
+fn fileContainsNeedleBounded(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    needle: []const u8,
+) !bool {
+    if (needle.len == 0) return false;
+    const file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
+        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
+        else => return e,
+    };
+    defer file.close();
+
+    var previous = std.ArrayListUnmanaged(u8){};
+    defer previous.deinit(allocator);
+
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+
+        var haystack = std.ArrayListUnmanaged(u8){};
+        defer haystack.deinit(allocator);
+        try haystack.appendSlice(allocator, previous.items);
+        try haystack.appendSlice(allocator, buf[0..n]);
+        if (std.mem.indexOf(u8, haystack.items, needle) != null) return true;
+
+        previous.clearRetainingCapacity();
+        const keep = @min(needle.len - 1, haystack.items.len);
+        if (keep != 0) try previous.appendSlice(allocator, haystack.items[haystack.items.len - keep ..]);
+    }
+    return false;
+}
+
+fn findRolloutTargetByFilename(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    explicit_id: []const u8,
+) !?RolloutTargetSnapshot {
+    if (explicit_id.len == 0) return null;
+    const sessions_dir = try std.fs.path.join(allocator, &.{ authority_home, "sessions" });
+    defer allocator.free(sessions_dir);
+    return try findRolloutTargetByFilenameUnder(allocator, sessions_dir, explicit_id, 0);
+}
+
+fn findRolloutTargetByFilenameUnder(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    explicit_id: []const u8,
+    depth: usize,
+) !?RolloutTargetSnapshot {
+    if (depth > 16) return null;
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |e| switch (e) {
+        error.FileNotFound, error.AccessDenied, error.NotDir => return null,
+        else => return e,
+    };
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        defer allocator.free(path);
+        switch (entry.kind) {
+            .directory => {
+                if (try findRolloutTargetByFilenameUnder(allocator, path, explicit_id, depth + 1)) |found| return found;
+            },
+            .file, .sym_link => {
+                if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+                if (std.mem.indexOf(u8, entry.name, explicit_id) == null) continue;
+                return try snapshotSingleRolloutTarget(allocator, path);
+            },
+            else => {},
+        }
     }
     return null;
+}
+
+fn snapshotSingleRolloutTarget(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) !RolloutTargetSnapshot {
+    const stat = try std.fs.cwd().statFile(path);
+    return .{
+        .allocator = allocator,
+        .path = try allocator.dupe(u8, path),
+        .entry = .{
+            .size = stat.size,
+            .mtime = stat.mtime,
+        },
+    };
 }
 
 fn observeResumeWriteback(
     allocator: std.mem.Allocator,
     authority_home: []const u8,
-    before: ?*const RolloutSnapshot,
+    preflight: *const ResumePreflightObservation,
     request: ResumeRequest,
 ) !ResumeObservation {
+    if (request.mode == .explicit) {
+        var observation = ResumeObservation{
+            .rollouts_before = preflight.rolloutsBefore(),
+            .rollouts_after = 0,
+            .explicit_target_found_before = preflight.explicit_target_found_before,
+            .explicit_target_changed = false,
+            .lookup_source = preflight.lookup_source,
+        };
+        if (preflight.target_snapshot) |target| {
+            const after = snapshotSingleRolloutTarget(allocator, target.path) catch |e| switch (e) {
+                error.FileNotFound, error.AccessDenied, error.NotDir => return observation,
+                else => return e,
+            };
+            var after_mut = after;
+            defer after_mut.deinit();
+
+            observation.rollouts_after = 1;
+            const changed = target.entry.size != after.entry.size or target.entry.mtime != after.entry.mtime;
+            if (changed) {
+                observation.changed_existing = 1;
+                observation.explicit_target_changed = true;
+            }
+        }
+        return observation;
+    }
+
     var after = try snapshotRollouts(allocator, authority_home);
     defer after.deinit();
 
     var observation = ResumeObservation{
-        .rollouts_before = if (before) |snapshot| snapshot.count() else 0,
+        .rollouts_before = 0,
         .rollouts_after = after.count(),
-        .explicit_target_found_before = if (request.explicit_id != null and before != null)
-            findExplicitResumeTarget(before.?, request.explicit_id) != null
-        else
-            null,
+        .explicit_target_found_before = null,
         .explicit_target_changed = if (request.explicit_id != null) false else null,
+        .lookup_source = preflight.lookup_source,
     };
 
     var it = after.entries.iterator();
     while (it.next()) |after_entry| {
-        if (before) |snapshot| {
-            if (snapshot.entries.get(after_entry.key_ptr.*)) |before_entry| {
-                const changed = before_entry.size != after_entry.value_ptr.size or
-                    before_entry.mtime != after_entry.value_ptr.mtime;
-                if (changed) {
-                    observation.changed_existing += 1;
-                    if (request.explicit_id) |id| {
-                        if (std.mem.indexOf(u8, after_entry.key_ptr.*, id) != null) {
-                            observation.explicit_target_changed = true;
-                        }
-                    }
-                }
-            } else {
-                observation.created += 1;
-            }
-        } else {
-            observation.created += 1;
-        }
+        _ = after_entry;
+        observation.created += 1;
     }
 
     return observation;
@@ -1160,6 +1424,7 @@ fn writeResumePreflightStatus(
     authority: SessionAuthorityMode,
     rollouts_before: usize,
     explicit_target_found_before: ?bool,
+    lookup_source: ResumeLookupSource,
 ) !void {
     try writer.print(
         "{{\"kind\":\"resume_preflight\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"rollouts_before\":{d},\"explicit_id_provided\":{s},\"explicit_target_found_before\":",
@@ -1171,7 +1436,7 @@ fn writeResumePreflightStatus(
         },
     );
     try writeOptionalBool(writer, explicit_target_found_before);
-    try writer.writeAll(",\"session_id_printed\":false,\"path_printed\":false}\n");
+    try writer.print(",\"resume_lookup_source\":\"{s}\",\"session_id_printed\":false,\"path_printed\":false}}\n", .{lookup_source.toString()});
 }
 
 fn writeResumeAuthorityCheckStatus(
@@ -1179,7 +1444,7 @@ fn writeResumeAuthorityCheckStatus(
     check: ResumeAuthorityCheck,
 ) !void {
     try writer.print(
-        "{{\"kind\":\"resume_authority_check\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"required_entries\":{d},\"canonical_present\":{d},\"overlay_present\":{d},\"session_id_printed\":false,\"path_printed\":false}}\n",
+        "{{\"kind\":\"resume_authority_check\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"required_entries\":{d},\"canonical_present\":{d},\"overlay_present\":{d},\"resume_authority_state_db_bridged\":{any},\"state_db_canonical_present\":{any},\"state_db_overlay_present\":{any},\"session_id_printed\":false,\"path_printed\":false}}\n",
         .{
             check.mode.toString(),
             check.authority.toString(),
@@ -1188,6 +1453,9 @@ fn writeResumeAuthorityCheckStatus(
             check.required_total,
             check.canonical_present,
             check.overlay_present,
+            check.state_db_bridged,
+            check.state_db_canonical_present,
+            check.state_db_overlay_present,
         },
     );
 }
@@ -1212,7 +1480,7 @@ fn writeResumeWritebackStatus(
     try writeOptionalBool(writer, observation.explicit_target_found_before);
     try writer.writeAll(",\"explicit_target_changed\":");
     try writeOptionalBool(writer, observation.explicit_target_changed);
-    try writer.writeAll(",\"session_id_printed\":false,\"path_printed\":false}\n");
+    try writer.print(",\"resume_lookup_source\":\"{s}\",\"session_id_printed\":false,\"path_printed\":false}}\n", .{observation.lookup_source.toString()});
 }
 
 fn writeAuthWritebackStatus(
@@ -1416,6 +1684,8 @@ fn writeManagedConfigToml(
     var contents = std.ArrayListUnmanaged(u8){};
     defer contents.deinit(allocator);
     const w = contents.writer(allocator);
+    var managed_root_written = false;
+    var feature_defaults = CodexExperimentalFeatureDefaults{};
 
     if (source_config_home) |home| {
         const source_path = try std.fs.path.join(allocator, &.{ home, "config.toml" });
@@ -1424,7 +1694,8 @@ fn writeManagedConfigToml(
             defer allocator.free(source_bytes);
             observation.source_present = true;
             observation.passthrough = true;
-            observation.overridden_keys = try writeConfigPassthrough(w, source_bytes);
+            observation.overridden_keys = try writeConfigPassthrough(allocator, w, source_bytes, &feature_defaults, &observation.experimental_feature_defaults_injected);
+            managed_root_written = true;
             if (contents.items.len != 0 and contents.items[contents.items.len - 1] != '\n') try w.writeAll("\n");
             try w.writeAll("\n");
         } else |e| switch (e) {
@@ -1433,9 +1704,11 @@ fn writeManagedConfigToml(
         }
     }
 
-    try w.writeAll("# Managed by oauth-mux. Proxy override; unrelated Codex config above is preserved.\n");
-    try w.writeAll("# Anchor: docs/spec/codex-adapter-contract-2026-05-03.md §4\n\n");
-    try w.writeAll("model_provider = \"oauth_mux_openai\"\n\n");
+    if (!managed_root_written) {
+        observation.experimental_feature_defaults_injected += try feature_defaults.writeMissingAsRootDotted(w);
+        if (observation.experimental_feature_defaults_injected != 0) try w.writeAll("\n");
+        try writeManagedConfigRoot(w);
+    }
     observation.overridden_keys += 1;
     try w.print("[model_providers.oauth_mux_openai]\n", .{});
     try w.print("name = \"oauth-mux OpenAI proxy\"\n", .{});
@@ -1450,18 +1723,41 @@ fn writeManagedConfigToml(
     return observation;
 }
 
+fn writeManagedConfigRoot(writer: anytype) !void {
+    try writer.writeAll("# Managed by oauth-mux. Proxy override; unrelated Codex config above is preserved.\n");
+    try writer.writeAll("# Anchor: docs/spec/codex-adapter-contract-2026-05-03.md §4\n\n");
+    try writer.writeAll("model_provider = \"oauth_mux_openai\"\n\n");
+}
+
 fn writeConfigPassthrough(
+    allocator: std.mem.Allocator,
     writer: anytype,
     source_bytes: []const u8,
+    feature_defaults: *CodexExperimentalFeatureDefaults,
+    experimental_feature_defaults_injected: *usize,
 ) !usize {
     var overridden: usize = 0;
+    var root = std.ArrayListUnmanaged(u8){};
+    defer root.deinit(allocator);
+    var tables = std.ArrayListUnmanaged(u8){};
+    defer tables.deinit(allocator);
+
+    var in_root = true;
+    var in_features_table = false;
+    var features_table_seen = false;
     var skip_table = false;
     var lines = std.mem.splitScalar(u8, source_bytes, '\n');
     while (lines.next()) |line| {
         const trimmed_left = std.mem.trimLeft(u8, line, " \t");
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        const starts_table = std.mem.startsWith(u8, trimmed, "[") and !std.mem.startsWith(u8, trimmed, "[[");
+        const starts_table = isTomlTableHeader(trimmed);
         if (starts_table) {
+            if (in_features_table and !skip_table) {
+                experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsTableEntries(tables.writer(allocator));
+            }
+            in_root = false;
+            in_features_table = isTomlTableHeaderNamed(trimmed, "features");
+            features_table_seen = features_table_seen or in_features_table;
             skip_table = isManagedProviderTable(trimmed);
             if (skip_table) {
                 overridden += 1;
@@ -1469,25 +1765,81 @@ fn writeConfigPassthrough(
             }
         }
         if (skip_table) continue;
-        if (std.mem.startsWith(u8, trimmed_left, "model_provider")) {
-            const rest = trimmed_left["model_provider".len..];
-            const rest_trimmed = std.mem.trimLeft(u8, rest, " \t");
-            if (std.mem.startsWith(u8, rest_trimmed, "=")) {
-                overridden += 1;
-                continue;
+        markExperimentalFeatureAssignment(feature_defaults, trimmed_left, in_root, in_features_table);
+        if (configAssignmentOverridesMuxProvider(trimmed_left)) |classification| {
+            switch (classification) {
+                .model_provider, .managed_provider => {
+                    overridden += 1;
+                    continue;
+                },
             }
         }
-        try writer.writeAll(line);
-        try writer.writeAll("\n");
+        const out = if (in_root) root.writer(allocator) else tables.writer(allocator);
+        try out.writeAll(line);
+        try out.writeAll("\n");
+    }
+    if (in_features_table and !skip_table) {
+        experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsTableEntries(tables.writer(allocator));
+    }
+    if (!features_table_seen) {
+        experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsRootDotted(root.writer(allocator));
+    }
+
+    if (root.items.len != 0) {
+        try writer.writeAll(root.items);
+        if (root.items[root.items.len - 1] != '\n') try writer.writeAll("\n");
+    }
+    try writeManagedConfigRoot(writer);
+    if (tables.items.len != 0) {
+        try writer.writeAll(tables.items);
+        if (tables.items[tables.items.len - 1] != '\n') try writer.writeAll("\n");
     }
     return overridden;
+}
+
+fn isTomlTableHeader(trimmed_line: []const u8) bool {
+    var line = trimmed_line;
+    if (std.mem.indexOfScalar(u8, line, '#')) |idx| line = std.mem.trim(u8, line[0..idx], " \t\r");
+    return std.mem.startsWith(u8, line, "[") and std.mem.endsWith(u8, line, "]");
+}
+
+fn isTomlTableHeaderNamed(trimmed_line: []const u8, table_name: []const u8) bool {
+    var line = trimmed_line;
+    if (std.mem.indexOfScalar(u8, line, '#')) |idx| line = std.mem.trim(u8, line[0..idx], " \t\r");
+    if (!std.mem.startsWith(u8, line, "[") or !std.mem.endsWith(u8, line, "]")) return false;
+    if (std.mem.startsWith(u8, line, "[[")) return false;
+    const body = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    return std.mem.eql(u8, body, table_name);
 }
 
 fn isManagedProviderTable(trimmed_line: []const u8) bool {
     var line = trimmed_line;
     if (std.mem.indexOfScalar(u8, line, '#')) |idx| line = std.mem.trim(u8, line[0..idx], " \t\r");
+    if (std.mem.startsWith(u8, line, "[[") and std.mem.endsWith(u8, line, "]]")) {
+        line = line[1 .. line.len - 1];
+    }
     return std.mem.eql(u8, line, "[model_providers.oauth_mux_openai]") or
         (std.mem.startsWith(u8, line, "[model_providers.oauth_mux_openai.") and std.mem.endsWith(u8, line, "]"));
+}
+
+fn markExperimentalFeatureAssignment(
+    feature_defaults: *CodexExperimentalFeatureDefaults,
+    assignment: []const u8,
+    in_root: bool,
+    in_features_table: bool,
+) void {
+    const eq = std.mem.indexOfScalar(u8, assignment, '=') orelse return;
+    var key = std.mem.trim(u8, assignment[0..eq], " \t\r\n");
+    key = std.mem.trim(u8, key, "\"'");
+    if (in_features_table) {
+        feature_defaults.mark(key);
+        return;
+    }
+    if (in_root and std.mem.startsWith(u8, key, "features.")) {
+        var feature_key = key["features.".len..];
+        feature_key = std.mem.trim(u8, feature_key, "\"'");
+        feature_defaults.mark(feature_key);
+    }
 }
 
 fn checkForwardedConfigOverrides(argv: []const []const u8) ConfigOverrideCheck {
@@ -1690,9 +2042,11 @@ test "resume writeback observation reports existing rollout changes without prin
     const rollout_path = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions", "2026", "05", "06", "rollout-managed-good-session.jsonl" });
     defer std.testing.allocator.free(rollout_path);
 
-    var before = try snapshotRollouts(std.testing.allocator, canonical_path);
-    defer before.deinit();
-    try std.testing.expectEqual(@as(usize, 1), before.count());
+    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "managed-good-session");
+    defer preflight.deinit();
+    try std.testing.expectEqual(ResumeLookupSource.filename_scan, preflight.lookup_source);
+    try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
+    try std.testing.expectEqual(@as(usize, 1), preflight.rolloutsBefore());
 
     {
         const rollout = try std.fs.cwd().openFile(rollout_path, .{ .mode = .write_only });
@@ -1702,13 +2056,14 @@ test "resume writeback observation reports existing rollout changes without prin
     }
 
     const request = ResumeRequest{ .mode = .explicit, .explicit_id = "managed-good-session" };
-    const observation = try observeResumeWriteback(std.testing.allocator, canonical_path, &before, request);
+    const observation = try observeResumeWriteback(std.testing.allocator, canonical_path, &preflight, request);
     try std.testing.expectEqual(@as(usize, 1), observation.rollouts_before);
     try std.testing.expectEqual(@as(usize, 1), observation.rollouts_after);
     try std.testing.expectEqual(@as(usize, 1), observation.changed_existing);
     try std.testing.expectEqual(@as(usize, 0), observation.created);
     try std.testing.expectEqual(true, observation.explicit_target_found_before.?);
     try std.testing.expectEqual(true, observation.explicit_target_changed.?);
+    try std.testing.expectEqual(ResumeLookupSource.filename_scan, observation.lookup_source);
 }
 
 test "createSessionCodexHomeUnder copies auth and does not clobber source config" {
@@ -1761,6 +2116,12 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.openai]") == null);
+    try std.testing.expectEqual(@as(usize, 5), codex_home.experimental_feature_defaults_injected);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.terminal_resize_reflow = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.memories = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.external_migration = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.goals = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.prevent_idle_sleep = true") != null);
 
     const source_config = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "config.toml" });
     defer std.testing.allocator.free(source_config);
@@ -1806,6 +2167,9 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
             \\name = "stale mux"
             \\base_url = "https://stale.invalid"
             \\
+            \\[tui.model_availability_nux]
+            \\"gpt-5.5" = 2
+            \\
         );
     }
 
@@ -1821,6 +2185,7 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
     try std.testing.expect(codex_home.config_source_present);
     try std.testing.expect(codex_home.config_passthrough);
     try std.testing.expect(codex_home.config_overridden_keys >= 2);
+    try std.testing.expectEqual(@as(usize, 4), codex_home.experimental_feature_defaults_injected);
 
     const overlay_config = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "config.toml" });
     defer std.testing.allocator.free(overlay_config);
@@ -1832,20 +2197,126 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "sandbox_mode = \"workspace-write\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "experimental_legacy_flag = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[features]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "terminal_resize_reflow = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "multi_agent = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "external_migration = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "goals = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "prevent_idle_sleep = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[mcp_servers.design]") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.user_provider]") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "https://example.invalid/api") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[tui.model_availability_nux]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "\"gpt-5.5\" = 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "https://stale.invalid") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"user_provider\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"") != null);
+    const managed_provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"").?;
+    const tui_table_idx = std.mem.indexOf(u8, generated_config, "[tui.model_availability_nux]").?;
+    const features_idx = std.mem.indexOf(u8, generated_config, "[features]").?;
+    const mcp_idx = std.mem.indexOf(u8, generated_config, "[mcp_servers.design]").?;
+    try std.testing.expect(managed_provider_idx < tui_table_idx);
+    try std.testing.expect(features_idx < mcp_idx);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config[features_idx..mcp_idx], "terminal_resize_reflow = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "http://127.0.0.1:45678/backend-api/codex") != null);
+}
+
+test "config passthrough preserves explicit experimental feature choices" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const cfg = try tmp.dir.createFile("canonical/config.toml", .{ .mode = 0o600 });
+        defer cfg.close();
+        try cfg.writeAll(
+            \\[features]
+            \\goals = false
+            \\memories = true
+            \\
+        );
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, canonical_path);
+    defer codex_home.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), codex_home.experimental_feature_defaults_injected);
+
+    const overlay_config = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "config.toml" });
+    defer std.testing.allocator.free(overlay_config);
+    const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, overlay_config, 8192);
+    defer std.testing.allocator.free(generated_config);
+
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "goals = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "goals = true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "terminal_resize_reflow = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "external_migration = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "prevent_idle_sleep = true") != null);
+}
+
+test "config passthrough partitions root model provider before trailing table" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const cfg = try tmp.dir.createFile("canonical/config.toml", .{ .mode = 0o600 });
+        defer cfg.close();
+        try cfg.writeAll(
+            \\model = "gpt-5.5"
+            \\
+            \\[tui.model_availability_nux]
+            \\"gpt-5.5" = 2
+            \\
+        );
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, canonical_path);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const overlay_config = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "config.toml" });
+    defer std.testing.allocator.free(overlay_config);
+    const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, overlay_config, 8192);
+    defer std.testing.allocator.free(generated_config);
+
+    const provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"").?;
+    const tui_idx = std.mem.indexOf(u8, generated_config, "[tui.model_availability_nux]").?;
+    const managed_table_idx = std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]").?;
+    try std.testing.expect(provider_idx < tui_idx);
+    try std.testing.expect(tui_idx < managed_table_idx);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "\"gpt-5.5\" = 2") != null);
 }
 
 test "config passthrough strips profile-scoped model_provider overrides" {
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(std.testing.allocator);
-    const overridden = try writeConfigPassthrough(buf.writer(std.testing.allocator),
+    var feature_defaults = CodexExperimentalFeatureDefaults{};
+    var experimental_feature_defaults_injected: usize = 0;
+    const source =
         \\[profiles.work]
         \\model = "gpt-5.5"
         \\model_provider = "user_provider"
@@ -1854,9 +2325,11 @@ test "config passthrough strips profile-scoped model_provider overrides" {
         \\[profiles.work.features]
         \\experimental_apply_patch = true
         \\
-    );
+    ;
+    const overridden = try writeConfigPassthrough(std.testing.allocator, buf.writer(std.testing.allocator), source, &feature_defaults, &experimental_feature_defaults_injected);
 
     try std.testing.expectEqual(@as(usize, 1), overridden);
+    try std.testing.expectEqual(@as(usize, 5), experimental_feature_defaults_injected);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "[profiles.work]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "model = \"gpt-5.5\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "approval_policy = \"on-request\"") != null);
@@ -1867,7 +2340,7 @@ test "config passthrough strips profile-scoped model_provider overrides" {
 test "forwarded Codex config overrides cannot replace managed provider" {
     const safe_argv = [_][]const u8{
         "--config", "model=\"gpt-5.5\"",
-        "-c", "profiles.work.approval_policy=\"on-request\"",
+        "-c",       "profiles.work.approval_policy=\"on-request\"",
     };
     const safe = checkForwardedConfigOverrides(&safe_argv);
     try std.testing.expect(safe.ok);
@@ -1875,10 +2348,9 @@ test "forwarded Codex config overrides cannot replace managed provider" {
     try std.testing.expectEqual(@as(usize, 0), safe.mux_owned_overrides);
 
     const unsafe_argv = [_][]const u8{
-        "--config", "model_provider=\"openai\"",
-        "--config=profiles.work.model_provider=\"custom\"",
-        "-c=model_providers.oauth_mux_openai.base_url=\"https://example.invalid\"",
-        "--model", "gpt-5.5",
+        "--config",                                         "model_provider=\"openai\"",
+        "--config=profiles.work.model_provider=\"custom\"", "-c=model_providers.oauth_mux_openai.base_url=\"https://example.invalid\"",
+        "--model",                                          "gpt-5.5",
     };
     const unsafe = checkForwardedConfigOverrides(&unsafe_argv);
     try std.testing.expect(!unsafe.ok);
@@ -2083,6 +2555,16 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
         defer session.close();
         try session.writeAll("{\"fixture\":true}\n");
     }
+    {
+        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
+        defer state.close();
+        try state.writeAll("managed-good-session");
+    }
+    {
+        const wal = try tmp.dir.createFile("canonical/state_5.sqlite-wal", .{ .mode = 0o600 });
+        defer wal.close();
+        try wal.writeAll("wal");
+    }
 
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root_path);
@@ -2102,6 +2584,22 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
     const expected_sessions_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions" });
     defer std.testing.allocator.free(expected_sessions_target);
     try std.testing.expectEqualStrings(expected_sessions_target, sessions_target);
+
+    var state_link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const state_link = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "state_5.sqlite" });
+    defer std.testing.allocator.free(state_link);
+    const state_target = try std.fs.readLinkAbsolute(state_link, &state_link_buf);
+    const expected_state_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "state_5.sqlite" });
+    defer std.testing.allocator.free(expected_state_target);
+    try std.testing.expectEqualStrings(expected_state_target, state_target);
+
+    const wal_link = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "state_5.sqlite-wal" });
+    defer std.testing.allocator.free(wal_link);
+    var wal_link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const wal_target = try std.fs.readLinkAbsolute(wal_link, &wal_link_buf);
+    const expected_wal_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "state_5.sqlite-wal" });
+    defer std.testing.allocator.free(expected_wal_target);
+    try std.testing.expectEqualStrings(expected_wal_target, wal_target);
 
     const bridged_session = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "sessions", "2026", "05", "05", "session.jsonl" });
     defer std.testing.allocator.free(bridged_session);
@@ -2126,4 +2624,90 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
     const marker_after_overlay_delete = try std.fs.cwd().readFileAlloc(std.testing.allocator, canonical_marker, 1024);
     defer std.testing.allocator.free(marker_after_overlay_delete);
     try std.testing.expectEqualStrings("via overlay\n", marker_after_overlay_delete);
+}
+
+test "resume authority accepts bridged state db as chooser authority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
+        defer state.close();
+        try state.writeAll("managed-good-session");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
+    try std.testing.expect(check.ok);
+    try std.testing.expect(check.state_db_bridged);
+    try std.testing.expectEqualStrings("state_db_available", check.diagnostic);
+}
+
+test "explicit resume preflight prefers state db and targeted rollout stat" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("canonical/sessions/2026/05/06");
+    {
+        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
+        defer state.close();
+        try state.writeAll("managed-good-session");
+    }
+    {
+        const rollout = try tmp.dir.createFile("canonical/sessions/2026/05/06/rollout-managed-good-session.jsonl", .{ .mode = 0o600 });
+        defer rollout.close();
+        try rollout.writeAll("{\"fixture\":true}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "managed-good-session");
+    defer preflight.deinit();
+    try std.testing.expectEqual(ResumeLookupSource.state_db, preflight.lookup_source);
+    try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
+    try std.testing.expect(preflight.target_snapshot != null);
+    try std.testing.expectEqual(@as(usize, 1), preflight.rolloutsBefore());
+}
+
+test "explicit resume preflight can use state db without scanning rollout files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("canonical");
+    {
+        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
+        defer state.close();
+        try state.writeAll("state-only-session");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "state-only-session");
+    defer preflight.deinit();
+    try std.testing.expectEqual(ResumeLookupSource.state_db, preflight.lookup_source);
+    try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
+    try std.testing.expect(preflight.target_snapshot == null);
+    try std.testing.expectEqual(@as(usize, 0), preflight.rolloutsBefore());
 }

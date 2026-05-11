@@ -97,6 +97,37 @@ fail before child spawn with a redacted `config_passthrough_check` status
 event. Track remaining edge-layer work in
 <https://github.com/Jesssullivan/oauth-mux/issues/211>.
 
+Implementation update, 2026-05-10: the managed config writer now partitions
+canonical config into root lines and table sections. `model_provider =
+"oauth_mux_openai"` is emitted only at TOML root, stale
+`[model_providers.oauth_mux_openai*]` sections are stripped, preserved user
+tables remain below the root override, and the generated provider table is
+appended after preserved user tables. The regression fixture is a canonical
+config ending in `[tui.model_availability_nux]` with `"gpt-5.5" = 2`.
+`session_started` reports `config_layout:"root_partitioned"`.
+
+Implementation update, 2026-05-10: the session-authority bridge now also
+symlinks `state_5.sqlite`, `state_5.sqlite-wal`, and `state_5.sqlite-shm` when
+canonical Codex has them. `state_5.sqlite` is treated as native chooser
+authority when present; older Codex homes still fall back to the legacy
+`sessions/`, `shell_snapshots/`, `history.jsonl`, and `session_index.jsonl`
+authority set. Redacted status reports `resume_authority_state_db_bridged` and
+`resume_lookup_source`.
+
+Implementation update, 2026-05-10: managed launch no longer runs broad
+`repairRefreshableCodexAuthFailures()` before child spawn. Network refresh is
+deferred to actual credential materialization for the selected/fallback route,
+or to explicit repair/revalidate commands. Status reports
+`pre_spawn_network_refresh:false`; `child_spawn_elapsed_ms` remains the startup
+UX timing to watch.
+
+Implementation update, 2026-05-11: the managed config writer now enables
+missing Codex experimental feature defaults for the child overlay:
+`terminal_resize_reflow`, `memories`, `external_migration`, `goals`, and
+`prevent_idle_sleep`. Existing canonical values, including explicit `false`,
+are preserved, the canonical `config.toml` is not mutated, and
+`session_started` reports `experimental_feature_defaults_injected`.
+
 ## 0. Scope
 
 This adapter exists to deliver the `oauth-mux codex` user entrypoint and

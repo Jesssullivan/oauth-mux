@@ -49,6 +49,9 @@ mkdir -p "$TMP/account-A" "$TMP/claude-personal" "$STATE_DIR" "$CANONICAL_SESSIO
 touch "$CANONICAL_SESSION_HOME/history.jsonl" "$CANONICAL_SESSION_HOME/session_index.jsonl"
 printf '%s\n' '{"fixture":"resume"}' >"$CANONICAL_SESSION_HOME/sessions/2026/05/06/rollout-managed-good-session.jsonl"
 printf '%s\n' '{"bridge":"preexisting"}' >"$CANONICAL_SESSION_HOME/sessions/omux-session-bridge-smoke.jsonl"
+printf '%s\n' 'managed-good-session' >"$CANONICAL_SESSION_HOME/state_5.sqlite"
+printf '%s\n' 'managed-good-session-wal' >"$CANONICAL_SESSION_HOME/state_5.sqlite-wal"
+printf '%s\n' 'managed-good-session-shm' >"$CANONICAL_SESSION_HOME/state_5.sqlite-shm"
 cat >"$CANONICAL_SESSION_HOME/config.toml" <<'EOF'
 model = "gpt-5.5"
 model_provider = "user_provider"
@@ -76,6 +79,9 @@ base_url = "https://example.invalid/api"
 [model_providers.oauth_mux_openai]
 name = "stale mux"
 base_url = "https://stale.invalid"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 2
 EOF
 
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.s"
@@ -172,14 +178,23 @@ run_case() {
     assert_grep "$label session_started" '"kind":"session_started"' "$ndjson"
     assert_grep "$label canonical session bridge" '"session_authority":"canonical_bridge"' "$ndjson"
     assert_grep "$label config passthrough status" '"config_passthrough":true,"user_config_present":true' "$ndjson"
+    assert_grep "$label config layout" '"config_layout":"root_partitioned"' "$ndjson"
+    assert_grep "$label experimental defaults injected" '"experimental_feature_defaults_injected":4' "$ndjson"
+    assert_grep "$label no pre-spawn network refresh" '"pre_spawn_network_refresh":false' "$ndjson"
     assert_grep "$label child spawn timing" '"kind":"launch_timing".*"phase":"child_spawn"' "$ndjson"
     assert_grep "$label resume preflight" '"kind":"resume_preflight"' "$ndjson"
     if [[ "$label" == "resume-chooser" ]]; then
         assert_grep "$label resume authority check" '"kind":"resume_authority_check".*"ok":true' "$ndjson"
+        assert_grep "$label state db authority" '"kind":"resume_authority_check".*"resume_authority_state_db_bridged":true' "$ndjson"
         assert_grep "$label no chooser rollout scan before spawn" '"kind":"resume_preflight".*"mode":"chooser".*"rollouts_before":0' "$ndjson"
+        assert_grep "$label chooser lookup not scanned" '"kind":"resume_preflight".*"mode":"chooser".*"resume_lookup_source":"not_scanned"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"mode":"chooser"' "$ndjson"
-    else
+    elif [[ "$label" == "resume-id" ]]; then
+        assert_grep "$label explicit state-db lookup" '"kind":"resume_preflight".*"mode":"explicit".*"resume_lookup_source":"state_db"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"changed_existing":[1-9]' "$ndjson"
+    else
+        assert_grep "$label lookup not scanned" '"kind":"resume_preflight".*"resume_lookup_source":"not_scanned"' "$ndjson"
+        assert_grep "$label resume writeback" '"kind":"resume_writeback"' "$ndjson"
     fi
     assert_grep "$label resume status redacts paths" '"kind":"resume_writeback".*"session_id_printed":false,"path_printed":false' "$ndjson"
     assert_grep "$label session_ended" '"kind":"session_ended".*"exit_code":0' "$ndjson"
@@ -204,7 +219,10 @@ run_case() {
           && "$(jq -r .session_bridge.sessions_samefile "$report")" == "true" \
           && "$(jq -r .session_bridge.history_samefile "$report")" == "true" \
           && "$(jq -r .session_bridge.session_index_samefile "$report")" == "true" \
-          && "$(jq -r .session_bridge.shell_snapshots_samefile "$report")" == "true" ]]; then
+          && "$(jq -r .session_bridge.shell_snapshots_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.state_db_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.state_db_wal_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.state_db_shm_samefile "$report")" == "true" ]]; then
         echo "  ✓ $label bridged canonical session authority"
     else
         echo "  ✗ $label session bridge failed" >&2
@@ -226,7 +244,13 @@ run_case() {
           && "$(jq -r .config.user_feature_apps "$report")" == "true" \
           && "$(jq -r .config.user_feature_memories "$report")" == "true" \
           && "$(jq -r .config.user_feature_multi_agent "$report")" == "true" \
+          && "$(jq -r .config.managed_feature_terminal_resize_reflow "$report")" == "true" \
+          && "$(jq -r .config.managed_feature_external_migration "$report")" == "true" \
+          && "$(jq -r .config.managed_feature_goals "$report")" == "true" \
+          && "$(jq -r .config.managed_feature_prevent_idle_sleep "$report")" == "true" \
           && "$(jq -r .config.user_experimental_legacy "$report")" == "true" \
+          && "$(jq -r .config.user_tui_model_availability_nux "$report")" == "true" \
+          && "$(jq -r .config.config_layout_root_partitioned "$report")" == "true" \
           && "$(jq -r .config.user_mcp_server "$report")" == "true" \
           && "$(jq -r .config.user_approval_policy "$report")" == "true" \
           && "$(jq -r .config.user_sandbox_mode "$report")" == "true" \
