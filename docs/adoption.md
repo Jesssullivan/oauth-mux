@@ -152,7 +152,9 @@ session authority is bridged by reference to the canonical Codex home unless
 `--isolated-session-store` is set. `oauth-mux codex resume` with no id keeps
 native Codex chooser ownership; oauth-mux only checks before spawn that the
 managed overlay exposes the same required session-authority entries so the
-chooser does not open empty.
+chooser does not open empty. When canonical Codex has `state_5.sqlite*`, those
+files are bridged by reference and `state_5.sqlite` is treated as chooser
+authority; older homes use the legacy session/history/index/snapshot set.
 
 Codex behavior config is preserved by default. The managed overlay reads the
 canonical config authority from `OMUX_CODEX_CONFIG_HOME`, then parent
@@ -162,7 +164,14 @@ defaults, and custom non-managed providers. oauth-mux strips the selected
 `model_provider` and stale `[model_providers.oauth_mux_openai]` entries before
 appending its proxy provider. Forwarded Codex `--config` / `-c` assignments
 that try to override mux-owned provider keys fail before child spawn with a
-redacted `config_passthrough_check` status event.
+redacted `config_passthrough_check` status event. The generated config uses
+`config_layout:"root_partitioned"` so managed root keys cannot land inside a
+trailing user table.
+When a Codex experimental feature key is absent, the managed overlay defaults
+`terminal_resize_reflow`, `memories`, `external_migration`, `goals`, and
+`prevent_idle_sleep` on for the child config only. Explicit canonical values,
+including `false`, are preserved, and the canonical `config.toml` is not
+mutated.
 
 `doctor runtime`, `route explain`, `route select`, `stay-afloat next`,
 `stay-afloat --once`, and bounded `stay-afloat --loop` are no-spend surfaces

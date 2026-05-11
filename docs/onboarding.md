@@ -210,7 +210,9 @@ The managed frame preserves native Codex session authority by reference while
 oauth-mux owns auth and the proxy provider override. Resume chooser mode stays
 native: oauth-mux checks the required session-authority entries before child
 spawn and fails with a redacted diagnostic rather than opening an empty
-chooser.
+chooser. Newer Codex `state_5.sqlite*` chooser state is bridged by reference
+when present; older homes fall back to `sessions/`, `history.jsonl`,
+`session_index.jsonl`, and `shell_snapshots/`.
 
 The managed overlay also preserves normal Codex behavior config from the
 canonical config authority (`OMUX_CODEX_CONFIG_HOME`, then parent
@@ -218,7 +220,14 @@ canonical config authority (`OMUX_CODEX_CONFIG_HOME`, then parent
 servers, approval/sandbox policy, profiles, model defaults, and custom
 non-managed provider definitions survive. oauth-mux strips only mux-owned
 provider selection conflicts and rejects forwarded `--config` / `-c` provider
-overrides before launching Codex.
+overrides before launching Codex. The generated TOML is root-partitioned, so a
+canonical config ending inside a table such as `[tui.model_availability_nux]`
+cannot capture the managed `model_provider` override.
+Missing Codex experimental feature defaults are enabled only in the managed
+child config: `terminal_resize_reflow`, `memories`, `external_migration`,
+`goals`, and `prevent_idle_sleep`. Existing canonical values, including
+explicit `false`, win, and oauth-mux does not rewrite the canonical
+`config.toml`.
 
 Managed Codex live quota handoff is proven for installed
 `oauth-mux codex resume` status artifacts. The 2026-05-09 engineered evidence

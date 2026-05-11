@@ -19,6 +19,13 @@ Proven:
 - The preserved proof bundles are
   `docs/evidence/codex-managed-quota-handoff-20260508/` and
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
+- 2026-05-10 local verification fixed the installed `0.1.6` runtime
+  regressions in the managed launch path: generated `config.toml` is
+  root-partitioned so trailing user tables such as
+  `[tui.model_availability_nux]` cannot swallow the managed
+  `model_provider`; `state_5.sqlite*` is bridged by reference when present for
+  native chooser parity; and broad pre-spawn Codex auth repair has been removed
+  from launch.
 
 Not proven:
 
@@ -52,6 +59,10 @@ Not proven:
   `/experimental` / `[features]`, MCP, hooks/rules, approval/sandbox, profiles,
   model defaults, and other user behavior settings must pass through while
   oauth-mux overrides only the proxy provider keys.
+- [x] Default missing Codex experimental feature keys in the managed child
+  config (`terminal_resize_reflow`, `memories`, `external_migration`, `goals`,
+  and `prevent_idle_sleep`) while preserving explicit canonical values,
+  including `false`.
 
 ## P0 Proof Work
 
@@ -60,12 +71,23 @@ Not proven:
 - [x] Add a managed-resume chooser regression: canonical authority is checked
   before child spawn, missing authority fails with a redacted diagnostic, and
   chooser mode avoids recursive rollout snapshotting before launch.
+- [x] Bridge newer Codex `state_5.sqlite*` chooser authority by reference when
+  canonical Codex has it. Treat `state_5.sqlite` as chooser authority when
+  present and fall back to legacy `sessions` / `history.jsonl` /
+  `session_index.jsonl` / `shell_snapshots` authority for older Codex homes.
 - [x] Add a managed config passthrough regression with a canonical
   `config.toml` fixture containing representative `[features]`,
   `experimental_*`, MCP, approval/sandbox, profile, custom provider, and model
   defaults. Include profile-scoped provider stripping and pre-spawn rejection
   for forwarded Codex `--config` / `-c` attempts to override mux-owned provider
   keys.
+- [x] Add the trailing-table config regression for
+  `[tui.model_availability_nux]` with `"gpt-5.5" = 2`; status now reports
+  `config_layout:"root_partitioned"`.
+- [x] Remove launch-time broad `repairRefreshableCodexAuthFailures()` from the
+  pre-spawn path. Status reports `pre_spawn_network_refresh:false`; refresh
+  remains lazy during credential materialization or explicit repair/revalidate
+  commands.
 - [x] Capture the engineered in-session exhaustion proof:
   account A starts available, emits successful `200` turns, reaches
   provider-originated `usage_limit_reached`, then account B returns `200` in the
@@ -107,6 +129,16 @@ Not proven:
   redacts sensitive fields.
 - [ ] Add cassette replay for the redacted real `usage_limit_reached` shape from
   the 2026-05-08 proof when a publishable cassette is available.
+
+## P0 Startup And Resume UX
+
+- [x] Explicit `oauth-mux codex resume <id>` no longer recursively snapshots all
+  rollouts before spawn. It resolves targeted evidence from `state_5.sqlite*`,
+  then `session_index.jsonl`, then a bounded filename lookup, and reports
+  `resume_lookup_source` in redacted status.
+- [x] Bare `oauth-mux codex resume` reports authority readiness without scanning
+  rollouts before child spawn. The `child_spawn_elapsed_ms` launch timing
+  remains the primary startup UX metric.
 
 ## P1 Documentation And Website
 

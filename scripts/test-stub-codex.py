@@ -67,10 +67,21 @@ def _config_report(codex_home: Path) -> dict:
         "checked": True,
         "proxy_provider_selected": 'model_provider = "oauth_mux_openai"' in cfg,
         "proxy_provider_present": "[model_providers.oauth_mux_openai]" in cfg,
+        "config_layout_root_partitioned": cfg.find('model_provider = "oauth_mux_openai"') < cfg.find("[tui.model_availability_nux]")
+        if "[tui.model_availability_nux]" in cfg
+        else True,
         "user_feature_apps": "apps = true" in cfg,
         "user_feature_memories": "memories = true" in cfg,
         "user_feature_multi_agent": "multi_agent = true" in cfg,
+        "managed_feature_terminal_resize_reflow": "terminal_resize_reflow = true" in cfg
+        or "features.terminal_resize_reflow = true" in cfg,
+        "managed_feature_external_migration": "external_migration = true" in cfg
+        or "features.external_migration = true" in cfg,
+        "managed_feature_goals": "goals = true" in cfg or "features.goals = true" in cfg,
+        "managed_feature_prevent_idle_sleep": "prevent_idle_sleep = true" in cfg
+        or "features.prevent_idle_sleep = true" in cfg,
         "user_experimental_legacy": "experimental_legacy_flag = true" in cfg,
+        "user_tui_model_availability_nux": "[tui.model_availability_nux]" in cfg and '"gpt-5.5" = 2' in cfg,
         "user_mcp_server": "[mcp_servers.design]" in cfg,
         "user_approval_policy": 'approval_policy = "on-request"' in cfg,
         "user_sandbox_mode": 'sandbox_mode = "workspace-write"' in cfg,
@@ -139,6 +150,12 @@ def _session_bridge_report(codex_home: Path) -> dict:
     index_canonical = canonical / "session_index.jsonl"
     snapshots_overlay = codex_home / "shell_snapshots"
     snapshots_canonical = canonical / "shell_snapshots"
+    state_overlay = codex_home / "state_5.sqlite"
+    state_canonical = canonical / "state_5.sqlite"
+    wal_overlay = codex_home / "state_5.sqlite-wal"
+    wal_canonical = canonical / "state_5.sqlite-wal"
+    shm_overlay = codex_home / "state_5.sqlite-shm"
+    shm_canonical = canonical / "state_5.sqlite-shm"
 
     marker = sessions_overlay / "omux-session-bridge-smoke.jsonl"
     marker.write_text('{"bridge":"ok"}\n')
@@ -149,6 +166,9 @@ def _session_bridge_report(codex_home: Path) -> dict:
         "history_samefile": os.path.samefile(history_overlay, history_canonical),
         "session_index_samefile": os.path.samefile(index_overlay, index_canonical),
         "shell_snapshots_samefile": os.path.samefile(snapshots_overlay, snapshots_canonical),
+        "state_db_samefile": state_canonical.exists() and os.path.samefile(state_overlay, state_canonical),
+        "state_db_wal_samefile": wal_canonical.exists() and os.path.samefile(wal_overlay, wal_canonical),
+        "state_db_shm_samefile": (not shm_canonical.exists()) or os.path.samefile(shm_overlay, shm_canonical),
         "marker_written_via_overlay": marker.exists(),
         "canonical_marker_exists": (sessions_canonical / marker.name).exists(),
         "paths_printed": False,
