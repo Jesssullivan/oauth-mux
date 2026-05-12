@@ -260,6 +260,13 @@ smoke-codex-401-propagation-local:
     zig build
     ./scripts/smoke-codex-401-propagation.sh
 
+smoke-codex-provider-degraded:
+    nix develop --command just smoke-codex-provider-degraded-local
+
+smoke-codex-provider-degraded-local:
+    zig build
+    ./scripts/smoke-codex-provider-degraded.sh
+
 # ── Codex cassette replay smoke (no provider traffic) ──
 
 smoke-codex-cassette-replay:

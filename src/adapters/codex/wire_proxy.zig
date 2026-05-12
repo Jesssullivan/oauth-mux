@@ -36,17 +36,20 @@
 //!      On auth_unauthorized, try the same fallback shape before Codex sees
 //!      the 401. If fallback is unavailable, return the buffered 401 so Codex
 //!      can still run its native refresh loop.
+//!      On provider_5xx, try another account before Codex sees the provider
+//!      outage. If no fallback is selectable, return the provider failure as
+//!      provider-degraded evidence rather than marking credentials dead.
 //!   7. Stream the final response body verbatim back to codex (SSE works
 //!      because chunked-transfer is forwarded byte-for-byte).
 //!
 //! Phase 2 scope (honestly labelled limitations):
 //!   - Synchronous, single-connection-at-a-time (codex sends one
 //!     request per turn). No request pipelining.
-//!   - **Streaming for 200/3xx/5xx; buffered for 401/429.** SSE turns
+//!   - **Streaming for 200/3xx; buffered for 4xx/5xx.** SSE turns
 //!     stream byte-for-byte from upstream to codex via Connection:close
-//!     framing — the TUI animation moves in real time. 401 and 429 responses
-//!     are small and need a retry decision before any bytes reach Codex, so
-//!     they stay buffered (with a 64 KiB cap).
+//!     framing — the TUI animation moves in real time. Error responses are
+//!     small and need a retry decision before any bytes reach Codex, so they
+//!     stay buffered (with a 64 KiB cap).
 //!   - No WebSocket upgrade support; if codex requests a WS upgrade
 //!     we propagate the upstream's response (which on `chatgpt.com`
 //!     is HTTP 426 / falls back to chunked). Phase 2.2 adds WS.
@@ -73,6 +76,7 @@ pub const RouteState = enum {
     quota_exhausted,
     rate_limited,
     tier_insufficient,
+    provider_degraded,
     credential_unavailable,
 };
 
@@ -228,6 +232,7 @@ pub const Proxy = struct {
         var pending_buffered: ?BufferedResponse = null;
         var pending_failure_kind: ?broker_types.QuotaKind = null;
         var pending_failure_account: ?[]const u8 = null;
+        var pending_transport_error: ?[]const u8 = null;
         var prior_attempt_account: ?[]const u8 = null;
 
         while (true) {
@@ -246,6 +251,25 @@ pub const Proxy = struct {
                         .account = pending_failure_account orelse "",
                     });
                     try writeBufferedStoredResponse(writer, pending_buffered.?);
+                } else if (pending_kind != null and pending_kind.? == .provider_5xx) {
+                    self.logEvent("proxy_provider_retry_unavailable", .{
+                        .from = pending_failure_account orelse "",
+                        .err = pending_transport_error orelse @errorName(err),
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                        .delivered_to_codex = true,
+                    });
+                    if (pending_buffered) |buffered| {
+                        try writeBufferedStoredResponse(writer, buffered);
+                    } else {
+                        try writeProviderUnavailableResponse(
+                            a,
+                            writer,
+                            pending_failure_account orelse "",
+                            pending_transport_error orelse @errorName(err),
+                            rejections.items,
+                        );
+                    }
                 } else if (pending_kind != null and (pending_kind.? == .quota_exhausted or pending_kind.? == .rate_limited)) {
                     self.logEvent("proxy_same_turn_retry_unavailable", .{
                         .from = pending_failure_account orelse "",
@@ -287,6 +311,7 @@ pub const Proxy = struct {
                 self.recordDurableRouteState(elected.id, .credential_unavailable, 0, null);
                 pending_failure_kind = null;
                 pending_failure_account = elected.id;
+                pending_transport_error = null;
                 prior_attempt_account = elected.id;
                 continue;
             };
@@ -336,11 +361,12 @@ pub const Proxy = struct {
 
             // ── 4. Forward to upstream + stream/buffer response ────
             const status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
-                appendRejection(a, &rejections, elected.id, .credential_unavailable, @errorName(err)) catch {};
+                appendRejection(a, &rejections, elected.id, .provider_degraded, @errorName(err)) catch {};
                 self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
-                self.recordDurableRouteState(elected.id, .credential_unavailable, 0, null);
-                pending_failure_kind = null;
+                self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
+                pending_failure_kind = .provider_5xx;
                 pending_failure_account = elected.id;
+                pending_transport_error = @errorName(err);
                 prior_attempt_account = elected.id;
                 continue;
             };
@@ -366,6 +392,7 @@ pub const Proxy = struct {
             pending_buffered = status_and_class.buffered_response;
             pending_failure_kind = status_and_class.classification.kind;
             pending_failure_account = elected.id;
+            pending_transport_error = null;
             prior_attempt_account = elected.id;
             continue;
         }
@@ -438,6 +465,16 @@ pub const Proxy = struct {
             return;
         }
 
+        if (reason == .provider_5xx) {
+            self.logEvent("proxy_provider_same_turn_retry", .{
+                .from = from,
+                .to = to,
+                .reason = @tagName(reason),
+                .dropped = "x-codex-turn-state",
+            });
+            return;
+        }
+
         self.logEvent("proxy_same_turn_retry", .{
             .from = from,
             .to = to,
@@ -490,6 +527,7 @@ pub const Proxy = struct {
                 .window = .unknown,
             } },
             .tier_insufficient => .{ .degraded = .tier_insufficient },
+            .provider_degraded => .provider_degraded,
             .credential_unavailable => .{ .dead = .auth_permanently_failed },
         };
 
@@ -504,10 +542,12 @@ pub const Proxy = struct {
                 .quota_exhausted => .quota_exhausted,
                 .rate_limited => .rate_limit,
                 .tier_insufficient => .tier_insufficient,
+                .provider_degraded => .provider_degraded,
             },
             switch (state) {
                 .available => .use_this,
                 .rate_limited => .wait_and_retry,
+                .provider_degraded => .try_next_provider,
                 .auth_failed, .quota_exhausted, .tier_insufficient, .credential_unavailable => .try_next_account,
             },
         );
@@ -543,8 +583,8 @@ pub const Proxy = struct {
 
 fn shouldRetrySameTurn(kind: broker_types.QuotaKind) bool {
     return switch (kind) {
-        .quota_exhausted, .rate_limited, .auth_unauthorized => true,
-        .ok, .tier_insufficient, .provider_5xx => false,
+        .quota_exhausted, .rate_limited, .auth_unauthorized, .provider_5xx => true,
+        .ok, .tier_insufficient => false,
     };
 }
 
@@ -555,7 +595,7 @@ fn routeStateFromClassification(kind: broker_types.QuotaKind) RouteState {
         .quota_exhausted => .quota_exhausted,
         .rate_limited => .rate_limited,
         .tier_insufficient => .tier_insufficient,
-        .provider_5xx => .credential_unavailable,
+        .provider_5xx => .provider_degraded,
     };
 }
 
@@ -628,6 +668,7 @@ fn appendPoolRejections(
 fn routeStateFromPoolAccount(account: account_pool_mod.AccountSummary) RouteState {
     if (!account.selectable) {
         if (account.liveness == .dead) return .auth_failed;
+        if (account.liveness == .degraded) return .provider_degraded;
         if (account.availability == .quota_exhausted) return .quota_exhausted;
         if (account.availability == .rate_limited) return .rate_limited;
         return .credential_unavailable;
@@ -646,6 +687,7 @@ fn poolAccountRejectionReason(account: account_pool_mod.AccountSummary, state: R
         .quota_exhausted => "quota_exhausted",
         .rate_limited => "rate_limited",
         .tier_insufficient => "tier_insufficient",
+        .provider_degraded => "provider_degraded",
         .credential_unavailable => "not_selectable",
         .available => "not_selectable",
     };
@@ -655,6 +697,7 @@ fn poolAccountRejectionReason(account: account_pool_mod.AccountSummary, state: R
         .quota_exhausted => "quota_exhausted",
         .rate_limited => "rate_limited",
         .tier_insufficient => "tier_insufficient",
+        .provider_degraded => "provider_degraded",
         .credential_unavailable => "credential_unavailable",
     };
 }
@@ -987,7 +1030,7 @@ const StatusAndClassification = struct {
     /// Never contains raw response bytes.
     body_class: ?[]const u8 = null,
     /// True if the body was streamed verbatim to the client (no buffer);
-    /// false if it was buffered for classification (429 path) or never
+    /// false if it was buffered for classification/retry or never
     /// arrived (early failure).
     streamed: bool,
     /// Present when the response was buffered and has not yet been written to
@@ -999,14 +1042,13 @@ const StatusAndClassification = struct {
 /// Forward the inbound request to chatgpt.com and write the response
 /// directly to the client writer.
 ///
-/// 401 and 429 responses are buffered so the proxy can decide whether to
+/// 4xx and 5xx responses are buffered so the proxy can decide whether to
 /// retry against a fallback account before any bytes reach Codex. 429 also
 /// needs the body to classify usage_limit_reached vs usage_not_included.
 ///
-/// All other responses (200 streaming SSE, 5xx) are streamed
-/// byte-for-byte from upstream's reader to the client. Connection-close
-/// framing is used so we don't have to re-chunk std.http.Client's
-/// already-decoded body bytes.
+/// Non-error responses (including 200 streaming SSE) are streamed byte-for-byte
+/// from upstream's reader to the client. Connection-close framing is used so we
+/// don't have to re-chunk std.http.Client's already-decoded body bytes.
 fn forwardAndStream(
     a: std.mem.Allocator,
     req: Request,
@@ -1049,32 +1091,16 @@ fn forwardAndStream(
 
     const status_u16: u16 = @intFromEnum(http_req.response.status);
 
-    // 401 and 429 are retry decision points, so they must be buffered before
-    // anything is written to Codex.
-    if (status_u16 == 401 or status_u16 == 429) {
-        // Cap at 64 KiB — chatgpt.com's 429 JSON bodies are small.
+    // Error responses are retry decision points, so they must be buffered
+    // before anything is written to Codex.
+    if (status_u16 >= 400 and status_u16 < 600) {
+        // Cap at 64 KiB — chatgpt.com's error JSON/HTML bodies are small.
         const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
         const classification = classify(a, status_u16, body);
         return .{
             .status = status_u16,
             .classification = classification,
             .body_class = classification.body_class orelse classifyHttpErrorBody(body),
-            .streamed = false,
-            .buffered_response = .{
-                .status = status_u16,
-                .headers = try captureResponseHeaders(a, http_req.response),
-                .body = body,
-            },
-        };
-    }
-
-    if (status_u16 >= 400 and status_u16 < 500 and status_u16 != 401) {
-        const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
-        const classification = classify(a, status_u16, body);
-        return .{
-            .status = status_u16,
-            .classification = classification,
-            .body_class = classifyHttpErrorBody(body),
             .streamed = false,
             .buffered_response = .{
                 .status = status_u16,
@@ -1220,6 +1246,47 @@ fn writeNoAccountSelectableResponse(
     try writer.writeAll(body.items);
 }
 
+fn writeProviderUnavailableResponse(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    account: []const u8,
+    err: []const u8,
+    rejections: []const CandidateRejection,
+) !void {
+    var body = std.ArrayListUnmanaged(u8){};
+    defer body.deinit(allocator);
+    const w = body.writer(allocator);
+
+    try w.writeAll("{\"error\":{\"type\":\"oauth_mux_provider_unavailable\",\"code\":\"oauth_mux_provider_unavailable\",\"message\":");
+    try std.json.stringify(
+        "oauth-mux: provider transport failed and no fallback account was selectable. This is provider-degraded evidence, not credential-dead evidence; inspect the redacted status artifact and retry when the provider recovers.",
+        .{},
+        w,
+    );
+    try w.writeAll(",\"account\":");
+    try std.json.stringify(account, .{}, w);
+    try w.writeAll(",\"transport_error\":");
+    try std.json.stringify(err, .{}, w);
+    try w.writeAll(",\"rejections\":[");
+    for (rejections, 0..) |rejection, idx| {
+        if (idx != 0) try w.writeByte(',');
+        try w.writeAll("{\"account\":");
+        try std.json.stringify(rejection.account, .{}, w);
+        try w.writeAll(",\"state\":");
+        try std.json.stringify(@tagName(rejection.state), .{}, w);
+        try w.writeAll(",\"reason\":");
+        try std.json.stringify(rejection.reason, .{}, w);
+        try w.writeByte('}');
+    }
+    try w.writeAll("]}}\n");
+
+    try writer.writeAll("HTTP/1.1 503 Service Unavailable\r\n");
+    try writer.writeAll("Content-Type: application/json\r\n");
+    try writer.print("Content-Length: {d}\r\n", .{body.items.len});
+    try writer.writeAll("Connection: close\r\n\r\n");
+    try writer.writeAll(body.items);
+}
+
 /// Write headers that are safe to forward to the client unchanged.
 /// Drops hop-by-hop headers (RFC 7230 §6.1) and transfer-coding
 /// metadata since we manage framing ourselves below.
@@ -1247,7 +1314,7 @@ fn captureResponseHeaders(a: std.mem.Allocator, response: std.http.Client.Respon
     return headers;
 }
 
-/// 429 path: write status + headers + Content-Length + buffered body.
+/// Buffered-error path: write status + headers + Content-Length + body.
 fn writeBufferedResponse(
     writer: anytype,
     response: std.http.Client.Response,
@@ -1375,6 +1442,11 @@ test "classify 503 -> provider_5xx" {
     try std.testing.expectEqual(broker_types.QuotaKind.provider_5xx, c.kind);
 }
 
+test "provider_5xx retries same turn and records provider-degraded route state" {
+    try std.testing.expect(shouldRetrySameTurn(.provider_5xx));
+    try std.testing.expectEqual(RouteState.provider_degraded, routeStateFromClassification(.provider_5xx));
+}
+
 test "classify 429 + usage_limit_reached -> quota_exhausted with resets_at" {
     const body =
         \\{"error":{"type":"usage_limit_reached","plan_type":"pro","resets_at":1788000000}}
@@ -1476,6 +1548,28 @@ test "writeNoAccountSelectableResponse emits parseable route-repair JSON" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"account\":\"codex:default\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"state\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, out, "]}}\n"));
+}
+
+test "writeProviderUnavailableResponse emits provider-degraded JSON" {
+    var buf: [1536]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    const rejections = [_]CandidateRejection{
+        .{ .account = "codex:max-1", .state = .provider_degraded, .reason = "ConnectionResetByPeer" },
+    };
+
+    try writeProviderUnavailableResponse(
+        std.testing.allocator,
+        fbs.writer(),
+        "codex:max-1",
+        "ConnectionResetByPeer",
+        &rejections,
+    );
+    const out = fbs.getWritten();
+    try std.testing.expect(std.mem.startsWith(u8, out, "HTTP/1.1 503 Service Unavailable\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"type\":\"oauth_mux_provider_unavailable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"transport_error\":\"ConnectionResetByPeer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"state\":\"provider_degraded\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "credential-dead") != null);
 }
 
 test "HeaderList.remove drops matching headers, case-insensitive" {
@@ -1703,6 +1797,7 @@ test "appendPoolRejections emits complete terminal candidate vector" {
     try pool.add(.{ .id = "codex:max-1", .selectable = false, .liveness = .live, .availability = .quota_exhausted });
     try pool.add(.{ .id = "codex:max-2", .selectable = false, .liveness = .dead, .availability = .available });
     try pool.add(.{ .id = "codex:max-3", .selectable = true, .liveness = .live, .availability = .rate_limited });
+    try pool.add(.{ .id = "codex:max-4", .selectable = false, .liveness = .degraded, .availability = .unknown });
 
     var attempted = std.ArrayListUnmanaged([]const u8){};
     defer attempted.deinit(std.testing.allocator);
@@ -1713,8 +1808,9 @@ test "appendPoolRejections emits complete terminal candidate vector" {
     try appendRejection(std.testing.allocator, &rejections, "codex:max-1", .quota_exhausted, "quota_exhausted");
     try appendPoolRejections(std.testing.allocator, &pool, &attempted, &rejections);
 
-    try std.testing.expectEqual(@as(usize, 3), rejections.items.len);
+    try std.testing.expectEqual(@as(usize, 4), rejections.items.len);
     try std.testing.expectEqual(RouteState.quota_exhausted, rejections.items[0].state);
     try std.testing.expectEqual(RouteState.auth_failed, rejections.items[1].state);
     try std.testing.expectEqual(RouteState.rate_limited, rejections.items[2].state);
+    try std.testing.expectEqual(RouteState.provider_degraded, rejections.items[3].state);
 }
