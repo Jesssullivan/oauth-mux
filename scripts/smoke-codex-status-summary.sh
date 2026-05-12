@@ -37,7 +37,7 @@ cat >"$FALLBACK" <<'EOF'
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":429,"classification":"quota_exhausted","body_class":"usage_limit_reached","delivered_to_codex":false}
 {"kind":"proxy_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"quota_exhausted","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
-{"kind":"proxy_no_account_selectable","attempted":["codex:max-2"],"rejections":[{"account":"codex:max-2","state":"credential_unavailable","reason":"ConnectionResetByPeer"}]}
+{"kind":"proxy_provider_retry_unavailable","attempted":["codex:max-2"],"rejections":[{"account":"codex:max-2","state":"provider_degraded","reason":"ConnectionResetByPeer"}]}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":true}
 EOF
