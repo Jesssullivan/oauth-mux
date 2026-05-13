@@ -3165,6 +3165,7 @@ fn collectRepairPlanRoutes(
         const profile = cfg.profiles.map.get(profile_name) orelse return error.ConfigValidationError;
         for (profile.providers) |provider_ref| {
             const parsed = parseRepairRouteSpec(provider_ref) orelse return error.ConfigValidationError;
+            if (!repairRouteMatchesAccountFilter(parsed, args.account)) continue;
             try routes.append(.{
                 .provider = parsed.provider,
                 .account = parsed.account,
@@ -3212,6 +3213,16 @@ fn collectRepairPlanRoutes(
         }
     }
     return routes;
+}
+
+fn repairRouteMatchesAccountFilter(route: RepairPlanRoute, account_filter: ?[]const u8) bool {
+    const filter = account_filter orelse return true;
+    if (std.mem.eql(u8, filter, route.account)) return true;
+    if (std.mem.indexOfScalar(u8, filter, ':')) |colon| {
+        if (!std.mem.eql(u8, filter[0..colon], route.provider)) return false;
+        return std.mem.eql(u8, filter[colon + 1 ..], route.account);
+    }
+    return false;
 }
 
 fn parseRepairRouteSpec(spec: []const u8) ?RepairPlanRoute {
@@ -3344,7 +3355,7 @@ fn writeRepairPlanRouteJson(
         try writer.writeAll("null");
     }
     try writer.writeAll(",\"admission\":");
-    try writeRouteAdmissionJson(writer, cfg.policy, action, budget);
+    try writeRouteAdmissionJson(writer, cfg.policy, action, budget, route);
     try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessJson(writer, runtime);
     try writer.writeAll(",\"liveness\":");
@@ -3424,7 +3435,22 @@ fn writePolicyJson(writer: anytype, policy: config.PolicyConfig) !void {
     try writer.writeAll(if (policy.daemon.allow_interactive) "true" else "false");
     try writer.writeAll(",\"allow_mutating\":");
     try writer.writeAll(if (policy.daemon.allow_mutating) "true" else "false");
-    try writer.writeAll("}}");
+    try writer.writeAll("},\"codex\":{");
+    try writer.writeAll("\"auto_stay_afloat\":");
+    try writer.writeAll(if (policy.codex.auto_stay_afloat) "true" else "false");
+    try writer.writeAll(",\"allow_provider_spend\":");
+    try writer.writeAll(if (policy.codex.allow_provider_spend) "true" else "false");
+    try writer.writeAll(",\"allow_interactive_auth\":");
+    try writer.writeAll(if (policy.codex.allow_interactive_auth) "true" else "false");
+    const codex_effective = config.effectiveDaemonPolicyForProvider(policy, "codex");
+    try writer.writeAll(",\"effective_daemon\":{");
+    try writer.writeAll("\"allowed_budgets\":");
+    try writeBudgetArrayJson(writer, codex_effective.allowed_budgets);
+    try writer.writeAll(",\"allow_interactive\":");
+    try writer.writeAll(if (codex_effective.allow_interactive) "true" else "false");
+    try writer.writeAll(",\"allow_mutating\":");
+    try writer.writeAll(if (codex_effective.allow_mutating) "true" else "false");
+    try writer.writeAll("}}}");
 }
 
 fn writeBudgetArrayJson(writer: anytype, budgets: []const types.ActionBudget) !void {
@@ -3441,12 +3467,16 @@ fn writeRouteAdmissionJson(
     policy: config.PolicyConfig,
     action: RepairAction,
     probe_budget: ?types.ActionBudget,
+    route: RepairPlanRoute,
 ) !void {
-    const probe = daemonProbeAdmission(policy.daemon, probe_budget);
-    const repair = daemonRepairAdmission(policy.daemon, action);
+    const effective_policy = config.effectiveDaemonPolicyForProvider(policy, route.provider);
+    const probe = daemonProbeAdmission(effective_policy, probe_budget);
+    const repair = daemonRepairAdmission(effective_policy, action);
 
     try writer.writeByte('{');
-    try writer.writeAll("\"daemon_probe\":");
+    try writer.writeAll("\"effective_policy\":");
+    try std.json.stringify(if (std.mem.eql(u8, route.provider, "codex") and policy.codex.auto_stay_afloat) "codex_auto_stay_afloat" else "daemon_default", .{}, writer);
+    try writer.writeAll(",\"daemon_probe\":");
     try writeAdmissionDecisionJson(writer, probe);
     try writer.writeAll(",\"daemon_repair\":");
     try writeAdmissionDecisionJson(writer, repair);
@@ -4568,7 +4598,7 @@ fn runDaemonTick(
             if (iterations > 1 and idx + 1 < iterations) try writer.writeByte('\n');
         }
 
-        const stats = daemonTickStats(parsed.value.policy.daemon, evaluations.items, observed_at);
+        const stats = daemonTickStats(parsed.value.policy, evaluations.items, observed_at);
         sleepBetweenDaemonTicks(args, idx, iterations, stats, observed_at);
     }
 
@@ -4613,7 +4643,7 @@ fn writeDaemonTickSnapshot(
     var snapshot = std.ArrayList(u8).init(allocator);
     defer snapshot.deinit();
     const writer = snapshot.writer();
-    const stats = daemonTickStats(cfg.policy.daemon, evaluations, observed_at);
+    const stats = daemonTickStats(cfg.policy, evaluations, observed_at);
 
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
@@ -4952,7 +4982,7 @@ fn executeDaemonTickActions(
     }
 
     for (evaluations) |evaluation| {
-        const decision = daemonTickDecision(cfg.policy.daemon, evaluation, std.time.timestamp());
+        const decision = daemonTickDecision(cfg.policy, evaluation, std.time.timestamp());
         if (std.mem.eql(u8, decision.phase, "repair") and evaluation.action.interactive) {
             try queueDaemonHandoff(allocator, args, evaluation, decision, executions);
             return false;
@@ -5505,7 +5535,7 @@ fn writeRouteEvaluationJson(
     try writer.writeAll(",\"probe_budget\":");
     if (evaluation.budget) |budget| try std.json.stringify(@tagName(budget), .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"admission\":");
-    try writeRouteAdmissionJson(writer, cfg.policy, evaluation.action, evaluation.budget);
+    try writeRouteAdmissionJson(writer, cfg.policy, evaluation.action, evaluation.budget, evaluation.route);
     try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessJson(writer, evaluation.runtime);
     try writer.writeAll(",\"liveness\":");
@@ -5590,7 +5620,7 @@ fn writeDaemonTickText(
 
     try writer.writeAll("\n  routes:\n");
     for (evaluations) |evaluation| {
-        const decision = daemonTickDecision(cfg.policy.daemon, evaluation, observed_at);
+        const decision = daemonTickDecision(cfg.policy, evaluation, observed_at);
         try writer.print("    {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
         if (evaluation.route.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.print(" selectable={s} runtime={s} tick={s} admitted={s} reason={s}", .{
@@ -5647,7 +5677,7 @@ fn writeDaemonTickJsonObject(
     observed_at: i64,
     include_version: bool,
 ) !void {
-    const stats = daemonTickStats(cfg.policy.daemon, evaluations, observed_at);
+    const stats = daemonTickStats(cfg.policy, evaluations, observed_at);
 
     try writer.writeByte('{');
     if (include_version) {
@@ -5703,7 +5733,7 @@ fn writeDaemonTickJsonObject(
         try writer.writeAll("\"route\":");
         try writeRouteEvaluationJson(writer, allocator, cfg, evaluation, selected);
         try writer.writeAll(",\"tick\":");
-        try writeDaemonTickDecisionJson(writer, daemonTickDecision(cfg.policy.daemon, evaluation, observed_at));
+        try writeDaemonTickDecisionJson(writer, daemonTickDecision(cfg.policy, evaluation, observed_at));
         try writer.writeByte('}');
     }
     try writer.writeAll("]}");
@@ -5825,7 +5855,7 @@ fn writeDaemonTickDecisionJson(writer: anytype, decision: DaemonTickDecision) !v
     try writer.writeByte('}');
 }
 
-fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const RouteEvaluation, observed_at: i64) DaemonTickStats {
+fn daemonTickStats(policy: config.PolicyConfig, evaluations: []const RouteEvaluation, observed_at: i64) DaemonTickStats {
     var stats = DaemonTickStats{ .routes = evaluations.len };
     for (evaluations) |evaluation| {
         if (evaluation.selectable) stats.selectable += 1;
@@ -5847,7 +5877,7 @@ fn daemonTickStats(policy: config.DaemonPolicyConfig, evaluations: []const Route
     return stats;
 }
 
-fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvaluation, observed_at: i64) DaemonTickDecision {
+fn daemonTickDecision(policy: config.PolicyConfig, evaluation: RouteEvaluation, observed_at: i64) DaemonTickDecision {
     if (evaluation.selectable) {
         return .{
             .phase = "none",
@@ -5861,7 +5891,7 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
     const schedule = daemonTickSchedule(evaluation.action, observed_at);
 
     if (evaluation.action.command == .probe) {
-        const admission = daemonProbeAdmission(policy, evaluation.budget);
+        const admission = daemonProbeAdmission(config.effectiveDaemonPolicyForProvider(policy, evaluation.route.provider), evaluation.budget);
         return .{
             .phase = "probe",
             .action = "probe",
@@ -5874,7 +5904,7 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
     }
 
     if (evaluation.action.command != .none or evaluation.action.mutating or evaluation.action.interactive) {
-        const admission = daemonRepairAdmission(policy, evaluation.action);
+        const admission = daemonRepairAdmission(config.effectiveDaemonPolicyForProvider(policy, evaluation.route.provider), evaluation.action);
         return .{
             .phase = "repair",
             .action = @tagName(evaluation.action.kind),
@@ -5887,7 +5917,7 @@ fn daemonTickDecision(policy: config.DaemonPolicyConfig, evaluation: RouteEvalua
         };
     }
 
-    const admission = daemonRepairAdmission(policy, evaluation.action);
+    const admission = daemonRepairAdmission(config.effectiveDaemonPolicyForProvider(policy, evaluation.route.provider), evaluation.action);
     return .{
         .phase = "observe",
         .action = @tagName(evaluation.action.kind),
@@ -8403,6 +8433,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .probe_all => try runCodexProbeAll(allocator, writer, args),
         .config_candidate => try runCodexConfigCandidate(allocator, writer, args, root),
         .config_merge => try runCodexConfigMerge(allocator, writer, args),
+        .preflight => try runCodexPreflight(allocator, writer, args),
         .managed_plan => try runCodexManagedPlan(allocator, writer, args),
         .managed => try runCodexManaged(allocator, writer, args),
         .status_latest => try runCodexStatusLatest(allocator, writer, args),
@@ -9202,6 +9233,226 @@ fn runCodexBrokerSessionPlan(allocator: std.mem.Allocator, writer: anytype, args
     } else {
         try writeCodexBrokerSessionPlanText(writer, allocator, parsed.value, evaluations.items, selected_index, args.profile, capability);
     }
+}
+
+fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
+    const parsed = try config.load(allocator);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    const config_valid = if (config.validate(parsed.value, validation_messages.writer())) |_| true else |_| false;
+
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+
+    const capability = firstCommaValue(args.capabilities);
+    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
+        .profile = args.profile,
+        .provider = if (args.profile == null) "codex" else null,
+        .account = args.account,
+        .capability = capability,
+        .json = args.json,
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const selected_index = try firstSelectableCodexBrokerRouteIndex(allocator, parsed.value, evaluations.items);
+    const summary = try summarizeCodexBrokerSessionPlan(allocator, parsed.value, evaluations.items, selected_index);
+    const session_start_ready = selected_index != null;
+    const fallback_ready = codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes);
+    const ok = config_valid and session_start_ready;
+
+    if (args.json) {
+        try writer.writeAll("{\"version\":");
+        try std.json.stringify(cli.version, .{}, writer);
+        try writer.writeAll(",\"mode\":\"codex_preflight\"");
+        try writer.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false");
+        try writer.writeAll(",\"ok\":");
+        try writer.writeAll(if (ok) "true" else "false");
+        try writer.writeAll(",\"config_valid\":");
+        try writer.writeAll(if (config_valid) "true" else "false");
+        try writer.writeAll(",\"profile\":");
+        if (args.profile) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"capability\":");
+        if (capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"account_filter\":");
+        if (args.account) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"policy\":");
+        try writePolicyJson(writer, parsed.value.policy);
+        try writer.writeAll(",\"install\":");
+        try writeCodexPreflightInstallJson(writer, allocator);
+        try writer.writeAll(",\"route_summary\":");
+        try writeCodexPreflightRouteSummaryJson(writer, summary, session_start_ready, fallback_ready);
+        try writer.writeAll(",\"selected\":");
+        if (selected_index) |idx| {
+            try writeRouteSelectionJson(writer, evaluations.items[idx].route);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"next_actions\":");
+        try writeCodexPreflightNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
+        if (!config_valid and validation_messages.items.len != 0) {
+            try writer.writeAll(",\"config_validation_hint\":");
+            try std.json.stringify(std.mem.trim(u8, validation_messages.items, " \t\r\n"), .{}, writer);
+        }
+        try writer.writeAll("}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux Codex preflight\n\n");
+    if (args.profile) |value| try writer.print("  profile: {s}\n", .{value});
+    if (capability) |value| try writer.print("  capability: {s}\n", .{value});
+    try writer.print("  config valid: {s}\n", .{if (config_valid) "yes" else "no"});
+    try writer.print("  session start ready: {s}\n", .{if (session_start_ready) "yes" else "no"});
+    try writer.print("  fallback ready: {s}\n", .{if (fallback_ready) "yes" else "no"});
+    try writer.print("  routes: total={d} selectable={d} broker-ready={d} selectable-fallback={d}\n", .{
+        summary.routes_total,
+        summary.selectable_routes,
+        summary.selectable_broker_routes,
+        summary.selectable_fallback_routes,
+    });
+    if (!ok) {
+        try writer.writeAll("\nNext actions:\n");
+        try writeCodexPreflightNextActionsText(writer, args.profile, capability, session_start_ready, fallback_ready);
+    }
+}
+
+fn writeCodexPreflightInstallJson(writer: anytype, allocator: std.mem.Allocator) !void {
+    const self_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
+    defer allocator.free(self_path);
+    try writer.writeAll("{\"active_oauth_mux\":");
+    try std.json.stringify(self_path, .{}, writer);
+    try writer.writeAll(",\"oauth_mux_candidates\":");
+    try writePathCandidateArrayJson(writer, allocator, "oauth-mux");
+    try writer.writeAll(",\"codex_candidates\":");
+    try writePathCandidateArrayJson(writer, allocator, "codex");
+    try writer.writeAll(",\"managed_codex_shim_supported\":true,\"native_codex_env\":\"OMUX_CODEX_BIN\"}");
+}
+
+fn writePathCandidateArrayJson(writer: anytype, allocator: std.mem.Allocator, name: []const u8) !void {
+    try writer.writeByte('[');
+    var first = true;
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch |e| switch (e) {
+        error.EnvironmentVariableNotFound => {
+            try writer.writeByte(']');
+            return;
+        },
+        else => return e,
+    };
+    defer allocator.free(path_env);
+    var it = std.mem.tokenizeScalar(u8, path_env, std.fs.path.delimiter);
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ dir, name });
+        defer allocator.free(candidate);
+        if (!fileExists(candidate)) continue;
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try std.json.stringify(candidate, .{}, writer);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCodexPreflightRouteSummaryJson(
+    writer: anytype,
+    summary: CodexBrokerSessionSummary,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    try writer.print(
+        "{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"unreadable_routes\":{d},\"selectable_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d},\"session_start_ready\":{any},\"fallback_ready\":{any},\"single_route_at_risk\":{any}}}",
+        .{
+            summary.routes_total,
+            summary.broker_ready_routes,
+            summary.unreadable_routes,
+            summary.selectable_routes,
+            summary.selectable_broker_routes,
+            summary.selectable_fallback_routes,
+            summary.blocked_broker_routes,
+            summary.auth_unready_routes,
+            session_start_ready,
+            fallback_ready,
+            codexBrokerSessionSingleRouteAtRisk(session_start_ready, summary.selectable_fallback_routes),
+        },
+    );
+}
+
+fn writeCodexPreflightNextActionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    try writer.writeByte('[');
+    var first = true;
+    if (!session_start_ready or !fallback_ready) {
+        const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
+        defer allocator.free(refresh);
+        try writeCommaJsonString(writer, &first, refresh);
+    }
+    if (!session_start_ready) {
+        const plan = try codexPreflightPlanCommand(allocator, profile, capability);
+        defer allocator.free(plan);
+        try writeCommaJsonString(writer, &first, plan);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCodexPreflightNextActionsText(
+    writer: anytype,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    if (!session_start_ready or !fallback_ready) {
+        const refresh = try codexPreflightStayAfloatCommand(std.heap.page_allocator, profile, capability);
+        defer std.heap.page_allocator.free(refresh);
+        try writer.print("  {s}\n", .{refresh});
+    }
+    if (!session_start_ready) {
+        const plan = try codexPreflightPlanCommand(std.heap.page_allocator, profile, capability);
+        defer std.heap.page_allocator.free(plan);
+        try writer.print("  {s}\n", .{plan});
+    }
+}
+
+fn writeCommaJsonString(writer: anytype, first: *bool, value: []const u8) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try std.json.stringify(value, .{}, writer);
+}
+
+fn codexPreflightStayAfloatCommand(allocator: std.mem.Allocator, profile: ?[]const u8, capability: ?[]const u8) ![]u8 {
+    if (profile) |p| {
+        if (capability) |c| {
+            return try std.fmt.allocPrint(allocator, "oauth-mux stay-afloat --once --execute --profile {s} --capability {s} --json", .{ p, c });
+        }
+        return try std.fmt.allocPrint(allocator, "oauth-mux stay-afloat --once --execute --profile {s} --json", .{p});
+    }
+    if (capability) |c| {
+        return try std.fmt.allocPrint(allocator, "oauth-mux stay-afloat --once --execute --provider codex --capability {s} --json", .{c});
+    }
+    return try allocator.dupe(u8, "oauth-mux stay-afloat --once --execute --provider codex --json");
+}
+
+fn codexPreflightPlanCommand(allocator: std.mem.Allocator, profile: ?[]const u8, capability: ?[]const u8) ![]u8 {
+    if (profile) |p| {
+        if (capability) |c| {
+            return try std.fmt.allocPrint(allocator, "oauth-mux codex broker-session-plan --profile {s} --capability {s} --json", .{ p, c });
+        }
+        return try std.fmt.allocPrint(allocator, "oauth-mux codex broker-session-plan --profile {s} --json", .{p});
+    }
+    if (capability) |c| {
+        return try std.fmt.allocPrint(allocator, "oauth-mux codex broker-session-plan --capability {s} --json", .{c});
+    }
+    return try allocator.dupe(u8, "oauth-mux codex broker-session-plan --json");
 }
 
 fn runCodexManagedPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs) !void {
@@ -15491,8 +15742,8 @@ test "writePolicyJson exposes effective daemon admission policy" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"allow_mutating\":false") != null);
 }
 
-test "daemon tick refuses spend provider probe by default" {
-    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+test "daemon tick admits Codex spend provider probe by default" {
+    const decision = daemonTickDecision(config.PolicyConfig{}, .{
         .route = .{ .provider = "codex", .account = "max-1", .capability = "codex-max" },
         .runtime = .ready,
         .health = null,
@@ -15510,8 +15761,8 @@ test "daemon tick refuses spend provider probe by default" {
     }, 1000);
 
     try std.testing.expectEqualStrings("probe", decision.phase);
-    try std.testing.expect(!decision.admitted);
-    try std.testing.expectEqualStrings("budget_not_allowed", decision.reason);
+    try std.testing.expect(decision.admitted);
+    try std.testing.expectEqualStrings("allowed_by_policy", decision.reason);
     try std.testing.expectEqual(types.ActionBudget.spend_provider, decision.budget.?);
     try std.testing.expect(!decision.executed);
     try std.testing.expectEqual(@as(?i64, 1000), decision.next_tick_after);
@@ -15522,7 +15773,7 @@ test "daemon tick reports selectable route as no-op" {
     const health = health_mod.AccountHealth{
         .liveness = .{ .live = .{ .availability = .available } },
     };
-    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+    const decision = daemonTickDecision(config.PolicyConfig{}, .{
         .route = .{ .provider = "codex", .account = "max-2", .capability = "codex-max" },
         .runtime = .ready,
         .health = health,
@@ -15546,7 +15797,7 @@ test "daemon tick reports selectable route as no-op" {
 
 test "daemon tick schedules interactive handoff recheck without admitting silent auth" {
     const route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
-    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+    const decision = daemonTickDecision(config.PolicyConfig{}, .{
         .route = route,
         .runtime = .{ .needs_reauth = .{ .methods = &.{"upstream_cli_login"}, .reason = "session_file_missing" } },
         .health = null,
@@ -15566,7 +15817,7 @@ test "daemon tick schedules interactive handoff recheck without admitting silent
 }
 
 test "daemon tick schedules runtime repair recheck" {
-    const decision = daemonTickDecision((config.PolicyConfig{}).daemon, .{
+    const decision = daemonTickDecision(config.PolicyConfig{}, .{
         .route = .{ .provider = "codex", .account = "max-1", .capability = "codex-max" },
         .runtime = .{ .unwritable_store = "/tmp/oauth-mux-test/store" },
         .health = null,
@@ -15622,7 +15873,7 @@ test "daemon tick stats carries earliest schedule reason" {
             .skip_reason = "unwritable_store",
         },
     };
-    const stats = daemonTickStats((config.PolicyConfig{}).daemon, &evaluations, 1000);
+    const stats = daemonTickStats(config.PolicyConfig{}, &evaluations, 1000);
 
     try std.testing.expectEqual(@as(?i64, 1300), stats.next_tick_after);
     try std.testing.expect(stats.next_tick_reason != null);

@@ -35,6 +35,9 @@ What works today:
   profiles, model defaults, and non-managed provider definitions.
 - Lazy account refresh at credential materialization or explicit repair time;
   managed launch reports `pre_spawn_network_refresh:false`.
+- Managed Codex launch/resume auto-revalidates expired Codex quota/rate windows
+  under the Codex stay-afloat policy before route election. Interactive login
+  remains user-mediated.
 - Live managed Codex quota handoff for installed `oauth-mux codex resume`, with
   the strongest preserved proof in
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
@@ -121,6 +124,11 @@ On macOS, remove the old Mach-O before copying the dogfood binary. Overwriting i
 place can leave stale taskgated/code-signing state on the old vnode and produce
 an immediate `SIGKILL` / status `137`.
 
+The staged `0.1.7` package and installer lanes also include a managed `codex`
+shim. The shim resolves the native upstream Codex executable, passes it through
+`OMUX_CODEX_BIN`, and then enters `oauth-mux codex`. Public package channels do
+not carry that shim until `0.1.7` is published.
+
 ## Usage
 
 Human first run:
@@ -146,11 +154,15 @@ oauth-mux doctor runtime --profile codex-max --capability codex-max --json
 oauth-mux accounts list --provider codex --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
 oauth-mux codex status-latest --json
 ```
 
-Those commands do not spend provider calls. Live probes, revalidation, and
-provider-spend paths stay behind explicit confirmation.
+Those inspection commands do not spend provider calls. In the `0.1.7` candidate,
+managed Codex launch/resume and admitted stay-afloat execution may spend
+provider calls only to revalidate expired Codex quota/rate windows before route
+election. Live probes, broad revalidation, and non-Codex provider-spend paths
+remain explicit.
 
 ## UX / DX / AX Contract
 
@@ -175,7 +187,8 @@ AX:
 
 - JSON surfaces are redacted and account-label based.
 - Agents do not need token files or raw provider stores to choose a next action.
-- oauth-mux does not silently perform provider-spend actions.
+- Provider-spend behavior is policy-labeled; no-spend inspection surfaces stay
+  separate from managed Codex auto-revalidation and live probes.
 - Diagnostic output should include exact next-action commands.
 
 ## Proof

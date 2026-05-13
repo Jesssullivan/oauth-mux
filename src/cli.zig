@@ -218,6 +218,7 @@ pub const Command = union(enum) {
         probe_all,
         config_candidate,
         config_merge,
+        preflight,
         managed_plan,
         managed,
         status_latest,
@@ -425,6 +426,7 @@ fn isCodexLegacySubcommand(arg: []const u8) bool {
         eql(arg, "probe-all") or
         eql(arg, "config-candidate") or
         eql(arg, "config-merge") or
+        eql(arg, "preflight") or
         eql(arg, "managed-plan") or
         eql(arg, "managed") or
         eql(arg, "status-latest") or
@@ -1086,6 +1088,8 @@ fn parseCodex(args: []const []const u8) Command {
             result.action = .config_candidate;
         } else if (eql(args[0], "config-merge")) {
             result.action = .config_merge;
+        } else if (eql(args[0], "preflight")) {
+            result.action = .preflight;
         } else if (eql(args[0], "managed-plan")) {
             result.action = .managed_plan;
         } else if (eql(args[0], "managed")) {
@@ -1334,6 +1338,9 @@ pub fn printUsage(writer: anytype) !void {
         \\  codex probe-all [--accounts a,b,c] [--capabilities c1,c2] [--json]
         \\      Probe every selected Codex account/capability route.
         \\
+        \\  codex preflight [--profile name] [--capability c] [--account a] [--json]
+        \\      No-spend managed Codex readiness snapshot: install, policy, routes, and next actions.
+        \\
         \\  codex managed-plan [--profile name] [--capability c] [--json]
         \\      Plan a managed native Codex launch with route-local resume semantics.
         \\
@@ -1412,6 +1419,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\  oauth-mux codex revalidate-exhausted [--profile name] [--capability c] [--account a] --confirm-spend [--json]
         \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
+        \\  oauth-mux codex preflight [--profile name] [--capability c] [--account a] [--json]
         \\  oauth-mux codex managed-plan [--profile name] [--capability c] [--json]
         \\  oauth-mux codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
         \\  oauth-mux codex status-latest [--status-file path] [--json]
@@ -1692,6 +1700,21 @@ test "parse codex managed plan" {
             try std.testing.expect(codex.json);
         },
         else => return error.Unexpected,
+    }
+}
+
+test "parse codex preflight" {
+    const args = [_][]const u8{ "codex", "preflight", "--profile", "codex-max", "--capability", "codex-max", "--account", "max-2", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .preflight);
+            try std.testing.expectEqualStrings("codex-max", codex.profile.?);
+            try std.testing.expectEqualStrings("codex-max", codex.capabilities);
+            try std.testing.expectEqualStrings("max-2", codex.account.?);
+            try std.testing.expect(codex.json);
+        },
+        else => return error.TestUnexpectedCommand,
     }
 }
 
@@ -2502,7 +2525,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all managed-plan managed status-latest broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all preflight managed-plan managed status-latest broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l profile -s p -d 'Profile name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l account -d 'Route account id' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l session-home -d 'Canonical Codex session authority home' -r

@@ -173,16 +173,19 @@ When a Codex experimental feature key is absent, the managed overlay defaults
 including `false`, are preserved, and the canonical `config.toml` is not
 mutated.
 
-`doctor runtime`, `route explain`, `route select`, `stay-afloat next`,
-`stay-afloat --once`, and bounded `stay-afloat --loop` are no-spend surfaces
-when run without `--execute`. They only use local runtime checks plus recorded
-liveness, so they are safe for agents to run before deciding whether a live
-probe or user-driven reauth is warranted. `stay-afloat --execute` is the beta
-foreground execution boundary: it can run one admitted non-interactive action
-or queue an interactive handoff event. Prefer scoped runtime checks such as
-`oauth-mux doctor runtime --profile codex-max --capability codex-max --json`
-when dogfooding a specific stay-afloat route; global runtime doctor is still
-useful for support bundles and full-machine cleanup.
+`doctor runtime`, `route explain`, `route select`, `codex preflight`,
+`stay-afloat next`, `stay-afloat --once`, and bounded `stay-afloat --loop` are
+no-spend surfaces when run without `--execute`. They only use local runtime
+checks plus recorded liveness, so they are safe for agents to run before
+deciding whether a live probe or user-driven reauth is warranted.
+`stay-afloat --execute` is the beta foreground execution boundary: for Codex it
+may run admitted provider-spend revalidation only for expired quota/rate windows
+under the Codex stay-afloat policy, or queue an interactive handoff event.
+Prefer scoped runtime checks such as `oauth-mux doctor runtime --profile
+codex-max --capability codex-max --json` or `oauth-mux codex preflight --profile
+codex-max --capability codex-max --json` when dogfooding a specific stay-afloat
+route; global runtime doctor is still useful for support bundles and
+full-machine cleanup.
 
 `oauth-mux stay-afloat next --json` is the simplest agent handoff: it returns
 an exact `exec_argv` when already afloat, otherwise it returns the typed repair
@@ -388,10 +391,13 @@ Wrappers should call the foreground command contract, not the socket daemon:
 ```bash
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --loop --iterations <n> --interval-ms <ms> --profile <profile> --capability <capability> --json
+oauth-mux codex preflight --profile <profile> --capability <capability> --json
 ```
 
 A wrapper may act automatically only on admitted, non-interactive,
-non-mutating work. When JSON reports `action.kind:"fix_runtime"` with
+non-mutating work, except for explicitly admitted Codex expired-window
+revalidation under the Codex stay-afloat policy. When JSON reports
+`action.kind:"fix_runtime"` with
 `action.command:null`, the wrapper should display or broker
 `action.diagnostic_command` in the user-owned process boundary, then rerun
 `stay-afloat` or `route explain`. It must not infer credential liveness from a

@@ -116,7 +116,9 @@ sed -E \
   dist/npm/package.json >"$root_pkg_dir/package.json"
 cp dist/npm/install.js "$root_pkg_dir/install.js"
 cp dist/npm/bin/oauth-mux.js "$root_pkg_dir/bin/oauth-mux.js"
+cp dist/npm/bin/codex.js "$root_pkg_dir/bin/codex.js"
 chmod 0755 "$root_pkg_dir/bin/oauth-mux.js"
+chmod 0755 "$root_pkg_dir/bin/codex.js"
 
 if command -v npm >/dev/null 2>&1; then
   printf 'packing npm tarballs...\n'

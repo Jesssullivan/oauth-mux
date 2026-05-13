@@ -22,12 +22,19 @@ pub const Defaults = struct {
 
 pub const PolicyConfig = struct {
     daemon: DaemonPolicyConfig = .{},
+    codex: CodexPolicyConfig = .{},
 };
 
 pub const DaemonPolicyConfig = struct {
     allowed_budgets: []const types.ActionBudget = &.{ .free_local, .free_command },
     allow_interactive: bool = false,
     allow_mutating: bool = false,
+};
+
+pub const CodexPolicyConfig = struct {
+    auto_stay_afloat: bool = true,
+    allow_provider_spend: bool = true,
+    allow_interactive_auth: bool = false,
 };
 
 pub const ProviderConfig = struct {
@@ -232,6 +239,24 @@ pub fn daemonPolicyAllowsBudget(policy: DaemonPolicyConfig, budget: types.Action
         if (allowed == budget) return true;
     }
     return false;
+}
+
+pub fn effectiveDaemonPolicyForProvider(policy: PolicyConfig, provider_name: []const u8) DaemonPolicyConfig {
+    var effective = policy.daemon;
+    if (std.mem.eql(u8, provider_name, "codex") and policy.codex.auto_stay_afloat) {
+        if (policy.codex.allow_provider_spend) {
+            effective.allowed_budgets = &.{
+                .free_local,
+                .free_command,
+                .cheap_provider,
+                .spend_provider,
+            };
+        }
+        if (policy.codex.allow_interactive_auth) {
+            effective.allow_interactive = true;
+        }
+    }
+    return effective;
 }
 
 fn validateProviderConfig(cfg: Config, provider_name: []const u8, prov: ProviderConfig, writer: anytype, ok: *bool) !void {
@@ -787,6 +812,19 @@ test "default daemon policy admits only local and command budgets" {
     try std.testing.expect(!daemonPolicyAllowsBudget(policy.daemon, .spend_provider));
     try std.testing.expect(!policy.daemon.allow_interactive);
     try std.testing.expect(!policy.daemon.allow_mutating);
+}
+
+test "default Codex policy admits provider spend only for Codex stay-afloat" {
+    const policy = PolicyConfig{};
+    const codex = effectiveDaemonPolicyForProvider(policy, "codex");
+    try std.testing.expect(daemonPolicyAllowsBudget(codex, .spend_provider));
+    try std.testing.expect(daemonPolicyAllowsBudget(codex, .cheap_provider));
+    try std.testing.expect(!codex.allow_interactive);
+    try std.testing.expect(!codex.allow_mutating);
+
+    const claude = effectiveDaemonPolicyForProvider(policy, "claude");
+    try std.testing.expect(!daemonPolicyAllowsBudget(claude, .spend_provider));
+    try std.testing.expect(!daemonPolicyAllowsBudget(claude, .cheap_provider));
 }
 
 test "validate rejects unknown provider kind without definition" {

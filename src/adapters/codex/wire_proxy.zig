@@ -288,13 +288,13 @@ pub const Proxy = struct {
                         .attempted = attempted.items,
                         .rejections = rejections.items,
                     });
-                    try writeNoAccountSelectableResponse(a, writer, rejections.items);
+                    try writeNoAccountSelectableResponse(a, writer, self.profile, rejections.items);
                 } else {
                     self.logEvent("proxy_no_account_selectable", .{
                         .attempted = attempted.items,
                         .rejections = rejections.items,
                     });
-                    try writeNoAccountSelectableResponse(a, writer, rejections.items);
+                    try writeNoAccountSelectableResponse(a, writer, self.profile, rejections.items);
                 }
                 return;
             };
@@ -1214,18 +1214,27 @@ fn writeStatus(writer: anytype, code: u16, reason: []const u8) !void {
 fn writeNoAccountSelectableResponse(
     allocator: std.mem.Allocator,
     writer: anytype,
+    profile: ?[]const u8,
     rejections: []const CandidateRejection,
 ) !void {
     var body = std.ArrayListUnmanaged(u8){};
     defer body.deinit(allocator);
     const w = body.writer(allocator);
+    const preflight_command = if (profile) |value|
+        try std.fmt.allocPrint(allocator, "oauth-mux codex preflight --profile {s} --json", .{value})
+    else
+        try allocator.dupe(u8, "oauth-mux codex preflight --json");
+    defer allocator.free(preflight_command);
 
     try w.writeAll("{\"error\":{\"type\":\"oauth_mux_no_account_selectable\",\"code\":\"oauth_mux_no_account_selectable\",\"message\":");
     try std.json.stringify(
-        "oauth-mux: no selectable Codex fallback account; route repair is required. Inspect the redacted status artifact or run oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json.",
+        "oauth-mux: no selectable Codex fallback account; route repair is required. Inspect the redacted status artifact or run codex preflight.",
         .{},
         w,
     );
+    try w.writeAll(",\"preflight_command\":");
+    try std.json.stringify(preflight_command, .{}, w);
+    try w.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false");
     try w.writeAll(",\"rejections\":[");
     for (rejections, 0..) |rejection, idx| {
         if (idx != 0) try w.writeByte(',');
@@ -1532,7 +1541,7 @@ test "writeStatus writes a complete HTTP/1.1 status response" {
     try std.testing.expect(std.mem.endsWith(u8, out, "\r\n\r\n"));
 }
 
-test "writeNoAccountSelectableResponse emits parseable route-repair JSON" {
+test "writeNoAccountSelectableResponse emits parseable preflight JSON" {
     var buf: [1024]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const rejections = [_]CandidateRejection{
@@ -1540,11 +1549,13 @@ test "writeNoAccountSelectableResponse emits parseable route-repair JSON" {
         .{ .account = "codex:max-2", .state = .auth_failed, .reason = "auth_unauthorized" },
     };
 
-    try writeNoAccountSelectableResponse(std.testing.allocator, fbs.writer(), &rejections);
+    try writeNoAccountSelectableResponse(std.testing.allocator, fbs.writer(), "codex-max", &rejections);
     const out = fbs.getWritten();
     try std.testing.expect(std.mem.startsWith(u8, out, "HTTP/1.1 503 Service Unavailable\r\n"));
     try std.testing.expect(std.mem.indexOf(u8, out, "Content-Type: application/json\r\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"type\":\"oauth_mux_no_account_selectable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"preflight_command\":\"oauth-mux codex preflight --profile codex-max --json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"spends_provider_calls\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"account\":\"codex:default\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"state\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, out, "]}}\n"));
