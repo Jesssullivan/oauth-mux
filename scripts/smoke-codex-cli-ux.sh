@@ -65,7 +65,13 @@ memories = true
 multi_agent = true
 
 [mcp_servers.design]
+url = "https://figma.invalid/mcp"
+bearer_token_env_var = "FIGMA_ACCESS_TOKEN"
 command = "figma-mcp"
+
+[mcp_servers.linear]
+url = "https://mcp.linear.app/mcp"
+bearer_token_env_var = "LINEAR_API_KEY"
 
 [profiles.work]
 model = "gpt-5.5"
@@ -180,6 +186,7 @@ run_case() {
     assert_grep "$label config passthrough status" '"config_passthrough":true,"user_config_present":true' "$ndjson"
     assert_grep "$label config layout" '"config_layout":"root_partitioned"' "$ndjson"
     assert_grep "$label experimental defaults injected" '"experimental_feature_defaults_injected":4' "$ndjson"
+    assert_grep "$label mcp stdio schema guard" '"mcp_stdio_unsupported_fields_removed":2' "$ndjson"
     assert_grep "$label no pre-spawn network refresh" '"pre_spawn_network_refresh":false' "$ndjson"
     assert_grep "$label child spawn timing" '"kind":"launch_timing".*"phase":"child_spawn"' "$ndjson"
     assert_grep "$label resume preflight" '"kind":"resume_preflight"' "$ndjson"
@@ -252,6 +259,8 @@ run_case() {
           && "$(jq -r .config.user_tui_model_availability_nux "$report")" == "true" \
           && "$(jq -r .config.config_layout_root_partitioned "$report")" == "true" \
           && "$(jq -r .config.user_mcp_server "$report")" == "true" \
+          && "$(jq -r .config.stdio_mcp_remote_fields_absent "$report")" == "true" \
+          && "$(jq -r .config.http_mcp_remote_fields_preserved "$report")" == "true" \
           && "$(jq -r .config.user_approval_policy "$report")" == "true" \
           && "$(jq -r .config.user_sandbox_mode "$report")" == "true" \
           && "$(jq -r .config.profile_model_provider_absent "$report")" == "true" \

@@ -128,6 +128,14 @@ missing Codex experimental feature defaults for the child overlay:
 are preserved, the canonical `config.toml` is not mutated, and
 `session_started` reports `experimental_feature_defaults_injected`.
 
+Implementation update, 2026-05-13: the overlay writer now guards the Codex
+0.130 MCP schema drift that rejects remote-only fields on stdio launchers.
+When a preserved `[mcp_servers.*]` table contains `command`, the managed
+overlay removes unsupported `url` and `bearer_token_env_var` lines from that
+overlay only. HTTP MCP tables without `command` keep those fields. The
+canonical config remains untouched, and `session_started` reports the redacted
+`mcp_stdio_unsupported_fields_removed` count.
+
 ## 0. Scope
 
 This adapter exists to deliver the `oauth-mux codex` user entrypoint and

@@ -84,6 +84,10 @@ Not proven:
 - [x] Add the trailing-table config regression for
   `[tui.model_availability_nux]` with `"gpt-5.5" = 2`; status now reports
   `config_layout:"root_partitioned"`.
+- [x] Guard Codex 0.130 MCP schema drift in the managed overlay: stdio MCP
+  tables with `command` drop unsupported `url` and `bearer_token_env_var`
+  lines in the overlay only, while HTTP MCP tables preserve those fields.
+  Status reports `mcp_stdio_unsupported_fields_removed`.
 - [x] Remove launch-time broad `repairRefreshableCodexAuthFailures()` from the
   pre-spawn path. Status reports `pre_spawn_network_refresh:false`; refresh
   remains lazy during credential materialization or explicit repair/revalidate
