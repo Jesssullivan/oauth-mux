@@ -29,6 +29,12 @@ proven managed resume/load through the proxy, including live quota handoff
 evidence tracked in
 `docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`.
 
+Implementation update, 2026-05-10: newer Codex chooser state can live in
+`state_5.sqlite*`. The managed overlay now bridges `state_5.sqlite`,
+`state_5.sqlite-wal`, and `state_5.sqlite-shm` by reference when canonical
+Codex has them. `state_5.sqlite` is accepted as chooser authority when
+present; older Codex homes still use the legacy file set above.
+
 The 2026-05-06 dogfood-6 auth failure exposed the auth-side counterpart:
 Codex can refresh tokens inside the managed overlay, and the adapter must
 import changed overlay `auth.json` back into the selected mux-owned account
@@ -142,10 +148,13 @@ For Codex today, candidate session-authority files are:
 - `~/.codex/session_index.jsonl`
 - `~/.codex/history.jsonl`
 - `~/.codex/shell_snapshots/`
+- `~/.codex/state_5.sqlite*` when present, for newer native chooser state
 
 The current required set is pinned by fixture smoke coverage and pre-spawn
-chooser authority checks. Add new entries only with evidence that native Codex
-requires them for chooser/resume parity.
+chooser authority checks. `state_5.sqlite` is sufficient chooser authority
+when present; otherwise the legacy entries above remain the fallback authority
+set. Add new entries only with evidence that native Codex requires them for
+chooser/resume parity.
 
 ### 2.4 Cache, Log, and Runtime State
 
@@ -161,8 +170,9 @@ normal operation. Keep this state local to the managed overlay or to an
 oauth-mux-owned runtime directory. If a harness needs a cache bridge, it must
 be explicit and documented separately from session authority.
 
-For Codex, `logs_*.sqlite`, `state_*.sqlite`, and model caches are not part of
-the initial bridge acceptance.
+For Codex, `state_5.sqlite*` is now a narrowly scoped session-authority bridge
+for native chooser parity. Other `logs_*.sqlite`, `state_*.sqlite`, and model
+caches are not bridged by default.
 
 ### 2.5 oauth-mux Evidence Store
 
@@ -227,6 +237,9 @@ For Codex on Unix-like systems, a candidate overlay is:
   session_index.jsonl -> ~/.codex/session_index.jsonl
   history.jsonl -> ~/.codex/history.jsonl
   shell_snapshots -> ~/.codex/shell_snapshots
+  state_5.sqlite -> ~/.codex/state_5.sqlite       # when canonical has it
+  state_5.sqlite-wal -> ~/.codex/state_5.sqlite-wal
+  state_5.sqlite-shm -> ~/.codex/state_5.sqlite-shm
 ```
 
 This keeps `resume <id>` and `resume --last` pointed at the canonical session

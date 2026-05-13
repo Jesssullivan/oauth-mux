@@ -83,6 +83,11 @@ def _config_report(codex_home: Path) -> dict:
         "user_experimental_legacy": "experimental_legacy_flag = true" in cfg,
         "user_tui_model_availability_nux": "[tui.model_availability_nux]" in cfg and '"gpt-5.5" = 2' in cfg,
         "user_mcp_server": "[mcp_servers.design]" in cfg,
+        "stdio_mcp_remote_fields_absent": "https://figma.invalid/mcp" not in cfg
+        and "FIGMA_ACCESS_TOKEN" not in cfg,
+        "http_mcp_remote_fields_preserved": "[mcp_servers.linear]" in cfg
+        and "https://mcp.linear.app/mcp" in cfg
+        and "LINEAR_API_KEY" in cfg,
         "user_approval_policy": 'approval_policy = "on-request"' in cfg,
         "user_sandbox_mode": 'sandbox_mode = "workspace-write"' in cfg,
         "profile_model_provider_absent": 'model_provider = "profile_provider"' not in cfg,

@@ -86,6 +86,7 @@ const SessionCodexHome = struct {
     config_passthrough: bool = false,
     config_overridden_keys: usize = 0,
     experimental_feature_defaults_injected: usize = 0,
+    mcp_stdio_unsupported_fields_removed: usize = 0,
     config_layout: []const u8 = "root_partitioned",
 
     fn deinit(self: SessionCodexHome, allocator: std.mem.Allocator) void {
@@ -199,6 +200,7 @@ const ManagedConfigObservation = struct {
     passthrough: bool = false,
     overridden_keys: usize = 0,
     experimental_feature_defaults_injected: usize = 0,
+    mcp_stdio_unsupported_fields_removed: usize = 0,
     layout: []const u8 = "root_partitioned",
 };
 
@@ -254,6 +256,55 @@ const ConfigOverrideCheck = struct {
     mux_owned_overrides: usize = 0,
     model_provider_override: bool = false,
     managed_provider_override: bool = false,
+};
+
+const TomlBufferedTable = struct {
+    active: bool = false,
+    skip: bool = false,
+    features: bool = false,
+    mcp_server: bool = false,
+    mcp_has_command: bool = false,
+    mcp_unsupported_stdio_fields: usize = 0,
+    lines: std.ArrayListUnmanaged(u8) = .{},
+
+    fn deinit(self: *TomlBufferedTable, allocator: std.mem.Allocator) void {
+        self.lines.deinit(allocator);
+    }
+
+    fn reset(self: *TomlBufferedTable) void {
+        self.active = false;
+        self.skip = false;
+        self.features = false;
+        self.mcp_server = false;
+        self.mcp_has_command = false;
+        self.mcp_unsupported_stdio_fields = 0;
+        self.lines.clearRetainingCapacity();
+    }
+
+    fn start(
+        self: *TomlBufferedTable,
+        allocator: std.mem.Allocator,
+        header: []const u8,
+        skip: bool,
+        features: bool,
+        mcp_server: bool,
+    ) !void {
+        self.reset();
+        self.active = true;
+        self.skip = skip;
+        self.features = features;
+        self.mcp_server = mcp_server;
+        if (!skip) {
+            try self.lines.writer(allocator).writeAll(header);
+            try self.lines.writer(allocator).writeAll("\n");
+        }
+    }
+
+    fn appendLine(self: *TomlBufferedTable, allocator: std.mem.Allocator, line: []const u8) !void {
+        if (self.skip) return;
+        try self.lines.writer(allocator).writeAll(line);
+        try self.lines.writer(allocator).writeAll("\n");
+    }
 };
 
 const LaunchTimer = struct {
@@ -698,8 +749,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         const installed_local_mismatch = envFlag("OMUX_INSTALLED_LOCAL_MISMATCH");
 
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{\"binary_path\":",
-            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.session_authority.toString(), status_file_path != null },
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{\"binary_path\":",
+            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.mcp_stdio_unsupported_fields_removed, codex_home.session_authority.toString(), status_file_path != null },
         );
         try std.json.stringify(binary_path, .{}, status_writer);
         try status_writer.writeAll(",\"binary_source\":");
@@ -1025,6 +1076,7 @@ fn createSessionCodexHomeUnder(
         .config_passthrough = config_observation.passthrough,
         .config_overridden_keys = config_observation.overridden_keys,
         .experimental_feature_defaults_injected = config_observation.experimental_feature_defaults_injected,
+        .mcp_stdio_unsupported_fields_removed = config_observation.mcp_stdio_unsupported_fields_removed,
         .config_layout = config_observation.layout,
     };
 }
@@ -1694,7 +1746,14 @@ fn writeManagedConfigToml(
             defer allocator.free(source_bytes);
             observation.source_present = true;
             observation.passthrough = true;
-            observation.overridden_keys = try writeConfigPassthrough(allocator, w, source_bytes, &feature_defaults, &observation.experimental_feature_defaults_injected);
+            observation.overridden_keys = try writeConfigPassthrough(
+                allocator,
+                w,
+                source_bytes,
+                &feature_defaults,
+                &observation.experimental_feature_defaults_injected,
+                &observation.mcp_stdio_unsupported_fields_removed,
+            );
             managed_root_written = true;
             if (contents.items.len != 0 and contents.items[contents.items.len - 1] != '\n') try w.writeAll("\n");
             try w.writeAll("\n");
@@ -1735,12 +1794,15 @@ fn writeConfigPassthrough(
     source_bytes: []const u8,
     feature_defaults: *CodexExperimentalFeatureDefaults,
     experimental_feature_defaults_injected: *usize,
+    mcp_stdio_unsupported_fields_removed: *usize,
 ) !usize {
     var overridden: usize = 0;
     var root = std.ArrayListUnmanaged(u8){};
     defer root.deinit(allocator);
     var tables = std.ArrayListUnmanaged(u8){};
     defer tables.deinit(allocator);
+    var current_table = TomlBufferedTable{};
+    defer current_table.deinit(allocator);
 
     var in_root = true;
     var in_features_table = false;
@@ -1752,20 +1814,42 @@ fn writeConfigPassthrough(
         const trimmed = std.mem.trim(u8, line, " \t\r");
         const starts_table = isTomlTableHeader(trimmed);
         if (starts_table) {
-            if (in_features_table and !skip_table) {
-                experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsTableEntries(tables.writer(allocator));
-            }
+            try flushConfigPassthroughTable(
+                allocator,
+                &tables,
+                &current_table,
+                feature_defaults,
+                experimental_feature_defaults_injected,
+                mcp_stdio_unsupported_fields_removed,
+            );
             in_root = false;
             in_features_table = isTomlTableHeaderNamed(trimmed, "features");
             features_table_seen = features_table_seen or in_features_table;
             skip_table = isManagedProviderTable(trimmed);
             if (skip_table) {
                 overridden += 1;
-                continue;
             }
+            try current_table.start(allocator, line, skip_table, in_features_table, isMcpServerTable(trimmed));
+            continue;
         }
+
+        if (in_root) {
+            markExperimentalFeatureAssignment(feature_defaults, trimmed_left, true, false);
+            if (configAssignmentOverridesMuxProvider(trimmed_left)) |classification| {
+                switch (classification) {
+                    .model_provider, .managed_provider => {
+                        overridden += 1;
+                        continue;
+                    },
+                }
+            }
+            try root.writer(allocator).writeAll(line);
+            try root.writer(allocator).writeAll("\n");
+            continue;
+        }
+
         if (skip_table) continue;
-        markExperimentalFeatureAssignment(feature_defaults, trimmed_left, in_root, in_features_table);
+        markExperimentalFeatureAssignment(feature_defaults, trimmed_left, false, in_features_table);
         if (configAssignmentOverridesMuxProvider(trimmed_left)) |classification| {
             switch (classification) {
                 .model_provider, .managed_provider => {
@@ -1774,13 +1858,25 @@ fn writeConfigPassthrough(
                 },
             }
         }
-        const out = if (in_root) root.writer(allocator) else tables.writer(allocator);
-        try out.writeAll(line);
-        try out.writeAll("\n");
+        if (current_table.mcp_server) {
+            if (tomlAssignmentKey(trimmed_left)) |key| {
+                if (std.mem.eql(u8, key, "command")) {
+                    current_table.mcp_has_command = true;
+                } else if (isUnsupportedStdioMcpFieldKey(key)) {
+                    current_table.mcp_unsupported_stdio_fields += 1;
+                }
+            }
+        }
+        try current_table.appendLine(allocator, line);
     }
-    if (in_features_table and !skip_table) {
-        experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsTableEntries(tables.writer(allocator));
-    }
+    try flushConfigPassthroughTable(
+        allocator,
+        &tables,
+        &current_table,
+        feature_defaults,
+        experimental_feature_defaults_injected,
+        mcp_stdio_unsupported_fields_removed,
+    );
     if (!features_table_seen) {
         experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsRootDotted(root.writer(allocator));
     }
@@ -1795,6 +1891,41 @@ fn writeConfigPassthrough(
         if (tables.items[tables.items.len - 1] != '\n') try writer.writeAll("\n");
     }
     return overridden;
+}
+
+fn flushConfigPassthroughTable(
+    allocator: std.mem.Allocator,
+    tables: *std.ArrayListUnmanaged(u8),
+    table: *TomlBufferedTable,
+    feature_defaults: *CodexExperimentalFeatureDefaults,
+    experimental_feature_defaults_injected: *usize,
+    mcp_stdio_unsupported_fields_removed: *usize,
+) !void {
+    if (!table.active) return;
+    defer table.reset();
+    if (table.skip) return;
+    if (table.features) {
+        experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsTableEntries(table.lines.writer(allocator));
+    }
+    const sanitize_stdio_mcp = table.mcp_server and table.mcp_has_command and table.mcp_unsupported_stdio_fields != 0;
+    if (!sanitize_stdio_mcp) {
+        try tables.writer(allocator).writeAll(table.lines.items);
+        return;
+    }
+
+    var start: usize = 0;
+    while (start < table.lines.items.len) {
+        const next = std.mem.indexOfScalarPos(u8, table.lines.items, start, '\n') orelse table.lines.items.len;
+        const line = table.lines.items[start..next];
+        const had_newline = next < table.lines.items.len;
+        if (isUnsupportedStdioMcpFieldLine(line)) {
+            mcp_stdio_unsupported_fields_removed.* += 1;
+        } else {
+            try tables.writer(allocator).writeAll(line);
+            if (had_newline) try tables.writer(allocator).writeByte('\n');
+        }
+        start = if (had_newline) next + 1 else next;
+    }
 }
 
 fn isTomlTableHeader(trimmed_line: []const u8) bool {
@@ -1822,15 +1953,39 @@ fn isManagedProviderTable(trimmed_line: []const u8) bool {
         (std.mem.startsWith(u8, line, "[model_providers.oauth_mux_openai.") and std.mem.endsWith(u8, line, "]"));
 }
 
+fn isMcpServerTable(trimmed_line: []const u8) bool {
+    var line = trimmed_line;
+    if (std.mem.indexOfScalar(u8, line, '#')) |idx| line = std.mem.trim(u8, line[0..idx], " \t\r");
+    if (!std.mem.startsWith(u8, line, "[") or !std.mem.endsWith(u8, line, "]")) return false;
+    if (std.mem.startsWith(u8, line, "[[")) return false;
+    const body = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    return std.mem.startsWith(u8, body, "mcp_servers.");
+}
+
+fn tomlAssignmentKey(assignment: []const u8) ?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, assignment, '=') orelse return null;
+    var key = std.mem.trim(u8, assignment[0..eq], " \t\r\n");
+    if (key.len == 0 or std.mem.startsWith(u8, key, "#")) return null;
+    key = std.mem.trim(u8, key, "\"'");
+    return key;
+}
+
+fn isUnsupportedStdioMcpFieldKey(key: []const u8) bool {
+    return std.mem.eql(u8, key, "url") or std.mem.eql(u8, key, "bearer_token_env_var");
+}
+
+fn isUnsupportedStdioMcpFieldLine(line: []const u8) bool {
+    const key = tomlAssignmentKey(std.mem.trimLeft(u8, line, " \t")) orelse return false;
+    return isUnsupportedStdioMcpFieldKey(key);
+}
+
 fn markExperimentalFeatureAssignment(
     feature_defaults: *CodexExperimentalFeatureDefaults,
     assignment: []const u8,
     in_root: bool,
     in_features_table: bool,
 ) void {
-    const eq = std.mem.indexOfScalar(u8, assignment, '=') orelse return;
-    var key = std.mem.trim(u8, assignment[0..eq], " \t\r\n");
-    key = std.mem.trim(u8, key, "\"'");
+    const key = tomlAssignmentKey(assignment) orelse return;
     if (in_features_table) {
         feature_defaults.mark(key);
         return;
@@ -1884,9 +2039,7 @@ const ConfigOverrideClassification = enum {
 };
 
 fn configAssignmentOverridesMuxProvider(assignment: []const u8) ?ConfigOverrideClassification {
-    const eq = std.mem.indexOfScalar(u8, assignment, '=') orelse return null;
-    var key = std.mem.trim(u8, assignment[0..eq], " \t\r\n");
-    key = std.mem.trim(u8, key, "\"'");
+    const key = tomlAssignmentKey(assignment) orelse return null;
     if (std.mem.eql(u8, key, "model_provider") or std.mem.endsWith(u8, key, ".model_provider")) {
         return .model_provider;
     }
@@ -2157,7 +2310,13 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
             \\multi_agent = true
             \\
             \\[mcp_servers.design]
+            \\url = "https://figma.invalid/mcp"
+            \\bearer_token_env_var = "FIGMA_ACCESS_TOKEN"
             \\command = "figma-mcp"
+            \\
+            \\[mcp_servers.linear]
+            \\url = "https://mcp.linear.app/mcp"
+            \\bearer_token_env_var = "LINEAR_API_KEY"
             \\
             \\[model_providers.user_provider]
             \\name = "User Provider"
@@ -2186,6 +2345,7 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
     try std.testing.expect(codex_home.config_passthrough);
     try std.testing.expect(codex_home.config_overridden_keys >= 2);
     try std.testing.expectEqual(@as(usize, 4), codex_home.experimental_feature_defaults_injected);
+    try std.testing.expectEqual(@as(usize, 2), codex_home.mcp_stdio_unsupported_fields_removed);
 
     const overlay_config = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "config.toml" });
     defer std.testing.allocator.free(overlay_config);
@@ -2203,6 +2363,11 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "goals = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "prevent_idle_sleep = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[mcp_servers.design]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "https://figma.invalid/mcp") == null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "FIGMA_ACCESS_TOKEN") == null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[mcp_servers.linear]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "https://mcp.linear.app/mcp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "LINEAR_API_KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.user_provider]") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "https://example.invalid/api") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[tui.model_availability_nux]") != null);
@@ -2316,6 +2481,7 @@ test "config passthrough strips profile-scoped model_provider overrides" {
     defer buf.deinit(std.testing.allocator);
     var feature_defaults = CodexExperimentalFeatureDefaults{};
     var experimental_feature_defaults_injected: usize = 0;
+    var mcp_stdio_unsupported_fields_removed: usize = 0;
     const source =
         \\[profiles.work]
         \\model = "gpt-5.5"
@@ -2326,10 +2492,11 @@ test "config passthrough strips profile-scoped model_provider overrides" {
         \\experimental_apply_patch = true
         \\
     ;
-    const overridden = try writeConfigPassthrough(std.testing.allocator, buf.writer(std.testing.allocator), source, &feature_defaults, &experimental_feature_defaults_injected);
+    const overridden = try writeConfigPassthrough(std.testing.allocator, buf.writer(std.testing.allocator), source, &feature_defaults, &experimental_feature_defaults_injected, &mcp_stdio_unsupported_fields_removed);
 
     try std.testing.expectEqual(@as(usize, 1), overridden);
     try std.testing.expectEqual(@as(usize, 5), experimental_feature_defaults_injected);
+    try std.testing.expectEqual(@as(usize, 0), mcp_stdio_unsupported_fields_removed);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "[profiles.work]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "model = \"gpt-5.5\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "approval_policy = \"on-request\"") != null);
