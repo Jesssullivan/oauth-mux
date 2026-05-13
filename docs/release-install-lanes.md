@@ -54,8 +54,9 @@ Before dogfooding unreleased behavior:
 
 ```bash
 just build
+mkdir -p ~/.local/bin
+rm -f ~/.local/bin/oauth-mux
 cp ./zig-out/bin/oauth-mux ~/.local/bin/oauth-mux
-codesign --force --sign - ~/.local/bin/oauth-mux  # macOS ad-hoc local install
 shasum -a 256 ./zig-out/bin/oauth-mux ~/.local/bin/oauth-mux
 which -a oauth-mux
 oauth-mux version
@@ -69,9 +70,14 @@ Expected:
 - Homebrew may report the same source version while still being a different
   binary hash; treat it as the package lane.
 
-On macOS, a copied ad-hoc binary can fail immediately with no output if the
-signature/provenance state is inconsistent. Re-signing the copied binary with
-`codesign --force --sign -` is the local dogfood repair.
+On macOS, do not overwrite an existing Mach-O in place for this lane. A direct
+`cp` over `~/.local/bin/oauth-mux` can leave stale taskgated/code-signing state
+on the old vnode; the symptom is immediate `SIGKILL` / shell status `137` with
+a DiagnosticReports entry saying `Taskgated Invalid Signature`. Remove the old
+file first, then copy the new build so the installed file has a fresh vnode and
+the hash still matches the worktree binary. Re-signing the installed copy is a
+separate repair fallback, but it changes the hash and no longer proves byte
+identity with `./zig-out/bin/oauth-mux`.
 
 ## UX, DX, AX Gates
 

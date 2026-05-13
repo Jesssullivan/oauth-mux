@@ -141,7 +141,7 @@ at the staged artifact directory instead of GitHub Releases.
 After the GitHub Release exists, run the hosted system-package install proof:
 
 ```bash
-gh workflow run system-package-install-qa.yml -f version=0.1.6
+gh workflow run system-package-install-qa.yml -f version=<version>
 ```
 
 This workflow downloads the published `.deb` and `.rpm` release assets, verifies
@@ -151,7 +151,7 @@ Linux containers on `ubuntu-latest`, and runs `/usr/bin/oauth-mux version`.
 For local reproduction on a healthy Docker-compatible host:
 
 ```bash
-just system-package-qa 0.1.6
+just system-package-qa <version>
 ```
 
 This is stricter than the registry `system` dry-run lane. The dry-run lane
