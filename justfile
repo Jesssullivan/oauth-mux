@@ -125,10 +125,10 @@ release-handoff VERSION=release_version:
 registry-dry-run VERSION=release_version:
     nix develop --command ./scripts/registry-dry-run.sh {{VERSION}}
 
-system-package-qa VERSION="0.1.6":
+system-package-qa VERSION=release_version:
     ./scripts/system-package-install-qa.sh {{VERSION}}
 
-homebrew-qa VERSION="0.1.6":
+homebrew-qa VERSION=release_version:
     ./scripts/homebrew-install-qa.sh {{VERSION}}
 
 npm-deprecate-plan VERSION="0.1.1":

@@ -15,7 +15,7 @@ The lane contract and current operator rules live in
 | --- | --- | --- | --- | --- | --- |
 | npm global install | 0.1.6 | macOS arm64 | public npm registry | Pass | Public registry reports `oauth-mux@0.1.6` plus all six platform packages. |
 | npm one-shot | 0.1.6 | macOS arm64 | public npm registry | Pass | `npx -y oauth-mux@0.1.6 version` returns `oauth-mux 0.1.6`. |
-| user-local dogfood install | 0.1.6 | macOS arm64 | current worktree copied to `~/.local/bin` | Pass | `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match after ad-hoc re-sign; use this lane for unreleased installed-command dogfood. |
+| user-local dogfood install | 0.1.7 candidate | macOS arm64 | current worktree copied to `~/.local/bin` | Pass | Remove the old installed file before copying; `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match. Use this lane for unreleased installed-command dogfood. |
 | Nix package | 0.1.6 | macOS arm64 remote builder | `nix build .#` | Pass | `result -> /nix/store/a7izjlmdm21x37glihb9aa34xaa1rfia-oauth-mux-0.1.6`; `./result/bin/oauth-mux version` returns `0.1.6`. |
 | GitHub release tarball | 0.1.6 | macOS arm64 | public `Jesssullivan/oauth-mux` release asset | Pass | Release workflow `25195318899` published all tarballs, packages, checksums, formula, and installer. |
 | `curl | sh` installer | 0.1.6 | macOS arm64 and `../lab` | public `Jesssullivan/oauth-mux` `install.sh` asset | Pass | Default installer repo is canonical; no `REPO=...` override needed. |
