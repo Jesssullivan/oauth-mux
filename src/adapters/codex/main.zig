@@ -34,7 +34,9 @@ const cli = @import("../../cli.zig");
 const config_mod = @import("../../config.zig");
 const health_mod = @import("../../health.zig");
 const paths = @import("../../paths.zig");
+const pipeline = @import("../../pipeline.zig");
 const shell = @import("../../shell.zig");
+const types = @import("../../types.zig");
 const wire_proxy = @import("wire_proxy.zig");
 
 pub const RunOptions = struct {
@@ -63,6 +65,7 @@ pub const RunError = error{
     NoCodexHome,
     SessionAuthorityUnavailable,
     ConfigOverrideUnavailable,
+    CodexShimRecursion,
 };
 
 const SessionAuthorityMode = enum {
@@ -492,6 +495,283 @@ fn restrictPoolToCodex(pool: *broker.AccountPool) void {
     }
 }
 
+fn codexSelectableCount(pool: *const broker.AccountPool) usize {
+    var count: usize = 0;
+    for (pool.accounts.items) |entry| {
+        if (isCodexAccountId(entry.id) and entry.selectable and entry.availability == .available) count += 1;
+    }
+    return count;
+}
+
+const AutoRevalidationRoute = struct {
+    account: []const u8,
+    capability: []const u8,
+};
+
+const AutoRevalidationSummary = struct {
+    admitted: bool = false,
+    attempted: usize = 0,
+    provider_evidence_routes: usize = 0,
+    available_after: usize = 0,
+    blocked_after: usize = 0,
+    probe_errors: usize = 0,
+    skipped: usize = 0,
+    reason: []const u8 = "not_attempted",
+
+    fn changedRouteHealth(self: AutoRevalidationSummary) bool {
+        return self.provider_evidence_routes != 0 or self.available_after != 0 or self.blocked_after != 0;
+    }
+};
+
+fn maybeAutoRevalidateCodexRoutes(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    store: *health_mod.HealthStore,
+    profile: ?[]const u8,
+    account_filter: ?[]const u8,
+    initial_selectable_routes: usize,
+    target_selectable_routes: usize,
+    writer: anytype,
+    emit_status: bool,
+) !AutoRevalidationSummary {
+    if (!cfg.policy.codex.auto_stay_afloat) return .{ .reason = "codex_auto_stay_afloat_disabled" };
+    if (!cfg.policy.codex.allow_provider_spend) return .{ .reason = "provider_spend_not_allowed" };
+
+    var seen = std.StringHashMap(void).init(allocator);
+    defer {
+        var key_it = seen.keyIterator();
+        while (key_it.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
+    var candidates = std.ArrayList(AutoRevalidationRoute).init(allocator);
+    defer {
+        for (candidates.items) |route| {
+            allocator.free(route.account);
+            allocator.free(route.capability);
+        }
+        candidates.deinit();
+    }
+
+    try collectProfileCodexAutoRevalidationRoutes(allocator, cfg, profile, account_filter, &seen, &candidates);
+    try collectHealthCodexAutoRevalidationRoutes(allocator, cfg, store, account_filter, &seen, &candidates);
+
+    var summary = AutoRevalidationSummary{ .admitted = true };
+    if (candidates.items.len == 0) {
+        summary.reason = "no_expired_codex_routes";
+        if (emit_status) try writeAutoRevalidationStatus(writer, summary);
+        return summary;
+    }
+
+    for (candidates.items) |route| {
+        if (initial_selectable_routes + summary.available_after >= target_selectable_routes) break;
+        const key = health_mod.capabilityKey("codex", route.account, route.capability);
+        const health = store.accounts.get(key.slice()) orelse {
+            summary.skipped += 1;
+            continue;
+        };
+        if (!codexHealthNeedsAutoRevalidation(health)) {
+            summary.skipped += 1;
+            continue;
+        }
+
+        summary.attempted += 1;
+        const previous = takeHealthEntry(store, key.slice());
+
+        var ctx = pipeline.Context.init(allocator, cfg, store);
+        defer ctx.deinit();
+        ctx.provider_name = "codex";
+        ctx.account_name = route.account;
+        ctx.capability_name = route.capability;
+
+        const probe_result = pipeline.runProbe(&ctx);
+        var recorded_provider_evidence = true;
+        if (probe_result) |_| {} else |e| {
+            if (autoRevalidationErrorRecordedEvidence(e)) {
+                summary.provider_evidence_routes += 1;
+            } else {
+                recorded_provider_evidence = false;
+                summary.probe_errors += 1;
+                if (store.accounts.get(key.slice()) == null) {
+                    if (previous) |prev| {
+                        try putHealthEntryCopy(store, key.slice(), prev);
+                    }
+                }
+            }
+        }
+
+        if (probe_result) |_| {
+            summary.provider_evidence_routes += 1;
+        } else |_| {}
+        if (recorded_provider_evidence) {
+            if (store.accounts.get(key.slice())) |after| {
+                if (codexHealthAvailable(after)) {
+                    summary.available_after += 1;
+                } else if (codexHealthBlocksRoute(after)) {
+                    summary.blocked_after += 1;
+                }
+            }
+        }
+    }
+
+    store.persist();
+    summary.reason = if (summary.attempted == 0)
+        "no_expired_codex_routes"
+    else if (summary.probe_errors != 0)
+        "auto_revalidation_probe_errors"
+    else if (summary.available_after != 0)
+        "auto_revalidation_found_available_route"
+    else
+        "provider_evidence_still_blocked";
+
+    if (emit_status) try writeAutoRevalidationStatus(writer, summary);
+    return summary;
+}
+
+fn collectProfileCodexAutoRevalidationRoutes(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    profile: ?[]const u8,
+    account_filter: ?[]const u8,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList(AutoRevalidationRoute),
+) !void {
+    if (profile) |name| {
+        if (cfg.profiles.map.get(name)) |profile_cfg| {
+            try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, profile_cfg.providers, account_filter, seen, out);
+        }
+        return;
+    }
+
+    var profiles = cfg.profiles.map.iterator();
+    while (profiles.next()) |entry| {
+        try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, entry.value_ptr.providers, account_filter, seen, out);
+    }
+}
+
+fn collectProfileEntriesForCodexAutoRevalidation(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    entries: []const []const u8,
+    account_filter: ?[]const u8,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList(AutoRevalidationRoute),
+) !void {
+    const provider = cfg.providers.map.get("codex") orelse return;
+    for (entries) |entry| {
+        const parsed = health_mod.parseHealthKey(entry) orelse continue;
+        if (!std.mem.eql(u8, parsed.provider, "codex")) continue;
+        const capability = parsed.capability orelse continue;
+        if (account_filter) |filter| {
+            if (!codexAccountFilterMatches(filter, parsed.account)) continue;
+        }
+        if (provider.accounts.map.get(parsed.account) == null) continue;
+        try appendAutoRevalidationRoute(allocator, seen, out, parsed.account, capability);
+    }
+}
+
+fn collectHealthCodexAutoRevalidationRoutes(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    store: *health_mod.HealthStore,
+    account_filter: ?[]const u8,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList(AutoRevalidationRoute),
+) !void {
+    const provider = cfg.providers.map.get("codex") orelse return;
+    var it = store.accounts.iterator();
+    while (it.next()) |entry| {
+        const parsed = health_mod.parseHealthKey(entry.key_ptr.*) orelse continue;
+        if (!std.mem.eql(u8, parsed.provider, "codex")) continue;
+        const capability = parsed.capability orelse continue;
+        if (account_filter) |filter| {
+            if (!codexAccountFilterMatches(filter, parsed.account)) continue;
+        }
+        if (provider.accounts.map.get(parsed.account) == null) continue;
+        if (!codexHealthNeedsAutoRevalidation(entry.value_ptr.*)) continue;
+        try appendAutoRevalidationRoute(allocator, seen, out, parsed.account, capability);
+    }
+}
+
+fn appendAutoRevalidationRoute(
+    allocator: std.mem.Allocator,
+    seen: *std.StringHashMap(void),
+    out: *std.ArrayList(AutoRevalidationRoute),
+    account: []const u8,
+    capability: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "codex:{s}#{s}", .{ account, capability });
+    defer allocator.free(key);
+    if (seen.contains(key)) return;
+    const account_copy = try allocator.dupe(u8, account);
+    errdefer allocator.free(account_copy);
+    const capability_copy = try allocator.dupe(u8, capability);
+    errdefer allocator.free(capability_copy);
+    try seen.put(try allocator.dupe(u8, key), {});
+    try out.append(.{ .account = account_copy, .capability = capability_copy });
+}
+
+fn codexAccountFilterMatches(filter: []const u8, account: []const u8) bool {
+    if (std.mem.eql(u8, filter, account)) return true;
+    if (std.mem.startsWith(u8, filter, "codex:")) return std.mem.eql(u8, filter["codex:".len..], account);
+    return false;
+}
+
+fn codexHealthNeedsAutoRevalidation(health: health_mod.AccountHealth) bool {
+    const now = std.time.timestamp();
+    return switch (health.liveness) {
+        .live => |live| switch (live.availability) {
+            .quota_exhausted => |quota| if (quota.window_resets_at) |reset| reset <= now else false,
+            .rate_limited => health.rate_limited_until != null and health.rate_limited_until.? <= now,
+            .available, .cooldown => false,
+        },
+        .dead, .degraded => false,
+    };
+}
+
+fn codexHealthAvailable(health: health_mod.AccountHealth) bool {
+    return switch (health.liveness) {
+        .live => |live| live.availability == .available,
+        .dead, .degraded => false,
+    };
+}
+
+fn codexHealthBlocksRoute(health: health_mod.AccountHealth) bool {
+    return switch (health.liveness) {
+        .dead, .degraded => true,
+        .live => |live| live.availability != .available,
+    };
+}
+
+fn autoRevalidationErrorRecordedEvidence(e: types.PipelineError) bool {
+    return switch (e) {
+        error.AllAccountsExhausted => true,
+        else => false,
+    };
+}
+
+fn takeHealthEntry(store: *health_mod.HealthStore, key: []const u8) ?health_mod.AccountHealth {
+    if (store.accounts.fetchRemove(key)) |kv| {
+        defer store.allocator.free(kv.key);
+        return kv.value;
+    }
+    return null;
+}
+
+fn putHealthEntryCopy(store: *health_mod.HealthStore, key: []const u8, health: health_mod.AccountHealth) !void {
+    const result = try store.accounts.getOrPut(key);
+    if (!result.found_existing) {
+        result.key_ptr.* = try store.allocator.dupe(u8, key);
+    }
+    result.value_ptr.* = health;
+}
+
+fn writeAutoRevalidationStatus(writer: anytype, summary: AutoRevalidationSummary) !void {
+    try writer.print(
+        "{{\"kind\":\"codex_auto_revalidation\",\"admitted\":{any},\"attempted\":{d},\"provider_evidence_routes\":{d},\"available_after\":{d},\"blocked_after\":{d},\"probe_errors\":{d},\"skipped\":{d},\"reason\":\"{s}\",\"spends_provider_calls\":{any},\"mutates_route_health\":{any}}}\n",
+        .{ summary.admitted, summary.attempted, summary.provider_evidence_routes, summary.available_after, summary.blocked_after, summary.probe_errors, summary.skipped, summary.reason, summary.attempted != 0, summary.changedRouteHealth() },
+    );
+}
+
 fn hasPathSeparator(value: []const u8) bool {
     return std.mem.indexOfScalar(u8, value, '/') != null or std.mem.indexOfScalar(u8, value, '\\') != null;
 }
@@ -505,6 +785,22 @@ fn fileExists(path: []const u8) bool {
     return true;
 }
 
+fn readFilePrefix(path: []const u8, buf: []u8) !usize {
+    var file = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    return try file.read(buf);
+}
+
+fn isOauthMuxCodexShim(path: []const u8) bool {
+    var buf: [4096]u8 = undefined;
+    const len = readFilePrefix(path, &buf) catch return false;
+    const data = buf[0..len];
+    return std.mem.indexOf(u8, data, "OMUX_CODEX_SHIM") != null;
+}
+
 fn resolveExecutableFromSearchPath(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -515,7 +811,13 @@ fn resolveExecutableFromSearchPath(
         if (dir.len == 0) continue;
         const candidate = try std.fs.path.join(allocator, &.{ dir, name });
         errdefer allocator.free(candidate);
-        if (fileExists(candidate)) return candidate;
+        if (fileExists(candidate)) {
+            if (isOauthMuxCodexShim(candidate)) {
+                allocator.free(candidate);
+                continue;
+            }
+            return candidate;
+        }
         allocator.free(candidate);
     }
     return null;
@@ -546,6 +848,10 @@ fn resolveCodexBinary(
             allocator.free(expanded);
             return error.FileNotFound;
         }
+        if (isOauthMuxCodexShim(expanded)) {
+            allocator.free(expanded);
+            return RunError.CodexShimRecursion;
+        }
         return expanded;
     }
 
@@ -563,7 +869,13 @@ fn resolveCodexBinary(
     for (fallback_dirs.items) |dir| {
         const candidate = try std.fs.path.join(allocator, &.{ dir, requested });
         errdefer allocator.free(candidate);
-        if (fileExists(candidate)) return candidate;
+        if (fileExists(candidate)) {
+            if (isOauthMuxCodexShim(candidate)) {
+                allocator.free(candidate);
+                continue;
+            }
+            return candidate;
+        }
         allocator.free(candidate);
     }
 
@@ -632,6 +944,31 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     };
     restrictPoolToCodex(&server.pool);
     try launch_timer.mark(status_writer, emit_status, "config_health_load");
+
+    const initial_selectable_routes = codexSelectableCount(&server.pool);
+    const target_selectable_routes: usize = if (opts.account != null) 1 else 2;
+    if (initial_selectable_routes < target_selectable_routes) {
+        const revalidation = try maybeAutoRevalidateCodexRoutes(
+            allocator,
+            parsed.value,
+            &route_health,
+            opts.profile,
+            opts.account,
+            initial_selectable_routes,
+            target_selectable_routes,
+            status_writer,
+            emit_status,
+        );
+        if (revalidation.changedRouteHealth()) {
+            server.pool.deinit();
+            server.pool = broker.AccountPool.init(allocator);
+            broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+                return RunError.PoolPopulateFailed;
+            };
+            restrictPoolToCodex(&server.pool);
+        }
+        try launch_timer.mark(status_writer, emit_status, "codex_auto_revalidation");
+    }
 
     // 2. Elect an account (honoring --account pin if set).
     const elected = if (opts.account) |pin| pin: {
@@ -780,7 +1117,11 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         try allocator.dupe(u8, "codex");
     defer allocator.free(requested_codex_bin);
     const codex_bin = resolveCodexBinary(allocator, requested_codex_bin) catch |e| {
-        try stderr.print("oauth-mux codex: cannot find Codex CLI {s}; set OMUX_CODEX_BIN to an executable path\n", .{requested_codex_bin});
+        if (e == RunError.CodexShimRecursion) {
+            try stderr.print("oauth-mux codex: resolved Codex CLI {s} is an oauth-mux codex shim; set OMUX_CODEX_BIN to the native Codex executable\n", .{requested_codex_bin});
+        } else {
+            try stderr.print("oauth-mux codex: cannot find Codex CLI {s}; set OMUX_CODEX_BIN to an executable path\n", .{requested_codex_bin});
+        }
         return e;
     };
     defer allocator.free(codex_bin);
@@ -2109,6 +2450,46 @@ test "resolveCodexBinary accepts explicit existing path" {
     const resolved = try resolveCodexBinary(std.testing.allocator, path);
     defer std.testing.allocator.free(resolved);
     try std.testing.expectEqualStrings(path, resolved);
+}
+
+test "resolveCodexBinary rejects explicit oauth-mux codex shim" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("codex", .{ .mode = 0o755 });
+    try file.writeAll("#!/bin/sh\n# OMUX_CODEX_SHIM\nexec oauth-mux codex \"$@\"\n");
+    file.close();
+
+    const path = try tmp.dir.realpathAlloc(std.testing.allocator, "codex");
+    defer std.testing.allocator.free(path);
+    try std.testing.expectError(RunError.CodexShimRecursion, resolveCodexBinary(std.testing.allocator, path));
+}
+
+test "resolveExecutableFromSearchPath skips oauth-mux codex shim" {
+    var shim_tmp = std.testing.tmpDir(.{});
+    defer shim_tmp.cleanup();
+    var native_tmp = std.testing.tmpDir(.{});
+    defer native_tmp.cleanup();
+
+    const shim = try shim_tmp.dir.createFile("codex", .{ .mode = 0o755 });
+    try shim.writeAll("#!/bin/sh\n# OMUX_CODEX_SHIM\nexec oauth-mux codex \"$@\"\n");
+    shim.close();
+    const native = try native_tmp.dir.createFile("codex", .{ .mode = 0o755 });
+    try native.writeAll("#!/bin/sh\nexit 0\n");
+    native.close();
+
+    const shim_root = try shim_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(shim_root);
+    const native_root = try native_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(native_root);
+    const search_path = try std.fmt.allocPrint(std.testing.allocator, "{s}{c}{s}", .{ shim_root, std.fs.path.delimiter, native_root });
+    defer std.testing.allocator.free(search_path);
+
+    const resolved = (try resolveExecutableFromSearchPath(std.testing.allocator, "codex", search_path)).?;
+    defer std.testing.allocator.free(resolved);
+    const expected = try std.fs.path.join(std.testing.allocator, &.{ native_root, "codex" });
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, resolved);
 }
 
 test "restrictPoolToCodex blocks non-codex routes" {

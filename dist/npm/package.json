@@ -10,7 +10,8 @@
     "install.js"
   ],
   "bin": {
-    "oauth-mux": "bin/oauth-mux.js"
+    "oauth-mux": "bin/oauth-mux.js",
+    "codex": "bin/codex.js"
   },
   "scripts": {
     "postinstall": "node install.js"

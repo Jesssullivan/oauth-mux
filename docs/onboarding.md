@@ -229,6 +229,15 @@ child config: `terminal_resize_reflow`, `memories`, `external_migration`,
 explicit `false`, win, and oauth-mux does not rewrite the canonical
 `config.toml`.
 
+For a no-spend managed Codex readiness snapshot, use:
+
+```bash
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
+```
+
+The preflight reports install candidates, Codex policy, route readiness, and
+exact next actions. It does not call the provider or mutate route health.
+
 Managed Codex live quota handoff is proven for installed
 `oauth-mux codex resume` status artifacts. The 2026-05-09 engineered evidence
 shows successful primary-route traffic, provider-originated
@@ -373,10 +382,10 @@ are refused in the admission report unless `policy.daemon` explicitly allows
 them. `repair-plan --json` and `route explain --json` include both the effective
 policy and per-route `daemon_probe` / `daemon_repair` decisions.
 
-`oauth-mux stay-afloat --once --json` is the portable stay-afloat dogfood surface. It
-loads the same route/runtime/liveness state, applies the daemon policy, and
-prints what a future background loop would be allowed to do. Without
-`--execute` it remains planning-only and reports `executed:false`.
+`oauth-mux stay-afloat --once --json` is the portable stay-afloat dogfood
+surface. It loads the same route/runtime/liveness state, applies the policy, and
+prints what a future background loop would be allowed to do. Without `--execute`
+it remains planning-only and reports `executed:false`.
 
 Opt-in beta execution is explicit:
 
@@ -386,6 +395,9 @@ oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-ma
 
 Execute mode runs at most one admitted non-interactive action per tick. The
 default policy admits `free_command`, so command-backed probes can refresh
+local evidence. The Codex stay-afloat policy also admits provider-spend
+revalidation for expired Codex quota/rate windows; interactive auth is still
+user-mediated.
 recorded route state without requiring a service manager. Provider-spending
 probes, interactive browser/device auth, and credential mutation remain refused
 unless policy explicitly admits them. Interactive reauth is not run in the
