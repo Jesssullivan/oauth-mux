@@ -285,6 +285,15 @@ jq -e '
   and .spends_provider_calls == false
   and .mutates_user_config == false
   and .mutates_route_health == false
+  and (.install.oauth_mux_candidates | type) == "array"
+  and (.install.active_oauth_mux_is_path_first | type) == "boolean"
+  and (.install.codex_candidates | type) == "array"
+  and (.install.active_codex == null or (.install.active_codex | type) == "string")
+  and (.install.active_codex_is_oauth_mux_shim | type) == "boolean"
+  and (.install.native_codex_candidate == null or (.install.native_codex_candidate | type) == "string")
+  and (.install.native_codex_found | type) == "boolean"
+  and (.install.codex_shim_candidates | type) == "number"
+  and .install.native_codex_env == "OMUX_CODEX_BIN"
   and .ok == false
   and .route_summary.routes_total == 3
   and .route_summary.selectable_routes == 0
