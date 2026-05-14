@@ -277,6 +277,27 @@ jq -e '
   else true end)
 ' "$route_explain_json" >/dev/null
 
+printf 'first-run e2e: codex preflight explains blocked route reasons without mutation\n'
+codex_preflight_json="$tmp/codex-preflight-codex-max.json"
+run_json "$codex_preflight_json" codex preflight --profile codex-max --capability codex-max --json
+jq -e '
+  .mode == "codex_preflight"
+  and .spends_provider_calls == false
+  and .mutates_user_config == false
+  and .mutates_route_health == false
+  and .ok == false
+  and .route_summary.routes_total == 3
+  and .route_summary.selectable_routes == 0
+  and (.blocked_route_reasons | length) == 1
+  and (.blocked_route_reasons[] | select(.reason == "auth_broker_unready" and .count == 3))
+  and (.blocked_routes | length) == 3
+  and all(.blocked_routes[]; .provider == "codex" and .capability == "codex-max" and .selectable == false and .broker_ready == false and .blocked_reason == "auth_broker_unready" and .action.mutating == false)
+  and (.next_actions | index("oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json") != null)
+' "$codex_preflight_json" >/dev/null
+expect_not_contains "$(cat "$codex_preflight_json")" "$store_root/max-1" "codex preflight does not print concrete Codex store paths"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
+
 printf 'first-run e2e: stay-afloat exposes runtime diagnostics without automatic repair\n'
 stay_afloat_json="$tmp/stay-afloat-codex-max.json"
 run_json "$stay_afloat_json" stay-afloat --once --profile codex-max --capability codex-max --json
