@@ -64,6 +64,7 @@ const std = @import("std");
 const broker_types = @import("../../broker/types.zig");
 const account_pool_mod = @import("../../broker/account_pool.zig");
 const health_mod = @import("../../health.zig");
+const trace = @import("../../trace.zig");
 const core_types = @import("../../types.zig");
 
 const DEFAULT_UPSTREAM_HOST = "chatgpt.com";
@@ -259,6 +260,7 @@ pub const Proxy = struct {
                         .rejections = rejections.items,
                         .delivered_to_codex = true,
                     });
+                    self.traceProviderUnavailable(req, pending_failure_account orelse "", pending_transport_error orelse @errorName(err), rejections.items);
                     if (pending_buffered) |buffered| {
                         try writeBufferedStoredResponse(writer, buffered);
                     } else {
@@ -288,12 +290,14 @@ pub const Proxy = struct {
                         .attempted = attempted.items,
                         .rejections = rejections.items,
                     });
+                    self.traceNoAccountSelectable(req, pending_kind, attempted.items, rejections.items);
                     try writeNoAccountSelectableResponse(a, writer, self.profile, rejections.items);
                 } else {
                     self.logEvent("proxy_no_account_selectable", .{
                         .attempted = attempted.items,
                         .rejections = rejections.items,
                     });
+                    self.traceNoAccountSelectable(req, pending_kind, attempted.items, rejections.items);
                     try writeNoAccountSelectableResponse(a, writer, self.profile, rejections.items);
                 }
                 return;
@@ -363,6 +367,7 @@ pub const Proxy = struct {
             const status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
                 appendRejection(a, &rejections, elected.id, .provider_degraded, @errorName(err)) catch {};
                 self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
+                self.traceUpstreamFailure(req, elected.id, @errorName(err));
                 self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
                 pending_failure_kind = .provider_5xx;
                 pending_failure_account = elected.id;
@@ -423,6 +428,21 @@ pub const Proxy = struct {
             .streamed = status_and_class.streamed,
             .delivered_to_codex = delivered_to_codex,
         });
+        trace.append(self.allocator, "codex.proxy.turn", if (status_and_class.classification.kind == .ok) .info else .warn, &.{
+            trace.string("provider", "codex"),
+            trace.string("account_label", accountLabel(account_id)),
+            trace.string("method", req.method),
+            trace.string("path_kind", pathKind(req.path)),
+            trace.uint("status", status_and_class.status),
+            trace.string("classification", @tagName(status_and_class.classification.kind)),
+            trace.string("body_class", status_and_class.body_class orelse "none"),
+            trace.string("claim_level", self.peak_claim.toString()),
+            trace.boolean("streamed", status_and_class.streamed),
+            trace.boolean("delivered_to_codex", delivered_to_codex),
+            trace.boolean("token_material_printed", false),
+            trace.boolean("raw_account_id_printed", false),
+            trace.boolean("session_ids_printed", false),
+        });
     }
 
     fn applyClassification(
@@ -462,6 +482,7 @@ pub const Proxy = struct {
                 .reason = @tagName(reason),
                 .dropped = "x-codex-turn-state",
             });
+            self.traceRetry(from, to, reason);
             return;
         }
 
@@ -472,6 +493,7 @@ pub const Proxy = struct {
                 .reason = @tagName(reason),
                 .dropped = "x-codex-turn-state",
             });
+            self.traceRetry(from, to, reason);
             return;
         }
 
@@ -481,6 +503,7 @@ pub const Proxy = struct {
             .reason = @tagName(reason),
             .dropped = "x-codex-turn-state",
         });
+        self.traceRetry(from, to, reason);
     }
 
     fn recordDurableClassification(
@@ -554,6 +577,92 @@ pub const Proxy = struct {
         store.persist();
     }
 
+    fn traceRetry(
+        self: *Proxy,
+        from: []const u8,
+        to: []const u8,
+        reason: broker_types.QuotaKind,
+    ) void {
+        trace.append(self.allocator, "codex.proxy.retry", .warn, &.{
+            trace.string("provider", "codex"),
+            trace.string("from_account_label", accountLabel(from)),
+            trace.string("to_account_label", accountLabel(to)),
+            trace.string("reason", @tagName(reason)),
+            trace.string("dropped_header_class", "turn_state"),
+            trace.boolean("token_material_printed", false),
+            trace.boolean("raw_account_id_printed", false),
+            trace.boolean("session_ids_printed", false),
+        });
+    }
+
+    fn traceNoAccountSelectable(
+        self: *Proxy,
+        req: Request,
+        pending_kind: ?broker_types.QuotaKind,
+        attempted: []const []const u8,
+        rejections: []const CandidateRejection,
+    ) void {
+        trace.append(self.allocator, "codex.proxy.no_account_selectable", .warn, &.{
+            trace.string("provider", "codex"),
+            trace.string("profile", self.profile orelse "none"),
+            trace.string("method", req.method),
+            trace.string("path_kind", pathKind(req.path)),
+            trace.string("pending_failure", if (pending_kind) |kind| @tagName(kind) else "none"),
+            trace.uint("attempted_count", @intCast(attempted.len)),
+            trace.uint("rejections_total", @intCast(rejections.len)),
+            trace.uint("auth_failed", @intCast(countRejectionsByState(rejections, .auth_failed))),
+            trace.uint("quota_exhausted", @intCast(countRejectionsByState(rejections, .quota_exhausted))),
+            trace.uint("rate_limited", @intCast(countRejectionsByState(rejections, .rate_limited))),
+            trace.uint("tier_insufficient", @intCast(countRejectionsByState(rejections, .tier_insufficient))),
+            trace.uint("provider_degraded", @intCast(countRejectionsByState(rejections, .provider_degraded))),
+            trace.uint("credential_unavailable", @intCast(countRejectionsByState(rejections, .credential_unavailable))),
+            trace.boolean("agent_safe_next_action_available", true),
+            trace.boolean("spend_confirmed_next_action_available", true),
+            trace.boolean("token_material_printed", false),
+            trace.boolean("raw_account_id_printed", false),
+            trace.boolean("session_ids_printed", false),
+        });
+    }
+
+    fn traceProviderUnavailable(
+        self: *Proxy,
+        req: Request,
+        account_id: []const u8,
+        err: []const u8,
+        rejections: []const CandidateRejection,
+    ) void {
+        trace.append(self.allocator, "codex.proxy.provider_unavailable", .warn, &.{
+            trace.string("provider", "codex"),
+            trace.string("account_label", accountLabel(account_id)),
+            trace.string("method", req.method),
+            trace.string("path_kind", pathKind(req.path)),
+            trace.string("transport_error", err),
+            trace.uint("rejections_total", @intCast(rejections.len)),
+            trace.boolean("delivered_to_codex", true),
+            trace.boolean("token_material_printed", false),
+            trace.boolean("raw_account_id_printed", false),
+            trace.boolean("session_ids_printed", false),
+        });
+    }
+
+    fn traceUpstreamFailure(
+        self: *Proxy,
+        req: Request,
+        account_id: []const u8,
+        err: []const u8,
+    ) void {
+        trace.append(self.allocator, "codex.proxy.upstream_failure", .warn, &.{
+            trace.string("provider", "codex"),
+            trace.string("account_label", accountLabel(account_id)),
+            trace.string("method", req.method),
+            trace.string("path_kind", pathKind(req.path)),
+            trace.string("transport_error", err),
+            trace.boolean("token_material_printed", false),
+            trace.boolean("raw_account_id_printed", false),
+            trace.boolean("session_ids_printed", false),
+        });
+    }
+
     fn logEvent(self: *Proxy, kind: []const u8, fields: anytype) void {
         // Minimal NDJSON log frame; never includes token material.
         var buf = std.ArrayListUnmanaged(u8){};
@@ -597,6 +706,12 @@ fn routeStateFromClassification(kind: broker_types.QuotaKind) RouteState {
         .tier_insufficient => .tier_insufficient,
         .provider_5xx => .provider_degraded,
     };
+}
+
+fn accountLabel(account_id: []const u8) []const u8 {
+    const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return account_id;
+    if (colon + 1 >= account_id.len) return account_id;
+    return account_id[colon + 1 ..];
 }
 
 fn retryAfterSeconds(now_unix: i64, resets_at: ?i64, kind: broker_types.QuotaKind) ?u32 {

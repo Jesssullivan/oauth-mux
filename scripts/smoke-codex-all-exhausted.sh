@@ -26,6 +26,7 @@ UPLOG="$TMP/upstream.log"
 NDJSON="$TMP/adapter.ndjson"
 ADAPTER_STDERR="$TMP/adapter.stderr"
 STUB_REPORT="$TMP/stub-codex.report"
+TRACE_FILE="$TMP/trace.ndjson"
 
 cleanup() {
     if [[ -n "${UPSTREAM_PID:-}" ]] && kill -0 "$UPSTREAM_PID" 2>/dev/null; then
@@ -91,6 +92,10 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  OMUX_TRACE=1 \
+  OMUX_TRACE_FILE="$TRACE_FILE" \
+  OMUX_TRACE_ID="cccccccccccccccccccccccccccccccc" \
+  OMUX_SPAN_ID="dddddddddddddddd" \
   OMUX_STUB_CODEX_TURNS=5 \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
   "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
@@ -123,6 +128,19 @@ assert_grep "fallback quota 429 was not delivered before no-account failure" '"k
 assert_grep "same-turn retry unavailable after all accounts exhausted" '"kind":"proxy_same_turn_retry_unavailable"' "$NDJSON"
 assert_grep "proxy_no_account_selectable event fired" '"kind":"proxy_no_account_selectable"' "$NDJSON"
 
+jq -e 'select(.name == "codex.managed.overlay" and .attributes.auth_authority == "mux_owned_overlay" and .attributes.config_paths_printed == false)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captured managed overlay without config paths"
+jq -e 'select(.name == "codex.managed.session_start" and .attributes.claim_level == "broker_owned" and .attributes.codex_home_path_printed == false)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captured managed session start without CODEX_HOME path"
+jq -e 'select(.name == "codex.proxy.turn" and .attributes.classification == "quota_exhausted" and .attributes.delivered_to_codex == false)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captured proxy quota turn"
+jq -e 'select(.name == "codex.proxy.retry" and .attributes.reason == "quota_exhausted" and .attributes.raw_account_id_printed == false)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captured proxy retry boundary"
+jq -e 'select(.name == "codex.proxy.no_account_selectable" and .attributes.pending_failure == "quota_exhausted" and .attributes.rejections_total == 2 and .attributes.quota_exhausted == 2)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captured no-account rejection summary"
+jq -e 'select(.name == "codex.managed.session_end" and .attributes.terminal_event == "session_ended" and .attributes.synthetic_swap_observed == true)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captured managed session end"
+
 if grep -q '"kind":"session_started"' "$ADAPTER_STDERR"; then
     echo "  ✗ adapter status frames leaked to stderr despite --json-status-file" >&2
     exit 1
@@ -146,6 +164,15 @@ else
     jq .turns "$STUB_REPORT" >&2
     exit 1
 fi
+
+for leak in AT-allexh-A AT-allexh-B RT-A RT-B acc-A-id acc-B-id "$TMP/account-A/auth.json" "$TMP/account-B/auth.json"; do
+    if grep -Fq "$leak" "$TRACE_FILE"; then
+        echo "  ✗ trace leaked sensitive value: $leak" >&2
+        cat "$TRACE_FILE" >&2
+        exit 1
+    fi
+done
+echo "  ✓ trace did not leak tokens, raw account ids, or auth paths"
 
 PID_STABLE=$(jq -r .pid_stable "$STUB_REPORT")
 if [[ "$PID_STABLE" == "true" ]]; then

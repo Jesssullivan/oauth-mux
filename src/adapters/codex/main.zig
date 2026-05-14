@@ -36,6 +36,7 @@ const health_mod = @import("../../health.zig");
 const paths = @import("../../paths.zig");
 const pipeline = @import("../../pipeline.zig");
 const shell = @import("../../shell.zig");
+const trace = @import("../../trace.zig");
 const types = @import("../../types.zig");
 const wire_proxy = @import("wire_proxy.zig");
 
@@ -483,6 +484,87 @@ fn envFlag(name: []const u8) bool {
 
 fn isCodexAccountId(account_id: []const u8) bool {
     return std.mem.startsWith(u8, account_id, "codex:");
+}
+
+fn codexAccountLabel(account_id: []const u8) []const u8 {
+    const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return account_id;
+    if (colon + 1 >= account_id.len) return account_id;
+    return account_id[colon + 1 ..];
+}
+
+fn traceManagedOverlay(
+    allocator: std.mem.Allocator,
+    account_id: []const u8,
+    profile: ?[]const u8,
+    proxy_port: u16,
+    codex_home: *const SessionCodexHome,
+) void {
+    trace.append(allocator, "codex.managed.overlay", .info, &.{
+        trace.string("provider", "codex"),
+        trace.string("account_label", codexAccountLabel(account_id)),
+        trace.string("profile", profile orelse "none"),
+        trace.string("auth_authority", "mux_owned_overlay"),
+        trace.string("managed_config", "mux_owned_overlay"),
+        trace.string("config_layout", codex_home.config_layout),
+        trace.string("session_authority", codex_home.session_authority.toString()),
+        trace.boolean("config_passthrough", codex_home.config_passthrough),
+        trace.boolean("user_config_present", codex_home.config_source_present),
+        trace.uint("config_overridden_keys", @intCast(codex_home.config_overridden_keys)),
+        trace.uint("experimental_feature_defaults_injected", @intCast(codex_home.experimental_feature_defaults_injected)),
+        trace.uint("mcp_stdio_unsupported_fields_removed", @intCast(codex_home.mcp_stdio_unsupported_fields_removed)),
+        trace.uint("proxy_port", proxy_port),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("config_paths_printed", false),
+        trace.boolean("session_paths_printed", false),
+        trace.boolean("token_material_printed", false),
+    });
+}
+
+fn traceManagedSessionStart(
+    allocator: std.mem.Allocator,
+    account_id: []const u8,
+    profile: ?[]const u8,
+    forwarded_arg_count: usize,
+    resume_mode: ResumeMode,
+    codex_home: *const SessionCodexHome,
+) void {
+    trace.append(allocator, "codex.managed.session_start", .info, &.{
+        trace.string("provider", "codex"),
+        trace.string("account_label", codexAccountLabel(account_id)),
+        trace.string("profile", profile orelse "none"),
+        trace.string("claim_level", "broker_owned"),
+        trace.string("resume_mode", resume_mode.toString()),
+        trace.string("session_authority", codex_home.session_authority.toString()),
+        trace.uint("forwarded_arg_count", @intCast(forwarded_arg_count)),
+        trace.boolean("child_stdio_inherited", true),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("session_ids_printed", false),
+        trace.boolean("token_material_printed", false),
+    });
+}
+
+fn traceManagedSessionEnd(
+    allocator: std.mem.Allocator,
+    proxy: *const wire_proxy.Proxy,
+    codex_home: *const SessionCodexHome,
+    aborted: bool,
+    reason: []const u8,
+    exit_code: i32,
+    term: ?std.process.Child.Term,
+) void {
+    trace.append(allocator, "codex.managed.session_end", if (aborted) .warn else .info, &.{
+        trace.string("provider", "codex"),
+        trace.string("terminal_event", if (aborted) "session_aborted" else "session_ended"),
+        trace.string("reason", reason),
+        trace.int("exit_code", exit_code),
+        trace.string("term_kind", if (term) |value| childTermKind(value) else "none"),
+        trace.int("term_code", if (term) |value| childTermCode(value) else -1),
+        trace.string("final_claim_level", proxy.peakClaimLevel().toString()),
+        trace.string("session_authority", codex_home.session_authority.toString()),
+        trace.boolean("synthetic_swap_observed", proxy.syntheticSwapSeen()),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("token_material_printed", false),
+    });
 }
 
 fn restrictPoolToCodex(pool: *broker.AccountPool) void {
@@ -1037,6 +1119,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         opts.isolated_session_store,
     );
     defer codex_home.deinit(allocator);
+    traceManagedOverlay(allocator, elected.id, opts.profile, proxy_port, &codex_home);
     try launch_timer.mark(status_writer, emit_status, "overlay_creation");
 
     const resume_request = detectResumeRequest(opts.forward_argv);
@@ -1145,6 +1228,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     if (opts.profile) |p| try env_map.put("OMUX_ACTIVE_PROFILE", p);
     try launch_timer.mark(status_writer, emit_status, "env_build");
 
+    traceManagedSessionStart(allocator, elected.id, opts.profile, opts.forward_argv.len, resume_request.mode, &codex_home);
+
     // 8. Spawn codex as child with inherited stdio (so the user gets
     // the real codex TUI). The adapter stays alive in parent.
     var child = std.process.Child.init(argv.items, allocator);
@@ -1154,8 +1239,22 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     child.env_map = &env_map;
     child.spawn() catch |e| {
         try stderr.print("oauth-mux codex: spawn: {s}\n", .{@errorName(e)});
+        trace.append(allocator, "codex.managed.child_spawn", .err, &.{
+            trace.string("provider", "codex"),
+            trace.string("account_label", codexAccountLabel(elected.id)),
+            trace.string("error", @errorName(e)),
+            trace.boolean("codex_home_path_printed", false),
+            trace.boolean("token_material_printed", false),
+        });
         return e;
     };
+    trace.append(allocator, "codex.managed.child_spawn", .info, &.{
+        trace.string("provider", "codex"),
+        trace.string("account_label", codexAccountLabel(elected.id)),
+        trace.boolean("stdio_inherited", true),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("token_material_printed", false),
+    });
     try launch_timer.mark(status_writer, emit_status, "child_spawn");
 
     // 9. Start the proxy thread. It loops on serveOne until the
@@ -1244,22 +1343,6 @@ fn finalizeManagedSession(
     }
     const auth_failure = proxy.authFailureObservation();
 
-    if (!emit_status) return;
-
-    try writeAuthWritebackStatus(status_writer, auth_writeback);
-    for (auth_failure.accounts) |account_observation| {
-        if (account_observation.auth_unauthorized_turns == 0) continue;
-        const auth_health = recordManagedAuthFailureHealth(allocator, account_observation, auth_writeback);
-        try writeManagedAuthHealthStatus(status_writer, account_observation, auth_health);
-    }
-    if (resume_request.requested()) {
-        const observation = if (codex_home.authority_home) |authority_home|
-            try observeResumeWriteback(allocator, authority_home, resume_preflight, resume_request)
-        else
-            ResumeObservation{};
-        try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
-    }
-
     const exit_code: i32 = if (final_status.term) |term| switch (term) {
         .Exited => |c| c,
         else => -1,
@@ -1274,6 +1357,32 @@ fn finalizeManagedSession(
                 terminal_reason = reason;
             }
         }
+    }
+
+    traceManagedSessionEnd(
+        allocator,
+        proxy,
+        codex_home,
+        terminal_aborted,
+        terminal_reason,
+        exit_code,
+        final_status.term,
+    );
+
+    if (!emit_status) return;
+
+    try writeAuthWritebackStatus(status_writer, auth_writeback);
+    for (auth_failure.accounts) |account_observation| {
+        if (account_observation.auth_unauthorized_turns == 0) continue;
+        const auth_health = recordManagedAuthFailureHealth(allocator, account_observation, auth_writeback);
+        try writeManagedAuthHealthStatus(status_writer, account_observation, auth_health);
+    }
+    if (resume_request.requested()) {
+        const observation = if (codex_home.authority_home) |authority_home|
+            try observeResumeWriteback(allocator, authority_home, resume_preflight, resume_request)
+        else
+            ResumeObservation{};
+        try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
     }
 
     if (terminal_aborted) {

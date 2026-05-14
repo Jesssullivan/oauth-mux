@@ -43,7 +43,7 @@ Each event uses schema `oauth-mux.trace.v1` and includes:
 - `attributes`
 - `redaction`
 
-The first traced decisions are:
+The traced decisions are:
 
 - `health.normalize`: persisted transient provider degradation recovered for
   route selection after its retry window expires.
@@ -54,6 +54,21 @@ The first traced decisions are:
   oauth-mux-managed Codex admin commands without printing `CODEX_HOME`.
 - `codex.shim.pass_through`: installed `codex` shim admin-command pass-through
   without route election or native binary path output.
+- `codex.managed.overlay`: managed Codex `CODEX_HOME` overlay shape, config
+  passthrough/injection counts, session-authority mode, and proxy port without
+  printing overlay, config, auth, or session paths.
+- `codex.managed.session_start`, `codex.managed.child_spawn`, and
+  `codex.managed.session_end`: broker-owned managed session lifecycle without
+  printing token material, raw account ids, `CODEX_HOME`, or session ids.
+- `codex.proxy.turn`: per-request Codex proxy classification, path kind,
+  status, claim level, streaming/delivery flags, and selected route label.
+- `codex.proxy.retry`: same-turn retry boundary, including reason and the
+  class of sticky header dropped before switching account routes.
+- `codex.proxy.no_account_selectable`: terminal no-account condition with only
+  aggregate rejection counts and next-action availability.
+- `codex.proxy.upstream_failure` and `codex.proxy.provider_unavailable`:
+  provider/transport failure boundaries without promoting them to credential
+  death and without printing token or path material.
 
 Trace output must not include OAuth token bytes, raw provider account ids, raw
 Codex session ids, or local auth/config file paths. Attach `trace.ndjson` to a
