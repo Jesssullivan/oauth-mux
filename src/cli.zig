@@ -1915,6 +1915,16 @@ test "parse codex probe-all with capability alias" {
 }
 
 test "parse codex login account" {
+    const login_args = [_][]const u8{ "codex", "login", "max-2" };
+    const login_cmd = parse(&login_args);
+    switch (login_cmd) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .login);
+            try std.testing.expectEqualStrings("max-2", codex.account.?);
+        },
+        else => return error.Unexpected,
+    }
+
     const args = [_][]const u8{ "codex", "login-device", "max-2" };
     const cmd = parse(&args);
     switch (cmd) {

@@ -173,6 +173,44 @@ pub fn decisionFromClassification(classification: types.HttpClassification) type
     };
 }
 
+pub fn effectiveHealthForRouteSelection(health: AccountHealth, now: i64) AccountHealth {
+    var result = health;
+    recoverExpiredTransientHealth(&result, now);
+    return result;
+}
+
+pub fn recoverExpiredTransientHealth(health: *AccountHealth, now: i64) void {
+    switch (health.liveness) {
+        .degraded => |d| {
+            const retry_at = d.retry_at orelse return;
+            if (now < retry_at) return;
+            if (!degradedReasonIsTransientForRouteSelection(d.reason)) return;
+            health.liveness = .{ .live = .{ .availability = .available } };
+            health.last_probe_retry_after_s = null;
+            health.last_probe_hint_class = .none;
+            health.last_probe_decision = .use_this;
+            health.consecutive_failures = 0;
+        },
+        else => {},
+    }
+}
+
+pub fn degradedReasonIsTransientForRouteSelection(reason: types.DegradedReason) bool {
+    return switch (reason) {
+        .provider_degraded => true,
+        .tier_insufficient,
+        .subscription_paused,
+        .scope_insufficient,
+        .audience_mismatch,
+        .schema_invalid,
+        .terms_required,
+        .step_up_required,
+        .pending_verification,
+        .unknown_4xx,
+        => false,
+    };
+}
+
 pub const HealthStore = struct {
     allocator: std.mem.Allocator,
     accounts: std.StringHashMap(AccountHealth),
@@ -997,6 +1035,43 @@ test "HealthStore account decisions dominate capability route decisions" {
         types.MuxDecision.try_next_account,
         store.muxDecisionFor("codex", "max-1", "codex-max"),
     );
+}
+
+test "effectiveHealthForRouteSelection recovers only expired transient degradation" {
+    const now: i64 = 1_800_000_000;
+
+    const recovered = effectiveHealthForRouteSelection(.{
+        .liveness = .{ .degraded = .{
+            .reason = .provider_degraded,
+            .since = now - 120,
+            .retry_at = now - 1,
+        } },
+        .last_probe_hint_class = .provider_degraded,
+        .last_probe_decision = .try_next_provider,
+        .consecutive_failures = 1,
+    }, now);
+    switch (recovered.liveness) {
+        .live => |live| switch (live.availability) {
+            .available => {},
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(ProbeHintClass.none, recovered.last_probe_hint_class.?);
+    try std.testing.expectEqual(types.MuxDecision.use_this, recovered.last_probe_decision.?);
+    try std.testing.expectEqual(@as(u32, 0), recovered.consecutive_failures);
+
+    const still_blocked = effectiveHealthForRouteSelection(.{
+        .liveness = .{ .degraded = .{
+            .reason = .step_up_required,
+            .since = now - 7200,
+            .retry_at = now - 1,
+        } },
+    }, now);
+    switch (still_blocked.liveness) {
+        .degraded => |degraded| try std.testing.expectEqual(types.DegradedReason.step_up_required, degraded.reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "parseHealthKey supports account and capability routes" {
