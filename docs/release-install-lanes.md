@@ -11,7 +11,7 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 | Lane | User command | Source of artifact | Proof gate | Claim |
 | --- | --- | --- | --- | --- |
 | Worktree dogfood | `./zig-out/bin/oauth-mux ...` | current checkout | `zig build`, `just check-local` | unreleased behavior only |
-| User-local dogfood | `oauth-mux ...` with PATH resolving to `~/.local/bin` | copied worktree binary | hash match with `./zig-out/bin/oauth-mux`, version check | installed-command dogfood for current checkout |
+| User-local dogfood | `oauth-mux ...` and managed `codex ...` with PATH resolving to `~/.local/bin` | copied worktree binary plus user-local shim | hash match with `./zig-out/bin/oauth-mux`, version check, preflight check | installed-command dogfood for current checkout |
 | Nix package | `nix build .#` | flake package | `./result/bin/oauth-mux version` | package derivation proof |
 | GitHub Release | downloaded tarball | `dist/out/v*/artifacts` from release workflow | checksum verify and tarball smoke | public raw binary lane |
 | npm | `npm install -g oauth-mux` / `npx oauth-mux` | CI-generated npm tarballs | npm install smoke and `npm view` | public JS package lane |
@@ -53,13 +53,11 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 Before dogfooding unreleased behavior:
 
 ```bash
-just build
-mkdir -p ~/.local/bin
-rm -f ~/.local/bin/oauth-mux
-cp ./zig-out/bin/oauth-mux ~/.local/bin/oauth-mux
-shasum -a 256 ./zig-out/bin/oauth-mux ~/.local/bin/oauth-mux
+just install-local-dogfood
 which -a oauth-mux
+which -a codex
 oauth-mux version
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
 Expected:
@@ -67,6 +65,10 @@ Expected:
 - `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match.
 - `which -a oauth-mux` resolves `~/.local/bin/oauth-mux` before Homebrew when
   testing unreleased behavior.
+- `which -a codex` resolves `~/.local/bin/codex` before the native upstream
+  Codex CLI when testing managed Codex behavior.
+- `oauth-mux codex preflight --json` is handled by oauth-mux, not by the native
+  Codex CLI usage parser.
 - Homebrew may report the same source version while still being a different
   binary hash; treat it as the package lane.
 
@@ -78,6 +80,11 @@ file first, then copy the new build so the installed file has a fresh vnode and
 the hash still matches the worktree binary. Re-signing the installed copy is a
 separate repair fallback, but it changes the hash and no longer proves byte
 identity with `./zig-out/bin/oauth-mux`.
+
+The local installer refuses to replace an existing non-oauth-mux
+`~/.local/bin/codex` unless `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Use
+`OMUX_DOGFOOD_INSTALL_CODEX_SHIM=0` when you need installed-command dogfood for
+`oauth-mux` without shadowing the native `codex` command.
 
 ## UX, DX, AX Gates
 

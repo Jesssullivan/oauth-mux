@@ -111,23 +111,24 @@ brew install jesssullivan/omux/oauth-mux
 Local `0.1.7` candidate dogfood should keep provenance explicit:
 
 ```bash
-just build
-mkdir -p ~/.local/bin
-rm -f ~/.local/bin/oauth-mux
-cp ./zig-out/bin/oauth-mux ~/.local/bin/oauth-mux
-shasum -a 256 ./zig-out/bin/oauth-mux ~/.local/bin/oauth-mux
+just install-local-dogfood
 which -a oauth-mux
+which -a codex
 oauth-mux version
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
 On macOS, remove the old Mach-O before copying the dogfood binary. Overwriting in
 place can leave stale taskgated/code-signing state on the old vnode and produce
 an immediate `SIGKILL` / status `137`.
 
-The staged `0.1.7` package and installer lanes also include a managed `codex`
-shim. The shim resolves the native upstream Codex executable, passes it through
-`OMUX_CODEX_BIN`, and then enters `oauth-mux codex`. Public package channels do
-not carry that shim until `0.1.7` is published.
+`just install-local-dogfood` uses that remove-then-copy lane, verifies the
+installed binary hash against `./zig-out/bin/oauth-mux`, and installs a managed
+`codex` shim in the same user-local bin directory. The shim resolves the native
+upstream Codex executable, passes it through `OMUX_CODEX_BIN`, and then enters
+`oauth-mux codex`. It refuses to replace a non-oauth-mux `codex` already in that
+directory unless `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Public package channels
+do not carry that shim until `0.1.7` is published.
 
 ## Usage
 
