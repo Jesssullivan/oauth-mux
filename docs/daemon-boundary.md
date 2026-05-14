@@ -64,6 +64,9 @@ See `docs/spec/paid-cohort-soak-claim-policy-2026-05-03.md` for the paid
 cohort soak and public-claim gate tracked by `TIN-895`.
 See `docs/provider-repair-contracts.md` for the provider-mediated action
 contract tracked by `TIN-900` / GitHub #106.
+See `docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md` for the
+agent/MCP contract for displaying, acknowledging, and refreshing user-mediated
+reauth handoffs without promoting silent login or daemon hot-swap.
 
 ## Supervisor Contract
 

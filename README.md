@@ -226,6 +226,8 @@ Keep the claim ladder tied to evidence:
   lanes.
 - `docs/lifecycle.md`: application lifecycle, managed Codex flow, agent-safe
   control plane, and claim levels.
+- `docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`: agent/MCP
+  contract for user-mediated reauth prompts, consent, and redaction.
 - `docs/tracing.md`: opt-in trace schema, sink selection, and redaction rules.
 - `docs/evidence/codex-engineered-quota-handoff-20260509/`: current headline
   managed Codex quota-handoff proof.
