@@ -124,7 +124,10 @@ shim, the first native Codex binary, and the `OMUX_CODEX_BIN` escape hatch. Use
 that before debugging stale package or managed-versus-unmanaged Codex behavior.
 Its JSON separates `agent_safe_next_actions` from
 `spend_confirmed_next_actions`; text output uses matching no-spend diagnostics
-and spend-confirmed repair sections.
+and spend-confirmed repair sections. The same JSON includes `repair_summary`,
+a compact blocked-route rollup for agents that need to distinguish expired
+quota-window revalidation, auth handoff, runtime repair, and wait-only states
+without scraping per-route diagnostics.
 
 On macOS, remove the old Mach-O before copying the dogfood binary. Overwriting in
 place can leave stale taskgated/code-signing state on the old vnode and produce
