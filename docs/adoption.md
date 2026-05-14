@@ -401,7 +401,10 @@ A wrapper may act automatically only on admitted, non-interactive,
 non-mutating work, except for explicitly admitted Codex expired-window
 revalidation under the Codex stay-afloat policy. For `codex preflight`, wrappers
 should consume `agent_safe_next_actions` automatically and reserve
-`spend_confirmed_next_actions` for a user-approved repair step. When JSON reports
+`spend_confirmed_next_actions` for a user-approved route-health repair step.
+Interactive auth handoffs appear in `user_mediated_next_actions`; wrappers
+should display those exact commands and let the human run the upstream CLI login
+flow. When JSON reports
 `repair_summary.route_repair_required:true`, wrappers can use
 `repair_summary.dominant_blocker` and the route-state counters to decide whether
 the next user-visible state is spend-confirmed revalidation, interactive auth

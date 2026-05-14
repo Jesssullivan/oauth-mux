@@ -9348,6 +9348,7 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     const summary = try summarizeCodexBrokerSessionPlan(allocator, parsed.value, evaluations.items, selected_index);
     const session_start_ready = selected_index != null;
     const fallback_ready = codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes);
+    const repair_summary = try codexPreflightRepairSummary(allocator, parsed.value, evaluations.items, selected_index, session_start_ready, fallback_ready);
     const ok = config_valid and session_start_ready;
 
     if (args.json) {
@@ -9374,7 +9375,7 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         try writer.writeAll(",\"blocked_route_reasons\":");
         try writeCodexPreflightBlockedReasonSummaryJson(writer, allocator, parsed.value, evaluations.items, selected_index);
         try writer.writeAll(",\"repair_summary\":");
-        try writeCodexPreflightRepairSummaryJson(writer, allocator, parsed.value, evaluations.items, selected_index, session_start_ready, fallback_ready);
+        try writeCodexPreflightRepairSummaryJson(writer, repair_summary);
         try writer.writeAll(",\"blocked_routes\":");
         try writeCodexPreflightBlockedRoutesJson(writer, allocator, parsed.value, evaluations.items, selected_index);
         try writer.writeAll(",\"selected\":");
@@ -9384,11 +9385,13 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
             try writer.writeAll("null");
         }
         try writer.writeAll(",\"next_actions\":");
-        try writeCodexPreflightNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
+        try writeCodexPreflightNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready, repair_summary.spend_confirmed_repair_available);
         try writer.writeAll(",\"agent_safe_next_actions\":");
         try writeCodexPreflightAgentSafeNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
         try writer.writeAll(",\"spend_confirmed_next_actions\":");
-        try writeCodexPreflightSpendConfirmedNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
+        try writeCodexPreflightSpendConfirmedNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready, repair_summary.spend_confirmed_repair_available);
+        try writer.writeAll(",\"user_mediated_next_actions\":");
+        try writeCodexPreflightUserMediatedNextActionsJson(writer, allocator, parsed.value, evaluations.items);
         if (!config_valid and validation_messages.items.len != 0) {
             try writer.writeAll(",\"config_validation_hint\":");
             try std.json.stringify(std.mem.trim(u8, validation_messages.items, " \t\r\n"), .{}, writer);
@@ -9412,10 +9415,11 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         summary.broker_ready_routes,
         summary.selectable_fallback_routes,
     });
-    try writeCodexPreflightRepairSummaryText(writer, allocator, parsed.value, evaluations.items, selected_index, session_start_ready, fallback_ready);
+    try writeCodexPreflightRepairSummaryText(writer, repair_summary);
     try writeCodexPreflightBlockedRoutesText(writer, allocator, parsed.value, evaluations.items, selected_index);
-    if (!ok) {
-        try writeCodexPreflightNextActionsText(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
+    if (!session_start_ready or !fallback_ready) {
+        try writeCodexPreflightNextActionsText(writer, allocator, args.profile, capability, session_start_ready, fallback_ready, repair_summary.spend_confirmed_repair_available);
+        try writeCodexPreflightUserMediatedNextActionsText(writer, allocator, parsed.value, evaluations.items);
     }
 }
 
@@ -9803,14 +9807,8 @@ fn codexPreflightRepairSummary(
 
 fn writeCodexPreflightRepairSummaryJson(
     writer: anytype,
-    allocator: std.mem.Allocator,
-    cfg: config.Config,
-    evaluations: []const RouteEvaluation,
-    selected_index: ?usize,
-    session_start_ready: bool,
-    fallback_ready: bool,
+    summary: CodexPreflightRepairSummary,
 ) !void {
-    const summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, session_start_ready, fallback_ready);
     try writer.writeByte('{');
     try writer.writeAll("\"route_repair_required\":");
     try writer.writeAll(if (summary.route_repair_required) "true" else "false");
@@ -9847,14 +9845,8 @@ fn writeCodexPreflightRepairSummaryJson(
 
 fn writeCodexPreflightRepairSummaryText(
     writer: anytype,
-    allocator: std.mem.Allocator,
-    cfg: config.Config,
-    evaluations: []const RouteEvaluation,
-    selected_index: ?usize,
-    session_start_ready: bool,
-    fallback_ready: bool,
+    summary: CodexPreflightRepairSummary,
 ) !void {
-    const summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, session_start_ready, fallback_ready);
     if (summary.blocked_routes == 0) return;
     try writer.print("  repair summary: required={s}", .{if (summary.route_repair_required) "yes" else "no"});
     if (summary.dominant_blocker) |value| {
@@ -9954,6 +9946,7 @@ fn writeCodexPreflightNextActionsJson(
     capability: ?[]const u8,
     session_start_ready: bool,
     fallback_ready: bool,
+    spend_confirmed_repair_available: bool,
 ) !void {
     try writer.writeByte('[');
     var first = true;
@@ -9962,7 +9955,7 @@ fn writeCodexPreflightNextActionsJson(
         defer allocator.free(plan);
         try writeCommaJsonString(writer, &first, plan);
     }
-    if (!session_start_ready or !fallback_ready) {
+    if ((!session_start_ready or !fallback_ready) and spend_confirmed_repair_available) {
         const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
         defer allocator.free(refresh);
         try writeCommaJsonString(writer, &first, refresh);
@@ -10005,10 +9998,11 @@ fn writeCodexPreflightSpendConfirmedNextActionsJson(
     capability: ?[]const u8,
     session_start_ready: bool,
     fallback_ready: bool,
+    spend_confirmed_repair_available: bool,
 ) !void {
     try writer.writeByte('[');
     var first = true;
-    if (!session_start_ready or !fallback_ready) {
+    if ((!session_start_ready or !fallback_ready) and spend_confirmed_repair_available) {
         const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
         defer allocator.free(refresh);
         try writeCodexPreflightActionObjectJson(writer, &first, .{
@@ -10026,6 +10020,22 @@ fn writeCodexPreflightSpendConfirmedNextActionsJson(
     try writer.writeByte(']');
 }
 
+fn writeCodexPreflightUserMediatedNextActionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+) !void {
+    try writer.writeByte('[');
+    var first = true;
+    for (evaluations) |evaluation| {
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
+        _ = try writeCodexPreflightUserMediatedActionJson(writer, allocator, &first, evaluation.action, evaluation.route);
+    }
+    try writer.writeByte(']');
+}
+
 const CodexPreflightActionObject = struct {
     kind: []const u8,
     label: []const u8,
@@ -10037,6 +10047,30 @@ const CodexPreflightActionObject = struct {
     mutates_route_health: bool,
     interactive: bool,
 };
+
+fn writeCodexPreflightUserMediatedActionJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    first: *bool,
+    action: RepairAction,
+    route: RepairPlanRoute,
+) !bool {
+    if (action.mediation != .user_handoff) return false;
+    const command = (try repairCommandAlloc(allocator, action.command, route)) orelse return false;
+    defer allocator.free(command);
+    try writeCodexPreflightActionObjectJson(writer, first, .{
+        .kind = @tagName(action.command),
+        .label = "user-mediated upstream CLI repair",
+        .command = command,
+        .budget = "interactive",
+        .agent_safe = false,
+        .may_spend_provider_calls = false,
+        .mutates_user_config = true,
+        .mutates_route_health = false,
+        .interactive = true,
+    });
+    return true;
+}
 
 fn writeCodexPreflightActionObjectJson(
     writer: anytype,
@@ -10067,6 +10101,29 @@ fn writeCodexPreflightActionObjectJson(
     try writer.writeByte('}');
 }
 
+fn writeCodexPreflightUserMediatedNextActionsText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+) !void {
+    var printed = false;
+    for (evaluations) |evaluation| {
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
+        if (evaluation.action.mediation != .user_handoff) continue;
+        if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
+            defer allocator.free(command);
+            if (!printed) {
+                printed = true;
+                try writer.writeAll("\nUser-mediated repair:\n");
+            }
+            try writer.print("  {s}\n", .{command});
+            try writer.writeAll("    budget=interactive agent_safe=false may_spend_provider_calls=false mutates_user_config=true interactive=true\n");
+        }
+    }
+}
+
 fn writeCodexPreflightNextActionsText(
     writer: anytype,
     allocator: std.mem.Allocator,
@@ -10074,6 +10131,7 @@ fn writeCodexPreflightNextActionsText(
     capability: ?[]const u8,
     session_start_ready: bool,
     fallback_ready: bool,
+    spend_confirmed_repair_available: bool,
 ) !void {
     if (!session_start_ready or !fallback_ready) {
         const plan = try codexPreflightPlanCommand(allocator, profile, capability);
@@ -10081,7 +10139,7 @@ fn writeCodexPreflightNextActionsText(
         try writer.writeAll("\nNo-spend diagnostics:\n");
         try writer.print("  {s}\n", .{plan});
     }
-    if (!session_start_ready or !fallback_ready) {
+    if ((!session_start_ready or !fallback_ready) and spend_confirmed_repair_available) {
         const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
         defer allocator.free(refresh);
         try writer.writeAll("\nSpend-confirmed repair:\n");
@@ -16809,6 +16867,25 @@ test "writeRepairActionJson emits codex reauth command without running it" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+}
+
+test "Codex preflight user-mediated action emits login handoff lane" {
+    const route = RepairPlanRoute{ .provider = "codex", .account = "max-2", .capability = "codex-max" };
+    const action = reauthAction(route, provider_schema.codex_def);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    var first = true;
+
+    try std.testing.expect(try writeCodexPreflightUserMediatedActionJson(buf.writer(), std.testing.allocator, &first, action, route));
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"codex_login_device\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"budget\":\"interactive\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"agent_safe\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"may_spend_provider_calls\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutates_user_config\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutates_route_health\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
 }
 
 test "writeRepairActionJson emits claude upstream handoff without codex command" {

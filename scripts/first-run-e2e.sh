@@ -309,17 +309,15 @@ jq -e '
   and .repair_summary.user_handoff_required == false
   and (.blocked_routes | length) == 3
   and all(.blocked_routes[]; .provider == "codex" and .capability == "codex-max" and .selectable == false and .broker_ready == false and .blocked_reason == "auth_broker_unready" and .action.mutating == false)
-  and (.next_actions | index("oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json") != null)
+  and (.next_actions | length) == 1
+  and (.next_actions | index("oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json") != null)
   and (.agent_safe_next_actions | length) == 1
   and .agent_safe_next_actions[0].command == "oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json"
   and .agent_safe_next_actions[0].agent_safe == true
   and .agent_safe_next_actions[0].may_spend_provider_calls == false
   and .agent_safe_next_actions[0].mutates_route_health == false
-  and (.spend_confirmed_next_actions | length) == 1
-  and .spend_confirmed_next_actions[0].command == "oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json"
-  and .spend_confirmed_next_actions[0].agent_safe == false
-  and .spend_confirmed_next_actions[0].may_spend_provider_calls == true
-  and .spend_confirmed_next_actions[0].mutates_route_health == true
+  and (.spend_confirmed_next_actions | length) == 0
+  and (.user_mediated_next_actions | length) == 0
 ' "$codex_preflight_json" >/dev/null
 expect_not_contains "$(cat "$codex_preflight_json")" "$store_root/max-1" "codex preflight does not print concrete Codex store paths"
 test ! -e "$store_root"
@@ -335,9 +333,7 @@ expect_contains "$codex_preflight_text" "    native codex env: OMUX_CODEX_BIN" "
 expect_contains "$codex_preflight_text" "  config valid: yes" "codex preflight text still reports route readiness"
 expect_contains "$codex_preflight_text" "No-spend diagnostics:" "codex preflight text labels no-spend diagnostics"
 expect_contains "$codex_preflight_text" "oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json" "codex preflight text reports no-spend broker plan"
-expect_contains "$codex_preflight_text" "Spend-confirmed repair:" "codex preflight text labels spend-confirmed repair"
-expect_contains "$codex_preflight_text" "oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json" "codex preflight text reports executable repair"
-expect_contains "$codex_preflight_text" "budget=spend_provider agent_safe=false may_spend_provider_calls=true mutates_route_health=true" "codex preflight text labels executable repair risk"
+expect_not_contains "$codex_preflight_text" "Spend-confirmed repair:" "codex preflight text omits unavailable spend repair"
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
 
