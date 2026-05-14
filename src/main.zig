@@ -14,6 +14,7 @@ const daemon = @import("daemon.zig");
 const repair_state = @import("repair_state.zig");
 const runtime_mod = @import("runtime.zig");
 const secret_mod = @import("secret.zig");
+const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
@@ -23,6 +24,7 @@ comptime {
     _ = broker;
     _ = broker_loader;
     _ = codex_adapter;
+    _ = trace;
     _ = @import("adapters/codex/app_server_client.zig");
     _ = @import("adapters/codex/wire_proxy.zig");
 }
@@ -431,7 +433,7 @@ fn writeAccountsListText(
             for (def.capabilities) |capability| {
                 const route = RepairPlanRoute{ .provider = provider_name, .account = account_name, .capability = capability.name };
                 const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
-                const health = routeHealth(store, route);
+                const health = routeHealth(allocator, store, route);
                 const selectable = routeSelectable(runtime, health);
                 try writer.print("    {s} proof={s} selectable={s} runtime={s}", .{
                     capability.name,
@@ -570,7 +572,7 @@ fn writeAccountCapabilityJson(
 ) !void {
     const route = RepairPlanRoute{ .provider = provider_name, .account = account_name, .capability = capability.name };
     const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
-    const health = routeHealth(store, route);
+    const health = routeHealth(allocator, store, route);
     const budget = routeProbeBudget(def, capability.name);
     const action = repairActionFor(route, def, runtime, health, budget);
     const selectable = routeSelectable(runtime, health);
@@ -3263,7 +3265,7 @@ fn writeRepairPlanText(
     for (routes) |route| {
         const def = config.resolveProviderDefinition(cfg, route.provider);
         const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
-        const health = routeHealth(store, route);
+        const health = routeHealth(allocator, store, route);
         const budget = routeProbeBudget(def, route.capability);
         const action = repairActionFor(route, def, runtime, health, budget);
 
@@ -3327,7 +3329,7 @@ fn writeRepairPlanRouteJson(
 ) !void {
     const def = config.resolveProviderDefinition(cfg, route.provider);
     const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
-    const health = routeHealth(store, route);
+    const health = routeHealth(allocator, store, route);
     const budget = routeProbeBudget(def, route.capability);
     const action = repairActionFor(route, def, runtime, health, budget);
 
@@ -3592,11 +3594,11 @@ fn daemonRepairAdmission(policy: config.DaemonPolicyConfig, action: RepairAction
     };
 }
 
-fn routeHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) ?health_mod.AccountHealth {
+fn routeHealth(allocator: std.mem.Allocator, store: *health_mod.HealthStore, route: RepairPlanRoute) ?health_mod.AccountHealth {
     const now = std.time.timestamp();
     const account_key = health_mod.accountKey(route.provider, route.account);
     const account_health = if (store.accounts.get(account_key.slice())) |health|
-        health_mod.effectiveHealthForRouteSelection(health, now)
+        effectiveHealthForRouteSelectionTraced(allocator, route, health, now, "account")
     else
         null;
     if (account_health) |health| {
@@ -3606,11 +3608,56 @@ fn routeHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) ?health_m
     if (route.capability) |capability| {
         const capability_key = health_mod.capabilityKey(route.provider, route.account, capability);
         if (store.accounts.get(capability_key.slice())) |health| {
-            return health_mod.effectiveHealthForRouteSelection(health, now);
+            return effectiveHealthForRouteSelectionTraced(allocator, route, health, now, "capability");
         }
     }
 
     return account_health;
+}
+
+fn effectiveHealthForRouteSelectionTraced(
+    allocator: std.mem.Allocator,
+    route: RepairPlanRoute,
+    raw: health_mod.AccountHealth,
+    now: i64,
+    source_scope: []const u8,
+) health_mod.AccountHealth {
+    const effective = health_mod.effectiveHealthForRouteSelection(raw, now);
+    traceHealthNormalization(allocator, route.provider, route.account, route.capability, source_scope, raw.liveness, effective.liveness);
+    return effective;
+}
+
+fn traceHealthNormalization(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    account_label: []const u8,
+    capability: ?[]const u8,
+    source_scope: []const u8,
+    before: types.CredentialLiveness,
+    after: types.CredentialLiveness,
+) void {
+    var before_buf: [128]u8 = undefined;
+    var after_buf: [128]u8 = undefined;
+    const before_summary = livenessSummaryIntoBuffer(before, &before_buf);
+    const after_summary = livenessSummaryIntoBuffer(after, &after_buf);
+    if (std.mem.eql(u8, before_summary, after_summary)) return;
+
+    trace.append(allocator, "health.normalize", .info, &.{
+        trace.string("provider", provider_name),
+        trace.string("account_label", account_label),
+        trace.string("capability", capability orelse "none"),
+        trace.string("source_scope", source_scope),
+        trace.string("before_liveness", before_summary),
+        trace.string("after_liveness", after_summary),
+        trace.boolean("token_material_printed", false),
+        trace.boolean("path_printed", false),
+    });
+}
+
+fn livenessSummaryIntoBuffer(liveness: types.CredentialLiveness, buf: []u8) []const u8 {
+    var stream = std.io.fixedBufferStream(buf);
+    health_mod.writeLivenessSummary(stream.writer(), liveness) catch return "unavailable";
+    return stream.getWritten();
 }
 
 fn routeProbeBudget(def: provider_schema.ProviderDefinition, capability: ?[]const u8) ?types.ActionBudget {
@@ -5178,10 +5225,11 @@ fn collectRouteEvaluations(
     for (routes) |route| {
         const def = config.resolveProviderDefinition(cfg, route.provider);
         const runtime = try routeRuntimeReadiness(allocator, cfg, route, def);
-        const health = routeHealth(store, route);
+        const health = routeHealth(allocator, store, route);
         const budget = routeProbeBudget(def, route.capability);
         const action = repairActionFor(route, def, runtime, health, budget);
         const selectable = routeSelectable(runtime, health);
+        const skip_reason = if (selectable) "available" else routeSkipReason(runtime, health);
         try evaluations.append(.{
             .route = route,
             .runtime = runtime,
@@ -5189,9 +5237,39 @@ fn collectRouteEvaluations(
             .budget = budget,
             .action = action,
             .selectable = selectable,
-            .skip_reason = if (selectable) "available" else routeSkipReason(runtime, health),
+            .skip_reason = skip_reason,
         });
+        traceRouteEvaluation(allocator, route, runtime, health, action, selectable, skip_reason);
     }
+}
+
+fn traceRouteEvaluation(
+    allocator: std.mem.Allocator,
+    route: RepairPlanRoute,
+    runtime: types.RuntimeReadiness,
+    route_health_value: ?health_mod.AccountHealth,
+    action: RepairAction,
+    selectable: bool,
+    skip_reason: []const u8,
+) void {
+    var liveness_buf: [128]u8 = undefined;
+    const liveness_summary = if (route_health_value) |current|
+        livenessSummaryIntoBuffer(current.liveness, &liveness_buf)
+    else
+        "unrecorded";
+
+    trace.append(allocator, "route.evaluate", .info, &.{
+        trace.string("provider", route.provider),
+        trace.string("account_label", route.account),
+        trace.string("capability", route.capability orelse "none"),
+        trace.string("runtime", runtimeReadinessSummary(runtime)),
+        trace.string("liveness", liveness_summary),
+        trace.string("action", @tagName(action.kind)),
+        trace.string("skip_reason", skip_reason),
+        trace.boolean("selectable", selectable),
+        trace.boolean("token_material_printed", false),
+        trace.boolean("path_printed", false),
+    });
 }
 
 fn firstSelectableRoute(evaluations: []const RouteEvaluation) ?usize {
@@ -15823,15 +15901,44 @@ fn getEnvOwnedOrNull(allocator: std.mem.Allocator, name: []const u8) !?[]const u
 fn resolveNativeCodexBinary(allocator: std.mem.Allocator) ![]const u8 {
     if (try getEnvOwnedOrNull(allocator, "OMUX_CODEX_BIN")) |env_path| {
         errdefer allocator.free(env_path);
-        if (env_path.len != 0 and fileExists(env_path) and !(try isOauthMuxShimPath(allocator, env_path))) return env_path;
+        if (env_path.len != 0 and fileExists(env_path) and !(try isOauthMuxShimPath(allocator, env_path))) {
+            trace.append(allocator, "codex.native_binary.resolve", .info, &.{
+                trace.string("source", "OMUX_CODEX_BIN"),
+                trace.boolean("selected", true),
+                trace.boolean("path_printed", false),
+            });
+            return env_path;
+        }
+        trace.append(allocator, "codex.native_binary.resolve", .warn, &.{
+            trace.string("source", "OMUX_CODEX_BIN"),
+            trace.boolean("selected", false),
+            trace.string("reason", "missing_or_oauth_mux_shim"),
+            trace.boolean("path_printed", false),
+        });
         allocator.free(env_path);
     }
 
     var candidates = try collectPathCandidates(allocator, "codex");
     defer candidates.deinit(allocator);
     if (try firstNativeCodexCandidate(allocator, candidates.paths.items)) |path_value| {
+        const shim_candidates = countOauthMuxShimCandidates(allocator, candidates.paths.items) catch 0;
+        trace.append(allocator, "codex.native_binary.resolve", .info, &.{
+            trace.string("source", "PATH"),
+            trace.boolean("selected", true),
+            trace.uint("candidate_count", candidates.paths.items.len),
+            trace.uint("oauth_mux_shim_candidates", shim_candidates),
+            trace.boolean("path_printed", false),
+        });
         return try allocator.dupe(u8, path_value);
     }
+    const shim_candidates = countOauthMuxShimCandidates(allocator, candidates.paths.items) catch 0;
+    trace.append(allocator, "codex.native_binary.resolve", .err, &.{
+        trace.string("source", "PATH"),
+        trace.boolean("selected", false),
+        trace.uint("candidate_count", candidates.paths.items.len),
+        trace.uint("oauth_mux_shim_candidates", shim_candidates),
+        trace.boolean("path_printed", false),
+    });
     return error.CodexNativeBinaryNotFound;
 }
 
@@ -15855,11 +15962,24 @@ fn runCodexCli(allocator: std.mem.Allocator, account_dir: []const u8, codex_args
     child.stderr_behavior = .Inherit;
     child.env_map = &env_map;
 
+    trace.append(allocator, "codex.native_command.spawn", .info, &.{
+        trace.string("command", if (codex_args.len > 0) codex_args[0] else "none"),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("native_binary_path_printed", false),
+    });
+
     const term = child.spawnAndWait() catch return error.CodexCommandFailed;
-    return switch (term) {
+    const ok = switch (term) {
         .Exited => |code| code == 0,
         else => false,
     };
+    trace.append(allocator, "codex.native_command.exit", if (ok) .info else .warn, &.{
+        trace.string("command", if (codex_args.len > 0) codex_args[0] else "none"),
+        trace.boolean("ok", ok),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("native_binary_path_printed", false),
+    });
+    return ok;
 }
 
 test "matchesProvider filters account keys" {

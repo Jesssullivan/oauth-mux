@@ -41,7 +41,7 @@ What works today:
 - Live managed Codex quota handoff for installed `oauth-mux codex resume`, with
   the strongest preserved proof in
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- Redacted JSON diagnostics for agents and operators.
+- Redacted JSON diagnostics and opt-in trace JSONL for agents and operators.
 
 Still research or open:
 
@@ -170,6 +170,17 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 oauth-mux codex status-latest --json
 ```
 
+When shell, install, auth, and route-health state disagree, enable the redacted
+trace sink:
+
+```bash
+OMUX_TRACE=1 \
+OMUX_TRACE_FILE=/tmp/oauth-mux-trace.ndjson \
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
+```
+
+See `docs/tracing.md` for the trace schema and redaction contract.
+
 Those inspection commands do not spend provider calls. In the `0.1.7` candidate,
 managed Codex launch/resume and admitted stay-afloat execution may spend
 provider calls only to revalidate expired Codex quota/rate windows before route
@@ -198,6 +209,8 @@ Use `just release-proof <version>` before any registry mutation. Direct
 AX:
 
 - JSON surfaces are redacted and account-label based.
+- Trace events are opt-in and must not print token bytes, raw provider account
+  ids, raw Codex session ids, or local auth/config file paths.
 - Agents do not need token files or raw provider stores to choose a next action.
 - Provider-spend behavior is policy-labeled; no-spend inspection surfaces stay
   separate from managed Codex auto-revalidation and live probes.
@@ -213,6 +226,7 @@ Keep the claim ladder tied to evidence:
   lanes.
 - `docs/lifecycle.md`: application lifecycle, managed Codex flow, agent-safe
   control plane, and claim levels.
+- `docs/tracing.md`: opt-in trace schema, sink selection, and redaction rules.
 - `docs/evidence/codex-engineered-quota-handoff-20260509/`: current headline
   managed Codex quota-handoff proof.
 
