@@ -439,6 +439,11 @@ pending handoffs with:
 oauth-mux stay-afloat handoffs --json
 ```
 
+The in-agent/MCP handoff boundary is specified in
+`docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`: agents may inspect
+and display user-mediated reauth commands, but must not silently run upstream
+login, provider-spend probes, or credential-store mutation.
+
 The default handoff view is pending as of the daemon's last route evidence. Use
 `oauth-mux stay-afloat handoffs --json --all` when you need the historical audit
 trail instead. A user or agent can acknowledge that the handoff has been seen

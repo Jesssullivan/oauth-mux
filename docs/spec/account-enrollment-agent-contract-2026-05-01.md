@@ -237,6 +237,10 @@ Account state is intentionally coarse:
 
 ## MCP And In-Agent Surface
 
+The current detailed handoff and consent contract is
+`docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`. This section is the
+enrollment-side summary.
+
 The MCP-facing surface should expose inventory and explanation before mutation:
 
 - `accounts.list`

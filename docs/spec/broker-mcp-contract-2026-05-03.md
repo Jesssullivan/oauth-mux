@@ -39,6 +39,10 @@ Current evidence review:
   attempt failed before exercising the bridge: first-class
   `oauth-mux codex resume ...`, strict parser behavior, status-file parent
   creation, and regression guards.
+- `docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md` records the
+  agent/MCP handoff contract for reauth prompts: agents can inspect, display,
+  acknowledge, and ask for consent, but must not silently run upstream login,
+  spend provider calls, or mutate credential stores.
 
 ## 0. The One Success Metric
 

@@ -10,6 +10,11 @@ into one generic failure.
 
 ## JSON Contract
 
+The agent/MCP consent boundary for these actions is defined in
+`docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`. Agents may display
+or acknowledge a handoff, but must not run interactive auth, provider-spend
+probes, or credential mutation without explicit user consent.
+
 `repair-plan`, `route explain`, `stay-afloat next`, `daemon tick`,
 `stay-afloat`, and `daemon loop` route objects expose an `action` object.
 The action now has three distinct identity fields:
