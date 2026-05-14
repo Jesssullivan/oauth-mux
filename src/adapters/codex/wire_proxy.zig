@@ -1225,6 +1225,11 @@ fn writeNoAccountSelectableResponse(
     else
         try allocator.dupe(u8, "oauth-mux codex preflight --json");
     defer allocator.free(preflight_command);
+    const repair_command = if (profile) |value|
+        try std.fmt.allocPrint(allocator, "oauth-mux stay-afloat --once --execute --profile {s} --json", .{value})
+    else
+        try allocator.dupe(u8, "oauth-mux stay-afloat --once --execute --provider codex --json");
+    defer allocator.free(repair_command);
 
     try w.writeAll("{\"error\":{\"type\":\"oauth_mux_no_account_selectable\",\"code\":\"oauth_mux_no_account_selectable\",\"message\":");
     try std.json.stringify(
@@ -1235,6 +1240,33 @@ fn writeNoAccountSelectableResponse(
     try w.writeAll(",\"preflight_command\":");
     try std.json.stringify(preflight_command, .{}, w);
     try w.writeAll(",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"mutates_route_health\":false");
+    try w.writeAll(",\"rejection_summary\":");
+    try writeNoAccountRejectionSummaryJson(w, rejections);
+    try w.writeAll(",\"agent_safe_next_actions\":[");
+    try writeNoAccountNextActionJson(w, .{
+        .kind = "codex_preflight",
+        .label = "no-spend Codex preflight",
+        .command = preflight_command,
+        .budget = "free_local",
+        .agent_safe = true,
+        .may_spend_provider_calls = false,
+        .mutates_user_config = false,
+        .mutates_route_health = false,
+        .interactive = false,
+    });
+    try w.writeAll("],\"spend_confirmed_next_actions\":[");
+    try writeNoAccountNextActionJson(w, .{
+        .kind = "stay_afloat_execute",
+        .label = "spend-confirmed route health repair",
+        .command = repair_command,
+        .budget = "spend_provider",
+        .agent_safe = false,
+        .may_spend_provider_calls = true,
+        .mutates_user_config = false,
+        .mutates_route_health = true,
+        .interactive = false,
+    });
+    try w.writeByte(']');
     try w.writeAll(",\"rejections\":[");
     for (rejections, 0..) |rejection, idx| {
         if (idx != 0) try w.writeByte(',');
@@ -1253,6 +1285,61 @@ fn writeNoAccountSelectableResponse(
     try writer.print("Content-Length: {d}\r\n", .{body.items.len});
     try writer.writeAll("Connection: close\r\n\r\n");
     try writer.writeAll(body.items);
+}
+
+const NoAccountNextAction = struct {
+    kind: []const u8,
+    label: []const u8,
+    command: []const u8,
+    budget: []const u8,
+    agent_safe: bool,
+    may_spend_provider_calls: bool,
+    mutates_user_config: bool,
+    mutates_route_health: bool,
+    interactive: bool,
+};
+
+fn writeNoAccountNextActionJson(writer: anytype, action: NoAccountNextAction) !void {
+    try writer.writeByte('{');
+    try writer.writeAll("\"kind\":");
+    try std.json.stringify(action.kind, .{}, writer);
+    try writer.writeAll(",\"label\":");
+    try std.json.stringify(action.label, .{}, writer);
+    try writer.writeAll(",\"command\":");
+    try std.json.stringify(action.command, .{}, writer);
+    try writer.writeAll(",\"budget\":");
+    try std.json.stringify(action.budget, .{}, writer);
+    try writer.writeAll(",\"agent_safe\":");
+    try writer.writeAll(if (action.agent_safe) "true" else "false");
+    try writer.writeAll(",\"may_spend_provider_calls\":");
+    try writer.writeAll(if (action.may_spend_provider_calls) "true" else "false");
+    try writer.writeAll(",\"mutates_user_config\":");
+    try writer.writeAll(if (action.mutates_user_config) "true" else "false");
+    try writer.writeAll(",\"mutates_route_health\":");
+    try writer.writeAll(if (action.mutates_route_health) "true" else "false");
+    try writer.writeAll(",\"interactive\":");
+    try writer.writeAll(if (action.interactive) "true" else "false");
+    try writer.writeByte('}');
+}
+
+fn writeNoAccountRejectionSummaryJson(writer: anytype, rejections: []const CandidateRejection) !void {
+    try writer.writeByte('{');
+    try writer.print("\"total\":{d}", .{rejections.len});
+    try writer.print(",\"auth_failed\":{d}", .{countRejectionsByState(rejections, .auth_failed)});
+    try writer.print(",\"quota_exhausted\":{d}", .{countRejectionsByState(rejections, .quota_exhausted)});
+    try writer.print(",\"rate_limited\":{d}", .{countRejectionsByState(rejections, .rate_limited)});
+    try writer.print(",\"tier_insufficient\":{d}", .{countRejectionsByState(rejections, .tier_insufficient)});
+    try writer.print(",\"provider_degraded\":{d}", .{countRejectionsByState(rejections, .provider_degraded)});
+    try writer.print(",\"credential_unavailable\":{d}", .{countRejectionsByState(rejections, .credential_unavailable)});
+    try writer.writeByte('}');
+}
+
+fn countRejectionsByState(rejections: []const CandidateRejection, state: RouteState) usize {
+    var count: usize = 0;
+    for (rejections) |rejection| {
+        if (rejection.state == state) count += 1;
+    }
+    return count;
 }
 
 fn writeProviderUnavailableResponse(
@@ -1542,7 +1629,7 @@ test "writeStatus writes a complete HTTP/1.1 status response" {
 }
 
 test "writeNoAccountSelectableResponse emits parseable preflight JSON" {
-    var buf: [1024]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
     const rejections = [_]CandidateRejection{
         .{ .account = "codex:default", .state = .quota_exhausted, .reason = "quota_exhausted" },
@@ -1553,9 +1640,24 @@ test "writeNoAccountSelectableResponse emits parseable preflight JSON" {
     const out = fbs.getWritten();
     try std.testing.expect(std.mem.startsWith(u8, out, "HTTP/1.1 503 Service Unavailable\r\n"));
     try std.testing.expect(std.mem.indexOf(u8, out, "Content-Type: application/json\r\n") != null);
+    const body_start = std.mem.indexOf(u8, out, "\r\n\r\n").?;
+    const body = out[body_start + 4 ..];
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    const error_obj = parsed.value.object.get("error").?.object;
+    try std.testing.expectEqual(@as(usize, 1), error_obj.get("agent_safe_next_actions").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, 1), error_obj.get("spend_confirmed_next_actions").?.array.items.len);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"type\":\"oauth_mux_no_account_selectable\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"preflight_command\":\"oauth-mux codex preflight --profile codex-max --json\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"spends_provider_calls\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"rejection_summary\":{\"total\":2,\"auth_failed\":1,\"quota_exhausted\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"agent_safe_next_actions\":[{\"kind\":\"codex_preflight\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"command\":\"oauth-mux codex preflight --profile codex-max --json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"agent_safe\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"spend_confirmed_next_actions\":[{\"kind\":\"stay_afloat_execute\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"command\":\"oauth-mux stay-afloat --once --execute --profile codex-max --json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"may_spend_provider_calls\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"mutates_route_health\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"account\":\"codex:default\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"state\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, out, "]}}\n"));
