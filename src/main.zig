@@ -9299,6 +9299,10 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         }
         try writer.writeAll(",\"next_actions\":");
         try writeCodexPreflightNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
+        try writer.writeAll(",\"agent_safe_next_actions\":");
+        try writeCodexPreflightAgentSafeNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
+        try writer.writeAll(",\"spend_confirmed_next_actions\":");
+        try writeCodexPreflightSpendConfirmedNextActionsJson(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
         if (!config_valid and validation_messages.items.len != 0) {
             try writer.writeAll(",\"config_validation_hint\":");
             try std.json.stringify(std.mem.trim(u8, validation_messages.items, " \t\r\n"), .{}, writer);
@@ -9324,8 +9328,7 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     });
     try writeCodexPreflightBlockedRoutesText(writer, allocator, parsed.value, evaluations.items, selected_index);
     if (!ok) {
-        try writer.writeAll("\nNext actions:\n");
-        try writeCodexPreflightNextActionsText(writer, args.profile, capability, session_start_ready, fallback_ready);
+        try writeCodexPreflightNextActionsText(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
     }
 }
 
@@ -9679,34 +9682,135 @@ fn writeCodexPreflightNextActionsJson(
     try writer.writeByte('[');
     var first = true;
     if (!session_start_ready or !fallback_ready) {
-        const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
-        defer allocator.free(refresh);
-        try writeCommaJsonString(writer, &first, refresh);
-    }
-    if (!session_start_ready) {
         const plan = try codexPreflightPlanCommand(allocator, profile, capability);
         defer allocator.free(plan);
         try writeCommaJsonString(writer, &first, plan);
     }
+    if (!session_start_ready or !fallback_ready) {
+        const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
+        defer allocator.free(refresh);
+        try writeCommaJsonString(writer, &first, refresh);
+    }
     try writer.writeByte(']');
+}
+
+fn writeCodexPreflightAgentSafeNextActionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    try writer.writeByte('[');
+    var first = true;
+    if (!session_start_ready or !fallback_ready) {
+        const plan = try codexPreflightPlanCommand(allocator, profile, capability);
+        defer allocator.free(plan);
+        try writeCodexPreflightActionObjectJson(writer, &first, .{
+            .kind = "broker_session_plan",
+            .label = "no-spend broker route plan",
+            .command = plan,
+            .budget = "free_local",
+            .agent_safe = true,
+            .may_spend_provider_calls = false,
+            .mutates_user_config = false,
+            .mutates_route_health = false,
+            .interactive = false,
+        });
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCodexPreflightSpendConfirmedNextActionsJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    try writer.writeByte('[');
+    var first = true;
+    if (!session_start_ready or !fallback_ready) {
+        const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
+        defer allocator.free(refresh);
+        try writeCodexPreflightActionObjectJson(writer, &first, .{
+            .kind = "stay_afloat_execute",
+            .label = "spend-confirmed route health repair",
+            .command = refresh,
+            .budget = "spend_provider",
+            .agent_safe = false,
+            .may_spend_provider_calls = true,
+            .mutates_user_config = false,
+            .mutates_route_health = true,
+            .interactive = false,
+        });
+    }
+    try writer.writeByte(']');
+}
+
+const CodexPreflightActionObject = struct {
+    kind: []const u8,
+    label: []const u8,
+    command: []const u8,
+    budget: []const u8,
+    agent_safe: bool,
+    may_spend_provider_calls: bool,
+    mutates_user_config: bool,
+    mutates_route_health: bool,
+    interactive: bool,
+};
+
+fn writeCodexPreflightActionObjectJson(
+    writer: anytype,
+    first: *bool,
+    action: CodexPreflightActionObject,
+) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writer.writeByte('{');
+    try writer.writeAll("\"kind\":");
+    try std.json.stringify(action.kind, .{}, writer);
+    try writer.writeAll(",\"label\":");
+    try std.json.stringify(action.label, .{}, writer);
+    try writer.writeAll(",\"command\":");
+    try std.json.stringify(action.command, .{}, writer);
+    try writer.writeAll(",\"budget\":");
+    try std.json.stringify(action.budget, .{}, writer);
+    try writer.writeAll(",\"agent_safe\":");
+    try writer.writeAll(if (action.agent_safe) "true" else "false");
+    try writer.writeAll(",\"may_spend_provider_calls\":");
+    try writer.writeAll(if (action.may_spend_provider_calls) "true" else "false");
+    try writer.writeAll(",\"mutates_user_config\":");
+    try writer.writeAll(if (action.mutates_user_config) "true" else "false");
+    try writer.writeAll(",\"mutates_route_health\":");
+    try writer.writeAll(if (action.mutates_route_health) "true" else "false");
+    try writer.writeAll(",\"interactive\":");
+    try writer.writeAll(if (action.interactive) "true" else "false");
+    try writer.writeByte('}');
 }
 
 fn writeCodexPreflightNextActionsText(
     writer: anytype,
+    allocator: std.mem.Allocator,
     profile: ?[]const u8,
     capability: ?[]const u8,
     session_start_ready: bool,
     fallback_ready: bool,
 ) !void {
     if (!session_start_ready or !fallback_ready) {
-        const refresh = try codexPreflightStayAfloatCommand(std.heap.page_allocator, profile, capability);
-        defer std.heap.page_allocator.free(refresh);
-        try writer.print("  {s}\n", .{refresh});
-    }
-    if (!session_start_ready) {
-        const plan = try codexPreflightPlanCommand(std.heap.page_allocator, profile, capability);
-        defer std.heap.page_allocator.free(plan);
+        const plan = try codexPreflightPlanCommand(allocator, profile, capability);
+        defer allocator.free(plan);
+        try writer.writeAll("\nNo-spend diagnostics:\n");
         try writer.print("  {s}\n", .{plan});
+    }
+    if (!session_start_ready or !fallback_ready) {
+        const refresh = try codexPreflightStayAfloatCommand(allocator, profile, capability);
+        defer allocator.free(refresh);
+        try writer.writeAll("\nSpend-confirmed repair:\n");
+        try writer.print("  {s}\n", .{refresh});
+        try writer.writeAll("    budget=spend_provider agent_safe=false may_spend_provider_calls=true mutates_route_health=true\n");
     }
 }
 

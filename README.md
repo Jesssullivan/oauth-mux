@@ -122,6 +122,9 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 and `codex` PATH candidates, whether active `codex` is the managed oauth-mux
 shim, the first native Codex binary, and the `OMUX_CODEX_BIN` escape hatch. Use
 that before debugging stale package or managed-versus-unmanaged Codex behavior.
+Its JSON separates `agent_safe_next_actions` from
+`spend_confirmed_next_actions`; text output uses matching no-spend diagnostics
+and spend-confirmed repair sections.
 
 On macOS, remove the old Mach-O before copying the dogfood binary. Overwriting in
 place can leave stale taskgated/code-signing state on the old vnode and produce

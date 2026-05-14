@@ -238,7 +238,10 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 The preflight reports install candidates, active `codex` shim/native
 classification, the first native Codex binary, Codex policy, route readiness,
 compact blocked-route reason counts, redacted blocked route actions, and exact
-next actions. It does not call the provider or mutate route health.
+next actions. It does not call the provider or mutate route health. JSON
+clients should prefer `agent_safe_next_actions` for no-spend automation and
+treat `spend_confirmed_next_actions` as user-approved repair only; text output
+uses the same no-spend diagnostics and spend-confirmed repair labels.
 
 Managed Codex live quota handoff is proven for installed
 `oauth-mux codex resume` status artifacts. The 2026-05-09 engineered evidence
