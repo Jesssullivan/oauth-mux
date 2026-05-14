@@ -9329,37 +9329,130 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
 fn writeCodexPreflightInstallJson(writer: anytype, allocator: std.mem.Allocator) !void {
     const self_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
     defer allocator.free(self_path);
+
+    var oauth_mux_candidates = try collectPathCandidates(allocator, "oauth-mux");
+    defer oauth_mux_candidates.deinit(allocator);
+    var codex_candidates = try collectPathCandidates(allocator, "codex");
+    defer codex_candidates.deinit(allocator);
+
+    const active_oauth_mux_is_path_first = oauth_mux_candidates.paths.items.len != 0 and std.mem.eql(u8, oauth_mux_candidates.paths.items[0], self_path);
+    const active_codex = if (codex_candidates.paths.items.len == 0) null else codex_candidates.paths.items[0];
+    const active_codex_is_oauth_mux_shim = if (active_codex) |path| try isOauthMuxShimPath(allocator, path) else false;
+    const native_codex_candidate = try firstNativeCodexCandidate(allocator, codex_candidates.paths.items);
+    const codex_shim_candidates = try countOauthMuxShimCandidates(allocator, codex_candidates.paths.items);
+
     try writer.writeAll("{\"active_oauth_mux\":");
     try std.json.stringify(self_path, .{}, writer);
     try writer.writeAll(",\"oauth_mux_candidates\":");
-    try writePathCandidateArrayJson(writer, allocator, "oauth-mux");
+    try writeStringArrayJson(writer, oauth_mux_candidates.paths.items);
+    try writer.writeAll(",\"active_oauth_mux_is_path_first\":");
+    try writer.writeAll(if (active_oauth_mux_is_path_first) "true" else "false");
     try writer.writeAll(",\"codex_candidates\":");
-    try writePathCandidateArrayJson(writer, allocator, "codex");
+    try writeStringArrayJson(writer, codex_candidates.paths.items);
+    try writer.writeAll(",\"active_codex\":");
+    if (active_codex) |path| try std.json.stringify(path, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"active_codex_is_oauth_mux_shim\":");
+    try writer.writeAll(if (active_codex_is_oauth_mux_shim) "true" else "false");
+    try writer.writeAll(",\"native_codex_candidate\":");
+    if (native_codex_candidate) |path| try std.json.stringify(path, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"native_codex_found\":");
+    try writer.writeAll(if (native_codex_candidate != null) "true" else "false");
+    try writer.print(",\"codex_shim_candidates\":{d}", .{codex_shim_candidates});
     try writer.writeAll(",\"managed_codex_shim_supported\":true,\"native_codex_env\":\"OMUX_CODEX_BIN\"}");
 }
 
-fn writePathCandidateArrayJson(writer: anytype, allocator: std.mem.Allocator, name: []const u8) !void {
-    try writer.writeByte('[');
-    var first = true;
+const PathCandidateList = struct {
+    paths: std.ArrayListUnmanaged([]u8) = .{},
+
+    fn deinit(self: *PathCandidateList, allocator: std.mem.Allocator) void {
+        for (self.paths.items) |item| allocator.free(item);
+        self.paths.deinit(allocator);
+    }
+};
+
+fn collectPathCandidates(allocator: std.mem.Allocator, name: []const u8) !PathCandidateList {
+    var result = PathCandidateList{};
+    errdefer result.deinit(allocator);
+
     const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch |e| switch (e) {
-        error.EnvironmentVariableNotFound => {
-            try writer.writeByte(']');
-            return;
-        },
+        error.EnvironmentVariableNotFound => return result,
         else => return e,
     };
     defer allocator.free(path_env);
+
     var it = std.mem.tokenizeScalar(u8, path_env, std.fs.path.delimiter);
     while (it.next()) |dir| {
         if (dir.len == 0) continue;
         const candidate = try std.fs.path.join(allocator, &.{ dir, name });
-        defer allocator.free(candidate);
-        if (!fileExists(candidate)) continue;
-        if (!first) try writer.writeByte(',');
-        first = false;
-        try std.json.stringify(candidate, .{}, writer);
+        errdefer allocator.free(candidate);
+        if (!fileExists(candidate)) {
+            allocator.free(candidate);
+            continue;
+        }
+        try result.paths.append(allocator, candidate);
     }
-    try writer.writeByte(']');
+    return result;
+}
+
+fn firstNativeCodexCandidate(allocator: std.mem.Allocator, candidates: []const []const u8) !?[]const u8 {
+    for (candidates) |candidate| {
+        if (!(try isOauthMuxShimPath(allocator, candidate))) return candidate;
+    }
+    return null;
+}
+
+fn countOauthMuxShimCandidates(allocator: std.mem.Allocator, candidates: []const []const u8) !usize {
+    var count: usize = 0;
+    for (candidates) |candidate| {
+        if (try isOauthMuxShimPath(allocator, candidate)) count += 1;
+    }
+    return count;
+}
+
+fn isOauthMuxShimPath(allocator: std.mem.Allocator, path_value: []const u8) !bool {
+    _ = allocator;
+    var buf: [4096]u8 = undefined;
+    const len = readFilePrefix(path_value, &buf) catch |e| switch (e) {
+        error.FileNotFound, error.AccessDenied, error.IsDir => return false,
+        else => return e,
+    };
+    const data = buf[0..len];
+    return std.mem.indexOf(u8, data, "OMUX_CODEX_SHIM") != null;
+}
+
+fn readFilePrefix(path_value: []const u8, buf: []u8) !usize {
+    const file = if (std.fs.path.isAbsolute(path_value))
+        try std.fs.openFileAbsolute(path_value, .{})
+    else
+        try std.fs.cwd().openFile(path_value, .{});
+    defer file.close();
+    return try file.read(buf);
+}
+
+test "Codex preflight install diagnostics classify shim and native candidates" {
+    var shim_tmp = std.testing.tmpDir(.{});
+    defer shim_tmp.cleanup();
+    var native_tmp = std.testing.tmpDir(.{});
+    defer native_tmp.cleanup();
+
+    const shim_file = try shim_tmp.dir.createFile("codex", .{ .mode = 0o755 });
+    try shim_file.writeAll("#!/bin/sh\n# OMUX_CODEX_SHIM\nexec oauth-mux codex \"$@\"\n");
+    shim_file.close();
+    const native_file = try native_tmp.dir.createFile("codex", .{ .mode = 0o755 });
+    try native_file.writeAll("#!/bin/sh\nexec true\n");
+    native_file.close();
+
+    const shim_path = try shim_tmp.dir.realpathAlloc(std.testing.allocator, "codex");
+    defer std.testing.allocator.free(shim_path);
+    const native_path = try native_tmp.dir.realpathAlloc(std.testing.allocator, "codex");
+    defer std.testing.allocator.free(native_path);
+
+    const candidates = [_][]const u8{ shim_path, native_path };
+    try std.testing.expect(try isOauthMuxShimPath(std.testing.allocator, shim_path));
+    try std.testing.expect(!(try isOauthMuxShimPath(std.testing.allocator, native_path)));
+    try std.testing.expectEqual(@as(usize, 1), try countOauthMuxShimCandidates(std.testing.allocator, &candidates));
+    const native = (try firstNativeCodexCandidate(std.testing.allocator, &candidates)).?;
+    try std.testing.expectEqualStrings(native_path, native);
 }
 
 fn writeCodexPreflightRouteSummaryJson(

@@ -177,7 +177,10 @@ mutated.
 `stay-afloat next`, `stay-afloat --once`, and bounded `stay-afloat --loop` are
 no-spend surfaces when run without `--execute`. They only use local runtime
 checks plus recorded liveness, so they are safe for agents to run before
-deciding whether a live probe or user-driven reauth is warranted.
+deciding whether a live probe or user-driven reauth is warranted. `codex
+preflight` also classifies the visible `codex` PATH entries so operators can
+see whether active `codex` is the managed oauth-mux shim and which native Codex
+binary `OMUX_CODEX_BIN` should point at when bypassing the shim.
 `stay-afloat --execute` is the beta foreground execution boundary: for Codex it
 may run admitted provider-spend revalidation only for expired quota/rate windows
 under the Codex stay-afloat policy, or queue an interactive handoff event.

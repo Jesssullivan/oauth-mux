@@ -118,6 +118,11 @@ oauth-mux version
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
+`codex preflight` prints the active `oauth-mux` path, all visible `oauth-mux`
+and `codex` PATH candidates, whether active `codex` is the managed oauth-mux
+shim, the first native Codex binary, and the `OMUX_CODEX_BIN` escape hatch. Use
+that before debugging stale package or managed-versus-unmanaged Codex behavior.
+
 On macOS, remove the old Mach-O before copying the dogfood binary. Overwriting in
 place can leave stale taskgated/code-signing state on the old vnode and produce
 an immediate `SIGKILL` / status `137`.
