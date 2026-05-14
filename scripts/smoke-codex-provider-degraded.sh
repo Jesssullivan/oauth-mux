@@ -139,6 +139,7 @@ run_fallback_case() {
     local ndjson="$case_dir/adapter.ndjson"
     local adapter_stderr="$case_dir/adapter.stderr"
     local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
     mkdir -p "$case_dir"
     write_two_account_fixture "$case_dir"
     mkdir -p "$case_dir/bin"
@@ -166,6 +167,8 @@ EOF
       OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
       OMUX_UPSTREAM_SCHEME="http" \
       OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
       OMUX_STUB_CODEX_TURNS=3 \
       OMUX_STUB_CODEX_REPORT="$stub_report" \
       "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
@@ -181,6 +184,10 @@ EOF
     assert_grep "fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$ndjson"
     assert_no_grep "provider retry did not use quota retry event" '"kind":"proxy_same_turn_retry".*"reason":"provider_5xx"' "$ndjson"
     assert_no_grep "no route-repair body leaked on provider fallback" 'oauth_mux_no_account_selectable' "$stub_report"
+    jq -e 'select(.name == "codex.proxy.turn" and .attributes.classification == "provider_5xx" and .attributes.delivered_to_codex == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured provider 5xx turn"
+    jq -e 'select(.name == "codex.proxy.retry" and .attributes.reason == "provider_5xx" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured provider retry boundary"
 
     local got_200
     got_200="$(jq -r '.turns | map(select(.status == 200)) | length' "$stub_report")"
@@ -215,6 +222,7 @@ run_no_fallback_case() {
     local ndjson="$case_dir/adapter.ndjson"
     local adapter_stderr="$case_dir/adapter.stderr"
     local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
     mkdir -p "$case_dir"
     write_one_account_fixture "$case_dir"
 
@@ -234,6 +242,8 @@ run_no_fallback_case() {
       OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
       OMUX_UPSTREAM_SCHEME="http" \
       OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
       OMUX_STUB_CODEX_TURNS=1 \
       OMUX_STUB_CODEX_REPORT="$stub_report" \
       "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
@@ -248,6 +258,8 @@ run_no_fallback_case() {
     assert_grep "provider retry unavailable event fired" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"delivered_to_codex":true' "$ndjson"
     assert_no_grep "no quota all-exhausted event for provider 503" '"kind":"quota_handoff_failed_no_account_selectable"' "$ndjson"
     assert_no_grep "no route-repair response for provider 503" 'oauth_mux_no_account_selectable' "$stub_report"
+    jq -e 'select(.name == "codex.proxy.provider_unavailable" and .attributes.transport_error == "NoAccountSelectable" and .attributes.delivered_to_codex == true)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured provider-unavailable terminal boundary"
 
     local got_503
     got_503="$(jq -r '.turns | map(select(.status == 503 and (.body_head | contains("forced status 503")))) | length' "$stub_report")"
@@ -258,10 +270,76 @@ run_no_fallback_case() {
         jq .turns "$stub_report" >&2
         exit 1
     fi
+
+    for leak in "$ID_TOKEN" RT-A acc-A-id "$case_dir/account-A/auth.json"; do
+        if grep -Fq "$leak" "$trace_file"; then
+            echo "  ✗ trace leaked sensitive value: $leak" >&2
+            cat "$trace_file" >&2
+            exit 1
+        fi
+    done
+    echo "  ✓ trace did not leak provider-degraded auth material"
+}
+
+run_transport_failure_case() {
+    local case_dir="$TMP/transport-failure"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    local closed_port
+    closed_port="$(
+      python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+    )"
+    echo "smoke-codex-provider-degraded: transport-failure closed_port=$closed_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$closed_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in transport-failure case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: transport-failure assertions"
+    assert_grep "transport failure recorded upstream failure" '"kind":"proxy_upstream_failed".*"account":"codex:max-1"' "$ndjson"
+    assert_grep "transport failure delivered provider unavailable" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"delivered_to_codex":true' "$ndjson"
+    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured upstream transport failure"
+    jq -e 'select(.name == "codex.proxy.provider_unavailable" and .attributes.delivered_to_codex == true)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured provider-unavailable transport boundary"
+
+    local got_503
+    got_503="$(jq -r '[.turns[] | select(.status == 503 and (.body_head | contains("oauth_mux_provider_unavailable")))] | length' "$stub_report")"
+    if [[ "$got_503" -eq 1 ]]; then
+        echo "  ✓ stub-codex saw oauth_mux_provider_unavailable body"
+    else
+        echo "  ✗ stub-codex did not see provider-unavailable body" >&2
+        jq .turns "$stub_report" >&2
+        exit 1
+    fi
 }
 
 run_fallback_case
 run_no_fallback_case
+run_transport_failure_case
 
 echo
 echo "smoke-codex-provider-degraded: all assertions passed."
