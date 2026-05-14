@@ -299,6 +299,14 @@ jq -e '
   and .route_summary.selectable_routes == 0
   and (.blocked_route_reasons | length) == 1
   and (.blocked_route_reasons[] | select(.reason == "auth_broker_unready" and .count == 3))
+  and .repair_summary.route_repair_required == true
+  and .repair_summary.agent_safe_inspection_available == true
+  and .repair_summary.blocked_routes == 3
+  and .repair_summary.dominant_blocker == "auth_broker_unready"
+  and .repair_summary.dominant_blocker_count == 3
+  and .repair_summary.auth_broker_unready_routes == 3
+  and .repair_summary.revalidation_needed_routes == 0
+  and .repair_summary.user_handoff_required == false
   and (.blocked_routes | length) == 3
   and all(.blocked_routes[]; .provider == "codex" and .capability == "codex-max" and .selectable == false and .broker_ready == false and .blocked_reason == "auth_broker_unready" and .action.mutating == false)
   and (.next_actions | index("oauth-mux stay-afloat --once --execute --profile codex-max --capability codex-max --json") != null)

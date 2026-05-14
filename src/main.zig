@@ -9289,6 +9289,8 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         try writeCodexPreflightRouteSummaryJson(writer, summary, session_start_ready, fallback_ready);
         try writer.writeAll(",\"blocked_route_reasons\":");
         try writeCodexPreflightBlockedReasonSummaryJson(writer, allocator, parsed.value, evaluations.items, selected_index);
+        try writer.writeAll(",\"repair_summary\":");
+        try writeCodexPreflightRepairSummaryJson(writer, allocator, parsed.value, evaluations.items, selected_index, session_start_ready, fallback_ready);
         try writer.writeAll(",\"blocked_routes\":");
         try writeCodexPreflightBlockedRoutesJson(writer, allocator, parsed.value, evaluations.items, selected_index);
         try writer.writeAll(",\"selected\":");
@@ -9323,9 +9325,10 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     try writer.print("  routes: total={d} selectable={d} broker-ready={d} selectable-fallback={d}\n", .{
         summary.routes_total,
         summary.selectable_routes,
-        summary.selectable_broker_routes,
+        summary.broker_ready_routes,
         summary.selectable_fallback_routes,
     });
+    try writeCodexPreflightRepairSummaryText(writer, allocator, parsed.value, evaluations.items, selected_index, session_start_ready, fallback_ready);
     try writeCodexPreflightBlockedRoutesText(writer, allocator, parsed.value, evaluations.items, selected_index);
     if (!ok) {
         try writeCodexPreflightNextActionsText(writer, allocator, args.profile, capability, session_start_ready, fallback_ready);
@@ -9601,6 +9604,185 @@ fn writeCodexPreflightBlockedReasonSummaryJson(
         try writer.writeByte('}');
     }
     try writer.writeByte(']');
+}
+
+const CodexPreflightRepairSummary = struct {
+    route_repair_required: bool,
+    agent_safe_inspection_available: bool,
+    spend_confirmed_repair_available: bool = false,
+    user_handoff_required: bool = false,
+    provider_spend_required: bool = false,
+    blocked_routes: usize = 0,
+    revalidation_needed_routes: usize = 0,
+    quota_exhausted_routes: usize = 0,
+    rate_limited_routes: usize = 0,
+    tier_insufficient_routes: usize = 0,
+    auth_permanently_failed_routes: usize = 0,
+    credential_unavailable_routes: usize = 0,
+    not_afloat_routes: usize = 0,
+    auth_handoff_routes: usize = 0,
+    auth_broker_unready_routes: usize = 0,
+    runtime_repair_routes: usize = 0,
+    wait_routes: usize = 0,
+    provider_plan_routes: usize = 0,
+    credential_rotation_routes: usize = 0,
+    manual_repair_routes: usize = 0,
+    dominant_blocker: ?[]const u8 = null,
+    dominant_blocker_count: usize = 0,
+};
+
+fn codexPreflightClassifyRepairRoute(summary: *CodexPreflightRepairSummary, reason: []const u8, action: RepairAction) void {
+    summary.blocked_routes += 1;
+    if (summary.dominant_blocker == null) summary.dominant_blocker = reason;
+
+    if (std.mem.eql(u8, reason, "revalidation_needed")) summary.revalidation_needed_routes += 1;
+    if (std.mem.eql(u8, reason, "quota_exhausted")) summary.quota_exhausted_routes += 1;
+    if (std.mem.eql(u8, reason, "rate_limited")) summary.rate_limited_routes += 1;
+    if (std.mem.eql(u8, reason, "tier_insufficient")) summary.tier_insufficient_routes += 1;
+    if (std.mem.eql(u8, reason, "auth_permanently_failed")) summary.auth_permanently_failed_routes += 1;
+    if (std.mem.eql(u8, reason, "credential_unavailable")) summary.credential_unavailable_routes += 1;
+    if (std.mem.eql(u8, reason, "not_afloat")) summary.not_afloat_routes += 1;
+    if (std.mem.eql(u8, reason, "auth_broker_unready")) summary.auth_broker_unready_routes += 1;
+
+    if (action.interactive or action.mediation == .user_handoff or action.kind == .reauth) {
+        summary.user_handoff_required = true;
+        summary.auth_handoff_routes += 1;
+    }
+    if (action.budget) |budget| {
+        if (budget == .spend_provider) {
+            summary.provider_spend_required = true;
+            if (!action.interactive and action.command != .none) summary.spend_confirmed_repair_available = true;
+        }
+    }
+
+    switch (action.kind) {
+        .revalidation_needed => summary.revalidation_needed_routes += if (std.mem.eql(u8, reason, "revalidation_needed")) 0 else 1,
+        .fix_runtime => summary.runtime_repair_routes += 1,
+        .wait_for_repair, .wait_and_retry, .wait_for_quota, .wait_for_cooldown => summary.wait_routes += 1,
+        .provider_plan => summary.provider_plan_routes += 1,
+        .external_secret_rotation => summary.credential_rotation_routes += 1,
+        .manual_repair => summary.manual_repair_routes += 1,
+        else => {},
+    }
+}
+
+fn codexPreflightSetDominantBlocker(summary: *CodexPreflightRepairSummary, reason: []const u8, count: usize) void {
+    if (count == 0) return;
+    if (summary.dominant_blocker_count == 0 or count > summary.dominant_blocker_count) {
+        summary.dominant_blocker = reason;
+        summary.dominant_blocker_count = count;
+    }
+}
+
+fn codexPreflightFinalizeRepairSummary(summary: *CodexPreflightRepairSummary) void {
+    codexPreflightSetDominantBlocker(summary, "revalidation_needed", summary.revalidation_needed_routes);
+    codexPreflightSetDominantBlocker(summary, "quota_exhausted", summary.quota_exhausted_routes);
+    codexPreflightSetDominantBlocker(summary, "rate_limited", summary.rate_limited_routes);
+    codexPreflightSetDominantBlocker(summary, "tier_insufficient", summary.tier_insufficient_routes);
+    codexPreflightSetDominantBlocker(summary, "auth_permanently_failed", summary.auth_permanently_failed_routes);
+    codexPreflightSetDominantBlocker(summary, "credential_unavailable", summary.credential_unavailable_routes);
+    codexPreflightSetDominantBlocker(summary, "not_afloat", summary.not_afloat_routes);
+    codexPreflightSetDominantBlocker(summary, "auth_broker_unready", summary.auth_broker_unready_routes);
+    if (summary.dominant_blocker_count == 0 and summary.blocked_routes != 0) summary.dominant_blocker_count = 1;
+}
+
+fn codexPreflightRepairSummary(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !CodexPreflightRepairSummary {
+    var summary = CodexPreflightRepairSummary{
+        .route_repair_required = !session_start_ready or !fallback_ready,
+        .agent_safe_inspection_available = !session_start_ready or !fallback_ready,
+    };
+
+    for (evaluations, 0..) |evaluation, idx| {
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
+        const reason = codexPreflightRouteBlockedReason(evaluation, selected, plan);
+        codexPreflightClassifyRepairRoute(&summary, reason, evaluation.action);
+    }
+    codexPreflightFinalizeRepairSummary(&summary);
+
+    return summary;
+}
+
+fn writeCodexPreflightRepairSummaryJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    const summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, session_start_ready, fallback_ready);
+    try writer.writeByte('{');
+    try writer.writeAll("\"route_repair_required\":");
+    try writer.writeAll(if (summary.route_repair_required) "true" else "false");
+    try writer.writeAll(",\"agent_safe_inspection_available\":");
+    try writer.writeAll(if (summary.agent_safe_inspection_available) "true" else "false");
+    try writer.writeAll(",\"spend_confirmed_repair_available\":");
+    try writer.writeAll(if (summary.spend_confirmed_repair_available) "true" else "false");
+    try writer.writeAll(",\"user_handoff_required\":");
+    try writer.writeAll(if (summary.user_handoff_required) "true" else "false");
+    try writer.writeAll(",\"provider_spend_required\":");
+    try writer.writeAll(if (summary.provider_spend_required) "true" else "false");
+    try writer.print(",\"blocked_routes\":{d}", .{summary.blocked_routes});
+    try writer.print(",\"revalidation_needed_routes\":{d}", .{summary.revalidation_needed_routes});
+    try writer.print(",\"quota_exhausted_routes\":{d}", .{summary.quota_exhausted_routes});
+    try writer.print(",\"rate_limited_routes\":{d}", .{summary.rate_limited_routes});
+    try writer.print(",\"tier_insufficient_routes\":{d}", .{summary.tier_insufficient_routes});
+    try writer.print(",\"auth_permanently_failed_routes\":{d}", .{summary.auth_permanently_failed_routes});
+    try writer.print(",\"credential_unavailable_routes\":{d}", .{summary.credential_unavailable_routes});
+    try writer.print(",\"not_afloat_routes\":{d}", .{summary.not_afloat_routes});
+    try writer.print(",\"auth_handoff_routes\":{d}", .{summary.auth_handoff_routes});
+    try writer.print(",\"auth_broker_unready_routes\":{d}", .{summary.auth_broker_unready_routes});
+    try writer.print(",\"runtime_repair_routes\":{d}", .{summary.runtime_repair_routes});
+    try writer.print(",\"wait_routes\":{d}", .{summary.wait_routes});
+    try writer.print(",\"provider_plan_routes\":{d}", .{summary.provider_plan_routes});
+    try writer.print(",\"credential_rotation_routes\":{d}", .{summary.credential_rotation_routes});
+    try writer.print(",\"manual_repair_routes\":{d}", .{summary.manual_repair_routes});
+    try writer.writeAll(",\"dominant_blocker\":");
+    if (summary.dominant_blocker) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.print(",\"dominant_blocker_count\":{d}", .{summary.dominant_blocker_count});
+    try writer.writeByte('}');
+}
+
+fn writeCodexPreflightRepairSummaryText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    session_start_ready: bool,
+    fallback_ready: bool,
+) !void {
+    const summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, session_start_ready, fallback_ready);
+    if (summary.blocked_routes == 0) return;
+    try writer.print("  repair summary: required={s}", .{if (summary.route_repair_required) "yes" else "no"});
+    if (summary.dominant_blocker) |value| {
+        try writer.print(" dominant_blocker={s}({d})", .{ value, summary.dominant_blocker_count });
+    }
+    if (summary.revalidation_needed_routes != 0) try writer.print(" revalidation_needed={d}", .{summary.revalidation_needed_routes});
+    if (summary.quota_exhausted_routes != 0) try writer.print(" quota_exhausted={d}", .{summary.quota_exhausted_routes});
+    if (summary.rate_limited_routes != 0) try writer.print(" rate_limited={d}", .{summary.rate_limited_routes});
+    if (summary.tier_insufficient_routes != 0) try writer.print(" tier_insufficient={d}", .{summary.tier_insufficient_routes});
+    if (summary.auth_permanently_failed_routes != 0) try writer.print(" auth_permanently_failed={d}", .{summary.auth_permanently_failed_routes});
+    if (summary.credential_unavailable_routes != 0) try writer.print(" credential_unavailable={d}", .{summary.credential_unavailable_routes});
+    if (summary.not_afloat_routes != 0) try writer.print(" not_afloat={d}", .{summary.not_afloat_routes});
+    if (summary.auth_broker_unready_routes != 0) try writer.print(" auth_broker_unready={d}", .{summary.auth_broker_unready_routes});
+    if (summary.auth_handoff_routes != 0) try writer.print(" auth_handoff={d}", .{summary.auth_handoff_routes});
+    if (summary.runtime_repair_routes != 0) try writer.print(" runtime_repair={d}", .{summary.runtime_repair_routes});
+    if (summary.wait_routes != 0) try writer.print(" wait={d}", .{summary.wait_routes});
+    try writer.print(" spend_confirmed_available={s} user_handoff_required={s}\n", .{
+        if (summary.spend_confirmed_repair_available) "yes" else "no",
+        if (summary.user_handoff_required) "yes" else "no",
+    });
 }
 
 fn writeCodexPreflightBlockedRoutesJson(
@@ -16362,6 +16544,52 @@ test "repairActionFor surfaces expired quota window as revalidation needed" {
     try std.testing.expectEqual(RepairCommandKind.probe, action.command);
     try std.testing.expect(action.wait_until == null);
     try std.testing.expectEqualStrings("revalidation_needed", routeSkipReason(.ready, health));
+}
+
+test "Codex preflight repair summary separates revalidation from user handoff" {
+    var summary = CodexPreflightRepairSummary{
+        .route_repair_required = true,
+        .agent_safe_inspection_available = true,
+    };
+
+    codexPreflightClassifyRepairRoute(&summary, "revalidation_needed", .{
+        .kind = .revalidation_needed,
+        .severity = "warning",
+        .message = "quota reset window has passed",
+        .mediation = .probe,
+        .command = .probe,
+        .budget = .spend_provider,
+    });
+    codexPreflightClassifyRepairRoute(&summary, "revalidation_needed", .{
+        .kind = .revalidation_needed,
+        .severity = "warning",
+        .message = "quota reset window has passed",
+        .mediation = .probe,
+        .command = .probe,
+        .budget = .spend_provider,
+    });
+    codexPreflightClassifyRepairRoute(&summary, "auth_permanently_failed", .{
+        .kind = .reauth,
+        .severity = "error",
+        .message = "reauth is owned by upstream CLI",
+        .mediation = .user_handoff,
+        .owner = .upstream_cli_login,
+        .command = .codex_login_device,
+        .budget = .interactive,
+        .interactive = true,
+        .mutating = true,
+    });
+    codexPreflightFinalizeRepairSummary(&summary);
+
+    try std.testing.expectEqual(@as(usize, 3), summary.blocked_routes);
+    try std.testing.expectEqual(@as(usize, 2), summary.revalidation_needed_routes);
+    try std.testing.expectEqual(@as(usize, 1), summary.auth_permanently_failed_routes);
+    try std.testing.expectEqual(@as(usize, 1), summary.auth_handoff_routes);
+    try std.testing.expect(summary.provider_spend_required);
+    try std.testing.expect(summary.spend_confirmed_repair_available);
+    try std.testing.expect(summary.user_handoff_required);
+    try std.testing.expectEqualStrings("revalidation_needed", summary.dominant_blocker.?);
+    try std.testing.expectEqual(@as(usize, 2), summary.dominant_blocker_count);
 }
 
 test "writeRepairActionJson emits codex reauth command without running it" {
