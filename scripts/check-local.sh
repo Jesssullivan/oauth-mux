@@ -5,6 +5,7 @@ set -eu
 
 zig build test
 zig build
+bash -n ./scripts/install-local-dogfood.sh
 
 for cfg in examples/*.config.json; do
   OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate

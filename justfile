@@ -30,6 +30,9 @@ run *ARGS:
 version: build
     ./zig-out/bin/oauth-mux version
 
+install-local-dogfood:
+    nix develop --command ./scripts/install-local-dogfood.sh
+
 status: build
     ./zig-out/bin/oauth-mux status --json
 
