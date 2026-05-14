@@ -399,7 +399,9 @@ oauth-mux codex preflight --profile <profile> --capability <capability> --json
 
 A wrapper may act automatically only on admitted, non-interactive,
 non-mutating work, except for explicitly admitted Codex expired-window
-revalidation under the Codex stay-afloat policy. When JSON reports
+revalidation under the Codex stay-afloat policy. For `codex preflight`, wrappers
+should consume `agent_safe_next_actions` automatically and reserve
+`spend_confirmed_next_actions` for a user-approved repair step. When JSON reports
 `action.kind:"fix_runtime"` with
 `action.command:null`, the wrapper should display or broker
 `action.diagnostic_command` in the user-owned process boundary, then rerun
