@@ -244,6 +244,13 @@ clients should prefer `agent_safe_next_actions` for no-spend automation and
 treat `spend_confirmed_next_actions` as user-approved repair only; text output
 uses the same no-spend diagnostics and spend-confirmed repair labels.
 
+When a managed Codex session exhausts every selectable fallback, the wire proxy
+returns typed `oauth_mux_no_account_selectable` JSON instead of a bare provider
+error. That 503 body includes `preflight_command`, `rejection_summary`,
+`agent_safe_next_actions`, and `spend_confirmed_next_actions` so wrappers can
+surface no-spend inspection first and reserve route-health repair for explicit
+user approval.
+
 Managed Codex live quota handoff is proven for installed
 `oauth-mux codex resume` status artifacts. The 2026-05-09 engineered evidence
 shows successful primary-route traffic, provider-originated
