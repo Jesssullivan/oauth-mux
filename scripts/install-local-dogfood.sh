@@ -117,6 +117,21 @@ if [ -z "\$native_codex" ]; then
     exit 127
 fi
 
+should_pass_native() {
+    case "\${1:-}" in
+        --help|-h|help|--version|-V|version|login|logout|auth|mcp|completion|completions)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+if should_pass_native "\${1:-}"; then
+    exec "\$native_codex" "\$@"
+fi
+
 OMUX_CODEX_BIN="\$native_codex" OMUX_CODEX_SHIM=1 OMUX_COMMAND_SPELLING=codex exec "\$oauth_mux_bin" codex "\$@"
 EOF
   chmod 0755 "$codex_target"

@@ -3150,7 +3150,7 @@ fn executeCodexLoginDeviceRepair(
     const config_dir = account.config_dir orelse return false;
     const expanded = try paths.expandTilde(allocator, config_dir);
     defer allocator.free(expanded);
-    return try runCodexCli(allocator, expanded, &.{ "codex", "login", "--device-auth" });
+    return try runCodexCli(allocator, expanded, &.{ "login", "--device-auth" });
 }
 
 fn collectRepairPlanRoutes(
@@ -3593,15 +3593,21 @@ fn daemonRepairAdmission(policy: config.DaemonPolicyConfig, action: RepairAction
 }
 
 fn routeHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) ?health_mod.AccountHealth {
+    const now = std.time.timestamp();
     const account_key = health_mod.accountKey(route.provider, route.account);
-    const account_health = store.accounts.get(account_key.slice());
+    const account_health = if (store.accounts.get(account_key.slice())) |health|
+        health_mod.effectiveHealthForRouteSelection(health, now)
+    else
+        null;
     if (account_health) |health| {
         if (accountLivenessBlocksRoute(health.liveness)) return health;
     }
 
     if (route.capability) |capability| {
         const capability_key = health_mod.capabilityKey(route.provider, route.account, capability);
-        if (store.accounts.get(capability_key.slice())) |health| return health;
+        if (store.accounts.get(capability_key.slice())) |health| {
+            return health_mod.effectiveHealthForRouteSelection(health, now);
+        }
     }
 
     return account_health;
@@ -8409,21 +8415,21 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             try bootstrapOneCodexDir(allocator, writer, root, account);
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
-            if (!try runCodexCli(allocator, dir, &.{ "codex", "login" })) return error.CodexCommandFailed;
+            if (!try runCodexCli(allocator, dir, &.{"login"})) return error.CodexCommandFailed;
         },
         .login_device => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
             try bootstrapOneCodexDir(allocator, writer, root, account);
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
-            if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "--device-auth" })) return error.CodexCommandFailed;
+            if (!try runCodexCli(allocator, dir, &.{ "login", "--device-auth" })) return error.CodexCommandFailed;
         },
         .login_status => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
-            if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) return error.CodexCommandFailed;
+            if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) return error.CodexCommandFailed;
         },
         .login_status_all => try runCodexLoginStatusAll(allocator, writer, args, root),
         .onboard => try runCodexOnboard(allocator, writer, args, root),
@@ -8467,21 +8473,21 @@ fn runCodexOnboard(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
         defer allocator.free(dir);
 
         try writer.print("\n=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
-        if (try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) continue;
+        if (try runCodexCli(allocator, dir, &.{ "login", "status" })) continue;
         if (args.status_only) {
             failures += 1;
             continue;
         }
 
         const login_argv = if (args.device)
-            &[_][]const u8{ "codex", "login", "--device-auth" }
+            &[_][]const u8{ "login", "--device-auth" }
         else
-            &[_][]const u8{ "codex", "login" };
+            &[_][]const u8{"login"};
         if (!try runCodexCli(allocator, dir, login_argv)) {
             failures += 1;
             continue;
         }
-        if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) failures += 1;
+        if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) failures += 1;
     }
 
     try writer.writeAll("\n=== oauth-mux discovery ===\n");
@@ -9617,6 +9623,8 @@ const CodexPreflightRepairSummary = struct {
     quota_exhausted_routes: usize = 0,
     rate_limited_routes: usize = 0,
     tier_insufficient_routes: usize = 0,
+    token_revoked_routes: usize = 0,
+    provider_degraded_routes: usize = 0,
     auth_permanently_failed_routes: usize = 0,
     credential_unavailable_routes: usize = 0,
     not_afloat_routes: usize = 0,
@@ -9639,6 +9647,8 @@ fn codexPreflightClassifyRepairRoute(summary: *CodexPreflightRepairSummary, reas
     if (std.mem.eql(u8, reason, "quota_exhausted")) summary.quota_exhausted_routes += 1;
     if (std.mem.eql(u8, reason, "rate_limited")) summary.rate_limited_routes += 1;
     if (std.mem.eql(u8, reason, "tier_insufficient")) summary.tier_insufficient_routes += 1;
+    if (std.mem.eql(u8, reason, "token_revoked")) summary.token_revoked_routes += 1;
+    if (std.mem.eql(u8, reason, "provider_degraded")) summary.provider_degraded_routes += 1;
     if (std.mem.eql(u8, reason, "auth_permanently_failed")) summary.auth_permanently_failed_routes += 1;
     if (std.mem.eql(u8, reason, "credential_unavailable")) summary.credential_unavailable_routes += 1;
     if (std.mem.eql(u8, reason, "not_afloat")) summary.not_afloat_routes += 1;
@@ -9679,6 +9689,8 @@ fn codexPreflightFinalizeRepairSummary(summary: *CodexPreflightRepairSummary) vo
     codexPreflightSetDominantBlocker(summary, "quota_exhausted", summary.quota_exhausted_routes);
     codexPreflightSetDominantBlocker(summary, "rate_limited", summary.rate_limited_routes);
     codexPreflightSetDominantBlocker(summary, "tier_insufficient", summary.tier_insufficient_routes);
+    codexPreflightSetDominantBlocker(summary, "token_revoked", summary.token_revoked_routes);
+    codexPreflightSetDominantBlocker(summary, "provider_degraded", summary.provider_degraded_routes);
     codexPreflightSetDominantBlocker(summary, "auth_permanently_failed", summary.auth_permanently_failed_routes);
     codexPreflightSetDominantBlocker(summary, "credential_unavailable", summary.credential_unavailable_routes);
     codexPreflightSetDominantBlocker(summary, "not_afloat", summary.not_afloat_routes);
@@ -9737,6 +9749,8 @@ fn writeCodexPreflightRepairSummaryJson(
     try writer.print(",\"quota_exhausted_routes\":{d}", .{summary.quota_exhausted_routes});
     try writer.print(",\"rate_limited_routes\":{d}", .{summary.rate_limited_routes});
     try writer.print(",\"tier_insufficient_routes\":{d}", .{summary.tier_insufficient_routes});
+    try writer.print(",\"token_revoked_routes\":{d}", .{summary.token_revoked_routes});
+    try writer.print(",\"provider_degraded_routes\":{d}", .{summary.provider_degraded_routes});
     try writer.print(",\"auth_permanently_failed_routes\":{d}", .{summary.auth_permanently_failed_routes});
     try writer.print(",\"credential_unavailable_routes\":{d}", .{summary.credential_unavailable_routes});
     try writer.print(",\"not_afloat_routes\":{d}", .{summary.not_afloat_routes});
@@ -9772,6 +9786,8 @@ fn writeCodexPreflightRepairSummaryText(
     if (summary.quota_exhausted_routes != 0) try writer.print(" quota_exhausted={d}", .{summary.quota_exhausted_routes});
     if (summary.rate_limited_routes != 0) try writer.print(" rate_limited={d}", .{summary.rate_limited_routes});
     if (summary.tier_insufficient_routes != 0) try writer.print(" tier_insufficient={d}", .{summary.tier_insufficient_routes});
+    if (summary.token_revoked_routes != 0) try writer.print(" token_revoked={d}", .{summary.token_revoked_routes});
+    if (summary.provider_degraded_routes != 0) try writer.print(" provider_degraded={d}", .{summary.provider_degraded_routes});
     if (summary.auth_permanently_failed_routes != 0) try writer.print(" auth_permanently_failed={d}", .{summary.auth_permanently_failed_routes});
     if (summary.credential_unavailable_routes != 0) try writer.print(" credential_unavailable={d}", .{summary.credential_unavailable_routes});
     if (summary.not_afloat_routes != 0) try writer.print(" not_afloat={d}", .{summary.not_afloat_routes});
@@ -15610,7 +15626,7 @@ fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: c
         const dir = try codexAccountDir(allocator, root, account);
         defer allocator.free(dir);
         try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
-        if (!try runCodexCli(allocator, dir, &.{ "codex", "login", "status" })) failures += 1;
+        if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) failures += 1;
     }
     if (failures != 0) return error.CodexCommandFailed;
 }
@@ -15804,10 +15820,34 @@ fn getEnvOwnedOrNull(allocator: std.mem.Allocator, name: []const u8) !?[]const u
     };
 }
 
-fn runCodexCli(allocator: std.mem.Allocator, account_dir: []const u8, argv: []const []const u8) !bool {
+fn resolveNativeCodexBinary(allocator: std.mem.Allocator) ![]const u8 {
+    if (try getEnvOwnedOrNull(allocator, "OMUX_CODEX_BIN")) |env_path| {
+        errdefer allocator.free(env_path);
+        if (env_path.len != 0 and fileExists(env_path) and !(try isOauthMuxShimPath(allocator, env_path))) return env_path;
+        allocator.free(env_path);
+    }
+
+    var candidates = try collectPathCandidates(allocator, "codex");
+    defer candidates.deinit(allocator);
+    if (try firstNativeCodexCandidate(allocator, candidates.paths.items)) |path_value| {
+        return try allocator.dupe(u8, path_value);
+    }
+    return error.CodexNativeBinaryNotFound;
+}
+
+fn runCodexCli(allocator: std.mem.Allocator, account_dir: []const u8, codex_args: []const []const u8) !bool {
+    const codex_bin = try resolveNativeCodexBinary(allocator);
+    defer allocator.free(codex_bin);
+
+    var argv = try allocator.alloc([]const u8, codex_args.len + 1);
+    defer allocator.free(argv);
+    argv[0] = codex_bin;
+    @memcpy(argv[1..], codex_args);
+
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
     try env_map.put("CODEX_HOME", account_dir);
+    _ = env_map.remove("OMUX_CODEX_SHIM");
 
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Inherit;
@@ -16589,6 +16629,44 @@ test "Codex preflight repair summary separates revalidation from user handoff" {
     try std.testing.expect(summary.spend_confirmed_repair_available);
     try std.testing.expect(summary.user_handoff_required);
     try std.testing.expectEqualStrings("revalidation_needed", summary.dominant_blocker.?);
+    try std.testing.expectEqual(@as(usize, 2), summary.dominant_blocker_count);
+}
+
+test "Codex preflight repair summary counts auth and provider blockers" {
+    var summary = CodexPreflightRepairSummary{
+        .route_repair_required = true,
+        .agent_safe_inspection_available = true,
+    };
+
+    const reauth = RepairAction{
+        .kind = .reauth,
+        .severity = "error",
+        .message = "reauth is owned by upstream CLI",
+        .mediation = .user_handoff,
+        .owner = .upstream_cli_login,
+        .command = .codex_login_device,
+        .budget = .interactive,
+        .interactive = true,
+        .mutating = true,
+    };
+    codexPreflightClassifyRepairRoute(&summary, "token_revoked", reauth);
+    codexPreflightClassifyRepairRoute(&summary, "token_revoked", reauth);
+    codexPreflightClassifyRepairRoute(&summary, "provider_degraded", .{
+        .kind = .try_next_provider,
+        .severity = "warning",
+        .message = "provider appears degraded",
+        .mediation = .provider_degraded,
+    });
+    codexPreflightClassifyRepairRoute(&summary, "auth_permanently_failed", reauth);
+    codexPreflightFinalizeRepairSummary(&summary);
+
+    try std.testing.expectEqual(@as(usize, 4), summary.blocked_routes);
+    try std.testing.expectEqual(@as(usize, 2), summary.token_revoked_routes);
+    try std.testing.expectEqual(@as(usize, 1), summary.provider_degraded_routes);
+    try std.testing.expectEqual(@as(usize, 1), summary.auth_permanently_failed_routes);
+    try std.testing.expectEqual(@as(usize, 3), summary.auth_handoff_routes);
+    try std.testing.expect(summary.user_handoff_required);
+    try std.testing.expectEqualStrings("token_revoked", summary.dominant_blocker.?);
     try std.testing.expectEqual(@as(usize, 2), summary.dominant_blocker_count);
 }
 

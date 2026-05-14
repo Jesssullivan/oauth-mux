@@ -371,6 +371,59 @@ else
     exit 1
 fi
 
+echo "smoke-codex-cli-ux: managed codex shim passes native admin commands through"
+DOGFOOD_BIN="$TMP/dogfood-bin"
+NATIVE_CODEX="$TMP/native-codex"
+NATIVE_REPORT="$TMP/native-codex.report"
+NATIVE_STDOUT="$TMP/native-codex.stdout"
+mkdir -p "$DOGFOOD_BIN"
+cat >"$NATIVE_CODEX" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${OMUX_NATIVE_CODEX_REPORT:-}" ]]; then
+    printf '%s\n' "$@" >"$OMUX_NATIVE_CODEX_REPORT"
+fi
+case "${1:-}" in
+    --version|-V|version)
+        printf '%s\n' 'codex-cli-native-stub 0.0.0'
+        ;;
+    login)
+        printf '%s\n' 'native-login-stub'
+        ;;
+    *)
+        printf '%s\n' 'native-codex-stub'
+        ;;
+esac
+EOF
+chmod 0755 "$NATIVE_CODEX"
+
+INSTALL_DIR="$DOGFOOD_BIN" \
+  OMUX_DOGFOOD_SKIP_BUILD=1 \
+  OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  "$ROOT/scripts/install-local-dogfood.sh" >"$TMP/dogfood-install.stdout"
+
+OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  OMUX_NATIVE_CODEX_REPORT="$NATIVE_REPORT" \
+  "$DOGFOOD_BIN/codex" --version >"$NATIVE_STDOUT"
+assert_grep "shim --version used native codex" 'codex-cli-native-stub' "$NATIVE_STDOUT"
+assert_grep "shim --version argv recorded by native" '^--version$' "$NATIVE_REPORT"
+
+rm -f "$NATIVE_REPORT" "$NATIVE_STDOUT"
+XDG_DATA_HOME="$TMP/native-xdg" \
+  OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  OMUX_NATIVE_CODEX_REPORT="$NATIVE_REPORT" \
+  "$DOGFOOD_BIN/codex" login --help >"$NATIVE_STDOUT"
+assert_grep "shim login used native codex" 'native-login-stub' "$NATIVE_STDOUT"
+assert_grep "shim login argv recorded by native" '^login$' "$NATIVE_REPORT"
+assert_grep "shim login help argv recorded by native" '^--help$' "$NATIVE_REPORT"
+if [[ -e "$TMP/native-xdg/oauth-mux/codex/max-1" ]]; then
+    echo "  ✗ shim login created mux account directory instead of passing through native Codex" >&2
+    find "$TMP/native-xdg" -maxdepth 4 -print >&2 || true
+    exit 1
+else
+    echo "  ✓ shim login did not bootstrap mux account dirs"
+fi
+
 echo "smoke-codex-cli-ux: no-profile codex election is provider-scoped"
 NO_PROFILE_NDJSON="$TMP/no-profile/status.ndjson"
 NO_PROFILE_STDERR="$TMP/no-profile.stderr"

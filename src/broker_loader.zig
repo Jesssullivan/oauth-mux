@@ -162,14 +162,16 @@ fn routeHealthForPoolAccount(
     account_id: []const u8,
     store: *health_mod.HealthStore,
 ) ?health_mod.AccountHealth {
+    const now = std.time.timestamp();
     const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return null;
     const provider = account_id[0..colon];
     const account = account_id[colon + 1 ..];
     const account_key = health_mod.accountKey(provider, account);
     if (store.accounts.get(account_key.slice())) |account_health| {
-        if (accountLivenessBlocksRoute(account_health.liveness)) {
+        const effective = health_mod.effectiveHealthForRouteSelection(account_health, now);
+        if (accountLivenessBlocksRoute(effective.liveness)) {
             if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return repaired;
-            return account_health;
+            return effective;
         }
     }
 
@@ -182,20 +184,22 @@ fn routeHealthForPoolAccount(
                 const capability = profile_entry[hash + 1 ..];
                 const capability_key = health_mod.capabilityKey(provider, account, capability);
                 if (store.accounts.get(capability_key.slice())) |capability_health| {
-                    if (accountLivenessBlocksRoute(capability_health.liveness)) {
+                    const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
+                    if (accountLivenessBlocksRoute(effective.liveness)) {
                         if (authMaterialRepairHealth(allocator, cfg, provider, account, capability_health)) |repaired| return repaired;
                     }
-                    return capability_health;
+                    return effective;
                 }
             }
         }
     }
 
     if (store.accounts.get(account_key.slice())) |account_health| {
-        if (accountLivenessBlocksRoute(account_health.liveness)) {
+        const effective = health_mod.effectiveHealthForRouteSelection(account_health, now);
+        if (accountLivenessBlocksRoute(effective.liveness)) {
             if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return repaired;
         }
-        return account_health;
+        return effective;
     }
     return null;
 }
@@ -752,8 +756,7 @@ test "codex auth refresh detection uses access token exp" {
     const payload = try std.fmt.bufPrint(&payload_buf, "{{\"exp\":{d}}}", .{future_exp});
     var encoded_buf: [128]u8 = undefined;
     const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buf, payload);
-    const fresh_auth = try std.fmt.allocPrint(
-        std.testing.allocator,
+    const fresh_auth = try std.fmt.allocPrint(std.testing.allocator,
         \\{{"tokens":{{"access_token":"h.{s}.s","refresh_token":"rt","account_id":"acc"}}}}
     , .{encoded});
     defer std.testing.allocator.free(fresh_auth);
@@ -913,6 +916,94 @@ test "populatePoolFromRouteHealth mirrors broker-session-plan route health" {
             try std.testing.expectEqual(broker.account_pool_mod.Availability.unknown, entry.availability);
         }
     }
+}
+
+test "populatePoolFromRouteHealth lets expired provider degradation yield to capability health" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const now = std.time.timestamp();
+    const account_health = try store.getOrCreate("codex:max-1");
+    account_health.liveness = .{ .degraded = .{
+        .reason = .provider_degraded,
+        .since = now - 120,
+        .retry_at = now - 1,
+    } };
+    account_health.last_probe_hint_class = .provider_degraded;
+    account_health.last_probe_decision = .try_next_provider;
+    const capability_health = try store.getOrCreate("codex:max-1#codex-max");
+    capability_health.liveness = .{ .live = .{ .availability = .available } };
+    capability_health.last_probe_hint_class = .none;
+    capability_health.last_probe_decision = .use_this;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealth(&pool, parsed.value, "codex-max", &store);
+
+    const elected = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-1", elected.id);
+    try std.testing.expectEqual(broker.account_pool_mod.Availability.available, elected.availability);
+}
+
+test "populatePoolFromRouteHealth keeps auth-dead account health global" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const now = std.time.timestamp();
+    const account_health = try store.getOrCreate("codex:max-1");
+    account_health.liveness = .{ .dead = .{
+        .reason = .token_revoked,
+        .since = now - 120,
+    } };
+    account_health.last_probe_hint_class = .auth_dead;
+    account_health.last_probe_decision = .try_next_account;
+    const capability_health = try store.getOrCreate("codex:max-1#codex-max");
+    capability_health.liveness = .{ .live = .{ .availability = .available } };
+    capability_health.last_probe_hint_class = .none;
+    capability_health.last_probe_decision = .use_this;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealth(&pool, parsed.value, "codex-max", &store);
+
+    try std.testing.expectError(broker_types.BrokerError.NoAccountSelectable, pool.elect(null, null, &.{}));
+    try std.testing.expectEqual(broker.account_pool_mod.Liveness.dead, pool.accounts.items[0].liveness);
 }
 
 test "populatePoolFromRouteHealth treats newer auth material as route repair evidence" {
