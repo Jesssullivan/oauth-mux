@@ -74,6 +74,19 @@ present and valid, counts configured providers/accounts/profiles, reports
 whether health state exists, and prints the next safe commands for the current
 state.
 
+When local shell, install, auth, or route-health state disagree, enable the
+redacted trace sink:
+
+```bash
+OMUX_TRACE=1 \
+OMUX_TRACE_FILE=/tmp/oauth-mux-trace.ndjson \
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
+```
+
+The trace format is documented in `docs/tracing.md`. It is designed for
+operator and agent debugging without printing token bytes, raw provider account
+ids, raw Codex session ids, or local auth/config file paths.
+
 `oauth-mux doctor runtime --json` is the no-spend runtime report. It checks
 upstream binary availability, configured account store directories, local write
 access via a temporary marker file, and expected session-file presence. It does

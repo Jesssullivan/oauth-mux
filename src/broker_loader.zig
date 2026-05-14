@@ -13,6 +13,7 @@ const broker_types = @import("broker/types.zig");
 const health_mod = @import("health.zig");
 const oauth = @import("oauth.zig");
 const paths = @import("paths.zig");
+const trace = @import("trace.zig");
 const types = @import("types.zig");
 
 /// Populate `pool` with one entry per `<provider>:<account>` defined in
@@ -169,6 +170,7 @@ fn routeHealthForPoolAccount(
     const account_key = health_mod.accountKey(provider, account);
     if (store.accounts.get(account_key.slice())) |account_health| {
         const effective = health_mod.effectiveHealthForRouteSelection(account_health, now);
+        tracePoolHealthNormalization(allocator, provider, account, null, "account", account_health.liveness, effective.liveness);
         if (accountLivenessBlocksRoute(effective.liveness)) {
             if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return repaired;
             return effective;
@@ -185,6 +187,7 @@ fn routeHealthForPoolAccount(
                 const capability_key = health_mod.capabilityKey(provider, account, capability);
                 if (store.accounts.get(capability_key.slice())) |capability_health| {
                     const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
+                    tracePoolHealthNormalization(allocator, provider, account, capability, "capability", capability_health.liveness, effective.liveness);
                     if (accountLivenessBlocksRoute(effective.liveness)) {
                         if (authMaterialRepairHealth(allocator, cfg, provider, account, capability_health)) |repaired| return repaired;
                     }
@@ -196,12 +199,46 @@ fn routeHealthForPoolAccount(
 
     if (store.accounts.get(account_key.slice())) |account_health| {
         const effective = health_mod.effectiveHealthForRouteSelection(account_health, now);
+        tracePoolHealthNormalization(allocator, provider, account, null, "account", account_health.liveness, effective.liveness);
         if (accountLivenessBlocksRoute(effective.liveness)) {
             if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return repaired;
         }
         return effective;
     }
     return null;
+}
+
+fn tracePoolHealthNormalization(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    account_label: []const u8,
+    capability: ?[]const u8,
+    source_scope: []const u8,
+    before: types.CredentialLiveness,
+    after: types.CredentialLiveness,
+) void {
+    var before_buf: [128]u8 = undefined;
+    var after_buf: [128]u8 = undefined;
+    const before_summary = livenessSummaryIntoBuffer(before, &before_buf);
+    const after_summary = livenessSummaryIntoBuffer(after, &after_buf);
+    if (std.mem.eql(u8, before_summary, after_summary)) return;
+
+    trace.append(allocator, "health.normalize", .info, &.{
+        trace.string("provider", provider_name),
+        trace.string("account_label", account_label),
+        trace.string("capability", capability orelse "none"),
+        trace.string("source_scope", source_scope),
+        trace.string("before_liveness", before_summary),
+        trace.string("after_liveness", after_summary),
+        trace.boolean("token_material_printed", false),
+        trace.boolean("path_printed", false),
+    });
+}
+
+fn livenessSummaryIntoBuffer(liveness: types.CredentialLiveness, buf: []u8) []const u8 {
+    var stream = std.io.fixedBufferStream(buf);
+    health_mod.writeLivenessSummary(stream.writer(), liveness) catch return "unavailable";
+    return stream.getWritten();
 }
 
 fn accountLivenessBlocksRoute(liveness: types.CredentialLiveness) bool {

@@ -376,6 +376,7 @@ DOGFOOD_BIN="$TMP/dogfood-bin"
 NATIVE_CODEX="$TMP/native-codex"
 NATIVE_REPORT="$TMP/native-codex.report"
 NATIVE_STDOUT="$TMP/native-codex.stdout"
+SHIM_TRACE="$TMP/shim-trace.ndjson"
 mkdir -p "$DOGFOOD_BIN"
 cat >"$NATIVE_CODEX" <<'EOF'
 #!/usr/bin/env bash
@@ -404,18 +405,28 @@ INSTALL_DIR="$DOGFOOD_BIN" \
 
 OMUX_CODEX_BIN="$NATIVE_CODEX" \
   OMUX_NATIVE_CODEX_REPORT="$NATIVE_REPORT" \
+  OMUX_TRACE=1 \
+  OMUX_TRACE_FILE="$SHIM_TRACE" \
+  OMUX_TRACE_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  OMUX_SPAN_ID="bbbbbbbbbbbbbbbb" \
   "$DOGFOOD_BIN/codex" --version >"$NATIVE_STDOUT"
 assert_grep "shim --version used native codex" 'codex-cli-native-stub' "$NATIVE_STDOUT"
 assert_grep "shim --version argv recorded by native" '^--version$' "$NATIVE_REPORT"
+jq -e 'select(.name == "codex.shim.pass_through" and .attributes.first_arg == "--version" and .attributes.native_binary_path_printed == false and .redaction.paths == false)' "$SHIM_TRACE" >/dev/null
+echo "  ✓ shim --version emitted redacted pass-through trace"
 
 rm -f "$NATIVE_REPORT" "$NATIVE_STDOUT"
 XDG_DATA_HOME="$TMP/native-xdg" \
   OMUX_CODEX_BIN="$NATIVE_CODEX" \
   OMUX_NATIVE_CODEX_REPORT="$NATIVE_REPORT" \
+  OMUX_TRACE=1 \
+  OMUX_TRACE_FILE="$SHIM_TRACE" \
   "$DOGFOOD_BIN/codex" login --help >"$NATIVE_STDOUT"
 assert_grep "shim login used native codex" 'native-login-stub' "$NATIVE_STDOUT"
 assert_grep "shim login argv recorded by native" '^login$' "$NATIVE_REPORT"
 assert_grep "shim login help argv recorded by native" '^--help$' "$NATIVE_REPORT"
+jq -e 'select(.name == "codex.shim.pass_through" and .attributes.first_arg == "login" and .attributes.native_binary_path_printed == false and .redaction.tokens == false)' "$SHIM_TRACE" >/dev/null
+echo "  ✓ shim login emitted redacted pass-through trace"
 if [[ -e "$TMP/native-xdg/oauth-mux/codex/max-1" ]]; then
     echo "  ✗ shim login created mux account directory instead of passing through native Codex" >&2
     find "$TMP/native-xdg" -maxdepth 4 -print >&2 || true

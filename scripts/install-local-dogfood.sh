@@ -117,6 +117,57 @@ if [ -z "\$native_codex" ]; then
     exit 127
 fi
 
+trace_enabled() {
+    case "\${OMUX_TRACE:-}" in
+        ""|0|false|FALSE|off|OFF|no|NO)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+trace_file_path() {
+    if [ -n "\${OMUX_TRACE_FILE:-}" ]; then
+        printf '%s\n' "\$OMUX_TRACE_FILE"
+        return 0
+    fi
+    if [ -n "\${OMUX_STATE_DIR:-}" ]; then
+        printf '%s/trace.ndjson\n' "\$OMUX_STATE_DIR"
+        return 0
+    fi
+    case "\$(uname -s 2>/dev/null || true)" in
+        Darwin)
+            printf '%s/Library/Application Support/oauth-mux/trace.ndjson\n' "\${HOME:-/tmp}"
+            ;;
+        *)
+            printf '%s/.local/state/oauth-mux/trace.ndjson\n' "\${HOME:-/tmp}"
+            ;;
+    esac
+}
+
+trace_shim_event() {
+    trace_enabled || return 0
+    trace_file=\$(trace_file_path)
+    trace_dir=\$(dirname "\$trace_file")
+    mkdir -p "\$trace_dir" 2>/dev/null || return 0
+    ts="\$(date +%s)000"
+    case "\${1:-none}" in
+        --help|-h|help|--version|-V|version|login|logout|auth|mcp|completion|completions|resume|run)
+            first_arg="\${1:-none}"
+            ;;
+        *)
+            first_arg="other"
+            ;;
+    esac
+    trace_id="\${OMUX_TRACE_ID:-00000000000000000000000000000000}"
+    span_id="\${OMUX_SPAN_ID:-0000000000000000}"
+    case "\$trace_id" in *[!0123456789abcdefABCDEF]*|"") trace_id="00000000000000000000000000000000" ;; esac
+    case "\$span_id" in *[!0123456789abcdefABCDEF]*|"") span_id="0000000000000000" ;; esac
+    printf '{"schema":"oauth-mux.trace.v1","ts_unix_ms":%s,"name":"%s","severity":"info","trace_id":"%s","span_id":"%s","parent_span_id":null,"attributes":{"first_arg":"%s","native_binary_path_printed":false,"path_printed":false},"redaction":{"tokens":false,"raw_account_ids":false,"session_ids":false,"paths":false}}\n' "\$ts" "\$2" "\$trace_id" "\$span_id" "\$first_arg" >>"\$trace_file" 2>/dev/null || true
+}
+
 should_pass_native() {
     case "\${1:-}" in
         --help|-h|help|--version|-V|version|login|logout|auth|mcp|completion|completions)
@@ -129,9 +180,11 @@ should_pass_native() {
 }
 
 if should_pass_native "\${1:-}"; then
+    trace_shim_event "\${1:-none}" "codex.shim.pass_through"
     exec "\$native_codex" "\$@"
 fi
 
+trace_shim_event "\${1:-none}" "codex.shim.managed_entry"
 OMUX_CODEX_BIN="\$native_codex" OMUX_CODEX_SHIM=1 OMUX_COMMAND_SPELLING=codex exec "\$oauth_mux_bin" codex "\$@"
 EOF
   chmod 0755 "$codex_target"

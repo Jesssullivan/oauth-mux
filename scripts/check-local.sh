@@ -14,6 +14,7 @@ done
 ./scripts/e2e-local.sh
 ./scripts/first-run-e2e.sh
 ./scripts/stay-afloat-wrapper-doc-smoke.sh
+./scripts/smoke-trace.sh
 ./scripts/smoke-broker.sh
 ./scripts/smoke-codex-cli-ux.sh
 ./scripts/smoke-codex-acceptance.sh
