@@ -9310,6 +9310,9 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     try writer.writeAll("oauth-mux Codex preflight\n\n");
     if (args.profile) |value| try writer.print("  profile: {s}\n", .{value});
     if (capability) |value| try writer.print("  capability: {s}\n", .{value});
+    var install_observation = try collectCodexPreflightInstallObservation(allocator);
+    defer install_observation.deinit(allocator);
+    try writeCodexPreflightInstallText(writer, install_observation);
     try writer.print("  config valid: {s}\n", .{if (config_valid) "yes" else "no"});
     try writer.print("  session start ready: {s}\n", .{if (session_start_ready) "yes" else "no"});
     try writer.print("  fallback ready: {s}\n", .{if (fallback_ready) "yes" else "no"});
@@ -9326,14 +9329,31 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     }
 }
 
-fn writeCodexPreflightInstallJson(writer: anytype, allocator: std.mem.Allocator) !void {
+const CodexPreflightInstallObservation = struct {
+    active_oauth_mux: []u8,
+    oauth_mux_candidates: PathCandidateList,
+    active_oauth_mux_is_path_first: bool,
+    codex_candidates: PathCandidateList,
+    active_codex: ?[]const u8,
+    active_codex_is_oauth_mux_shim: bool,
+    native_codex_candidate: ?[]const u8,
+    codex_shim_candidates: usize,
+
+    fn deinit(self: *CodexPreflightInstallObservation, allocator: std.mem.Allocator) void {
+        allocator.free(self.active_oauth_mux);
+        self.oauth_mux_candidates.deinit(allocator);
+        self.codex_candidates.deinit(allocator);
+    }
+};
+
+fn collectCodexPreflightInstallObservation(allocator: std.mem.Allocator) !CodexPreflightInstallObservation {
     const self_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
-    defer allocator.free(self_path);
+    errdefer allocator.free(self_path);
 
     var oauth_mux_candidates = try collectPathCandidates(allocator, "oauth-mux");
-    defer oauth_mux_candidates.deinit(allocator);
+    errdefer oauth_mux_candidates.deinit(allocator);
     var codex_candidates = try collectPathCandidates(allocator, "codex");
-    defer codex_candidates.deinit(allocator);
+    errdefer codex_candidates.deinit(allocator);
 
     const active_oauth_mux_is_path_first = oauth_mux_candidates.paths.items.len != 0 and std.mem.eql(u8, oauth_mux_candidates.paths.items[0], self_path);
     const active_codex = if (codex_candidates.paths.items.len == 0) null else codex_candidates.paths.items[0];
@@ -9341,24 +9361,68 @@ fn writeCodexPreflightInstallJson(writer: anytype, allocator: std.mem.Allocator)
     const native_codex_candidate = try firstNativeCodexCandidate(allocator, codex_candidates.paths.items);
     const codex_shim_candidates = try countOauthMuxShimCandidates(allocator, codex_candidates.paths.items);
 
+    return .{
+        .active_oauth_mux = self_path,
+        .oauth_mux_candidates = oauth_mux_candidates,
+        .active_oauth_mux_is_path_first = active_oauth_mux_is_path_first,
+        .codex_candidates = codex_candidates,
+        .active_codex = active_codex,
+        .active_codex_is_oauth_mux_shim = active_codex_is_oauth_mux_shim,
+        .native_codex_candidate = native_codex_candidate,
+        .codex_shim_candidates = codex_shim_candidates,
+    };
+}
+
+fn writeCodexPreflightInstallJson(writer: anytype, allocator: std.mem.Allocator) !void {
+    var observation = try collectCodexPreflightInstallObservation(allocator);
+    defer observation.deinit(allocator);
+    try writeCodexPreflightInstallObservationJson(writer, observation);
+}
+
+fn writeCodexPreflightInstallObservationJson(writer: anytype, observation: CodexPreflightInstallObservation) !void {
     try writer.writeAll("{\"active_oauth_mux\":");
-    try std.json.stringify(self_path, .{}, writer);
+    try std.json.stringify(observation.active_oauth_mux, .{}, writer);
     try writer.writeAll(",\"oauth_mux_candidates\":");
-    try writeStringArrayJson(writer, oauth_mux_candidates.paths.items);
+    try writeStringArrayJson(writer, observation.oauth_mux_candidates.paths.items);
     try writer.writeAll(",\"active_oauth_mux_is_path_first\":");
-    try writer.writeAll(if (active_oauth_mux_is_path_first) "true" else "false");
+    try writer.writeAll(if (observation.active_oauth_mux_is_path_first) "true" else "false");
     try writer.writeAll(",\"codex_candidates\":");
-    try writeStringArrayJson(writer, codex_candidates.paths.items);
+    try writeStringArrayJson(writer, observation.codex_candidates.paths.items);
     try writer.writeAll(",\"active_codex\":");
-    if (active_codex) |path| try std.json.stringify(path, .{}, writer) else try writer.writeAll("null");
+    if (observation.active_codex) |path| try std.json.stringify(path, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"active_codex_is_oauth_mux_shim\":");
-    try writer.writeAll(if (active_codex_is_oauth_mux_shim) "true" else "false");
+    try writer.writeAll(if (observation.active_codex_is_oauth_mux_shim) "true" else "false");
     try writer.writeAll(",\"native_codex_candidate\":");
-    if (native_codex_candidate) |path| try std.json.stringify(path, .{}, writer) else try writer.writeAll("null");
+    if (observation.native_codex_candidate) |path| try std.json.stringify(path, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"native_codex_found\":");
-    try writer.writeAll(if (native_codex_candidate != null) "true" else "false");
-    try writer.print(",\"codex_shim_candidates\":{d}", .{codex_shim_candidates});
+    try writer.writeAll(if (observation.native_codex_candidate != null) "true" else "false");
+    try writer.print(",\"codex_shim_candidates\":{d}", .{observation.codex_shim_candidates});
     try writer.writeAll(",\"managed_codex_shim_supported\":true,\"native_codex_env\":\"OMUX_CODEX_BIN\"}");
+}
+
+fn writeCodexPreflightInstallText(writer: anytype, observation: CodexPreflightInstallObservation) !void {
+    try writer.writeAll("  install:\n");
+    try writer.print("    active oauth-mux: {s}\n", .{observation.active_oauth_mux});
+    try writer.print("    oauth-mux path first: {s}\n", .{if (observation.active_oauth_mux_is_path_first) "yes" else "no"});
+    try writer.print("    active codex: {s}\n", .{observation.active_codex orelse "not found"});
+    try writer.print("    active codex is oauth-mux shim: {s}\n", .{if (observation.active_codex_is_oauth_mux_shim) "yes" else "no"});
+    try writer.print("    native codex: {s}\n", .{observation.native_codex_candidate orelse "not found"});
+    try writer.print("    codex shim candidates: {d}\n", .{observation.codex_shim_candidates});
+    try writer.writeAll("    native codex env: OMUX_CODEX_BIN\n");
+    if (!observation.active_oauth_mux_is_path_first) {
+        try writer.writeAll("    note: this oauth-mux is not first on PATH; compare `which -a oauth-mux` before dogfood\n");
+    }
+    if (observation.active_codex_is_oauth_mux_shim) {
+        if (observation.native_codex_candidate != null) {
+            try writer.writeAll("    note: active `codex` routes through oauth-mux; native Codex is available via OMUX_CODEX_BIN\n");
+        } else {
+            try writer.writeAll("    note: active `codex` is the oauth-mux shim, but no native Codex binary was found\n");
+        }
+    } else if (observation.active_codex != null) {
+        try writer.writeAll("    note: active `codex` is native/unmanaged; use `oauth-mux codex` or install the managed shim for muxed Codex\n");
+    } else {
+        try writer.writeAll("    note: no `codex` binary was found on PATH\n");
+    }
 }
 
 const PathCandidateList = struct {

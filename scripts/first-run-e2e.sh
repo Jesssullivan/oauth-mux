@@ -306,6 +306,17 @@ jq -e '
 expect_not_contains "$(cat "$codex_preflight_json")" "$store_root/max-1" "codex preflight does not print concrete Codex store paths"
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
+codex_preflight_text="$(omux codex preflight --profile codex-max --capability codex-max)"
+expect_contains "$codex_preflight_text" "  install:" "codex preflight text reports install diagnostics"
+expect_contains "$codex_preflight_text" "    active oauth-mux:" "codex preflight text reports active oauth-mux"
+expect_contains "$codex_preflight_text" "    oauth-mux path first:" "codex preflight text reports oauth-mux path ordering"
+expect_contains "$codex_preflight_text" "    active codex:" "codex preflight text reports active codex"
+expect_contains "$codex_preflight_text" "    active codex is oauth-mux shim:" "codex preflight text reports codex shim classification"
+expect_contains "$codex_preflight_text" "    native codex:" "codex preflight text reports native codex"
+expect_contains "$codex_preflight_text" "    native codex env: OMUX_CODEX_BIN" "codex preflight text reports native codex env override"
+expect_contains "$codex_preflight_text" "  config valid: yes" "codex preflight text still reports route readiness"
+test ! -e "$store_root"
+test ! -e "$legacy_store_root"
 
 printf 'first-run e2e: stay-afloat exposes runtime diagnostics without automatic repair\n'
 stay_afloat_json="$tmp/stay-afloat-codex-max.json"
