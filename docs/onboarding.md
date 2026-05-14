@@ -254,8 +254,11 @@ compact blocked-route reason counts, a `repair_summary` rollup, redacted blocked
 route actions, and exact next actions. It does not call the provider or mutate
 route health. JSON
 clients should prefer `agent_safe_next_actions` for no-spend automation and
-treat `spend_confirmed_next_actions` as user-approved repair only; text output
-uses the same no-spend diagnostics and spend-confirmed repair labels.
+treat `spend_confirmed_next_actions` as user-approved route-health repair only.
+Interactive login or reauth commands appear in `user_mediated_next_actions`;
+wrappers may display those commands, but must not run them without the user
+owning the upstream CLI login boundary. Text output uses the same no-spend,
+spend-confirmed, and user-mediated repair labels.
 
 When a managed Codex session exhausts every selectable fallback, the wire proxy
 returns typed `oauth_mux_no_account_selectable` JSON instead of a bare provider
