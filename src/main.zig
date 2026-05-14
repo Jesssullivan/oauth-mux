@@ -9287,6 +9287,10 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         try writeCodexPreflightInstallJson(writer, allocator);
         try writer.writeAll(",\"route_summary\":");
         try writeCodexPreflightRouteSummaryJson(writer, summary, session_start_ready, fallback_ready);
+        try writer.writeAll(",\"blocked_route_reasons\":");
+        try writeCodexPreflightBlockedReasonSummaryJson(writer, allocator, parsed.value, evaluations.items, selected_index);
+        try writer.writeAll(",\"blocked_routes\":");
+        try writeCodexPreflightBlockedRoutesJson(writer, allocator, parsed.value, evaluations.items, selected_index);
         try writer.writeAll(",\"selected\":");
         if (selected_index) |idx| {
             try writeRouteSelectionJson(writer, evaluations.items[idx].route);
@@ -9315,6 +9319,7 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         summary.selectable_broker_routes,
         summary.selectable_fallback_routes,
     });
+    try writeCodexPreflightBlockedRoutesText(writer, allocator, parsed.value, evaluations.items, selected_index);
     if (!ok) {
         try writer.writeAll("\nNext actions:\n");
         try writeCodexPreflightNextActionsText(writer, args.profile, capability, session_start_ready, fallback_ready);
@@ -9379,6 +9384,131 @@ fn writeCodexPreflightRouteSummaryJson(
             codexBrokerSessionSingleRouteAtRisk(session_start_ready, summary.selectable_fallback_routes),
         },
     );
+}
+
+fn codexPreflightRouteSessionReady(evaluation: RouteEvaluation, plan: CodexBrokerTokenPlan) bool {
+    return plan.can_supply and evaluation.selectable;
+}
+
+fn codexPreflightRouteBlockedReason(evaluation: RouteEvaluation, selected: bool, plan: CodexBrokerTokenPlan) []const u8 {
+    _ = selected;
+    if (!plan.can_supply) return "auth_broker_unready";
+    return evaluation.skip_reason;
+}
+
+fn writeCodexPreflightBlockedReasonSummaryJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+) !void {
+    try writer.writeByte('[');
+    var first = true;
+    for (evaluations, 0..) |evaluation, idx| {
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
+        const reason = codexPreflightRouteBlockedReason(evaluation, selected, plan);
+
+        var seen = false;
+        for (evaluations[0..idx], 0..) |previous, previous_idx| {
+            const previous_selected = if (selected_index) |selected_idx| previous_idx == selected_idx else false;
+            const previous_plan = try inspectCodexBrokerRoute(allocator, cfg, previous.route);
+            if (codexPreflightRouteSessionReady(previous, previous_plan)) continue;
+            const previous_reason = codexPreflightRouteBlockedReason(previous, previous_selected, previous_plan);
+            if (std.mem.eql(u8, previous_reason, reason)) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) continue;
+
+        var count: usize = 0;
+        for (evaluations, 0..) |candidate, candidate_idx| {
+            const candidate_selected = if (selected_index) |selected_idx| candidate_idx == selected_idx else false;
+            const candidate_plan = try inspectCodexBrokerRoute(allocator, cfg, candidate.route);
+            if (codexPreflightRouteSessionReady(candidate, candidate_plan)) continue;
+            const candidate_reason = codexPreflightRouteBlockedReason(candidate, candidate_selected, candidate_plan);
+            if (std.mem.eql(u8, candidate_reason, reason)) count += 1;
+        }
+
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try writer.writeAll("{\"reason\":");
+        try std.json.stringify(reason, .{}, writer);
+        try writer.print(",\"count\":{d}", .{count});
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCodexPreflightBlockedRoutesJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+) !void {
+    try writer.writeByte('[');
+    var first = true;
+    for (evaluations, 0..) |evaluation, idx| {
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
+        if (!first) try writer.writeByte(',');
+        first = false;
+        try writer.writeByte('{');
+        try writer.writeAll("\"provider\":");
+        try std.json.stringify(evaluation.route.provider, .{}, writer);
+        try writer.writeAll(",\"account\":");
+        try std.json.stringify(evaluation.route.account, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        if (evaluation.route.capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"selectable\":");
+        try writer.writeAll(if (evaluation.selectable) "true" else "false");
+        try writer.writeAll(",\"broker_ready\":");
+        try writer.writeAll(if (plan.can_supply) "true" else "false");
+        try writer.writeAll(",\"route_role\":");
+        try std.json.stringify(codexBrokerSessionRouteRole(evaluation, selected, plan), .{}, writer);
+        try writer.writeAll(",\"blocked_reason\":");
+        try std.json.stringify(codexPreflightRouteBlockedReason(evaluation, selected, plan), .{}, writer);
+        try writer.writeAll(",\"skip_reason\":");
+        try std.json.stringify(evaluation.skip_reason, .{}, writer);
+        try writer.writeAll(",\"liveness\":");
+        if (evaluation.health) |health| try writeLivenessJson(writer, health.liveness) else try writer.writeAll("null");
+        try writer.writeAll(",\"action\":");
+        try writeRepairActionJson(writer, allocator, evaluation.action, evaluation.route);
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+}
+
+fn writeCodexPreflightBlockedRoutesText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+) !void {
+    var blocked_count: usize = 0;
+    for (evaluations, 0..) |evaluation, idx| {
+        const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
+        const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
+        if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
+        if (blocked_count == 0) try writer.writeAll("  blocked routes:\n");
+        blocked_count += 1;
+        const role = codexBrokerSessionRouteRole(evaluation, selected, plan);
+        const reason = codexPreflightRouteBlockedReason(evaluation, selected, plan);
+        try writer.print("    - {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
+        if (evaluation.route.capability) |value| try writer.print("#{s}", .{value});
+        try writer.print(" reason={s} role={s} action={s}", .{ reason, role, @tagName(evaluation.action.kind) });
+        if (try repairCommandAlloc(allocator, evaluation.action.command, evaluation.route)) |command| {
+            defer allocator.free(command);
+            try writer.print(" command=\"{s}\"", .{command});
+        }
+        try writer.writeByte('\n');
+    }
 }
 
 fn writeCodexPreflightNextActionsJson(

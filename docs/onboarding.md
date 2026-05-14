@@ -235,8 +235,9 @@ For a no-spend managed Codex readiness snapshot, use:
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
-The preflight reports install candidates, Codex policy, route readiness, and
-exact next actions. It does not call the provider or mutate route health.
+The preflight reports install candidates, Codex policy, route readiness, compact
+blocked-route reason counts, redacted blocked route actions, and exact next
+actions. It does not call the provider or mutate route health.
 
 Managed Codex live quota handoff is proven for installed
 `oauth-mux codex resume` status artifacts. The 2026-05-09 engineered evidence
