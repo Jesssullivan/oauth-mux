@@ -257,8 +257,12 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 The preflight reports install candidates, active `codex` shim/native
 classification, the first native Codex binary, Codex policy, route readiness,
 compact blocked-route reason counts, a `repair_summary` rollup, redacted blocked
-route actions, and exact next actions. It does not call the provider or mutate
-route health. JSON
+route actions, redacted auth-material freshness, and exact next actions. It does
+not call the provider or mutate route health. For Codex blocked routes,
+`auth_material.material_newer_than_last_probe:false` means local auth material is
+older than the recorded failure, so a native `login status` success is not enough
+to clear `token_revoked`; a user-mediated login, admitted refresh, or live
+revalidation must write newer evidence. JSON
 clients should prefer `agent_safe_next_actions` for no-spend automation and
 treat `spend_confirmed_next_actions` as user-approved route-health repair only.
 Interactive login or reauth commands appear in `user_mediated_next_actions`;

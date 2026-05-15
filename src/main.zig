@@ -9024,6 +9024,9 @@ const CodexBrokerTokenPlan = struct {
     secret_readable: bool = false,
     access_token_present: bool = false,
     access_token_jwt_parseable: bool = false,
+    access_token_expired: ?bool = null,
+    access_token_expiring_soon: ?bool = null,
+    refresh_token_present: bool = false,
     chatgpt_account_id_present: bool = false,
     chatgpt_account_id_source: ?[]const u8 = null,
     chatgpt_plan_type_present: bool = false,
@@ -9947,11 +9950,73 @@ fn writeCodexPreflightBlockedRoutesJson(
         try std.json.stringify(evaluation.skip_reason, .{}, writer);
         try writer.writeAll(",\"liveness\":");
         if (evaluation.health) |health| try writeLivenessJson(writer, health.liveness) else try writer.writeAll("null");
+        try writer.writeAll(",\"auth_material\":");
+        try writeCodexPreflightAuthMaterialJson(writer, allocator, cfg, evaluation, plan);
         try writer.writeAll(",\"action\":");
         try writeRepairActionJson(writer, allocator, evaluation.action, evaluation.route);
         try writer.writeByte('}');
     }
     try writer.writeByte(']');
+}
+
+fn writeCodexPreflightAuthMaterialJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    evaluation: RouteEvaluation,
+    plan: CodexBrokerTokenPlan,
+) !void {
+    const modified_at = routeAuthMaterialModifiedAt(allocator, cfg, evaluation.route);
+    const last_probe_at = if (evaluation.health) |health| health.last_probe_observed_at else null;
+    const material_newer = if (modified_at) |mtime| blk: {
+        const observed = last_probe_at orelse break :blk null;
+        break :blk mtime > observed;
+    } else null;
+
+    try writer.writeByte('{');
+    try writer.writeAll("\"secret_readable\":");
+    try writer.writeAll(if (plan.secret_readable) "true" else "false");
+    try writer.writeAll(",\"broker_ready\":");
+    try writer.writeAll(if (plan.can_supply) "true" else "false");
+    try writer.writeAll(",\"refresh_token_present\":");
+    try writer.writeAll(if (plan.refresh_token_present) "true" else "false");
+    try writer.writeAll(",\"access_token_expired\":");
+    try writeOptionalBoolJson(writer, plan.access_token_expired);
+    try writer.writeAll(",\"access_token_expiring_soon\":");
+    try writeOptionalBoolJson(writer, plan.access_token_expiring_soon);
+    try writer.writeAll(",\"modified_at\":");
+    if (modified_at) |value| try writer.print("{d}", .{value}) else try writer.writeAll("null");
+    try writer.writeAll(",\"last_probe_observed_at\":");
+    if (last_probe_at) |value| try writer.print("{d}", .{value}) else try writer.writeAll("null");
+    try writer.writeAll(",\"material_newer_than_last_probe\":");
+    try writeOptionalBoolJson(writer, material_newer);
+    try writer.writeAll(",\"path_printed\":false,\"token_material_printed\":false}");
+}
+
+fn routeAuthMaterialModifiedAt(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    route: RepairPlanRoute,
+) ?i64 {
+    const prov = cfg.providers.map.get(route.provider) orelse return null;
+    const account = prov.accounts.map.get(route.account) orelse return null;
+    const backend = config.resolveSecretBackend(account.secret) catch return null;
+    return switch (backend) {
+        .file => |ref| fileModifiedAt(allocator, ref.path),
+        else => null,
+    };
+}
+
+fn fileModifiedAt(allocator: std.mem.Allocator, raw_path: []const u8) ?i64 {
+    const expanded = paths.expandTilde(allocator, raw_path) catch return null;
+    defer allocator.free(expanded);
+    const file = if (std.fs.path.isAbsolute(expanded))
+        std.fs.openFileAbsolute(expanded, .{}) catch return null
+    else
+        std.fs.cwd().openFile(expanded, .{}) catch return null;
+    defer file.close();
+    const stat = file.stat() catch return null;
+    return std.math.cast(i64, @divFloor(stat.mtime, std.time.ns_per_s)) orelse null;
 }
 
 fn writeCodexPreflightBlockedRoutesText(
@@ -14927,6 +14992,12 @@ fn writeCodexBrokerRouteJson(
     try writer.writeAll(if (plan.access_token_present) "true" else "false");
     try writer.writeAll(",\"access_token_jwt_parseable\":");
     try writer.writeAll(if (plan.access_token_jwt_parseable) "true" else "false");
+    try writer.writeAll(",\"access_token_expired\":");
+    try writeOptionalBoolJson(writer, plan.access_token_expired);
+    try writer.writeAll(",\"access_token_expiring_soon\":");
+    try writeOptionalBoolJson(writer, plan.access_token_expiring_soon);
+    try writer.writeAll(",\"refresh_token\":");
+    try writer.writeAll(if (plan.refresh_token_present) "true" else "false");
     try writer.writeAll(",\"chatgpt_account_id\":");
     try writer.writeAll(if (plan.chatgpt_account_id_present) "true" else "false");
     try writer.writeAll(",\"chatgpt_account_id_source\":");
@@ -14936,6 +15007,14 @@ fn writeCodexBrokerRouteJson(
     try writer.writeAll(",\"chatgpt_plan_type_source\":");
     if (plan.chatgpt_plan_type_source) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll("}}");
+}
+
+fn writeOptionalBoolJson(writer: anytype, value: ?bool) !void {
+    if (value) |actual| {
+        try writer.writeAll(if (actual) "true" else "false");
+    } else {
+        try writer.writeAll("null");
+    }
 }
 
 fn inspectCodexBrokerRoute(
@@ -14995,6 +15074,8 @@ fn inspectCodexBrokerAuthJson(allocator: std.mem.Allocator, raw: []const u8) Cod
     const tokens = parsed.value.tokens orelse return .{ .secret_readable = true, .reason = "tokens_missing" };
     const access_token = nonEmpty(tokens.access_token) orelse return .{ .secret_readable = true, .reason = "access_token_missing" };
     const access_token_jwt_parseable = jwtPayloadParses(allocator, access_token);
+    const access_token_exp = jwtIntegerClaim(allocator, access_token, "exp") catch null;
+    const now = std.time.timestamp();
     const account_id_source = codexAccountIdSource(allocator, tokens);
     const plan_type_source = codexPlanTypeSource(allocator, tokens);
     const can_supply = access_token_jwt_parseable and account_id_source != null;
@@ -15005,6 +15086,9 @@ fn inspectCodexBrokerAuthJson(allocator: std.mem.Allocator, raw: []const u8) Cod
         .reason = if (can_supply) "ready" else if (!access_token_jwt_parseable) "access_token_not_jwt" else "chatgpt_account_id_missing",
         .access_token_present = true,
         .access_token_jwt_parseable = access_token_jwt_parseable,
+        .access_token_expired = if (access_token_exp) |exp| exp <= now else null,
+        .access_token_expiring_soon = if (access_token_exp) |exp| exp <= now + 300 else null,
+        .refresh_token_present = nonEmpty(tokens.refresh_token) != null,
         .chatgpt_account_id_present = account_id_source != null,
         .chatgpt_account_id_source = account_id_source,
         .chatgpt_plan_type_present = plan_type_source != null,
@@ -15127,6 +15211,22 @@ fn jwtPayloadParses(allocator: std.mem.Allocator, jwt: []const u8) bool {
     return parsed.value == .object;
 }
 
+fn jwtIntegerClaim(allocator: std.mem.Allocator, jwt: []const u8, field: []const u8) !?i64 {
+    const payload = jwtPayloadJsonAlloc(allocator, jwt) catch return null;
+    defer allocator.free(payload);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return null,
+    };
+    return switch (root.get(field) orelse return null) {
+        .integer => |value| std.math.cast(i64, value) orelse null,
+        else => null,
+    };
+}
+
 fn jwtPayloadJsonAlloc(allocator: std.mem.Allocator, jwt: []const u8) ![]u8 {
     var parts = std.mem.splitScalar(u8, jwt, '.');
     const header = parts.next() orelse return error.InvalidJwt;
@@ -15156,22 +15256,35 @@ fn nonEmpty(value: ?[]const u8) ?[]const u8 {
 }
 
 test "inspectCodexBrokerAuthJson detects app-server token tuple without exposing values" {
-    const auth_json =
-        \\{
+    const access_exp = std.time.timestamp() + 3600;
+    const access_payload = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"exp\":{d},\"https://api.openai.com/auth\":{{\"chatgpt_account_id\":\"acct-test\",\"chatgpt_plan_type\":\"pro\"}}}}",
+        .{access_exp},
+    );
+    defer std.testing.allocator.free(access_payload);
+    var encoded_buf: [256]u8 = undefined;
+    const encoded_access_payload = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buf, access_payload);
+    const auth_json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
         \\  "auth_mode": "chatgpt",
-        \\  "tokens": {
+        \\  "tokens": {{
         \\    "id_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
-        \\    "access_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "access_token": "hdr.{s}.sig",
         \\    "refresh_token": "redacted-in-test"
-        \\  }
-        \\}
-    ;
+        \\  }}
+        \\}}
+    , .{encoded_access_payload});
+    defer std.testing.allocator.free(auth_json);
 
     const plan = inspectCodexBrokerAuthJson(std.testing.allocator, auth_json);
     try std.testing.expect(plan.can_supply);
     try std.testing.expect(plan.secret_readable);
     try std.testing.expect(plan.access_token_present);
     try std.testing.expect(plan.access_token_jwt_parseable);
+    try std.testing.expect(!plan.access_token_expired.?);
+    try std.testing.expect(!plan.access_token_expiring_soon.?);
+    try std.testing.expect(plan.refresh_token_present);
     try std.testing.expect(plan.chatgpt_account_id_present);
     try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_account_id", plan.chatgpt_account_id_source.?);
     try std.testing.expect(plan.chatgpt_plan_type_present);
@@ -15193,6 +15306,7 @@ test "inspectCodexBrokerAuthJson rejects missing account metadata" {
     try std.testing.expect(!plan.can_supply);
     try std.testing.expect(plan.access_token_present);
     try std.testing.expect(plan.access_token_jwt_parseable);
+    try std.testing.expect(plan.refresh_token_present);
     try std.testing.expect(!plan.chatgpt_account_id_present);
     try std.testing.expectEqualStrings("chatgpt_account_id_missing", plan.reason);
 }
