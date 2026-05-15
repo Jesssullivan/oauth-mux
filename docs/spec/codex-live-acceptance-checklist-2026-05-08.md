@@ -25,8 +25,8 @@ Requirements:
 
 - `oauth-mux` resolves to an installed executable on PATH.
 - The status artifact records `runtime_identity.binary_path`,
-  `binary_source`, `build_id`, `version`, `command_spelling`, and
-  `installed_local_mismatch_detected:false`.
+  `binary_source`, `binary_sha256`, `build_id`, `version`, `path_printed`,
+  `command_spelling`, and `installed_local_mismatch_detected:false`.
 - The operator does not pass a repo-local `./zig-out/bin/oauth-mux` path, a
   wrapper, or an arg-heavy dogfood helper.
 - The operator does not repair the failure with logout/login/manual resume

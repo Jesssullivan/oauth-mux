@@ -35,6 +35,7 @@ const config_mod = @import("../../config.zig");
 const health_mod = @import("../../health.zig");
 const paths = @import("../../paths.zig");
 const pipeline = @import("../../pipeline.zig");
+const runtime_mod = @import("../../runtime.zig");
 const shell = @import("../../shell.zig");
 const trace = @import("../../trace.zig");
 const types = @import("../../types.zig");
@@ -1154,31 +1155,17 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     }
 
     if (emit_status) {
-        const binary_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
-        defer allocator.free(binary_path);
-        const binary_source = try getEnvOwnedOrDefault(
-            allocator,
-            "OMUX_BINARY_SOURCE",
-            if (std.mem.indexOf(u8, binary_path, "/zig-out/bin/oauth-mux") != null) "repo_local" else "path_or_installed",
-        );
-        defer allocator.free(binary_source);
-        const build_id = try getEnvOwnedOrDefault(allocator, "OMUX_BUILD_ID", cli.version);
-        defer allocator.free(build_id);
+        const runtime_identity = try runtime_mod.oauthMuxRuntimeIdentity(allocator, cli.version);
+        defer runtime_identity.deinit(allocator);
         const command_spelling = try getEnvOwnedOrDefault(allocator, "OMUX_COMMAND_SPELLING", "oauth-mux codex");
         defer allocator.free(command_spelling);
         const installed_local_mismatch = envFlag("OMUX_INSTALLED_LOCAL_MISMATCH");
 
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{\"binary_path\":",
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{",
             .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.mcp_stdio_unsupported_fields_removed, codex_home.session_authority.toString(), status_file_path != null },
         );
-        try std.json.stringify(binary_path, .{}, status_writer);
-        try status_writer.writeAll(",\"binary_source\":");
-        try std.json.stringify(binary_source, .{}, status_writer);
-        try status_writer.writeAll(",\"build_id\":");
-        try std.json.stringify(build_id, .{}, status_writer);
-        try status_writer.writeAll(",\"version\":");
-        try std.json.stringify(cli.version, .{}, status_writer);
+        try runtime_identity.writeJsonFields(status_writer);
         try status_writer.writeAll(",\"command_spelling\":");
         try std.json.stringify(command_spelling, .{}, status_writer);
         try status_writer.print(",\"installed_local_mismatch_detected\":{any}", .{installed_local_mismatch});

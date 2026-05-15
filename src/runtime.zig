@@ -6,6 +6,97 @@ const provider_schema = @import("provider_schema.zig");
 const repair_state = @import("repair_state.zig");
 const types = @import("types.zig");
 
+pub const OauthMuxRuntimeIdentity = struct {
+    binary_path: []const u8,
+    binary_source: []const u8,
+    binary_sha256: ?[]const u8,
+    build_id: []const u8,
+    version: []const u8,
+
+    pub fn deinit(self: OauthMuxRuntimeIdentity, allocator: std.mem.Allocator) void {
+        allocator.free(self.binary_path);
+        if (self.binary_sha256) |sha| allocator.free(sha);
+        allocator.free(self.build_id);
+    }
+
+    pub fn writeJson(self: OauthMuxRuntimeIdentity, writer: anytype) !void {
+        try writer.writeByte('{');
+        try self.writeJsonFields(writer);
+        try writer.writeByte('}');
+    }
+
+    pub fn writeJsonFields(self: OauthMuxRuntimeIdentity, writer: anytype) !void {
+        try writer.writeAll("\"binary_path\":");
+        try std.json.stringify(self.binary_path, .{}, writer);
+        try writer.writeAll(",\"binary_source\":");
+        try std.json.stringify(self.binary_source, .{}, writer);
+        try writer.writeAll(",\"binary_sha256\":");
+        if (self.binary_sha256) |sha| {
+            try std.json.stringify(sha, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"build_id\":");
+        try std.json.stringify(self.build_id, .{}, writer);
+        try writer.writeAll(",\"version\":");
+        try std.json.stringify(self.version, .{}, writer);
+        try writer.writeAll(",\"path_printed\":true,\"binary_sha256_available\":");
+        try writer.writeAll(if (self.binary_sha256 != null) "true" else "false");
+    }
+};
+
+pub fn oauthMuxRuntimeIdentity(allocator: std.mem.Allocator, version: []const u8) !OauthMuxRuntimeIdentity {
+    const binary_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
+    errdefer allocator.free(binary_path);
+
+    const binary_sha256 = hashFileSha256Hex(allocator, binary_path) catch null;
+    errdefer if (binary_sha256) |sha| allocator.free(sha);
+
+    const build_id = std.process.getEnvVarOwned(allocator, "OMUX_BUILD_ID") catch try allocator.dupe(u8, version);
+    errdefer allocator.free(build_id);
+
+    return .{
+        .binary_path = binary_path,
+        .binary_source = classifyOauthMuxBinarySource(binary_path),
+        .binary_sha256 = binary_sha256,
+        .build_id = build_id,
+        .version = version,
+    };
+}
+
+pub fn classifyOauthMuxBinarySource(path_value: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, path_value, "/zig-out/bin/oauth-mux") != null) return "repo_local";
+    if (std.mem.indexOf(u8, path_value, "/.local/bin/oauth-mux") != null) return "user_local";
+    if (std.mem.indexOf(u8, path_value, "/Cellar/oauth-mux/") != null) return "homebrew";
+    if (std.mem.indexOf(u8, path_value, "/opt/homebrew/bin/oauth-mux") != null) return "homebrew";
+    if (std.mem.indexOf(u8, path_value, "/usr/local/bin/oauth-mux") != null) return "homebrew";
+    if (std.mem.startsWith(u8, path_value, "/nix/store/")) return "nix_store";
+    if (std.mem.indexOf(u8, path_value, "/node_modules/") != null) return "npm";
+    return "path_or_installed";
+}
+
+pub fn hashFileSha256Hex(allocator: std.mem.Allocator, path_value: []const u8) ![]u8 {
+    if (std.mem.eql(u8, path_value, "unknown")) return error.UnknownPath;
+
+    const file = try std.fs.openFileAbsolute(path_value, .{});
+    defer file.close();
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        hasher.update(buf[0..n]);
+    }
+
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+
+    const hex = try allocator.alloc(u8, digest.len * 2);
+    _ = std.fmt.bufPrint(hex, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+    return hex;
+}
+
 pub const RouteRef = struct {
     provider: []const u8,
     account: []const u8,
@@ -321,6 +412,15 @@ pub fn fileExists(path_value: []const u8) bool {
 
 fn pathDelimiter() u8 {
     return if (builtin.os.tag == .windows) ';' else ':';
+}
+
+test "classify oauth mux binary source" {
+    try std.testing.expectEqualStrings("repo_local", classifyOauthMuxBinarySource("/repo/zig-out/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("user_local", classifyOauthMuxBinarySource("/Users/me/.local/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("homebrew", classifyOauthMuxBinarySource("/opt/homebrew/Cellar/oauth-mux/0.1.7/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("nix_store", classifyOauthMuxBinarySource("/nix/store/abc-oauth-mux-0.1.7/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("npm", classifyOauthMuxBinarySource("/tmp/app/node_modules/.bin/oauth-mux"));
+    try std.testing.expectEqualStrings("path_or_installed", classifyOauthMuxBinarySource("/usr/bin/oauth-mux"));
 }
 
 test "routeReadiness reports missing command capability binary" {

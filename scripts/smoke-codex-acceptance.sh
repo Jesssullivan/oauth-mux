@@ -180,6 +180,8 @@ assert_grep "session_started reports canonical session bridge" '"session_authori
 assert_grep "session_started redacts session paths" '"session_paths_printed":false' "$NDJSON"
 assert_grep "session_started records runtime identity" '"runtime_identity":\{' "$NDJSON"
 assert_grep "runtime identity marks repo-local binary" '"binary_source":"repo_local"' "$NDJSON"
+assert_grep "runtime identity records binary sha" '"binary_sha256":"[0-9a-f]{64}"' "$NDJSON"
+assert_grep "runtime identity marks path printed" '"path_printed":true' "$NDJSON"
 assert_grep "runtime identity records installed/local mismatch bit" '"installed_local_mismatch_detected":false' "$NDJSON"
 assert_grep "proxy_turn 200 ok"         '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "proxy_turn 429 quota_exhausted" '"kind":"proxy_turn".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
