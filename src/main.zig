@@ -11252,10 +11252,73 @@ fn writeCodexBrokerSessionRiskActionsJson(
     session_start_ready: bool,
     selectable_fallback_routes: usize,
 ) !void {
+    try writeCodexBrokerSessionRiskActionsJsonWithSummary(writer, allocator, profile, capability, session_start_ready, selectable_fallback_routes, null);
+}
+
+fn codexBrokerSessionRepairSummaryHasWaitCandidate(summary: CodexPreflightRepairSummary) bool {
+    return summary.revalidation_needed_routes != 0 or
+        summary.quota_exhausted_routes != 0 or
+        summary.rate_limited_routes != 0 or
+        summary.wait_routes != 0;
+}
+
+fn codexBrokerSessionRepairSummaryHasProviderRevalidationCandidate(summary: CodexPreflightRepairSummary) bool {
+    return summary.revalidation_needed_routes != 0 or
+        summary.quota_exhausted_routes != 0 or
+        summary.rate_limited_routes != 0;
+}
+
+fn writeCodexBrokerSessionRiskActionEntryJson(
+    writer: anytype,
+    first: *bool,
+    allocator: std.mem.Allocator,
+    kind: []const u8,
+    reason: []const u8,
+    spends_provider_calls: bool,
+    mutates_route_health: bool,
+    mutates_user_config: bool,
+    confirmation_required: bool,
+    include_profile_capability: bool,
+    command_base: ?[]const u8,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    command_suffix: []const u8,
+) !void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writeCodexBrokerSessionRiskActionJson(
+        writer,
+        allocator,
+        kind,
+        reason,
+        spends_provider_calls,
+        mutates_route_health,
+        mutates_user_config,
+        confirmation_required,
+        include_profile_capability,
+        command_base,
+        profile,
+        capability,
+        command_suffix,
+    );
+}
+
+fn writeCodexBrokerSessionRiskActionsJsonWithSummary(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    session_start_ready: bool,
+    selectable_fallback_routes: usize,
+    repair_summary: ?CodexPreflightRepairSummary,
+) !void {
     try writer.writeByte('[');
+    var first = true;
     if (codexBrokerSessionSingleRouteAtRisk(session_start_ready, selectable_fallback_routes)) {
-        try writeCodexBrokerSessionRiskActionJson(
+        const include_revalidation = if (repair_summary) |summary| codexBrokerSessionRepairSummaryHasProviderRevalidationCandidate(summary) else true;
+        if (include_revalidation) try writeCodexBrokerSessionRiskActionEntryJson(
             writer,
+            &first,
             allocator,
             "revalidate_exhausted_routes",
             "selected_route_has_no_spare_fallback",
@@ -11269,9 +11332,27 @@ fn writeCodexBrokerSessionRiskActionsJson(
             capability,
             "--confirm-spend --json",
         );
-        try writer.writeByte(',');
-        try writeCodexBrokerSessionRiskActionJson(
+        if (repair_summary) |summary| {
+            if (summary.user_handoff_required) try writeCodexBrokerSessionRiskActionEntryJson(
+                writer,
+                &first,
+                allocator,
+                "reauth_blocked_routes",
+                "blocked_routes_require_user_mediated_login",
+                false,
+                false,
+                true,
+                true,
+                false,
+                null,
+                null,
+                null,
+                "",
+            );
+        }
+        try writeCodexBrokerSessionRiskActionEntryJson(
             writer,
+            &first,
             allocator,
             "enroll_codex_account",
             "no_spare_fallback_route_ready",
@@ -11285,9 +11366,10 @@ fn writeCodexBrokerSessionRiskActionsJson(
             null,
             "",
         );
-        try writer.writeByte(',');
-        try writeCodexBrokerSessionRiskActionJson(
+        const include_wait = if (repair_summary) |summary| codexBrokerSessionRepairSummaryHasWaitCandidate(summary) else true;
+        if (include_wait) try writeCodexBrokerSessionRiskActionEntryJson(
             writer,
+            &first,
             allocator,
             "wait_for_quota_reset",
             "blocked_routes_may_become_available_after_reset",
@@ -11660,6 +11742,7 @@ fn writeCodexBrokerSessionPlanJson(
     const summary = try summarizeCodexBrokerSessionPlan(allocator, cfg, evaluations, selected_index);
     const session_start_ready = selected_index != null;
     const prepared_fallback = codexBrokerSessionSpareFallbackReady(session_start_ready, summary.selectable_fallback_routes);
+    const repair_summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, session_start_ready, prepared_fallback);
 
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
@@ -11690,7 +11773,7 @@ fn writeCodexBrokerSessionPlanJson(
     try writer.writeAll(",\"resilience\":");
     try writeCodexBrokerSessionResilienceJson(writer, session_start_ready, summary.selectable_fallback_routes);
     try writer.writeAll(",\"resilience_actions\":");
-    try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, capability, session_start_ready, summary.selectable_fallback_routes);
+    try writeCodexBrokerSessionRiskActionsJsonWithSummary(writer, allocator, profile, capability, session_start_ready, summary.selectable_fallback_routes, repair_summary);
     try writer.print(",\"summary\":{{\"routes_total\":{d},\"broker_ready_routes\":{d},\"unreadable_routes\":{d},\"selectable_routes\":{d},\"selectable_broker_routes\":{d},\"selectable_fallback_routes\":{d},\"blocked_broker_routes\":{d},\"auth_unready_routes\":{d}}}", .{
         summary.routes_total,
         summary.broker_ready_routes,
@@ -11701,6 +11784,12 @@ fn writeCodexBrokerSessionPlanJson(
         summary.blocked_broker_routes,
         summary.auth_unready_routes,
     });
+    try writer.writeAll(",\"repair_summary\":");
+    try writeCodexPreflightRepairSummaryJson(writer, repair_summary);
+    try writer.writeAll(",\"blocked_route_reasons\":");
+    try writeCodexPreflightBlockedReasonSummaryJson(writer, allocator, cfg, evaluations, selected_index);
+    try writer.writeAll(",\"blocked_routes\":");
+    try writeCodexPreflightBlockedRoutesJson(writer, allocator, cfg, evaluations, selected_index);
     try writer.writeAll(",\"selected\":");
     if (selected_index) |idx| {
         try writeRouteSelectionJson(writer, evaluations[idx].route);
@@ -16891,6 +16980,80 @@ test "Codex preflight repair summary counts auth and provider blockers" {
     try std.testing.expect(summary.user_handoff_required);
     try std.testing.expectEqualStrings("token_revoked", summary.dominant_blocker.?);
     try std.testing.expectEqual(@as(usize, 2), summary.dominant_blocker_count);
+}
+
+test "Codex broker-session risk actions follow repair reason lanes" {
+    var summary = CodexPreflightRepairSummary{
+        .route_repair_required = true,
+        .agent_safe_inspection_available = true,
+    };
+
+    const reauth = RepairAction{
+        .kind = .reauth,
+        .severity = "error",
+        .message = "reauth is owned by upstream CLI",
+        .mediation = .user_handoff,
+        .owner = .upstream_cli_login,
+        .command = .codex_login_device,
+        .budget = .interactive,
+        .interactive = true,
+        .mutating = true,
+    };
+    codexPreflightClassifyRepairRoute(&summary, "token_revoked", reauth);
+    codexPreflightClassifyRepairRoute(&summary, "auth_permanently_failed", reauth);
+    codexPreflightFinalizeRepairSummary(&summary);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeCodexBrokerSessionRiskActionsJsonWithSummary(
+        buf.writer(),
+        std.testing.allocator,
+        "codex-max",
+        "codex-max",
+        true,
+        0,
+        summary,
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth_blocked_routes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"enroll_codex_account\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"revalidate_exhausted_routes\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"wait_for_quota_reset\"") == null);
+}
+
+test "Codex broker-session risk actions preserve quota repair lane" {
+    var summary = CodexPreflightRepairSummary{
+        .route_repair_required = true,
+        .agent_safe_inspection_available = true,
+    };
+
+    codexPreflightClassifyRepairRoute(&summary, "quota_exhausted", .{
+        .kind = .wait_for_quota,
+        .severity = "warning",
+        .message = "quota window is exhausted",
+        .mediation = .wait,
+        .command = .none,
+        .budget = .free_local,
+    });
+    codexPreflightFinalizeRepairSummary(&summary);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeCodexBrokerSessionRiskActionsJsonWithSummary(
+        buf.writer(),
+        std.testing.allocator,
+        "codex-max",
+        "codex-max",
+        true,
+        0,
+        summary,
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"revalidate_exhausted_routes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"wait_for_quota_reset\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth_blocked_routes\"") == null);
 }
 
 test "writeRepairActionJson emits codex reauth command without running it" {
