@@ -69,6 +69,16 @@ maintainer has called this drift out by name. We will not relapse.
 
 ### 1.1 oauth-mux is the broker. Each harness has an adapter.
 
+This diagram is the target architecture, not a claim that every named adapter is
+implemented today. Current repo truth:
+
+- Codex is the reference harness with managed launch/resume, broker-owned
+  app-server proof, and live managed quota handoff evidence.
+- Claude is a provider-proof lane only: `CLAUDE_CONFIG_DIR` isolation,
+  `enroll claude`, and `auth-status` via `claude auth status --json`.
+- `oauth-mux claude` is not yet an implemented harness adapter and must not be
+  presented as stay-afloat or broker-seamless proof.
+
 ```
                     ┌── oauth-mux (broker daemon) ─────────────┐
                     │  • Multi-provider account pool           │
@@ -80,7 +90,7 @@ maintainer has called this drift out by name. We will not relapse.
                                    │ MCP / JSON-RPC over stdio
                   ┌────────────────┼────────────────┐
                   ▼                ▼                ▼
-           Codex adapter    Claude adapter   Cursor adapter…
+           Codex adapter    future Claude    future Cursor…
                   │                │                │
                   ▼                ▼                ▼
            codex app-server  claude code CLI   cursor agent
@@ -97,8 +107,10 @@ adapters speak.
 The adapter is the *only* place per-harness intelligence lives. The Codex
 adapter knows about `codex app-server`, the `chatgptAuthTokens` mode, the
 `UnauthorizedRecovery` step machine, the `chatgpt.com/backend-api/codex`
-wire shape, and how to render or pass through the Codex TUI. The Claude
-adapter knows none of that and handles its own world the same way.
+wire shape, and how to render or pass through the Codex TUI. A future Claude
+adapter must do the same kind of per-harness work for Claude's own auth,
+session, quota, and reload surfaces; the existing Claude provider proof does
+not satisfy that adapter contract.
 
 ### 1.2 MCP is the cross-process protocol
 
@@ -126,6 +138,7 @@ The product surface presented to users is the adapter command, not raw
 
 ```bash
 oauth-mux codex   [args passed through to codex-equivalent UX]
+# future adapters, after per-harness proof:
 oauth-mux claude  [args passed through to claude-equivalent UX]
 oauth-mux cursor  [...]
 oauth-mux pi      [...]
@@ -137,6 +150,12 @@ The cost the user accepts: they type `oauth-mux <harness>` instead of
 Bare `codex`/`claude`/etc. continue to work — we do not modify the upstream
 binaries — but bare-mode users do not get seamless mux. That is honest
 labelling, not a product limitation we hide.
+
+Until a non-Codex adapter exists, use the provider-proof and enrollment surfaces
+for those providers. For Claude, that means `oauth-mux enroll claude ...`,
+`CLAUDE_CONFIG_DIR` user-mediated login, `doctor runtime`, `probe
+--capability auth-status`, and `stay-afloat --once` as a no-spend route-state
+check. It does not mean `oauth-mux claude` seamless handoff exists.
 
 ## 2. Broker MCP Method Surface
 
