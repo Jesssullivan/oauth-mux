@@ -97,7 +97,11 @@ account stores.
 inspection surface. It shells out to native `codex login status` with each
 isolated account `CODEX_HOME`, but captures native output and returns only
 redacted status booleans. It does not print `CODEX_HOME`, token material, raw
-native output, run login, or spend provider calls.
+native output, run login, or spend provider calls. A `logged_in` result is
+only native Codex's isolated-home login status; it does not read, clear, or
+prove oauth-mux route liveness. Use `oauth-mux codex preflight --profile
+<profile> --capability <capability> --json` for managed Codex route
+selectability and provider-accepted auth evidence.
 
 `oauth-mux accounts list --json` is the no-spend account inventory. It is the
 first provider-neutral surface for N-account enrollment and stay-afloat

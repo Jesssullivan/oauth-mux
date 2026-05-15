@@ -443,9 +443,20 @@ jq -e '.mode == "codex_login_status_all"
        and .spends_provider_calls == false
        and .mutates_user_config == false
        and .interactive == false
+       and .readiness_scope.native_login_status == true
+       and .readiness_scope.route_liveness_considered == false
+       and .readiness_scope.route_selectability_considered == false
+       and .readiness_scope.native_login_status_clears_route_health == false
        and .ok == true
        and (.accounts | length == 2)
-       and all(.accounts[]; .authenticated == true and .status == "logged_in" and .codex_home_path_printed == false and .native_output_printed == false)' "$LOGIN_STATUS_JSON" >/dev/null
+       and all(.accounts[];
+           .authenticated == true
+           and .status == "logged_in"
+           and .codex_home_path_printed == false
+           and .native_output_printed == false
+           and .route_liveness_considered == false
+           and .route_selectability_considered == false
+           and .native_login_status_clears_route_health == false)' "$LOGIN_STATUS_JSON" >/dev/null
 if grep -E 'CODEX_HOME=|native-login-stub|/oauth-mux/codex|max-1/auth.json' "$LOGIN_STATUS_JSON" >"$LOGIN_STATUS_LEAKS"; then
     echo "  ✗ login-status-all --json leaked native text or paths" >&2
     cat "$LOGIN_STATUS_JSON" >&2

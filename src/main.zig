@@ -16010,6 +16010,7 @@ fn runCodexLoginStatusOne(
 
     if (!args.json) {
         try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
+        try writer.writeAll("note: native Codex login status only; route liveness and selectability are reported by oauth-mux codex preflight --profile <profile> --capability <capability> --json\n");
         if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) return error.CodexCommandFailed;
         return;
     }
@@ -16022,6 +16023,8 @@ fn runCodexLoginStatusOne(
 
     try writer.writeAll("{\"mode\":\"codex_login_status\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"interactive\":false,\"ok\":");
     try writer.writeAll(if (result.ok()) "true" else "false");
+    try writer.writeAll(",\"readiness_scope\":");
+    try writeCodexLoginStatusReadinessScopeJson(writer);
     try writer.writeAll(",\"account\":");
     try writeCodexLoginStatusResultJson(writer, account, result);
     try writer.writeAll("}\n");
@@ -16029,7 +16032,9 @@ fn runCodexLoginStatusOne(
 
 fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
     if (args.json) {
-        try writer.writeAll("{\"mode\":\"codex_login_status_all\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"interactive\":false,\"accounts\":[");
+        try writer.writeAll("{\"mode\":\"codex_login_status_all\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"interactive\":false,\"readiness_scope\":");
+        try writeCodexLoginStatusReadinessScopeJson(writer);
+        try writer.writeAll(",\"accounts\":[");
         var first = true;
         var ok = true;
         var account_it = std.mem.splitScalar(u8, args.accounts, ',');
@@ -16062,6 +16067,7 @@ fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: c
         const dir = try codexAccountDir(allocator, root, account);
         defer allocator.free(dir);
         try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
+        try writer.writeAll("note: native Codex login status only; route liveness and selectability are reported by oauth-mux codex preflight --profile <profile> --capability <capability> --json\n");
         if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) failures += 1;
     }
     if (failures != 0) return error.CodexCommandFailed;
@@ -16093,6 +16099,12 @@ const CodexCliResult = struct {
     }
 };
 
+fn writeCodexLoginStatusReadinessScopeJson(writer: anytype) !void {
+    try writer.writeAll(
+        "{\"native_login_status\":true,\"route_liveness_considered\":false,\"route_selectability_considered\":false,\"native_login_status_clears_route_health\":false,\"route_health_authority\":\"oauth-mux codex preflight --profile <profile> --capability <capability> --json\"}",
+    );
+}
+
 fn writeCodexLoginStatusResultJson(writer: anytype, account: []const u8, result: CodexCliResult) !void {
     try writer.writeAll("{\"account\":");
     try std.json.stringify(account, .{}, writer);
@@ -16107,6 +16119,7 @@ fn writeCodexLoginStatusResultJson(writer: anytype, account: []const u8, result:
         try writer.writeAll("null");
     }
     try writer.writeAll(",\"codex_home_path_printed\":false,\"native_output_printed\":false");
+    try writer.writeAll(",\"route_liveness_considered\":false,\"route_selectability_considered\":false,\"native_login_status_clears_route_health\":false");
     if (result.error_name) |name| {
         try writer.writeAll(",\"error\":");
         try std.json.stringify(name, .{}, writer);
@@ -16125,6 +16138,28 @@ fn codexLoginStatusLabel(result: CodexCliResult) []const u8 {
     }
     if (result.error_name != null) return "command_failed";
     return "unknown";
+}
+
+test "Codex login-status JSON declares native-only readiness scope" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeCodexLoginStatusReadinessScopeJson(buf.writer());
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"native_login_status\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"route_liveness_considered\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"route_selectability_considered\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"native_login_status_clears_route_health\":false") != null);
+}
+
+test "Codex login-status account JSON does not imply route health" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeCodexLoginStatusResultJson(buf.writer(), "max-1", .{ .term = .{ .Exited = 0 } });
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"authenticated\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"status\":\"logged_in\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"route_liveness_considered\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"native_login_status_clears_route_health\":false") != null);
 }
 
 fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, emit_headers: bool) !void {
