@@ -1000,6 +1000,51 @@ test "populatePoolFromRouteHealth lets expired provider degradation yield to cap
     try std.testing.expectEqual(broker.account_pool_mod.Availability.available, elected.availability);
 }
 
+test "populatePoolFromRouteHealth lets expired account rate limit yield to capability health" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const now = std.time.timestamp();
+    const account_health = try store.getOrCreate("codex:max-1");
+    account_health.liveness = .{ .live = .{ .availability = .{ .rate_limited = .{
+        .retry_after_s = 60,
+        .limited_at = now - 120,
+        .window = .unknown,
+    } } } };
+    account_health.last_probe_hint_class = .rate_limit;
+    account_health.last_probe_decision = .wait_and_retry;
+    const capability_health = try store.getOrCreate("codex:max-1#codex-max");
+    capability_health.liveness = .{ .live = .{ .availability = .available } };
+    capability_health.last_probe_hint_class = .none;
+    capability_health.last_probe_decision = .use_this;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealth(&pool, parsed.value, "codex-max", &store);
+
+    const elected = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-1", elected.id);
+    try std.testing.expectEqual(broker.account_pool_mod.Availability.available, elected.availability);
+}
+
 test "populatePoolFromRouteHealth keeps auth-dead account health global" {
     const cfg_json =
         \\{
