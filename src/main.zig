@@ -7522,6 +7522,9 @@ fn writeHealthEntriesJson(writer: anytype, store: *health_mod.HealthStore) !void
         }
         try writer.writeAll(",\"liveness\":");
         try writeLivenessJson(writer, h.liveness);
+        const effective_health = health_mod.effectiveHealthForRouteSelection(h, std.time.timestamp());
+        try writer.writeAll(",\"effective_liveness\":");
+        try writeLivenessJson(writer, effective_health.liveness);
         try writer.writeAll(",\"last_probe\":");
         try writeProbeEvidenceJson(writer, h);
         try writer.writeByte('}');
@@ -8172,6 +8175,9 @@ fn writeHealthJson(writer: anytype, store: *health_mod.HealthStore, provider_fil
         }
         try writer.writeAll(",\"liveness\":");
         try writeLivenessJson(writer, h.liveness);
+        const effective_health = health_mod.effectiveHealthForRouteSelection(h, std.time.timestamp());
+        try writer.writeAll(",\"effective_liveness\":");
+        try writeLivenessJson(writer, effective_health.liveness);
         try writer.writeAll(",\"last_probe\":");
         try writeProbeEvidenceJson(writer, h);
         try writer.writeByte('}');
@@ -16258,6 +16264,28 @@ test "writeHealthJson includes capability routes" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"key\":\"codex:max-1#codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"capability\":\"codex-max\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"availability\":\"quota_exhausted\"") != null);
+}
+
+test "writeHealthJson includes route-effective liveness" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    const health = try store.getOrCreate("codex:max-3");
+    const now = std.time.timestamp();
+    health.liveness = .{ .live = .{ .availability = .{ .rate_limited = .{
+        .retry_after_s = 60,
+        .limited_at = now - 120,
+        .window = .unknown,
+    } } } };
+    health.last_probe_hint_class = .rate_limit;
+    health.last_probe_decision = .wait_and_retry;
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeHealthJson(buf.writer(), &store, "codex");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"liveness\":{\"summary\":\"rate_limited:unknown:60s\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"effective_liveness\":{\"summary\":\"available\"") != null);
 }
 
 test "writeDiscoverJson includes stay-afloat agent-safe commands" {
