@@ -57,12 +57,16 @@ just install-local-dogfood
 which -a oauth-mux
 which -a codex
 oauth-mux version
+oauth-mux version --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
 Expected:
 
 - `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match.
+- `oauth-mux version --json` reports the active executable's
+  `runtime_identity.binary_source` and `runtime_identity.binary_sha256`, so
+  agents can compare dogfood/package binaries without a separate hash command.
 - `which -a oauth-mux` resolves `~/.local/bin/oauth-mux` before Homebrew when
   testing unreleased behavior.
 - `which -a codex` resolves `~/.local/bin/codex` before the native upstream

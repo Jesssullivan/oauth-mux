@@ -115,8 +115,14 @@ just install-local-dogfood
 which -a oauth-mux
 which -a codex
 oauth-mux version
+oauth-mux version --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
+
+`version --json` prints the active executable path classification and SHA-256
+under `runtime_identity`. Use it when public packages and local dogfood have
+nearby version strings and you need machine-readable proof of the exact binary
+that will run.
 
 `codex preflight` prints the active `oauth-mux` path, all visible `oauth-mux`
 and `codex` PATH candidates, whether active `codex` is the managed oauth-mux

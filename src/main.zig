@@ -45,7 +45,13 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
 
     switch (cmd) {
-        .version_cmd => try stdout.print("oauth-mux {s}\n", .{cli.version}),
+        .version_cmd => |version_args| {
+            if (version_args.json) {
+                try writeVersionJson(allocator, stdout);
+            } else {
+                try stdout.print("oauth-mux {s}\n", .{cli.version});
+            }
+        },
         .help => try cli.printUsage(stdout),
         .codex_help => try cli.printCodexUsage(stdout),
 
@@ -297,6 +303,70 @@ pub fn main() !void {
             };
         },
     }
+}
+
+fn writeVersionJson(allocator: std.mem.Allocator, writer: anytype) !void {
+    const binary_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
+    defer allocator.free(binary_path);
+
+    const binary_sha256 = hashFileSha256Hex(allocator, binary_path) catch null;
+    defer if (binary_sha256) |sha| allocator.free(sha);
+
+    const build_id = std.process.getEnvVarOwned(allocator, "OMUX_BUILD_ID") catch try allocator.dupe(u8, cli.version);
+    defer allocator.free(build_id);
+
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"runtime_identity\":{\"binary_path\":");
+    try std.json.stringify(binary_path, .{}, writer);
+    try writer.writeAll(",\"binary_source\":");
+    try std.json.stringify(classifyOauthMuxBinarySource(binary_path), .{}, writer);
+    try writer.writeAll(",\"binary_sha256\":");
+    if (binary_sha256) |sha| {
+        try std.json.stringify(sha, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"build_id\":");
+    try std.json.stringify(build_id, .{}, writer);
+    try writer.writeAll(",\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"path_printed\":true,\"binary_sha256_available\":");
+    try writer.writeAll(if (binary_sha256 != null) "true" else "false");
+    try writer.writeAll("}}\n");
+}
+
+fn classifyOauthMuxBinarySource(path: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, path, "/zig-out/bin/oauth-mux") != null) return "repo_local";
+    if (std.mem.indexOf(u8, path, "/.local/bin/oauth-mux") != null) return "user_local";
+    if (std.mem.indexOf(u8, path, "/Cellar/oauth-mux/") != null) return "homebrew";
+    if (std.mem.indexOf(u8, path, "/opt/homebrew/bin/oauth-mux") != null) return "homebrew";
+    if (std.mem.indexOf(u8, path, "/usr/local/bin/oauth-mux") != null) return "homebrew";
+    if (std.mem.startsWith(u8, path, "/nix/store/")) return "nix_store";
+    if (std.mem.indexOf(u8, path, "/node_modules/") != null) return "npm";
+    return "path_or_installed";
+}
+
+fn hashFileSha256Hex(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (std.mem.eql(u8, path, "unknown")) return error.UnknownPath;
+
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        hasher.update(buf[0..n]);
+    }
+
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+
+    const hex = try allocator.alloc(u8, digest.len * 2);
+    _ = std.fmt.bufPrint(hex, "{s}", .{std.fmt.fmtSliceHexLower(&digest)}) catch unreachable;
+    return hex;
 }
 
 fn exitCodeFromPipelineError(e: anyerror) u8 {

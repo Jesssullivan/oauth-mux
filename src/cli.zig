@@ -38,7 +38,7 @@ pub const Command = union(enum) {
     daemon_events: DaemonEventsArgs,
     daemon_handoffs: DaemonHandoffsArgs,
     daemon_tick: DaemonTickArgs,
-    version_cmd,
+    version_cmd: VersionArgs,
     help,
     codex_help,
 
@@ -311,6 +311,10 @@ pub const Command = union(enum) {
         capability: ?[]const u8 = null,
         json: bool = false,
     };
+
+    pub const VersionArgs = struct {
+        json: bool = false,
+    };
 };
 
 pub fn parse(args: []const []const u8) Command {
@@ -348,7 +352,7 @@ pub fn parse(args: []const []const u8) Command {
         return parseCodex(rest);
     }
     if (eql(cmd, "mcp")) return parseMcp(rest);
-    if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return .version_cmd;
+    if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return parseVersion(rest);
     if (eql(cmd, "daemon")) {
         if (rest.len > 0) {
             if (eql(rest[0], "run")) return parseDaemonRun(rest[1..]);
@@ -374,6 +378,14 @@ pub fn parse(args: []const []const u8) Command {
 
 fn parseExec(args: []const []const u8) Command {
     return .{ .exec = parseExecArgs(args) };
+}
+
+fn parseVersion(args: []const []const u8) Command {
+    var result = Command.VersionArgs{};
+    for (args) |arg| {
+        if (eql(arg, "--json")) result.json = true;
+    }
+    return .{ .version_cmd = result };
 }
 
 fn parseCodexAdapter(args: []const []const u8, strict_run: bool) Command {
@@ -1388,7 +1400,7 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  completions <shell> Generate shell completions (fish|zsh|bash).
         \\
-        \\  version            Print version.
+        \\  version [--json]   Print version; --json includes runtime binary identity.
         \\  help               Print this help.
         \\
         \\Environment:
@@ -2610,7 +2622,19 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
 test "parse version" {
     const args = [_][]const u8{"--version"};
     const cmd = parse(&args);
-    try std.testing.expect(cmd == .version_cmd);
+    switch (cmd) {
+        .version_cmd => |parsed| try std.testing.expect(!parsed.json),
+        else => return error.UnexpectedCommand,
+    }
+}
+
+test "parse version json" {
+    const args = [_][]const u8{ "version", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .version_cmd => |parsed| try std.testing.expect(parsed.json),
+        else => return error.UnexpectedCommand,
+    }
 }
 
 test "parse empty" {
