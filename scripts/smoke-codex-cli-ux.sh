@@ -435,6 +435,25 @@ else
     echo "  ✓ shim login did not bootstrap mux account dirs"
 fi
 
+LOGIN_STATUS_JSON="$TMP/login-status-all.json"
+LOGIN_STATUS_LEAKS="$TMP/login-status-all.leaks"
+OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  "$BIN" codex login-status-all --accounts max-1,max-2 --store-root "$TMP/login-status-root" --json >"$LOGIN_STATUS_JSON"
+jq -e '.mode == "codex_login_status_all"
+       and .spends_provider_calls == false
+       and .mutates_user_config == false
+       and .interactive == false
+       and .ok == true
+       and (.accounts | length == 2)
+       and all(.accounts[]; .authenticated == true and .status == "logged_in" and .codex_home_path_printed == false and .native_output_printed == false)' "$LOGIN_STATUS_JSON" >/dev/null
+if grep -E 'CODEX_HOME=|native-login-stub|/oauth-mux/codex|max-1/auth.json' "$LOGIN_STATUS_JSON" >"$LOGIN_STATUS_LEAKS"; then
+    echo "  ✗ login-status-all --json leaked native text or paths" >&2
+    cat "$LOGIN_STATUS_JSON" >&2
+    exit 1
+else
+    echo "  ✓ login-status-all --json is redacted structured inspection"
+fi
+
 echo "smoke-codex-cli-ux: no-profile codex election is provider-scoped"
 NO_PROFILE_NDJSON="$TMP/no-profile/status.ndjson"
 NO_PROFILE_STDERR="$TMP/no-profile.stderr"

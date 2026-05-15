@@ -93,6 +93,12 @@ access via a temporary marker file, and expected session-file presence. It does
 not read token values, run live probes, open auth flows, or create missing
 account stores.
 
+`oauth-mux codex login-status-all --json` is the Codex account login-status
+inspection surface. It shells out to native `codex login status` with each
+isolated account `CODEX_HOME`, but captures native output and returns only
+redacted status booleans. It does not print `CODEX_HOME`, token material, raw
+native output, run login, or spend provider calls.
+
 `oauth-mux accounts list --json` is the no-spend account inventory. It is the
 first provider-neutral surface for N-account enrollment and stay-afloat
 planning: it reports each configured provider/account, secret backend name,

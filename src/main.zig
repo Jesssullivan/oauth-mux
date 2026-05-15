@@ -8549,10 +8549,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         },
         .login_status => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
-            const dir = try codexAccountDir(allocator, root, account);
-            defer allocator.free(dir);
-            try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
-            if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) return error.CodexCommandFailed;
+            try runCodexLoginStatusOne(allocator, writer, args, root, account);
         },
         .login_status_all => try runCodexLoginStatusAll(allocator, writer, args, root),
         .onboard => try runCodexOnboard(allocator, writer, args, root),
@@ -15887,7 +15884,62 @@ fn validateCurrentConfig(allocator: std.mem.Allocator, writer: anytype) !void {
     try writer.writeAll("config: valid\n");
 }
 
+fn runCodexLoginStatusOne(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.CodexArgs,
+    root: []const u8,
+    account: []const u8,
+) !void {
+    const dir = try codexAccountDir(allocator, root, account);
+    defer allocator.free(dir);
+
+    if (!args.json) {
+        try writer.print("=== {s} ===\nCODEX_HOME={s}\n", .{ account, dir });
+        if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) return error.CodexCommandFailed;
+        return;
+    }
+
+    const result = runCodexCliCaptured(allocator, dir, &.{ "login", "status" }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => CodexCliResult{ .term = .{ .Unknown = 0 }, .error_name = @errorName(e) },
+    };
+    defer result.deinit(allocator);
+
+    try writer.writeAll("{\"mode\":\"codex_login_status\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"interactive\":false,\"ok\":");
+    try writer.writeAll(if (result.ok()) "true" else "false");
+    try writer.writeAll(",\"account\":");
+    try writeCodexLoginStatusResultJson(writer, account, result);
+    try writer.writeAll("}\n");
+}
+
 fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
+    if (args.json) {
+        try writer.writeAll("{\"mode\":\"codex_login_status_all\",\"spends_provider_calls\":false,\"mutates_user_config\":false,\"interactive\":false,\"accounts\":[");
+        var first = true;
+        var ok = true;
+        var account_it = std.mem.splitScalar(u8, args.accounts, ',');
+        while (account_it.next()) |raw_account| {
+            const account = std.mem.trim(u8, raw_account, " \t\r\n");
+            if (account.len == 0) continue;
+            const dir = try codexAccountDir(allocator, root, account);
+            defer allocator.free(dir);
+            const result = runCodexCliCaptured(allocator, dir, &.{ "login", "status" }) catch |e| switch (e) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => CodexCliResult{ .term = .{ .Unknown = 0 }, .error_name = @errorName(e) },
+            };
+            defer result.deinit(allocator);
+            if (!result.ok()) ok = false;
+            if (!first) try writer.writeByte(',');
+            first = false;
+            try writeCodexLoginStatusResultJson(writer, account, result);
+        }
+        try writer.writeAll("],\"ok\":");
+        try writer.writeAll(if (ok) "true" else "false");
+        try writer.writeAll("}\n");
+        return;
+    }
+
     var failures: usize = 0;
     var it = std.mem.splitScalar(u8, args.accounts, ',');
     while (it.next()) |raw_account| {
@@ -15899,6 +15951,66 @@ fn runCodexLoginStatusAll(allocator: std.mem.Allocator, writer: anytype, args: c
         if (!try runCodexCli(allocator, dir, &.{ "login", "status" })) failures += 1;
     }
     if (failures != 0) return error.CodexCommandFailed;
+}
+
+const CodexCliResult = struct {
+    stdout: []u8 = &.{},
+    stderr: []u8 = &.{},
+    term: std.process.Child.Term,
+    error_name: ?[]const u8 = null,
+
+    fn deinit(self: CodexCliResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+
+    fn ok(self: CodexCliResult) bool {
+        return switch (self.term) {
+            .Exited => |code| code == 0,
+            else => false,
+        };
+    }
+
+    fn exitCode(self: CodexCliResult) ?u8 {
+        return switch (self.term) {
+            .Exited => |code| code,
+            else => null,
+        };
+    }
+};
+
+fn writeCodexLoginStatusResultJson(writer: anytype, account: []const u8, result: CodexCliResult) !void {
+    try writer.writeAll("{\"account\":");
+    try std.json.stringify(account, .{}, writer);
+    try writer.writeAll(",\"authenticated\":");
+    try writer.writeAll(if (result.ok()) "true" else "false");
+    try writer.writeAll(",\"status\":");
+    try std.json.stringify(codexLoginStatusLabel(result), .{}, writer);
+    try writer.writeAll(",\"exit_code\":");
+    if (result.exitCode()) |code| {
+        try writer.print("{d}", .{code});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"codex_home_path_printed\":false,\"native_output_printed\":false");
+    if (result.error_name) |name| {
+        try writer.writeAll(",\"error\":");
+        try std.json.stringify(name, .{}, writer);
+    }
+    try writer.writeByte('}');
+}
+
+fn codexLoginStatusLabel(result: CodexCliResult) []const u8 {
+    if (result.ok()) return "logged_in";
+    if (containsAsciiIgnoreCase(result.stdout, "not logged") or
+        containsAsciiIgnoreCase(result.stderr, "not logged") or
+        containsAsciiIgnoreCase(result.stdout, "not authenticated") or
+        containsAsciiIgnoreCase(result.stderr, "not authenticated"))
+    {
+        return "not_logged_in";
+    }
+    if (result.error_name != null) return "command_failed";
+    return "unknown";
 }
 
 fn runCodexLiveProbes(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, emit_headers: bool) !void {
@@ -16172,6 +16284,55 @@ fn runCodexCli(allocator: std.mem.Allocator, account_dir: []const u8, codex_args
         trace.boolean("native_binary_path_printed", false),
     });
     return ok;
+}
+
+fn runCodexCliCaptured(allocator: std.mem.Allocator, account_dir: []const u8, codex_args: []const []const u8) !CodexCliResult {
+    const codex_bin = try resolveNativeCodexBinary(allocator);
+    defer allocator.free(codex_bin);
+
+    var argv = try allocator.alloc([]const u8, codex_args.len + 1);
+    defer allocator.free(argv);
+    argv[0] = codex_bin;
+    @memcpy(argv[1..], codex_args);
+
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("CODEX_HOME", account_dir);
+    _ = env_map.remove("OMUX_CODEX_SHIM");
+
+    trace.append(allocator, "codex.native_command.spawn", .info, &.{
+        trace.string("command", if (codex_args.len > 0) codex_args[0] else "none"),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("native_binary_path_printed", false),
+        trace.boolean("native_output_printed", false),
+    });
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .env_map = &env_map,
+        .max_output_bytes = 16 * 1024,
+    });
+    errdefer allocator.free(result.stdout);
+    errdefer allocator.free(result.stderr);
+
+    const ok = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    trace.append(allocator, "codex.native_command.exit", if (ok) .info else .warn, &.{
+        trace.string("command", if (codex_args.len > 0) codex_args[0] else "none"),
+        trace.boolean("ok", ok),
+        trace.boolean("codex_home_path_printed", false),
+        trace.boolean("native_binary_path_printed", false),
+        trace.boolean("native_output_printed", false),
+    });
+
+    return .{
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .term = result.term,
+    };
 }
 
 test "matchesProvider filters account keys" {
