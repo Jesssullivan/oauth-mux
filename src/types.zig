@@ -238,6 +238,7 @@ pub const DeadReason = enum {
     token_revoked,
     account_deleted,
     auth_permanently_failed,
+    credential_unavailable,
 };
 
 // ── Provider Extensibility ──

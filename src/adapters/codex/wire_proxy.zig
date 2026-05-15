@@ -551,7 +551,7 @@ pub const Proxy = struct {
             } },
             .tier_insufficient => .{ .degraded = .tier_insufficient },
             .provider_degraded => .provider_degraded,
-            .credential_unavailable => .{ .dead = .auth_permanently_failed },
+            .credential_unavailable => .{ .dead = .credential_unavailable },
         };
 
         store.recordHttpClassification(key.slice(), status, classification);

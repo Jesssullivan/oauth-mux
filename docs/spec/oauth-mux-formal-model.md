@@ -330,6 +330,7 @@ DeadReason =
     token_revoked
   | account_deleted
   | auth_permanently_failed
+  | credential_unavailable
 ```
 
 Dead credentials require user action: login again, rotate the secret, or remove
