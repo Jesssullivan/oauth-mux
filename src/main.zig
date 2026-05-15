@@ -3928,7 +3928,7 @@ fn runRoute(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Rou
     if (args.json) {
         try writeRouteJson(writer, allocator, parsed.value, evaluations.items, selected_index, args);
     } else {
-        try writeRouteText(writer, allocator, evaluations.items, selected_index, args);
+        try writeRouteText(writer, allocator, parsed.value, evaluations.items, selected_index, args);
     }
 
     if (args.action == .select and selected_index == null) return error.AllAccountsExhausted;
@@ -3964,7 +3964,7 @@ fn runStayAfloatNext(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     if (args.json) {
         try writeStayAfloatNextJson(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args);
     } else {
-        try writeStayAfloatNextText(writer, allocator, evaluations.items, selected_index, candidate_index, args);
+        try writeStayAfloatNextText(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args);
     }
 }
 
@@ -4011,7 +4011,7 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
         const selected_index = firstSelectableRouteNotAttempted(evaluations.items, attempted_routes.items);
         if (selected_index == null) {
             const candidate_index = firstActionableRoute(evaluations.items);
-            try writeStayAfloatMediationText(writer, allocator, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
+            try writeStayAfloatMediationText(writer, allocator, parsed.value, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
             if (last_exec_error) |err| return err;
             return error.AllAccountsExhausted;
         }
@@ -4587,6 +4587,7 @@ fn writeStayAfloatLaunchMediationFromCurrentState(
     try writeStayAfloatMediationText(
         writer,
         allocator,
+        cfg,
         evaluations.items,
         selected_index,
         candidate_index,
@@ -4795,6 +4796,7 @@ fn writeRouteResilienceJson(
 fn writeRouteResilienceActionsJson(
     writer: anytype,
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     profile: ?[]const u8,
@@ -4810,12 +4812,19 @@ fn writeRouteResilienceActionsJson(
     }
 
     const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    if (!codexBrokerSessionSingleRouteAtRisk(true, fallback_count)) {
+        try writer.writeAll("[]");
+        return;
+    }
     const action_capability = capability orelse evaluations[selected].route.capability;
-    try writeCodexBrokerSessionRiskActionsJson(writer, allocator, profile, action_capability, true, fallback_count);
+    const repair_summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, true, fallback_count > 0);
+    try writeCodexBrokerSessionRiskActionsJsonWithSummary(writer, allocator, profile, action_capability, true, fallback_count, repair_summary);
 }
 
 fn writeRouteResilienceActionsText(
     writer: anytype,
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
 ) !void {
@@ -4823,9 +4832,19 @@ fn writeRouteResilienceActionsText(
     if (selected >= evaluations.len) return;
     const route = evaluations[selected].route;
     if (!std.mem.eql(u8, route.provider, "codex")) return;
-    if (!codexBrokerSessionSingleRouteAtRisk(true, selectableFallbackRouteCount(evaluations, selected_index))) return;
+    const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    if (!codexBrokerSessionSingleRouteAtRisk(true, fallback_count)) return;
 
-    try writer.writeAll("  next: revalidate exhausted routes, enroll another Codex account, or wait for quota reset\n");
+    const repair_summary = try codexPreflightRepairSummary(allocator, cfg, evaluations, selected_index, true, fallback_count > 0);
+    const has_provider_revalidation = codexBrokerSessionRepairSummaryHasProviderRevalidationCandidate(repair_summary);
+    const has_wait = codexBrokerSessionRepairSummaryHasWaitCandidate(repair_summary);
+    if (repair_summary.user_handoff_required and !has_provider_revalidation and !has_wait) {
+        try writer.writeAll("  next: reauthenticate blocked Codex routes or enroll another Codex account\n");
+    } else if (repair_summary.user_handoff_required) {
+        try writer.writeAll("  next: reauthenticate blocked Codex routes, revalidate exhausted routes, enroll another Codex account, or wait for quota reset\n");
+    } else {
+        try writer.writeAll("  next: revalidate exhausted routes, enroll another Codex account, or wait for quota reset\n");
+    }
 }
 
 const StayAfloatSelector = struct {
@@ -5330,6 +5349,7 @@ fn routeSkipReason(runtime: types.RuntimeReadiness, health: ?health_mod.AccountH
 fn writeRouteText(
     writer: anytype,
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     args: cli.Command.RouteArgs,
@@ -5342,7 +5362,7 @@ fn writeRouteText(
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
         if (selected.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.writeByte('\n');
-        try writeRouteResilienceActionsText(writer, evaluations, selected_index);
+        try writeRouteResilienceActionsText(writer, allocator, cfg, evaluations, selected_index);
     } else {
         try writer.writeAll("  selected: none\n");
     }
@@ -5386,17 +5406,19 @@ fn writeRouteText(
 fn writeStayAfloatNextText(
     writer: anytype,
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     candidate_index: ?usize,
     args: cli.Command.RouteArgs,
 ) !void {
-    try writeStayAfloatMediationText(writer, allocator, evaluations, selected_index, candidate_index, args, "oauth-mux stay-afloat next");
+    try writeStayAfloatMediationText(writer, allocator, cfg, evaluations, selected_index, candidate_index, args, "oauth-mux stay-afloat next");
 }
 
 fn writeStayAfloatMediationText(
     writer: anytype,
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     candidate_index: ?usize,
@@ -5415,7 +5437,7 @@ fn writeStayAfloatMediationText(
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
         if (selected.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.writeByte('\n');
-        try writeRouteResilienceActionsText(writer, evaluations, selected_index);
+        try writeRouteResilienceActionsText(writer, allocator, cfg, evaluations, selected_index);
         try writer.writeAll("  exec: ");
         try writeStayAfloatExecCommandText(writer, selected);
         try writer.writeByte('\n');
@@ -5468,7 +5490,7 @@ fn writeRouteJson(
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"resilience_actions\":");
-    try writeRouteResilienceActionsJson(writer, allocator, evaluations, selected_index, args.profile, args.capability);
+    try writeRouteResilienceActionsJson(writer, allocator, cfg, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"routes\":[");
     for (evaluations, 0..) |evaluation, idx| {
         if (idx > 0) try writer.writeByte(',');
@@ -5513,7 +5535,7 @@ fn writeStayAfloatNextJson(
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"resilience_actions\":");
-    try writeRouteResilienceActionsJson(writer, allocator, evaluations, selected_index, args.profile, args.capability);
+    try writeRouteResilienceActionsJson(writer, allocator, cfg, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"claim\":");
     try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"next_action\":");
@@ -5709,7 +5731,7 @@ fn writeDaemonTickText(
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
         if (selected.capability) |capability| try writer.print("#{s}", .{capability});
         try writer.writeByte('\n');
-        try writeRouteResilienceActionsText(writer, evaluations, selected_index);
+        try writeRouteResilienceActionsText(writer, allocator, cfg, evaluations, selected_index);
     } else {
         try writer.writeAll("  selected: none\n");
     }
@@ -5819,7 +5841,7 @@ fn writeDaemonTickJsonObject(
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"resilience_actions\":");
-    try writeRouteResilienceActionsJson(writer, allocator, evaluations, selected_index, args.profile, args.capability);
+    try writeRouteResilienceActionsJson(writer, allocator, cfg, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"claim\":");
     try writeStayAfloatClaimJson(writer, selectorFromDaemonTickArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
     try writer.writeAll(",\"summary\":");
@@ -17014,6 +17036,107 @@ test "Codex broker-session risk actions follow repair reason lanes" {
         true,
         0,
         summary,
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth_blocked_routes\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"enroll_codex_account\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"revalidate_exhausted_routes\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"wait_for_quota_reset\"") == null);
+}
+
+test "stay-afloat tick risk actions follow auth-only repair lanes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const auth_json =
+        \\{
+        \\  "auth_mode": "chatgpt",
+        \\  "tokens": {
+        \\    "id_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "access_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "refresh_token": "redacted-in-test"
+        \\  }
+        \\}
+    ;
+
+    {
+        const file = try tmp.dir.createFile("max-1-auth.json", .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(auth_json);
+    }
+    {
+        const file = try tmp.dir.createFile("max-3-auth.json", .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(auth_json);
+    }
+
+    const max_1_auth_path = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1-auth.json");
+    defer std.testing.allocator.free(max_1_auth_path);
+    const max_3_auth_path = try tmp.dir.realpathAlloc(std.testing.allocator, "max-3-auth.json");
+    defer std.testing.allocator.free(max_3_auth_path);
+    const cfg_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-3": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "codex-max": {{ "providers": ["codex:max-1#codex-max", "codex:max-3#codex-max"] }}
+        \\  }},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ max_1_auth_path, max_3_auth_path },
+    );
+    defer std.testing.allocator.free(cfg_json);
+    const parsed = try config.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const blocked_route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const selected_route = RepairPlanRoute{ .provider = "codex", .account = "max-3", .capability = "codex-max" };
+    const evaluations = [_]RouteEvaluation{
+        .{
+            .route = blocked_route,
+            .runtime = .ready,
+            .health = health_mod.AccountHealth{ .liveness = .{ .dead = .{ .reason = .token_revoked, .since = 1000 } } },
+            .budget = .interactive,
+            .action = reauthAction(blocked_route, provider_schema.codex_def),
+            .selectable = false,
+            .skip_reason = "token_revoked",
+        },
+        .{
+            .route = selected_route,
+            .runtime = .ready,
+            .health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .available } } },
+            .budget = .spend_provider,
+            .action = .{ .kind = .none, .severity = "ok", .message = "route is selectable" },
+            .selectable = true,
+            .skip_reason = "available",
+        },
+    };
+    const executions = [_]DaemonTickExecution{};
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeDaemonTickJsonObject(
+        buf.writer(),
+        std.testing.allocator,
+        parsed.value,
+        &evaluations,
+        1,
+        &executions,
+        .{ .profile = "codex-max", .capability = "codex-max", .once = true, .json = true },
+        0,
+        1000,
+        true,
     );
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"reauth_blocked_routes\"") != null);
