@@ -21,6 +21,12 @@ claude auth status --json
 or rewrite Claude's credential store before the upstream CLI has reported its
 own status.
 
+As of 2026-05-14 this is a provider-proof and enrollment lane, not a harness
+adapter. `oauth-mux enroll claude ...`, `CLAUDE_CONFIG_DIR` isolation, and
+`auth-status` do not imply that `oauth-mux claude` exists, that Claude
+quota/tier fallback is proven, or that an active Claude Code session can be
+hot-swapped by the daemon.
+
 ## Bug Found During Dogfood
 
 The first Claude proof attempt failed before invoking `claude auth status`.
