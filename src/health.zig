@@ -181,6 +181,27 @@ pub fn effectiveHealthForRouteSelection(health: AccountHealth, now: i64) Account
 
 pub fn recoverExpiredTransientHealth(health: *AccountHealth, now: i64) void {
     switch (health.liveness) {
+        .live => |live| switch (live.availability) {
+            .rate_limited => |rl| {
+                const retry_at = health.rate_limited_until orelse rl.limited_at + @as(i64, rl.retry_after_s);
+                if (now < retry_at) return;
+                health.liveness = .{ .live = .{ .availability = .available } };
+                health.rate_limited_until = null;
+                health.last_probe_retry_after_s = null;
+                health.last_probe_hint_class = .none;
+                health.last_probe_decision = .use_this;
+                health.consecutive_failures = 0;
+            },
+            .cooldown => |cooldown| {
+                if (now < cooldown.until) return;
+                health.liveness = .{ .live = .{ .availability = .available } };
+                health.last_probe_retry_after_s = null;
+                health.last_probe_hint_class = .none;
+                health.last_probe_decision = .use_this;
+                health.consecutive_failures = 0;
+            },
+            .available, .quota_exhausted => {},
+        },
         .degraded => |d| {
             const retry_at = d.retry_at orelse return;
             if (now < retry_at) return;
@@ -1070,6 +1091,64 @@ test "effectiveHealthForRouteSelection recovers only expired transient degradati
     }, now);
     switch (still_blocked.liveness) {
         .degraded => |degraded| try std.testing.expectEqual(types.DegradedReason.step_up_required, degraded.reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "effectiveHealthForRouteSelection recovers expired live retry windows" {
+    const now: i64 = 1_800_000_000;
+
+    const recovered_rate_limit = effectiveHealthForRouteSelection(.{
+        .liveness = .{ .live = .{ .availability = .{ .rate_limited = .{
+            .retry_after_s = 60,
+            .limited_at = now - 120,
+            .window = .unknown,
+        } } } },
+        .last_probe_retry_after_s = 60,
+        .last_probe_hint_class = .rate_limit,
+        .last_probe_decision = .wait_and_retry,
+        .consecutive_failures = 3,
+    }, now);
+    switch (recovered_rate_limit.liveness) {
+        .live => |live| switch (live.availability) {
+            .available => {},
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(ProbeHintClass.none, recovered_rate_limit.last_probe_hint_class.?);
+    try std.testing.expectEqual(types.MuxDecision.use_this, recovered_rate_limit.last_probe_decision.?);
+    try std.testing.expectEqual(@as(u32, 0), recovered_rate_limit.consecutive_failures);
+
+    const blocked_rate_limit = effectiveHealthForRouteSelection(.{
+        .liveness = .{ .live = .{ .availability = .{ .rate_limited = .{
+            .retry_after_s = 60,
+            .limited_at = now - 10,
+            .window = .unknown,
+        } } } },
+    }, now);
+    switch (blocked_rate_limit.liveness) {
+        .live => |live| switch (live.availability) {
+            .rate_limited => {},
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const recovered_cooldown = effectiveHealthForRouteSelection(.{
+        .liveness = .{ .live = .{ .availability = .{ .cooldown = .{
+            .until = now - 1,
+            .reason = "test",
+        } } } },
+        .last_probe_hint_class = .failure,
+        .last_probe_decision = .wait_and_retry,
+        .consecutive_failures = 1,
+    }, now);
+    switch (recovered_cooldown.liveness) {
+        .live => |live| switch (live.availability) {
+            .available => {},
+            else => return error.TestUnexpectedResult,
+        },
         else => return error.TestUnexpectedResult,
     }
 }
