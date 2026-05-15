@@ -44,9 +44,9 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
   `OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run`.
 - Homebrew and system package checks are package-lane QA. They do not prove
   unreleased worktree behavior unless the package was rebuilt from that tree.
-- For live Codex acceptance, use an installed binary on PATH and preserve
-  `runtime_identity` in the status artifact. Repo-local wrapper runs are not
-  acceptance evidence.
+- For live Codex acceptance, use an installed binary on PATH and preserve the
+  status artifact `runtime_identity`, including `binary_source` and
+  `binary_sha256`. Repo-local wrapper runs are not acceptance evidence.
 
 ## Local Dogfood Provenance
 
