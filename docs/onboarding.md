@@ -515,6 +515,13 @@ The refresh path now uses that same admission gate. File-backed credentials can
 be replaced atomically, but automatic refresh only runs for providers whose
 definition declares `repair.owner = "oauth_mux_refresh"` and whose backend
 reports `automatic_refresh_admitted: true`. Codex remains upstream-CLI-owned.
+Managed Codex credential materialization has one narrower guard: if a selected
+mux-owned Codex account store already contains an expired access token,
+oauth-mux attempts the account's refresh token before handing credentials to
+the broker. If that refresh is missing or fails, the materializer fails closed
+and records `credential_unavailable` instead of sending a known-stale access
+token upstream and misclassifying the provider's 401 as permanent auth death.
+This is lazy per-route materialization, not broad pre-spawn route warming.
 
 If `repair-plan --profile codex-max` reports a config validation error, the
 active config is not the starter Codex Max shape. That usually means the

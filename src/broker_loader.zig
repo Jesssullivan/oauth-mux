@@ -362,27 +362,42 @@ fn refreshCodexAccountAuthFile(
     _ = account;
 }
 
-fn maybeRefreshCodexAuthBeforeMaterialize(
+const CodexAuthRefreshState = enum {
+    not_needed,
+    needed,
+    unavailable,
+};
+
+fn refreshCodexAuthState(allocator: std.mem.Allocator, bytes: []const u8) CodexAuthRefreshState {
+    var material = parseCodexAuthRefreshMaterial(allocator, bytes) catch return .not_needed;
+    defer material.deinit(allocator);
+    const exp = jwtExpiresAt(allocator, material.access_token) catch return .not_needed;
+    if (exp > std.time.timestamp() + 300) return .not_needed;
+    return if (material.refresh_token != null) .needed else .unavailable;
+}
+
+fn refreshCodexAuthBeforeMaterialize(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     provider: []const u8,
     account: []const u8,
     acct_cfg: config_mod.AccountConfig,
     bytes: []const u8,
-) bool {
+) broker_types.BrokerError!bool {
     if (!std.mem.eql(u8, provider, "codex")) return false;
     if (acct_cfg.config_dir == null) return false;
-    if (!codexAuthShouldRefresh(allocator, bytes)) return false;
-    refreshCodexAccountAuthFile(allocator, cfg, provider, account, acct_cfg) catch return false;
+    switch (refreshCodexAuthState(allocator, bytes)) {
+        .not_needed => return false,
+        .unavailable => return broker_types.BrokerError.SecretUnavailable,
+        .needed => {},
+    }
+    refreshCodexAccountAuthFile(allocator, cfg, provider, account, acct_cfg) catch
+        return broker_types.BrokerError.SecretUnavailable;
     return true;
 }
 
 fn codexAuthShouldRefresh(allocator: std.mem.Allocator, bytes: []const u8) bool {
-    var material = parseCodexAuthRefreshMaterial(allocator, bytes) catch return false;
-    defer material.deinit(allocator);
-    if (material.refresh_token == null) return false;
-    const exp = jwtExpiresAt(allocator, material.access_token) catch return false;
-    return exp <= std.time.timestamp() + 300;
+    return refreshCodexAuthState(allocator, bytes) == .needed;
 }
 
 const CodexAuthRefreshMaterial = struct {
@@ -636,7 +651,7 @@ pub fn materializeChatgpt(
         return broker_types.BrokerError.SecretUnavailable;
     defer allocator.free(bytes);
 
-    if (maybeRefreshCodexAuthBeforeMaterialize(allocator, cfg, provider, account, acct_cfg, bytes)) {
+    if (try refreshCodexAuthBeforeMaterialize(allocator, cfg, provider, account, acct_cfg, bytes)) {
         const refreshed_bytes = readFileAlloc(allocator, path) catch
             return broker_types.BrokerError.SecretUnavailable;
         allocator.free(bytes);
@@ -787,6 +802,12 @@ test "codex auth refresh detection uses access token exp" {
         \\{"tokens":{"access_token":"h.eyJleHAiOjF9.s","refresh_token":"rt","account_id":"acc"}}
     ;
     try std.testing.expect(codexAuthShouldRefresh(std.testing.allocator, expired_auth));
+    try std.testing.expectEqual(
+        CodexAuthRefreshState.unavailable,
+        refreshCodexAuthState(std.testing.allocator,
+            \\{"tokens":{"access_token":"h.eyJleHAiOjF9.s","account_id":"acc"}}
+        ),
+    );
 
     const future_exp = std.time.timestamp() + 3600;
     var payload_buf: [64]u8 = undefined;
@@ -798,6 +819,109 @@ test "codex auth refresh detection uses access token exp" {
     , .{encoded});
     defer std.testing.allocator.free(fresh_auth);
     try std.testing.expect(!codexAuthShouldRefresh(std.testing.allocator, fresh_auth));
+}
+
+test "materializeChatgpt refuses expired codex token when refresh is unavailable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const auth_file = try tmp.dir.createFile("auth.json", .{ .mode = 0o600 });
+    try auth_file.writeAll(
+        \\{"tokens":{"access_token":"h.eyJleHAiOjF9.s","account_id":"acc"}}
+    );
+    auth_file.close();
+
+    const auth_path = try tmp.dir.realpathAlloc(std.testing.allocator, "auth.json");
+    defer std.testing.allocator.free(auth_path);
+    const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(config_dir);
+
+    const cfg_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "file", "path": "{s}" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ config_dir, auth_path },
+    );
+    defer std.testing.allocator.free(cfg_json);
+
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    try std.testing.expectError(
+        broker_types.BrokerError.SecretUnavailable,
+        materializeChatgpt(parsed.value, std.testing.allocator, "codex:max-1"),
+    );
+}
+
+test "materializeChatgpt refuses stale codex token when refresh fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const auth_file = try tmp.dir.createFile("auth.json", .{ .mode = 0o600 });
+    try auth_file.writeAll(
+        \\{"tokens":{"access_token":"h.eyJleHAiOjF9.s","refresh_token":"rt","account_id":"acc"}}
+    );
+    auth_file.close();
+
+    const auth_path = try tmp.dir.realpathAlloc(std.testing.allocator, "auth.json");
+    defer std.testing.allocator.free(auth_path);
+    const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(config_dir);
+
+    const cfg_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex-test": {{
+        \\      "name": "codex-test",
+        \\      "auth": {{
+        \\        "token_endpoint": "://invalid",
+        \\        "client_id": "client"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex-test",
+        \\      "accounts": {{
+        \\        "max-1": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "file", "path": "{s}" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ config_dir, auth_path },
+    );
+    defer std.testing.allocator.free(cfg_json);
+
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    try std.testing.expectError(
+        broker_types.BrokerError.SecretUnavailable,
+        materializeChatgpt(parsed.value, std.testing.allocator, "codex:max-1"),
+    );
 }
 
 test "buildRefreshedCodexAuthJson preserves account id and retained refresh token" {

@@ -17267,13 +17267,15 @@ test "Codex preflight repair summary counts auth and provider blockers" {
         .mediation = .provider_degraded,
     });
     codexPreflightClassifyRepairRoute(&summary, "auth_permanently_failed", reauth);
+    codexPreflightClassifyRepairRoute(&summary, "credential_unavailable", reauth);
     codexPreflightFinalizeRepairSummary(&summary);
 
-    try std.testing.expectEqual(@as(usize, 4), summary.blocked_routes);
+    try std.testing.expectEqual(@as(usize, 5), summary.blocked_routes);
     try std.testing.expectEqual(@as(usize, 2), summary.token_revoked_routes);
     try std.testing.expectEqual(@as(usize, 1), summary.provider_degraded_routes);
     try std.testing.expectEqual(@as(usize, 1), summary.auth_permanently_failed_routes);
-    try std.testing.expectEqual(@as(usize, 3), summary.auth_handoff_routes);
+    try std.testing.expectEqual(@as(usize, 1), summary.credential_unavailable_routes);
+    try std.testing.expectEqual(@as(usize, 4), summary.auth_handoff_routes);
     try std.testing.expect(summary.user_handoff_required);
     try std.testing.expectEqualStrings("token_revoked", summary.dominant_blocker.?);
     try std.testing.expectEqual(@as(usize, 2), summary.dominant_blocker_count);
