@@ -228,6 +228,8 @@ Keep the claim ladder tied to evidence:
 
 - `docs/qa-handoff-matrix.md`: route states, handoff patterns, and current Codex
   truth.
+- `docs/productionization-ledger.md`: UX/DX/AX stance, feature ledger,
+  adapter strategy, daemon beta boundary, release posture, and tracker map.
 - `docs/release-install-lanes.md`: public package lanes versus local dogfood
   lanes.
 - `docs/lifecycle.md`: application lifecycle, managed Codex flow, agent-safe

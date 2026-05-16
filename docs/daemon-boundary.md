@@ -1,20 +1,27 @@
 # Daemon Boundary
 
-The daemon exists, but it is not a production dependency yet.
+The daemon exists, but it is not a hidden production dependency yet. The
+near-term product lane is a beta daemon that hosts the same foreground tick
+engine and mediation semantics already used by `stay-afloat`, not a separate
+route warmer or unmanaged process hot-swapper.
 
 ## Current Decision
 
 Keep daemon usage optional until provider-specific refresh semantics are proven
 for each OAuth-backed harness. The default production path remains explicit
-selection, explicit probe, env injection, and exec handoff.
+selection, explicit probe, env injection, managed broker mediation, and exec
+handoff.
 
 For the current product line, the socket daemon is not the stay-afloat product
 surface. It remains local experimental status/control plumbing. Wrappers,
 package recipes, CI jobs, and agents should call the foreground tick contract:
 `oauth-mux stay-afloat ...` or the lower-level `oauth-mux daemon tick ...`.
-If a production background daemon is added later, it must be a deliberate beta
-promotion of the same foreground tick engine, not a semantic fork of the socket
-stub.
+The beta daemon promotion must be a deliberate host for the same foreground
+tick engine, not a semantic fork of the socket stub. It may publish status,
+schedule ticks, and queue user-mediated handoffs. It must not claim same-thread
+continuity, mid-turn streaming recovery, per-request muxing, or unmanaged
+hot-swap until a provider/native hook, request proxy, or adapter-owned process
+boundary proves that level.
 
 The 2026-04-30 stay-afloat review keeps this boundary in place. Real Codex
 dogfood proved route-scoped fallback from `codex:max-1#codex-max` quota
@@ -29,10 +36,10 @@ and no seamless daemon handoff occurred. Manual logout/login restored future
 into a seamless fallback path.
 
 The current paid Codex Max route matrix is also newer than the original
-2026-04-30 example: `max-1#codex-max` is selected after spend-gated
-revalidation, `max-4#codex-max` is the spare fallback, and `max-2#codex-max`
-plus `max-3#codex-max` remain provider quota-exhausted for `codex-max`.
-Dashboard credit or mini/Spark availability must not be treated as Max route
+2026-04-30 example: the 2026-05-16 no-spend refresh has `max-1#codex-max`,
+`max-2#codex-max`, `max-3#codex-max`, and `max-4#codex-max` all selectable and
+broker-ready, with a selected route plus three spare fallbacks. Dashboard
+credit or mini/Spark availability must not be treated as Max route
 availability; use provider execution evidence per route and capability.
 
 `oauth-mux doctor runtime`, `oauth-mux route explain`, `oauth-mux route
