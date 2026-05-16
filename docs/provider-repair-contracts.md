@@ -28,6 +28,7 @@ The action now has three distinct identity fields:
   "mutating": true,
   "budget": "interactive",
   "command": "oauth-mux codex login-device max-1",
+  "handoff_plan_command": null,
   "diagnostic_command": null
 }
 ```
@@ -35,6 +36,9 @@ The action now has three distinct identity fields:
 - `kind` is the precise route action.
 - `mediation` is how an agent, wrapper, or user should handle the action.
 - `repair_owner` identifies who owns credential repair when there is one.
+- `command` is the executable oauth-mux repair handoff when oauth-mux has one.
+- `handoff_plan_command` is a no-spend planning command for upstream-owned
+  handoffs that do not yet have an oauth-mux executable repair command.
 
 `stay-afloat next --json` wraps the same action contract in a single
 agent-facing decision. Selectable routes return `ready_for_exec:true` with an
@@ -117,6 +121,10 @@ Claude:
 - Upstream CLI login owns session repair.
 - Handoff may not have an oauth-mux executable command yet; `command:null` is
   valid when the safe action is to surface upstream login instructions.
+- In that case `handoff_plan_command` points agents to
+  `oauth-mux enroll plan claude --account <account> --json`, which returns the
+  user-mediated `CLAUDE_CONFIG_DIR` login instruction without oauth-mux running
+  Claude login or mutating credentials.
 
 Figma:
 
