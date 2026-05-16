@@ -1,12 +1,12 @@
 # Test, Coverage, Architecture, and Story Review
 Date: 2026-05-05
-Status: current-main assessment; not a product contract.
+Status: historical current-main assessment; not a product contract.
 
 Anchor: `docs/spec/broker-mcp-contract-2026-05-03.md`.
 Codex adapter contract: `docs/spec/codex-adapter-contract-2026-05-03.md`.
 
 This review replaces the stale quarry-branch assessment from
-`<local-quarry-worktree>`. It describes current `main` through
+`<local-quarry-worktree>`. It describes the 2026-05-05 `main` state through
 `9cdf5a3` (`Add Codex dogfood status monitor helper (#209)`), after
 route-health truthing, Codex quarry smokes, expired-quota revalidation state,
 restart-claim demotion, managed resume UX work, request-framing fixes,
@@ -14,7 +14,8 @@ same-account child-refresh preservation, auth fallback chain summarization,
 managed auth-health recording, and dogfood-9's live auth-continuity event
 followed by failed live quota handoff. It is superseded for current Codex
 quota-handoff evidence by
-`docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`.
+`docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`, and for current
+route/test matrix truth by `docs/qa-handoff-matrix.md`.
 
 ## Product Bar
 
