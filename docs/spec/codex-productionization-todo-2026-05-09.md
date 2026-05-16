@@ -113,24 +113,36 @@ Not proven:
     `codex:max-3`; raw identities remain private operator state.
 - [ ] Run the exhausted ChatGPT quota plus extra API credits permutation and
   verify API credits do not falsely make a subscription-backed Codex route
-  selectable.
-- [ ] Run all-fallbacks-exhausted live or cassette-backed proof and verify the
-  terminal event is `quota_handoff_failed_no_account_selectable` with a
-  complete redacted rejection vector.
+  selectable. No synthetic substitute currently proves this because it depends
+  on a real account with separate API-credit and subscription-quota signals.
+- [ ] Run provider-originated all-fallbacks-exhausted live or cassette-backed
+  proof and verify the terminal event is
+  `quota_handoff_failed_no_account_selectable` with a
+  complete redacted rejection vector. The synthetic managed-run regression is
+  already covered by `scripts/smoke-codex-all-exhausted.sh` and is part of
+  `just check-local`; the remaining gap is real wire/live evidence.
 - [ ] Run reset-window repair proof: exhausted route stays blocked until reset
-  or spend-gated revalidation evidence repairs it.
+  or spend-gated revalidation evidence repairs it. Synthetic stale-window
+  routing is already covered in `scripts/e2e-local.sh`; the remaining gap is
+  a live reset-window repair without manually clearing health.
 
 ## P0 Test Hardening
 
-- [ ] Add deterministic route-state tests for 1-4 account pools covering `200`,
-  `401`, `429 usage_limit_reached`, generic `429`, `usage_not_included`,
-  materialization failure, and network failure.
-- [ ] Assert no attempted, auth-dead, quota-exhausted, rate-limited,
-  tier-insufficient, or credential-unavailable account is elected in the same
-  request.
-- [ ] Assert quota evidence is recorded before retry.
-- [ ] Assert terminal no-fallback evidence includes every rejected candidate and
-  redacts sensitive fields.
+- [x] Assert terminal no-fallback evidence includes every rejected candidate and
+  redacts sensitive fields in the synthetic all-fallbacks managed-run smoke and
+  supporting unit coverage.
+- [x] Assert `usage_not_included` is `tier_insufficient`, not quota, and does
+  not trigger a same-turn quota retry.
+- [x] Assert expired quota reset windows remain blocked as
+  `revalidation_needed` until provider revalidation.
+- [ ] Add a deterministic route-state matrix for 1-4 account pools covering
+  `200`, `401`, `429 usage_limit_reached`, generic `429`,
+  `usage_not_included`, materialization failure, and network failure.
+- [ ] In that matrix, assert no attempted, auth-dead, quota-exhausted,
+  rate-limited, tier-insufficient, or credential-unavailable account is elected
+  in the same request.
+- [ ] Assert quota evidence is recorded before retry in a small unit or cassette
+  replay that does not depend on timing or status-line ordering.
 - [ ] Add cassette replay for the redacted real `usage_limit_reached` shape from
   the 2026-05-08 proof when a publishable cassette is available.
 

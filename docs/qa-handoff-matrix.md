@@ -54,8 +54,9 @@ capability, such as `codex:max-3#codex-max`.
 | Labeled reauth | `oauth-mux codex login-device <account>` | action says `user_handoff`, route label named, no raw identity | live operator flow |
 | Auth fallback | selected route 401, fallback 200 | `proxy_auth_same_turn_retry`, `auth_health_observed quota_claim:false` | live and smoke evidence |
 | Quota handoff | selected route `usage_limit_reached`, fallback 200 | `proxy_turn 429`, durable quota evidence, `proxy_same_turn_retry`, fallback `200` | live-proven for managed Codex |
-| All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic; live/cassette target |
-| Tier before fallback | B returns `usage_not_included`, C succeeds | B marked `tier_insufficient`, C selected | synthetic; live/cassette target |
+| All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic covered; live/cassette target |
+| Tier selected-route classification | selected route returns `usage_not_included` | route marked `tier_insufficient`; no quota classification or same-turn quota retry | synthetic covered; live/cassette target |
+| Tier before fallback election | already-tier-blocked B precedes credited C in route pool | B is not elected; C selected | route-state matrix target |
 | Reset-window repair | quota window expires | no-spend state becomes stale; confirmed revalidation repairs only with provider evidence | live target |
 | API-credit false positive | subscription quota exhausted but API credits exist | Codex subscription route stays quota-blocked | live target |
 | Child signal | Codex child killed/stopped | `session_aborted` with `term_kind`, `term_code`, `signal_name` | status regression added |
@@ -69,6 +70,26 @@ capability, such as `codex:max-3#codex-max`.
 | Cassette replay | none after capture | real wire-shape regression without provider calls | scrubbed `usage_limit_reached`, 401, tier/rate captures |
 | Live no-spend | no provider spend | installed binary route truth and runtime state | `route explain`, `doctor runtime`, `status-latest` |
 | Live spend-confirmed | yes | provider-originated quota/auth/tier truth | `probe-all`, `revalidate-exhausted`, managed Codex dogfood |
+
+## Coverage Reality
+
+`just check-local` already includes synthetic smokes for the two highest-value
+negative Codex UX lanes:
+
+- `scripts/smoke-codex-all-exhausted.sh` covers the all-fallbacks terminal
+  vector, typed `503` repair body, redaction, and stable managed child PID.
+- `scripts/smoke-codex-tier-insufficient.sh` covers
+  `usage_not_included -> tier_insufficient`, no quota misclassification, and no
+  same-turn quota retry.
+- `scripts/e2e-local.sh` covers expired quota windows staying blocked as
+  `revalidation_needed` until spend-confirmed provider revalidation.
+- `scripts/smoke-codex-status-summary.sh` keeps the Python and native
+  `status-latest` oracles aligned on quota-handoff success and terminal
+  no-account-selectable failure shapes.
+
+The remaining gap is not "no test exists"; it is provider-originated,
+publishable evidence for those same negative shapes, plus a generated
+route-state matrix that enumerates blocked accounts across 1-4 account pools.
 
 ## Current Codex Truth
 
@@ -115,8 +136,9 @@ Current matrix entry:
 | `codex:max-4#codex-max` | selectable, `available` | fallback / reset-repair target |
 
 Next spend-confirmed permutations should prefer negative coverage over another
-happy-path quota proof: all-fallbacks-exhausted, tier-insufficient before
-fallback success, reset-window repair, and API-credit false-positive guards.
+happy-path quota proof: all-fallbacks-exhausted, tier-insufficient
+classification plus later-election skip, reset-window repair, and API-credit
+false-positive guards.
 
 ## Next QA Targets
 
@@ -126,7 +148,8 @@ parity tranche for `0.1.7`.
 
 1. Publishable cassette for real `usage_limit_reached` response shape.
 2. Live or cassette-backed all-fallbacks-exhausted terminal vector.
-3. Live or cassette-backed tier-insufficient before credited fallback.
+3. Live or cassette-backed tier-insufficient classification, then route
+   election that skips the tier-blocked route before a credited fallback.
 4. Reset-window repair after quota reset with no manual health reset.
 5. API-credit false-positive guard for subscription-backed Codex.
 6. Beta daemon status/handoff mediation proof that preserves the foreground
