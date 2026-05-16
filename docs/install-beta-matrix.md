@@ -1,6 +1,6 @@
 # Install Beta Matrix
 
-Updated: 2026-05-10
+Updated: 2026-05-16
 
 This matrix tracks clean-install proof for the public adoption surfaces. It is
 operator evidence, not a credential runbook: do not paste OAuth stores, `.env`
@@ -22,7 +22,7 @@ The lane contract and current operator rules live in
 | Homebrew formula | 0.1.6 | macOS arm64 + hosted Ubuntu dry-run | public `jesssullivan/omux` tap | Pass | Clean local uninstall/untap followed by `just homebrew-qa 0.1.6` installed from `Jesssullivan/homebrew-omux`; hosted registry dry-run `25199131583` checked out the public tap and passed the Homebrew lane. |
 | deb package | 0.1.6 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.6 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
-| Codex route dogfood | 0.1.6 | macOS arm64 | installed user-local binary | Pass with current route not afloat | Historical npm snapshots remain below. Current post-handoff truth: `codex-max` is `not_afloat`; `max-1`, `max-2`, and `max-4` are quota-exhausted; `max-3` is runtime-ready but recorded auth-dead. |
+| Codex route dogfood | 0.1.7 candidate | macOS arm64 | installed user-local binary | Pass with four selectable routes | Current 2026-05-16 no-spend truth: `codex-max` has four selectable broker-ready routes, `session_start_ready:true`, `fallback_ready:true`, and `single_route_at_risk:false`. Public package channels remain `0.1.6`. |
 | lab dogfood | 0.1.6 | macOS arm64 | public npm one-shot | Pass | Installed `oauth-mux doctor --json` reports `ok: true` against local config/state. |
 | first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, runtime diagnostics, redacted report, no-spend route explanation/select refusal, and non-mutating Codex help. |
 

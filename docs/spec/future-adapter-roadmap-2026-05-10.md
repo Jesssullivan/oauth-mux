@@ -29,6 +29,7 @@ Every adapter needs:
 | Adapter | First proof target | Handoff shape to study | Main unknowns |
 | --- | --- | --- | --- |
 | Claude Code | isolated account-store `auth-status` | native CLI config-dir selection first; current-process handoff later only if a hook exists | subscription vs Console/API billing, quota text shape, account-store isolation |
+| OMO / OpenCode frontends | route inventory and config/profile isolation | consume oauth-mux diagnostics or future MCP repair prompts first; prepared launch only until protocol evidence exists | whether the agent frontend exposes provider auth state, quota state, request proxy hooks, or reloadable credentials |
 | Pi | account inventory and login-state doctor | likely prepared launch or HTTP/MCP proxy, pending protocol evidence | auth storage, quota signal shape, CLI/API boundary |
 | opencode | config/profile isolation and command probe | prepared launch first; request proxy only if HTTP path is observable | provider plugin model, auth ownership, model/provider routing |
 | Kimi | provider-schema proof and command/API probe | command adapter or HTTP proxy depending on available CLI/API | OAuth vs API key, quota/rate/tier error taxonomy |
@@ -53,6 +54,8 @@ metadata.
 ## Do Not Claim
 
 - Do not claim "provider supported" when only one capability is proven.
+- Do not treat adjacent agent-control-plane route proof as oauth-mux
+  stay-afloat support.
 - Do not claim seamless handoff from a prepared launch.
 - Do not claim quota fallback from auth fallback.
 - Do not generalize API credits or unrelated model availability into
@@ -68,5 +71,5 @@ metadata.
    quota/fallback proof is a separate lane.
 3. Promote Figma as a token/resource taxonomy proof, not as a harness
    stay-afloat proof.
-4. Add Pi/opencode/Kimi only after provider docs or local CLI behavior identify
-   concrete auth and quota states to model.
+4. Add OMO/OpenCode/Pi/Kimi only after provider docs or local CLI behavior
+   identify concrete auth, quota, reload, and process-boundary states to model.

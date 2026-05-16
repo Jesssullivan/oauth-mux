@@ -16,6 +16,8 @@ Start here when you need the right document without reading every spec.
 
 - `qa-handoff-matrix.md`: canonical account labels, route states, handoff
   patterns, and current Codex truth.
+- `productionization-ledger.md`: current UX/DX/AX stance, feature ledger,
+  adapter roadmap, release posture, daemon beta boundary, and tracker map.
 - `release-install-lanes.md`: installer, package, CI/CD, and local dogfood lane
   contract.
 - `live-provider-qa.md`: manual live-provider QA runbook and spend-gated

@@ -1,6 +1,6 @@
 # QA Handoff Matrix
 
-Updated: 2026-05-10
+Updated: 2026-05-16
 
 This matrix keeps handoff, reauth, resume, account-label, and cassette/live QA
 claims in one place. It is subordinate to the broker and Codex adapter specs.
@@ -76,9 +76,16 @@ capability, such as `codex:max-3#codex-max`.
   `oauth-mux codex resume`.
 - The strongest preserved proof is
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- Current no-spend route truth after that burn is `not_afloat` for
-  `codex-max`: `max-1`, `max-2`, and `max-4` are quota-exhausted; `max-3` is
-  runtime-ready but recorded `auth_permanently_failed`.
+- Current no-spend route truth from the 2026-05-16 refresh is afloat for
+  `codex-max`: `max-1`, `max-2`, `max-3`, and `max-4` are selectable,
+  broker-ready, and `available`.
+- `oauth-mux codex preflight --profile codex-max --capability codex-max --json`
+  reports `session_start_ready:true`, `fallback_ready:true`, and
+  `single_route_at_risk:false`.
+- `oauth-mux codex status-latest --json` currently reports
+  `successful_live_quota_handoff`. Status artifacts are rolling local evidence;
+  refresh this command before copying current-state claims into public release
+  notes or tracker comments.
 
 ## Next QA Targets
 
@@ -87,4 +94,6 @@ capability, such as `codex:max-3#codex-max`.
 3. Live or cassette-backed tier-insufficient before credited fallback.
 4. Reset-window repair after quota reset with no manual health reset.
 5. API-credit false-positive guard for subscription-backed Codex.
-6. Same-thread continuity study, explicitly separate from managed handoff.
+6. Beta daemon status/handoff mediation proof that preserves the foreground
+   tick semantics and does not claim unmanaged hot-swap.
+7. Same-thread continuity study, explicitly separate from managed handoff.
