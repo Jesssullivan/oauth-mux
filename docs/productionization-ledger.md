@@ -10,7 +10,9 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 - Repo state: `main` is clean against `origin/main`; no open GitHub PRs were
   present in the 2026-05-16 refresh.
-- CI state: the latest checked `main` CI run was green at `25974613776`.
+- CI state: GitHub Actions is the live source for the latest run. The
+  2026-05-16 refresh verified green PR and post-merge `main` checks; do not
+  treat a run id copied into docs as current release proof.
 - Version truth: local/source dogfood is `0.1.7`; public npm, GitHub Release,
   and Homebrew remain `0.1.6`.
 - Installed provenance: PATH can resolve a public package binary or a
