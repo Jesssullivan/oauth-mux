@@ -121,8 +121,11 @@ config such as `[features]`, legacy `experimental_*` keys, MCP servers, hooks,
 rules, approval/sandbox policy, profiles, and model defaults. The known Codex
 gap is tracked as <https://github.com/Jesssullivan/oauth-mux/issues/211>; the
 initial implementation is landed. Config authority follows
-`OMUX_CODEX_CONFIG_HOME`, then parent `CODEX_HOME`, then `~/.codex`, and is
-independent from session authority. oauth-mux removes provider-selection
+`OMUX_CODEX_CONFIG_HOME`, then a non-managed parent `CODEX_HOME`, then
+`~/.codex`, and is independent from session authority. A parent `CODEX_HOME`
+that is itself an oauth-mux temporary overlay is not reusable authority;
+nested managed sessions fall back to canonical config/session state instead of
+recursively inheriting a reduced overlay. oauth-mux removes provider-selection
 conflicts, including profile-scoped `model_provider`, then appends the managed
 proxy provider. Forwarded `--config` / `-c` attempts to override mux-owned
 provider keys fail before child spawn with redacted status.

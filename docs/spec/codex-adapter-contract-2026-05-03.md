@@ -86,7 +86,10 @@ managed proxy provider. This protects `/experimental` / `[features]`, MCP,
 hooks/rules, approval/sandbox, profiles, model defaults, and custom
 non-managed provider definitions from being silently shadowed by the temporary
 `CODEX_HOME`. Config authority is independent from session authority:
-`OMUX_CODEX_CONFIG_HOME` wins, then parent `CODEX_HOME`, then `~/.codex`.
+`OMUX_CODEX_CONFIG_HOME` wins, then a non-managed parent `CODEX_HOME`, then
+`~/.codex`. A parent `CODEX_HOME` that is itself an oauth-mux temporary overlay
+is not a reusable authority; nested managed sessions must fall back to the
+canonical config instead of inheriting a reduced generated overlay.
 `--session-home`, `OMUX_CODEX_SESSION_HOME`, and
 `--isolated-session-store` affect session state, not native behavior config.
 Profile-scoped `model_provider` lines are removed, stale

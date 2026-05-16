@@ -86,6 +86,7 @@ const SessionCodexHome = struct {
     path: []u8,
     session_authority: SessionAuthorityMode,
     authority_home: ?[]u8 = null,
+    config_authority_home: ?[]u8 = null,
     auth_initial_hash: [32]u8,
     config_source_present: bool = false,
     config_passthrough: bool = false,
@@ -98,6 +99,7 @@ const SessionCodexHome = struct {
         std.fs.cwd().deleteTree(self.path) catch {};
         allocator.free(self.path);
         if (self.authority_home) |home| allocator.free(home);
+        if (self.config_authority_home) |home| allocator.free(home);
     }
 };
 
@@ -1206,6 +1208,12 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
     try env_map.put("CODEX_HOME", codex_home.path);
+    if (codex_home.authority_home) |authority_home| {
+        try env_map.put("OMUX_CODEX_SESSION_HOME", authority_home);
+    }
+    if (codex_home.config_authority_home) |config_home| {
+        try env_map.put("OMUX_CODEX_CONFIG_HOME", config_home);
+    }
     try env_map.put("OMUX_ACTIVE_PROVIDER", "codex");
     try env_map.put("OMUX_MANAGED_FRAME_ID", managed_frame_id);
     try env_map.put("OMUX_CLAIM_LEVEL", "broker_owned");
@@ -1508,6 +1516,7 @@ fn createSessionCodexHomeUnder(
         .path = session_home,
         .session_authority = session_authority,
         .authority_home = if (session_authority_home) |home| try allocator.dupe(u8, home) else null,
+        .config_authority_home = if (config_authority_home) |home| try allocator.dupe(u8, home) else null,
         .auth_initial_hash = auth_initial_hash,
         .config_source_present = config_observation.source_present,
         .config_passthrough = config_observation.passthrough,
@@ -1529,11 +1538,13 @@ fn resolveCodexSessionAuthorityHome(
         return path;
     } else |_| {}
     if (std.process.getEnvVarOwned(allocator, "CODEX_HOME")) |path| {
-        return path;
+        if (try isManagedCodexOverlayHome(allocator, path)) {
+            allocator.free(path);
+        } else {
+            return path;
+        }
     } else |_| {}
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
-    return try std.fs.path.join(allocator, &.{ home, ".codex" });
+    return try defaultCodexHome(allocator);
 }
 
 fn resolveCodexConfigAuthorityHome(allocator: std.mem.Allocator) !?[]u8 {
@@ -1541,14 +1552,39 @@ fn resolveCodexConfigAuthorityHome(allocator: std.mem.Allocator) !?[]u8 {
         return path;
     } else |_| {}
     if (std.process.getEnvVarOwned(allocator, "CODEX_HOME")) |path| {
-        return path;
+        if (try isManagedCodexOverlayHome(allocator, path)) {
+            allocator.free(path);
+        } else {
+            return path;
+        }
     } else |_| {}
+    return try defaultCodexHome(allocator);
+}
+
+fn defaultCodexHome(allocator: std.mem.Allocator) !?[]u8 {
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch |e| switch (e) {
         error.EnvironmentVariableNotFound => return null,
         else => return e,
     };
     defer allocator.free(home);
     return try std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+fn isManagedCodexOverlayHome(allocator: std.mem.Allocator, path: []const u8) !bool {
+    const base = std.fs.path.basename(path);
+    if (std.mem.startsWith(u8, base, "oauth-mux-codex-")) return true;
+
+    const config_path = try std.fs.path.join(allocator, &.{ path, "config.toml" });
+    defer allocator.free(config_path);
+    const bytes = std.fs.cwd().readFileAlloc(allocator, config_path, 2 * 1024 * 1024) catch |e| switch (e) {
+        error.FileNotFound => return false,
+        else => return e,
+    };
+    defer allocator.free(bytes);
+
+    return std.mem.indexOf(u8, bytes, "Managed by oauth-mux") != null or
+        std.mem.indexOf(u8, bytes, "model_provider = \"oauth_mux_openai\"") != null or
+        std.mem.indexOf(u8, bytes, "[model_providers.oauth_mux_openai]") != null;
 }
 
 fn bridgeCodexSessionAuthority(
@@ -3065,6 +3101,47 @@ test "config passthrough is independent from session authority" {
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.keep_me]") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "wrong-session-config") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "SHOULD_NOT_SURVIVE") == null);
+}
+
+test "managed Codex overlay homes are not reusable authority homes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("oauth-mux-codex-fixture");
+    try tmp.dir.makePath("canonical");
+    {
+        const cfg = try tmp.dir.createFile("oauth-mux-codex-fixture/config.toml", .{ .mode = 0o600 });
+        defer cfg.close();
+        try cfg.writeAll(
+            \\# Managed by oauth-mux. Proxy override; unrelated Codex config above is preserved.
+            \\model_provider = "oauth_mux_openai"
+            \\
+            \\[model_providers.oauth_mux_openai]
+            \\name = "managed"
+            \\
+        );
+    }
+    {
+        const cfg = try tmp.dir.createFile("canonical/config.toml", .{ .mode = 0o600 });
+        defer cfg.close();
+        try cfg.writeAll(
+            \\model = "gpt-5.5"
+            \\
+            \\[mcp_servers.linear]
+            \\url = "https://mcp.linear.app/mcp"
+            \\
+        );
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const overlay_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "oauth-mux-codex-fixture" });
+    defer std.testing.allocator.free(overlay_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    try std.testing.expect(try isManagedCodexOverlayHome(std.testing.allocator, overlay_path));
+    try std.testing.expect(!try isManagedCodexOverlayHome(std.testing.allocator, canonical_path));
 }
 
 test "observeAuthWriteback imports changed overlay auth into mux source" {
