@@ -49,7 +49,9 @@ The traced decisions are:
   route selection after its retry window expires.
 - `route.evaluate`: no-spend route runtime, liveness, action, and selectability.
 - `codex.native_binary.resolve`: native Codex binary resolution without printing
-  absolute paths.
+  absolute paths. Managed Codex launches include `adapter:"managed_codex"` so a
+  support trace can distinguish mux-owned launch resolution from explicit
+  admin-command resolution.
 - `codex.native_command.spawn` and `codex.native_command.exit`: explicit
   oauth-mux-managed Codex admin commands without printing `CODEX_HOME`.
 - `codex.shim.pass_through`: installed `codex` shim admin-command pass-through

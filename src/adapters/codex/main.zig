@@ -570,6 +570,24 @@ fn traceManagedSessionEnd(
     });
 }
 
+fn traceManagedCodexBinaryResolution(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    requested: []const u8,
+    selected: bool,
+    reason: []const u8,
+) void {
+    trace.append(allocator, "codex.native_binary.resolve", if (selected) .info else .warn, &.{
+        trace.string("adapter", "managed_codex"),
+        trace.string("source", source),
+        trace.string("requested_kind", if (hasPathSeparator(requested)) "path" else "search_name"),
+        trace.boolean("selected", selected),
+        trace.string("reason", reason),
+        trace.boolean("path_printed", false),
+        trace.boolean("native_binary_path_printed", false),
+    });
+}
+
 fn restrictPoolToCodex(pool: *broker.AccountPool) void {
     for (pool.accounts.items) |*entry| {
         if (isCodexAccountId(entry.id)) continue;
@@ -1185,10 +1203,15 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     }
 
     // 6. Build argv: `codex` plus any forwarded user args.
-    const requested_codex_bin = std.process.getEnvVarOwned(allocator, "OMUX_CODEX_BIN") catch
-        try allocator.dupe(u8, "codex");
+    const requested_codex_bin_from_env = std.process.getEnvVarOwned(allocator, "OMUX_CODEX_BIN") catch |e| switch (e) {
+        error.EnvironmentVariableNotFound => null,
+        else => return e,
+    };
+    const requested_codex_bin_source: []const u8 = if (requested_codex_bin_from_env == null) "PATH" else "OMUX_CODEX_BIN";
+    const requested_codex_bin = requested_codex_bin_from_env orelse try allocator.dupe(u8, "codex");
     defer allocator.free(requested_codex_bin);
     const codex_bin = resolveCodexBinary(allocator, requested_codex_bin) catch |e| {
+        traceManagedCodexBinaryResolution(allocator, requested_codex_bin_source, requested_codex_bin, false, @errorName(e));
         if (e == RunError.CodexShimRecursion) {
             try stderr.print("oauth-mux codex: resolved Codex CLI {s} is an oauth-mux codex shim; set OMUX_CODEX_BIN to the native Codex executable\n", .{requested_codex_bin});
         } else {
@@ -1197,6 +1220,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         return e;
     };
     defer allocator.free(codex_bin);
+    traceManagedCodexBinaryResolution(allocator, requested_codex_bin_source, requested_codex_bin, true, "selected");
     try launch_timer.mark(status_writer, emit_status, "binary_resolution");
 
     var argv = std.ArrayListUnmanaged([]const u8){};
