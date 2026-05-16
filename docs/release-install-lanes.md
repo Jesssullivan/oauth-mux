@@ -1,6 +1,6 @@
 # Release And Install Lanes
 
-Updated: 2026-05-10
+Updated: 2026-05-16
 
 This is the DRY map for installer, package, CI, and local dogfood lanes.
 Detailed historical evidence stays in `docs/install-beta-matrix.md` and
@@ -12,10 +12,10 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 | --- | --- | --- | --- | --- |
 | Worktree dogfood | `./zig-out/bin/oauth-mux ...` | current checkout | `zig build`, `just check-local` | unreleased behavior only |
 | User-local dogfood | `oauth-mux ...` and managed `codex ...` with PATH resolving to `~/.local/bin` | copied worktree binary plus user-local shim | hash match with `./zig-out/bin/oauth-mux`, version check, preflight check | installed-command dogfood for current checkout |
-| Nix package | `nix build .#` | flake package | `./result/bin/oauth-mux version` | package derivation proof |
+| Nix package | `nix build .#` | flake package | `./result/bin/oauth-mux version`, `nix flake check` smoke | package derivation proof |
 | GitHub Release | downloaded tarball | `dist/out/v*/artifacts` from release workflow | checksum verify and tarball smoke | public raw binary lane |
 | npm | `npm install -g oauth-mux` / `npx oauth-mux` | CI-generated npm tarballs | npm install smoke and `npm view` | public JS package lane |
-| Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>` | public macOS/Linux tap lane |
+| Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>` plus parsed version check | public macOS/Linux tap lane |
 | curl installer | `curl .../install.sh \| sh` | GitHub Release `install.sh` + tarballs | local file URL smoke and public installer smoke | shell installer lane |
 | deb/rpm | system package install | GitHub Release `.deb` / `.rpm` | hosted container install QA | distro package lane |
 
@@ -38,12 +38,20 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
   package versions independently.
 - `just release-proof <version>` is the local release tree proof. It must pass
   before any registry mutation.
+- `nix flake check` is a hybrid package smoke, not the full shell smoke suite.
+  It must prove the flake package runs, reports the source version, and
+  validates no-secret examples.
 - npm publication is CI-only through `.github/workflows/npm-publish.yml`.
   Workstation `npm publish` is unsupported.
+- Release and registry scripts must use an isolated npm cache so root-owned or
+  stale workstation `~/.npm` state cannot affect release proof.
 - Registry dry-runs are non-publishing gates. Use
   `OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run`.
 - Homebrew and system package checks are package-lane QA. They do not prove
   unreleased worktree behavior unless the package was rebuilt from that tree.
+- Homebrew package QA must check the installed binary and Homebrew's parsed
+  `versions.stable`; a working binary with bad formula metadata is not release
+  parity.
 - For live Codex acceptance, use an installed binary on PATH and preserve the
   status artifact `runtime_identity`, including `binary_source` and
   `binary_sha256`. Repo-local wrapper runs are not acceptance evidence.
@@ -61,7 +69,7 @@ oauth-mux version --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
-Expected:
+Expected when testing unreleased behavior:
 
 - `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match.
 - `oauth-mux version --json` reports the active executable's
@@ -75,6 +83,12 @@ Expected:
   Codex CLI usage parser.
 - Homebrew may report the same source version while still being a different
   binary hash; treat it as the package lane.
+
+If Homebrew appears before `~/.local/bin` in PATH, use the worktree binary or
+adjust PATH before recording dogfood evidence. The active public Homebrew
+`0.1.6` tap installs the expected binary but has a formula stable-version
+metadata defect; `0.1.7` release proof must reject that defect before
+publication.
 
 On macOS, do not overwrite an existing Mach-O in place for this lane. A direct
 `cp` over `~/.local/bin/oauth-mux` can leave stale taskgated/code-signing state
@@ -104,7 +118,8 @@ DX gates:
 
 - `just check-local` is the single no-network local validation chain;
 - `just release-proof <version>` is the local release validation chain;
-- `nix build .#` proves the flake package for the current checkout.
+- `nix build .#` proves the flake package for the current checkout;
+- `nix flake check` runs the package smoke without replacing `just check-local`.
 
 AX gates:
 

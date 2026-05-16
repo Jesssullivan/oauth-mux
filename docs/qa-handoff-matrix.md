@@ -89,6 +89,10 @@ capability, such as `codex:max-3#codex-max`.
 
 ## Next QA Targets
 
+These targets remain important production hardening work. They should not be
+treated as public claims until captured, but they do not block the package
+parity tranche for `0.1.7`.
+
 1. Publishable cassette for real `usage_limit_reached` response shape.
 2. Live or cassette-backed all-fallbacks-exhausted terminal vector.
 3. Live or cassette-backed tier-insufficient before credited fallback.

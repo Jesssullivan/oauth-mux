@@ -10,13 +10,17 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 - Repo state: `main` is clean against `origin/main`; no open GitHub PRs were
   present in the 2026-05-16 refresh.
-- CI state: the latest checked `main` CI runs were green through run
-  `25930367658`.
+- CI state: the latest checked `main` CI run was green at `25954361661`.
 - Version truth: local/source dogfood is `0.1.7`; public npm, GitHub Release,
   and Homebrew remain `0.1.6`.
-- Installed dogfood: active `oauth-mux` resolves to the user-local binary and
-  active `codex` resolves to the oauth-mux-managed shim; native Codex is still
-  discoverable for pass-through.
+- Installed provenance: PATH can resolve a public package binary or a
+  user-local dogfood binary depending on shell setup. Use `which -a oauth-mux`,
+  `which -a codex`, `oauth-mux version --json`, and `codex preflight` before
+  treating any installed-command run as release evidence.
+- Homebrew truth: the public `0.1.6` tap installs the expected binary, but
+  Homebrew currently parses the formula stable version incorrectly because the
+  generated formula lacks an explicit version. `0.1.7` release proof must catch
+  this class before publication.
 - Codex route truth: `codex-max` currently has four selectable broker-ready
   routes, `session_start_ready:true`, `fallback_ready:true`, and
   `single_route_at_risk:false`.
@@ -85,10 +89,11 @@ not claim to keep them alive.
 
 ## Release And Distribution Posture
 
-Hold `0.1.7` as a release candidate until the truth docs, tracker state,
-negative cassettes, and daemon beta boundary are current. Public install copy
-must continue to say `0.1.6` until npm, GitHub Release, and Homebrew are
-actually published and verified.
+Hold `0.1.7` as a release candidate until release/install parity, tracker
+state, and the daemon beta boundary are current. Negative Codex cassettes remain
+important follow-up proof, but they are not the publication blocker for this
+release tranche. Public install copy must continue to say `0.1.6` until npm,
+GitHub Release, and Homebrew are actually published and verified.
 
 The release lanes remain:
 
@@ -114,6 +119,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
+| Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
 
 ## Acceptance Gates
 
@@ -121,11 +127,14 @@ browser is needed; local Playwright is not part of this CLI proof path.
   `doctor`, `providers list`, `accounts list`, `route explain`,
   `codex preflight`, `broker-session-plan`, `stay-afloat next`,
   `status-latest`, and `daemon status`.
-- Local validation passes: `zig build test`, targeted Codex smokes, and
-  `nix develop --command just check-local`.
+- Local validation passes: `zig build test`, targeted Codex smokes,
+  `nix develop --command just check-local`, and the hybrid `nix flake check`
+  package smoke.
 - Public release validation passes: `just release-proof <version>`, release
   proof workflow, npm dry run/publish workflow as appropriate, Homebrew QA, and
   system package QA.
+- Homebrew release validation proves both installed binary output and
+  `brew info --json=v2` stable version semantics for the public tap formula.
 - Public copy does not claim same-thread continuity, mid-turn recovery,
   unmanaged daemon hot-swap, non-Codex stay-afloat, universal provider support,
   or public `0.1.7` availability before publication.

@@ -122,6 +122,9 @@ chmod 0755 "$root_pkg_dir/bin/codex.js"
 
 if command -v npm >/dev/null 2>&1; then
   printf 'packing npm tarballs...\n'
+  export npm_config_cache="${npm_config_cache:-$work_dir/npm-cache}"
+  export npm_config_update_notifier=false
+  mkdir -p "$npm_config_cache"
   for pkg_json in "$npm_dir"/oauth-mux-{darwin,linux,windows}-*/package.json; do
     npm pack "$(dirname "$pkg_json")" --pack-destination "$npm_tgz_dir" >/dev/null
   done

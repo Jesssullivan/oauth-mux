@@ -355,7 +355,8 @@ PATH_STDERR="$TMP/path-resolution.stderr"
 PATH_REPORT="$TMP/path-resolution.report"
 mkdir -p "$PATH_STUB_DIR" "$(dirname "$PATH_NDJSON")"
 ln -s "$ROOT/scripts/test-stub-codex.py" "$PATH_STUB_DIR/codex"
-PATH="$PATH_STUB_DIR:$PATH" \
+env -u OMUX_CODEX_BIN \
+  PATH="$PATH_STUB_DIR:$PATH" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
@@ -474,7 +475,8 @@ NO_PROFILE_NDJSON="$TMP/no-profile/status.ndjson"
 NO_PROFILE_STDERR="$TMP/no-profile.stderr"
 NO_PROFILE_REPORT="$TMP/no-profile.report"
 mkdir -p "$(dirname "$NO_PROFILE_NDJSON")"
-PATH="$PATH_STUB_DIR:$PATH" \
+env -u OMUX_CODEX_BIN \
+  PATH="$PATH_STUB_DIR:$PATH" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
@@ -500,7 +502,8 @@ DEFAULT_STATUS_DIR="$STATE_DIR/codex/status"
 DEFAULT_STDERR="$TMP/default-status.stderr"
 DEFAULT_REPORT="$TMP/default-status.report"
 rm -rf "$DEFAULT_STATUS_DIR"
-PATH="$PATH_STUB_DIR:$PATH" \
+env -u OMUX_CODEX_BIN \
+  PATH="$PATH_STUB_DIR:$PATH" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \

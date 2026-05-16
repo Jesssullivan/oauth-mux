@@ -17,6 +17,16 @@ This enters the Nix dev shell and runs:
 - every `examples/*.config.json` through `config validate`
 - synthetic local E2E via `scripts/e2e-local.sh`
 
+Run the flake package smoke separately when changing packaging or release
+surfaces:
+
+```bash
+XDG_CACHE_HOME=/tmp/oauth-mux-nix-cache nix flake check
+```
+
+That check proves the Nix package runs, reports the source version, and validates
+no-secret examples. It is intentionally smaller than `just check`.
+
 The lane-level source of truth for installer, package, and local dogfood
 provenance is `docs/release-install-lanes.md`.
 
@@ -82,9 +92,14 @@ This runs `release-local` and then checks:
 - `SHA256SUMS` against the artifact directory
 - tarball payload names for Unix and Windows targets
 - rendered Homebrew formula placeholders and Ruby syntax when Ruby is present
+- rendered Homebrew formula explicit version metadata
 - local npm install of the matching platform package plus root shim
 - local installer execution against the staged artifact directory
 - non-publishing release handoff generation
+
+The release scripts set an isolated npm cache for packing, dry-run, publish, and
+deprecation operations. A broken workstation `~/.npm` cache must not change
+release proof results.
 
 Generate only the handoff for an already staged tree:
 
@@ -226,13 +241,18 @@ Current release evidence:
   `dry_run=true` for v0.1.6.
 - NPM publish workflow run `25195609579` published v0.1.6 through the CI-only
   SOPS-backed path; `npm view oauth-mux version` reports `0.1.6`.
+- Main CI run `25954361661` completed successfully on 2026-05-16 for the latest
+  checked `main` state before the `0.1.7` release-parity tranche.
 
 ## Before Marking A PR Ready
 
 - `just check` passes.
 - `just release-proof <version>` produces and smoke-checks the release tree.
+- `nix flake check` passes, preferably with an isolated cache such as
+  `XDG_CACHE_HOME=/tmp/oauth-mux-nix-cache` on sandboxed agent hosts.
 - Hosted `System Package Install QA` passes after release assets exist when the
   release changes deb/rpm packaging.
+- Homebrew QA proves both binary output and parsed formula stable version.
 - Hosted PR CI passes.
 - GF lane either passes or is explicitly deferred because of runner/token state.
 - Release notes mention any skipped GF proof.

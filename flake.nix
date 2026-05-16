@@ -64,6 +64,27 @@
 
         checks = {
           build = self.packages.${system}.default;
+          smoke = pkgs.runCommand "oauth-mux-smoke-${version}" {
+            nativeBuildInputs = [ pkgs.jq ];
+          } ''
+            set -eu
+
+            binary="${self.packages.${system}.default}/bin/oauth-mux"
+            test "$($binary version)" = "oauth-mux ${version}"
+            $binary version --json \
+              | jq -e \
+                '.version == "${version}"
+                 and .runtime_identity.binary_path
+                 and .runtime_identity.binary_sha256
+                 and .runtime_identity.binary_sha256_available == true' \
+              >/dev/null
+
+            for cfg in ${./examples}/*.config.json; do
+              OMUX_CONFIG="$cfg" $binary config validate
+            done
+
+            touch "$out"
+          '';
         };
       }
     );
