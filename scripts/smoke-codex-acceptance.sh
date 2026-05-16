@@ -58,6 +58,7 @@ NDJSON="$TMP/adapter.ndjson"
 ADAPTER_STDERR="$TMP/adapter.stderr"
 STUB_PIDFILE="$TMP/stub-codex.pid"
 STUB_REPORT="$TMP/stub-codex.report"
+TRACE_FILE="$TMP/trace.ndjson"
 CANONICAL_SESSION_HOME="$TMP/canonical-codex"
 
 cleanup() {
@@ -140,6 +141,8 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_UPSTREAM_SCHEME="http" \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_TRACE=1 \
+  OMUX_TRACE_FILE="$TRACE_FILE" \
   OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_CODEX_TURNS=3 \
   OMUX_STUB_CODEX_PIDFILE="$STUB_PIDFILE" \
@@ -191,6 +194,14 @@ assert_grep "same-turn retry dropped x-codex-turn-state" '"dropped":"x-codex-tur
 assert_grep "claim_level remains broker_owned" '"claim_level":"broker_owned"' "$NDJSON"
 assert_grep "session_ended final_claim_level broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
 assert_grep "session_ended records synthetic swap" '"kind":"session_ended".*"synthetic_swap_observed":true' "$NDJSON"
+
+jq -e 'select(.name == "codex.native_binary.resolve" and .attributes.adapter == "managed_codex" and .attributes.source == "OMUX_CODEX_BIN" and .attributes.selected == true and .attributes.native_binary_path_printed == false)' "$TRACE_FILE" >/dev/null
+echo "  ✓ trace captures managed Codex binary resolution without path output"
+if grep -Fq "$ROOT/scripts/test-stub-codex.py" "$TRACE_FILE"; then
+    echo "  ✗ trace leaked managed Codex binary path" >&2
+    cat "$TRACE_FILE" >&2
+    exit 1
+fi
 
 if grep -q '"kind":"session_started"' "$ADAPTER_STDERR"; then
     echo "  ✗ adapter status frames leaked to stderr despite --json-status-file" >&2
@@ -268,7 +279,7 @@ else
 fi
 
 echo
-echo "smoke-codex-acceptance: all 23 assertions passed."
+echo "smoke-codex-acceptance: all 24 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"
