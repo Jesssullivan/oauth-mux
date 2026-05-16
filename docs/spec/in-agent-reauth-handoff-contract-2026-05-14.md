@@ -86,6 +86,7 @@ Canonical shape:
   "mutating": true,
   "spends_provider_calls": false,
   "command": "oauth-mux codex login-device max-1",
+  "handoff_plan_command": null,
   "redaction": {
     "token_values_printed": false,
     "raw_account_ids_printed": false,
@@ -98,6 +99,11 @@ Canonical shape:
 The command is displayable. It is not agent-executable by default. A future
 permission broker may approve execution, but that approval must be explicit and
 auditable.
+
+Some upstream-owned providers do not have an oauth-mux executable repair
+command yet. In those cases `command` remains `null` and
+`handoff_plan_command` points to a no-spend planning command the agent can show
+to the user.
 
 After a user completes the upstream login, the agent should ask for an evidence
 refresh rather than assuming success:
@@ -156,6 +162,14 @@ claude auth status --json
 
 That proves account-store isolation and command-owned auth status only. It does
 not prove Claude quota, model-call availability, or in-session stay-afloat.
+For Claude reauth, `repair-plan` may return `command:null` with:
+
+```bash
+oauth-mux enroll plan claude --account <account> --json
+```
+
+That is the safe agent step. It returns the user-mediated `CLAUDE_CONFIG_DIR`
+login instruction; oauth-mux still must not run Claude login silently.
 
 ### MCP Resource Tokens
 

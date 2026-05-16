@@ -39,7 +39,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Native Codex shim pass-through | Implemented | Admin/login/help/version paths bypass route election and exec native Codex. |
 | Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
-| Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields; future MCP tools must mirror CLI semantics. |
+| Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields and safe handoff-plan commands for upstream-owned login surfaces; future MCP tools must mirror CLI semantics. |
 | Beta daemon | Experimental | Foreground tick engine and daemon-hosted beta may mediate status/handoffs; not a hidden dependency and not unmanaged hot-swap. |
 | Claude adapter | Provider-proof only | `auth-status` and account-store isolation are the first proof lane; no Claude stay-afloat claim. |
 | OMO, Pi, OpenCode, Kimi | Adapter-candidate only | Adjacent agent-control-plane proof does not equal oauth-mux keepalive support. |

@@ -3304,6 +3304,10 @@ fn writeRepairPlanText(
             defer allocator.free(command);
             try writer.print("    command: {s}\n", .{command});
         }
+        if (try handoffPlanCommandAlloc(allocator, action, route)) |command| {
+            defer allocator.free(command);
+            try writer.print("    handoff_plan: {s}\n", .{command});
+        }
         if (try runtimeDiagnosticCommandAlloc(allocator, action, route)) |command| {
             defer allocator.free(command);
             try writer.print("    diagnostic: {s}\n", .{command});
@@ -3431,6 +3435,13 @@ fn writeRepairActionJson(
     }
     try writer.writeAll(",\"command\":");
     if (try repairCommandAlloc(allocator, action.command, route)) |command| {
+        defer allocator.free(command);
+        try std.json.stringify(command, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"handoff_plan_command\":");
+    if (try handoffPlanCommandAlloc(allocator, action, route)) |command| {
         defer allocator.free(command);
         try std.json.stringify(command, .{}, writer);
     } else {
@@ -3876,6 +3887,17 @@ fn repairCommandAlloc(
             try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --json", .{ route.provider, route.account }),
         .codex_login_device => try std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{route.account}),
     };
+}
+
+fn handoffPlanCommandAlloc(
+    allocator: std.mem.Allocator,
+    action: RepairAction,
+    route: RepairPlanRoute,
+) !?[]const u8 {
+    if (action.mediation != .user_handoff) return null;
+    if (action.command != .none) return null;
+    if (action.owner == null or action.owner.? != .upstream_cli_login) return null;
+    return try std.fmt.allocPrint(allocator, "oauth-mux enroll plan {s} --account {s} --json", .{ route.provider, route.account });
 }
 
 fn runtimeDiagnosticCommandAlloc(
@@ -5394,6 +5416,10 @@ fn writeRouteText(
                 defer allocator.free(command);
                 try writer.print(" command={s}", .{command});
             }
+            if (try handoffPlanCommandAlloc(allocator, evaluation.action, evaluation.route)) |command| {
+                defer allocator.free(command);
+                try writer.print(" handoff_plan={s}", .{command});
+            }
             if (try runtimeDiagnosticCommandAlloc(allocator, evaluation.action, evaluation.route)) |command| {
                 defer allocator.free(command);
                 try writer.print(" diagnostic={s}", .{command});
@@ -5451,6 +5477,10 @@ fn writeStayAfloatMediationText(
         if (try repairCommandAlloc(allocator, candidate.action.command, candidate.route)) |command| {
             defer allocator.free(command);
             try writer.print("  command: {s}\n", .{command});
+        }
+        if (try handoffPlanCommandAlloc(allocator, candidate.action, candidate.route)) |command| {
+            defer allocator.free(command);
+            try writer.print("  handoff_plan: {s}\n", .{command});
         }
         if (try runtimeDiagnosticCommandAlloc(allocator, candidate.action, candidate.route)) |command| {
             defer allocator.free(command);
@@ -17510,6 +17540,7 @@ test "writeRepairActionJson emits codex reauth command without running it" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interactive\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"mutating\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":\"oauth-mux codex login-device max-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"handoff_plan_command\":null") != null);
 }
 
 test "Codex preflight user-mediated action emits login handoff lane" {
@@ -17544,6 +17575,7 @@ test "writeRepairActionJson emits claude upstream handoff without codex command"
     try std.testing.expectEqual(types.RepairOwner.upstream_cli_login, action.owner.?);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"repair_owner\":\"upstream_cli_login\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"command\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"handoff_plan_command\":\"oauth-mux enroll plan claude --account pro --json\"") != null);
 }
 
 test "figma scope degradation carries provider-scope mediation" {
