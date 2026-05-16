@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 version="${1:-}"
 if [ -z "$version" ] || [ "$version" = "--help" ] || [ "$version" = "-h" ]; then
   cat <<'EOF'
@@ -65,6 +67,7 @@ if [ "$was_tapped" != "1" ]; then
 fi
 
 "$brew_cmd" audit --formula --strict "$formula"
+"$repo_root/scripts/homebrew-version-check.sh" "$version" "$formula"
 
 if [ "$was_installed" = "1" ]; then
   "$brew_cmd" reinstall "$formula"

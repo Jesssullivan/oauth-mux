@@ -75,12 +75,12 @@ EOF
 
 package_exists() {
   local spec="$1"
-  NPM_CONFIG_USERCONFIG="${npmrc:-}" npm view "$spec" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1
+  npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="${npmrc:-}" npm view "$spec" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1
 }
 
 current_deprecation() {
   local spec="$1"
-  NPM_CONFIG_USERCONFIG="${npmrc:-}" npm view "$spec" deprecated --registry=https://registry.npmjs.org/ 2>/dev/null || true
+  npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="${npmrc:-}" npm view "$spec" deprecated --registry=https://registry.npmjs.org/ 2>/dev/null || true
 }
 
 deprecate_one() {
@@ -114,13 +114,16 @@ deprecate_one() {
     return
   fi
 
-  NPM_CONFIG_USERCONFIG="$npmrc" npm deprecate "$spec" "$message" --registry=https://registry.npmjs.org/
+  npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm deprecate "$spec" "$message" --registry=https://registry.npmjs.org/
   append "- deprecated: \`${spec}\`"
 }
 
 ensure_ci_boundary
 ensure_confirmed
 require_command npm
+
+npm_cache="${npm_config_cache:-${TMPDIR:-/tmp}/oauth-mux-npm-deprecate-cache}"
+mkdir -p "$npm_cache"
 
 mkdir -p "$handoff_dir"
 
@@ -144,11 +147,13 @@ if [ "$plan_only" = "0" ]; then
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-npm-deprecate.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   npmrc="$tmp/npmrc"
+  npm_cache="$tmp/npm-cache"
+  mkdir -p "$npm_cache"
   "$repo_root/scripts/resolve-npm-token.sh" --npmrc "$npmrc" >/dev/null
 
   append "## npm identity"
   append
-  npm_user="$(NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/)"
+  npm_user="$(npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/)"
   append "- authenticated as: \`${npm_user}\`"
   append
 fi

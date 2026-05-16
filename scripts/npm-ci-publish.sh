@@ -89,7 +89,7 @@ EOF
 package_exists() {
   local name="$1"
   local pkg_version="$2"
-  NPM_CONFIG_USERCONFIG="$npmrc" npm view "${name}@${pkg_version}" version >/dev/null 2>&1
+  npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm view "${name}@${pkg_version}" version >/dev/null 2>&1
 }
 
 publish_one() {
@@ -122,7 +122,7 @@ publish_one() {
     args+=(--dry-run)
   fi
 
-  NPM_CONFIG_USERCONFIG="$npmrc" npm "${args[@]}"
+  npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm "${args[@]}"
   if [ "${OMUX_NPM_PUBLISH_DRY_RUN:-0}" = "1" ]; then
     append "- dry-run OK: \`${name}@${pkg_version}\`"
   else
@@ -167,11 +167,13 @@ else
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-npm-publish.XXXXXX")"
   trap 'rm -rf "$tmp"' EXIT
   npmrc="$tmp/npmrc"
+  npm_cache="$tmp/npm-cache"
+  mkdir -p "$npm_cache"
   "$repo_root/scripts/resolve-npm-token.sh" --npmrc "$npmrc" >/dev/null
 
   append "## npm identity"
   append
-  npm_user="$(NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/)"
+  npm_user="$(npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/)"
   append "- authenticated as: \`${npm_user}\`"
   if [ "${OMUX_NPM_PUBLISH_DRY_RUN:-0}" = "1" ]; then
     append "- mode: dry-run"

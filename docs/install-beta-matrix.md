@@ -16,10 +16,10 @@ The lane contract and current operator rules live in
 | npm global install | 0.1.6 | macOS arm64 | public npm registry | Pass | Public registry reports `oauth-mux@0.1.6` plus all six platform packages. |
 | npm one-shot | 0.1.6 | macOS arm64 | public npm registry | Pass | `npx -y oauth-mux@0.1.6 version` returns `oauth-mux 0.1.6`. |
 | user-local dogfood install | 0.1.7 candidate | macOS arm64 | current worktree copied to `~/.local/bin` | Pass | Remove the old installed file before copying; `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match. Use this lane for unreleased installed-command dogfood. |
-| Nix package | 0.1.6 | macOS arm64 remote builder | `nix build .#` | Pass | `result -> /nix/store/a7izjlmdm21x37glihb9aa34xaa1rfia-oauth-mux-0.1.6`; `./result/bin/oauth-mux version` returns `0.1.6`. |
+| Nix package | 0.1.7 candidate | macOS arm64 | source flake | Candidate | `nix eval .#packages.aarch64-darwin.default.version` reports `0.1.7`; `nix flake check` now includes a package smoke gate. |
 | GitHub release tarball | 0.1.6 | macOS arm64 | public `Jesssullivan/oauth-mux` release asset | Pass | Release workflow `25195318899` published all tarballs, packages, checksums, formula, and installer. |
 | `curl | sh` installer | 0.1.6 | macOS arm64 and `../lab` | public `Jesssullivan/oauth-mux` `install.sh` asset | Pass | Default installer repo is canonical; no `REPO=...` override needed. |
-| Homebrew formula | 0.1.6 | macOS arm64 + hosted Ubuntu dry-run | public `jesssullivan/omux` tap | Pass | Clean local uninstall/untap followed by `just homebrew-qa 0.1.6` installed from `Jesssullivan/homebrew-omux`; hosted registry dry-run `25199131583` checked out the public tap and passed the Homebrew lane. |
+| Homebrew formula | 0.1.6 | macOS arm64 + hosted Ubuntu dry-run | public `jesssullivan/omux` tap | Binary pass, metadata defect | Installed binary reports `oauth-mux 0.1.6`, but `brew info --json=v2` currently parses the stable formula version incorrectly. `0.1.7` release proof must reject this. |
 | deb package | 0.1.6 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.6 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25195456319` installed package and ran `/usr/bin/oauth-mux version`. |
 | Codex route dogfood | 0.1.7 candidate | macOS arm64 | installed user-local binary | Pass with four selectable routes | Current 2026-05-16 no-spend truth: `codex-max` has four selectable broker-ready routes, `session_start_ready:true`, `fallback_ready:true`, and `single_route_at_risk:false`. Public package channels remain `0.1.6`. |
@@ -94,6 +94,16 @@ Expected output includes:
 ```text
 Homebrew install QA passed for oauth-mux 0.1.6 via jesssullivan/omux/oauth-mux
 ```
+
+Current public `0.1.6` caveat:
+
+```bash
+brew info jesssullivan/omux/oauth-mux --json=v2
+```
+
+The installed keg is `0.1.6`, but the formula's parsed
+`formulae[0].versions.stable` is not `0.1.6`. Treat that as a release metadata
+defect, not as proof that the binary failed.
 
 First-run source e2e:
 
@@ -201,3 +211,5 @@ just system-package-qa 0.1.6
 4. Keep Homebrew release updates derived from public GitHub Release
    `oauth-mux.rb` and `SHA256SUMS`, then rerun `just homebrew-qa <version>`
    against the public `jesssullivan/omux` tap.
+5. Require the Homebrew parsed stable version to match the release version
+   before calling a tap update complete.

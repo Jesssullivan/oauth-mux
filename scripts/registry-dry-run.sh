@@ -23,11 +23,15 @@ out_dir="$repo_root/dist/out/v${version}"
 handoff_dir="$out_dir/handoff"
 report="$handoff_dir/registry-dry-run.md"
 tmp_files=()
+tmp_dirs=()
 tmp_taps=()
 
 cleanup() {
   for file in "${tmp_files[@]}"; do
     rm -f "$file"
+  done
+  for dir in "${tmp_dirs[@]}"; do
+    rm -rf "$dir"
   done
   if command -v brew >/dev/null 2>&1; then
     for tap in "${tmp_taps[@]}"; do
@@ -99,23 +103,25 @@ for lane in "${lanes[@]}"; do
     npm)
       require_command npm
       npmrc="$(mktemp)"
+      npm_cache="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-npm-cache.XXXXXX")"
       tmp_files+=("$npmrc")
+      tmp_dirs+=("$npm_cache")
       "$repo_root/scripts/resolve-npm-token.sh" --npmrc "$npmrc" >/dev/null
       append "## npm"
       append
-      NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
+      npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
       for tarball in "$out_dir"/npm-tarballs/*.tgz; do
         name="$(basename "$tarball")"
         publish_log="$(mktemp)"
         tmp_files+=("$publish_log")
-        if NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >"$publish_log" 2>&1; then
+        if npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >"$publish_log" 2>&1; then
           append "- dry-run OK: \`npm-tarballs/${name}\`"
           continue
         fi
 
         package_name="${name%-${version}.tgz}"
         if grep -qi 'previously published versions' "$publish_log" &&
-          NPM_CONFIG_USERCONFIG="$npmrc" npm view "${package_name}@${version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+          npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm view "${package_name}@${version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
           append "- already published OK: \`${package_name}@${version}\`"
           continue
         fi
@@ -159,11 +165,13 @@ for lane in "${lanes[@]}"; do
         cat "$audit_log" >&2
         exit 1
       fi
+      "$repo_root/scripts/homebrew-version-check.sh" "$version" "${tap_name}/oauth-mux"
       append "## homebrew"
       append
       append "- formula copied to tap checkout"
       append "- git diff --check OK"
       append "- ${audit_label} OK via \`${tap_name}/oauth-mux\`"
+      append "- brew info stable version matches \`${version}\`"
       append
       ;;
 

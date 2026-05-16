@@ -23,6 +23,9 @@ diagnostic infrastructure. They are not product success.
 
 Source and local dogfood are `0.1.7` candidate. Public npm, GitHub Release, and
 Homebrew install lanes still publish `0.1.6`.
+The current public Homebrew tap installs the `0.1.6` binary, but its formula
+metadata can parse the stable version incorrectly; the `0.1.7` release gate now
+checks Homebrew's parsed version explicitly.
 
 What works today:
 
@@ -118,6 +121,9 @@ oauth-mux version
 oauth-mux version --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
+
+If `which -a oauth-mux` resolves Homebrew before the user-local dogfood binary,
+adjust PATH or invoke `./zig-out/bin/oauth-mux` directly for source-tree proof.
 
 `version --json` prints the active executable path classification and SHA-256
 under `runtime_identity`. Use it when public packages and local dogfood have

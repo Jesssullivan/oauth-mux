@@ -97,10 +97,11 @@ for archive in \
 done
 
 printf 'checking Homebrew formula...\n'
-if grep -q '\${' "$homebrew_formula"; then
+if grep -q -E '\$\{(VERSION|SHA_[A-Z0-9_]+)\}' "$homebrew_formula"; then
   printf 'unrendered placeholder remains in %s\n' "$homebrew_formula" >&2
   exit 1
 fi
+"$repo_root/scripts/homebrew-version-check.sh" "$version" "$homebrew_formula"
 if command -v ruby >/dev/null 2>&1; then
   ruby -c "$homebrew_formula" >/dev/null
 fi
