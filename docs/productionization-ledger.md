@@ -10,7 +10,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 - Repo state: `main` is clean against `origin/main`; no open GitHub PRs were
   present in the 2026-05-16 refresh.
-- CI state: the latest checked `main` CI run was green at `25954361661`.
+- CI state: the latest checked `main` CI run was green at `25974342238`.
 - Version truth: local/source dogfood is `0.1.7`; public npm, GitHub Release,
   and Homebrew remain `0.1.6`.
 - Installed provenance: PATH can resolve a public package binary or a
@@ -25,8 +25,9 @@ refreshed when release truth, route evidence, or tracker state changes.
   routes, `session_start_ready:true`, `fallback_ready:true`, and
   `single_route_at_risk:false`.
 - Latest local status truth: `oauth-mux codex status-latest --json` currently
-  reports `successful_live_quota_handoff`; status artifacts are rolling local
-  evidence and must be refreshed before being used in public claims.
+  reports `auth_fallback_sequence_observed` from a rolling local artifact. This
+  does not supersede the preserved quota-handoff proof; status artifacts must be
+  refreshed before being used in public claims.
 - Daemon truth: `oauth-mux daemon status --json` still reports
   `contract:"experimental_socket_stub"`; the beta daemon lane must host the
   same foreground tick engine and must not claim unmanaged hot-swap.
@@ -113,8 +114,8 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Theme | Linear | GitHub | Current stance |
 | --- | --- | --- | --- |
 | Broker daemon and adapter contract | TIN-738 | #67 | Anchor remains open until daemon beta and second-adapter validation are honest. |
-| Codex next-turn broker switch | TIN-916 | #131 | Codex is the reference path; keep evidence distinct from same-thread or mid-turn claims. |
-| Live Codex account-swap acceptance | TIN-951 | #177 | Spend-confirmed only; requires selected route plus spare fallback and redacted artifacts. |
+| Codex next-turn broker switch | TIN-916 | #131 | Managed Codex handoff is proven; keep remaining negative/permutation work distinct from same-thread or mid-turn claims. |
+| Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
 | Wire cassette coverage | TIN-950 | #176 | Needed before treating negative permutations as stable release proof. |
 | Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
