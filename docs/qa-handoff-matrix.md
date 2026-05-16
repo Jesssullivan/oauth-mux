@@ -83,9 +83,40 @@ capability, such as `codex:max-3#codex-max`.
   reports `session_start_ready:true`, `fallback_ready:true`, and
   `single_route_at_risk:false`.
 - `oauth-mux codex status-latest --json` currently reports
-  `successful_live_quota_handoff`. Status artifacts are rolling local evidence;
-  refresh this command before copying current-state claims into public release
-  notes or tracker comments.
+  `auth_fallback_sequence_observed` from the latest rolling local artifact.
+  This does not supersede the preserved quota handoff proof above; refresh this
+  command before copying current-state claims into public release notes or
+  tracker comments.
+
+## Next Multi-Account Session
+
+Start from the user-local `0.1.7` dogfood binary unless PATH is fixed to put
+that binary first. As of the 2026-05-16 local post-merge refresh, bare
+`oauth-mux` resolves Homebrew `0.1.6` first, while
+`~/.local/bin/oauth-mux` and `./zig-out/bin/oauth-mux` have matching `0.1.7`
+hashes.
+
+No-spend opening sequence:
+
+```bash
+~/.local/bin/oauth-mux version --json
+~/.local/bin/oauth-mux codex preflight --profile codex-max --capability codex-max --json
+~/.local/bin/oauth-mux route explain --profile codex-max --capability codex-max --json
+~/.local/bin/oauth-mux codex status-latest --json
+```
+
+Current matrix entry:
+
+| Route | Current state | Session role |
+| --- | --- | --- |
+| `codex:max-1#codex-max` | selectable, `available`, selected | primary candidate |
+| `codex:max-2#codex-max` | selectable, `available` | fallback / prior engineered primary |
+| `codex:max-3#codex-max` | selectable, `available` | fallback / prior engineered fallback |
+| `codex:max-4#codex-max` | selectable, `available` | fallback / reset-repair target |
+
+Next spend-confirmed permutations should prefer negative coverage over another
+happy-path quota proof: all-fallbacks-exhausted, tier-insufficient before
+fallback success, reset-window repair, and API-credit false-positive guards.
 
 ## Next QA Targets
 
