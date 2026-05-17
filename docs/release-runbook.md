@@ -243,6 +243,23 @@ Current release evidence:
   SOPS-backed path; `npm view oauth-mux version` reports `0.1.6`.
 - Main CI run `25954361661` completed successfully on 2026-05-16 for the latest
   checked `main` state before the `0.1.7` release-parity tranche.
+- Hosted GloriousFlywheel release proof run `25979637380` passed for `0.1.7`.
+- Hosted registry dry-run run `25979761165` passed for `0.1.7` lanes
+  `plan,github,system`.
+- Release workflow run `25980203233` published the latest `v0.1.7` GitHub
+  Release assets from commit `6838db5`.
+- System Package Install QA run `25980333371` passed for published `0.1.7`
+  `.deb` and `.rpm` assets.
+- NPM publish dry-run `25980347239` passed for all seven `0.1.7` packages, then
+  NPM publish run `25980468974` published all seven packages with provenance
+  disabled for the private-source release path.
+- Public npm verification confirms `oauth-mux@0.1.7` and all six platform
+  packages resolve; temp-prefix npm install and `npx -y oauth-mux@0.1.7`
+  both return `oauth-mux 0.1.7`.
+- Public Homebrew tap PR `Jesssullivan/homebrew-omux#1` updated the formula
+  from the `v0.1.7` GitHub Release asset and merged at `43c32ce`; clean
+  public tap QA passed with installed binary `oauth-mux 0.1.7` and parsed
+  stable version `0.1.7`.
 
 ## Before Marking A PR Ready
 

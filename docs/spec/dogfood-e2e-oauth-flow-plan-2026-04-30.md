@@ -33,13 +33,13 @@ Install surfaces:
 
 | Surface | Current proof |
 | --- | --- |
-| npm global install | `oauth-mux@0.1.6` installs from the public npm registry and returns `oauth-mux 0.1.6`. |
-| npm one-shot | `npx -y oauth-mux@0.1.6 version` passed from `../lab`. |
-| GitHub Release tarball | v0.1.6 macOS arm64 tarball verifies against `SHA256SUMS` and runs. |
-| curl installer | v0.1.6 installer downloads public release assets, verifies checksums, and runs on macOS and `../lab`. |
-| Homebrew | `just homebrew-qa 0.1.6` installs from public `jesssullivan/omux`, runs `brew audit`, `brew test`, `version`, and `doctor --json`. The private `tinyland/tools` tap remains a staged internal lane. |
-| deb/rpm | Hosted System Package Install QA run `25195456319` installed published v0.1.6 `.deb` and `.rpm` assets in Debian/Rocky containers. |
-| lab dogfood | Public npm one-shot `oauth-mux@0.1.6` reports healthy `doctor --json` against the local config/state. |
+| npm global install | `oauth-mux@0.1.7` installs from the public npm registry and returns `oauth-mux 0.1.7`. |
+| npm one-shot | `npx -y oauth-mux@0.1.7 version` passes; `doctor --json` reports `ok:true`. |
+| GitHub Release tarball | v0.1.7 macOS arm64 tarball verifies against `SHA256SUMS` and runs. |
+| curl installer | v0.1.7 installer downloads public release assets, verifies checksums, and runs on macOS. |
+| Homebrew | `just homebrew-qa 0.1.7` installs from public `jesssullivan/omux`, runs `brew audit`, parsed stable-version check, `brew test`, `version`, and `doctor --json`. The private `tinyland/tools` tap remains a staged internal lane. |
+| deb/rpm | Hosted System Package Install QA run `25980333371` installed published v0.1.7 `.deb` and `.rpm` assets in Debian/Rocky containers. |
+| lab dogfood | Public npm one-shot `oauth-mux@0.1.7` reports healthy `doctor --json` against the local config/state. |
 
 OAuth and muxing surfaces:
 
@@ -79,7 +79,7 @@ These are the adoption blockers that should stay visible:
    stdin, and env references need explicit e2e proof before public copy implies
    they are equally dogfooded.
 
-5. Homebrew is public-tap proven for v0.1.6, but release automation still needs
+5. Homebrew is public-tap proven for v0.1.7, and release automation still needs
    to keep future formula updates derived from public GitHub Release assets.
    The public tap is `Jesssullivan/homebrew-omux`; the private Tinyland tap is
    staging infrastructure.

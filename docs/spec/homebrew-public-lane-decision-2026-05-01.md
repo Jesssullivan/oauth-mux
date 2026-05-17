@@ -33,6 +33,8 @@ avoiding any claim that this is Homebrew core.
   test, `oauth-mux version`, and `oauth-mux doctor --json`.
 - `Jesssullivan/homebrew-omux` now exists as the public tap, with default
   branch `main`.
+- The public `jesssullivan/omux` tap installs `oauth-mux 0.1.7` and
+  `brew info --json=v2` reports stable version `0.1.7`.
 - The release workflow already emits `oauth-mux.rb` and `SHA256SUMS` from the
   public GitHub Release tree.
 
@@ -56,6 +58,18 @@ Result:
 
 ```text
 Homebrew install QA passed for oauth-mux 0.1.6 via jesssullivan/omux/oauth-mux
+```
+
+On 2026-05-17, public tap PR `Jesssullivan/homebrew-omux#1` updated the formula
+from the published `oauth-mux` v0.1.7 GitHub Release formula asset and merged at
+`43c32ce`. Clean local QA removed the previous install/tap, tapped the public
+repo, ran strict audit, checked Homebrew's parsed stable version, installed,
+ran `brew test`, checked `oauth-mux version`, and ran `oauth-mux doctor --json`.
+
+Result:
+
+```text
+Homebrew install QA passed for oauth-mux 0.1.7 via jesssullivan/omux/oauth-mux
 ```
 
 ## Rationale
@@ -132,5 +146,6 @@ Close `#66` / `TIN-858` only after:
 4. `docs/adoption.md`, `docs/install-beta-matrix.md`, the website, and release
    notes use the public tap wording.
 
-Items 1-3 have clean-local v0.1.6 proof as of 2026-05-01. Item 4 remains the
-cross-repo alignment gate.
+Items 1-4 have repo-doc clean-local v0.1.7 proof as of 2026-05-17. The website
+still needs a separate source refresh if its copy names a specific older
+version.

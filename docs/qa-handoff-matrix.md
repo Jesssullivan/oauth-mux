@@ -114,19 +114,19 @@ publishable evidence for those same negative shapes.
 
 ## Next Multi-Account Session
 
-Start from the user-local `0.1.7` dogfood binary unless PATH is fixed to put
-that binary first. As of the 2026-05-16 local post-merge refresh, bare
-`oauth-mux` resolves Homebrew `0.1.6` first, while
-`~/.local/bin/oauth-mux` and `./zig-out/bin/oauth-mux` have matching `0.1.7`
-hashes.
+Start from an installed `0.1.7` binary and record provenance before any
+spend-confirmed test. As of the 2026-05-17 package-parity refresh, bare
+`oauth-mux` resolves the public Homebrew `0.1.7` package first on the operator
+machine; use `oauth-mux version --json` to distinguish that package binary from
+`~/.local/bin/oauth-mux` or `./zig-out/bin/oauth-mux` worktree dogfood hashes.
 
 No-spend opening sequence:
 
 ```bash
-~/.local/bin/oauth-mux version --json
-~/.local/bin/oauth-mux codex preflight --profile codex-max --capability codex-max --json
-~/.local/bin/oauth-mux route explain --profile codex-max --capability codex-max --json
-~/.local/bin/oauth-mux codex status-latest --json
+oauth-mux version --json
+oauth-mux codex preflight --profile codex-max --capability codex-max --json
+oauth-mux route explain --profile codex-max --capability codex-max --json
+oauth-mux codex status-latest --json
 ```
 
 Current matrix entry:

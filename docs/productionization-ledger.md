@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-16
+Updated: 2026-05-17
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -8,21 +8,20 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` is clean against `origin/main`; no open GitHub PRs were
-  present in the 2026-05-16 refresh.
+- Repo state: `main` is clean against `origin/main` after the `0.1.7`
+  package-parity refresh.
 - CI state: GitHub Actions is the live source for the latest run. The
-  2026-05-16 refresh verified green PR and post-merge `main` checks; do not
-  treat a run id copied into docs as current release proof.
-- Version truth: local/source dogfood is `0.1.7`; public npm, GitHub Release,
-  and Homebrew remain `0.1.6`.
+  2026-05-17 refresh verified the `v0.1.7` release workflow, npm publish
+  workflow, and hosted system-package install QA.
+- Version truth: public npm, GitHub Release, Homebrew, curl installer, and
+  deb/rpm lanes now resolve to `0.1.7`.
 - Installed provenance: PATH can resolve a public package binary or a
   user-local dogfood binary depending on shell setup. Use `which -a oauth-mux`,
   `which -a codex`, `oauth-mux version --json`, and `codex preflight` before
   treating any installed-command run as release evidence.
-- Homebrew truth: the public `0.1.6` tap installs the expected binary, but
-  Homebrew currently parses the formula stable version incorrectly because the
-  generated formula lacks an explicit version. `0.1.7` release proof must catch
-  this class before publication.
+- Homebrew truth: the public `jesssullivan/omux` tap installs `oauth-mux
+  0.1.7`, includes the managed `codex` shim, and `brew info --json=v2`
+  reports stable version `0.1.7`.
 - Codex route truth: `codex-max` currently has four selectable broker-ready
   routes, `session_start_ready:true`, `fallback_ready:true`, and
   `single_route_at_risk:false`.
@@ -92,11 +91,11 @@ not claim to keep them alive.
 
 ## Release And Distribution Posture
 
-Hold `0.1.7` as a release candidate until release/install parity, tracker
-state, and the daemon beta boundary are current. Negative Codex cassettes remain
-important follow-up proof, but they are not the publication blocker for this
-release tranche. Public install copy must continue to say `0.1.6` until npm,
-GitHub Release, and Homebrew are actually published and verified.
+`0.1.7` package parity is complete for the public install lanes. Negative Codex
+cassettes, broader adapter proof, and daemon beta truth remain important
+follow-up work, but they are no longer publication blockers for this release
+tranche. Future public install copy must still avoid naming a version until
+that version is actually published and verified.
 
 The release lanes remain:
 
@@ -121,6 +120,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Wire cassette coverage | TIN-950 | #176 | Needed before treating negative permutations as stable release proof. |
 | Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
+| Package parity and install lanes | TIN-1255 | #252 | `0.1.7` is published and verified across GitHub Release, npm, Homebrew, curl, and deb/rpm package lanes. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
 
@@ -140,4 +140,4 @@ browser is needed; local Playwright is not part of this CLI proof path.
   `brew info --json=v2` stable version semantics for the public tap formula.
 - Public copy does not claim same-thread continuity, mid-turn recovery,
   unmanaged daemon hot-swap, non-Codex stay-afloat, universal provider support,
-  or public `0.1.7` availability before publication.
+  or future package availability before publication.
