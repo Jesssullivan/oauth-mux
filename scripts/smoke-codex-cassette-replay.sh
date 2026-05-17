@@ -169,7 +169,12 @@ miss = json.loads(body4)
 assert miss["error"] == "no_cassette_match", miss
 assert miss["path"] == "/backend-api/codex/missing", miss
 
-records = [json.loads(line) for line in logfile.read_text().splitlines() if line.strip()]
+deadline = time.monotonic() + 2
+while True:
+    records = [json.loads(line) for line in logfile.read_text().splitlines() if line.strip()]
+    if len(records) >= 4 or time.monotonic() >= deadline:
+        break
+    time.sleep(0.02)
 matches = [r for r in records if r.get("match") is True]
 misses = [r for r in records if r.get("match") is False]
 assert len(matches) == 3, records
