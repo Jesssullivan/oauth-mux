@@ -451,22 +451,24 @@ pub const Proxy = struct {
         c: Classification,
     ) !void {
         const now_unix = std.time.timestamp();
-        self.recordDurableClassification(account_id, c, now_unix);
-        switch (c.kind) {
-            .ok => self.pool.refreshTimeBased(now_unix),
-            .quota_exhausted => {
-                const until = c.resets_at orelse (now_unix + 7 * 24 * 60 * 60);
-                try self.pool.markQuotaExhausted(account_id, until);
-            },
-            .rate_limited => {
-                const until = c.resets_at orelse (now_unix + 60);
-                try self.pool.markRateLimited(account_id, until);
-            },
-            .auth_unauthorized => try self.pool.markUnauthorized(account_id),
-            .tier_insufficient, .provider_5xx => {
-                // Recorded for telemetry only; no pool mutation.
-            },
-        }
+        var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
+        defer store.deinit();
+        try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix);
+        store.persist();
+    }
+
+    fn recordDurableRouteState(
+        self: *Proxy,
+        account_id: []const u8,
+        state: RouteState,
+        status: u16,
+        retry_after_s: ?u32,
+    ) void {
+        _ = self;
+        var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
+        defer store.deinit();
+        recordDurableRouteStateInStore(&store, account_id, state, status, retry_after_s);
+        store.persist();
     }
 
     fn logRetryEvent(
@@ -504,77 +506,6 @@ pub const Proxy = struct {
             .dropped = "x-codex-turn-state",
         });
         self.traceRetry(from, to, reason);
-    }
-
-    fn recordDurableClassification(
-        self: *Proxy,
-        account_id: []const u8,
-        c: Classification,
-        now_unix: i64,
-    ) void {
-        if (c.kind == .ok) return;
-        const state = routeStateFromClassification(c.kind);
-        const status: u16 = switch (c.kind) {
-            .ok => 200,
-            .auth_unauthorized => 401,
-            .quota_exhausted, .rate_limited, .tier_insufficient => 429,
-            .provider_5xx => 500,
-        };
-        const retry_after_s = retryAfterSeconds(now_unix, c.resets_at, c.kind);
-        self.recordDurableRouteState(account_id, state, status, retry_after_s);
-    }
-
-    fn recordDurableRouteState(
-        self: *Proxy,
-        account_id: []const u8,
-        state: RouteState,
-        status: u16,
-        retry_after_s: ?u32,
-    ) void {
-        _ = self;
-        const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return;
-        if (colon == 0 or colon + 1 >= account_id.len) return;
-        const provider = account_id[0..colon];
-        const account = account_id[colon + 1 ..];
-        const key = health_mod.accountKey(provider, account);
-
-        var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
-        defer store.deinit();
-
-        const classification: core_types.HttpClassification = switch (state) {
-            .available => .success,
-            .auth_failed => .{ .dead = .token_revoked },
-            .quota_exhausted => .{ .quota_exhausted = .{ .retry_after_s = retry_after_s orelse 7 * 24 * 60 * 60 } },
-            .rate_limited => .{ .rate_limited = .{
-                .retry_after_s = retry_after_s orelse 60,
-                .window = .unknown,
-            } },
-            .tier_insufficient => .{ .degraded = .tier_insufficient },
-            .provider_degraded => .provider_degraded,
-            .credential_unavailable => .{ .dead = .credential_unavailable },
-        };
-
-        store.recordHttpClassification(key.slice(), status, classification);
-        store.recordProbeEvidence(
-            key.slice(),
-            .broker_run_live,
-            retry_after_s,
-            switch (state) {
-                .available => .none,
-                .auth_failed, .credential_unavailable => .auth_dead,
-                .quota_exhausted => .quota_exhausted,
-                .rate_limited => .rate_limit,
-                .tier_insufficient => .tier_insufficient,
-                .provider_degraded => .provider_degraded,
-            },
-            switch (state) {
-                .available => .use_this,
-                .rate_limited => .wait_and_retry,
-                .provider_degraded => .try_next_provider,
-                .auth_failed, .quota_exhausted, .tier_insufficient, .credential_unavailable => .try_next_account,
-            },
-        );
-        store.persist();
     }
 
     fn traceRetry(
@@ -723,6 +654,97 @@ fn retryAfterSeconds(now_unix: i64, resets_at: ?i64, kind: broker_types.QuotaKin
     if (reset <= now_unix) return 0;
     const delta = reset - now_unix;
     return @intCast(@min(delta, std.math.maxInt(u32)));
+}
+
+fn applyClassificationWithStore(
+    pool: *account_pool_mod.AccountPool,
+    store: *health_mod.HealthStore,
+    account_id: []const u8,
+    c: Classification,
+    now_unix: i64,
+) !void {
+    recordDurableClassificationInStore(store, account_id, c, now_unix);
+    switch (c.kind) {
+        .ok => pool.refreshTimeBased(now_unix),
+        .quota_exhausted => {
+            const until = c.resets_at orelse (now_unix + 7 * 24 * 60 * 60);
+            try pool.markQuotaExhausted(account_id, until);
+        },
+        .rate_limited => {
+            const until = c.resets_at orelse (now_unix + 60);
+            try pool.markRateLimited(account_id, until);
+        },
+        .auth_unauthorized => try pool.markUnauthorized(account_id),
+        .tier_insufficient, .provider_5xx => {
+            // Recorded for telemetry only; no pool mutation.
+        },
+    }
+}
+
+fn recordDurableClassificationInStore(
+    store: *health_mod.HealthStore,
+    account_id: []const u8,
+    c: Classification,
+    now_unix: i64,
+) void {
+    if (c.kind == .ok) return;
+    const state = routeStateFromClassification(c.kind);
+    const status: u16 = switch (c.kind) {
+        .ok => 200,
+        .auth_unauthorized => 401,
+        .quota_exhausted, .rate_limited, .tier_insufficient => 429,
+        .provider_5xx => 500,
+    };
+    const retry_after_s = retryAfterSeconds(now_unix, c.resets_at, c.kind);
+    recordDurableRouteStateInStore(store, account_id, state, status, retry_after_s);
+}
+
+fn recordDurableRouteStateInStore(
+    store: *health_mod.HealthStore,
+    account_id: []const u8,
+    state: RouteState,
+    status: u16,
+    retry_after_s: ?u32,
+) void {
+    const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return;
+    if (colon == 0 or colon + 1 >= account_id.len) return;
+    const provider = account_id[0..colon];
+    const account = account_id[colon + 1 ..];
+    const key = health_mod.accountKey(provider, account);
+
+    const classification: core_types.HttpClassification = switch (state) {
+        .available => .success,
+        .auth_failed => .{ .dead = .token_revoked },
+        .quota_exhausted => .{ .quota_exhausted = .{ .retry_after_s = retry_after_s orelse 7 * 24 * 60 * 60 } },
+        .rate_limited => .{ .rate_limited = .{
+            .retry_after_s = retry_after_s orelse 60,
+            .window = .unknown,
+        } },
+        .tier_insufficient => .{ .degraded = .tier_insufficient },
+        .provider_degraded => .provider_degraded,
+        .credential_unavailable => .{ .dead = .credential_unavailable },
+    };
+
+    store.recordHttpClassification(key.slice(), status, classification);
+    store.recordProbeEvidence(
+        key.slice(),
+        .broker_run_live,
+        retry_after_s,
+        switch (state) {
+            .available => .none,
+            .auth_failed, .credential_unavailable => .auth_dead,
+            .quota_exhausted => .quota_exhausted,
+            .rate_limited => .rate_limit,
+            .tier_insufficient => .tier_insufficient,
+            .provider_degraded => .provider_degraded,
+        },
+        switch (state) {
+            .available => .use_this,
+            .rate_limited => .wait_and_retry,
+            .provider_degraded => .try_next_provider,
+            .auth_failed, .quota_exhausted, .tier_insufficient, .credential_unavailable => .try_next_account,
+        },
+    );
 }
 
 fn containsAccount(items: []const []const u8, account_id: []const u8) bool {
@@ -1769,6 +1791,37 @@ test "provider signal matrix maps to route state and same-turn retry policy" {
             try std.testing.expect(c.body_class == null);
         }
     }
+}
+
+test "quota evidence is recorded before same-turn retry election" {
+    var pool = account_pool_mod.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{ .id = "codex:max-1", .selectable = true, .liveness = .live, .availability = .available });
+    try pool.add(.{ .id = "codex:max-2", .selectable = true, .liveness = .live, .availability = .available });
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    const now: i64 = 1_788_000_000;
+    try applyClassificationWithStore(&pool, &store, "codex:max-1", .{
+        .kind = .quota_exhausted,
+        .resets_at = now + 900,
+        .body_class = "usage_limit_reached",
+    }, now);
+
+    const recorded = store.accounts.get("codex:max-1") orelse {
+        return error.ExpectedQuotaEvidence;
+    };
+    try std.testing.expectEqual(@as(?u16, 429), recorded.last_http_status);
+    try std.testing.expectEqual(health_mod.ProbeEvidenceSource.broker_run_live, recorded.last_probe_source.?);
+    try std.testing.expectEqual(@as(?u32, 900), recorded.last_probe_retry_after_s);
+    try std.testing.expectEqual(health_mod.ProbeHintClass.quota_exhausted, recorded.last_probe_hint_class.?);
+    try std.testing.expectEqual(core_types.MuxDecision.try_next_account, recorded.last_probe_decision.?);
+
+    // This mirrors the retry boundary: fallback election only happens after
+    // the selected route has durable quota evidence and is blocked in-pool.
+    const elected = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
 }
 
 test "parseRequest reads start line + headers + content-length body" {
