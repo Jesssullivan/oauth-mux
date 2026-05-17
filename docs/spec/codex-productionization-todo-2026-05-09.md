@@ -142,7 +142,7 @@ Not proven:
 - [x] In the election matrix, assert no attempted, auth-dead, quota-exhausted,
   rate-limited, tier-insufficient, or credential-unavailable account is elected
   in the same request.
-- [ ] Assert quota evidence is recorded before retry in a small unit or cassette
+- [x] Assert quota evidence is recorded before retry in a small unit or cassette
   replay that does not depend on timing or status-line ordering.
 - [ ] Add cassette replay for the redacted real `usage_limit_reached` shape from
   the 2026-05-08 proof when a publishable cassette is available.
