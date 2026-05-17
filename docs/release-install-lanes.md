@@ -1,6 +1,6 @@
 # Release And Install Lanes
 
-Updated: 2026-05-16
+Updated: 2026-05-17
 
 This is the DRY map for installer, package, CI, and local dogfood lanes.
 Detailed historical evidence stays in `docs/install-beta-matrix.md` and
@@ -85,10 +85,10 @@ Expected when testing unreleased behavior:
   binary hash; treat it as the package lane.
 
 If Homebrew appears before `~/.local/bin` in PATH, use the worktree binary or
-adjust PATH before recording dogfood evidence. The active public Homebrew
-`0.1.6` tap installs the expected binary but has a formula stable-version
-metadata defect; `0.1.7` release proof must reject that defect before
-publication.
+adjust PATH before recording unreleased dogfood evidence. The active public
+Homebrew tap now resolves `0.1.7` and passes both installed-binary and
+`brew info --json=v2` stable-version checks, but it is still a package binary,
+not worktree proof.
 
 On macOS, do not overwrite an existing Mach-O in place for this lane. A direct
 `cp` over `~/.local/bin/oauth-mux` can leave stale taskgated/code-signing state

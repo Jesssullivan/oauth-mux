@@ -21,11 +21,10 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Source and local dogfood are `0.1.7` candidate. Public npm, GitHub Release, and
-Homebrew install lanes still publish `0.1.6`.
-The current public Homebrew tap installs the `0.1.6` binary, but its formula
-metadata can parse the stable version incorrectly; the `0.1.7` release gate now
-checks Homebrew's parsed version explicitly.
+Public install lanes now resolve to `0.1.7`: GitHub Release assets, npm root
+and platform packages, the public Homebrew tap, the curl installer, and
+published deb/rpm assets have all passed package-lane QA. Homebrew QA now checks
+both the installed binary and Homebrew's parsed `versions.stable` metadata.
 
 What works today:
 
@@ -103,7 +102,7 @@ ladder diagrams.
 
 ## Install
 
-Public install lanes currently resolve to `0.1.6`:
+Public install lanes currently resolve to `0.1.7`:
 
 ```bash
 npm install -g oauth-mux
@@ -111,7 +110,7 @@ npm install -g oauth-mux
 brew install jesssullivan/omux/oauth-mux
 ```
 
-Local `0.1.7` candidate dogfood should keep provenance explicit:
+Unreleased source dogfood should keep provenance explicit:
 
 ```bash
 just install-local-dogfood
@@ -150,8 +149,10 @@ installed binary hash against `./zig-out/bin/oauth-mux`, and installs a managed
 `codex` shim in the same user-local bin directory. The shim resolves the native
 upstream Codex executable, passes it through `OMUX_CODEX_BIN`, and then enters
 `oauth-mux codex`. It refuses to replace a non-oauth-mux `codex` already in that
-directory unless `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Public package channels
-do not carry that shim until `0.1.7` is published.
+directory unless `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Public npm and Homebrew
+package lanes also carry the managed `codex` shim; use `version --json` and
+`codex preflight` when you need to distinguish a package binary from a worktree
+dogfood binary.
 
 ## Usage
 
@@ -193,7 +194,7 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 
 See `docs/tracing.md` for the trace schema and redaction contract.
 
-Those inspection commands do not spend provider calls. In the `0.1.7` candidate,
+Those inspection commands do not spend provider calls. In the `0.1.7` release,
 managed Codex launch/resume and admitted stay-afloat execution may spend
 provider calls only to revalidate expired Codex quota/rate windows before route
 election. Live probes, broad revalidation, and non-Codex provider-spend paths

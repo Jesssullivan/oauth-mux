@@ -11,7 +11,7 @@ auth-broker proof `TIN-913` / GitHub `#125`.
 
 ## Baseline
 
-`oauth-mux` v0.1.6 is published and dogfooded for the Codex route-selection
+`oauth-mux` v0.1.7 is published and dogfooded for the Codex route-selection
 path. The release has public GitHub assets, npm `latest`, `curl | sh`,
 deb/rpm assets, and a public Jess-owned Homebrew tap. The remaining adoption
 risks are no longer general release mechanics. They are specific product
@@ -43,11 +43,16 @@ same-thread continuity semantics, mid-turn streaming recovery, unmanaged
 bare-`codex` daemon handoff, non-Codex harnesses, and the remaining auth/quota
 permutations as open proof lanes.
 
+Supersession note, 2026-05-17: `v0.1.7` package parity is live. GitHub Release,
+npm, curl installer, Homebrew public tap, and deb/rpm package QA resolve to
+`0.1.7`. This updates distribution truth only; it does not add new live
+provider handoff claims beyond the preserved Codex evidence above.
+
 ## Public Issue Map
 
 | Facet | Public GitHub issue | Linear tracking | Current posture |
 | --- | --- | --- | --- |
-| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes; Tinyland tap remains private/staged. Live website copy was rechecked on 2026-05-03 and now uses the public `jesssullivan/omux` tap. |
+| Homebrew distribution | `#66` | `TIN-858`, related to `TIN-737` | Public Jess-owned tap exists and clean local install QA passes for `0.1.7`; Tinyland tap remains private/staged. Live website copy was rechecked on 2026-05-03 and used the public `jesssullivan/omux` tap, but site copy should be refreshed against the 2026-05-17 package-parity truth. |
 | Stay-afloat daemon | `#67` | `TIN-738`, `TIN-859`, `TIN-860`, `TIN-866`, `TIN-867`, `TIN-897`, `TIN-898`, `TIN-940` | Foreground/agent-safe stay-afloat is shipped; production background daemon is not. Socket daemon is explicitly non-product plumbing. The active claim matrix lives in `docs/daemon-boundary.md`; managed Codex launch/resume and broker-owned app-server sessions are scoped proof surfaces. Supervised child capture is diagnostic only, not a product claim level. |
 | Provider expansion | `#68` | `TIN-736`, `TIN-861`, `TIN-862`, `TIN-863`, `TIN-876`, `TIN-877`, `TIN-878`, `TIN-879` | Managed Codex route selection, broker-owned sessions, and installed `oauth-mux codex resume` quota handoff are live-proven for scoped commands, including the 2026-05-09 engineered handoff. Same-thread semantics, unmanaged daemon handoff, and non-Codex proof remain capability-level or still need operator proof. |
 | Paid multi-account proof | `#67`, `#68` | `TIN-892`, `TIN-893`, `TIN-894`, `TIN-895`, `TIN-896` | Codex has a four-route paid cohort. Dogfood-9 proved managed auth-continuity and failed-quota truth. The 2026-05-08 installed-runtime artifacts proved managed load/resume quota handoff from `codex:default` to `codex:max-2`; the 2026-05-09 engineered artifact proved managed-session quota handoff from `codex:max-2` to `codex:max-3` after successful primary traffic. Claude, Figma, same-thread semantics, unmanaged daemon handoff, and long-window soak evidence remain separate gates. |
@@ -57,7 +62,7 @@ permutations as open proof lanes.
 Current truth:
 
 - `brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git`
-  plus `brew install jesssullivan/omux/oauth-mux` installs v0.1.6 from the
+  plus `brew install jesssullivan/omux/oauth-mux` installs v0.1.7 from the
   public tap.
 - The public tap is `Jesssullivan/homebrew-omux`, default branch `main`.
 - `tinyland-inc/homebrew-tools` still exists and remains private/staged
