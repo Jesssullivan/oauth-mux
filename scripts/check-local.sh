@@ -26,6 +26,7 @@ done
 ./scripts/smoke-codex-401-propagation.sh
 ./scripts/smoke-codex-provider-degraded.sh
 ./scripts/smoke-codex-cassette-replay.sh
+./scripts/smoke-codex-cassette-all-exhausted.sh
 ./scripts/smoke-codex-capture-review.sh
 ./scripts/smoke-codex-status-summary.sh
 ./scripts/smoke-github-tracker-comment.sh
