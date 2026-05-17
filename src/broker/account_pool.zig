@@ -173,6 +173,63 @@ pub const AccountPool = struct {
     }
 };
 
+const ElectionMatrixState = enum {
+    available,
+    auth_dead,
+    quota_exhausted,
+    rate_limited,
+    tier_insufficient,
+    credential_unavailable,
+    provider_degraded,
+};
+
+fn matrixAccountSummary(id: []const u8, state: ElectionMatrixState) AccountSummary {
+    return switch (state) {
+        .available => .{
+            .id = id,
+            .selectable = true,
+            .liveness = .live,
+            .availability = .available,
+        },
+        .auth_dead => .{
+            .id = id,
+            .selectable = false,
+            .liveness = .dead,
+            .availability = .unknown,
+        },
+        .quota_exhausted => .{
+            .id = id,
+            .selectable = false,
+            .liveness = .live,
+            .availability = .quota_exhausted,
+        },
+        .rate_limited => .{
+            .id = id,
+            .selectable = true,
+            .liveness = .live,
+            .availability = .rate_limited,
+        },
+        .tier_insufficient => .{
+            .id = id,
+            .selectable = false,
+            .liveness = .degraded,
+            .availability = .unknown,
+        },
+        .credential_unavailable => .{
+            .id = id,
+            .selectable = false,
+            .liveness = .live,
+            .availability = .unknown,
+        },
+        .provider_degraded => .{
+            .id = id,
+            .selectable = false,
+            .liveness = .degraded,
+            .availability = .unknown,
+        },
+    };
+}
+
 test "AccountPool markQuotaExhausted blocks selection until reset" {
     var pool = AccountPool.init(std.testing.allocator);
     defer pool.deinit();
@@ -236,6 +293,86 @@ test "AccountPool restrictToAllowList narrows selectability" {
         }
     }
     try std.testing.expect(found);
+}
+
+test "AccountPool deterministic route-state matrix skips blocked accounts across 1-4 pools" {
+    const ids = [_][]const u8{
+        "codex:max-1",
+        "codex:max-2",
+        "codex:max-3",
+        "codex:max-4",
+    };
+    const blocked_states = [_]ElectionMatrixState{
+        .auth_dead,
+        .quota_exhausted,
+        .rate_limited,
+        .tier_insufficient,
+        .credential_unavailable,
+        .provider_degraded,
+    };
+
+    var pool_size: usize = 1;
+    while (pool_size <= ids.len) : (pool_size += 1) {
+        for (blocked_states) |blocked_state| {
+            var pool = AccountPool.init(std.testing.allocator);
+            defer pool.deinit();
+
+            var idx: usize = 0;
+            while (idx < pool_size) : (idx += 1) {
+                const state: ElectionMatrixState = if (pool_size > 1 and idx + 1 == pool_size)
+                    .available
+                else
+                    blocked_state;
+                try pool.add(matrixAccountSummary(ids[idx], state));
+            }
+
+            if (pool_size == 1) {
+                try std.testing.expectError(
+                    types.BrokerError.NoAccountSelectable,
+                    pool.elect(null, null, &.{}),
+                );
+            } else {
+                const elected = try pool.elect(null, null, &.{});
+                try std.testing.expectEqualStrings(ids[pool_size - 1], elected.id);
+            }
+        }
+    }
+}
+
+test "AccountPool deterministic route-state matrix skips attempted accounts across 1-4 pools" {
+    const ids = [_][]const u8{
+        "codex:max-1",
+        "codex:max-2",
+        "codex:max-3",
+        "codex:max-4",
+    };
+
+    var pool_size: usize = 1;
+    while (pool_size <= ids.len) : (pool_size += 1) {
+        var pool = AccountPool.init(std.testing.allocator);
+        defer pool.deinit();
+
+        var idx: usize = 0;
+        while (idx < pool_size) : (idx += 1) {
+            try pool.add(matrixAccountSummary(ids[idx], .available));
+        }
+
+        var attempted: [4][]const u8 = undefined;
+        var attempted_count: usize = 0;
+        while (attempted_count + 1 < pool_size) : (attempted_count += 1) {
+            attempted[attempted_count] = ids[attempted_count];
+        }
+
+        const elected = try pool.elect(null, null, attempted[0..attempted_count]);
+        try std.testing.expectEqualStrings(ids[pool_size - 1], elected.id);
+
+        attempted[attempted_count] = ids[pool_size - 1];
+        attempted_count += 1;
+        try std.testing.expectError(
+            types.BrokerError.NoAccountSelectable,
+            pool.elect(null, null, attempted[0..attempted_count]),
+        );
+    }
 }
 
 test "AccountPool.elect property: never returns excluded id (random)" {

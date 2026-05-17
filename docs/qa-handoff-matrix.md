@@ -56,7 +56,7 @@ capability, such as `codex:max-3#codex-max`.
 | Quota handoff | selected route `usage_limit_reached`, fallback 200 | `proxy_turn 429`, durable quota evidence, `proxy_same_turn_retry`, fallback `200` | live-proven for managed Codex |
 | All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic covered; live/cassette target |
 | Tier selected-route classification | selected route returns `usage_not_included` | route marked `tier_insufficient`; no quota classification or same-turn quota retry | synthetic covered; live/cassette target |
-| Tier before fallback election | already-tier-blocked B precedes credited C in route pool | B is not elected; C selected | route-state matrix target |
+| Tier before fallback election | already-tier-blocked B precedes credited C in route pool | B is not elected; C selected | unit matrix covered; live/cassette target |
 | Reset-window repair | quota window expires | no-spend state becomes stale; confirmed revalidation repairs only with provider evidence | live target |
 | API-credit false positive | subscription quota exhausted but API credits exist | Codex subscription route stays quota-blocked | live target |
 | Child signal | Codex child killed/stopped | `session_aborted` with `term_kind`, `term_code`, `signal_name` | status regression added |
@@ -88,8 +88,7 @@ negative Codex UX lanes:
   no-account-selectable failure shapes.
 
 The remaining gap is not "no test exists"; it is provider-originated,
-publishable evidence for those same negative shapes, plus a generated
-route-state matrix that enumerates blocked accounts across 1-4 account pools.
+publishable evidence for those same negative shapes.
 
 ## Current Codex Truth
 

@@ -135,10 +135,11 @@ Not proven:
   not trigger a same-turn quota retry.
 - [x] Assert expired quota reset windows remain blocked as
   `revalidation_needed` until provider revalidation.
-- [ ] Add a deterministic route-state matrix for 1-4 account pools covering
-  `200`, `401`, `429 usage_limit_reached`, generic `429`,
-  `usage_not_included`, materialization failure, and network failure.
-- [ ] In that matrix, assert no attempted, auth-dead, quota-exhausted,
+- [x] Add deterministic route-state coverage for 1-4 account pools and provider
+  signal classification covering `200`, `401`, `429 usage_limit_reached`,
+  generic `429`, `usage_not_included`, materialization failure, and
+  provider/transport failure.
+- [x] In the election matrix, assert no attempted, auth-dead, quota-exhausted,
   rate-limited, tier-insufficient, or credential-unavailable account is elected
   in the same request.
 - [ ] Assert quota evidence is recorded before retry in a small unit or cassette

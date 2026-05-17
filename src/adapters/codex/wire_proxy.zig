@@ -1686,6 +1686,91 @@ test "classify 429 with non-JSON body -> rate_limited" {
     try std.testing.expectEqual(broker_types.QuotaKind.rate_limited, c.kind);
 }
 
+test "provider signal matrix maps to route state and same-turn retry policy" {
+    const SignalCase = struct {
+        name: []const u8,
+        status: u16,
+        body: []const u8,
+        kind: broker_types.QuotaKind,
+        route_state: RouteState,
+        retry_same_turn: bool,
+        body_class: ?[]const u8 = null,
+    };
+
+    const cases = [_]SignalCase{
+        .{
+            .name = "200 ok",
+            .status = 200,
+            .body = "{}",
+            .kind = .ok,
+            .route_state = .available,
+            .retry_same_turn = false,
+        },
+        .{
+            .name = "401 auth",
+            .status = 401,
+            .body = "{}",
+            .kind = .auth_unauthorized,
+            .route_state = .auth_failed,
+            .retry_same_turn = true,
+        },
+        .{
+            .name = "429 usage_limit_reached",
+            .status = 429,
+            .body = "{\"error\":{\"type\":\"usage_limit_reached\",\"resets_at\":1788000000}}",
+            .kind = .quota_exhausted,
+            .route_state = .quota_exhausted,
+            .retry_same_turn = true,
+            .body_class = "usage_limit_reached",
+        },
+        .{
+            .name = "429 generic rate",
+            .status = 429,
+            .body = "{\"error\":{\"type\":\"rate_limit_exceeded\"}}",
+            .kind = .rate_limited,
+            .route_state = .rate_limited,
+            .retry_same_turn = true,
+        },
+        .{
+            .name = "429 malformed rate",
+            .status = 429,
+            .body = "Too Many Requests",
+            .kind = .rate_limited,
+            .route_state = .rate_limited,
+            .retry_same_turn = true,
+        },
+        .{
+            .name = "429 usage_not_included",
+            .status = 429,
+            .body = "{\"error\":{\"type\":\"usage_not_included\",\"plan_type\":\"free\"}}",
+            .kind = .tier_insufficient,
+            .route_state = .tier_insufficient,
+            .retry_same_turn = false,
+            .body_class = "usage_not_included",
+        },
+        .{
+            .name = "provider 5xx",
+            .status = 503,
+            .body = "Service Unavailable",
+            .kind = .provider_5xx,
+            .route_state = .provider_degraded,
+            .retry_same_turn = true,
+        },
+    };
+
+    for (cases) |tc| {
+        const c = classify(std.testing.allocator, tc.status, tc.body);
+        try std.testing.expectEqual(tc.kind, c.kind);
+        try std.testing.expectEqual(tc.route_state, routeStateFromClassification(c.kind));
+        try std.testing.expectEqual(tc.retry_same_turn, shouldRetrySameTurn(c.kind));
+        if (tc.body_class) |expected_body_class| {
+            try std.testing.expectEqualStrings(expected_body_class, c.body_class orelse "");
+        } else {
+            try std.testing.expect(c.body_class == null);
+        }
+    }
+}
+
 test "parseRequest reads start line + headers + content-length body" {
     const wire =
         "POST /backend-api/codex/responses HTTP/1.1\r\n" ++
@@ -2026,19 +2111,23 @@ test "appendPoolRejections emits complete terminal candidate vector" {
     try pool.add(.{ .id = "codex:max-2", .selectable = false, .liveness = .dead, .availability = .available });
     try pool.add(.{ .id = "codex:max-3", .selectable = true, .liveness = .live, .availability = .rate_limited });
     try pool.add(.{ .id = "codex:max-4", .selectable = false, .liveness = .degraded, .availability = .unknown });
+    try pool.add(.{ .id = "codex:max-5", .selectable = true, .liveness = .live, .availability = .available });
 
     var attempted = std.ArrayListUnmanaged([]const u8){};
     defer attempted.deinit(std.testing.allocator);
     try appendAttempt(std.testing.allocator, &attempted, "codex:max-1");
+    try appendAttempt(std.testing.allocator, &attempted, "codex:max-5");
 
     var rejections = std.ArrayListUnmanaged(CandidateRejection){};
     defer rejections.deinit(std.testing.allocator);
     try appendRejection(std.testing.allocator, &rejections, "codex:max-1", .quota_exhausted, "quota_exhausted");
     try appendPoolRejections(std.testing.allocator, &pool, &attempted, &rejections);
 
-    try std.testing.expectEqual(@as(usize, 4), rejections.items.len);
+    try std.testing.expectEqual(@as(usize, 5), rejections.items.len);
     try std.testing.expectEqual(RouteState.quota_exhausted, rejections.items[0].state);
     try std.testing.expectEqual(RouteState.auth_failed, rejections.items[1].state);
     try std.testing.expectEqual(RouteState.rate_limited, rejections.items[2].state);
     try std.testing.expectEqual(RouteState.provider_degraded, rejections.items[3].state);
+    try std.testing.expectEqual(RouteState.credential_unavailable, rejections.items[4].state);
+    try std.testing.expectEqualStrings("attempted_without_success", rejections.items[4].reason);
 }
