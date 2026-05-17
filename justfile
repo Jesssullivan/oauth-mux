@@ -278,6 +278,13 @@ smoke-codex-cassette-replay:
 smoke-codex-cassette-replay-local:
     ./scripts/smoke-codex-cassette-replay.sh
 
+smoke-codex-cassette-all-exhausted:
+    nix develop --command just smoke-codex-cassette-all-exhausted-local
+
+smoke-codex-cassette-all-exhausted-local:
+    zig build
+    ./scripts/smoke-codex-cassette-all-exhausted.sh
+
 smoke-codex-capture-review:
     nix develop --command just smoke-codex-capture-review-local
 

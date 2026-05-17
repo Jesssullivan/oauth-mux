@@ -119,8 +119,10 @@ Not proven:
   proof and verify the terminal event is
   `quota_handoff_failed_no_account_selectable` with a
   complete redacted rejection vector. The synthetic managed-run regression is
-  already covered by `scripts/smoke-codex-all-exhausted.sh` and is part of
-  `just check-local`; the remaining gap is real wire/live evidence.
+  covered by `scripts/smoke-codex-all-exhausted.sh`; the managed cassette
+  harness is covered by `scripts/smoke-codex-cassette-all-exhausted.sh` and is
+  part of `just check-local`. The remaining gap is publishable provider-originated
+  cassette or live evidence.
 - [ ] Run reset-window repair proof: exhausted route stays blocked until reset
   or spend-gated revalidation evidence repairs it. Synthetic stale-window
   routing is already covered in `scripts/e2e-local.sh`; the remaining gap is

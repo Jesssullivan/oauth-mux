@@ -54,7 +54,7 @@ capability, such as `codex:max-3#codex-max`.
 | Labeled reauth | `oauth-mux codex login-device <account>` | action says `user_handoff`, route label named, no raw identity | live operator flow |
 | Auth fallback | selected route 401, fallback 200 | `proxy_auth_same_turn_retry`, `auth_health_observed quota_claim:false` | live and smoke evidence |
 | Quota handoff | selected route `usage_limit_reached`, fallback 200 | `proxy_turn 429`, durable quota evidence, `proxy_same_turn_retry`, fallback `200` | live-proven for managed Codex |
-| All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic covered; live/cassette target |
+| All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic and managed cassette harness covered; publishable provider cassette/live target |
 | Tier selected-route classification | selected route returns `usage_not_included` | route marked `tier_insufficient`; no quota classification or same-turn quota retry | synthetic covered; live/cassette target |
 | Tier before fallback election | already-tier-blocked B precedes credited C in route pool | B is not elected; C selected | unit matrix covered; live/cassette target |
 | Reset-window repair | quota window expires | no-spend state becomes stale; confirmed revalidation repairs only with provider evidence | live target |
@@ -78,6 +78,10 @@ negative Codex UX lanes:
 
 - `scripts/smoke-codex-all-exhausted.sh` covers the all-fallbacks terminal
   vector, typed `503` repair body, redaction, and stable managed child PID.
+- `scripts/smoke-codex-cassette-all-exhausted.sh` runs that terminal vector
+  through the cassette replay server, proving the managed proxy/replayer
+  boundary without provider traffic. It is still synthetic cassette content,
+  not publishable provider-originated evidence.
 - `scripts/smoke-codex-tier-insufficient.sh` covers
   `usage_not_included -> tier_insufficient`, no quota misclassification, and no
   same-turn quota retry.
@@ -146,7 +150,8 @@ treated as public claims until captured, but they do not block the package
 parity tranche for `0.1.7`.
 
 1. Publishable cassette for real `usage_limit_reached` response shape.
-2. Live or cassette-backed all-fallbacks-exhausted terminal vector.
+2. Publishable provider cassette or live all-fallbacks-exhausted terminal
+   vector.
 3. Live or cassette-backed tier-insufficient classification, then route
    election that skips the tier-blocked route before a credited fallback.
 4. Reset-window repair after quota reset with no manual health reset.
