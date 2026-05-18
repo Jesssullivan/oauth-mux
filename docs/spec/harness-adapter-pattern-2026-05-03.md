@@ -194,15 +194,17 @@ per-adapter parsing logic.
 
 ```jsonc
 { "kind": "session_started", "adapter": "codex", "session_id": "...", "selected_account": "codex:max-1", "claim_level": "broker_owned" }
-{ "kind": "account_swap", "from": "...", "to": "...", "reason": "quota_exhausted", "via": "<adapter-specific mechanism>", "claim_level": "next_turn_seamless" }
+{ "kind": "account_swap_selected", "from": "...", "to": "...", "reason": "quota_exhausted", "via": "<adapter-specific mechanism>", "claim_level": "broker_owned" }
+{ "kind": "account_swap_verified", "from": "...", "to": "...", "via": "<adapter-specific mechanism>", "claim_level": "next_turn_seamless" }
 { "kind": "credential_refresh", "account": "...", "trigger": "proactive_exp" | "unauthorized_401", "outcome": "ok" | "failed" }
 { "kind": "quota_observed", "account": "...", "kind_detail": "rate_limited" | "tier_insufficient" | "provider_5xx", "retry_after_s": 12 }
 { "kind": "session_ended", "session_id": "...", "turns": int, "swaps": int, "final_claim_level": "..." }
 ```
 
-The `via` field on `account_swap` is the only adapter-specific freeform
-field; everything else has a fixed enum of allowed values per the broker
-spec.
+The `via` field on swap frames is the only adapter-specific freeform field;
+everything else has a fixed enum of allowed values per the broker spec. A
+replacement selection is not a Level 3 claim; the verified frame appears only
+after the adapter observes a completed turn against the replacement account.
 
 ## When to write a new adapter
 

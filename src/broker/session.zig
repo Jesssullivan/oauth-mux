@@ -64,11 +64,26 @@ pub const SessionTable = struct {
         owned.adapter = try self.allocator.dupe(u8, s.adapter);
         owned.adapter_version = try self.allocator.dupe(u8, s.adapter_version);
         owned.harness_target = try self.allocator.dupe(u8, s.harness_target);
+        owned.current_account = if (s.current_account) |account|
+            try self.allocator.dupe(u8, account)
+        else
+            null;
         try self.map.put(owned_id, owned);
     }
 
     pub fn get(self: *SessionTable, id: []const u8) ?Session {
         return self.map.get(id);
+    }
+
+    pub fn getPtr(self: *SessionTable, id: []const u8) ?*Session {
+        return self.map.getPtr(id);
+    }
+
+    pub fn setCurrentAccount(self: *SessionTable, id: []const u8, account: []const u8) types.BrokerError!void {
+        const session = self.getPtr(id) orelse return types.BrokerError.SessionNotFound;
+        const owned_account = self.allocator.dupe(u8, account) catch return types.BrokerError.OutOfMemory;
+        if (session.current_account) |old| self.allocator.free(old);
+        session.current_account = owned_account;
     }
 
     pub fn drop(self: *SessionTable, id: []const u8) bool {
@@ -135,4 +150,30 @@ test "SessionTable create/get/drop" {
 
     try std.testing.expect(t.drop(id));
     try std.testing.expect(t.get(id) == null);
+}
+
+test "SessionTable setCurrentAccount replaces owned account state" {
+    var t = SessionTable.init(std.testing.allocator);
+    defer t.deinit();
+
+    const id = try t.newId();
+    defer std.testing.allocator.free(id);
+
+    try t.create(.{
+        .id = id,
+        .adapter = "codex",
+        .adapter_version = "0.1.0",
+        .harness_target = "codex 0.128.0",
+        .session_pid = 1234,
+        .claim_floor = .broker_owned,
+        .started_at_ms = std.time.milliTimestamp(),
+    });
+
+    try t.setCurrentAccount(id, "codex:max-1");
+    try std.testing.expectEqualStrings("codex:max-1", t.get(id).?.current_account.?);
+
+    try t.setCurrentAccount(id, "codex:max-2");
+    try std.testing.expectEqualStrings("codex:max-2", t.get(id).?.current_account.?);
+
+    try std.testing.expectError(types.BrokerError.SessionNotFound, t.setCurrentAccount("missing", "codex:max-3"));
 }

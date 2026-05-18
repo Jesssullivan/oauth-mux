@@ -178,7 +178,21 @@ declared capabilities.
   "surface_version": 1,
   "build": "oauth-mux 0.2.0+broker",
   "transports": ["stdio", "unix"],
-  "capabilities": ["accounts", "quota", "refresh", "events", "policy"]
+  "capabilities": ["accounts", "quota", "refresh", "events", "policy"],
+  "capabilities_detail": {
+    "account_list": true,
+    "account_select": true,
+    "account_swap": true,
+    "credential_materialize": true,
+    "credential_materialize_scope": "adapter_stdio_only",
+    "credential_refresh": false,
+    "quota_observe": true,
+    "quota_status": true,
+    "events_append": false,
+    "events_subscribe": false,
+    "policy_get": true,
+    "policy_request_admission": false
+  }
 }
 ```
 
@@ -220,13 +234,18 @@ Adapter signals "the current account is unusable; give me the next one."
 Broker marks the current account quota-exhausted (or other typed reason),
 selects the next, returns it.
 - Params: `{ "session_id": "...", "current_account": "codex:max-1", "reason": "quota_exhausted", "evidence": { "http_status": 429, "body_class": "usage_limit_reached", "resets_at": 1788000000 } }`
-- Returns: same shape as `account/select`, plus `previous_marked: { "as": "quota_exhausted", "until": 1788000000 }`.
+- Returns: same shape as `account/select`, plus `previous_marked: { "as": "quota_exhausted", "until": 1788000000 }` and explicit claim fields such as `requires_adapter_turn_completion:true`.
 - Errors: `no_account_selectable` with the same typed reasons.
 
 `account/swap` is the load-bearing method. It is what makes
 "`account A` exhausts → `account B` takes over" a single atomic broker
 operation that the adapter requests when its harness shows it the
 exhaustion signal.
+
+`account/swap` itself remains a broker-owned replacement selection. It must
+not emit `claim.level:"next_turn_seamless"` merely because a replacement was
+found. The adapter or proxy promotes to `next_turn_seamless` only after it
+observes the next turn complete against the replacement account.
 
 ### 2.3 Credentials
 
