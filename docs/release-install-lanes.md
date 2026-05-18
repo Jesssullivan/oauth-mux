@@ -45,8 +45,8 @@ The 2026-05-18 investigation found that public Homebrew `0.1.7` installed a
 `codex` shim that always entered `oauth-mux codex`, so `codex --version` and
 `codex login` could hit route election and fail with `NoAccountSelectable`.
 That was package-lane drift, not a route-health issue. The current source tree
-fixes the release templates and adds package smokes so the next release can
-prove this behavior before publication.
+fixes the release templates and adds package smokes so the `0.1.9` package
+release can prove this behavior before publication.
 
 ## CI/CD Surfaces
 
