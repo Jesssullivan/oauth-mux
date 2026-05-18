@@ -14,14 +14,17 @@ refreshed when release truth, route evidence, or tracker state changes.
   2026-05-17 refresh verified the `v0.1.7` release workflow, npm publish
   workflow, and hosted system-package install QA.
 - Version truth: public npm, GitHub Release, Homebrew, curl installer, and
-  deb/rpm lanes now resolve to `0.1.7`.
+  deb/rpm lanes resolve to `0.1.7`, but the 2026-05-18 shim investigation found
+  a package-lane QA gap: public Homebrew `0.1.7` routes native admin commands
+  such as `codex --version` through `oauth-mux codex`.
 - Installed provenance: PATH can resolve a public package binary or a
   user-local dogfood binary depending on shell setup. Use `which -a oauth-mux`,
   `which -a codex`, `oauth-mux version --json`, and `codex preflight` before
   treating any installed-command run as release evidence.
 - Homebrew truth: the public `jesssullivan/omux` tap installs `oauth-mux
-  0.1.7`, includes the managed `codex` shim, and `brew info --json=v2`
-  reports stable version `0.1.7`.
+  0.1.7`, includes a managed `codex` shim, and `brew info --json=v2`
+  reports stable version `0.1.7`; the current public shim still needs the
+  admin pass-through fix from this source tree.
 - Codex route truth: refresh before every live test. The latest 2026-05-17
   22:24 EDT installed Homebrew `0.1.7` no-spend snapshot is `not_afloat`:
   all four named `codex-max` routes are runtime-ready and broker-ready but
@@ -50,7 +53,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` when present. |
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
-| Native Codex shim pass-through | Implemented | Admin/login/help/version paths bypass route election and exec native Codex. |
+| Native Codex shim pass-through | Implemented in source, release pending | Admin/login/help/version paths bypass route election and exec native Codex. The 2026-05-18 package-lane fix must ship before public Homebrew/curl claims use this as installed truth. |
 | Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
 | Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields and safe handoff-plan commands for upstream-owned login surfaces; future MCP tools must mirror CLI semantics. |
@@ -99,11 +102,13 @@ not claim to keep them alive.
 
 ## Release And Distribution Posture
 
-`0.1.7` package parity is complete for the public install lanes. Negative Codex
-cassettes, broader adapter proof, and daemon beta truth remain important
-follow-up work, but they are no longer publication blockers for this release
-tranche. Future public install copy must still avoid naming a version until
-that version is actually published and verified.
+`0.1.7` version availability is complete for the public install lanes, but
+package parity is not complete until the shared Codex shim fix ships and the
+package lanes prove native admin pass-through. Negative Codex cassettes,
+broader adapter proof, Home Manager packaging, Windows raw-tarball shim parity,
+and daemon beta truth remain follow-up work. Future public install copy must
+avoid claiming a version or lane behavior until that version is actually
+published and verified.
 
 The release lanes remain:
 

@@ -59,7 +59,13 @@ package_binary() {
   mkdir -p "$stage"
   cp "$src" "$stage/${binary_name}"
   chmod 0755 "$stage/${binary_name}"
-  tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name"
+  if [ "$npm_os" = "darwin" ] || [ "$npm_os" = "linux" ]; then
+    cp "$repo_root/dist/codex-shim.sh" "$stage/codex"
+    chmod 0755 "$stage/codex"
+    tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name" codex
+  else
+    tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name"
+  fi
 
   local pkg_dir="$npm_dir/${npm_pkg}"
   mkdir -p "$pkg_dir/bin"
@@ -137,6 +143,9 @@ write_nfpm_config() {
   local arch="$1"
   local src="$2"
   local config="$nfpm_dir/oauth-mux-${arch}.yaml"
+  local codex_shim="$work_dir/nfpm-codex-shim"
+  cp "$repo_root/dist/codex-shim.sh" "$codex_shim"
+  chmod 0755 "$codex_shim"
   cat >"$config" <<EOF
 name: oauth-mux
 arch: "${arch}"
@@ -148,6 +157,10 @@ license: MIT
 contents:
   - src: ${src}
     dst: /usr/bin/oauth-mux
+    file_info:
+      mode: 0755
+  - src: ${codex_shim}
+    dst: /usr/bin/codex
     file_info:
       mode: 0755
 EOF

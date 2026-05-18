@@ -43,10 +43,11 @@ same-thread continuity semantics, mid-turn streaming recovery, unmanaged
 bare-`codex` daemon handoff, non-Codex harnesses, and the remaining auth/quota
 permutations as open proof lanes.
 
-Supersession note, 2026-05-17: `v0.1.7` package parity is live. GitHub Release,
-npm, curl installer, Homebrew public tap, and deb/rpm package QA resolve to
-`0.1.7`. This updates distribution truth only; it does not add new live
-provider handoff claims beyond the preserved Codex evidence above.
+Supersession note, 2026-05-18: public GitHub Release, npm, curl installer,
+Homebrew public tap, and deb/rpm package lanes resolve to `0.1.7`, but package
+parity is not complete until the shared `codex` shim admin pass-through fix
+ships. This updates distribution truth only; it does not add new live provider
+handoff claims beyond the preserved Codex evidence above.
 
 ## Public Issue Map
 

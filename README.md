@@ -21,17 +21,20 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes now resolve to `0.1.7`: GitHub Release assets, npm root
-and platform packages, the public Homebrew tap, the curl installer, and
-published deb/rpm assets have all passed package-lane QA. Homebrew QA now checks
-both the installed binary and Homebrew's parsed `versions.stable` metadata.
+Public install lanes currently resolve to `0.1.7`: GitHub Release assets, npm
+root and platform packages, the public Homebrew tap, the curl installer, and
+published deb/rpm assets. The current source tree also tightens install parity
+after a 2026-05-18 finding that the public Homebrew `codex` shim routed native
+admin commands such as `codex --version` through oauth-mux route election.
 
 What works today:
 
 - Managed Codex launch and resume through `oauth-mux codex` and
   `oauth-mux codex resume`.
-- Package/user-local installs include a `codex` shim, so a future bare `codex`
-  command is managed only when PATH resolves that shim. Direct native Codex
+- Current source/user-local dogfood and next package artifacts include a
+  `codex` shim, so a future bare `codex` command is managed only when PATH
+  resolves that shim. Admin commands such as `codex login` and
+  `codex --version` must pass through to native Codex. Direct native Codex
   binaries and already-running native sessions are not globally protected.
 - Native Codex chooser/session authority bridge, including canonical
   `state_5.sqlite*` when present.
@@ -150,12 +153,13 @@ an immediate `SIGKILL` / status `137`.
 `just install-local-dogfood` uses that remove-then-copy lane, verifies the
 installed binary hash against `./zig-out/bin/oauth-mux`, and installs a managed
 `codex` shim in the same user-local bin directory. The shim resolves the native
-upstream Codex executable, passes it through `OMUX_CODEX_BIN`, and then enters
-`oauth-mux codex`. It refuses to replace a non-oauth-mux `codex` already in that
-directory unless `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Public npm and Homebrew
-package lanes also carry the managed `codex` shim; use `version --json` and
-`codex preflight` when you need to distinguish a package binary from a worktree
-dogfood binary.
+upstream Codex executable, passes native admin commands through, and enters
+`oauth-mux codex` for managed session commands. It refuses to replace a
+non-oauth-mux `codex` already in that directory unless
+`OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Public packages may carry a managed
+`codex` shim, but installed behavior must still be proven with `version --json`,
+`which -a codex`, and `codex preflight` when you need to distinguish a package
+binary from a worktree dogfood binary.
 
 ## Usage
 
