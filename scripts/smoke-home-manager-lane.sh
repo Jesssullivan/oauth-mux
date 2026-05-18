@@ -11,13 +11,16 @@ fi
 
 binary_only="$(nix build --no-link --print-out-paths .#oauth-mux)"
 with_shim="$(nix build --no-link --print-out-paths .#withCodexShim)"
+expected_version="$($repo_root/scripts/project-version.sh)"
 
 test -x "$binary_only/bin/oauth-mux"
 test ! -e "$binary_only/bin/codex"
+"$binary_only/bin/oauth-mux" version | grep -qx "oauth-mux $expected_version"
 
 test -x "$with_shim/bin/oauth-mux"
 test -x "$with_shim/bin/codex"
 grep -q OMUX_CODEX_SHIM "$with_shim/bin/codex"
+"$with_shim/bin/oauth-mux" version | grep -qx "oauth-mux $expected_version"
 
 native_dir="$(mktemp -d)"
 cleanup() {
