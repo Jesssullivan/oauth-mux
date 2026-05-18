@@ -33,6 +33,12 @@ version: build
 install-local-dogfood:
     nix develop --command ./scripts/install-local-dogfood.sh
 
+install-local-dogfood-shim:
+    OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1 nix develop --command ./scripts/install-local-dogfood.sh
+
+uninstall-local-dogfood:
+    ./scripts/uninstall-local-dogfood.sh
+
 status: build
     ./zig-out/bin/oauth-mux status --json
 

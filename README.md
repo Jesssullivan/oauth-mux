@@ -153,13 +153,17 @@ place can leave stale taskgated/code-signing state on the old vnode and produce
 an immediate `SIGKILL` / status `137`.
 
 `just install-local-dogfood` uses that remove-then-copy lane, verifies the
-installed binary hash against `./zig-out/bin/oauth-mux`, and installs a managed
-`codex` shim in the same user-local bin directory. The shim resolves the native
-upstream Codex executable, passes native admin commands through, and enters
-`oauth-mux codex` for managed session commands. It refuses to replace a
-non-oauth-mux `codex` already in that directory unless
-`OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Public packages may carry a managed
-`codex` shim, but installed behavior must still be proven with `version --json`,
+installed binary hash against `./zig-out/bin/oauth-mux`, and leaves the native
+`codex` command unshadowed by default. Use `just install-local-dogfood-shim` or
+set `OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` only when you intentionally want
+`~/.local/bin/codex` to enter managed Codex sessions through oauth-mux. The shim
+resolves the native upstream Codex executable, passes native admin commands
+through, and enters `oauth-mux codex` for managed session commands. It refuses
+to replace a non-oauth-mux `codex` already in that directory unless
+`OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Use `just uninstall-local-dogfood` to
+remove the local dogfood binary and any oauth-mux-marked `codex` shim without
+touching a native Codex executable. Public packages may carry a managed `codex`
+shim, but installed behavior must still be proven with `version --json`,
 `which -a codex`, and `codex preflight` when you need to distinguish a package
 binary from a worktree dogfood binary.
 

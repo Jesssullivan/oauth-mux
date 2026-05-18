@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 install_dir="${INSTALL_DIR:-$HOME/.local/bin}"
-install_codex_shim="${OMUX_DOGFOOD_INSTALL_CODEX_SHIM:-1}"
+install_codex_shim="${OMUX_DOGFOOD_INSTALL_CODEX_SHIM:-0}"
 replace_existing_codex="${OMUX_DOGFOOD_REPLACE_CODEX:-0}"
 binary_src="$repo_root/zig-out/bin/oauth-mux"
 oauth_mux_target="$install_dir/oauth-mux"
@@ -116,6 +116,8 @@ printf 'oauth-mux sha256: %s\n' "$installed_hash"
 if [ "$install_codex_shim" != "0" ]; then
   printf 'installed managed codex shim: %s\n' "$codex_target"
   printf 'native Codex CLI resolved before install: %s\n' "$native_codex"
+else
+  printf 'skipped managed codex shim: set OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1 to shadow codex for managed-shim dogfood\n'
 fi
 printf 'PATH oauth-mux: %s\n' "$(command -v oauth-mux || true)"
 printf 'PATH codex: %s\n' "$(command -v codex || true)"
