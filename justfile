@@ -177,6 +177,9 @@ nix-build:
 nix-check:
     nix flake check
 
+home-manager-smoke:
+    ./scripts/smoke-home-manager-lane.sh
+
 # ── Validation ──
 
 check:

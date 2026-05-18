@@ -45,6 +45,11 @@ refreshed when release truth, route evidence, or tracker state changes.
   commands enter `oauth-mux codex` when PATH resolves the shim, but that is not
   a global stay-afloat daemon and does not protect direct native Codex binaries
   or already-running unmanaged sessions.
+- Nix/Home Manager truth: source now exposes a binary-only
+  `packages.<system>.oauth-mux` package, the existing shimmed
+  `packages.<system>.withCodexShim` / default package, and a Home Manager module
+  that defaults to binary-only unless `programs.oauth-mux.codexShim.enable =
+  true`.
 
 ## Feature Ledger
 
@@ -56,6 +61,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
 | Native Codex shim pass-through | Implemented in source, release pending | Admin/login/help/version paths bypass route election and exec native Codex. The 2026-05-18 package-lane fix must ship before public Homebrew/curl claims use this as installed truth. |
+| Home Manager lane | Implemented in source | Module defaults to binary-only install; managed `codex` shim is explicit opt-in. |
 | Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
 | Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields and safe handoff-plan commands for upstream-owned login surfaces; future MCP tools must mirror CLI semantics. |
@@ -107,20 +113,21 @@ not claim to keep them alive.
 `0.1.7` version availability is complete for the public install lanes, but
 package parity is not complete until the shared Codex shim fix ships and the
 package lanes prove native admin pass-through. Negative Codex cassettes,
-broader adapter proof, Home Manager packaging, Windows raw-tarball shim parity,
-and daemon beta truth remain follow-up work. Future public install copy must
-avoid claiming a version or lane behavior until that version is actually
-published and verified.
+broader adapter proof, and daemon beta truth remain follow-up work. Windows
+managed-`codex` parity is intentionally assigned to the npm wrapper lane rather
+than raw tarballs until a native Windows operator need is proven. Future public
+install copy must avoid claiming a version or lane behavior until that version
+is actually published and verified.
 
 The release lanes remain:
 
 - worktree dogfood;
 - user-local dogfood;
 - Nix package;
-- GitHub Release tarballs and installer;
 - npm;
 - Homebrew;
-- deb/rpm packages.
+- deb/rpm packages;
+- Home Manager.
 
 Remote/browser validation should use the repo's remote execution lane when a
 browser is needed; local Playwright is not part of this CLI proof path.
@@ -136,6 +143,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
 | Package parity and install lanes | TIN-1255 | #252 | `0.1.7` is published and verified across GitHub Release, npm, Homebrew, curl, and deb/rpm package lanes. |
+| Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
 
