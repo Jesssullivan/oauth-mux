@@ -192,4 +192,7 @@ Not proven:
   public-copy changes.
 - [ ] Split product/code changes and website proof-copy changes into separate
   commits or PRs when publishing.
-- [ ] Do not close TIN-951/#177 or TIN-916/#131 from synthetic tests alone.
+- [x] Close TIN-951/#177 and TIN-916/#131 only from live evidence, not
+  synthetic tests alone. #177 closed from the managed Codex live account-swap
+  acceptance; #131 closed from the May 9 engineered managed-session quota
+  handoff proof, with remaining negative/permutation lanes tracked separately.
