@@ -30,6 +30,9 @@ What works today:
 
 - Managed Codex launch and resume through `oauth-mux codex` and
   `oauth-mux codex resume`.
+- Package/user-local installs include a `codex` shim, so a future bare `codex`
+  command is managed only when PATH resolves that shim. Direct native Codex
+  binaries and already-running native sessions are not globally protected.
 - Native Codex chooser/session authority bridge, including canonical
   `state_5.sqlite*` when present.
 - Root-partitioned Codex config passthrough for user settings such as

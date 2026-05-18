@@ -1,6 +1,6 @@
 # QA Handoff Matrix
 
-Updated: 2026-05-16
+Updated: 2026-05-17
 
 This matrix keeps handoff, reauth, resume, account-label, and cassette/live QA
 claims in one place. It is subordinate to the broker and Codex adapter specs.
@@ -100,17 +100,19 @@ publishable evidence for those same negative shapes.
   `oauth-mux codex resume`.
 - The strongest preserved proof is
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- Current no-spend route truth from the 2026-05-16 refresh is afloat for
-  `codex-max`: `max-1`, `max-2`, `max-3`, and `max-4` are selectable,
-  broker-ready, and `available`.
+- Current no-spend route truth is volatile and must be refreshed before each
+  live session. The 2026-05-17 installed `0.1.7` snapshot is afloat for
+  `codex-max`: `max-1` selected, `max-3` and `max-4` selectable fallbacks, and
+  `max-2` blocked as `token_revoked` with the labeled handoff
+  `oauth-mux codex login-device max-2`.
 - `oauth-mux codex preflight --profile codex-max --capability codex-max --json`
-  reports `session_start_ready:true`, `fallback_ready:true`, and
-  `single_route_at_risk:false`.
+  reports `session_start_ready:true`, `fallback_ready:true`,
+  `single_route_at_risk:false`, and one blocked broker route in that snapshot.
 - `oauth-mux codex status-latest --json` currently reports
-  `auth_fallback_sequence_observed` from the latest rolling local artifact.
-  This does not supersede the preserved quota handoff proof above; refresh this
-  command before copying current-state claims into public release notes or
-  tracker comments.
+  `brokered_without_fallback` from a rolling local artifact. This does not
+  supersede the preserved quota handoff proof above; refresh this command
+  before copying current-state claims into public release notes or tracker
+  comments.
 
 ## Next Multi-Account Session
 
@@ -134,7 +136,7 @@ Current matrix entry:
 | Route | Current state | Session role |
 | --- | --- | --- |
 | `codex:max-1#codex-max` | selectable, `available`, selected | primary candidate |
-| `codex:max-2#codex-max` | selectable, `available` | fallback / prior engineered primary |
+| `codex:max-2#codex-max` | blocked, `token_revoked`; run labeled login handoff before use | auth-repair / prior engineered primary |
 | `codex:max-3#codex-max` | selectable, `available` | fallback / prior engineered fallback |
 | `codex:max-4#codex-max` | selectable, `available` | fallback / reset-repair target |
 
