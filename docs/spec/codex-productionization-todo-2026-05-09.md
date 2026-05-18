@@ -71,6 +71,11 @@ Not proven:
 - [x] Add a managed-resume chooser regression: canonical authority is checked
   before child spawn, missing authority fails with a redacted diagnostic, and
   chooser mode avoids recursive rollout snapshotting before launch.
+- [x] Define the Codex session-store portability/import policy: canonical
+  session authority is bridged by reference, isolated stores are explicit, and
+  route-local silent import/copy remains rejected until a separate confirmed
+  import command exists. See
+  `docs/spec/codex-session-store-portability-policy-2026-05-18.md`.
 - [x] Bridge newer Codex `state_5.sqlite*` chooser authority by reference when
   canonical Codex has it. Treat `state_5.sqlite` as chooser authority when
   present and fall back to legacy `sessions` / `history.jsonl` /

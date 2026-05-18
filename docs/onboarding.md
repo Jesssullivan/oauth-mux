@@ -236,6 +236,9 @@ spawn and fails with a redacted diagnostic rather than opening an empty
 chooser. Newer Codex `state_5.sqlite*` chooser state is bridged by reference
 when present; older homes fall back to `sessions/`, `history.jsonl`,
 `session_index.jsonl`, and `shell_snapshots/`.
+See `docs/spec/codex-session-store-portability-policy-2026-05-18.md` for the
+explicit import policy: canonical bridge is supported; silent route-local
+session import/copy is not.
 
 The managed overlay also preserves normal Codex behavior config from the
 canonical config authority (`OMUX_CODEX_CONFIG_HOME`, then parent
