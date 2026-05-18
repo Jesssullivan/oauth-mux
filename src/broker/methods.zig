@@ -73,11 +73,17 @@ fn surfaceInfo(ctx: *Context) DispatchOutcome {
 
     var transports = std.json.Array.init(ctx.allocator);
     transports.append(.{ .string = "stdio" }) catch return oom();
-    transports.append(.{ .string = "unix" }) catch return oom();
     obj.put("transports", .{ .array = transports }) catch return oom();
 
+    var transport_detail = std.json.ObjectMap.init(ctx.allocator);
+    transport_detail.put("stdio_broker", .{ .bool = true }) catch return oom();
+    transport_detail.put("unix_broker", .{ .bool = false }) catch return oom();
+    transport_detail.put("daemon_socket_contract", .{ .string = "experimental_socket_stub" }) catch return oom();
+    transport_detail.put("daemon_hosts_broker", .{ .bool = false }) catch return oom();
+    obj.put("transport_detail", .{ .object = transport_detail }) catch return oom();
+
     var caps = std.json.Array.init(ctx.allocator);
-    inline for (.{ "accounts", "quota", "refresh", "events", "policy" }) |c| {
+    inline for (.{ "accounts", "quota", "credentials", "policy" }) |c| {
         caps.append(.{ .string = c }) catch return oom();
     }
     obj.put("capabilities", .{ .array = caps }) catch return oom();
@@ -693,6 +699,33 @@ test "dispatch surface/info returns object with surface_version=1" {
             const sv = v.object.get("surface_version") orelse return error.TestFailed;
             try std.testing.expect(sv == .integer);
             try std.testing.expectEqual(@as(i64, 1), sv.integer);
+
+            const transports = v.object.get("transports") orelse return error.TestFailed;
+            try std.testing.expect(transports == .array);
+            try std.testing.expectEqual(@as(usize, 1), transports.array.items.len);
+            try std.testing.expectEqualStrings("stdio", transports.array.items[0].string);
+
+            const transport_detail = v.object.get("transport_detail") orelse return error.TestFailed;
+            try std.testing.expect(transport_detail == .object);
+            try std.testing.expectEqual(false, transport_detail.object.get("unix_broker").?.bool);
+            try std.testing.expectEqual(false, transport_detail.object.get("daemon_hosts_broker").?.bool);
+            try std.testing.expectEqualStrings(
+                "experimental_socket_stub",
+                transport_detail.object.get("daemon_socket_contract").?.string,
+            );
+
+            const caps = v.object.get("capabilities") orelse return error.TestFailed;
+            try std.testing.expect(caps == .array);
+            for (caps.array.items) |cap| {
+                try std.testing.expect(cap == .string);
+                try std.testing.expect(!std.mem.eql(u8, cap.string, "refresh"));
+                try std.testing.expect(!std.mem.eql(u8, cap.string, "events"));
+            }
+            const detail = v.object.get("capabilities_detail") orelse return error.TestFailed;
+            try std.testing.expect(detail == .object);
+            try std.testing.expectEqual(false, detail.object.get("credential_refresh").?.bool);
+            try std.testing.expectEqual(false, detail.object.get("events_append").?.bool);
+            try std.testing.expectEqual(false, detail.object.get("events_subscribe").?.bool);
         },
         .err => return error.TestFailed,
     }
