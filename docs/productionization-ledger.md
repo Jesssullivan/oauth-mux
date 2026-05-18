@@ -138,6 +138,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | --- | --- | --- | --- |
 | Broker daemon and adapter contract | TIN-738 | #67 | Anchor remains open until daemon beta and second-adapter validation are honest. |
 | Codex next-turn broker switch | TIN-916 | #131 | Managed Codex handoff is proven; keep remaining negative/permutation work distinct from same-thread or mid-turn claims. |
+| Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
 | Wire cassette coverage | TIN-950 | #176 | Needed before treating negative permutations as stable release proof. |
 | Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
