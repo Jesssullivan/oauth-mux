@@ -136,7 +136,14 @@ assert_eq() {
 r=$(send_rpc '{"jsonrpc":"2.0","id":1,"method":"surface/info"}')
 assert_eq "surface/info.surface_version" "1" "$(echo "$r" | jq -r .result.surface_version)"
 assert_eq "surface/info.transports[0]"   "stdio" "$(echo "$r" | jq -r .result.transports[0])"
+assert_eq "surface/info.transports length" "1" "$(echo "$r" | jq -r '.result.transports | length')"
+assert_eq "surface/info.unix_broker" "false" "$(echo "$r" | jq -r .result.transport_detail.unix_broker)"
+assert_eq "surface/info.daemon_hosts_broker" "false" "$(echo "$r" | jq -r .result.transport_detail.daemon_hosts_broker)"
+assert_eq "surface/info.no refresh capability overclaim" "false" "$(echo "$r" | jq -r '.result.capabilities | index("refresh") != null')"
+assert_eq "surface/info.no events capability overclaim" "false" "$(echo "$r" | jq -r '.result.capabilities | index("events") != null')"
 assert_eq "surface/info.credential_materialize_scope" "adapter_stdio_only" "$(echo "$r" | jq -r .result.capabilities_detail.credential_materialize_scope)"
+assert_eq "surface/info.credential_refresh disabled" "false" "$(echo "$r" | jq -r .result.capabilities_detail.credential_refresh)"
+assert_eq "surface/info.events_append disabled" "false" "$(echo "$r" | jq -r .result.capabilities_detail.events_append)"
 
 # 1b. session validation rejects unknown ids before handshake.
 r=$(send_rpc '{"jsonrpc":"2.0","id":10,"method":"account/list","params":{"session_id":"not-real"}}')

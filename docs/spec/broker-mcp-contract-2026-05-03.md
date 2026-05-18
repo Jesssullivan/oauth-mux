@@ -127,9 +127,11 @@ The broker exposes its surface as **MCP server methods over stdio**. JSON-RPC
 3. The protocol is versioned and auditable. A Codex protocol drift won't
    silently break adapters that were correctly speaking the broker contract.
 
-Concretely: the broker process can be invoked as
-`oauth-mux mcp` for stdio MCP clients, and as a long-lived daemon for
-adapter children. Both speak the same method surface.
+Concretely: the broker process can be invoked as `oauth-mux mcp` for stdio MCP
+clients today. A future daemon/unix transport must speak the same method
+surface before it is advertised as a broker host; the current daemon socket
+remains experimental status/control plumbing and must not be treated as the
+broker MCP transport.
 
 ### 1.3 The user-facing entrypoints become the adapters
 
@@ -177,8 +179,14 @@ declared capabilities.
 {
   "surface_version": 1,
   "build": "oauth-mux 0.2.0+broker",
-  "transports": ["stdio", "unix"],
-  "capabilities": ["accounts", "quota", "refresh", "events", "policy"],
+  "transports": ["stdio"],
+  "transport_detail": {
+    "stdio_broker": true,
+    "unix_broker": false,
+    "daemon_socket_contract": "experimental_socket_stub",
+    "daemon_hosts_broker": false
+  },
+  "capabilities": ["accounts", "quota", "credentials", "policy"],
   "capabilities_detail": {
     "account_list": true,
     "account_select": true,
@@ -431,8 +439,11 @@ JSON entirely; restart is not a claim, it is a non-event.
 bare `codex`.
 **Deliverables:**
 - `oauth-mux mcp` exposes `surface/info`, `surface/handshake`,
-  `account/list`, `account/select`, `credential/materialize`, `events/*`,
-  `policy/get`. Stdio transport only.
+  `account/list`, `account/select`, `account/swap`,
+  `credential/materialize`, `quota/observe`, `quota/status`, and
+  `policy/get`. Stdio transport only. `credential/refresh`, `events/*`,
+  and policy admission return typed not-implemented responses until later
+  slices wire those capabilities.
 - `oauth-mux codex` adapter: spawns `codex app-server --listen stdio://`,
   drives the JSON-RPC, renders a thin terminal pass-through, materializes
   one selected account's tokens via the broker.
