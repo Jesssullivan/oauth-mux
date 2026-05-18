@@ -108,6 +108,12 @@ if grep -q -E '\$\{(VERSION|SHA_[A-Z0-9_]+)\}' "$homebrew_formula"; then
   printf 'unrendered placeholder remains in %s\n' "$homebrew_formula" >&2
   exit 1
 fi
+version_line="$(awk '/^[[:space:]]+version / { print NR; exit }' "$homebrew_formula")"
+license_line="$(awk '/^[[:space:]]+license / { print NR; exit }' "$homebrew_formula")"
+if [ -z "${version_line:-}" ] || [ -z "${license_line:-}" ] || [ "$version_line" -ge "$license_line" ]; then
+  printf 'Homebrew formula must put version before license for brew audit compatibility: %s\n' "$homebrew_formula" >&2
+  exit 1
+fi
 "$repo_root/scripts/homebrew-version-check.sh" "$version" "$homebrew_formula"
 if command -v ruby >/dev/null 2>&1; then
   ruby -c "$homebrew_formula" >/dev/null
