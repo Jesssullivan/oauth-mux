@@ -13,6 +13,7 @@ Environment:
   OMUX_RELEASE_REPO     GitHub release repo (default: Jesssullivan/oauth-mux)
   OMUX_DEB_QA_IMAGE     Debian image (default: debian:bookworm-slim)
   OMUX_RPM_QA_IMAGE     RPM image (default: rockylinux:9)
+  OMUX_EXPECT_CODEX_SHIM Require /usr/bin/codex package shim (default: 0)
   DOCKER                Docker-compatible runtime (default: docker)
 EOF
 }
@@ -32,6 +33,7 @@ repo="${OMUX_RELEASE_REPO:-Jesssullivan/oauth-mux}"
 docker_bin="${DOCKER:-docker}"
 deb_image="${OMUX_DEB_QA_IMAGE:-debian:bookworm-slim}"
 rpm_image="${OMUX_RPM_QA_IMAGE:-rockylinux:9}"
+expect_codex_shim="${OMUX_EXPECT_CODEX_SHIM:-0}"
 base_url="https://github.com/${repo}/releases/download/v${version}"
 
 require_command() {
@@ -91,16 +93,23 @@ download "$rpm_name"
 verify_release_checksum "$deb_name"
 verify_release_checksum "$rpm_name"
 
+deb_check="set -e; dpkg -i /qa/$deb_name >/dev/null; dpkg-query -W oauth-mux; /usr/bin/oauth-mux version | grep 'oauth-mux $version'"
+rpm_check="set -e; rpm -i /qa/$rpm_name; rpm -q oauth-mux; rpm -ql oauth-mux | grep '^/usr/bin/oauth-mux$'; /usr/bin/oauth-mux version | grep 'oauth-mux $version'"
+if [ "$expect_codex_shim" = "1" ]; then
+  deb_check="set -e; dpkg -i /qa/$deb_name >/dev/null; dpkg-query -W oauth-mux; test -x /usr/bin/codex; grep OMUX_CODEX_SHIM /usr/bin/codex; /usr/bin/oauth-mux version | grep 'oauth-mux $version'"
+  rpm_check="set -e; rpm -i /qa/$rpm_name; rpm -q oauth-mux; rpm -ql oauth-mux | grep '^/usr/bin/oauth-mux$'; rpm -ql oauth-mux | grep '^/usr/bin/codex$'; grep OMUX_CODEX_SHIM /usr/bin/codex; /usr/bin/oauth-mux version | grep 'oauth-mux $version'"
+fi
+
 printf 'installing %s in %s\n' "$deb_name" "$deb_image"
 "$docker_bin" run --rm \
   -v "$workdir:/qa:ro" \
   "$deb_image" \
-  sh -lc "set -e; dpkg -i /qa/$deb_name >/dev/null; dpkg-query -W oauth-mux; /usr/bin/oauth-mux version | grep 'oauth-mux $version'"
+  sh -lc "$deb_check"
 
 printf 'installing %s in %s\n' "$rpm_name" "$rpm_image"
 "$docker_bin" run --rm \
   -v "$workdir:/qa:ro" \
   "$rpm_image" \
-  sh -lc "set -e; rpm -i /qa/$rpm_name; rpm -q oauth-mux; rpm -ql oauth-mux | grep '^/usr/bin/oauth-mux$'; /usr/bin/oauth-mux version | grep 'oauth-mux $version'"
+  sh -lc "$rpm_check"
 
 printf 'system package install QA passed for oauth-mux %s\n' "$version"

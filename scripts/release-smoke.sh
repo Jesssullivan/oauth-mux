@@ -58,6 +58,12 @@ require_command() {
   fi
 }
 
+archive_contains() {
+  local archive="$1"
+  local expected="$2"
+  tar -tzf "$archive" | awk -v expected="$expected" '$0 == expected { found = 1 } END { exit found ? 0 : 1 }'
+}
+
 printf 'checking release tree: %s\n' "$out_dir"
 if [ ! -d "$out_dir" ]; then
   printf 'release output does not exist: %s\n' "$out_dir" >&2
@@ -88,12 +94,13 @@ for archive in \
   oauth-mux-aarch64-linux.tar.gz \
   oauth-mux-x86_64-macos.tar.gz \
   oauth-mux-aarch64-macos.tar.gz; do
-  tar -tzf "$artifacts_dir/$archive" | grep -qx 'oauth-mux'
+  archive_contains "$artifacts_dir/$archive" 'oauth-mux'
+  archive_contains "$artifacts_dir/$archive" 'codex'
 done
 for archive in \
   oauth-mux-x86_64-windows.tar.gz \
   oauth-mux-aarch64-windows.tar.gz; do
-  tar -tzf "$artifacts_dir/$archive" | grep -qx 'oauth-mux.exe'
+  archive_contains "$artifacts_dir/$archive" 'oauth-mux.exe'
 done
 
 printf 'checking Homebrew formula...\n'
@@ -139,6 +146,16 @@ if [ -n "${platform_tgz:-}" ]; then
     --no-audit \
     --no-fund >/dev/null
   "$tmp/app/node_modules/.bin/oauth-mux" version | grep -qx "oauth-mux ${version}"
+  native_codex="$tmp/native-codex"
+  cat >"$native_codex" <<'EOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "native-codex-stub 0.0.0" ;;
+  *) echo "native-codex-stub" ;;
+esac
+EOF
+  chmod 0755 "$native_codex"
+  OMUX_CODEX_BIN="$native_codex" "$tmp/app/node_modules/.bin/codex" --version | grep -qx "native-codex-stub 0.0.0"
 
   printf 'checking curl installer...\n'
   install_dir="$tmp/install-bin"
@@ -147,6 +164,9 @@ if [ -n "${platform_tgz:-}" ]; then
     INSTALL_DIR="$install_dir" \
     sh "$artifacts_dir/install.sh" >/dev/null
   "$install_dir/oauth-mux" version | grep -qx "oauth-mux ${version}"
+  test -x "$install_dir/codex"
+  grep -q OMUX_CODEX_SHIM "$install_dir/codex"
+  OMUX_CODEX_BIN="$native_codex" "$install_dir/codex" --version | grep -qx "native-codex-stub 0.0.0"
 fi
 
 printf 'release smoke passed for v%s\n' "$version"

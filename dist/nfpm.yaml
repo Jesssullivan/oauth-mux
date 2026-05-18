@@ -10,3 +10,7 @@ contents:
     dst: /usr/bin/oauth-mux
     file_info:
       mode: 0755
+  - src: dist/codex-shim.sh
+    dst: /usr/bin/codex
+    file_info:
+      mode: 0755

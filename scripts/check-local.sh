@@ -7,6 +7,8 @@ zig build test
 zig build
 ./zig-out/bin/oauth-mux version --json | jq -e '.version and .runtime_identity.binary_path and .runtime_identity.binary_sha256 and .runtime_identity.path_printed == true' >/dev/null
 bash -n ./scripts/install-local-dogfood.sh
+sh -n ./dist/codex-shim.sh
+sh -n ./dist/install.sh
 
 for cfg in examples/*.config.json; do
   OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate

@@ -40,10 +40,49 @@ function findNativeCodex() {
   return null;
 }
 
+function shouldPassNative(firstArg) {
+  return new Set([
+    "--help",
+    "-h",
+    "help",
+    "--version",
+    "-V",
+    "version",
+    "login",
+    "logout",
+    "auth",
+    "mcp",
+    "completion",
+    "completions",
+  ]).has(firstArg || "");
+}
+
+function exitFromResult(prefix, result) {
+  if (result.error) {
+    console.error(`${prefix}: ${result.error.message}`);
+    process.exit(1);
+  }
+  if (result.signal) {
+    process.kill(process.pid, result.signal);
+  }
+  process.exit(result.status ?? 1);
+}
+
 const nativeCodex = process.env.OMUX_CODEX_BIN || findNativeCodex();
 if (!nativeCodex) {
   console.error("codex: native Codex CLI not found; set OMUX_CODEX_BIN to the upstream Codex executable");
   process.exit(127);
+}
+
+const forwardedArgs = process.argv.slice(2);
+if (shouldPassNative(forwardedArgs[0])) {
+  exitFromResult(
+    "codex: failed to launch native Codex",
+    spawnSync(nativeCodex, forwardedArgs, {
+      stdio: "inherit",
+      env: process.env,
+    }),
+  );
 }
 
 const env = {
@@ -52,16 +91,9 @@ const env = {
   OMUX_CODEX_SHIM: "1",
   OMUX_COMMAND_SPELLING: "codex",
 };
-const result = spawnSync(process.execPath, [oauthMuxJs, "codex", ...process.argv.slice(2)], {
+const result = spawnSync(process.execPath, [oauthMuxJs, "codex", ...forwardedArgs], {
   stdio: "inherit",
   env,
 });
 
-if (result.error) {
-  console.error(`codex: failed to launch oauth-mux: ${result.error.message}`);
-  process.exit(1);
-}
-if (result.signal) {
-  process.kill(process.pid, result.signal);
-}
-process.exit(result.status ?? 1);
+exitFromResult("codex: failed to launch oauth-mux", result);

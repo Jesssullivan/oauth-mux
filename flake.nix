@@ -43,6 +43,8 @@
                 --release=safe \
                 --prefix "$out" \
                 -Doptimize=ReleaseSafe
+              cp dist/codex-shim.sh "$out/bin/codex"
+              chmod 0755 "$out/bin/codex"
             '';
 
             meta = with pkgs.lib; {
@@ -70,6 +72,7 @@
             set -eu
 
             binary="${self.packages.${system}.default}/bin/oauth-mux"
+            codex_shim="${self.packages.${system}.default}/bin/codex"
             test "$($binary version)" = "oauth-mux ${version}"
             $binary version --json \
               | jq -e \
@@ -78,6 +81,18 @@
                  and .runtime_identity.binary_sha256
                  and .runtime_identity.binary_sha256_available == true' \
               >/dev/null
+            test -x "$codex_shim"
+            grep -q OMUX_CODEX_SHIM "$codex_shim"
+            native_codex="$TMPDIR/native-codex"
+            cat > "$native_codex" <<'EOF'
+#!/bin/sh
+case "$1" in
+  --version) echo "native-codex-stub 0.0.0" ;;
+  *) echo "native-codex-stub" ;;
+esac
+EOF
+            chmod 0755 "$native_codex"
+            test "$(OMUX_CODEX_BIN="$native_codex" "$codex_shim" --version)" = "native-codex-stub 0.0.0"
 
             for cfg in ${./examples}/*.config.json; do
               OMUX_CONFIG="$cfg" $binary config validate
