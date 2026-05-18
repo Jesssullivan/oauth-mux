@@ -158,6 +158,10 @@ managed overlay exposes the same required session-authority entries so the
 chooser does not open empty. When canonical Codex has `state_5.sqlite*`, those
 files are bridged by reference and `state_5.sqlite` is treated as chooser
 authority; older homes use the legacy session/history/index/snapshot set.
+The portability policy is
+`docs/spec/codex-session-store-portability-policy-2026-05-18.md`: oauth-mux
+does not silently copy or import unmanaged rollout stores into route-local
+account homes.
 
 Codex behavior config is preserved by default. The managed overlay reads the
 canonical config authority from `OMUX_CODEX_CONFIG_HOME`, then parent

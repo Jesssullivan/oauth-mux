@@ -142,6 +142,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
 | Wire cassette coverage | TIN-950 | #176 | Needed before treating negative permutations as stable release proof. |
 | Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
+| Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
 | Package parity and install lanes | TIN-1255 | #252 | `0.1.7` is published and verified across GitHub Release, npm, Homebrew, curl, and deb/rpm package lanes. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
