@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-17
+Updated: 2026-05-18
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -22,17 +22,20 @@ refreshed when release truth, route evidence, or tracker state changes.
 - Homebrew truth: the public `jesssullivan/omux` tap installs `oauth-mux
   0.1.7`, includes the managed `codex` shim, and `brew info --json=v2`
   reports stable version `0.1.7`.
-- Codex route truth: the 2026-05-17 installed `0.1.7` no-spend snapshot has
-  `codex-max` `afloat_with_spare_fallback`: `max-1` selected, `max-3` and
-  `max-4` selectable fallbacks, and `max-2` blocked as `token_revoked` until
-  the labeled upstream login handoff runs. Refresh this before live testing.
+- Codex route truth: refresh before every live test. The latest 2026-05-17
+  22:24 EDT installed Homebrew `0.1.7` no-spend snapshot is `not_afloat`:
+  all four named `codex-max` routes are runtime-ready and broker-ready but
+  blocked as `unrecorded`. The next step is spend-confirmed route-health
+  repair/probe, not managed resume.
 - Latest local status truth: `oauth-mux codex status-latest --json` currently
   reports `brokered_without_fallback` from a rolling local artifact. This
   does not supersede the preserved quota-handoff proof; status artifacts must be
   refreshed before being used in public claims.
 - Daemon truth: `oauth-mux daemon status --json` still reports
-  `contract:"experimental_socket_stub"`; the beta daemon lane must host the
-  same foreground tick engine and must not claim unmanaged hot-swap.
+  `contract:"experimental_socket_stub"` and `hosts_stay_afloat:false`; any
+  stale foreground tick snapshot is observational only. The beta daemon lane
+  must host the same foreground tick engine and must not claim unmanaged
+  hot-swap.
 - Codex shim truth: package/user-local installs can make future bare `codex`
   commands enter `oauth-mux codex` when PATH resolves the shim, but that is not
   a global stay-afloat daemon and does not protect direct native Codex binaries
