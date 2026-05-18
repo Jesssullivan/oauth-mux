@@ -95,7 +95,10 @@ pub fn main() !void {
             var server = broker.Server.init(allocator);
             defer server.deinit();
 
-            broker_loader.populatePool(&server.pool, parsed.value, mcp_args.profile) catch |e| {
+            var route_health = health_mod.HealthStore.load(allocator, .{});
+            defer route_health.deinit();
+
+            broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, mcp_args.profile, mcp_args.capability, &route_health) catch |e| {
                 log.err("mcp: pool populate: {s}", .{@errorName(e)});
                 std.process.exit(types.ExitCode.general_error.int());
             };
@@ -103,10 +106,11 @@ pub fn main() !void {
             var mat_ctx = broker_loader.ChatgptMaterializerCtx{ .cfg = &parsed.value };
             server.setMaterializer(mat_ctx.vtable());
 
-            log.info("mcp: broker surface_version={d} accounts={d} profile={s}", .{
+            log.info("mcp: broker surface_version={d} accounts={d} profile={s} capability={s}", .{
                 broker.SURFACE_VERSION,
                 server.pool.accounts.items.len,
                 mcp_args.profile orelse "(none)",
+                mcp_args.capability orelse "(none)",
             });
 
             server.runStdio() catch |e| {

@@ -79,8 +79,18 @@ pub fn populatePoolFromRouteHealth(
     profile_name: ?[]const u8,
     store: *health_mod.HealthStore,
 ) !void {
+    try populatePoolFromRouteHealthScoped(pool, cfg, profile_name, null, store);
+}
+
+pub fn populatePoolFromRouteHealthScoped(
+    pool: *broker.AccountPool,
+    cfg: config_mod.Config,
+    profile_name: ?[]const u8,
+    capability_name: ?[]const u8,
+    store: *health_mod.HealthStore,
+) !void {
     try populatePool(pool, cfg, profile_name);
-    applyRouteHealth(pool, cfg, profile_name, store);
+    applyRouteHealth(pool, cfg, profile_name, capability_name, store);
 }
 
 pub const CodexAuthRepairSummary = struct {
@@ -142,11 +152,12 @@ fn applyRouteHealth(
     pool: *broker.AccountPool,
     cfg: config_mod.Config,
     profile_name: ?[]const u8,
+    capability_name: ?[]const u8,
     store: *health_mod.HealthStore,
 ) void {
     for (pool.accounts.items) |*entry| {
         if (!entry.selectable) continue;
-        const route_health = routeHealthForPoolAccount(pool.allocator, cfg, profile_name, entry.id, store) orelse {
+        const route_health = routeHealthForPoolAccount(pool.allocator, cfg, profile_name, capability_name, entry.id, store) orelse {
             entry.selectable = false;
             entry.liveness = .unknown;
             entry.availability = .unknown;
@@ -160,6 +171,7 @@ fn routeHealthForPoolAccount(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     profile_name: ?[]const u8,
+    requested_capability: ?[]const u8,
     account_id: []const u8,
     store: *health_mod.HealthStore,
 ) ?health_mod.AccountHealth {
@@ -184,6 +196,9 @@ fn routeHealthForPoolAccount(
                 const head = profile_entry[0..hash];
                 if (!std.mem.eql(u8, head, account_id)) continue;
                 const capability = profile_entry[hash + 1 ..];
+                if (requested_capability) |want| {
+                    if (!std.mem.eql(u8, capability, want)) continue;
+                }
                 const capability_key = health_mod.capabilityKey(provider, account, capability);
                 if (store.accounts.get(capability_key.slice())) |capability_health| {
                     const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
@@ -194,6 +209,18 @@ fn routeHealthForPoolAccount(
                     return effective;
                 }
             }
+        }
+    }
+
+    if (requested_capability) |capability| {
+        const capability_key = health_mod.capabilityKey(provider, account, capability);
+        if (store.accounts.get(capability_key.slice())) |capability_health| {
+            const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
+            tracePoolHealthNormalization(allocator, provider, account, capability, "capability", capability_health.liveness, effective.liveness);
+            if (accountLivenessBlocksRoute(effective.liveness)) {
+                if (authMaterialRepairHealth(allocator, cfg, provider, account, capability_health)) |repaired| return repaired;
+            }
+            return effective;
         }
     }
 

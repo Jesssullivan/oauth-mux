@@ -148,24 +148,24 @@ pub const Server = struct {
     ) !void {
         _ = self;
         var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, line, .{}) catch {
-            try writeError(writer, null, .parse_error, "parse error");
+            try writeError(writer, null, .parse_error, "parse error", null);
             return;
         };
         defer parsed.deinit();
 
         const root = parsed.value;
         if (root != .object) {
-            try writeError(writer, null, .invalid_request, "request must be an object");
+            try writeError(writer, null, .invalid_request, "request must be an object", null);
             return;
         }
 
         const obj = root.object;
         const method_v = obj.get("method") orelse {
-            try writeError(writer, obj.get("id"), .invalid_request, "missing method");
+            try writeError(writer, obj.get("id"), .invalid_request, "missing method", null);
             return;
         };
         if (method_v != .string) {
-            try writeError(writer, obj.get("id"), .invalid_request, "method must be a string");
+            try writeError(writer, obj.get("id"), .invalid_request, "method must be a string", null);
             return;
         }
 
@@ -181,7 +181,7 @@ pub const Server = struct {
             },
             .err => |berr| {
                 const code = ErrorCode.fromBrokerError(berr.err);
-                try writeError(writer, req_id, code, berr.message);
+                try writeError(writer, req_id, code, berr.message, berr.data);
             },
         }
     }
@@ -200,7 +200,7 @@ fn writeOk(writer: anytype, id: std.json.Value, result: std.json.Value) !void {
     try writer.writeByte('\n');
 }
 
-fn writeError(writer: anytype, id: ?std.json.Value, code: ErrorCode, msg: []const u8) !void {
+fn writeError(writer: anytype, id: ?std.json.Value, code: ErrorCode, msg: []const u8, data: ?std.json.Value) !void {
     var sw = std.json.writeStream(writer, .{});
     try sw.beginObject();
     try sw.objectField("jsonrpc");
@@ -213,6 +213,10 @@ fn writeError(writer: anytype, id: ?std.json.Value, code: ErrorCode, msg: []cons
     try sw.write(@intFromEnum(code));
     try sw.objectField("message");
     try sw.write(msg);
+    if (data) |v| {
+        try sw.objectField("data");
+        try sw.write(v);
+    }
     try sw.endObject();
     try sw.endObject();
     try writer.writeByte('\n');

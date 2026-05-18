@@ -23,6 +23,12 @@ pub const DispatchOutcome = union(enum) {
 pub const BrokerErrWithMessage = struct {
     err: types.BrokerError,
     message: []const u8,
+    data: ?std.json.Value = null,
+};
+
+const SessionLookup = union(enum) {
+    ok: []const u8,
+    err: BrokerErrWithMessage,
 };
 
 /// Top-level dispatch by method string.
@@ -76,6 +82,21 @@ fn surfaceInfo(ctx: *Context) DispatchOutcome {
     }
     obj.put("capabilities", .{ .array = caps }) catch return oom();
 
+    var detail = std.json.ObjectMap.init(ctx.allocator);
+    detail.put("account_list", .{ .bool = true }) catch return oom();
+    detail.put("account_select", .{ .bool = true }) catch return oom();
+    detail.put("account_swap", .{ .bool = true }) catch return oom();
+    detail.put("credential_materialize", .{ .bool = true }) catch return oom();
+    detail.put("credential_materialize_scope", .{ .string = "adapter_stdio_only" }) catch return oom();
+    detail.put("credential_refresh", .{ .bool = false }) catch return oom();
+    detail.put("quota_observe", .{ .bool = true }) catch return oom();
+    detail.put("quota_status", .{ .bool = true }) catch return oom();
+    detail.put("events_append", .{ .bool = false }) catch return oom();
+    detail.put("events_subscribe", .{ .bool = false }) catch return oom();
+    detail.put("policy_get", .{ .bool = true }) catch return oom();
+    detail.put("policy_request_admission", .{ .bool = false }) catch return oom();
+    obj.put("capabilities_detail", .{ .object = detail }) catch return oom();
+
     return .{ .ok = .{ .object = obj } };
 }
 
@@ -93,7 +114,7 @@ fn surfaceHandshake(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     };
 
     const sid = ctx.sessions.newId() catch return oom();
-    defer ctx.allocator.free(sid);
+    defer ctx.sessions.allocator.free(sid);
 
     ctx.sessions.create(.{
         .id = sid,
@@ -122,7 +143,10 @@ fn surfaceHandshake(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 fn surfaceTeardown(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    const sid = strField(p.object, "session_id") orelse return invalidParams("missing session_id");
+    const sid = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
     _ = ctx.sessions.drop(sid);
 
     var out = std.json.ObjectMap.init(ctx.allocator);
@@ -135,7 +159,10 @@ fn surfaceTeardown(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 fn accountList(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    if (strField(p.object, "session_id") == null) return invalidParams("missing session_id");
+    _ = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
 
     // Phase 1 scope: profile/capability params are accepted but per-call
     // filtering is not applied here. The pool was already populated for
@@ -171,7 +198,10 @@ fn accountList(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    if (strField(p.object, "session_id") == null) return invalidParams("missing session_id");
+    const sid = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
 
     const profile = strField(p.object, "profile");
     const capability = strField(p.object, "capability");
@@ -187,8 +217,12 @@ fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
         }
     }
 
-    const elected = ctx.pool.elect(profile, capability, excl_buf.items) catch |e| return .{
-        .err = .{ .err = e, .message = "no selectable account" },
+    const elected = ctx.pool.elect(profile, capability, excl_buf.items) catch |e| switch (e) {
+        error.NoAccountSelectable => return noAccountSelectable(ctx, "no selectable account", profile, capability),
+        else => return .{ .err = .{ .err = e, .message = "account election failed" } },
+    };
+    ctx.sessions.setCurrentAccount(sid, elected.id) catch |e| return .{
+        .err = .{ .err = e, .message = "session update failed" },
     };
 
     var out = std.json.ObjectMap.init(ctx.allocator);
@@ -205,7 +239,7 @@ fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 
     var claim_obj = std.json.ObjectMap.init(ctx.allocator);
     claim_obj.put("level", .{ .string = "broker_owned" }) catch return oom();
-    claim_obj.put("spare_fallback_ready", .{ .bool = false }) catch return oom();
+    claim_obj.put("spare_fallback_ready", .{ .bool = anotherSelectableExists(ctx.pool, elected.id) }) catch return oom();
     out.put("claim", .{ .object = claim_obj }) catch return oom();
 
     return .{ .ok = .{ .object = out } };
@@ -241,10 +275,15 @@ fn intField(obj: std.json.ObjectMap, key: []const u8) ?i64 {
 fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    if (strField(p.object, "session_id") == null) return invalidParams("missing session_id");
+    const sid = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
 
     const current = strField(p.object, "current_account") orelse
         return invalidParams("missing current_account");
+    const profile = strField(p.object, "profile");
+    const capability = strField(p.object, "capability");
     const reason_str = strField(p.object, "reason") orelse "quota_exhausted";
     const reason = parseSwapReason(reason_str);
 
@@ -283,8 +322,12 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 
     // Elect a replacement, excluding the current account.
     const exclude = [_][]const u8{current};
-    const elected = ctx.pool.elect(null, null, exclude[0..]) catch |e| return .{
-        .err = .{ .err = e, .message = "no replacement account selectable" },
+    const elected = ctx.pool.elect(profile, capability, exclude[0..]) catch |e| switch (e) {
+        error.NoAccountSelectable => return noAccountSelectable(ctx, "no replacement account selectable", profile, capability),
+        else => return .{ .err = .{ .err = e, .message = "replacement election failed" } },
+    };
+    ctx.sessions.setCurrentAccount(sid, elected.id) catch |e| return .{
+        .err = .{ .err = e, .message = "session update failed" },
     };
 
     // Build response.
@@ -298,8 +341,12 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     out.put("credential_handle", .{ .string = handle }) catch return oom();
 
     var claim_obj = std.json.ObjectMap.init(ctx.allocator);
-    claim_obj.put("level", .{ .string = "next_turn_seamless" }) catch return oom();
+    claim_obj.put("level", .{ .string = "broker_owned" }) catch return oom();
     claim_obj.put("spare_fallback_ready", .{ .bool = anotherSelectableExists(ctx.pool, elected.id) }) catch return oom();
+    claim_obj.put("replacement_selected", .{ .bool = true }) catch return oom();
+    claim_obj.put("requires_adapter_turn_completion", .{ .bool = true }) catch return oom();
+    claim_obj.put("next_turn_seamless_claimed", .{ .bool = false }) catch return oom();
+    claim_obj.put("pending_success_level", .{ .string = "next_turn_seamless" }) catch return oom();
     out.put("claim", .{ .object = claim_obj }) catch return oom();
 
     var prev_obj = std.json.ObjectMap.init(ctx.allocator);
@@ -317,7 +364,7 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 fn anotherSelectableExists(pool: anytype, except_id: []const u8) bool {
     var count: usize = 0;
     for (pool.accounts.items) |a| {
-        if (a.selectable and !std.mem.eql(u8, a.id, except_id)) {
+        if (a.selectable and a.availability == .available and !std.mem.eql(u8, a.id, except_id)) {
             count += 1;
             if (count >= 1) return true;
         }
@@ -331,7 +378,10 @@ fn anotherSelectableExists(pool: anytype, except_id: []const u8) bool {
 fn quotaObserve(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    if (strField(p.object, "session_id") == null) return invalidParams("missing session_id");
+    _ = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
 
     const account = strField(p.object, "account") orelse
         return invalidParams("missing account");
@@ -394,7 +444,10 @@ fn quotaObserve(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 fn quotaStatus(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    if (strField(p.object, "session_id") == null) return invalidParams("missing session_id");
+    _ = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
 
     var arr = std.json.Array.init(ctx.allocator);
     var selectable_count: usize = 0;
@@ -433,7 +486,10 @@ fn accountIdFromHandle(handle: []const u8) ?[]const u8 {
 fn credentialMaterialize(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
-    if (strField(p.object, "session_id") == null) return invalidParams("missing session_id");
+    _ = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
 
     const handle = strField(p.object, "credential_handle") orelse
         return invalidParams("missing credential_handle");
@@ -474,7 +530,12 @@ fn credentialMaterialize(ctx: *Context, params: ?std.json.Value) DispatchOutcome
 // ── policy/* ──────────────────────────────────────────────────────────
 
 fn policyGet(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
-    _ = params;
+    const p = params orelse return invalidParams("missing params");
+    if (p != .object) return invalidParams("params must be object");
+    _ = switch (requireSessionId(ctx, p.object)) {
+        .ok => |v| v,
+        .err => |e| return .{ .err = e },
+    };
     var out = std.json.ObjectMap.init(ctx.allocator);
     var budgets = std.json.Array.init(ctx.allocator);
     budgets.append(.{ .string = "free_local" }) catch return oom();
@@ -493,12 +554,115 @@ fn strField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return if (v == .string) v.string else null;
 }
 
+fn requireSessionId(ctx: *Context, obj: std.json.ObjectMap) SessionLookup {
+    const sid = strField(obj, "session_id") orelse return .{
+        .err = .{ .err = error.InvalidParams, .message = "missing session_id" },
+    };
+    if (ctx.sessions.getPtr(sid) == null) return .{
+        .err = .{ .err = error.SessionNotFound, .message = "unknown session_id" },
+    };
+    return .{ .ok = sid };
+}
+
 fn invalidParams(msg: []const u8) DispatchOutcome {
     return .{ .err = .{ .err = error.InvalidParams, .message = msg } };
 }
 
 fn oom() DispatchOutcome {
     return .{ .err = .{ .err = error.OutOfMemory, .message = "out of memory" } };
+}
+
+fn noAccountSelectable(
+    ctx: *Context,
+    msg: []const u8,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) DispatchOutcome {
+    var summary = std.json.ObjectMap.init(ctx.allocator);
+    var total: i64 = 0;
+    var selectable: i64 = 0;
+    var available: i64 = 0;
+    var quota_exhausted: i64 = 0;
+    var rate_limited: i64 = 0;
+    var dead: i64 = 0;
+    var degraded: i64 = 0;
+    var unknown: i64 = 0;
+    var hidden: i64 = 0;
+
+    for (ctx.pool.accounts.items) |a| {
+        if (!a.selectable and a.liveness == .unknown and a.availability == .available) {
+            hidden += 1;
+            continue;
+        }
+        total += 1;
+        if (a.selectable) selectable += 1;
+        switch (a.availability) {
+            .available => available += 1,
+            .quota_exhausted => quota_exhausted += 1,
+            .rate_limited => rate_limited += 1,
+            .cooldown => rate_limited += 1,
+            .unknown => {},
+        }
+        switch (a.liveness) {
+            .dead => dead += 1,
+            .degraded => degraded += 1,
+            .unknown => unknown += 1,
+            .live => {},
+        }
+    }
+
+    summary.put("total_routes", .{ .integer = total }) catch return oom();
+    summary.put("selectable_routes", .{ .integer = selectable }) catch return oom();
+    summary.put("available_routes", .{ .integer = available }) catch return oom();
+    summary.put("quota_exhausted_routes", .{ .integer = quota_exhausted }) catch return oom();
+    summary.put("rate_limited_routes", .{ .integer = rate_limited }) catch return oom();
+    summary.put("dead_routes", .{ .integer = dead }) catch return oom();
+    summary.put("degraded_routes", .{ .integer = degraded }) catch return oom();
+    summary.put("unknown_routes", .{ .integer = unknown }) catch return oom();
+    summary.put("hidden_routes", .{ .integer = hidden }) catch return oom();
+
+    var data = std.json.ObjectMap.init(ctx.allocator);
+    data.put("error_name", .{ .string = "no_account_selectable" }) catch return oom();
+    if (profile) |p| {
+        data.put("profile", .{ .string = p }) catch return oom();
+    } else {
+        data.put("profile", .{ .null = {} }) catch return oom();
+    }
+    if (capability) |c| {
+        data.put("capability", .{ .string = c }) catch return oom();
+    } else {
+        data.put("capability", .{ .null = {} }) catch return oom();
+    }
+    data.put("rejection_summary", .{ .object = summary }) catch return oom();
+
+    var actions = std.json.Array.init(ctx.allocator);
+    actions.append(.{ .string = routeDiagnosticCommand(ctx.allocator, "route explain", profile, capability) catch return oom() }) catch return oom();
+    actions.append(.{ .string = routeDiagnosticCommand(ctx.allocator, "repair-plan", profile, capability) catch return oom() }) catch return oom();
+    data.put("agent_safe_next_actions", .{ .array = actions }) catch return oom();
+
+    return .{ .err = .{
+        .err = error.NoAccountSelectable,
+        .message = msg,
+        .data = .{ .object = data },
+    } };
+}
+
+fn routeDiagnosticCommand(
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+) ![]const u8 {
+    if (profile) |p| {
+        if (capability) |c| {
+            return std.fmt.allocPrint(allocator, "oauth-mux {s} --profile {s} --capability {s} --json", .{ base, p, c });
+        }
+        return std.fmt.allocPrint(allocator, "oauth-mux {s} --profile {s} --json", .{ base, p });
+    }
+    if (capability) |c| {
+        return std.fmt.allocPrint(allocator, "oauth-mux {s} --capability {s} --json", .{ base, c });
+    }
+    return std.fmt.allocPrint(allocator, "oauth-mux {s} --json", .{base});
 }
 
 test "dispatch surface/info returns object with surface_version=1" {
@@ -596,6 +760,69 @@ test "surface/handshake without adapter returns InvalidParams" {
         .err => |e| try std.testing.expectEqual(error.InvalidParams, e.err),
         else => return error.TestFailed,
     }
+}
+
+test "account methods reject unknown session ids" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var sessions = session_mod.SessionTable.init(arena.allocator());
+    var pool = account_pool_mod.AccountPool.init(arena.allocator());
+    var stderr_buf: [0]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(stderr_buf[0..]);
+    var ctx = Context{
+        .allocator = arena.allocator(),
+        .sessions = &sessions,
+        .pool = &pool,
+        .materializer = null,
+        .log_writer = fbs.writer().any(),
+    };
+
+    var obj = std.json.ObjectMap.init(arena.allocator());
+    try obj.put("session_id", .{ .string = "not-real" });
+    const out = dispatch(&ctx, "account/list", .{ .object = obj });
+    switch (out) {
+        .err => |e| try std.testing.expectEqual(error.SessionNotFound, e.err),
+        .ok => return error.TestFailed,
+    }
+}
+
+test "account/select records current account on the broker session" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var sessions = session_mod.SessionTable.init(arena.allocator());
+    var pool = account_pool_mod.AccountPool.init(arena.allocator());
+    try pool.add(.{ .id = "codex:max-1", .selectable = true, .liveness = .live, .availability = .available });
+    try pool.add(.{ .id = "codex:max-2", .selectable = true, .liveness = .live, .availability = .available });
+    var stderr_buf: [0]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(stderr_buf[0..]);
+    var ctx = Context{
+        .allocator = arena.allocator(),
+        .sessions = &sessions,
+        .pool = &pool,
+        .materializer = null,
+        .log_writer = fbs.writer().any(),
+    };
+
+    const sid = try sessions.newId();
+    defer sessions.allocator.free(sid);
+    try sessions.create(.{
+        .id = sid,
+        .adapter = "smoke",
+        .adapter_version = "0",
+        .harness_target = "codex",
+        .session_pid = 1,
+        .claim_floor = .broker_owned,
+        .started_at_ms = std.time.milliTimestamp(),
+    });
+
+    var obj = std.json.ObjectMap.init(arena.allocator());
+    try obj.put("session_id", .{ .string = sid });
+    const out = dispatch(&ctx, "account/select", .{ .object = obj });
+    switch (out) {
+        .ok => {},
+        .err => return error.TestFailed,
+    }
+    try std.testing.expectEqualStrings("codex:max-1", sessions.get(sid).?.current_account.?);
 }
 
 test "accountIdFromHandle property: round-trip with 200 random ids" {
