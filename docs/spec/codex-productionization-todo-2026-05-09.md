@@ -175,6 +175,10 @@ Not proven:
   `tier_insufficient`, and `credential_unavailable`.
 - [x] Link the live acceptance checklist from every public or internal page that
   discusses Codex closure criteria.
+- [x] Draft the upstream Codex usage-limit handoff proposal that explains why
+  same-thread quota handoff is not an oauth-mux public claim until Codex exposes
+  a first-class usage-limit/account-switch contract. See
+  `docs/spec/codex-upstream-usage-limit-handoff-proposal-2026-05-18.md`.
 
 ## P1 Release Hygiene
 
