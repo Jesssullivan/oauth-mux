@@ -16,6 +16,10 @@ For the current product line, the socket daemon is not the stay-afloat product
 surface. It remains local experimental status/control plumbing. Wrappers,
 package recipes, CI jobs, and agents should call the foreground tick contract:
 `oauth-mux stay-afloat ...` or the lower-level `oauth-mux daemon tick ...`.
+Public package installs and local dogfood can also place a `codex` shim on
+PATH; that only routes future `codex` invocations through `oauth-mux codex`
+when the shell resolves the shim. It is not a global interceptor for direct
+native Codex binaries, already-running Codex processes, or other harnesses.
 The beta daemon promotion must be a deliberate host for the same foreground
 tick engine, not a semantic fork of the socket stub. It may publish status,
 schedule ticks, and queue user-mediated handoffs. It must not claim same-thread
@@ -36,11 +40,13 @@ and no seamless daemon handoff occurred. Manual logout/login restored future
 into a seamless fallback path.
 
 The current paid Codex Max route matrix is also newer than the original
-2026-04-30 example: the 2026-05-16 no-spend refresh has `max-1#codex-max`,
-`max-2#codex-max`, `max-3#codex-max`, and `max-4#codex-max` all selectable and
-broker-ready, with a selected route plus three spare fallbacks. Dashboard
-credit or mini/Spark availability must not be treated as Max route
-availability; use provider execution evidence per route and capability.
+2026-04-30 example, and it changes with real auth/quota state. The 2026-05-17
+installed `0.1.7` no-spend refresh has `max-1#codex-max` selected,
+`max-3#codex-max` and `max-4#codex-max` selectable as spare fallbacks, and
+`max-2#codex-max` blocked as `token_revoked` until the labeled upstream login
+handoff runs. Dashboard credit or mini/Spark availability must not be treated
+as Max route availability; use provider execution evidence per route and
+capability.
 
 `oauth-mux doctor runtime`, `oauth-mux route explain`, `oauth-mux route
 select`, `oauth-mux repair-plan`, and `oauth-mux repair run` are the current
