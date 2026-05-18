@@ -26,6 +26,7 @@ root and platform packages, the public Homebrew tap, the curl installer, and
 published deb/rpm assets. The current source tree also tightens install parity
 after a 2026-05-18 finding that the public Homebrew `codex` shim routed native
 admin commands such as `codex --version` through oauth-mux route election.
+Source `0.1.8` is the shim-parity patch release candidate.
 
 What works today:
 

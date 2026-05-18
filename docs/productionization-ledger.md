@@ -16,7 +16,8 @@ refreshed when release truth, route evidence, or tracker state changes.
 - Version truth: public npm, GitHub Release, Homebrew, curl installer, and
   deb/rpm lanes resolve to `0.1.7`, but the 2026-05-18 shim investigation found
   a package-lane QA gap: public Homebrew `0.1.7` routes native admin commands
-  such as `codex --version` through `oauth-mux codex`.
+  such as `codex --version` through `oauth-mux codex`. Source `0.1.8` is the
+  shim-parity patch release candidate.
 - Installed provenance: PATH can resolve a public package binary or a
   user-local dogfood binary depending on shell setup. Use `which -a oauth-mux`,
   `which -a codex`, `oauth-mux version --json`, and `codex preflight` before
