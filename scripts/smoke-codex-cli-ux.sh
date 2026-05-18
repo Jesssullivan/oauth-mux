@@ -376,7 +376,7 @@ else
     exit 1
 fi
 
-echo "smoke-codex-cli-ux: managed codex shim passes native admin commands through"
+echo "smoke-codex-cli-ux: local dogfood install keeps native codex unshadowed by default"
 DOGFOOD_BIN="$TMP/dogfood-bin"
 NATIVE_CODEX="$TMP/native-codex"
 NATIVE_REPORT="$TMP/native-codex.report"
@@ -407,6 +407,21 @@ INSTALL_DIR="$DOGFOOD_BIN" \
   OMUX_DOGFOOD_SKIP_BUILD=1 \
   OMUX_CODEX_BIN="$NATIVE_CODEX" \
   "$ROOT/scripts/install-local-dogfood.sh" >"$TMP/dogfood-install.stdout"
+test -x "$DOGFOOD_BIN/oauth-mux"
+if [[ -e "$DOGFOOD_BIN/codex" ]]; then
+    echo "  ✗ default local dogfood install unexpectedly created a codex shim" >&2
+    cat "$TMP/dogfood-install.stdout" >&2
+    exit 1
+else
+    echo "  ✓ default local dogfood install did not shadow codex"
+fi
+
+echo "smoke-codex-cli-ux: managed codex shim opt-in passes native admin commands through"
+INSTALL_DIR="$DOGFOOD_BIN" \
+  OMUX_DOGFOOD_SKIP_BUILD=1 \
+  OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1 \
+  OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  "$ROOT/scripts/install-local-dogfood.sh" >"$TMP/dogfood-install-shim.stdout"
 
 OMUX_CODEX_BIN="$NATIVE_CODEX" \
   OMUX_NATIVE_CODEX_REPORT="$NATIVE_REPORT" \
@@ -439,6 +454,10 @@ if [[ -e "$TMP/native-xdg/oauth-mux/codex/max-1" ]]; then
 else
     echo "  ✓ shim login did not bootstrap mux account dirs"
 fi
+INSTALL_DIR="$DOGFOOD_BIN" "$ROOT/scripts/uninstall-local-dogfood.sh" >"$TMP/dogfood-uninstall.stdout"
+test ! -e "$DOGFOOD_BIN/oauth-mux"
+test ! -e "$DOGFOOD_BIN/codex"
+echo "  ✓ local dogfood uninstall removed only dogfood-managed files"
 
 LOGIN_STATUS_JSON="$TMP/login-status-all.json"
 LOGIN_STATUS_LEAKS="$TMP/login-status-all.leaks"

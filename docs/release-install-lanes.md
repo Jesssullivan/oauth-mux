@@ -131,10 +131,14 @@ the hash still matches the worktree binary. Re-signing the installed copy is a
 separate repair fallback, but it changes the hash and no longer proves byte
 identity with `./zig-out/bin/oauth-mux`.
 
-The local installer refuses to replace an existing non-oauth-mux
-`~/.local/bin/codex` unless `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Use
-`OMUX_DOGFOOD_INSTALL_CODEX_SHIM=0` when you need installed-command dogfood for
-`oauth-mux` without shadowing the native `codex` command.
+The local installer installs only `~/.local/bin/oauth-mux` by default and leaves
+the native `codex` command unshadowed. Use
+`OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` or `just install-local-dogfood-shim` only
+when managed-shim dogfood is the point of the test. The local installer refuses
+to replace an existing non-oauth-mux `~/.local/bin/codex` unless
+`OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Use `just uninstall-local-dogfood` to
+remove the local dogfood binary and any oauth-mux-marked `codex` shim without
+touching a native Codex executable.
 
 ## UX, DX, AX Gates
 

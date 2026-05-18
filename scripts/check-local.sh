@@ -7,6 +7,7 @@ zig build test
 zig build
 ./zig-out/bin/oauth-mux version --json | jq -e '.version and .runtime_identity.binary_path and .runtime_identity.binary_sha256 and .runtime_identity.path_printed == true' >/dev/null
 bash -n ./scripts/install-local-dogfood.sh
+bash -n ./scripts/uninstall-local-dogfood.sh
 sh -n ./dist/codex-shim.sh
 sh -n ./dist/install.sh
 
