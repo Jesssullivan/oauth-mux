@@ -76,8 +76,11 @@ Later in the same artifact, `codex:max-4` returned provider-originated
 `429 usage_limit_reached` / `quota_exhausted`, and oauth-mux reported
 `proxy_same_turn_retry_unavailable` / `NoAccountSelectable` instead of
 substituting another credited account. The correct summarizer verdict is
-`quota_handoff_failed`; this keeps TIN-916 / GitHub #131 and TIN-951 /
-GitHub #177 open.
+`quota_handoff_failed`; at the time, this kept TIN-916 / GitHub #131 and
+TIN-951 / GitHub #177 open. Later May 8 and May 9 installed-runtime evidence
+superseded that state for the managed Codex handoff claim; same-thread,
+mid-turn streaming, unmanaged-daemon, non-Codex, and negative/permutation
+lanes remain separate proof surfaces.
 
 ## 2026-05-08 Managed Load Quota Handoff
 

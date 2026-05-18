@@ -137,11 +137,11 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Theme | Linear | GitHub | Current stance |
 | --- | --- | --- | --- |
 | Broker daemon and adapter contract | TIN-738 | #67 | Anchor remains open until daemon beta and second-adapter validation are honest. |
-| Codex next-turn broker switch | TIN-916 | #131 | Managed Codex handoff is proven; keep remaining negative/permutation work distinct from same-thread or mid-turn claims. |
+| Codex next-turn broker switch | TIN-916 | #131 | Closed for the proven managed Codex live handoff. Remaining negative/permutation work lives in #212/#176; same-thread, mid-turn, and unmanaged daemon behavior remain separate non-claims. |
 | Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
 | Wire cassette coverage | TIN-950 | #176 | Needed before treating negative permutations as stable release proof. |
-| Harness session authority bridge | TIN-979 | #191 | Implementation exists, but tracker should be reconciled against current bridge proof. |
+| Harness session authority bridge | TIN-979 | #191 | Closed for Codex: managed auth/config overlays bridge canonical session authority, `state_5.sqlite*`, and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
 | Package parity and install lanes | TIN-1255 | #252 | `0.1.7` is published and verified across GitHub Release, npm, Homebrew, curl, and deb/rpm package lanes. |
