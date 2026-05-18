@@ -18,7 +18,7 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 | Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>`, formula test shim pass-through, parsed version check | public macOS/Linux tap lane |
 | curl installer | `curl .../install.sh \| sh` | GitHub Release `install.sh` + tarballs | local file URL binary+shim smoke and public installer smoke | shell installer lane |
 | deb/rpm | system package install | GitHub Release `.deb` / `.rpm` | hosted container install QA for `/usr/bin/oauth-mux`; set `OMUX_EXPECT_CODEX_SHIM=1` for releases that should include `/usr/bin/codex` | distro package lane |
-| Home Manager | not yet published | future Nix module wrapping the flake package | not implemented | planned Nix user-profile lane |
+| Home Manager | `programs.oauth-mux.enable = true` | flake Home Manager module | `just home-manager-smoke` package-variant smoke | Nix user-profile lane with opt-in Codex shim |
 
 ## Codex Shim Contract
 
@@ -37,9 +37,23 @@ Every install lane that puts `codex` on PATH must preserve this behavior:
   generated deb/rpm packages.
 - npm uses `dist/npm/bin/codex.js`, which must match the same admin
   pass-through contract even though it is a JS wrapper.
-- Windows raw tarballs currently ship only `oauth-mux.exe`; managed `codex`
-  command parity on Windows is covered by the npm wrapper, not by a standalone
-  raw-tarball shim.
+- Windows raw tarballs currently ship only `oauth-mux.exe`. The 2026-05-18
+  decision is that managed `codex` command parity on Windows is covered by the
+  npm JS wrapper, not by a standalone raw-tarball `.cmd` or PowerShell shim,
+  until a native Windows operator need is proven.
+
+## Home Manager
+
+The flake exposes `homeManagerModules.default`. The Home Manager lane is safer
+than the default Nix package lane by default:
+
+- `programs.oauth-mux.enable = true` installs only the binary-only
+  `packages.<system>.oauth-mux` package.
+- `programs.oauth-mux.codexShim.enable = true` explicitly opts into
+  `packages.<system>.withCodexShim`, which puts the managed `codex` shim on
+  PATH.
+
+See `docs/home-manager.md` for the module snippet and local smoke command.
 
 The 2026-05-18 investigation found that public Homebrew `0.1.7` installed a
 `codex` shim that always entered `oauth-mux codex`, so `codex --version` and

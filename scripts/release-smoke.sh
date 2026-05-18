@@ -64,6 +64,15 @@ archive_contains() {
   tar -tzf "$archive" | awk -v expected="$expected" '$0 == expected { found = 1 } END { exit found ? 0 : 1 }'
 }
 
+archive_not_contains() {
+  local archive="$1"
+  local unexpected="$2"
+  if tar -tzf "$archive" | awk -v unexpected="$unexpected" '$0 == unexpected { found = 1 } END { exit found ? 0 : 1 }'; then
+    printf 'unexpected file in archive %s: %s\n' "$archive" "$unexpected" >&2
+    exit 1
+  fi
+}
+
 printf 'checking release tree: %s\n' "$out_dir"
 if [ ! -d "$out_dir" ]; then
   printf 'release output does not exist: %s\n' "$out_dir" >&2
@@ -101,6 +110,9 @@ for archive in \
   oauth-mux-x86_64-windows.tar.gz \
   oauth-mux-aarch64-windows.tar.gz; do
   archive_contains "$artifacts_dir/$archive" 'oauth-mux.exe'
+  archive_not_contains "$artifacts_dir/$archive" 'codex'
+  archive_not_contains "$artifacts_dir/$archive" 'codex.cmd'
+  archive_not_contains "$artifacts_dir/$archive" 'codex.ps1'
 done
 
 printf 'checking Homebrew formula...\n'

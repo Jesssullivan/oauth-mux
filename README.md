@@ -118,6 +118,18 @@ npm install -g oauth-mux
 brew install jesssullivan/omux/oauth-mux
 ```
 
+Nix users can choose the binary-only package or the managed-shim package:
+
+```bash
+nix build .#oauth-mux
+nix build .#withCodexShim
+```
+
+Home Manager users should import `inputs.oauth-mux.homeManagerModules.default`.
+The module installs only `oauth-mux` by default; set
+`programs.oauth-mux.codexShim.enable = true` to intentionally put the managed
+`codex` shim on PATH. See `docs/home-manager.md`.
+
 Unreleased source dogfood should keep provenance explicit:
 
 ```bash

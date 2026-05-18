@@ -8,7 +8,53 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, zig-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+    let
+      homeModule = { config, lib, pkgs, ... }:
+        let
+          cfg = config.programs.oauth-mux;
+          system = pkgs.stdenv.hostPlatform.system;
+          packageSet = self.packages.${system};
+        in
+        {
+          options.programs.oauth-mux = {
+            enable = lib.mkEnableOption "oauth-mux";
+
+            package = lib.mkOption {
+              type = lib.types.package;
+              default =
+                if cfg.codexShim.enable
+                then packageSet.withCodexShim
+                else packageSet.oauth-mux;
+              defaultText = lib.literalExpression ''
+                if config.programs.oauth-mux.codexShim.enable
+                then inputs.oauth-mux.packages.''${pkgs.stdenv.hostPlatform.system}.withCodexShim
+                else inputs.oauth-mux.packages.''${pkgs.stdenv.hostPlatform.system}.oauth-mux
+              '';
+              description = ''
+                oauth-mux package installed into the user profile.
+              '';
+            };
+
+            codexShim.enable = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = ''
+                Install the managed Codex shim as `codex`. This is opt-in so
+                Home Manager users do not unexpectedly shadow an existing
+                upstream Codex CLI in their profile.
+              '';
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            home.packages = [ cfg.package ];
+          };
+        };
+    in
+    {
+      homeModules.default = homeModule;
+      homeManagerModules.default = homeModule;
+    } // flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -22,11 +68,9 @@
               (map (line: builtins.match ".*\\.version[[:space:]]*=[[:space:]]*\"([^\"]+)\".*" line) lines);
           in
           builtins.head (builtins.head matches);
-      in
-      {
-        packages = {
-          default = pkgs.stdenvNoCC.mkDerivation {
-            pname = "oauth-mux";
+        mkPackage = { installCodexShim }:
+          pkgs.stdenvNoCC.mkDerivation {
+            pname = if installCodexShim then "oauth-mux-with-codex-shim" else "oauth-mux";
             inherit version;
             src = ./.;
 
@@ -43,9 +87,12 @@
                 --release=safe \
                 --prefix "$out" \
                 -Doptimize=ReleaseSafe
+            '' + pkgs.lib.optionalString installCodexShim ''
               cp dist/codex-shim.sh "$out/bin/codex"
               chmod 0755 "$out/bin/codex"
             '';
+
+            passthru.codexShim = installCodexShim;
 
             meta = with pkgs.lib; {
               description = "OAuth fallback muxing for AI harness subscriptions";
@@ -54,6 +101,12 @@
               mainProgram = "oauth-mux";
             };
           };
+      in
+      {
+        packages = rec {
+          oauth-mux = mkPackage { installCodexShim = false; };
+          withCodexShim = mkPackage { installCodexShim = true; };
+          default = withCodexShim;
         };
 
         devShells.default = pkgs.mkShell {
@@ -66,6 +119,15 @@
 
         checks = {
           build = self.packages.${system}.default;
+          binary-only = pkgs.runCommand "oauth-mux-binary-only-smoke-${version}" { } ''
+            set -eu
+
+            binary="${self.packages.${system}.oauth-mux}/bin/oauth-mux"
+            test "$($binary version)" = "oauth-mux ${version}"
+            test ! -e "${self.packages.${system}.oauth-mux}/bin/codex"
+
+            touch "$out"
+          '';
           smoke = pkgs.runCommand "oauth-mux-smoke-${version}" {
             nativeBuildInputs = [ pkgs.jq ];
           } ''
