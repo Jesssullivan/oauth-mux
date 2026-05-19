@@ -102,11 +102,13 @@ AX:
 Codex remains the reference adapter until its negative/cassette matrix and
 release truth are stable. Claude is the next likely adapter proof because it has
 a narrow command-owned `auth-status` surface and account-store isolation to
-validate. OMO, Pi, OpenCode, and Kimi should first get adapter contracts that
-answer token shape, auth storage, reload boundary, quota signal, failure signal,
-wire interception, process topology, and session authority. Until then, they may
-consume oauth-mux diagnostics or future MCP repair prompts, but oauth-mux must
-not claim to keep them alive.
+validate. The broker MCP contract now has a synthetic Claude-shaped smoke, but
+that only validates provider-neutral account/session/error semantics; it is not
+a Claude stay-afloat or `oauth-mux claude` claim. OMO, Pi, OpenCode, and Kimi
+should first get adapter contracts that answer token shape, auth storage, reload
+boundary, quota signal, failure signal, wire interception, process topology, and
+session authority. Until then, they may consume oauth-mux diagnostics or future
+MCP repair prompts, but oauth-mux must not claim to keep them alive.
 
 ## Release And Distribution Posture
 

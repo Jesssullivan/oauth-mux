@@ -90,6 +90,22 @@ These fixtures keep local runtime absence separate from Claude account state.
 They do not replace real operator proof for logged-out, keychain, or quota
 conditions.
 
+## Broker Contract Smoke
+
+`scripts/smoke-broker-claude.sh` exercises the generic broker MCP surface with a
+Claude-shaped `auth-status` profile. It proves that `surface/handshake`,
+`account/list`, `account/select`, `quota/observe`, `account/swap`, and typed
+`no_account_selectable` error data work for a non-Codex command-adapter route.
+
+The smoke also asserts that `credential/materialize` rejects
+`chatgpt_auth_tokens` for Claude with an unsupported-shape error before reading
+Claude credential files. That keeps Codex app-server token materialization from
+becoming an accidental cross-provider token bridge.
+
+This is broker-contract validation only. It does not prove `oauth-mux claude`,
+Claude quota/tier/model-call fallback, active Claude Code hot-swap, or daemon
+stay-afloat parity.
+
 ## Remaining Work
 
 - Attach the fixture and live proof evidence to `TIN-861` and GitHub `#68`.
