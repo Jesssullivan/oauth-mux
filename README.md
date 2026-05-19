@@ -158,6 +158,12 @@ that will run.
 and `codex` PATH candidates, whether active `codex` is the managed oauth-mux
 shim, the first native Codex binary, and the `OMUX_CODEX_BIN` escape hatch. Use
 that before debugging stale package or managed-versus-unmanaged Codex behavior.
+It also reports redacted shell context, including whether `CODEX_HOME` is set,
+whether it is an oauth-mux managed overlay, and whether inherited `OMUX_*`
+managed-session variables are present.
+If a shell refresh changes the result, start a fresh shell or use the shell's
+native reload path. For example, fish cannot safely `source ~/.bashrc`; bash
+syntax can fail partway through and leave a misleading mixed environment.
 Its JSON separates `agent_safe_next_actions` from
 `spend_confirmed_next_actions`; text output uses matching no-spend diagnostics
 and spend-confirmed repair sections. The same JSON includes `repair_summary`,
