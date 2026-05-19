@@ -650,6 +650,12 @@ pub fn materializeChatgpt(
 
     const provider_cfg = cfg.providers.map.get(provider) orelse
         return broker_types.BrokerError.AccountNotFound;
+    if (!std.mem.eql(u8, provider, "codex") and !std.mem.eql(u8, provider_cfg.kind, "codex")) {
+        // chatgpt_auth_tokens is a Codex app-server credential shape. Refuse
+        // providers that are neither the built-in Codex key nor Codex-kind
+        // before touching their account stores.
+        return broker_types.BrokerError.UnsupportedShape;
+    }
     const acct_cfg = provider_cfg.accounts.map.get(account) orelse
         return broker_types.BrokerError.AccountNotFound;
 
@@ -686,6 +692,38 @@ pub fn materializeChatgpt(
     }
 
     return parseAuthJson(allocator, bytes);
+}
+
+test "materializeChatgpt rejects non-Codex providers before reading secrets" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "work": {
+        \\          "priority": 10,
+        \\          "secret": {
+        \\            "backend": "file",
+        \\            "path": "/tmp/omux-this-file-must-not-be-read"
+        \\          }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "claude": { "providers": ["claude:work#auth-status"] }
+        \\  }
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectError(
+        broker_types.BrokerError.UnsupportedShape,
+        materializeChatgpt(parsed.value, std.testing.allocator, "claude:work"),
+    );
 }
 
 /// Parse a codex-shaped auth.json into ChatgptAuthTokens. Schema

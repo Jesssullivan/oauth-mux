@@ -20,6 +20,7 @@ done
 ./scripts/stay-afloat-wrapper-doc-smoke.sh
 ./scripts/smoke-trace.sh
 ./scripts/smoke-broker.sh
+./scripts/smoke-broker-claude.sh
 ./scripts/smoke-codex-cli-ux.sh
 ./scripts/smoke-codex-acceptance.sh
 ./scripts/smoke-codex-concurrent-sessions.sh

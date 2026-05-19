@@ -215,6 +215,13 @@ smoke-broker-local:
     zig build
     ./scripts/smoke-broker.sh
 
+smoke-broker-claude:
+    nix develop --command just smoke-broker-claude-local
+
+smoke-broker-claude-local:
+    zig build
+    ./scripts/smoke-broker-claude.sh
+
 # ── Codex adapter synthetic smoke (no provider traffic) ──
 
 smoke-codex-cli-ux:
