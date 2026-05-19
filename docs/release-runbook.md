@@ -79,6 +79,22 @@ The Nix dev shell supplies Zig, Just, Node/npm, and nfpm, so `just release-local
 is the reproducible proof path. Running `scripts/release-local.sh` directly will
 still skip npm or deb/rpm output if those host tools are absent.
 
+`release-local` performs a host-resource preflight before deleting or staging
+`dist/out/v<version>`. By default it requires at least 12 GiB free on the repo
+filesystem. On hosts with less than 12 GiB RAM, it constrains Zig release
+compilation with `-j2` unless `OMUX_RELEASE_ZIG_JOBS` is already set. This is
+intentional: the six-target ReleaseSafe graph can look like a shell hang on
+low-disk, memory-compressed dogfood machines.
+
+Useful overrides:
+
+- `OMUX_RELEASE_PREFLIGHT_ONLY=1 scripts/release-local.sh <version>` checks the
+  host without mutating release output.
+- `OMUX_RELEASE_ALLOW_LOW_DISK=1` continues despite the disk warning.
+- `OMUX_RELEASE_MIN_FREE_KIB=<kib>` changes the free-space threshold.
+- `OMUX_RELEASE_ZIG_JOBS=<n>` sets Zig release concurrency explicitly.
+- `OMUX_RELEASE_SKIP_PREFLIGHT=1` disables the host-resource guard.
+
 Run the full build-plus-smoke proof:
 
 ```bash
