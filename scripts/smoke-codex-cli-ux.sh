@@ -300,6 +300,7 @@ if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
     exit 1
 fi
 assert_grep "missing authority diagnostic status" '"kind":"resume_authority_check".*"ok":false' "$BAD_AUTHORITY_NDJSON"
+assert_grep "missing authority terminal status" '"kind":"session_aborted".*"reason":"session_authority_unavailable".*"phase":"resume_authority_check".*"pre_spawn":true.*"child_spawned":false' "$BAD_AUTHORITY_NDJSON"
 assert_grep "missing authority failed before child spawn" 'resume chooser unavailable' "$BAD_AUTHORITY_STDERR"
 if [[ -e "$BAD_AUTHORITY_REPORT" ]]; then
     echo "  ✗ missing authority launched stub unexpectedly" >&2
@@ -333,6 +334,7 @@ if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
     exit 1
 fi
 assert_grep "config override diagnostic status" '"kind":"config_passthrough_check".*"ok":false.*"model_provider_override":true' "$BAD_CONFIG_NDJSON"
+assert_grep "config override terminal status" '"kind":"session_aborted".*"reason":"config_override_unavailable".*"phase":"config_passthrough_check".*"pre_spawn":true.*"child_spawned":false' "$BAD_CONFIG_NDJSON"
 assert_grep "config override failed before child spawn" 'forwarded Codex --config attempts to override managed provider settings' "$BAD_CONFIG_STDERR"
 if [[ -e "$BAD_CONFIG_REPORT" ]]; then
     echo "  ✗ config override launched stub unexpectedly" >&2

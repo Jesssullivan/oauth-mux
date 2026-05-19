@@ -22,6 +22,7 @@ AUTH_FALLBACK="$TMP/auth-fallback.ndjson"
 AUTH_FALLBACK_CHAIN="$TMP/auth-fallback-chain.ndjson"
 INCOMPLETE="$TMP/incomplete.ndjson"
 SIGNALED="$TMP/signaled.ndjson"
+PRE_SPAWN="$TMP/pre-spawn.ndjson"
 
 cat >"$BROKERED" <<'EOF'
 {"kind":"launch_timing","phase":"config_health_load","duration_ms":4,"elapsed_ms":4,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
@@ -95,6 +96,11 @@ cat >"$SIGNALED" <<'EOF'
 {"kind":"session_started","selected_account":"codex:max-3","claim_level":"broker_owned","session_authority":"canonical_bridge"}
 {"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
 {"kind":"session_aborted","adapter":"codex","reason":"child_signal","exit_code":-1,"term_kind":"signal","term_code":9,"signal_name":"SIGKILL","final_claim_level":"broker_owned","synthetic_swap_observed":false}
+EOF
+
+cat >"$PRE_SPAWN" <<'EOF'
+{"kind":"launch_timing","phase":"config_health_load","duration_ms":3,"elapsed_ms":3,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
+{"kind":"session_aborted","adapter":"codex","reason":"no_account_selectable","phase":"route_election","error":"NoAccountSelectable","exit_code":-1,"term_kind":null,"term_code":null,"signal_name":null,"final_claim_level":"none","synthetic_swap_observed":false,"pre_spawn":true,"child_spawned":false,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
 EOF
 
 BROKERED_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$BROKERED" --require-brokered)"
@@ -285,6 +291,23 @@ fi
 if [[ "$(jq -r .terminal_event.signal_name <<<"$SIGNALED_SUMMARY")" != "SIGKILL" ]]; then
     echo "signaled artifact should retain signal name" >&2
     echo "$SIGNALED_SUMMARY" >&2
+    exit 1
+fi
+
+PRE_SPAWN_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$PRE_SPAWN")"
+if [[ "$(jq -r .session_aborted_observed <<<"$PRE_SPAWN_SUMMARY")" != "true" ]]; then
+    echo "pre-spawn artifact should be marked aborted" >&2
+    echo "$PRE_SPAWN_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .terminal_event.kind <<<"$PRE_SPAWN_SUMMARY")" != "session_aborted" ]]; then
+    echo "pre-spawn artifact should retain terminal event kind" >&2
+    echo "$PRE_SPAWN_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .terminal_event.term_kind <<<"$PRE_SPAWN_SUMMARY")" != "null" ]]; then
+    echo "pre-spawn artifact should not fake a child term kind" >&2
+    echo "$PRE_SPAWN_SUMMARY" >&2
     exit 1
 fi
 
