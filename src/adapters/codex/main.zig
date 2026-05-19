@@ -999,6 +999,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     const stderr = std.io.getStdErr().writer();
     var launch_timer = LaunchTimer.start();
     var emit_status = opts.json_status or opts.json_status_file != null;
+    var session_started_emitted = false;
 
     var status_file: ?std.fs.File = null;
     defer if (status_file) |*file| file.close();
@@ -1034,6 +1035,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     // 1. Load oauth-mux config + populate broker pool.
     const parsed = config_mod.load(allocator) catch |e| {
         try stderr.print("oauth-mux codex: config load: {s}\n", .{@errorName(e)});
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "config_load_failed", "config_load", @errorName(e), session_started_emitted);
         return RunError.NoConfig;
     };
     defer parsed.deinit();
@@ -1043,6 +1045,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     var route_health = health_mod.HealthStore.load(allocator, .{});
     defer route_health.deinit();
     broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "config_health_load", "PoolPopulateFailed", session_started_emitted);
         return RunError.PoolPopulateFailed;
     };
     restrictPoolToCodex(&server.pool);
@@ -1066,6 +1069,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             server.pool.deinit();
             server.pool = broker.AccountPool.init(allocator);
             broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+                try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "codex_auto_revalidation", "PoolPopulateFailed", session_started_emitted);
                 return RunError.PoolPopulateFailed;
             };
             restrictPoolToCodex(&server.pool);
@@ -1077,16 +1081,19 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     const elected = if (opts.account) |pin| pin: {
         if (!isCodexAccountId(pin)) {
             try stderr.print("oauth-mux codex: --account {s} is not a codex account\n", .{pin});
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
             return RunError.NoAccountSelectable;
         }
         for (server.pool.accounts.items) |a| {
             if (std.mem.eql(u8, a.id, pin)) break :pin a;
         }
         try stderr.print("oauth-mux codex: --account {s} not in profile\n", .{pin});
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
         return RunError.NoAccountSelectable;
     } else server.pool.elect(opts.profile, null, &.{}) catch |e| switch (e) {
         broker_types.BrokerError.NoAccountSelectable => {
             try stderr.writeAll("oauth-mux codex: no selectable account in profile\n");
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
             return RunError.NoAccountSelectable;
         },
         else => return e,
@@ -1100,6 +1107,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             "oauth-mux codex: cannot resolve auth.json for {s}; account needs config_dir or file secret\n",
             .{elected.id},
         );
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "codex_home_unavailable", "auth_refresh_preflight", "NoCodexHome", session_started_emitted);
         return RunError.NoCodexHome;
     };
     defer allocator.free(source_auth_path);
@@ -1117,6 +1125,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         status_writer,
     ) catch |e| {
         try stderr.print("oauth-mux codex: proxy bind: {s}\n", .{@errorName(e)});
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "proxy_bind_failed", "proxy_bind", @errorName(e), session_started_emitted);
         return e;
     };
     defer proxy.deinit();
@@ -1151,6 +1160,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     try launch_timer.mark(status_writer, emit_status, "resume_authority_check");
     if (resume_request.mode == .chooser and !resume_authority_check.ok) {
         try stderr.print("oauth-mux codex: resume chooser unavailable: {s}\n", .{resume_authority_check.diagnostic});
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "session_authority_unavailable", "resume_authority_check", "SessionAuthorityUnavailable", session_started_emitted);
         return RunError.SessionAuthorityUnavailable;
     }
 
@@ -1161,6 +1171,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     try launch_timer.mark(status_writer, emit_status, "config_passthrough_check");
     if (!config_override_check.ok) {
         try stderr.writeAll("oauth-mux codex: forwarded Codex --config attempts to override managed provider settings\n");
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "config_override_unavailable", "config_passthrough_check", "ConfigOverrideUnavailable", session_started_emitted);
         return RunError.ConfigOverrideUnavailable;
     }
 
@@ -1190,6 +1201,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         try std.json.stringify(command_spelling, .{}, status_writer);
         try status_writer.print(",\"installed_local_mismatch_detected\":{any}", .{installed_local_mismatch});
         try status_writer.writeAll("}}\n");
+        session_started_emitted = true;
         if (resume_request.requested()) {
             try writeResumePreflightStatus(
                 status_writer,
@@ -1217,6 +1229,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         } else {
             try stderr.print("oauth-mux codex: cannot find Codex CLI {s}; set OMUX_CODEX_BIN to an executable path\n", .{requested_codex_bin});
         }
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "binary_resolution_failed", "binary_resolution", @errorName(e), session_started_emitted);
         return e;
     };
     defer allocator.free(codex_bin);
@@ -1265,6 +1278,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             trace.boolean("codex_home_path_printed", false),
             trace.boolean("token_material_printed", false),
         });
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "child_spawn_failed", "child_spawn", @errorName(e), session_started_emitted);
         return e;
     };
     trace.append(allocator, "codex.managed.child_spawn", .info, &.{
@@ -1336,6 +1350,21 @@ fn openStatusFile(path: []const u8) !std.fs.File {
         try std.fs.cwd().makePath(dir);
     }
     return try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
+}
+
+fn writeManagedPreSpawnAbortStatus(
+    writer: anytype,
+    emit_status: bool,
+    reason: []const u8,
+    phase: []const u8,
+    error_name: []const u8,
+    session_started_emitted: bool,
+) !void {
+    if (!emit_status) return;
+    try writer.print(
+        "{{\"kind\":\"session_aborted\",\"adapter\":\"codex\",\"reason\":\"{s}\",\"phase\":\"{s}\",\"error\":\"{s}\",\"exit_code\":-1,\"term_kind\":null,\"term_code\":null,\"signal_name\":null,\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":false,\"pre_spawn\":true,\"child_spawned\":false,\"path_printed\":false,\"token_material_printed\":false,\"session_id_printed\":false}}\n",
+        .{ reason, phase, error_name, if (session_started_emitted) "broker_owned" else "none" },
+    );
 }
 
 fn finalizeManagedSession(
