@@ -27,7 +27,7 @@ TIN-950 adds the capture/replay tooling only:
   summarizes endpoint/status coverage, extracts 429 quota shapes, and
   fails on obvious secret-like values before a capture is promoted.
 - `scripts/test-cassette-upstream.py` replays reviewed capture JSON by
-  `(method, path)`.
+  `(method, path)`, ignoring query strings for route matching.
 - `just smoke-codex-cassette-replay` proves the replayer on a tiny
   synthetic cassette without provider traffic.
 - `just smoke-codex-capture-review` pins the offline reviewer: scrubbed
@@ -67,7 +67,11 @@ evidence:
 4. Manually inspect the fixture-sized JSON selected for promotion.
    The reviewer catches obvious token/JWT/API-key strings; it is not a
    formal proof that all account-identifying material is gone.
-5. Commit only scrubbed per-flow JSON. Do not commit
+5. Textual non-JSON responses such as `text/event-stream` may include
+   `body_text` so the cassette replayer can serve realistic SSE frames.
+   Keep only reviewed, fixture-sized text bodies and remove prompt,
+   transcript, or account-identifying content before promotion.
+6. Commit only scrubbed per-flow JSON. Do not commit
    `captures/**/flows.binary`.
 
 ## 1. Endpoints Observed

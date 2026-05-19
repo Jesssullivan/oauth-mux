@@ -15,6 +15,9 @@ Redactions:
   - Body fields tokens.access_token / refresh_token / id_token: replace
     with sha256(value)[:10] (so swap-correctness can be argued from the
     capture without leaking material)
+  - Textual non-JSON response bodies such as text/event-stream are kept
+    as body_text for replay fidelity and must be manually reviewed before
+    fixture promotion.
 """
 
 from __future__ import annotations
@@ -48,6 +51,12 @@ HASH_REDACT_KEYS = {
     "accountId",
     "account_id",
 }
+
+TEXTUAL_CONTENT_TYPES = (
+    "text/event-stream",
+    "text/plain",
+    "application/x-ndjson",
+)
 
 
 def _hash10(s: str) -> str:
@@ -91,11 +100,28 @@ def _redact_obj(node: Any) -> Any:
     return node
 
 
-def _safe_json(b: bytes) -> Any:
+def _is_textual_content_type(content_type: str) -> bool:
+    low = content_type.split(";", 1)[0].strip().lower()
+    if low in TEXTUAL_CONTENT_TYPES:
+        return True
+    if low.endswith("+json"):
+        return True
+    return False
+
+
+def _safe_body(b: bytes, content_type: str) -> Any:
     try:
         return json.loads(b.decode("utf-8"))
     except Exception:
-        return {"__non_json__": True, "len": len(b), "head_hex": b[:64].hex()}
+        out: dict[str, Any] = {
+            "__non_json__": True,
+            "len": len(b),
+            "head_hex": b[:64].hex(),
+        }
+        if b and _is_textual_content_type(content_type):
+            out["text_encoding"] = "utf-8"
+            out["body_text"] = b.decode("utf-8", "replace")
+        return out
 
 
 class CodexWireAddon:
@@ -138,8 +164,14 @@ class CodexWireAddon:
         req_headers = [(k, _redact_header(k, v)) for k, v in flow.request.headers.items()]
         resp_headers = [(k, _redact_header(k, v)) for k, v in flow.response.headers.items()]
 
-        req_body = _redact_obj(_safe_json(flow.request.raw_content or b""))
-        resp_body = _redact_obj(_safe_json(flow.response.raw_content or b""))
+        req_body = _redact_obj(_safe_body(
+            flow.request.raw_content or b"",
+            flow.request.headers.get("content-type", ""),
+        ))
+        resp_body = _redact_obj(_safe_body(
+            flow.response.raw_content or b"",
+            flow.response.headers.get("content-type", ""),
+        ))
 
         record = {
             "captured_at": time.time(),

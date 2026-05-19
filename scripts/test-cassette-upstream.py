@@ -34,8 +34,8 @@ matching what `codex-wire-addon.py` writes. Each file:
     }
 
 Replay strategy: match incoming requests to captures by
-(method, path) tuple. If multiple captures match the same key,
-cycle through them in capture-time order so a session that
+(method, path-without-query) tuple. If multiple captures match the
+same key, cycle through them in capture-time order so a session that
 captured "200, 200, 429" can be replayed in the same sequence.
 
 Env (matching test-stub-upstream.py for harness compatibility):
@@ -49,6 +49,10 @@ Failure modes:
     {"error":"no_cassette_match","method":...,"path":...}
   - Cassette dir is empty: server starts but every request errors
     (the harness should treat this as a setup failure)
+
+Textual non-JSON captures may include response.body.body_text; those
+bytes are replayed directly so reviewed text/event-stream cassettes
+exercise the same parser path as real Codex SSE responses.
 
 This script does NOT generate cassettes. Use
 `scripts/capture-codex-wire.sh proxy` for that. Once captures
@@ -65,6 +69,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 CASSETTE_DIR = os.environ.get("OMUX_CASSETTE_DIR")
@@ -79,6 +84,11 @@ def _log(record: dict) -> None:
         f.write(json.dumps(record) + "\n")
 
 
+def _normalize_path(path: str) -> str:
+    split = urlsplit(path or "/")
+    return split.path or "/"
+
+
 def _load_cassettes(d: Path) -> dict[tuple[str, str], list[dict]]:
     """Load all flow JSON files; group by (method, path); sort by ts."""
     by_key: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -90,11 +100,18 @@ def _load_cassettes(d: Path) -> dict[tuple[str, str], list[dict]]:
         except Exception as e:
             print(f"cassette: skipping malformed {f.name}: {e}", file=sys.stderr)
             continue
-        key = (flow.get("method", "GET"), flow.get("path", "/"))
+        key = (flow.get("method", "GET"), _normalize_path(flow.get("path", "/")))
         by_key[key].append(flow)
     for k in by_key:
         by_key[k].sort(key=lambda f: f.get("captured_at", 0))
     return by_key
+
+
+def _header_value(headers: list, target: str) -> str | None:
+    for name, value in headers:
+        if str(name).lower() == target.lower():
+            return str(value)
+    return None
 
 
 # Per-key replay cursor. Each (method, path) advances independently;
@@ -115,10 +132,7 @@ class CassetteHandler(http.server.BaseHTTPRequestHandler):
         return b""
 
     def _serve(self) -> None:
-        path = self.path
-        # Strip query string for matching
-        if "?" in path:
-            path = path.split("?", 1)[0]
+        path = _normalize_path(self.path)
         body_in = self._read_body()
         _ = body_in
 
@@ -132,25 +146,31 @@ class CassetteHandler(http.server.BaseHTTPRequestHandler):
         CURSORS[key] += 1
         flow = flows[cursor]
         resp = flow.get("response", {})
+        headers = resp.get("headers") or []
         status = resp.get("status", 200)
         body_obj = resp.get("body")
+        captured_ct = _header_value(headers, "content-type")
         if isinstance(body_obj, str):
             payload = body_obj.encode("utf-8")
-            ct = "text/plain"
+            ct = captured_ct or "text/plain"
         elif isinstance(body_obj, dict) and body_obj.get("__non_json__"):
-            # Non-JSON original; we have head_hex but not full bytes.
-            # For replay we send a minimal body of the same length.
-            payload = b"\x00" * body_obj.get("len", 0)
-            ct = "application/octet-stream"
+            if isinstance(body_obj.get("body_text"), str):
+                payload = body_obj["body_text"].encode(body_obj.get("text_encoding", "utf-8"))
+                ct = captured_ct or "text/plain"
+            else:
+                # Legacy non-JSON captures have head_hex but not full bytes.
+                # For replay we send a minimal body of the same length.
+                payload = b"\x00" * body_obj.get("len", 0)
+                ct = captured_ct or "application/octet-stream"
         else:
             payload = json.dumps(body_obj or {}).encode("utf-8")
-            ct = "application/json"
+            ct = captured_ct or "application/json"
 
         self.send_response(status)
         # Replay headers verbatim except framing-related ones we control
-        for name, value in resp.get("headers", []):
-            n = name.lower()
-            if n in ("content-length", "transfer-encoding", "connection", "keep-alive"):
+        for name, value in headers:
+            n = str(name).lower()
+            if n in ("content-length", "content-type", "transfer-encoding", "connection", "keep-alive"):
                 continue
             self.send_header(name, value)
         self.send_header("Content-Type", ct)
