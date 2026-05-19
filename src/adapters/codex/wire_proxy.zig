@@ -127,6 +127,10 @@ pub const Proxy = struct {
     /// allow-list. Owned by the adapter for the proxy lifetime.
     profile: ?[]const u8 = null,
 
+    /// Capability scope for durable route health written by observed
+    /// broker-run traffic. Borrowed from managed launch options.
+    capability: ?[]const u8 = null,
+
     /// stderr writer for redacted diagnostic logs. Never carries token
     /// material; emits NDJSON status frames the adapter can correlate.
     log_writer: std.io.AnyWriter,
@@ -453,7 +457,7 @@ pub const Proxy = struct {
         const now_unix = std.time.timestamp();
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
-        try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix);
+        try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix, self.capability);
         store.persist();
     }
 
@@ -464,10 +468,9 @@ pub const Proxy = struct {
         status: u16,
         retry_after_s: ?u32,
     ) void {
-        _ = self;
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
-        recordDurableRouteStateInStore(&store, account_id, state, status, retry_after_s);
+        recordDurableRouteStateInStore(&store, account_id, self.capability, state, status, retry_after_s);
         store.persist();
     }
 
@@ -662,8 +665,9 @@ fn applyClassificationWithStore(
     account_id: []const u8,
     c: Classification,
     now_unix: i64,
+    capability: ?[]const u8,
 ) !void {
-    recordDurableClassificationInStore(store, account_id, c, now_unix);
+    recordDurableClassificationInStore(store, account_id, c, now_unix, capability);
     switch (c.kind) {
         .ok => pool.refreshTimeBased(now_unix),
         .quota_exhausted => {
@@ -686,8 +690,8 @@ fn recordDurableClassificationInStore(
     account_id: []const u8,
     c: Classification,
     now_unix: i64,
+    capability: ?[]const u8,
 ) void {
-    if (c.kind == .ok) return;
     const state = routeStateFromClassification(c.kind);
     const status: u16 = switch (c.kind) {
         .ok => 200,
@@ -696,12 +700,13 @@ fn recordDurableClassificationInStore(
         .provider_5xx => 500,
     };
     const retry_after_s = retryAfterSeconds(now_unix, c.resets_at, c.kind);
-    recordDurableRouteStateInStore(store, account_id, state, status, retry_after_s);
+    recordDurableRouteStateInStore(store, account_id, capability, state, status, retry_after_s);
 }
 
 fn recordDurableRouteStateInStore(
     store: *health_mod.HealthStore,
     account_id: []const u8,
+    capability: ?[]const u8,
     state: RouteState,
     status: u16,
     retry_after_s: ?u32,
@@ -710,7 +715,10 @@ fn recordDurableRouteStateInStore(
     if (colon == 0 or colon + 1 >= account_id.len) return;
     const provider = account_id[0..colon];
     const account = account_id[colon + 1 ..];
-    const key = health_mod.accountKey(provider, account);
+    const key = switch (state) {
+        .auth_failed, .credential_unavailable => health_mod.accountKey(provider, account),
+        else => if (capability) |cap| health_mod.capabilityKey(provider, account, cap) else health_mod.accountKey(provider, account),
+    };
 
     const classification: core_types.HttpClassification = switch (state) {
         .available => .success,
@@ -1807,7 +1815,7 @@ test "quota evidence is recorded before same-turn retry election" {
         .kind = .quota_exhausted,
         .resets_at = now + 900,
         .body_class = "usage_limit_reached",
-    }, now);
+    }, now, null);
 
     const recorded = store.accounts.get("codex:max-1") orelse {
         return error.ExpectedQuotaEvidence;
@@ -1822,6 +1830,31 @@ test "quota evidence is recorded before same-turn retry election" {
     // the selected route has durable quota evidence and is blocked in-pool.
     const elected = try pool.elect(null, null, &.{});
     try std.testing.expectEqualStrings("codex:max-2", elected.id);
+}
+
+test "successful managed proxy turn records capability route health" {
+    var pool = account_pool_mod.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{ .id = "codex:max-1", .selectable = true, .liveness = .live, .availability = .available });
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    try applyClassificationWithStore(&pool, &store, "codex:max-1", .{
+        .kind = .ok,
+    }, 1_788_000_000, "codex-max");
+
+    const recorded = store.accounts.get("codex:max-1#codex-max") orelse {
+        return error.ExpectedSuccessEvidence;
+    };
+    try std.testing.expectEqual(@as(?u16, 200), recorded.last_http_status);
+    try std.testing.expectEqual(health_mod.ProbeEvidenceSource.broker_run_live, recorded.last_probe_source.?);
+    try std.testing.expectEqual(health_mod.ProbeHintClass.none, recorded.last_probe_hint_class.?);
+    try std.testing.expectEqual(core_types.MuxDecision.use_this, recorded.last_probe_decision.?);
+    switch (recorded.liveness) {
+        .live => |live| try std.testing.expectEqual(core_types.Availability.available, live.availability),
+        else => return error.ExpectedLiveHealth,
+    }
 }
 
 test "parseRequest reads start line + headers + content-length body" {
