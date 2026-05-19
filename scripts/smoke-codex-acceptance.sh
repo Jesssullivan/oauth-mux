@@ -218,6 +218,14 @@ else
     exit 1
 fi
 
+if jq -e '.accounts[] | select(.key == "codex:max-2#codex-max" and .last_http_status == 200 and .last_probe_source == "broker_run_live" and .last_probe_hint_class == "none" and .last_probe_decision == "use_this" and .liveness.state == "live" and .liveness.availability == "available")' "$STATE_DIR/health.json" >/dev/null; then
+    echo "  ✓ successful proxy turn persisted capability route health"
+else
+    echo "  ✗ successful proxy turn did not persist capability route health" >&2
+    jq . "$STATE_DIR/health.json" >&2
+    exit 1
+fi
+
 if [[ ! -s "$STUB_REPORT" ]]; then
     echo "  ✗ stub-codex report missing" >&2
     exit 1
@@ -279,7 +287,7 @@ else
 fi
 
 echo
-echo "smoke-codex-acceptance: all 24 assertions passed."
+echo "smoke-codex-acceptance: all 25 assertions passed."
 echo "  full ndjson: $NDJSON"
 echo "  stub upstream log: $UPLOG"
 echo "  stub codex report: $STUB_REPORT"
