@@ -17,6 +17,41 @@ commit message, or PR description frames any of those as "the success" or
 "the fallback if seamless mux is hard," it is wrong by construction;
 delete and re-anchor on the broker contract.
 
+## Product Guardrail
+
+oauth-mux is a harness continuity layer, not a general auth diagnostics
+toolkit. The product is:
+
+> Install oauth-mux, enroll the engineer's agent accounts, run
+> `oauth-mux <harness>`, and keep that harness usable when auth, quota, tier,
+> or local runtime state changes, with little to no extra user interaction.
+
+Treat work as core only when it directly improves one of these surfaces:
+
+- `oauth-mux codex` as the reference managed harness flow.
+- Account enrollment and route-health truth across multiple engineer identities.
+- Managed in-session quota/rate/auth/tier handoff.
+- Native-feeling UX for install, preflight, login/pass-through, resume, status,
+  and repair.
+- Redacted no-spend AX so agents can inspect state and request safe next actions
+  without reading tokens or spending provider calls.
+- A reusable harness adapter contract for future Claude, OpenCode, and other
+  harness integrations.
+
+Broker MCP methods, daemon status, route diagnostics, trace flags, cassette
+capture, packaging, and website/docs updates are support infrastructure. They
+matter only when they make the managed harness experience more reliable, easier
+to repair, safer for agents, or easier to generalize into the next real harness
+adapter.
+
+Defer or contain work that primarily chases universal provider support, hidden
+daemon dependency, unmanaged harness hot-swap, same-thread provider continuity,
+mid-turn streaming recovery, or broad adapter claims without live proof.
+
+Feature-creep test: if a change does not make `oauth-mux codex` more reliable,
+easier to install, easier to repair, easier for agents to inspect safely, or
+easier to generalize into the next harness adapter, it is probably out of scope.
+
 ## Source of Truth Hierarchy
 
 1. This file (AGENTS.md)
