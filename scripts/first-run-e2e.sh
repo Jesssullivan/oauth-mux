@@ -294,6 +294,13 @@ jq -e '
   and (.install.native_codex_found | type) == "boolean"
   and (.install.codex_shim_candidates | type) == "number"
   and .install.native_codex_env == "OMUX_CODEX_BIN"
+  and (.environment.codex_home_set | type) == "boolean"
+  and (.environment.codex_home_managed_overlay | type) == "boolean"
+  and (.environment.omux_managed_env_present | type) == "boolean"
+  and (.environment.omux_active_account_present | type) == "boolean"
+  and (.environment.omux_codex_session_home_present | type) == "boolean"
+  and (.environment.omux_codex_config_home_present | type) == "boolean"
+  and .environment.path_printed == false
   and .ok == false
   and .route_summary.routes_total == 3
   and .route_summary.selectable_routes == 0
@@ -330,6 +337,8 @@ expect_contains "$codex_preflight_text" "    active codex:" "codex preflight tex
 expect_contains "$codex_preflight_text" "    active codex is oauth-mux shim:" "codex preflight text reports codex shim classification"
 expect_contains "$codex_preflight_text" "    native codex:" "codex preflight text reports native codex"
 expect_contains "$codex_preflight_text" "    native codex env: OMUX_CODEX_BIN" "codex preflight text reports native codex env override"
+expect_contains "$codex_preflight_text" "  environment:" "codex preflight text reports shell environment diagnostics"
+expect_contains "$codex_preflight_text" "    CODEX_HOME is oauth-mux overlay:" "codex preflight text reports managed overlay detection"
 expect_contains "$codex_preflight_text" "  config valid: yes" "codex preflight text still reports route readiness"
 expect_contains "$codex_preflight_text" "No-spend diagnostics:" "codex preflight text labels no-spend diagnostics"
 expect_contains "$codex_preflight_text" "oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json" "codex preflight text reports no-spend broker plan"

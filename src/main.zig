@@ -9450,6 +9450,8 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
         try writePolicyJson(writer, parsed.value.policy);
         try writer.writeAll(",\"install\":");
         try writeCodexPreflightInstallJson(writer, allocator);
+        try writer.writeAll(",\"environment\":");
+        try writeCodexPreflightEnvironmentJson(writer, allocator);
         try writer.writeAll(",\"route_summary\":");
         try writeCodexPreflightRouteSummaryJson(writer, summary, session_start_ready, fallback_ready);
         try writer.writeAll(",\"blocked_route_reasons\":");
@@ -9486,6 +9488,7 @@ fn runCodexPreflight(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     var install_observation = try collectCodexPreflightInstallObservation(allocator);
     defer install_observation.deinit(allocator);
     try writeCodexPreflightInstallText(writer, install_observation);
+    try writeCodexPreflightEnvironmentText(writer, allocator);
     try writer.print("  config valid: {s}\n", .{if (config_valid) "yes" else "no"});
     try writer.print("  session start ready: {s}\n", .{if (session_start_ready) "yes" else "no"});
     try writer.print("  fallback ready: {s}\n", .{if (fallback_ready) "yes" else "no"});
@@ -9529,7 +9532,8 @@ fn collectCodexPreflightInstallObservation(allocator: std.mem.Allocator) !CodexP
     var codex_candidates = try collectPathCandidates(allocator, "codex");
     errdefer codex_candidates.deinit(allocator);
 
-    const active_oauth_mux_is_path_first = oauth_mux_candidates.paths.items.len != 0 and std.mem.eql(u8, oauth_mux_candidates.paths.items[0], self_path);
+    const active_oauth_mux_is_path_first = oauth_mux_candidates.paths.items.len != 0 and
+        try executablePathsEquivalent(allocator, oauth_mux_candidates.paths.items[0], self_path);
     const active_codex = if (codex_candidates.paths.items.len == 0) null else codex_candidates.paths.items[0];
     const active_codex_is_oauth_mux_shim = if (active_codex) |path| try isOauthMuxShimPath(allocator, path) else false;
     const native_codex_candidate = try firstNativeCodexCandidate(allocator, codex_candidates.paths.items);
@@ -9596,6 +9600,81 @@ fn writeCodexPreflightInstallText(writer: anytype, observation: CodexPreflightIn
         try writer.writeAll("    note: active `codex` is native/unmanaged; use `oauth-mux codex` or install the managed shim for muxed Codex\n");
     } else {
         try writer.writeAll("    note: no `codex` binary was found on PATH\n");
+    }
+}
+
+fn executablePathsEquivalent(allocator: std.mem.Allocator, lhs: []const u8, rhs: []const u8) !bool {
+    if (std.mem.eql(u8, lhs, rhs)) return true;
+
+    const lhs_real = try realpathOrDupe(allocator, lhs);
+    defer allocator.free(lhs_real);
+    const rhs_real = try realpathOrDupe(allocator, rhs);
+    defer allocator.free(rhs_real);
+
+    return std.mem.eql(u8, lhs_real, rhs_real);
+}
+
+fn realpathOrDupe(allocator: std.mem.Allocator, path_value: []const u8) ![]u8 {
+    return std.fs.realpathAlloc(allocator, path_value) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => try allocator.dupe(u8, path_value),
+        else => return err,
+    };
+}
+
+fn envVarPresent(name: []const u8) bool {
+    const value = std.process.getEnvVarOwned(std.heap.page_allocator, name) catch return false;
+    defer std.heap.page_allocator.free(value);
+    return true;
+}
+
+fn envManagedCodexOverlayPresent(allocator: std.mem.Allocator) !bool {
+    const path_value = std.process.getEnvVarOwned(allocator, "CODEX_HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(path_value);
+    return try codexManagedOverlayHomeForPlanning(allocator, path_value);
+}
+
+fn writeCodexPreflightEnvironmentJson(writer: anytype, allocator: std.mem.Allocator) !void {
+    const codex_home_set = envVarPresent("CODEX_HOME");
+    const managed_overlay = try envManagedCodexOverlayPresent(allocator);
+    const inherited_managed_frame = envVarPresent("OMUX_MANAGED_FRAME_ID") or
+        envVarPresent("OMUX_ACTIVE_ACCOUNT") or
+        envVarPresent("OMUX_STATUS_FILE");
+
+    try writer.writeAll("{\"codex_home_set\":");
+    try writer.writeAll(if (codex_home_set) "true" else "false");
+    try writer.writeAll(",\"codex_home_managed_overlay\":");
+    try writer.writeAll(if (managed_overlay) "true" else "false");
+    try writer.writeAll(",\"omux_managed_env_present\":");
+    try writer.writeAll(if (inherited_managed_frame) "true" else "false");
+    try writer.writeAll(",\"omux_active_account_present\":");
+    try writer.writeAll(if (envVarPresent("OMUX_ACTIVE_ACCOUNT")) "true" else "false");
+    try writer.writeAll(",\"omux_status_file_present\":");
+    try writer.writeAll(if (envVarPresent("OMUX_STATUS_FILE")) "true" else "false");
+    try writer.writeAll(",\"omux_codex_session_home_present\":");
+    try writer.writeAll(if (envVarPresent("OMUX_CODEX_SESSION_HOME")) "true" else "false");
+    try writer.writeAll(",\"omux_codex_config_home_present\":");
+    try writer.writeAll(if (envVarPresent("OMUX_CODEX_CONFIG_HOME")) "true" else "false");
+    try writer.writeAll(",\"path_printed\":false}");
+}
+
+fn writeCodexPreflightEnvironmentText(writer: anytype, allocator: std.mem.Allocator) !void {
+    const codex_home_set = envVarPresent("CODEX_HOME");
+    const managed_overlay = try envManagedCodexOverlayPresent(allocator);
+    const inherited_managed_frame = envVarPresent("OMUX_MANAGED_FRAME_ID") or
+        envVarPresent("OMUX_ACTIVE_ACCOUNT") or
+        envVarPresent("OMUX_STATUS_FILE");
+
+    try writer.writeAll("  environment:\n");
+    try writer.print("    CODEX_HOME set: {s}\n", .{if (codex_home_set) "yes" else "no"});
+    try writer.print("    CODEX_HOME is oauth-mux overlay: {s}\n", .{if (managed_overlay) "yes" else "no"});
+    try writer.print("    inherited managed oauth-mux env: {s}\n", .{if (inherited_managed_frame) "yes" else "no"});
+    try writer.print("    OMUX_CODEX_SESSION_HOME set: {s}\n", .{if (envVarPresent("OMUX_CODEX_SESSION_HOME")) "yes" else "no"});
+    try writer.print("    OMUX_CODEX_CONFIG_HOME set: {s}\n", .{if (envVarPresent("OMUX_CODEX_CONFIG_HOME")) "yes" else "no"});
+    if (managed_overlay) {
+        try writer.writeAll("    note: parent CODEX_HOME is a managed overlay; oauth-mux ignores it as reusable session/config authority\n");
     }
 }
 
@@ -9691,6 +9770,29 @@ test "Codex preflight install diagnostics classify shim and native candidates" {
     try std.testing.expectEqual(@as(usize, 1), try countOauthMuxShimCandidates(std.testing.allocator, &candidates));
     const native = (try firstNativeCodexCandidate(std.testing.allocator, &candidates)).?;
     try std.testing.expectEqualStrings(native_path, native);
+}
+
+test "executablePathsEquivalent follows Homebrew-style symlinks" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var target_tmp = std.testing.tmpDir(.{});
+    defer target_tmp.cleanup();
+    var bin_tmp = std.testing.tmpDir(.{});
+    defer bin_tmp.cleanup();
+
+    const target_file = try target_tmp.dir.createFile("oauth-mux", .{ .mode = 0o755 });
+    try target_file.writeAll("#!/bin/sh\nexit 0\n");
+    target_file.close();
+
+    const target_path = try target_tmp.dir.realpathAlloc(std.testing.allocator, "oauth-mux");
+    defer std.testing.allocator.free(target_path);
+    const bin_root = try bin_tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(bin_root);
+    const link_path = try std.fs.path.join(std.testing.allocator, &.{ bin_root, "oauth-mux" });
+    defer std.testing.allocator.free(link_path);
+
+    try std.fs.symLinkAbsolute(target_path, link_path, .{});
+    try std.testing.expect(try executablePathsEquivalent(std.testing.allocator, link_path, target_path));
 }
 
 fn writeCodexPreflightRouteSummaryJson(
@@ -11040,6 +11142,40 @@ fn codexManagedRouteConfigDir(allocator: std.mem.Allocator, cfg: config.Config, 
     const account = provider_cfg.accounts.map.get(route.account) orelse return null;
     const config_dir = account.config_dir orelse return null;
     return try paths.expandTilde(allocator, config_dir);
+}
+
+fn codexManagedOverlayHomeForPlanning(allocator: std.mem.Allocator, path_value: []const u8) !bool {
+    const base = std.fs.path.basename(path_value);
+    if (std.mem.startsWith(u8, base, "oauth-mux-codex-")) return true;
+
+    const config_path = try std.fs.path.join(allocator, &.{ path_value, "config.toml" });
+    defer allocator.free(config_path);
+    const bytes = std.fs.cwd().readFileAlloc(allocator, config_path, 2 * 1024 * 1024) catch |e| switch (e) {
+        error.FileNotFound, error.NotDir, error.AccessDenied, error.IsDir => return false,
+        else => return e,
+    };
+    defer allocator.free(bytes);
+
+    return std.mem.indexOf(u8, bytes, "Managed by oauth-mux") != null or
+        std.mem.indexOf(u8, bytes, "model_provider = \"oauth_mux_openai\"") != null or
+        std.mem.indexOf(u8, bytes, "[model_providers.oauth_mux_openai]") != null;
+}
+
+test "codexManagedOverlayHomeForPlanning detects managed overlay homes" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expect(try codexManagedOverlayHomeForPlanning(allocator, "/tmp/oauth-mux-codex-test"));
+    try std.testing.expect(!try codexManagedOverlayHomeForPlanning(allocator, "/tmp/not-an-omux-overlay-does-not-exist"));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile("config.toml", .{});
+    defer file.close();
+    try file.writeAll("# Managed by oauth-mux\n");
+
+    const tmp_path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(tmp_path);
+    try std.testing.expect(try codexManagedOverlayHomeForPlanning(allocator, tmp_path));
 }
 
 fn codexManagedStateFileContainsNeedle(
