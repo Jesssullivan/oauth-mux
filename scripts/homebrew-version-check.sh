@@ -6,7 +6,8 @@ if [ "$#" -ne 2 ]; then
 Usage: scripts/homebrew-version-check.sh <expected-version> <formula-file-or-ref>
 
 Checks either:
-  - a rendered formula file contains an explicit Homebrew version line, or
+  - a rendered formula file contains an explicit Homebrew version line or a
+    release URL from which Homebrew can infer the expected stable version, or
   - a tapped formula reference reports the expected stable version via
     `brew info --json=v2`.
 EOF
@@ -17,11 +18,20 @@ expected="$1"
 target="$2"
 
 if [ -f "$target" ]; then
-  if ! grep -Fqx "  version \"$expected\"" "$target"; then
-    printf 'Homebrew formula %s does not contain expected explicit version "%s"\n' "$target" "$expected" >&2
-    exit 1
+  if grep -Fqx "  version \"$expected\"" "$target"; then
+    exit 0
   fi
-  exit 0
+  inferred="$(
+    sed -n 's|.*releases/download/v\([^/"]*\)/.*|\1|p' "$target" |
+      sort -u |
+      tr '\n' ' ' |
+      sed 's/[[:space:]]*$//'
+  )"
+  if [ "$inferred" = "$expected" ]; then
+    exit 0
+  fi
+  printf 'Homebrew formula %s does not expose expected stable version "%s" (inferred: %s)\n' "$target" "$expected" "${inferred:-<none>}" >&2
+  exit 1
 fi
 
 brew_cmd="${OMUX_BREW_BIN:-brew}"

@@ -21,13 +21,14 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes currently resolve to `0.1.7`: GitHub Release assets, npm
-root and platform packages, the public Homebrew tap, the curl installer, and
-published deb/rpm assets. The current source tree also tightens install parity
-after a 2026-05-18 finding that the public Homebrew `codex` shim routed native
-admin commands such as `codex --version` through oauth-mux route election.
-Source `0.1.9` is the package-lane patch release candidate after `0.1.8`
-exposed Homebrew formula audit drift before registry/tap publication.
+Public install lanes are versioned by channel. GitHub Release assets, npm root
+and platform packages, the curl installer, and published deb/rpm assets last
+resolved to `0.1.7` in the public parity sweep. The public Homebrew tap now
+serves `0.1.9`. The current source tree also tightens install parity after a
+2026-05-18 finding that the public Homebrew `codex` shim routed native admin
+commands such as `codex --version` through oauth-mux route election. Homebrew
+must remain binary-only by default: `brew install jesssullivan/omux/oauth-mux`
+installs `oauth-mux` and must not install or link a managed `codex` shim.
 
 What works today:
 
@@ -110,13 +111,17 @@ ladder diagrams.
 
 ## Install
 
-Public install lanes currently resolve to `0.1.7`:
+Public install lanes:
 
 ```bash
 npm install -g oauth-mux
 # or
 brew install jesssullivan/omux/oauth-mux
 ```
+
+The Homebrew formula is intentionally binary-only. It should not change
+`command -v codex`; use the explicit local, npm, Nix, or future opt-in package
+shim lanes when testing managed bare-`codex` behavior.
 
 Nix users can choose the binary-only package or the managed-shim package:
 
