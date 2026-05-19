@@ -21,6 +21,58 @@ homebrew_dir="$out_dir/homebrew"
 nfpm_dir="$out_dir/nfpm"
 work_dir="$out_dir/work"
 
+format_kib_as_gib() {
+  awk "BEGIN { printf \"%.1f\", $1 / 1048576 }"
+}
+
+host_memory_bytes() {
+  if command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.memsize 2>/dev/null && return 0
+  fi
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemTotal:/ { printf "%.0f\n", $2 * 1024; exit }' /proc/meminfo
+    return 0
+  fi
+  return 1
+}
+
+release_host_preflight() {
+  if [ "${OMUX_RELEASE_SKIP_PREFLIGHT:-0}" = "1" ]; then
+    printf 'warning: skipping release host preflight because OMUX_RELEASE_SKIP_PREFLIGHT=1\n' >&2
+    return
+  fi
+
+  local free_kib min_free_kib
+  free_kib="$(df -Pk "$repo_root" | awk 'NR == 2 { print $4 }')"
+  min_free_kib="${OMUX_RELEASE_MIN_FREE_KIB:-12582912}"
+  if [ -n "$free_kib" ] && [ "$free_kib" -lt "$min_free_kib" ]; then
+    if [ "${OMUX_RELEASE_ALLOW_LOW_DISK:-0}" != "1" ]; then
+      printf 'release host preflight failed: only %s GiB free at %s; need at least %s GiB for local release proof\n' \
+        "$(format_kib_as_gib "$free_kib")" "$repo_root" "$(format_kib_as_gib "$min_free_kib")" >&2
+      printf 'free disk space, use remote CI/RBE release proof, or set OMUX_RELEASE_ALLOW_LOW_DISK=1 to continue anyway\n' >&2
+      exit 2
+    fi
+    printf 'warning: continuing with only %s GiB free because OMUX_RELEASE_ALLOW_LOW_DISK=1\n' \
+      "$(format_kib_as_gib "$free_kib")" >&2
+  fi
+
+  local mem_bytes low_mem_bytes
+  low_mem_bytes=$((12 * 1024 * 1024 * 1024))
+  mem_bytes="$(host_memory_bytes 2>/dev/null || true)"
+  if [ -n "$mem_bytes" ] && [ "$mem_bytes" -lt "$low_mem_bytes" ] && [ -z "${OMUX_RELEASE_ZIG_JOBS:-}" ]; then
+    OMUX_RELEASE_ZIG_JOBS=2
+    export OMUX_RELEASE_ZIG_JOBS
+    printf 'release host preflight: detected less than 12 GiB RAM; using zig -j%s for local release proof\n' \
+      "$OMUX_RELEASE_ZIG_JOBS" >&2
+  fi
+}
+
+release_host_preflight
+if [ "${OMUX_RELEASE_PREFLIGHT_ONLY:-0}" = "1" ]; then
+  printf 'release host preflight passed\n'
+  exit 0
+fi
+
 rm -rf "$out_dir"
 mkdir -p "$artifacts_dir" "$npm_dir" "$npm_tgz_dir" "$homebrew_dir" "$nfpm_dir" "$work_dir"
 
@@ -87,7 +139,12 @@ EOF
 }
 
 printf 'building release binaries...\n'
-zig build release
+zig_release_args=(build release --summary all)
+if [ -n "${OMUX_RELEASE_ZIG_JOBS:-}" ]; then
+  zig_release_args+=("-j${OMUX_RELEASE_ZIG_JOBS}")
+fi
+printf 'running: zig %s\n' "${zig_release_args[*]}"
+zig "${zig_release_args[@]}"
 
 package_binary "x86_64-linux" "oauth-mux-x86_64-linux" "oauth-mux-linux-x64" "linux" "x64" "oauth-mux"
 package_binary "aarch64-linux" "oauth-mux-aarch64-linux" "oauth-mux-linux-arm64" "linux" "arm64" "oauth-mux"
