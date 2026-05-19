@@ -93,6 +93,15 @@ paid-cohort-soak-snapshot: build
 
 codex-max-soak-snapshot: paid-cohort-soak-snapshot
 
+dogfood-process-snapshot OUT="dist/dogfood/process":
+    python3 ./scripts/dogfood-process-snapshot.py --out {{OUT}}
+
+dogfood-process-snapshot-json:
+    python3 ./scripts/dogfood-process-snapshot.py --json
+
+codex-max-process-snapshot OUT="dist/dogfood/process":
+    python3 ./scripts/dogfood-process-snapshot.py --out {{OUT}} --tag codex-max
+
 codex-max-live-qa: build
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex live-qa
 

@@ -96,6 +96,9 @@ AX:
 - Agents must not read token files, run upstream login, spend provider calls, or
   mutate credential stores without explicit consent.
 - Trace and status artifacts are support material only after redaction review.
+- Agent process fanout evidence lives in `docs/dogfood-process-fanout.md` and
+  `scripts/dogfood-process-snapshot.py`; it is observational only and must not
+  kill processes, spend provider calls, or be cited as route-selection proof.
 
 ## Adapter Strategy
 
@@ -160,6 +163,8 @@ browser is needed; local Playwright is not part of this CLI proof path.
 - Local validation passes: `zig build test`, targeted Codex smokes,
   `nix develop --command just check-local`, and the hybrid `nix flake check`
   package smoke.
+- Dogfood process/memory concerns are backed by at least two redacted
+  `dogfood-process-snapshot` artifacts before being called leaks.
 - Public release validation passes: `just release-proof <version>`, release
   proof workflow, npm dry run/publish workflow as appropriate, Homebrew QA, and
   system package QA.

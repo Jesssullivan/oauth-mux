@@ -8,6 +8,7 @@ zig build
 ./zig-out/bin/oauth-mux version --json | jq -e '.version and .runtime_identity.binary_path and .runtime_identity.binary_sha256 and .runtime_identity.path_printed == true' >/dev/null
 bash -n ./scripts/install-local-dogfood.sh
 bash -n ./scripts/uninstall-local-dogfood.sh
+python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 sh -n ./dist/codex-shim.sh
 sh -n ./dist/install.sh
 
@@ -19,6 +20,7 @@ done
 ./scripts/first-run-e2e.sh
 ./scripts/stay-afloat-wrapper-doc-smoke.sh
 ./scripts/smoke-trace.sh
+./scripts/smoke-dogfood-process-snapshot.sh
 ./scripts/smoke-broker.sh
 ./scripts/smoke-broker-claude.sh
 ./scripts/smoke-codex-cli-ux.sh
