@@ -65,6 +65,7 @@ pub fn main() !void {
             }
             codex_adapter.run(allocator, .{
                 .profile = adapter_args.profile,
+                .capability = adapter_args.capability,
                 .account = adapter_args.account,
                 .session_home = adapter_args.session_home,
                 .isolated_session_store = adapter_args.isolated_session_store,

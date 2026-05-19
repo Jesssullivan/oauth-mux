@@ -45,7 +45,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$TMP/account-A" "$TMP/claude-personal" "$STATE_DIR" "$CANONICAL_SESSION_HOME/sessions/2026/05/06" "$CANONICAL_SESSION_HOME/shell_snapshots"
+mkdir -p "$TMP/account-A" "$TMP/account-B" "$TMP/claude-personal" "$STATE_DIR" "$CANONICAL_SESSION_HOME/sessions/2026/05/06" "$CANONICAL_SESSION_HOME/shell_snapshots"
 touch "$CANONICAL_SESSION_HOME/history.jsonl" "$CANONICAL_SESSION_HOME/session_index.jsonl"
 printf '%s\n' '{"fixture":"resume"}' >"$CANONICAL_SESSION_HOME/sessions/2026/05/06/rollout-managed-good-session.jsonl"
 printf '%s\n' '{"bridge":"preexisting"}' >"$CANONICAL_SESSION_HOME/sessions/omux-session-bridge-smoke.jsonl"
@@ -93,6 +93,9 @@ EOF
 ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.s"
 cat >"$TMP/account-A/auth.json" <<EOF
 {"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-cli-ux-A","refresh_token":"RT-A","account_id":"acc-A-id"},"auth_mode":"Chatgpt"}
+EOF
+cat >"$TMP/account-B/auth.json" <<EOF
+{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-cli-ux-B","refresh_token":"RT-B","account_id":"acc-B-id"},"auth_mode":"Chatgpt"}
 EOF
 cat >"$TMP/claude-personal/auth.json" <<EOF
 {"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-cli-ux-claude","refresh_token":"RT-claude","account_id":"acc-claude-id"},"auth_mode":"Chatgpt"}
@@ -280,6 +283,110 @@ run_case top "resume-last" '["resume","--last"]' resume --last
 run_case top "resume-id" '["resume","managed-good-session"]' resume managed-good-session
 run_case top "resume-chooser" '["resume"]' resume
 run_case raw "raw-run" '["resume","--last"]' resume --last
+
+echo "smoke-codex-cli-ux: capability-scoped route election matches broker-session-plan"
+MIXED_CONFIG="$TMP/mixed-capability.config.json"
+MIXED_STATE="$TMP/mixed-capability-state"
+mkdir -p "$MIXED_STATE"
+cat >"$MIXED_CONFIG" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "$TMP/account-A/auth.json" } },
+        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "$TMP/account-B/auth.json" } }
+      }
+    }
+  },
+  "profiles": {
+    "mixed": { "providers": ["codex:max-1#codex-mini", "codex:max-1#codex-max", "codex:max-2#codex-max"] }
+  }
+}
+EOF
+cat >"$MIXED_STATE/health.json" <<'EOF'
+{"version":2,"accounts":[
+  {"key":"codex:max-1#codex-mini","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}},
+  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"quota_exhausted","last_probe_decision":"try_next_account","liveness":{"state":"live","availability":"quota_exhausted","window_resets_at":1999999999}},
+  {"key":"codex:max-2#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
+]}
+EOF
+MIXED_NDJSON="$TMP/mixed-capability/status.ndjson"
+MIXED_STDERR="$TMP/mixed-capability.stderr"
+MIXED_REPORT="$TMP/mixed-capability.report"
+mkdir -p "$(dirname "$MIXED_NDJSON")"
+OMUX_CONFIG="$MIXED_CONFIG" \
+  OMUX_STATE_DIR="$MIXED_STATE" \
+  OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  CODEX_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+  OMUX_STUB_CODEX_TURNS=0 \
+  OMUX_STUB_CODEX_REPORT="$MIXED_REPORT" \
+  "$BIN" codex --profile mixed --capability codex-max --json-status-file "$MIXED_NDJSON" resume --last 2>"$MIXED_STDERR"
+assert_grep "mixed capability selected max-2" '"kind":"session_started".*"selected_account":"codex:max-2"' "$MIXED_NDJSON"
+if [[ "$(jq -r .active_account_at_start "$MIXED_REPORT")" == "max-2" ]]; then
+    echo "  ✓ mixed capability launch used the codex-max selectable route"
+else
+    echo "  ✗ mixed capability launch used wrong account" >&2
+    cat "$MIXED_REPORT" >&2
+    exit 1
+fi
+
+PINNED_BLOCKED_NDJSON="$TMP/pinned-blocked/status.ndjson"
+PINNED_BLOCKED_STDERR="$TMP/pinned-blocked.stderr"
+PINNED_BLOCKED_REPORT="$TMP/pinned-blocked.report"
+mkdir -p "$(dirname "$PINNED_BLOCKED_NDJSON")"
+if OMUX_CONFIG="$MIXED_CONFIG" \
+     OMUX_STATE_DIR="$MIXED_STATE" \
+     OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+     CODEX_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_TURNS=0 \
+     OMUX_STUB_CODEX_REPORT="$PINNED_BLOCKED_REPORT" \
+     "$BIN" codex --profile mixed --capability codex-max --account codex:max-1 --json-status-file "$PINNED_BLOCKED_NDJSON" resume --last 2>"$PINNED_BLOCKED_STDERR"; then
+    echo "  ✗ pinned quota-blocked account unexpectedly launched" >&2
+    exit 1
+fi
+assert_grep "pinned blocked terminal status" '"kind":"session_aborted".*"reason":"no_account_selectable".*"phase":"route_election".*"pre_spawn":true.*"child_spawned":false' "$PINNED_BLOCKED_NDJSON"
+assert_grep "pinned blocked stderr" 'is not selectable for the requested profile/capability' "$PINNED_BLOCKED_STDERR"
+if [[ -e "$PINNED_BLOCKED_REPORT" ]]; then
+    echo "  ✗ pinned quota-blocked account launched stub unexpectedly" >&2
+    cat "$PINNED_BLOCKED_REPORT" >&2
+    exit 1
+else
+    echo "  ✓ pinned quota-blocked account fails before child spawn"
+fi
+
+AMBIGUOUS_NDJSON="$TMP/ambiguous-capability/status.ndjson"
+AMBIGUOUS_STDERR="$TMP/ambiguous-capability.stderr"
+AMBIGUOUS_REPORT="$TMP/ambiguous-capability.report"
+mkdir -p "$(dirname "$AMBIGUOUS_NDJSON")"
+if OMUX_CONFIG="$MIXED_CONFIG" \
+     OMUX_STATE_DIR="$MIXED_STATE" \
+     OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+     CODEX_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_TURNS=0 \
+     OMUX_STUB_CODEX_REPORT="$AMBIGUOUS_REPORT" \
+     "$BIN" codex --profile mixed --json-status-file "$AMBIGUOUS_NDJSON" resume --last 2>"$AMBIGUOUS_STDERR"; then
+    echo "  ✗ ambiguous mixed-capability profile unexpectedly launched" >&2
+    exit 1
+fi
+assert_grep "ambiguous capability terminal status" '"kind":"session_aborted".*"reason":"no_account_selectable".*"phase":"route_election".*"pre_spawn":true.*"child_spawned":false' "$AMBIGUOUS_NDJSON"
+assert_grep "ambiguous capability stderr" 'pass --capability for managed launch' "$AMBIGUOUS_STDERR"
+if [[ -e "$AMBIGUOUS_REPORT" ]]; then
+    echo "  ✗ ambiguous mixed-capability profile launched stub unexpectedly" >&2
+    cat "$AMBIGUOUS_REPORT" >&2
+    exit 1
+else
+    echo "  ✓ ambiguous mixed-capability profile fails before child spawn"
+fi
 
 echo "smoke-codex-cli-ux: resume chooser missing authority fails before spawn"
 BAD_AUTHORITY_HOME="$TMP/bad-canonical-codex"

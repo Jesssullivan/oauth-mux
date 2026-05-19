@@ -1144,6 +1144,53 @@ test "populatePoolFromRouteHealth mirrors broker-session-plan route health" {
     }
 }
 
+test "populatePoolFromRouteHealthScoped keeps mixed-profile capabilities isolated" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } },
+        \\        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "/tmp/b" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "mixed": { "providers": ["codex:max-1#codex-mini", "codex:max-1#codex-max", "codex:max-2#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
+    const mini = try store.getOrCreate("codex:max-1#codex-mini");
+    mini.liveness = .{ .live = .{ .availability = .available } };
+    mini.last_probe_hint_class = .none;
+    mini.last_probe_decision = .use_this;
+    const max2 = try store.getOrCreate("codex:max-2#codex-max");
+    max2.liveness = .{ .live = .{ .availability = .available } };
+    max2.last_probe_hint_class = .none;
+    max2.last_probe_decision = .use_this;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "mixed", "codex-max", &store);
+
+    const elected = try pool.elect("mixed", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) {
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqual(broker.account_pool_mod.Availability.quota_exhausted, entry.availability);
+        }
+    }
+}
+
 test "populatePoolFromRouteHealth lets expired provider degradation yield to capability health" {
     const cfg_json =
         \\{
