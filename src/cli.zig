@@ -49,6 +49,7 @@ pub const Command = union(enum) {
 
     pub const CodexAdapterArgs = struct {
         profile: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
         account: ?[]const u8 = null,
         session_home: ?[]const u8 = null,
         isolated_session_store: bool = false,
@@ -398,6 +399,9 @@ fn parseCodexAdapter(args: []const []const u8, strict_run: bool) Command {
         } else if ((eql(args[i], "--profile") or eql(args[i], "-p")) and i + 1 < args.len) {
             i += 1;
             result.profile = args[i];
+        } else if ((eql(args[i], "--capability") or eql(args[i], "--capabilities")) and i + 1 < args.len) {
+            i += 1;
+            result.capability = args[i];
         } else if (eql(args[i], "--account") and i + 1 < args.len) {
             i += 1;
             result.account = args[i];
@@ -1322,7 +1326,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  mcp [--profile <name>] [--capability <name>]
         \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
         \\
-        \\  codex [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
+        \\  codex [--profile name] [--capability name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
         \\      Run a broker-mediated Codex adapter session with a local wire proxy.
         \\  codex resume [id|--last]
         \\      Resume Codex inside the broker-mediated adapter frame.
@@ -1422,7 +1426,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\oauth-mux codex — broker-mediated Codex sessions, setup, and probes
         \\
         \\Usage:
-        \\  oauth-mux codex [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
+        \\  oauth-mux codex [--profile name] [--capability name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
         \\  oauth-mux codex resume [id|--last]
         \\  oauth-mux codex run [adapter options] -- [codex-args...]
         \\  oauth-mux setup codex [--accounts a,b,c] [--device|--status-only] [--live]
@@ -2350,11 +2354,12 @@ test "parse mcp broker server profile" {
 }
 
 test "parse codex run adapter args" {
-    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--account", "codex:max-1", "--session-home", "/tmp/codex-sessions", "--isolated-session-store", "--json-status-file", "/tmp/omux-status.ndjson", "--", "--model", "gpt-5.5" };
+    const args = [_][]const u8{ "codex", "run", "--profile", "codex-max", "--capability", "codex-max", "--account", "codex:max-1", "--session-home", "/tmp/codex-sessions", "--isolated-session-store", "--json-status-file", "/tmp/omux-status.ndjson", "--", "--model", "gpt-5.5" };
     const cmd = parse(&args);
     switch (cmd) {
         .codex_adapter => |adapter| {
             try std.testing.expectEqualStrings("codex-max", adapter.profile.?);
+            try std.testing.expectEqualStrings("codex-max", adapter.capability.?);
             try std.testing.expectEqualStrings("codex:max-1", adapter.account.?);
             try std.testing.expectEqualStrings("/tmp/codex-sessions", adapter.session_home.?);
             try std.testing.expect(adapter.isolated_session_store);

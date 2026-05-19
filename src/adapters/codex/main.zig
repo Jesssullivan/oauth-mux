@@ -5,8 +5,8 @@
 //! Skeleton model: child-owned codex session. This gives
 //! users the unmodified codex TUI/exec experience — we don't render a
 //! TUI, don't drive JSON-RPC, don't spawn `codex app-server`. We:
-//!   1. broker.populatePool from the active oauth-mux Config (profile
-//!      filtered).
+//!   1. broker.populatePool from the active oauth-mux Config (profile and
+//!      capability filtered).
 //!   2. account/select to pick a credited account.
 //!   3. Resolve that account's auth.json source from the oauth-mux
 //!      account store.
@@ -43,6 +43,10 @@ const wire_proxy = @import("wire_proxy.zig");
 
 pub const RunOptions = struct {
     profile: ?[]const u8 = null,
+    /// Optional route capability used for health-backed election.
+    /// When set, managed launch must match `codex broker-session-plan`
+    /// for the same profile/capability tuple.
+    capability: ?[]const u8 = null,
     account: ?[]const u8 = null,
     /// Optional canonical Codex session authority home. Defaults to the
     /// parent CODEX_HOME when set, otherwise ~/.codex.
@@ -606,6 +610,44 @@ fn codexSelectableCount(pool: *const broker.AccountPool) usize {
     return count;
 }
 
+fn firstCommaValue(values: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, values, ',');
+    while (it.next()) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len != 0) return trimmed;
+    }
+    return null;
+}
+
+fn requestedCapability(value: ?[]const u8) ?[]const u8 {
+    return if (value) |capabilities| firstCommaValue(capabilities) else null;
+}
+
+fn populateManagedCodexPool(
+    pool: *broker.AccountPool,
+    cfg: config_mod.Config,
+    profile: ?[]const u8,
+    capability: ?[]const u8,
+    store: *health_mod.HealthStore,
+) !void {
+    try broker_loader.populatePoolFromRouteHealthScoped(pool, cfg, profile, capability, store);
+    restrictPoolToCodex(pool);
+}
+
+fn electPinnedCodexAccount(
+    pool: *const broker.AccountPool,
+    pin: []const u8,
+) broker_types.BrokerError!broker.account_pool_mod.AccountSummary {
+    for (pool.accounts.items) |entry| {
+        if (!std.mem.eql(u8, entry.id, pin)) continue;
+        if (!entry.selectable or entry.availability != .available) {
+            return broker_types.BrokerError.NoAccountSelectable;
+        }
+        return entry;
+    }
+    return broker_types.BrokerError.NoAccountSelectable;
+}
+
 const AutoRevalidationRoute = struct {
     account: []const u8,
     capability: []const u8,
@@ -631,6 +673,7 @@ fn maybeAutoRevalidateCodexRoutes(
     cfg: config_mod.Config,
     store: *health_mod.HealthStore,
     profile: ?[]const u8,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     initial_selectable_routes: usize,
     target_selectable_routes: usize,
@@ -655,8 +698,8 @@ fn maybeAutoRevalidateCodexRoutes(
         candidates.deinit();
     }
 
-    try collectProfileCodexAutoRevalidationRoutes(allocator, cfg, profile, account_filter, &seen, &candidates);
-    try collectHealthCodexAutoRevalidationRoutes(allocator, cfg, store, account_filter, &seen, &candidates);
+    try collectProfileCodexAutoRevalidationRoutes(allocator, cfg, profile, capability_filter, account_filter, &seen, &candidates);
+    try collectHealthCodexAutoRevalidationRoutes(allocator, cfg, store, capability_filter, account_filter, &seen, &candidates);
 
     var summary = AutoRevalidationSummary{ .admitted = true };
     if (candidates.items.len == 0) {
@@ -734,20 +777,21 @@ fn collectProfileCodexAutoRevalidationRoutes(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     profile: ?[]const u8,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     seen: *std.StringHashMap(void),
     out: *std.ArrayList(AutoRevalidationRoute),
 ) !void {
     if (profile) |name| {
         if (cfg.profiles.map.get(name)) |profile_cfg| {
-            try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, profile_cfg.providers, account_filter, seen, out);
+            try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, profile_cfg.providers, capability_filter, account_filter, seen, out);
         }
         return;
     }
 
     var profiles = cfg.profiles.map.iterator();
     while (profiles.next()) |entry| {
-        try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, entry.value_ptr.providers, account_filter, seen, out);
+        try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, entry.value_ptr.providers, capability_filter, account_filter, seen, out);
     }
 }
 
@@ -755,6 +799,7 @@ fn collectProfileEntriesForCodexAutoRevalidation(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     entries: []const []const u8,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     seen: *std.StringHashMap(void),
     out: *std.ArrayList(AutoRevalidationRoute),
@@ -764,6 +809,9 @@ fn collectProfileEntriesForCodexAutoRevalidation(
         const parsed = health_mod.parseHealthKey(entry) orelse continue;
         if (!std.mem.eql(u8, parsed.provider, "codex")) continue;
         const capability = parsed.capability orelse continue;
+        if (capability_filter) |want| {
+            if (!std.mem.eql(u8, capability, want)) continue;
+        }
         if (account_filter) |filter| {
             if (!codexAccountFilterMatches(filter, parsed.account)) continue;
         }
@@ -776,6 +824,7 @@ fn collectHealthCodexAutoRevalidationRoutes(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     store: *health_mod.HealthStore,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     seen: *std.StringHashMap(void),
     out: *std.ArrayList(AutoRevalidationRoute),
@@ -786,6 +835,9 @@ fn collectHealthCodexAutoRevalidationRoutes(
         const parsed = health_mod.parseHealthKey(entry.key_ptr.*) orelse continue;
         if (!std.mem.eql(u8, parsed.provider, "codex")) continue;
         const capability = parsed.capability orelse continue;
+        if (capability_filter) |want| {
+            if (!std.mem.eql(u8, capability, want)) continue;
+        }
         if (account_filter) |filter| {
             if (!codexAccountFilterMatches(filter, parsed.account)) continue;
         }
@@ -1044,11 +1096,11 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer server.deinit();
     var route_health = health_mod.HealthStore.load(allocator, .{});
     defer route_health.deinit();
-    broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+    const route_capability = requestedCapability(opts.capability);
+    populateManagedCodexPool(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "config_health_load", "PoolPopulateFailed", session_started_emitted);
         return RunError.PoolPopulateFailed;
     };
-    restrictPoolToCodex(&server.pool);
     try launch_timer.mark(status_writer, emit_status, "config_health_load");
 
     const initial_selectable_routes = codexSelectableCount(&server.pool);
@@ -1059,6 +1111,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             parsed.value,
             &route_health,
             opts.profile,
+            route_capability,
             opts.account,
             initial_selectable_routes,
             target_selectable_routes,
@@ -1068,11 +1121,10 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         if (revalidation.changedRouteHealth()) {
             server.pool.deinit();
             server.pool = broker.AccountPool.init(allocator);
-            broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+            populateManagedCodexPool(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
                 try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "codex_auto_revalidation", "PoolPopulateFailed", session_started_emitted);
                 return RunError.PoolPopulateFailed;
             };
-            restrictPoolToCodex(&server.pool);
         }
         try launch_timer.mark(status_writer, emit_status, "codex_auto_revalidation");
     }
@@ -1084,13 +1136,17 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
             return RunError.NoAccountSelectable;
         }
-        for (server.pool.accounts.items) |a| {
-            if (std.mem.eql(u8, a.id, pin)) break :pin a;
+        if (electPinnedCodexAccount(&server.pool, pin)) |account| {
+            break :pin account;
+        } else |e| switch (e) {
+            broker_types.BrokerError.NoAccountSelectable => {
+                try stderr.print("oauth-mux codex: --account {s} is not selectable for profile/capability\n", .{pin});
+                try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
+                return RunError.NoAccountSelectable;
+            },
+            else => return e,
         }
-        try stderr.print("oauth-mux codex: --account {s} not in profile\n", .{pin});
-        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
-        return RunError.NoAccountSelectable;
-    } else server.pool.elect(opts.profile, null, &.{}) catch |e| switch (e) {
+    } else server.pool.elect(opts.profile, route_capability, &.{}) catch |e| switch (e) {
         broker_types.BrokerError.NoAccountSelectable => {
             try stderr.writeAll("oauth-mux codex: no selectable account in profile\n");
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
@@ -2593,11 +2649,91 @@ fn writeConfigOverrideCheckStatus(writer: anytype, check: ConfigOverrideCheck) !
 test "RunOptions defaults" {
     const opts = RunOptions{};
     try std.testing.expect(opts.profile == null);
+    try std.testing.expect(opts.capability == null);
     try std.testing.expect(opts.session_home == null);
     try std.testing.expect(!opts.isolated_session_store);
     try std.testing.expect(!opts.json_status);
     try std.testing.expect(opts.json_status_file == null);
     try std.testing.expectEqual(@as(usize, 0), opts.forward_argv.len);
+}
+
+test "requestedCapability uses first non-empty comma-delimited value" {
+    try std.testing.expectEqualStrings("codex-max", requestedCapability(" codex-max , codex-mini ").?);
+    try std.testing.expect(requestedCapability(" , ") == null);
+    try std.testing.expect(requestedCapability(null) == null);
+}
+
+test "managed Codex pool applies requested capability health" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } },
+        \\        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "/tmp/b" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-mixed": { "providers": ["codex:max-1#codex-mini", "codex:max-1#codex-max", "codex:max-2#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    _ = try store.getOrCreate("codex:max-1#codex-mini");
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
+    _ = try store.getOrCreate("codex:max-2#codex-max");
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populateManagedCodexPool(&pool, parsed.value, "codex-mixed", "codex-max", &store);
+
+    const elected = try pool.elect("codex-mixed", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
+
+    var saw_blocked_max1 = false;
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) {
+            saw_blocked_max1 = true;
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqual(broker.account_pool_mod.Availability.quota_exhausted, entry.availability);
+        }
+    }
+    try std.testing.expect(saw_blocked_max1);
+}
+
+test "electPinnedCodexAccount rejects blocked pins" {
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{
+        .id = "codex:max-1",
+        .selectable = false,
+        .liveness = .live,
+        .availability = .quota_exhausted,
+    });
+    try pool.add(.{
+        .id = "codex:max-2",
+        .selectable = true,
+        .liveness = .live,
+        .availability = .available,
+    });
+
+    try std.testing.expectError(
+        broker_types.BrokerError.NoAccountSelectable,
+        electPinnedCodexAccount(&pool, "codex:max-1"),
+    );
+    try std.testing.expectError(
+        broker_types.BrokerError.NoAccountSelectable,
+        electPinnedCodexAccount(&pool, "codex:max-missing"),
+    );
+    const elected = try electPinnedCodexAccount(&pool, "codex:max-2");
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
 }
 
 test "expandTilde no-op when no tilde" {
