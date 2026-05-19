@@ -15,7 +15,7 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 | Nix package | `nix build .#` | flake package plus shared POSIX shim | `./result/bin/oauth-mux version`, `nix flake check` binary+shim smoke | package derivation proof |
 | GitHub Release | downloaded tarball | `dist/out/v*/artifacts` from release workflow | checksum verify, tarball binary+shim smoke | public raw binary lane |
 | npm | `npm install -g oauth-mux` / `npx oauth-mux` | CI-generated npm tarballs plus JS `codex` shim | npm install smoke, shim pass-through smoke, and `npm view` | public JS package lane |
-| Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>`, formula test shim pass-through, parsed version check | public macOS/Linux tap lane |
+| Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>`, formula test proves no `codex` install, parsed version check | public macOS/Linux tap lane |
 | curl installer | `curl .../install.sh \| sh` | GitHub Release `install.sh` + tarballs | local file URL binary+shim smoke and public installer smoke | shell installer lane |
 | deb/rpm | system package install | GitHub Release `.deb` / `.rpm` | hosted container install QA for `/usr/bin/oauth-mux`; set `OMUX_EXPECT_CODEX_SHIM=1` for releases that should include `/usr/bin/codex` | distro package lane |
 | Home Manager | `programs.oauth-mux.enable = true` | flake Home Manager module | `just home-manager-smoke` package-variant smoke | Nix user-profile lane with opt-in Codex shim |
@@ -32,9 +32,12 @@ Every install lane that puts `codex` on PATH must preserve this behavior:
   `oauth-mux codex` only when PATH resolves the oauth-mux shim.
 - The shim discovers native Codex via `OMUX_CODEX_BIN` first, then PATH,
   skipping other files marked `OMUX_CODEX_SHIM`.
-- POSIX lanes use the single shared source `dist/codex-shim.sh`: user-local
-  dogfood, GitHub Release tarballs, curl installer, Homebrew, Nix, and
-  generated deb/rpm packages.
+- POSIX shim-bearing lanes use the single shared source `dist/codex-shim.sh`:
+  user-local dogfood, GitHub Release tarballs, curl installer, opt-in Nix /
+  Home Manager packages, and generated deb/rpm packages.
+- Homebrew is intentionally binary-only for PATH ownership: the formula installs
+  `oauth-mux` but must not install or link `codex`. A managed Codex shim for
+  Homebrew users must be an explicit opt-in lane, not the default formula.
 - npm uses `dist/npm/bin/codex.js`, which must match the same admin
   pass-through contract even though it is a JS wrapper.
 - Windows raw tarballs currently ship only `oauth-mux.exe`. The 2026-05-18
@@ -59,8 +62,8 @@ The 2026-05-18 investigation found that public Homebrew `0.1.7` installed a
 `codex` shim that always entered `oauth-mux codex`, so `codex --version` and
 `codex login` could hit route election and fail with `NoAccountSelectable`.
 That was package-lane drift, not a route-health issue. The current source tree
-fixes the release templates and adds package smokes so the `0.1.9` package
-release can prove this behavior before publication.
+fixes the release templates and adds package smokes so Homebrew proves native
+Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-mux`.
 
 ## CI/CD Surfaces
 
@@ -95,8 +98,12 @@ release can prove this behavior before publication.
 - Homebrew package QA must check the installed binary and Homebrew's parsed
   `versions.stable`; a working binary with bad formula metadata is not release
   parity.
-- Package QA must check the managed `codex` shim's admin pass-through behavior
-  with a native Codex stub. A binary version check alone is not sufficient.
+- Homebrew package QA must prove the formula does not install `codex`, does not
+  link an `OMUX_CODEX_SHIM` into the Homebrew prefix, and leaves `command -v
+  codex` unchanged from before install.
+- Shim-bearing package QA must check the managed `codex` shim's admin
+  pass-through behavior with a native Codex stub. A binary version check alone
+  is not sufficient.
 - For live Codex acceptance, use an installed binary on PATH and preserve the
   status artifact `runtime_identity`, including `binary_source` and
   `binary_sha256`. Repo-local wrapper runs are not acceptance evidence.
@@ -114,7 +121,7 @@ oauth-mux version --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
-Expected when testing unreleased behavior:
+Expected when testing unreleased managed-shim behavior:
 
 - `./zig-out/bin/oauth-mux` and `~/.local/bin/oauth-mux` hashes match.
 - `oauth-mux version --json` reports the active executable's
@@ -123,7 +130,7 @@ Expected when testing unreleased behavior:
 - `which -a oauth-mux` resolves `~/.local/bin/oauth-mux` before Homebrew when
   testing unreleased behavior.
 - `which -a codex` resolves `~/.local/bin/codex` before the native upstream
-  Codex CLI when testing managed Codex behavior.
+  Codex CLI only when testing the explicit managed-shim lane.
 - `oauth-mux codex preflight --json` is handled by oauth-mux, not by the native
   Codex CLI usage parser.
 - Homebrew may report the same source version while still being a different
@@ -131,10 +138,9 @@ Expected when testing unreleased behavior:
 
 If Homebrew appears before `~/.local/bin` in PATH, use the worktree binary or
 adjust PATH before recording unreleased dogfood evidence. The active public
-Homebrew tap now resolves `0.1.7` and passes both installed-binary and
-`brew info --json=v2` stable-version checks, but it is still a package binary,
-not worktree proof, and those older checks did not prove native Codex admin
-pass-through.
+Homebrew is a package binary, not worktree proof. It must not shadow native
+Codex by default; use `which -a codex` before and after Homebrew QA to verify
+the `codex` executable owner did not change.
 
 On macOS, do not overwrite an existing Mach-O in place for this lane. A direct
 `cp` over `~/.local/bin/oauth-mux` can leave stale taskgated/code-signing state

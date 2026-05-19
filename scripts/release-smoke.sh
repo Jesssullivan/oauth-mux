@@ -120,13 +120,24 @@ if grep -q -E '\$\{(VERSION|SHA_[A-Z0-9_]+)\}' "$homebrew_formula"; then
   printf 'unrendered placeholder remains in %s\n' "$homebrew_formula" >&2
   exit 1
 fi
-version_line="$(awk '/^[[:space:]]+version / { print NR; exit }' "$homebrew_formula")"
+if grep -q '^[[:space:]]*version ' "$homebrew_formula"; then
+  printf 'Homebrew formula must not declare a redundant explicit version; Homebrew should infer it from release URLs: %s\n' "$homebrew_formula" >&2
+  exit 1
+fi
 license_line="$(awk '/^[[:space:]]+license / { print NR; exit }' "$homebrew_formula")"
-if [ -z "${version_line:-}" ] || [ -z "${license_line:-}" ] || [ "$version_line" -ge "$license_line" ]; then
-  printf 'Homebrew formula must put version before license for brew audit compatibility: %s\n' "$homebrew_formula" >&2
+if [ -z "${license_line:-}" ]; then
+  printf 'Homebrew formula missing license line: %s\n' "$homebrew_formula" >&2
   exit 1
 fi
 "$repo_root/scripts/homebrew-version-check.sh" "$version" "$homebrew_formula"
+if grep -q 'bin.install "codex"' "$homebrew_formula"; then
+  printf 'Homebrew formula must not install codex; shim lanes must be opt-in outside Brew: %s\n' "$homebrew_formula" >&2
+  exit 1
+fi
+if ! grep -q 'system "test", "!", "-e", "#{bin}/codex"' "$homebrew_formula"; then
+  printf 'Homebrew formula test must prove codex is not installed by oauth-mux: %s\n' "$homebrew_formula" >&2
+  exit 1
+fi
 if command -v ruby >/dev/null 2>&1; then
   ruby -c "$homebrew_formula" >/dev/null
 fi

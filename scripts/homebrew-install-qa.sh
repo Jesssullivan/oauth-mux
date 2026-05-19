@@ -8,8 +8,9 @@ if [ -z "$version" ] || [ "$version" = "--help" ] || [ "$version" = "-h" ]; then
   cat <<'EOF'
 Usage: scripts/homebrew-install-qa.sh <version>
 
-Installs oauth-mux from the configured Homebrew tap, runs brew audit/test, and
-verifies the installed binary version.
+Installs oauth-mux from the configured Homebrew tap, runs brew audit/test,
+verifies the installed binary version, and proves the formula does not shadow
+native Codex with an oauth-mux shim.
 
 Environment:
   OMUX_HOMEBREW_TAP_NAME       Homebrew tap name. Default: jesssullivan/omux
@@ -37,13 +38,19 @@ require_command() {
 
 require_command "$brew_cmd"
 
+resolve_command() {
+  command -v "$1" 2>/dev/null || true
+}
+
+codex_before="$(resolve_command codex)"
+
 was_tapped=0
 if "$brew_cmd" tap | grep -Fxq "$tap_name"; then
   was_tapped=1
 fi
 
 was_installed=0
-if "$brew_cmd" list --versions oauth-mux >/dev/null 2>&1; then
+if [ -n "$("$brew_cmd" list --versions "$formula" 2>/dev/null)" ]; then
   was_installed=1
 fi
 
@@ -52,7 +59,7 @@ keep_tap="${OMUX_HOMEBREW_KEEP_TAP:-$was_tapped}"
 
 cleanup() {
   if [ "$keep_installed" != "1" ] && [ "$was_installed" != "1" ]; then
-    "$brew_cmd" uninstall oauth-mux >/dev/null 2>&1 || true
+    "$brew_cmd" uninstall "$formula" >/dev/null 2>&1 || true
   fi
   if [ "$keep_tap" != "1" ] && [ "$was_tapped" != "1" ]; then
     "$brew_cmd" untap "$tap_name" >/dev/null 2>&1 || true
@@ -77,7 +84,7 @@ fi
 
 "$brew_cmd" test "$formula"
 
-prefix="$("$brew_cmd" --prefix oauth-mux)"
+prefix="$("$brew_cmd" --prefix "$formula")"
 bin="$prefix/bin/oauth-mux"
 if [ ! -x "$bin" ]; then
   printf 'installed binary not executable: %s\n' "$bin" >&2
@@ -92,6 +99,24 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 "$bin" doctor --json >/dev/null
+
+if [ -e "$prefix/bin/codex" ]; then
+  printf 'Homebrew oauth-mux formula must not install a formula-local codex shim: %s\n' "$prefix/bin/codex" >&2
+  exit 1
+fi
+
+brew_prefix="$("$brew_cmd" --prefix)"
+homebrew_codex="$brew_prefix/bin/codex"
+if [ -e "$homebrew_codex" ] && grep -q 'OMUX_CODEX_SHIM' "$homebrew_codex" 2>/dev/null; then
+  printf 'Homebrew oauth-mux formula must not link OMUX_CODEX_SHIM into PATH: %s\n' "$homebrew_codex" >&2
+  exit 1
+fi
+
+codex_after="$(resolve_command codex)"
+if [ "$codex_before" != "$codex_after" ]; then
+  printf 'Homebrew oauth-mux install changed codex resolution: before=%s after=%s\n' "${codex_before:-<not found>}" "${codex_after:-<not found>}" >&2
+  exit 1
+fi
 
 if [ "${OMUX_HOMEBREW_CODEX_CANARY:-0}" = "1" ]; then
   canary_args=(codex canary)

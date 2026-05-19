@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-18
+Updated: 2026-05-19
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -8,25 +8,25 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` is clean against `origin/main` after the `0.1.7`
-  package-parity refresh.
+- Repo state: `main` is clean against `origin/main` after the product-guardrail
+  and dogfood process fanout snapshot merge.
 - CI state: GitHub Actions is the live source for the latest run. The
   2026-05-17 refresh verified the `v0.1.7` release workflow, npm publish
   workflow, and hosted system-package install QA.
-- Version truth: public npm, GitHub Release, Homebrew, curl installer, and
-  deb/rpm lanes resolve to `0.1.7`, but the 2026-05-18 shim investigation found
-  a package-lane QA gap: public Homebrew `0.1.7` routes native admin commands
-  such as `codex --version` through `oauth-mux codex`. GitHub Release `0.1.8`
-  exists, but registry/tap publication is targeting source `0.1.9` after the
-  Homebrew dry-run caught formula audit drift.
+- Version truth: public npm, GitHub Release, curl installer, and deb/rpm lanes
+  last resolved to `0.1.7` in the public parity sweep. The public Homebrew tap
+  now advertises `0.1.9`, but the 2026-05-18/19 shim investigation found a
+  package-lane ownership bug: the Homebrew formula must not install or link a
+  managed `codex` shim by default.
 - Installed provenance: PATH can resolve a public package binary or a
   user-local dogfood binary depending on shell setup. Use `which -a oauth-mux`,
   `which -a codex`, `oauth-mux version --json`, and `codex preflight` before
   treating any installed-command run as release evidence.
-- Homebrew truth: the public `jesssullivan/omux` tap installs `oauth-mux
-  0.1.7`, includes a managed `codex` shim, and `brew info --json=v2`
-  reports stable version `0.1.7`; the current public shim still needs the
-  admin pass-through fix from this source tree.
+- Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
+  0.1.9`. Homebrew should be treated as a binary-only package lane: QA must
+  prove `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux`, does
+  not install an `OMUX_CODEX_SHIM`, and leaves native `codex` command
+  resolution unchanged.
 - Codex route truth: refresh before every live test. The latest 2026-05-17
   22:24 EDT installed Homebrew `0.1.7` no-spend snapshot is `not_afloat`:
   all four named `codex-max` routes are runtime-ready and broker-ready but
