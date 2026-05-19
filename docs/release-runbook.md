@@ -213,6 +213,11 @@ The normal CI workflow has a GloriousFlywheel cache-first lane on
 If `GF_ACTIONS_TOKEN` is absent, CI records a token-gated skip instead of
 claiming a cache-first proof.
 
+oauth-mux wraps the private action command with an inner timeout so runner or
+cache stalls fail with an explicit step diagnostic before the outer workflow
+timeout. CI uses `OMUX_GF_CHECK_TIMEOUT` with a default of `25m`; the manual
+release proof uses `OMUX_GF_RELEASE_PROOF_TIMEOUT` with a default of `40m`.
+
 During known lab or runner outages, do not block release staging on a queued
 `tinyland-nix` job alone. Use these signals together:
 
