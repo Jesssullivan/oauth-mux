@@ -43,6 +43,7 @@ const wire_proxy = @import("wire_proxy.zig");
 
 pub const RunOptions = struct {
     profile: ?[]const u8 = null,
+    capability: ?[]const u8 = null,
     account: ?[]const u8 = null,
     /// Optional canonical Codex session authority home. Defaults to the
     /// parent CODEX_HOME when set, otherwise ~/.codex.
@@ -489,6 +490,36 @@ fn isCodexAccountId(account_id: []const u8) bool {
     return std.mem.startsWith(u8, account_id, "codex:");
 }
 
+const ManagedCapabilityResolution = union(enum) {
+    none,
+    capability: []const u8,
+    ambiguous,
+};
+
+fn managedRouteCapability(
+    cfg: config_mod.Config,
+    explicit_capability: ?[]const u8,
+    profile_name: ?[]const u8,
+) ManagedCapabilityResolution {
+    if (explicit_capability) |capability| return .{ .capability = capability };
+    const profile = cfg.profiles.map.get(profile_name orelse return .none) orelse return .none;
+
+    var found: ?[]const u8 = null;
+    for (profile.providers) |entry| {
+        const hash = std.mem.indexOfScalar(u8, entry, '#') orelse continue;
+        const head = entry[0..hash];
+        if (!std.mem.startsWith(u8, head, "codex:")) continue;
+        const capability = entry[hash + 1 ..];
+        if (found) |existing| {
+            if (!std.mem.eql(u8, existing, capability)) return .ambiguous;
+        } else {
+            found = capability;
+        }
+    }
+    if (found) |capability| return .{ .capability = capability };
+    return .none;
+}
+
 fn codexAccountLabel(account_id: []const u8) []const u8 {
     const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return account_id;
     if (colon + 1 >= account_id.len) return account_id;
@@ -631,6 +662,7 @@ fn maybeAutoRevalidateCodexRoutes(
     cfg: config_mod.Config,
     store: *health_mod.HealthStore,
     profile: ?[]const u8,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     initial_selectable_routes: usize,
     target_selectable_routes: usize,
@@ -655,8 +687,8 @@ fn maybeAutoRevalidateCodexRoutes(
         candidates.deinit();
     }
 
-    try collectProfileCodexAutoRevalidationRoutes(allocator, cfg, profile, account_filter, &seen, &candidates);
-    try collectHealthCodexAutoRevalidationRoutes(allocator, cfg, store, account_filter, &seen, &candidates);
+    try collectProfileCodexAutoRevalidationRoutes(allocator, cfg, profile, capability_filter, account_filter, &seen, &candidates);
+    try collectHealthCodexAutoRevalidationRoutes(allocator, cfg, store, capability_filter, account_filter, &seen, &candidates);
 
     var summary = AutoRevalidationSummary{ .admitted = true };
     if (candidates.items.len == 0) {
@@ -734,20 +766,21 @@ fn collectProfileCodexAutoRevalidationRoutes(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     profile: ?[]const u8,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     seen: *std.StringHashMap(void),
     out: *std.ArrayList(AutoRevalidationRoute),
 ) !void {
     if (profile) |name| {
         if (cfg.profiles.map.get(name)) |profile_cfg| {
-            try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, profile_cfg.providers, account_filter, seen, out);
+            try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, profile_cfg.providers, capability_filter, account_filter, seen, out);
         }
         return;
     }
 
     var profiles = cfg.profiles.map.iterator();
     while (profiles.next()) |entry| {
-        try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, entry.value_ptr.providers, account_filter, seen, out);
+        try collectProfileEntriesForCodexAutoRevalidation(allocator, cfg, entry.value_ptr.providers, capability_filter, account_filter, seen, out);
     }
 }
 
@@ -755,6 +788,7 @@ fn collectProfileEntriesForCodexAutoRevalidation(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     entries: []const []const u8,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     seen: *std.StringHashMap(void),
     out: *std.ArrayList(AutoRevalidationRoute),
@@ -764,6 +798,9 @@ fn collectProfileEntriesForCodexAutoRevalidation(
         const parsed = health_mod.parseHealthKey(entry) orelse continue;
         if (!std.mem.eql(u8, parsed.provider, "codex")) continue;
         const capability = parsed.capability orelse continue;
+        if (capability_filter) |filter| {
+            if (!std.mem.eql(u8, filter, capability)) continue;
+        }
         if (account_filter) |filter| {
             if (!codexAccountFilterMatches(filter, parsed.account)) continue;
         }
@@ -776,6 +813,7 @@ fn collectHealthCodexAutoRevalidationRoutes(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
     store: *health_mod.HealthStore,
+    capability_filter: ?[]const u8,
     account_filter: ?[]const u8,
     seen: *std.StringHashMap(void),
     out: *std.ArrayList(AutoRevalidationRoute),
@@ -786,6 +824,9 @@ fn collectHealthCodexAutoRevalidationRoutes(
         const parsed = health_mod.parseHealthKey(entry.key_ptr.*) orelse continue;
         if (!std.mem.eql(u8, parsed.provider, "codex")) continue;
         const capability = parsed.capability orelse continue;
+        if (capability_filter) |filter| {
+            if (!std.mem.eql(u8, filter, capability)) continue;
+        }
         if (account_filter) |filter| {
             if (!codexAccountFilterMatches(filter, parsed.account)) continue;
         }
@@ -1040,11 +1081,21 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     };
     defer parsed.deinit();
 
+    const route_capability = switch (managedRouteCapability(parsed.value, opts.capability, opts.profile)) {
+        .capability => |capability| capability,
+        .none => null,
+        .ambiguous => {
+            try stderr.writeAll("oauth-mux codex: profile has multiple Codex capabilities; pass --capability for managed launch\n");
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
+            return RunError.NoAccountSelectable;
+        },
+    };
+
     var server = broker.Server.init(allocator);
     defer server.deinit();
     var route_health = health_mod.HealthStore.load(allocator, .{});
     defer route_health.deinit();
-    broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+    broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "config_health_load", "PoolPopulateFailed", session_started_emitted);
         return RunError.PoolPopulateFailed;
     };
@@ -1059,6 +1110,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             parsed.value,
             &route_health,
             opts.profile,
+            route_capability,
             opts.account,
             initial_selectable_routes,
             target_selectable_routes,
@@ -1068,7 +1120,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         if (revalidation.changedRouteHealth()) {
             server.pool.deinit();
             server.pool = broker.AccountPool.init(allocator);
-            broker_loader.populatePoolFromRouteHealth(&server.pool, parsed.value, opts.profile, &route_health) catch {
+            broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
                 try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "codex_auto_revalidation", "PoolPopulateFailed", session_started_emitted);
                 return RunError.PoolPopulateFailed;
             };
@@ -1085,12 +1137,19 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             return RunError.NoAccountSelectable;
         }
         for (server.pool.accounts.items) |a| {
-            if (std.mem.eql(u8, a.id, pin)) break :pin a;
+            if (std.mem.eql(u8, a.id, pin)) {
+                if (!a.selectable or a.availability != .available) {
+                    try stderr.print("oauth-mux codex: --account {s} is not selectable for the requested profile/capability\n", .{pin});
+                    try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
+                    return RunError.NoAccountSelectable;
+                }
+                break :pin a;
+            }
         }
         try stderr.print("oauth-mux codex: --account {s} not in profile\n", .{pin});
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
         return RunError.NoAccountSelectable;
-    } else server.pool.elect(opts.profile, null, &.{}) catch |e| switch (e) {
+    } else server.pool.elect(opts.profile, route_capability, &.{}) catch |e| switch (e) {
         broker_types.BrokerError.NoAccountSelectable => {
             try stderr.writeAll("oauth-mux codex: no selectable account in profile\n");
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
@@ -2593,11 +2652,53 @@ fn writeConfigOverrideCheckStatus(writer: anytype, check: ConfigOverrideCheck) !
 test "RunOptions defaults" {
     const opts = RunOptions{};
     try std.testing.expect(opts.profile == null);
+    try std.testing.expect(opts.capability == null);
     try std.testing.expect(opts.session_home == null);
     try std.testing.expect(!opts.isolated_session_store);
     try std.testing.expect(!opts.json_status);
     try std.testing.expect(opts.json_status_file == null);
     try std.testing.expectEqual(@as(usize, 0), opts.forward_argv.len);
+}
+
+test "managedRouteCapability infers unique profile capability and rejects ambiguous profiles" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 20, "secret": { "backend": "file", "path": "/tmp/a" } },
+        \\        "max-2": { "priority": 10, "secret": { "backend": "file", "path": "/tmp/b" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"] },
+        \\    "mixed": { "providers": ["codex:max-1#codex-mini", "codex:max-2#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const inferred = managedRouteCapability(parsed.value, null, "codex-max");
+    switch (inferred) {
+        .capability => |capability| try std.testing.expectEqualStrings("codex-max", capability),
+        else => return error.Unexpected,
+    }
+    switch (managedRouteCapability(parsed.value, null, "mixed")) {
+        .ambiguous => {},
+        else => return error.Unexpected,
+    }
+    switch (managedRouteCapability(parsed.value, "codex-mini", "mixed")) {
+        .capability => |capability| try std.testing.expectEqualStrings("codex-mini", capability),
+        else => return error.Unexpected,
+    }
+    switch (managedRouteCapability(parsed.value, null, null)) {
+        .none => {},
+        else => return error.Unexpected,
+    }
 }
 
 test "expandTilde no-op when no tilde" {
