@@ -39,13 +39,15 @@ import sys
 
 d = pathlib.Path(sys.argv[1])
 
+ok_body = 'event: response.completed\ndata: {"type":"response.completed"}\n\n'
+
 flows = [
     {
         "captured_at": 1788000000.001,
         "host": "chatgpt.com",
         "scheme": "https",
         "method": "POST",
-        "path": "/backend-api/codex/responses",
+        "path": "/backend-api/codex/responses?captured=query",
         "request": {
             "headers": [
                 ["Authorization", "Bearer synth-<redacted>"],
@@ -57,7 +59,13 @@ flows = [
             "status": 200,
             "reason": "OK",
             "headers": [["Content-Type", "text/event-stream"]],
-            "body": "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+            "body": {
+                "__non_json__": True,
+                "len": len(ok_body.encode("utf-8")),
+                "head_hex": ok_body.encode("utf-8")[:64].hex(),
+                "text_encoding": "utf-8",
+                "body_text": ok_body,
+            },
         },
         "timing_ms": 12,
     },
