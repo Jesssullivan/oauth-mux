@@ -264,6 +264,8 @@ Keep the claim ladder tied to evidence:
   adapter strategy, daemon beta boundary, release posture, and tracker map.
 - `docs/release-install-lanes.md`: public package lanes versus local dogfood
   lanes.
+- `docs/dogfood-process-fanout.md`: no-spend agent process topology snapshots
+  and cleanup rules for suspected helper fanout or RSS growth.
 - `docs/lifecycle.md`: application lifecycle, managed Codex flow, agent-safe
   control plane, and claim levels.
 - `docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`: agent/MCP
