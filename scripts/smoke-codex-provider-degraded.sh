@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Provider-degraded smoke: 5xx responses are provider failures, not credential
-# failures. The proxy should retry a selectable fallback before Codex sees the
-# 5xx, and should pass through a no-fallback provider 5xx without emitting the
-# route-repair no-account body.
+# Provider-degraded and stream-disconnect smoke: 5xx responses are provider
+# failures, not credential failures. The proxy should retry a selectable
+# fallback before Codex sees the 5xx, pass through a no-fallback provider 5xx
+# without emitting the route-repair no-account body, and treat downstream Codex
+# socket closes as local client disconnects rather than provider degradation.
+# Upstream interruptions after partial stream delivery should be recorded as
+# provider-degraded evidence, but must not trigger same-turn retry.
 
 set -euo pipefail
 
@@ -30,6 +33,10 @@ cleanup() {
             wait "$pid" 2>/dev/null || true
         fi
     done
+    if [[ "${OMUX_KEEP_SMOKE_TMP:-0}" == "1" ]]; then
+        echo "smoke-codex-provider-degraded: kept temp dir $TMP" >&2
+        return
+    fi
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -337,9 +344,112 @@ PY
     fi
 }
 
+run_upstream_interrupted_case() {
+    local case_dir="$TMP/upstream-interrupted"
+    local portfile="$case_dir/upstream.port"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_200_BODY_REPEAT=4096 \
+      OMUX_STUB_TRUNCATE_200_AFTER_BYTES=128 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: upstream-interrupted stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in upstream-interrupted case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: upstream-interrupted assertions"
+    jq -e 'select(.kind == "proxy_stream_interrupted" and .account == "codex:max-1" and .status == 200 and .bytes_streamed > 0 and .delivered_to_codex == true and .retry_attempted == false)' "$ndjson" >/dev/null
+    echo "  ✓ upstream partial stream classified as interrupted"
+    assert_no_grep "partial upstream stream did not same-turn retry" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
+    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured interrupted upstream stream"
+    jq -e '[.turns[] | select(.status == 200 and (.body_head | contains("response.created")))] | length == 1' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex saw partial 200 stream"
+    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ interrupted upstream stream recorded provider-degraded route health"
+}
+
+run_client_disconnect_case() {
+    local case_dir="$TMP/client-disconnect"
+    local portfile="$case_dir/upstream.port"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_200_BODY_REPEAT=4096 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: client-disconnect stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_DISCONNECT_TURNS=0 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in client-disconnect case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: client-disconnect assertions"
+    assert_grep "downstream close classified as client disconnect" '"kind":"proxy_client_disconnected".*"account":"codex:max-1".*"status":200.*"retry_attempted":false' "$ndjson"
+    assert_no_grep "downstream close did not record upstream failure" '"kind":"proxy_upstream_failed"' "$ndjson"
+    assert_no_grep "downstream close did not same-turn retry" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
+    assert_no_grep "adapter stderr suppresses benign proxy close" 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream)' "$adapter_stderr"
+    jq -e '[.turns[] | select(.status == 0 and (.body_head | contains("client_disconnected_before_response")))] | length == 1' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex intentionally closed the turn socket"
+    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ route health was not polluted by downstream disconnect"
+}
+
 run_fallback_case
 run_no_fallback_case
 run_transport_failure_case
+run_upstream_interrupted_case
+run_client_disconnect_case
 
 echo
 echo "smoke-codex-provider-degraded: all assertions passed."

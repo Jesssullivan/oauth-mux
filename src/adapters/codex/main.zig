@@ -1552,11 +1552,25 @@ fn proxyThreadMain(p: *wire_proxy.Proxy, shutdown: *std.atomic.Value(bool)) void
         p.serveOne() catch |e| {
             // Server error or accept failure; if shutting down, exit.
             if (shutdown.load(.acquire)) return;
+            if (isBenignProxyConnectionClose(e)) continue;
             std.debug.print("proxy: serveOne: {s}\n", .{@errorName(e)});
             // Continue serving; transient errors should not kill the
             // proxy mid-session.
         };
     }
+}
+
+fn isBenignProxyConnectionClose(err: anyerror) bool {
+    return err == error.BrokenPipe or
+        err == error.ConnectionResetByPeer or
+        err == error.EndOfStream;
+}
+
+test "proxy thread suppresses expected localhost connection close errors" {
+    try std.testing.expect(isBenignProxyConnectionClose(error.BrokenPipe));
+    try std.testing.expect(isBenignProxyConnectionClose(error.ConnectionResetByPeer));
+    try std.testing.expect(isBenignProxyConnectionClose(error.EndOfStream));
+    try std.testing.expect(!isBenignProxyConnectionClose(error.Unexpected));
 }
 
 /// Open a TCP connection to the proxy and immediately close it. This
