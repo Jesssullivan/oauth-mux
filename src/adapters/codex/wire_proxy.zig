@@ -380,6 +380,39 @@ pub const Proxy = struct {
                 continue;
             };
 
+            if (status_and_class.stream_outcome.kind == .client_disconnected) {
+                self.logEvent("proxy_client_disconnected", .{
+                    .account = elected.id,
+                    .method = req.method,
+                    .path_kind = pathKind(req.path),
+                    .status = status_and_class.status,
+                    .err = status_and_class.stream_outcome.err orelse "client_disconnected",
+                    .bytes_streamed = status_and_class.stream_outcome.bytes_streamed,
+                    .retry_attempted = false,
+                });
+                final_account = elected.id;
+                break;
+            }
+
+            if (status_and_class.stream_outcome.kind == .upstream_interrupted) {
+                const err_name = status_and_class.stream_outcome.err orelse "stream_interrupted";
+                appendRejection(a, &rejections, elected.id, .provider_degraded, err_name) catch {};
+                self.logEvent("proxy_stream_interrupted", .{
+                    .account = elected.id,
+                    .method = req.method,
+                    .path_kind = pathKind(req.path),
+                    .status = status_and_class.status,
+                    .err = err_name,
+                    .bytes_streamed = status_and_class.stream_outcome.bytes_streamed,
+                    .delivered_to_codex = true,
+                    .retry_attempted = false,
+                });
+                self.traceUpstreamFailure(req, elected.id, err_name);
+                self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
+                final_account = elected.id;
+                break;
+            }
+
             // ── 5. Apply classification + log ──────────────────────
             self.applyClassification(elected.id, status_and_class.classification) catch |err| {
                 self.logEvent("proxy_apply_classification_failed", .{ .account = elected.id, .err = @errorName(err) });
@@ -1168,6 +1201,18 @@ const BufferedResponse = struct {
     body: []const u8,
 };
 
+const StreamOutcomeKind = enum {
+    complete,
+    client_disconnected,
+    upstream_interrupted,
+};
+
+const StreamOutcome = struct {
+    kind: StreamOutcomeKind = .complete,
+    err: ?[]const u8 = null,
+    bytes_streamed: usize = 0,
+};
+
 const StatusAndClassification = struct {
     status: u16,
     classification: Classification,
@@ -1178,6 +1223,7 @@ const StatusAndClassification = struct {
     /// false if it was buffered for classification/retry or never
     /// arrived (early failure).
     streamed: bool,
+    stream_outcome: StreamOutcome = .{},
     /// Present when the response was buffered and has not yet been written to
     /// Codex. The caller may retry first, then write this only if recovery is
     /// unavailable or the retry also fails with a buffered response.
@@ -1256,8 +1302,13 @@ fn forwardAndStream(
     }
 
     const classification = classify(a, status_u16, &.{});
-    try writeStreamedResponse(client_writer, http_req.response, http_req.reader());
-    return .{ .status = status_u16, .classification = classification, .streamed = true };
+    const stream_outcome = writeStreamedResponse(client_writer, http_req.response, http_req.reader());
+    return .{
+        .status = status_u16,
+        .classification = classification,
+        .streamed = true,
+        .stream_outcome = stream_outcome,
+    };
 }
 
 fn pathKind(path: []const u8) []const u8 {
@@ -1586,20 +1637,60 @@ fn writeStreamedResponse(
     writer: anytype,
     response: std.http.Client.Response,
     upstream_reader: anytype,
-) !void {
-    try writer.print("HTTP/1.1 {d} \r\n", .{@intFromEnum(response.status)});
-    try writeForwardingResponseHeaders(writer, response);
-    try writer.writeAll("Connection: close\r\n\r\n");
+) StreamOutcome {
+    writer.print("HTTP/1.1 {d} \r\n", .{@intFromEnum(response.status)}) catch |err| {
+        return .{ .kind = .client_disconnected, .err = @errorName(err) };
+    };
+    writeForwardingResponseHeaders(writer, response) catch |err| {
+        return .{ .kind = .client_disconnected, .err = @errorName(err) };
+    };
+    writer.writeAll("Connection: close\r\n\r\n") catch |err| {
+        return .{ .kind = .client_disconnected, .err = @errorName(err) };
+    };
 
+    return pumpStreamBody(writer, upstream_reader, response.content_length);
+}
+
+fn shortReadOutcome(bytes_streamed: usize, expected_content_length: ?u64) ?StreamOutcome {
+    const expected = expected_content_length orelse return null;
+    const streamed: u64 = @intCast(bytes_streamed);
+    if (streamed >= expected) return null;
+    return .{
+        .kind = .upstream_interrupted,
+        .err = "ShortRead",
+        .bytes_streamed = bytes_streamed,
+    };
+}
+
+fn pumpStreamBody(writer: anytype, upstream_reader: anytype, expected_content_length: ?u64) StreamOutcome {
     var buf: [64 * 1024]u8 = undefined;
+    var bytes_streamed: usize = 0;
     while (true) {
         const n = upstream_reader.read(&buf) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
+            error.EndOfStream => {
+                if (shortReadOutcome(bytes_streamed, expected_content_length)) |outcome| return outcome;
+                break;
+            },
+            else => return .{
+                .kind = .upstream_interrupted,
+                .err = @errorName(err),
+                .bytes_streamed = bytes_streamed,
+            },
         };
-        if (n == 0) break;
-        try writer.writeAll(buf[0..n]);
+        if (n == 0) {
+            if (shortReadOutcome(bytes_streamed, expected_content_length)) |outcome| return outcome;
+            break;
+        }
+        writer.writeAll(buf[0..n]) catch |err| {
+            return .{
+                .kind = .client_disconnected,
+                .err = @errorName(err),
+                .bytes_streamed = bytes_streamed,
+            };
+        };
+        bytes_streamed += n;
     }
+    return .{ .kind = .complete, .bytes_streamed = bytes_streamed };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1622,6 +1713,83 @@ test "pathKind redacts Codex endpoint paths into stable classes" {
     try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/codex/memories/trace_summarize"));
     try std.testing.expectEqualStrings("codex_other", pathKind("/backend-api/codex/unknown/shape"));
     try std.testing.expectEqualStrings("unknown", pathKind("/not-codex"));
+}
+
+const TestSinkWriter = struct {
+    bytes: usize = 0,
+    fail: bool = false,
+
+    const Error = error{BrokenPipe};
+    const Writer = std.io.Writer(*TestSinkWriter, Error, write);
+
+    fn writer(self: *TestSinkWriter) Writer {
+        return .{ .context = self };
+    }
+
+    fn write(self: *TestSinkWriter, bytes: []const u8) Error!usize {
+        if (self.fail) return error.BrokenPipe;
+        self.bytes += bytes.len;
+        return bytes.len;
+    }
+};
+
+const TestChunkReader = struct {
+    chunk: []const u8,
+    emitted: bool = false,
+    fail_after_chunk: bool = false,
+
+    const Error = error{ EndOfStream, ConnectionResetByPeer };
+    const Reader = std.io.Reader(*TestChunkReader, Error, read);
+
+    fn reader(self: *TestChunkReader) Reader {
+        return .{ .context = self };
+    }
+
+    fn read(self: *TestChunkReader, buf: []u8) Error!usize {
+        if (self.emitted) {
+            if (self.fail_after_chunk) return error.ConnectionResetByPeer;
+            return error.EndOfStream;
+        }
+        self.emitted = true;
+        const n = @min(buf.len, self.chunk.len);
+        @memcpy(buf[0..n], self.chunk[0..n]);
+        return n;
+    }
+};
+
+test "stream body BrokenPipe is classified as downstream disconnect" {
+    var writer = TestSinkWriter{ .fail = true };
+    var reader = TestChunkReader{ .chunk = "data" };
+
+    const outcome = pumpStreamBody(writer.writer(), reader.reader(), null);
+
+    try std.testing.expectEqual(StreamOutcomeKind.client_disconnected, outcome.kind);
+    try std.testing.expectEqualStrings("BrokenPipe", outcome.err.?);
+    try std.testing.expectEqual(@as(usize, 0), outcome.bytes_streamed);
+}
+
+test "stream body upstream read failure is classified without retrying partial response" {
+    var writer = TestSinkWriter{};
+    var reader = TestChunkReader{ .chunk = "data", .fail_after_chunk = true };
+
+    const outcome = pumpStreamBody(writer.writer(), reader.reader(), null);
+
+    try std.testing.expectEqual(StreamOutcomeKind.upstream_interrupted, outcome.kind);
+    try std.testing.expectEqualStrings("ConnectionResetByPeer", outcome.err.?);
+    try std.testing.expectEqual(@as(usize, 4), outcome.bytes_streamed);
+    try std.testing.expectEqual(@as(usize, 4), writer.bytes);
+}
+
+test "stream body short Content-Length EOF is classified as upstream interrupted" {
+    var writer = TestSinkWriter{};
+    var reader = TestChunkReader{ .chunk = "data" };
+
+    const outcome = pumpStreamBody(writer.writer(), reader.reader(), 8);
+
+    try std.testing.expectEqual(StreamOutcomeKind.upstream_interrupted, outcome.kind);
+    try std.testing.expectEqualStrings("ShortRead", outcome.err.?);
+    try std.testing.expectEqual(@as(usize, 4), outcome.bytes_streamed);
+    try std.testing.expectEqual(@as(usize, 4), writer.bytes);
 }
 
 test "classifyHttpErrorBody identifies Cloudflare 400 without exposing body" {

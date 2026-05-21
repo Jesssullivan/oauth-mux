@@ -13,7 +13,7 @@ on:
       version:
         description: "Published version to install from GitHub Release assets"
         required: false
-        default: "0.1.6"
+        default: "0.1.9"
         type: string
       expect_codex_shim:
         description: "Require published deb/rpm packages to include /usr/bin/codex"
@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           version="${{ github.event.inputs.version }}"
           if [ -z "$version" ]; then
-            version="0.1.6"
+            version="0.1.9"
           fi
           if [ "${{ github.event.inputs.expect_codex_shim }}" = "true" ]; then
             export OMUX_EXPECT_CODEX_SHIM=1

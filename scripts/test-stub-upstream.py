@@ -15,6 +15,13 @@ Behavior (configurable via env):
                             for ANY GIVEN account-id (default 2)
   OMUX_STUB_LOGFILE   — path to append per-request JSON log lines
                         (default /tmp/omux-stub-upstream.log)
+  OMUX_STUB_200_BODY_REPEAT — repeat the tiny SSE 200 response this many
+                        times (default 1). Used by disconnect smokes to
+                        force multiple streamed proxy writes.
+  OMUX_STUB_TRUNCATE_200_AFTER_BYTES — if positive, send only this many bytes
+                        of a 200 response body, then reset the connection.
+                        Used to model upstream network interruption after a
+                        partial streaming response reached the proxy.
 
 Per request:
   - Logs a JSON line with: ts, path, method, account_id (from
@@ -48,6 +55,8 @@ import hashlib
 import http.server
 import json
 import os
+import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -58,6 +67,8 @@ PORT = int(os.environ.get("OMUX_STUB_PORT", "0"))
 PORTFILE = Path(os.environ.get("OMUX_STUB_PORTFILE", "/tmp/omux-stub-upstream.port"))
 OK_BEFORE_429 = int(os.environ.get("OMUX_STUB_OK_BEFORE_429", "2"))
 LOGFILE = Path(os.environ.get("OMUX_STUB_LOGFILE", "/tmp/omux-stub-upstream.log"))
+BODY_REPEAT = int(os.environ.get("OMUX_STUB_200_BODY_REPEAT", "1"))
+TRUNCATE_200_AFTER_BYTES = int(os.environ.get("OMUX_STUB_TRUNCATE_200_AFTER_BYTES", "0"))
 
 # OMUX_STUB_429_TYPE chooses what the stub returns once an account
 # crosses OK_BEFORE_429:
@@ -164,6 +175,7 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
                 "event: response.completed\n"
                 'data: {"type":"response.completed","response":{"id":"resp-stub","output":[]}}\n\n'
             )
+            body = body * max(1, BODY_REPEAT)
             return 200, {"_text": body, "_ct": "text/event-stream"}
         # 429 path. Body shape selected by OMUX_STUB_429_TYPE so the
         # harness can drive the swap-eligible (usage_limit_reached)
@@ -209,6 +221,31 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             payload = json.dumps(body).encode("utf-8")
             ct = "application/json"
 
+        if status == 200 and TRUNCATE_200_AFTER_BYTES > 0 and TRUNCATE_200_AFTER_BYTES < len(payload):
+            self.send_response(status)
+            self.send_header("Content-Type", ct)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(payload[:TRUNCATE_200_AFTER_BYTES])
+            self.wfile.flush()
+            try:
+                linger = struct.pack("ii", 1, 0)
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+            except OSError:
+                pass
+            self.close_connection = True
+            _log({
+                "path": path,
+                "method": self.command,
+                "account_id": self._account_id(),
+                "auth_prefix": self._auth_prefix(),
+                "status_returned": status,
+                "response_classification": "ok_truncated",
+                "bytes_written": TRUNCATE_200_AFTER_BYTES,
+            })
+            return
+
         self.send_response(status)
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(len(payload)))
@@ -241,6 +278,8 @@ def main() -> int:
     print(f"stub-upstream: portfile={PORTFILE}", file=sys.stderr, flush=True)
     print(f"stub-upstream: logfile={LOGFILE}", file=sys.stderr, flush=True)
     print(f"stub-upstream: ok_before_429={OK_BEFORE_429} per account", file=sys.stderr, flush=True)
+    print(f"stub-upstream: 200_body_repeat={BODY_REPEAT}", file=sys.stderr, flush=True)
+    print(f"stub-upstream: truncate_200_after_bytes={TRUNCATE_200_AFTER_BYTES}", file=sys.stderr, flush=True)
     print(f"stub-upstream: 429_type={ERROR_TYPE}", file=sys.stderr, flush=True)
     if ALWAYS_STATUS:
         print(f"stub-upstream: always_status={ALWAYS_STATUS} (overrides classification)", file=sys.stderr, flush=True)

@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-19
+Updated: 2026-05-20
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -8,37 +8,45 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` is clean against `origin/main` after the product-guardrail
-  and dogfood process fanout snapshot merge.
-- CI state: GitHub Actions is the live source for the latest run. The
-  2026-05-17 refresh verified the `v0.1.7` release workflow, npm publish
-  workflow, and hosted system-package install QA.
-- Version truth: public npm, GitHub Release, curl installer, and deb/rpm lanes
-  last resolved to `0.1.7` in the public parity sweep. The public Homebrew tap
-  now advertises `0.1.9`, but the 2026-05-18/19 shim investigation found a
-  package-lane ownership bug: the Homebrew formula must not install or link a
-  managed `codex` shim by default.
-- Installed provenance: PATH can resolve a public package binary or a
-  user-local dogfood binary depending on shell setup. Use `which -a oauth-mux`,
-  `which -a codex`, `oauth-mux version --json`, and `codex preflight` before
-  treating any installed-command run as release evidence.
+- Repo state: `main` matches `origin/main` at `f05a44f`; local worktrees may
+  carry focused BrokenPipe/network-blip WIP until that regression fix is landed.
+- CI state: GitHub Actions is the live source for the latest run. The latest
+  observed `main` run for `f05a44f` succeeded on 2026-05-19. Release workflow
+  `26012676776`, registry dry-run `26012836911`, and npm publish
+  `26013003383` verified the `v0.1.9` release lane on 2026-05-18.
+- Version truth: public npm, GitHub Release, curl installer assets, deb/rpm
+  assets, and the public Homebrew tap resolve to `0.1.9`; this was rechecked on
+  2026-05-21. The 2026-05-18/19 shim investigation fixed a package-lane
+  ownership bug: the Homebrew formula must not install or link a managed
+  `codex` shim by default.
+- Installed provenance: PATH currently resolves user-local
+  `/Users/jess/.local/bin/oauth-mux` before Homebrew. Use
+  `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`, and
+  `codex preflight` before treating any installed-command run as release
+  evidence.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
-  0.1.9`. Homebrew should be treated as a binary-only package lane: QA must
-  prove `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux`, does
-  not install an `OMUX_CODEX_SHIM`, and leaves native `codex` command
-  resolution unchanged.
-- Codex route truth: refresh before every live test. The latest 2026-05-17
-  22:24 EDT installed Homebrew `0.1.7` no-spend snapshot is `not_afloat`:
-  all four named `codex-max` routes are runtime-ready and broker-ready but
-  blocked as `unrecorded`. The next step is spend-confirmed route-health
-  repair/probe, not managed resume.
+  0.1.9` and the local linked keg is `0.1.9`. Homebrew is a binary-only package
+  lane by default: QA must prove
+  `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux`, does not
+  install an `OMUX_CODEX_SHIM`, and leaves native `codex` command resolution
+  unchanged.
+- Codex route truth: the 2026-05-21 02:57 UTC post-repair no-spend refresh used
+  user-local `oauth-mux 0.1.9`. All four named `codex-max` route stores are
+  runtime-ready and broker-ready. `codex:max-3#codex-max` is selected and
+  selectable; `max-4` is a live selectable fallback; `max-1` and `max-2` remain
+  blocked as `unrecorded`. Current state is `session_start_ready:true`,
+  `fallback_ready:true`, `single_route_at_risk:false`. The next live cassette
+  run still needs a just-in-time no-spend refresh plus explicit operator
+  approval for provider-spend capture.
 - Latest local status truth: `oauth-mux codex status-latest --json` currently
-  reports `brokered_without_fallback` from a rolling local artifact. This
-  does not supersede the preserved quota-handoff proof; status artifacts must be
-  refreshed before being used in public claims.
+  reports `brokered_without_fallback` from a rolling local artifact. This is
+  stale relative to current route truth and does not supersede the preserved
+  quota-handoff proof; status artifacts must be refreshed before being used in
+  public claims.
 - Daemon truth: `oauth-mux daemon status --json` still reports
-  `contract:"experimental_socket_stub"` and `hosts_stay_afloat:false`; any
-  stale foreground tick snapshot is observational only. The beta daemon lane
+  `status:"not_running"`, `contract:"experimental_socket_stub"`, and
+  `hosts_stay_afloat:false`; its foreground tick snapshot is observational only
+  even when fresh and showing `afloat_with_spare_fallback`. The beta daemon lane
   must host the same foreground tick engine and must not claim unmanaged
   hot-swap.
 - Codex shim truth: package/user-local installs can make future bare `codex`
@@ -113,16 +121,25 @@ boundary, quota signal, failure signal, wire interception, process topology, and
 session authority. Until then, they may consume oauth-mux diagnostics or future
 MCP repair prompts, but oauth-mux must not claim to keep them alive.
 
+## Active Plan
+
+The current testable workstream plan lives at
+`docs/spec/oauth-mux-operational-hardening-plan-2026-05-20.md`. It prioritizes
+the BrokenPipe regression fix, no-spend route/process truth refresh, real Codex
+wire cassettes, release hygiene, tracker reconciliation, then later sidecar and
+non-Codex provider work.
+
 ## Release And Distribution Posture
 
-`0.1.7` version availability is complete for the public install lanes, but
-package parity is not complete until the shared Codex shim fix ships and the
-package lanes prove native admin pass-through. Negative Codex cassettes,
-broader adapter proof, and daemon beta truth remain follow-up work. Windows
-managed-`codex` parity is intentionally assigned to the npm wrapper lane rather
-than raw tarballs until a native Windows operator need is proven. Future public
-install copy must avoid claiming a version or lane behavior until that version
-is actually published and verified.
+`0.1.9` version availability is complete for the public install lanes checked
+again on 2026-05-21: GitHub Release `v0.1.9` is published and non-draft,
+npm `latest` is `0.1.9`, Homebrew stable/linked keg is `0.1.9`, and curl
+installer plus deb/rpm assets are attached to the release. Negative Codex
+cassettes, broader adapter proof, and daemon beta truth remain follow-up work.
+Windows managed-`codex` parity is intentionally assigned to the npm wrapper
+lane rather than raw tarballs until a native Windows operator need is proven.
+Future public install copy must avoid claiming a version or lane behavior until
+that version is actually published and verified.
 
 The release lanes remain:
 
@@ -145,11 +162,11 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Codex next-turn broker switch | TIN-916 | #131 | Closed for the proven managed Codex live handoff. Remaining negative/permutation work lives in #212/#176; same-thread, mid-turn, and unmanaged daemon behavior remain separate non-claims. |
 | Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Wire cassette coverage | TIN-950 | #176 | Needed before treating negative permutations as stable release proof. |
+| Wire cassette coverage | TIN-950 | #176 | Still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile only after real cassette acceptance or an explicit tracker correction. |
 | Harness session authority bridge | TIN-979 | #191 | Closed for Codex: managed auth/config overlays bridge canonical session authority, `state_5.sqlite*`, and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
-| Package parity and install lanes | TIN-1255 | #252 | `0.1.7` is published and verified across GitHub Release, npm, Homebrew, curl, and deb/rpm package lanes. |
+| Package parity and install lanes | TIN-1255 | #252 | `0.1.9` is published and verified across GitHub Release, npm, Homebrew, curl installer assets, and deb/rpm release assets. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |

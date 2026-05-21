@@ -37,6 +37,9 @@ Env (set by the smoke harness):
                             Codex persisting refreshed ChatGPT tokens in the
                             managed overlay.
   OMUX_STUB_CODEX_TURN_DELAY_MS — optional delay between turns (default 50).
+  OMUX_STUB_CODEX_DISCONNECT_TURNS — optional comma-separated turn indexes that
+                            should send the request then close the proxy socket
+                            before reading the streamed response.
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -47,6 +50,8 @@ import http.client
 import json
 import os
 import re
+import socket
+import struct
 import sys
 import time
 from pathlib import Path
@@ -106,6 +111,44 @@ def _auth_token_for_turn(turn: int) -> str | None:
     return tokens[min(turn, len(tokens) - 1)]
 
 
+def _disconnect_turns() -> set[int]:
+    raw = os.environ.get("OMUX_STUB_CODEX_DISCONNECT_TURNS", "")
+    turns: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        turns.add(int(part))
+    return turns
+
+
+def _request_parts(proxy_url: str, body: bytes, turn: int) -> tuple[str, bytes]:
+    m = re.match(r"http://([^/]+)(/.*)$", proxy_url)
+    if not m:
+        print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
+        sys.exit(2)
+    netloc, prefix = m.group(1), m.group(2)
+    headers = [
+        f"POST {prefix}/responses HTTP/1.1",
+        f"Host: {netloc}",
+        "Content-Type: application/json",
+        "User-Agent: stub-codex/0",
+        "x-codex-turn-state: stub-turn-state-v1",
+        "x-codex-installation-id: stub-install-1",
+        "OpenAI-Beta: responses_websockets=2026-02-06",
+        f"Content-Length: {len(body)}",
+        "Connection: close",
+    ]
+    account_id = os.environ.get("OMUX_STUB_CODEX_CHATGPT_ACCOUNT_ID")
+    auth_token = _auth_token_for_turn(turn)
+    if account_id:
+        headers.append(f"ChatGPT-Account-ID: {account_id}")
+    if auth_token:
+        headers.append(f"Authorization: Bearer {auth_token}")
+    request = ("\r\n".join(headers) + "\r\n\r\n").encode("utf-8") + body
+    return netloc, request
+
+
 def _post(proxy_url: str, body: bytes, turn: int) -> tuple[int, str]:
     # base_url is like http://127.0.0.1:NNNN/backend-api/codex
     # We want to POST to that prefix + /responses.
@@ -139,6 +182,19 @@ def _post(proxy_url: str, body: bytes, turn: int) -> tuple[int, str]:
         return resp.status, resp.read().decode("utf-8", errors="replace")
     finally:
         conn.close()
+
+
+def _post_and_disconnect(proxy_url: str, body: bytes, turn: int) -> tuple[int, str]:
+    netloc, request = _request_parts(proxy_url, body, turn)
+    host, port_s = netloc.rsplit(":", 1)
+    sock = socket.create_connection((host, int(port_s)), timeout=15)
+    try:
+        sock.sendall(request)
+        linger = struct.pack("ii", 1, 0)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+    finally:
+        sock.close()
+    return 0, "client_disconnected_before_response"
 
 
 def _session_bridge_report(codex_home: Path) -> dict:
@@ -231,12 +287,13 @@ def main() -> int:
     )
 
     turn_results: list[dict] = []
+    disconnect_turns = _disconnect_turns()
     for i in range(turns):
-        status, body = _post(
-            proxy_url,
-            json.dumps({"input": f"stub turn {i}"}).encode("utf-8"),
-            i,
-        )
+        payload = json.dumps({"input": f"stub turn {i}"}).encode("utf-8")
+        if i in disconnect_turns:
+            status, body = _post_and_disconnect(proxy_url, payload, i)
+        else:
+            status, body = _post(proxy_url, payload, i)
         turn_results.append({"turn": i, "status": status, "body_head": body[:120]})
         print(f"stub-codex: turn {i} -> {status}", file=sys.stderr, flush=True)
         time.sleep(turn_delay_ms / 1000)
