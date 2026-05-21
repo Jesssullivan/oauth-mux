@@ -102,32 +102,34 @@ publishable evidence for those same negative shapes.
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
 - Current no-spend route truth is volatile and must be refreshed before each
   live session. The 2026-05-17 22:24 EDT installed Homebrew `0.1.7` snapshot is
-  `not_afloat` for `codex-max`: all four named routes are runtime-ready and
-  broker-ready, but route liveness is `unrecorded`.
-- `oauth-mux codex preflight --profile codex-max --capability codex-max --json`
-  reports `routes_total:4`, `selectable_routes:0`,
-  `blocked_route_reasons:[unrecorded(4)]`, `session_start_ready:false`, and
-  `fallback_ready:false` in that snapshot.
-- No user-mediated login handoff is pending in that snapshot. The next action is
-  a spend-confirmed route-health repair/probe, such as the preflight-reported
-  `oauth-mux stay-afloat --once --execute --profile codex-max --capability
-  codex-max --json`, or a targeted `oauth-mux probe --provider codex --account
-  max-N --capability codex-max --json` after operator quota UI review.
+  historical evidence, not current route truth; it was `not_afloat` for
+  `codex-max` with all four named routes runtime-ready and broker-ready but
+  route liveness `unrecorded`.
+- The 2026-05-20 17:01 UTC no-spend refresh improved that to one selectable
+  route (`max-3`) but still had no spare fallback; treat it as historical
+  single-route-risk evidence.
+- The 2026-05-21 02:57 UTC post-repair no-spend refresh used user-local
+  `oauth-mux 0.1.9`: `codex:max-3#codex-max` is selected, `max-4` is a live
+  selectable fallback, and `max-1` / `max-2` remain runtime/broker ready but
+  blocked as `unrecorded`.
+- Current resilience from that refresh is `session_start_ready:true`,
+  `fallback_ready:true`, `single_route_at_risk:false`. Refresh immediately
+  before any provider-spend run; do not treat this paragraph as future-proof.
 - `oauth-mux codex status-latest --json` currently reports
-  `brokered_without_fallback` from a rolling local artifact. This does not
-  supersede the preserved quota handoff proof above; refresh this command
-  before copying current-state claims into public release notes or tracker
-  comments.
+  `brokered_without_fallback` from a rolling local artifact. This is stale
+  relative to route truth and does not supersede the preserved quota handoff
+  proof above; refresh this command before copying current-state claims into
+  public release notes or tracker comments.
 - `oauth-mux daemon status --json` currently reports no hosted stay-afloat
-  loop. Its stale foreground tick snapshot must not override current preflight
-  or route-explain truth.
+  loop. Its foreground tick snapshot is observational only and must not be cited
+  as daemon-hosted continuity proof.
 
 ## Next Multi-Account Session
 
-Start from an installed `0.1.7` binary and record provenance before any
-spend-confirmed test. As of the 2026-05-17 package-parity refresh, bare
-`oauth-mux` resolves the public Homebrew `0.1.7` package first on the operator
-machine; use `oauth-mux version --json` to distinguish that package binary from
+Start from the current installed `0.1.9` binary, or an explicitly installed
+dogfood binary, and record provenance before any spend-confirmed test. As of
+the 2026-05-20 release-hygiene refresh, public package lanes resolve to
+`0.1.9`; use `oauth-mux version --json` to distinguish that package binary from
 `~/.local/bin/oauth-mux` or `./zig-out/bin/oauth-mux` worktree dogfood hashes.
 
 No-spend opening sequence:
@@ -147,27 +149,31 @@ Current matrix entry:
 | Route | Current state | Session role |
 | --- | --- | --- |
 | `codex:max-1#codex-max` | blocked, `unrecorded`; runtime ready; `probe_needed` | route-health repair candidate |
-| `codex:max-2#codex-max` | blocked, `unrecorded`; runtime ready; `probe_needed` | prior engineered primary; route-health repair candidate |
-| `codex:max-3#codex-max` | blocked, `unrecorded`; runtime ready; `probe_needed` | prior engineered fallback; route-health repair candidate |
-| `codex:max-4#codex-max` | blocked, `unrecorded`; runtime ready; `probe_needed` | reset-repair / route-health repair candidate |
+| `codex:max-2#codex-max` | blocked, `unrecorded`; runtime ready; `probe_needed` | route-health repair candidate |
+| `codex:max-3#codex-max` | selectable, live; selected | current primary |
+| `codex:max-4#codex-max` | selectable, live | current spare fallback |
 
-Do not start the next managed live session from this state. `oauth-mux codex
-resume` should wait until route-health repair makes at least one primary and
-one fallback selectable. Otherwise the expected outcome is a typed
-`NoAccountSelectable` refusal, not quota-handoff evidence.
+Do not start provider-spend cassette or negative-matrix work from memory. Rerun
+the no-spend opener first and verify `session_start_ready:true`,
+`fallback_ready:true`, and `single_route_at_risk:false`; then proceed only with
+explicit operator approval for the provider-spend capture. If the just-in-time
+refresh falls back to single-route risk, pause and repair/probe before treating
+the run as release-grade evidence.
 
 Spend-confirmed activation sequence:
 
-1. Refresh private quota UI for the four route labels and pick the least risky
-   primary/fallback pair.
-2. With explicit operator consent, run the smallest targeted provider probe(s)
-   needed to make one primary and one fallback selectable.
+1. Refresh private quota UI for the four route labels and confirm the current
+   `max-3` / `max-4` primary-fallback pair is still the least risky pair.
+2. With explicit operator consent, run only the smallest targeted provider
+   probe(s) needed to restore spare fallback if the no-spend opener regresses;
+   optionally probe `max-1` / `max-2` only when additional redundancy is worth
+   the provider spend.
 3. If a targeted probe reports auth failure, run only the labeled
    `oauth-mux codex login-device max-N` handoff for that route, then rerun the
    no-spend opener and a spend-confirmed probe only if still needed.
-4. Once `session_start_ready:true` and `fallback_ready:true` are restored, run
-   the chosen negative/live permutation through installed `oauth-mux`, not a
-   repo-local binary.
+4. Once `session_start_ready:true` and `fallback_ready:true` are reconfirmed,
+   run the chosen negative/live permutation through the intended installed
+   `oauth-mux` binary and record provenance.
 
 Next spend-confirmed permutations should prefer negative coverage over another
 happy-path quota proof: all-fallbacks-exhausted, tier-insufficient
@@ -177,8 +183,9 @@ false-positive guards.
 ## Next QA Targets
 
 These targets remain important production hardening work. They should not be
-treated as public claims until captured, but they do not block the package
-parity tranche for `0.1.7`.
+treated as public claims until captured. They do not block current package
+parity, but they do block stronger Codex negative-matrix and release-proof
+claims.
 
 1. Publishable cassette for real `usage_limit_reached` response shape.
 2. Publishable provider cassette or live all-fallbacks-exhausted terminal

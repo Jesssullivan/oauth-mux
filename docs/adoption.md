@@ -65,10 +65,10 @@ The public Homebrew tap is `Jesssullivan/homebrew-omux`, documented in
 infrastructure, not public adoption copy.
 The DRY release/install lane contract is `docs/release-install-lanes.md`; keep
 new UX/DX/AX installer copy aligned with that file rather than duplicating
-package-state tables here. As of the 2026-05-17 package-parity refresh, public
-GitHub Release, npm, Homebrew, curl installer, and system package lanes resolve
-to `0.1.7`. Package-lane QA proves installability and metadata, not live
-provider handoff behavior.
+package-state tables here. As of the 2026-05-20 release-hygiene refresh, public
+GitHub Release, npm, Homebrew, curl installer assets, and system package assets
+resolve to `0.1.9`. Package-lane QA proves installability and metadata, not
+live provider handoff behavior.
 
 When validating unreleased source behavior, install or invoke the worktree build
 deliberately and record provenance:

@@ -21,14 +21,15 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes are versioned by channel. GitHub Release assets, npm root
-and platform packages, the curl installer, and published deb/rpm assets last
-resolved to `0.1.7` in the public parity sweep. The public Homebrew tap now
-serves `0.1.9`. The current source tree also tightens install parity after a
-2026-05-18 finding that the public Homebrew `codex` shim routed native admin
-commands such as `codex --version` through oauth-mux route election. Homebrew
-must remain binary-only by default: `brew install jesssullivan/omux/oauth-mux`
-installs `oauth-mux` and must not install or link a managed `codex` shim.
+Public install lanes are versioned by channel. The current verified release is
+`0.1.9`: GitHub Release assets exist, npm root and platform packages resolve,
+the curl installer and deb/rpm assets are attached to the release, and the
+public Homebrew tap reports stable `0.1.9`. The 2026-05-18/19 install-parity
+work fixed a package-lane bug where a public Homebrew `codex` shim routed
+native admin commands such as `codex --version` through oauth-mux route
+election. Homebrew remains binary-only by default:
+`brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
+install or link a managed `codex` shim.
 
 What works today:
 
@@ -230,7 +231,7 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 
 See `docs/tracing.md` for the trace schema and redaction contract.
 
-Those inspection commands do not spend provider calls. In the `0.1.7` release,
+Those inspection commands do not spend provider calls. In the current release,
 managed Codex launch/resume and admitted stay-afloat execution may spend
 provider calls only to revalidate expired Codex quota/rate windows before route
 election. Live probes, broad revalidation, and non-Codex provider-spend paths
