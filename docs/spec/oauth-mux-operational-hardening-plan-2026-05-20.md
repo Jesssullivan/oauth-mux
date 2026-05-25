@@ -15,25 +15,24 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 
 ## Current Verified State
 
-- Local checkout: `main` is at `3de6e17`, where PR #279 landed the
-  BrokenPipe/client-disconnect reliability slice.
+- Local checkout: `main` is at `42b103c`, where PR #279 landed the
+  BrokenPipe/client-disconnect reliability slice and PR #280 prepared the
+  0.1.10 provenance/release lane.
 - GitHub read-only refresh at 2026-05-25: no open PRs, no GitHub Discussions,
   and open issues are `#67`, `#68`, `#163`, `#176`, and `#212`.
 - Linear: `TIN-1517` and `TIN-1518` are Done. `TIN-950` is marked Done, but
   GitHub `#176` is still open for real Codex wire cassettes; treat that as a
   tracker hygiene mismatch until reconciled. `TIN-1079` is Backlog, `TIN-938`
   is Todo, and `TIN-736` is In Progress.
-- Release truth: public GitHub Release `v0.1.9` is published, not
-  draft/prerelease, with installer, npm, Homebrew, tarball, deb/rpm, and
-  checksum assets; `npm view oauth-mux version dist-tags --json` reports
-  `latest:0.1.9`; the public Homebrew tap reports stable and linked keg
-  `0.1.9`. Source is staged for `0.1.10` so the next package lane can carry the
-  post-`0.1.9` Codex hardening.
-- Current route truth from the 2026-05-21 02:57 UTC post-repair no-spend
-  refresh: active binary is user-local `oauth-mux 0.1.9`; native Codex resolves
-  outside oauth-mux; `codex:max-3#codex-max` is selected; `max-4` is a live
-  selectable fallback; `max-1` and `max-2` remain runtime/broker ready but
-  blocked as `unrecorded`.
+- Release truth: public GitHub Release `v0.1.10` is published, not
+  draft/prerelease, with installer, Homebrew, tarball, deb/rpm, and checksum
+  assets; the public Homebrew tap reports stable and linked keg `0.1.10`.
+  `npm view oauth-mux version` still reports `0.1.9` because the CI npm lane
+  currently lacks usable npm auth and fails `npm whoami` with 401.
+- Current route truth from the 2026-05-25 refresh: active bare binary is
+  Homebrew `oauth-mux 0.1.10`; native Codex resolves outside oauth-mux;
+  `codex:max-3#codex-max` is selected; `max-4` is a live selectable fallback;
+  `max-1` and `max-2` remain runtime/broker ready but blocked as `unrecorded`.
 - Local validation at 2026-05-21 03:20 UTC: `just check-local` passed with the
   BrokenPipe/client-disconnect regression, upstream partial-stream
   interruption regression, managed Codex smokes, and cassette replay smokes.
@@ -255,6 +254,8 @@ Todo:
 - [x] Add a short pointer from the productionization ledger to this plan.
 - [x] Stage `0.1.10` source/release metadata for the post-`0.1.9` BrokenPipe
   and install-provenance fixes.
+- [x] Publish `v0.1.10` GitHub Release assets and update the public Homebrew tap
+  to `0.1.10`; npm remains blocked on CI npm auth.
 - [x] When running the stale-version search, confirm remaining older-version
   hits are explicitly historical, such as the 2026-05-17 no-spend snapshot or
   the `0.1.1` npm deprecation cleanup workflow.
