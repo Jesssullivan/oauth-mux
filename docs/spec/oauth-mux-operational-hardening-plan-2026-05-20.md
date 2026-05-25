@@ -208,6 +208,11 @@ Test commands:
 
 ```bash
 scripts/capture-codex-wire.sh preflight
+scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
+  --require-preflight-ok \
+  --require-path-kind responses \
+  --require-status 200 \
+  --require-quota-type usage_limit_reached
 just smoke-codex-cassette-replay-local
 just smoke-codex-cassette-all-exhausted-local
 just check-local
@@ -222,6 +227,9 @@ Todo:
   `oauth-mux` provenance, native Codex version, mitmproxy availability,
   fallback readiness, latest status verdict, and stale-process hints before
   starting the intercepting proxy.
+- [x] Add explicit capture review promotion gates for preflight success,
+  required endpoint path kinds, required HTTP statuses, and required quota
+  `error.type` values.
 - [ ] Re-run no-spend route truth immediately before capture and keep the
   generated preflight summary with the capture scratch directory.
 - [ ] Capture at least one normal `200` Codex turn with streaming preserved.

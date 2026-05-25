@@ -10,6 +10,23 @@ trap 'rm -rf "$TMP"' EXIT
 CAP="$TMP/codex-wire-synth/http"
 mkdir -p "$CAP"
 
+cat >"$TMP/codex-wire-synth/capture-preflight-summary.json" <<'JSON'
+{
+  "ok": true,
+  "issues": [],
+  "oauth_mux": {
+    "version": "0.1.10",
+    "build_id": "v0.1.10",
+    "binary_source": "homebrew"
+  },
+  "route_summary": {
+    "session_start_ready": true,
+    "fallback_ready": true,
+    "single_route_at_risk": false
+  }
+}
+JSON
+
 cat >"$CAP/00001-POST-backend-api_codex_responses.json" <<'JSON'
 {
   "captured_at": 1788000000.0,
@@ -70,7 +87,13 @@ cat >"$CAP/00002-POST-backend-api_codex_responses.json" <<'JSON'
 }
 JSON
 
-python3 "$ROOT/scripts/review-codex-wire-capture.py" "$TMP/codex-wire-synth" --json >"$TMP/summary.json"
+python3 "$ROOT/scripts/review-codex-wire-capture.py" "$TMP/codex-wire-synth" \
+  --require-preflight-ok \
+  --require-path-kind responses \
+  --require-status 200 \
+  --require-status 429 \
+  --require-quota-type usage_limit_reached \
+  --json >"$TMP/summary.json"
 
 python3 - "$TMP/summary.json" <<'PY'
 import json
@@ -78,6 +101,8 @@ import sys
 summary = json.load(open(sys.argv[1]))
 assert summary["ok"] is True, summary
 assert summary["flow_count"] == 2, summary
+assert summary["preflight"]["present"] is True, summary
+assert summary["preflight"]["ok"] is True, summary
 assert summary["path_counts"]["responses"] == 2, summary
 assert summary["status_counts"]["200"] == 1, summary
 assert summary["status_counts"]["429"] == 1, summary
@@ -85,6 +110,25 @@ shape = summary["quota_shapes"][0]
 assert shape["error_type"] == "usage_limit_reached", shape
 assert shape["has_resets_at"] is True, shape
 assert shape["plan_type"] == "pro", shape
+assert summary["requirement_failures"] == [], summary
+PY
+
+if python3 "$ROOT/scripts/review-codex-wire-capture.py" "$TMP/codex-wire-synth" \
+  --require-quota-type usage_not_included \
+  --json >"$TMP/missing-requirement-summary.json"; then
+  echo "smoke-codex-capture-review: expected missing requirement to fail" >&2
+  exit 1
+fi
+
+python3 - "$TMP/missing-requirement-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is False, summary
+assert summary["redaction_failures"] == [], summary
+assert summary["requirement_failures"] == [
+    "required quota error.type not observed: usage_not_included"
+], summary
 PY
 
 cat >"$CAP/00003-POST-secret-leak.json" <<'JSON'
