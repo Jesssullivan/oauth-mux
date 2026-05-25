@@ -15,9 +15,10 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 
 ## Current Verified State
 
-- Local checkout: `main` is at `42b103c`, where PR #279 landed the
-  BrokenPipe/client-disconnect reliability slice and PR #280 prepared the
-  0.1.10 provenance/release lane.
+- Local checkout: `main` is at `33133e3`, where PR #279 landed the
+  BrokenPipe/client-disconnect reliability slice, PR #280 prepared the
+  0.1.10 provenance/release lane, and PR #281 required explicit Homebrew
+  formula version metadata.
 - GitHub read-only refresh at 2026-05-25: no open PRs, no GitHub Discussions,
   and open issues are `#67`, `#68`, `#163`, `#176`, and `#212`.
 - Linear: `TIN-1517` and `TIN-1518` are Done. `TIN-950` is marked Done, but
@@ -31,8 +32,10 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
   currently lacks usable npm auth and fails `npm whoami` with 401.
 - Current route truth from the 2026-05-25 refresh: active bare binary is
   Homebrew `oauth-mux 0.1.10`; native Codex resolves outside oauth-mux;
-  `codex:max-3#codex-max` is selected; `max-4` is a live selectable fallback;
-  `max-1` and `max-2` remain runtime/broker ready but blocked as `unrecorded`.
+  explicit capability probes proved `max-1` and `max-2` available, so preflight
+  now has a selectable fallback. `max-3` is quota-exhausted, and `max-4` is
+  currently provider-degraded by an old still-running `0.1.9.reinstall`
+  managed resume process rather than by the installed 0.1.10 binary.
 - Local validation at 2026-05-21 03:20 UTC: `just check-local` passed with the
   BrokenPipe/client-disconnect regression, upstream partial-stream
   interruption regression, managed Codex smokes, and cassette replay smokes.
@@ -83,8 +86,11 @@ Todo:
   diagnostics.
 - [x] Land the WIP as a small focused PR before starting live cassette or
   provider-spend work. Landed as PR #279.
-- [ ] Publish or install a build that contains PR #279 before treating
-  installed `oauth-mux codex resume` dogfood as fixed.
+- [x] Publish or install a build that contains PR #279 before treating new
+  installed `oauth-mux codex resume` dogfood as fixed. Completed for GitHub
+  Release and Homebrew as `0.1.10`; existing long-running 0.1.9 processes still
+  need to exit or be restarted before their status artifacts stop showing the
+  old BrokenPipe behavior.
 
 ## Workstream 2 - No-Spend Route And Process Truth Refresh
 

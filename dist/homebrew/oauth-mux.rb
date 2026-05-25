@@ -1,8 +1,8 @@
 class OauthMux < Formula
   desc "OAuth fallback muxing for AI harness subscriptions"
   homepage "https://omux.xoxd.ai"
-  license "MIT"
   version "${VERSION}"
+  license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?

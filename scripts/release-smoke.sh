@@ -129,6 +129,15 @@ if [ -z "${license_line:-}" ]; then
   printf 'Homebrew formula missing license line: %s\n' "$homebrew_formula" >&2
   exit 1
 fi
+version_line="$(awk '/^[[:space:]]+version / { print NR; exit }' "$homebrew_formula")"
+if [ -z "${version_line:-}" ]; then
+  printf 'Homebrew formula missing explicit version line: %s\n' "$homebrew_formula" >&2
+  exit 1
+fi
+if [ "$version_line" -gt "$license_line" ]; then
+  printf 'Homebrew formula must put version before license for brew audit style: %s\n' "$homebrew_formula" >&2
+  exit 1
+fi
 "$repo_root/scripts/homebrew-version-check.sh" "$version" "$homebrew_formula"
 if grep -q 'bin.install "codex"' "$homebrew_formula"; then
   printf 'Homebrew formula must not install codex; shim lanes must be opt-in outside Brew: %s\n' "$homebrew_formula" >&2
