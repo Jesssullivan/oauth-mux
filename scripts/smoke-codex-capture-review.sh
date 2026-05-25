@@ -87,7 +87,7 @@ cat >"$CAP/00002-POST-backend-api_codex_responses.json" <<'JSON'
 }
 JSON
 
-python3 "$ROOT/scripts/review-codex-wire-capture.py" "$TMP/codex-wire-synth" \
+"$ROOT/scripts/capture-codex-wire.sh" review "$TMP/codex-wire-synth" \
   --require-preflight-ok \
   --require-path-kind responses \
   --require-status 200 \
@@ -113,7 +113,7 @@ assert shape["plan_type"] == "pro", shape
 assert summary["requirement_failures"] == [], summary
 PY
 
-if python3 "$ROOT/scripts/review-codex-wire-capture.py" "$TMP/codex-wire-synth" \
+if "$ROOT/scripts/capture-codex-wire.sh" review "$TMP/codex-wire-synth" \
   --require-quota-type usage_not_included \
   --json >"$TMP/missing-requirement-summary.json"; then
   echo "smoke-codex-capture-review: expected missing requirement to fail" >&2

@@ -31,7 +31,8 @@ USAGE
   scripts/capture-codex-wire.sh init             # one-time mitmproxy CA install check
   scripts/capture-codex-wire.sh preflight        # no-spend capture readiness report
   scripts/capture-codex-wire.sh proxy            # start the HTTP capture proxy in foreground
-  scripts/capture-codex-wire.sh review DIR       # summarize/redaction-check a capture
+  scripts/capture-codex-wire.sh review DIR [REVIEW_FLAGS...]
+                                              # summarize/redaction-check a capture
   scripts/capture-codex-wire.sh help
 
 WORKFLOW
@@ -263,8 +264,9 @@ cmd_review() {
     echo "error: review requires a capture directory" >&2
     exit 64
   fi
+  shift || true
   require_cmd python3 "install python3"
-  exec python3 "$ROOT/scripts/review-codex-wire-capture.py" "$dir"
+  exec python3 "$ROOT/scripts/review-codex-wire-capture.py" "$dir" "$@"
 }
 
 case "$cmd" in
@@ -272,6 +274,6 @@ case "$cmd" in
   init)           cmd_init ;;
   preflight)      cmd_preflight ;;
   proxy)          cmd_proxy ;;
-  review)         shift; cmd_review "${1:-}" ;;
+  review)         shift; cmd_review "$@" ;;
   *)              usage; exit 64 ;;
 esac
