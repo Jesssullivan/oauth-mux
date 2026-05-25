@@ -22,12 +22,11 @@ diagnostic infrastructure. They are not product success.
 ## Current Truth
 
 Public install lanes are versioned by channel. The current verified release is
-`0.1.9`: GitHub Release assets exist, npm root and platform packages resolve,
-the curl installer and deb/rpm assets are attached to the release, and the
-public Homebrew tap reports stable `0.1.9`. The 2026-05-18/19 install-parity
-work fixed a package-lane bug where a public Homebrew `codex` shim routed
-native admin commands such as `codex --version` through oauth-mux route
-election. Homebrew remains binary-only by default:
+`0.1.10` for GitHub Release, curl installer, deb/rpm assets, and Homebrew.
+The npm package lane still reports `0.1.9` until CI npm auth is repaired. The
+2026-05-18/19 install-parity work fixed a package-lane bug where a public
+Homebrew `codex` shim routed native admin commands such as `codex --version`
+through oauth-mux route election. Homebrew remains binary-only by default:
 `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
 install or link a managed `codex` shim.
 
@@ -35,8 +34,8 @@ What works today:
 
 - Managed Codex launch and resume through `oauth-mux codex` and
   `oauth-mux codex resume`.
-- Current source/user-local dogfood and next package artifacts include a
-  `codex` shim, so a future bare `codex` command is managed only when PATH
+- Current source/user-local dogfood and the npm wrapper lane can include a
+  managed `codex` shim, so a bare `codex` command is managed only when PATH
   resolves that shim. Admin commands such as `codex login` and
   `codex --version` must pass through to native Codex. Direct native Codex
   binaries and already-running native sessions are not globally protected.

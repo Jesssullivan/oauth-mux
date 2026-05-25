@@ -8,14 +8,15 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` matches `origin/main` at `42b103c`, including the
-  BrokenPipe/client-disconnect hardening from PR #279 and the 0.1.10
-  provenance/release preparation from PR #280.
-- CI state: GitHub Actions is the live source for the latest run. Release
-  workflow `26012676776`, registry dry-run `26012836911`, and npm publish
-  `26013003383` verified the `v0.1.9` release lane on 2026-05-18. Any
-  installed public `0.1.9` package predates PRs #260-#279 unless its binary hash
-  is explicitly proven otherwise.
+- Repo state: `main` matches `origin/main` at `33133e3`, including the
+  BrokenPipe/client-disconnect hardening from PR #279, the 0.1.10
+  provenance/release preparation from PR #280, and the explicit Homebrew
+  formula-version guard from PR #281.
+- CI state: GitHub Actions is the live source for the latest run. Main CI for
+  PR #281 completed green on 2026-05-25. Release workflow `26408682726`
+  published `v0.1.10`; system package install QA `26409604539` passed against
+  the published deb/rpm assets. npm dry-run/publish remains blocked by npm auth
+  and returns `npm whoami` 401.
 - Version truth: GitHub Release, curl installer assets, deb/rpm assets, and the
   public Homebrew tap resolve to `0.1.10`; this was rechecked on 2026-05-25.
   npm `latest` is still `0.1.9` because the CI npm lane currently lacks usable
@@ -36,14 +37,15 @@ refreshed when release truth, route evidence, or tracker state changes.
   install an `OMUX_CODEX_SHIM`, and leaves native `codex` command resolution
   unchanged. The formula must declare explicit version metadata because Linux
   Homebrew can infer `64-linux` from the x86_64 Linux tarball name.
-- Codex route truth: the 2026-05-21 02:57 UTC post-repair no-spend refresh used
-  user-local `oauth-mux 0.1.9`. All four named `codex-max` route stores are
-  runtime-ready and broker-ready. `codex:max-3#codex-max` is selected and
-  selectable; `max-4` is a live selectable fallback; `max-1` and `max-2` remain
-  blocked as `unrecorded`. Current state is `session_start_ready:true`,
-  `fallback_ready:true`, `single_route_at_risk:false`. The next live cassette
-  run still needs a just-in-time no-spend refresh plus explicit operator
-  approval for provider-spend capture.
+- Codex route truth: the 2026-05-25 dogfood refresh uses Homebrew
+  `oauth-mux 0.1.10` and native Codex `0.132.0`. Explicit capability probes
+  proved `codex:max-1#codex-max` and `codex:max-2#codex-max` available, so
+  current preflight reports `session_start_ready:true`, `fallback_ready:true`,
+  and `single_route_at_risk:false`. `codex:max-3#codex-max` is quota-exhausted
+  until reset. An extant managed resume process is still running from
+  `/opt/homebrew/Cellar/oauth-mux/0.1.9.reinstall/bin/oauth-mux`; its status
+  artifact continues to show pre-0.1.10 `BrokenPipe` provider-degraded events
+  and can re-poison `max-4` until that old process exits or is restarted.
 - Latest local status truth: `oauth-mux codex status-latest --json` currently
   reports `brokered_without_fallback` from a rolling local artifact. This is
   stale relative to current route truth and does not supersede the preserved
