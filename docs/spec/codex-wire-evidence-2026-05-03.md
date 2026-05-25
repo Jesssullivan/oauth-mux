@@ -32,6 +32,9 @@ TIN-950 adds the capture/replay tooling only:
 - `scripts/capture-codex-wire.sh review captures/codex-wire-<TS>`
   summarizes endpoint/status coverage, extracts 429 quota shapes, and
   fails on obvious secret-like values before a capture is promoted.
+  Promotion gates can require a successful preflight summary and exact
+  observed path/status/quota shapes, so missing evidence fails as
+  `requirement_failures` rather than passing by omission.
 - `scripts/test-cassette-upstream.py` replays reviewed capture JSON by
   `(method, path)`, ignoring query strings for route matching.
 - `just smoke-codex-cassette-replay` proves the replayer on a tiny
@@ -70,12 +73,22 @@ evidence:
 1. Run `scripts/capture-codex-wire.sh preflight` and confirm
    `ok:true`, `fallback_ready:true`, and `single_route_at_risk:false`
    unless the operator explicitly accepts a single-route-at-risk capture.
-2. Run `scripts/capture-codex-wire.sh review captures/codex-wire-<TS>`
-   against the capture root, not the raw `.flows` file.
+2. Run the gated review against the capture root, not the raw `.flows`
+   file:
+   ```bash
+   scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
+     --require-preflight-ok \
+     --require-path-kind responses \
+     --require-status 200 \
+     --require-quota-type usage_limit_reached
+   ```
+   Add `--require-status 401`, `--require-status 429`, or other
+   `--require-*` gates for the specific evidence being promoted.
 3. Confirm the summary includes the expected path/status mix for the
    scenario being promoted: normal 200, 401 refresh, 429
    `usage_limit_reached`, compact, memory, or other Codex endpoint.
-4. Confirm `redaction_failures` and `malformed` are empty.
+4. Confirm `redaction_failures`, `malformed`, and `requirement_failures`
+   are empty.
 5. Manually inspect the fixture-sized JSON selected for promotion.
    The reviewer catches obvious token/JWT/API-key strings; it is not a
    formal proof that all account-identifying material is gone.
