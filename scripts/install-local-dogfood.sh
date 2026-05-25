@@ -119,5 +119,11 @@ if [ "$install_codex_shim" != "0" ]; then
 else
   printf 'skipped managed codex shim: set OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1 to shadow codex for managed-shim dogfood\n'
 fi
-printf 'PATH oauth-mux: %s\n' "$(command -v oauth-mux || true)"
-printf 'PATH codex: %s\n' "$(command -v codex || true)"
+path_oauth_mux="$(command -v oauth-mux || true)"
+path_codex="$(command -v codex || true)"
+printf 'PATH oauth-mux: %s\n' "$path_oauth_mux"
+if [ -n "$path_oauth_mux" ] && [ "$(real_path "$path_oauth_mux")" != "$(real_path "$oauth_mux_target")" ]; then
+  printf 'warning: installed dogfood oauth-mux is shadowed on PATH by %s\n' "$path_oauth_mux" >&2
+  printf 'warning: put %s before that directory or invoke %s directly for source dogfood\n' "$install_dir" "$oauth_mux_target" >&2
+fi
+printf 'PATH codex: %s\n' "$path_codex"

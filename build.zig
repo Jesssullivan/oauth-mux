@@ -6,8 +6,11 @@ pub fn build(b: *std.Build) void {
     const project_version = readProjectVersion(b) catch |err| {
         std.debug.panic("failed to read project version from build.zig.zon: {s}", .{@errorName(err)});
     };
+    const project_build_id = b.option([]const u8, "build-id", "Build provenance id") orelse
+        readBuildId(b, project_version);
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", project_version);
+    build_options.addOption([]const u8, "build_id", project_build_id);
 
     const exe = b.addExecutable(.{
         .name = "oauth-mux",
@@ -77,4 +80,36 @@ fn readProjectVersion(b: *std.Build) ![]const u8 {
     const after_first_quote = after_marker[first_quote + 1 ..];
     const second_quote = std.mem.indexOfScalar(u8, after_first_quote, '"') orelse return error.ProjectVersionMissing;
     return try b.allocator.dupe(u8, after_first_quote[0..second_quote]);
+}
+
+fn readBuildId(b: *std.Build, project_version: []const u8) []const u8 {
+    const env_build_id = std.process.getEnvVarOwned(b.allocator, "OMUX_BUILD_ID") catch null;
+    if (env_build_id) |value| {
+        if (std.mem.trim(u8, value, " \t\r\n").len != 0) return value;
+        b.allocator.free(value);
+    }
+
+    const result = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "git", "describe", "--tags", "--dirty", "--always" },
+    }) catch return project_version;
+    defer b.allocator.free(result.stderr);
+
+    if (result.term != .Exited or result.term.Exited != 0) {
+        b.allocator.free(result.stdout);
+        return project_version;
+    }
+
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (trimmed.len == 0) {
+        b.allocator.free(result.stdout);
+        return project_version;
+    }
+
+    const build_id = b.allocator.dupe(u8, trimmed) catch {
+        b.allocator.free(result.stdout);
+        return project_version;
+    };
+    b.allocator.free(result.stdout);
+    return build_id;
 }

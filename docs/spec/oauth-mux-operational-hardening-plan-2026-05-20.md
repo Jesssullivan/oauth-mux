@@ -15,25 +15,20 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 
 ## Current Verified State
 
-- Local checkout: feature branch `jess/brokenpipe-network-blip-reliability`
-  based on `main` at `f05a44f`. Slice A is locally committed as `5bd36b3`
-  (`fix: classify codex stream disconnects`); Slice B docs/release hygiene is
-  separate WIP.
-- GitHub read-only refresh at 2026-05-21 17:22 UTC: no open PRs, no GitHub
-  Discussions, and open issues are `#67`, `#68`, `#163`, `#176`, and `#212`.
-  Latest observed `main` CI run for `f05a44f` is `26085487311` and succeeded on
-  2026-05-19.
+- Local checkout: `main` is at `3de6e17`, where PR #279 landed the
+  BrokenPipe/client-disconnect reliability slice.
+- GitHub read-only refresh at 2026-05-25: no open PRs, no GitHub Discussions,
+  and open issues are `#67`, `#68`, `#163`, `#176`, and `#212`.
 - Linear: `TIN-1517` and `TIN-1518` are Done. `TIN-950` is marked Done, but
   GitHub `#176` is still open for real Codex wire cassettes; treat that as a
   tracker hygiene mismatch until reconciled. `TIN-1079` is Backlog, `TIN-938`
   is Todo, and `TIN-736` is In Progress.
-- Release truth: source version is `0.1.9`; GitHub Release `v0.1.9` is
-  published, not draft/prerelease, with installer, npm, Homebrew, tarball,
-  deb/rpm, and checksum assets; `npm view oauth-mux version dist-tags --json`
-  reports `latest:0.1.9`; the public Homebrew tap reports stable and linked keg
-  `0.1.9`.
-- CI truth: latest observed `main` Actions run for `f05a44f` completed
-  successfully on 2026-05-19.
+- Release truth: public GitHub Release `v0.1.9` is published, not
+  draft/prerelease, with installer, npm, Homebrew, tarball, deb/rpm, and
+  checksum assets; `npm view oauth-mux version dist-tags --json` reports
+  `latest:0.1.9`; the public Homebrew tap reports stable and linked keg
+  `0.1.9`. Source is staged for `0.1.10` so the next package lane can carry the
+  post-`0.1.9` Codex hardening.
 - Current route truth from the 2026-05-21 02:57 UTC post-repair no-spend
   refresh: active binary is user-local `oauth-mux 0.1.9`; native Codex resolves
   outside oauth-mux; `codex:max-3#codex-max` is selected; `max-4` is a live
@@ -42,6 +37,8 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 - Local validation at 2026-05-21 03:20 UTC: `just check-local` passed with the
   BrokenPipe/client-disconnect regression, upstream partial-stream
   interruption regression, managed Codex smokes, and cassette replay smokes.
+  On 2026-05-25, dogfood logs showed the public/Homebrew `0.1.9` binary still
+  lacks that fix because it predates PR #279.
 
 ## Workstream 1 - BrokenPipe And Network-Blip Reliability
 
@@ -85,8 +82,10 @@ Todo:
   health.
 - [x] Suppress benign proxy thread close noise while preserving real upstream
   diagnostics.
-- [ ] Land the WIP as a small focused PR before starting live cassette or
-  provider-spend work.
+- [x] Land the WIP as a small focused PR before starting live cassette or
+  provider-spend work. Landed as PR #279.
+- [ ] Publish or install a build that contains PR #279 before treating
+  installed `oauth-mux codex resume` dogfood as fixed.
 
 ## Workstream 2 - No-Spend Route And Process Truth Refresh
 
@@ -227,7 +226,8 @@ prepared.
 
 Completion metric:
 
-- Current-state docs describe `0.1.9` as the latest verified release truth.
+- Current-state docs describe `0.1.9` as the latest verified public release
+  truth and `0.1.10` as the next staged source/package version until published.
 - Historical docs may keep older versions only when clearly framed as
   historical evidence.
 - Manual workflow defaults use the current project version or are deliberately
@@ -253,6 +253,8 @@ Todo:
 - [x] Keep `docs/install-beta-matrix.md` and old release-runbook entries as
   historical evidence unless a fresh parity sweep replaces them.
 - [x] Add a short pointer from the productionization ledger to this plan.
+- [x] Stage `0.1.10` source/release metadata for the post-`0.1.9` BrokenPipe
+  and install-provenance fixes.
 - [x] When running the stale-version search, confirm remaining older-version
   hits are explicitly historical, such as the 2026-05-17 no-spend snapshot or
   the `0.1.1` npm deprecation cleanup workflow.

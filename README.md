@@ -150,10 +150,10 @@ oauth-mux codex preflight --profile codex-max --capability codex-max --json
 If `which -a oauth-mux` resolves Homebrew before the user-local dogfood binary,
 adjust PATH or invoke `./zig-out/bin/oauth-mux` directly for source-tree proof.
 
-`version --json` prints the active executable path classification and SHA-256
-under `runtime_identity`. Use it when public packages and local dogfood have
-nearby version strings and you need machine-readable proof of the exact binary
-that will run.
+`version --json` prints the active executable path classification, SHA-256, and
+compiled `build_id` under `runtime_identity`. Use it when public packages and
+local dogfood have nearby version strings and you need machine-readable proof of
+the exact binary that will run.
 
 `codex preflight` prints the active `oauth-mux` path, all visible `oauth-mux`
 and `codex` PATH candidates, whether active `codex` is the managed oauth-mux
@@ -190,6 +190,8 @@ touching a native Codex executable. Public packages may carry a managed `codex`
 shim, but installed behavior must still be proven with `version --json`,
 `which -a codex`, and `codex preflight` when you need to distinguish a package
 binary from a worktree dogfood binary.
+The installer warns if the copied user-local binary is still shadowed by a
+Homebrew or other PATH entry.
 
 ## Usage
 

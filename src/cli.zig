@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const build_options = @import("build_options");
 
 pub const version = build_options.version;
+pub const build_id = build_options.build_id;
 
 pub const Command = union(enum) {
     exec: ExecArgs,

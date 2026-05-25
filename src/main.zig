@@ -311,7 +311,7 @@ pub fn main() !void {
 }
 
 fn writeVersionJson(allocator: std.mem.Allocator, writer: anytype) !void {
-    const identity = try runtime_mod.oauthMuxRuntimeIdentity(allocator, cli.version);
+    const identity = try runtime_mod.oauthMuxRuntimeIdentity(allocator, cli.version, cli.build_id);
     defer identity.deinit(allocator);
 
     try writer.writeAll("{\"version\":");
