@@ -10,7 +10,7 @@ on:
       version:
         description: "Version to stage and dry-run"
         required: false
-        default: "0.1.9"
+        default: "0.1.10"
         type: string
       lanes:
         description: "Comma-separated lanes: plan,github,npm,homebrew,system"

@@ -45,14 +45,14 @@ pub const OauthMuxRuntimeIdentity = struct {
     }
 };
 
-pub fn oauthMuxRuntimeIdentity(allocator: std.mem.Allocator, version: []const u8) !OauthMuxRuntimeIdentity {
+pub fn oauthMuxRuntimeIdentity(allocator: std.mem.Allocator, version: []const u8, default_build_id: []const u8) !OauthMuxRuntimeIdentity {
     const binary_path = std.fs.selfExePathAlloc(allocator) catch try allocator.dupe(u8, "unknown");
     errdefer allocator.free(binary_path);
 
     const binary_sha256 = hashFileSha256Hex(allocator, binary_path) catch null;
     errdefer if (binary_sha256) |sha| allocator.free(sha);
 
-    const build_id = std.process.getEnvVarOwned(allocator, "OMUX_BUILD_ID") catch try allocator.dupe(u8, version);
+    const build_id = try allocator.dupe(u8, default_build_id);
     errdefer allocator.free(build_id);
 
     return .{

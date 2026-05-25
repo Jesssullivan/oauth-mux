@@ -1246,7 +1246,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     }
 
     if (emit_status) {
-        const runtime_identity = try runtime_mod.oauthMuxRuntimeIdentity(allocator, cli.version);
+        const runtime_identity = try runtime_mod.oauthMuxRuntimeIdentity(allocator, cli.version, cli.build_id);
         defer runtime_identity.deinit(allocator);
         const command_spelling = try getEnvOwnedOrDefault(allocator, "OMUX_COMMAND_SPELLING", "oauth-mux codex");
         defer allocator.free(command_spelling);

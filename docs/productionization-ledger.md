@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-20
+Updated: 2026-05-25
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -8,22 +8,24 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` matches `origin/main` at `f05a44f`; local worktrees may
-  carry focused BrokenPipe/network-blip WIP until that regression fix is landed.
-- CI state: GitHub Actions is the live source for the latest run. The latest
-  observed `main` run for `f05a44f` succeeded on 2026-05-19. Release workflow
-  `26012676776`, registry dry-run `26012836911`, and npm publish
-  `26013003383` verified the `v0.1.9` release lane on 2026-05-18.
+- Repo state: `main` matches `origin/main` at `3de6e17`, including the
+  BrokenPipe/client-disconnect hardening from PR #279.
+- CI state: GitHub Actions is the live source for the latest run. Release
+  workflow `26012676776`, registry dry-run `26012836911`, and npm publish
+  `26013003383` verified the `v0.1.9` release lane on 2026-05-18. Any
+  installed public `0.1.9` package predates PRs #260-#279 unless its binary hash
+  is explicitly proven otherwise.
 - Version truth: public npm, GitHub Release, curl installer assets, deb/rpm
   assets, and the public Homebrew tap resolve to `0.1.9`; this was rechecked on
   2026-05-21. The 2026-05-18/19 shim investigation fixed a package-lane
   ownership bug: the Homebrew formula must not install or link a managed
   `codex` shim by default.
-- Installed provenance: PATH currently resolves user-local
-  `/Users/jess/.local/bin/oauth-mux` before Homebrew. Use
-  `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`, and
+- Installed provenance: PATH may resolve Homebrew before user-local dogfood.
+  Use `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`, and
   `codex preflight` before treating any installed-command run as release
-  evidence.
+  evidence. `version --json` must be checked for both binary SHA-256 and
+  `runtime_identity.build_id`; source builds after this update report a git
+  describe-style build id such as `v0.1.9-19-g3de6e17`.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
   0.1.9` and the local linked keg is `0.1.9`. Homebrew is a binary-only package
   lane by default: QA must prove
@@ -70,7 +72,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
 | Native Codex shim pass-through | Implemented in source, release pending | Admin/login/help/version paths bypass route election and exec native Codex. The 2026-05-18 package-lane fix must ship before public Homebrew/curl claims use this as installed truth. |
 | Home Manager lane | Implemented in source | Module defaults to binary-only install; managed `codex` shim is explicit opt-in. |
-| Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. |
+| Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. Source after PR #279 also separates downstream client disconnects from upstream/provider failures so client `BrokenPipe` does not poison route health. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
 | Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields and safe handoff-plan commands for upstream-owned login surfaces; future MCP tools must mirror CLI semantics. |
 | Beta daemon | Experimental | Foreground tick engine and daemon-hosted beta may mediate status/handoffs; not a hidden dependency and not unmanaged hot-swap. |
@@ -124,10 +126,12 @@ MCP repair prompts, but oauth-mux must not claim to keep them alive.
 ## Active Plan
 
 The current testable workstream plan lives at
-`docs/spec/oauth-mux-operational-hardening-plan-2026-05-20.md`. It prioritizes
-the BrokenPipe regression fix, no-spend route/process truth refresh, real Codex
-wire cassettes, release hygiene, tracker reconciliation, then later sidecar and
-non-Codex provider work.
+`docs/spec/oauth-mux-operational-hardening-plan-2026-05-20.md`. The BrokenPipe
+regression fix is landed in source; the immediate operational risk is stale
+installed package/dogfood provenance. Next work should prioritize installed
+build-id proof, package parity/release hygiene, no-spend route/process truth
+refresh, real Codex wire cassettes, tracker reconciliation, then later sidecar
+and non-Codex provider work.
 
 ## Release And Distribution Posture
 

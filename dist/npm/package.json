@@ -1,6 +1,6 @@
 {
   "name": "oauth-mux",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "OAuth fallback muxing for AI harness subscriptions",
   "license": "MIT",
   "repository": "Jesssullivan/oauth-mux",
@@ -17,11 +17,11 @@
     "postinstall": "node install.js"
   },
   "optionalDependencies": {
-    "oauth-mux-darwin-arm64": "0.1.9",
-    "oauth-mux-darwin-x64": "0.1.9",
-    "oauth-mux-linux-arm64": "0.1.9",
-    "oauth-mux-linux-x64": "0.1.9",
-    "oauth-mux-windows-arm64": "0.1.9",
-    "oauth-mux-windows-x64": "0.1.9"
+    "oauth-mux-darwin-arm64": "0.1.10",
+    "oauth-mux-darwin-x64": "0.1.10",
+    "oauth-mux-linux-arm64": "0.1.10",
+    "oauth-mux-linux-x64": "0.1.10",
+    "oauth-mux-windows-arm64": "0.1.10",
+    "oauth-mux-windows-x64": "0.1.10"
   }
 }
