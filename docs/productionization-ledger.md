@@ -8,30 +8,34 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` matches `origin/main` at `3de6e17`, including the
-  BrokenPipe/client-disconnect hardening from PR #279.
+- Repo state: `main` matches `origin/main` at `42b103c`, including the
+  BrokenPipe/client-disconnect hardening from PR #279 and the 0.1.10
+  provenance/release preparation from PR #280.
 - CI state: GitHub Actions is the live source for the latest run. Release
   workflow `26012676776`, registry dry-run `26012836911`, and npm publish
   `26013003383` verified the `v0.1.9` release lane on 2026-05-18. Any
   installed public `0.1.9` package predates PRs #260-#279 unless its binary hash
   is explicitly proven otherwise.
-- Version truth: public npm, GitHub Release, curl installer assets, deb/rpm
-  assets, and the public Homebrew tap resolve to `0.1.9`; this was rechecked on
-  2026-05-21. The 2026-05-18/19 shim investigation fixed a package-lane
-  ownership bug: the Homebrew formula must not install or link a managed
-  `codex` shim by default.
+- Version truth: GitHub Release, curl installer assets, deb/rpm assets, and the
+  public Homebrew tap resolve to `0.1.10`; this was rechecked on 2026-05-25.
+  npm `latest` is still `0.1.9` because the CI npm lane currently lacks usable
+  npm auth and fails `npm whoami` with 401. The 2026-05-18/19 shim
+  investigation fixed a package-lane ownership bug: the Homebrew formula must
+  not install or link a managed `codex` shim by default.
 - Installed provenance: PATH may resolve Homebrew before user-local dogfood.
   Use `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`, and
   `codex preflight` before treating any installed-command run as release
   evidence. `version --json` must be checked for both binary SHA-256 and
   `runtime_identity.build_id`; source builds after this update report a git
-  describe-style build id such as `v0.1.9-19-g3de6e17`.
+  describe-style build id, while tagged releases report the exact tag such as
+  `v0.1.10`.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
-  0.1.9` and the local linked keg is `0.1.9`. Homebrew is a binary-only package
-  lane by default: QA must prove
+  0.1.10` and the local linked keg is `0.1.10`. Homebrew is a binary-only
+  package lane by default: QA must prove
   `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux`, does not
   install an `OMUX_CODEX_SHIM`, and leaves native `codex` command resolution
-  unchanged.
+  unchanged. The formula must declare explicit version metadata because Linux
+  Homebrew can infer `64-linux` from the x86_64 Linux tarball name.
 - Codex route truth: the 2026-05-21 02:57 UTC post-repair no-spend refresh used
   user-local `oauth-mux 0.1.9`. All four named `codex-max` route stores are
   runtime-ready and broker-ready. `codex:max-3#codex-max` is selected and
@@ -135,10 +139,12 @@ and non-Codex provider work.
 
 ## Release And Distribution Posture
 
-`0.1.9` version availability is complete for the public install lanes checked
-again on 2026-05-21: GitHub Release `v0.1.9` is published and non-draft,
-npm `latest` is `0.1.9`, Homebrew stable/linked keg is `0.1.9`, and curl
-installer plus deb/rpm assets are attached to the release. Negative Codex
+`0.1.10` version availability is complete for GitHub Release, curl installer,
+deb/rpm assets, and Homebrew as of 2026-05-25: GitHub Release `v0.1.10` is
+published and non-draft, Homebrew stable/linked keg is `0.1.10`, and hosted
+system package install QA passed for the published `.deb` / `.rpm` assets. npm
+publication remains blocked on npm auth; npm `latest` still reports `0.1.9`.
+Negative Codex
 cassettes, broader adapter proof, and daemon beta truth remain follow-up work.
 Windows managed-`codex` parity is intentionally assigned to the npm wrapper
 lane rather than raw tarballs until a native Windows operator need is proven.

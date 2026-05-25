@@ -120,8 +120,8 @@ if grep -q -E '\$\{(VERSION|SHA_[A-Z0-9_]+)\}' "$homebrew_formula"; then
   printf 'unrendered placeholder remains in %s\n' "$homebrew_formula" >&2
   exit 1
 fi
-if grep -q '^[[:space:]]*version ' "$homebrew_formula"; then
-  printf 'Homebrew formula must not declare a redundant explicit version; Homebrew should infer it from release URLs: %s\n' "$homebrew_formula" >&2
+if ! grep -Fqx "  version \"$version\"" "$homebrew_formula"; then
+  printf 'Homebrew formula must declare explicit version "%s" so Linux Homebrew does not infer a platform suffix: %s\n' "$version" "$homebrew_formula" >&2
   exit 1
 fi
 license_line="$(awk '/^[[:space:]]+license / { print NR; exit }' "$homebrew_formula")"

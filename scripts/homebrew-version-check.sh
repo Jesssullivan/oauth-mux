@@ -6,8 +6,8 @@ if [ "$#" -ne 2 ]; then
 Usage: scripts/homebrew-version-check.sh <expected-version> <formula-file-or-ref>
 
 Checks either:
-  - a rendered formula file contains an explicit Homebrew version line or a
-    release URL from which Homebrew can infer the expected stable version, or
+  - a rendered formula file contains an explicit Homebrew version line, or a
+    legacy release URL from which Homebrew can infer the expected stable version, or
   - a tapped formula reference reports the expected stable version via
     `brew info --json=v2`.
 EOF
