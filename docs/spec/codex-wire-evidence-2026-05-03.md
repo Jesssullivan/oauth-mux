@@ -21,10 +21,10 @@ TIN-950 adds the capture/replay tooling only:
 
 - `scripts/capture-codex-wire.sh preflight` writes a no-spend
   capture-readiness report with installed `oauth-mux` provenance,
-  native Codex version, mitmproxy availability, current route fallback
-  readiness, latest status verdict, and stale-process hints. Run this
-  immediately before starting any intercepting proxy or live provider
-  spend.
+  native Codex version, mitmproxy availability, mitmproxy CA readiness,
+  current route fallback readiness, latest status verdict, and
+  stale-process hints. Run this immediately before starting any
+  intercepting proxy or live provider spend.
 - `scripts/capture-codex-wire.sh` starts the operator-controlled
   mitmproxy HTTP capture path.
 - `scripts/codex-wire-addon.py` writes reviewed, redacted per-flow JSON
