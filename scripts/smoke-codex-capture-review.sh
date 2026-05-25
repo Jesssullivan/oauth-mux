@@ -231,18 +231,25 @@ SH
 
 chmod +x "$BIN/oauth-mux" "$BIN/codex" "$BIN/mitmdump"
 
-OMUX_CAPTURE_DIR="$TMP/captures" PATH="$BIN:$PATH" \
+MITMPROXY_CA="$TMP/mitmproxy/mitmproxy-ca-cert.cer"
+mkdir -p "$(dirname "$MITMPROXY_CA")"
+printf 'fake mitmproxy ca\n' >"$MITMPROXY_CA"
+
+OMUX_CAPTURE_DIR="$TMP/captures" OMUX_MITMPROXY_CA="$MITMPROXY_CA" SSL_CERT_FILE="$MITMPROXY_CA" PATH="$BIN:$PATH" \
   "$ROOT/scripts/capture-codex-wire.sh" preflight >"$TMP/preflight.out"
 
 SUMMARY="$(find "$TMP/captures" -name capture-preflight-summary.json -print | head -1)"
 test -n "$SUMMARY"
 
-python3 - "$SUMMARY" <<'PY'
+python3 - "$SUMMARY" "$MITMPROXY_CA" <<'PY'
 import json
 import sys
 summary = json.load(open(sys.argv[1]))
 assert summary["ok"] is True, summary
 assert summary["mitmdump_available"] is True, summary
+assert summary["mitmproxy_ca"]["path"] == sys.argv[2], summary
+assert summary["mitmproxy_ca"]["exists"] is True, summary
+assert summary["mitmproxy_ca"]["ssl_cert_file_matches_ca"] is True, summary
 assert summary["route_summary"]["fallback_ready"] is True, summary
 assert summary["route_summary"]["single_route_at_risk"] is False, summary
 assert summary["oauth_mux"]["build_id"] == "v0.1.10", summary
@@ -250,7 +257,26 @@ assert summary["status_verdict"] == "brokered_with_fallback", summary
 assert summary["blocked_route_reasons"][0]["reason"] == "quota_exhausted", summary
 PY
 
-if OMUX_CAPTURE_DIR="$TMP/captures-failed" OMUX_FAKE_PREFLIGHT_FAIL=1 PATH="$BIN:$PATH" \
+if OMUX_CAPTURE_DIR="$TMP/captures-missing-ca" OMUX_MITMPROXY_CA="$TMP/missing-mitmproxy-ca.cer" PATH="$BIN:$PATH" \
+  "$ROOT/scripts/capture-codex-wire.sh" preflight >"$TMP/preflight-missing-ca.out"; then
+  echo "expected missing-CA capture preflight to fail" >&2
+  exit 1
+fi
+
+MISSING_CA_SUMMARY="$(find "$TMP/captures-missing-ca" -name capture-preflight-summary.json -print | head -1)"
+test -n "$MISSING_CA_SUMMARY"
+
+python3 - "$MISSING_CA_SUMMARY" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is False, summary
+assert summary["mitmdump_available"] is True, summary
+assert summary["mitmproxy_ca"]["exists"] is False, summary
+assert "mitmproxy CA is missing; run capture init or mitmdump once" in summary["issues"], summary
+PY
+
+if OMUX_CAPTURE_DIR="$TMP/captures-failed" OMUX_MITMPROXY_CA="$MITMPROXY_CA" SSL_CERT_FILE="$MITMPROXY_CA" OMUX_FAKE_PREFLIGHT_FAIL=1 PATH="$BIN:$PATH" \
   "$ROOT/scripts/capture-codex-wire.sh" preflight >"$TMP/preflight-failed.out"; then
   echo "expected failing capture preflight" >&2
   exit 1

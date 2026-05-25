@@ -225,8 +225,8 @@ Todo:
   do not post it without explicit operator approval.
 - [x] Add a no-spend capture preflight command that records installed
   `oauth-mux` provenance, native Codex version, mitmproxy availability,
-  fallback readiness, latest status verdict, and stale-process hints before
-  starting the intercepting proxy.
+  mitmproxy CA readiness, fallback readiness, latest status verdict, and
+  stale-process hints before starting the intercepting proxy.
 - [x] Add explicit capture review promotion gates for preflight success,
   required endpoint path kinds, required HTTP statuses, and required quota
   `error.type` values.

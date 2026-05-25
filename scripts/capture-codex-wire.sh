@@ -79,11 +79,16 @@ require_cmd() {
   fi
 }
 
+mitmproxy_ca_path() {
+  printf '%s\n' "${OMUX_MITMPROXY_CA:-$HOME/.mitmproxy/mitmproxy-ca-cert.cer}"
+}
+
 cmd_init() {
   require_cmd mitmdump "install mitmproxy via 'brew install mitmproxy' or 'pipx install mitmproxy'"
   echo "mitmdump: $(mitmdump --version | head -1)"
 
-  local ca="$HOME/.mitmproxy/mitmproxy-ca-cert.cer"
+  local ca
+  ca="$(mitmproxy_ca_path)"
   if [[ ! -f "$ca" ]]; then
     echo "info: mitmproxy CA not yet generated. Run 'mitmdump' once briefly to mint it." >&2
     exit 1
@@ -118,6 +123,9 @@ cmd_preflight() {
   local commands_txt="$report_dir/commands.txt"
   local processes_txt="$report_dir/processes.txt"
   local summary_json="$report_dir/capture-preflight-summary.json"
+  local mitmproxy_ca
+  mitmproxy_ca="$(mitmproxy_ca_path)"
+  local ssl_cert_file="${SSL_CERT_FILE:-}"
 
   {
     echo "oauth-mux:"
@@ -140,12 +148,12 @@ cmd_preflight() {
     mitmdump --version >"$report_dir/mitmdump-version.txt" 2>&1 || true
   fi
 
-  python3 - "$version_json" "$preflight_json" "$status_json" "$commands_txt" "$processes_txt" "$summary_json" "$profile" "$capability" "$require_fallback" <<'PY'
+  python3 - "$version_json" "$preflight_json" "$status_json" "$commands_txt" "$processes_txt" "$summary_json" "$profile" "$capability" "$require_fallback" "$mitmproxy_ca" "$ssl_cert_file" <<'PY'
 import json
 import pathlib
 import sys
 
-version_path, preflight_path, status_path, commands_path, processes_path, out_path, profile, capability, require_fallback = sys.argv[1:]
+version_path, preflight_path, status_path, commands_path, processes_path, out_path, profile, capability, require_fallback, mitmproxy_ca_path, ssl_cert_file = sys.argv[1:]
 
 
 def load_json(path):
@@ -165,12 +173,29 @@ route_summary = preflight.get("route_summary") or {}
 selected = preflight.get("selected")
 runtime_identity = version.get("runtime_identity") or {}
 mitmdump_available = bool([line for line in commands.splitlines() if line.strip().endswith("mitmdump") or "/mitmdump" in line])
+mitmproxy_ca = pathlib.Path(mitmproxy_ca_path).expanduser()
+mitmproxy_ca_exists = mitmproxy_ca.is_file()
+ssl_cert_file_path = pathlib.Path(ssl_cert_file).expanduser() if ssl_cert_file else None
+ssl_cert_file_exists = bool(ssl_cert_file_path and ssl_cert_file_path.is_file())
+
+
+def same_file_or_path(left, right):
+    if not left or not right:
+        return False
+    try:
+        return left.samefile(right)
+    except OSError:
+        return str(left) == str(right)
+
+
+ssl_cert_file_matches_ca = same_file_or_path(ssl_cert_file_path, mitmproxy_ca) if ssl_cert_file_path else False
 stale_mux_process_hints = [
     line for line in processes.splitlines()
     if "oauth-mux" in line and ("0.1.9" in line or ".reinstall" in line)
 ]
 
 issues = []
+warnings = []
 if not preflight.get("ok"):
     issues.append("codex preflight is not ok")
 if not route_summary.get("session_start_ready"):
@@ -181,6 +206,12 @@ if route_summary.get("single_route_at_risk"):
     issues.append("single_route_at_risk is true")
 if not mitmdump_available:
     issues.append("mitmdump is not installed or not on PATH")
+elif not mitmproxy_ca_exists:
+    issues.append("mitmproxy CA is missing; run capture init or mitmdump once")
+elif not ssl_cert_file:
+    warnings.append("SSL_CERT_FILE is not set; rustls Codex capture may need it to trust mitmproxy")
+elif not ssl_cert_file_matches_ca:
+    warnings.append("SSL_CERT_FILE does not point at the mitmproxy CA; confirm your rustls trust bundle includes it")
 if stale_mux_process_hints:
     issues.append("stale oauth-mux process hints found")
 
@@ -198,11 +229,19 @@ summary = {
     },
     "codex_version_file": pathlib.Path(status_path).with_name("codex-version.txt").name,
     "mitmdump_available": mitmdump_available,
+    "mitmproxy_ca": {
+        "path": str(mitmproxy_ca),
+        "exists": mitmproxy_ca_exists,
+        "ssl_cert_file": ssl_cert_file or None,
+        "ssl_cert_file_exists": ssl_cert_file_exists,
+        "ssl_cert_file_matches_ca": ssl_cert_file_matches_ca,
+    },
     "selected": selected,
     "route_summary": route_summary,
     "blocked_route_reasons": preflight.get("blocked_route_reasons") or [],
     "status_verdict": status.get("verdict"),
     "status_path": status.get("path"),
+    "warnings": warnings,
     "stale_mux_process_hints": stale_mux_process_hints,
     "report_files": {
         "oauth_mux_version": pathlib.Path(version_path).name,
@@ -220,6 +259,11 @@ print(f"ok: {str(summary['ok']).lower()}")
 print(f"oauth-mux: {summary['oauth_mux'].get('version')} {summary['oauth_mux'].get('build_id')} {summary['oauth_mux'].get('binary_source')}")
 print(f"selected: {selected}")
 print(f"route_summary: {json.dumps(route_summary, sort_keys=True)}")
+print(f"mitmproxy_ca: {json.dumps(summary['mitmproxy_ca'], sort_keys=True)}")
+if warnings:
+    print("warnings:")
+    for warning in warnings:
+        print(f"  - {warning}")
 if issues:
     print("issues:")
     for issue in issues:
