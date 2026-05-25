@@ -19,6 +19,12 @@ the live capture lands.
 
 TIN-950 adds the capture/replay tooling only:
 
+- `scripts/capture-codex-wire.sh preflight` writes a no-spend
+  capture-readiness report with installed `oauth-mux` provenance,
+  native Codex version, mitmproxy availability, current route fallback
+  readiness, latest status verdict, and stale-process hints. Run this
+  immediately before starting any intercepting proxy or live provider
+  spend.
 - `scripts/capture-codex-wire.sh` starts the operator-controlled
   mitmproxy HTTP capture path.
 - `scripts/codex-wire-addon.py` writes reviewed, redacted per-flow JSON
@@ -48,6 +54,9 @@ confirm the shapes themselves match upstream reality.
   type fires)
 - Capture timestamp range: _OPERATOR-CONFIRM_
 - Capture run directory: `captures/codex-wire-<TS>/`
+- Capture preflight summary: _OPERATOR-CONFIRM_
+  (`captures/codex-wire-<TS>/capture-preflight-summary.json`, recorded
+  before the proxy was started)
 - mitmdump version: _OPERATOR-CONFIRM_
 - Capture review summary: _OPERATOR-CONFIRM_ (`capture-codex-wire.sh review`)
 - Replay tooling: `scripts/test-cassette-upstream.py`
@@ -58,20 +67,23 @@ confirm the shapes themselves match upstream reality.
 Before any captured flow is committed as a cassette or cited as live
 evidence:
 
-1. Run `scripts/capture-codex-wire.sh review captures/codex-wire-<TS>`
+1. Run `scripts/capture-codex-wire.sh preflight` and confirm
+   `ok:true`, `fallback_ready:true`, and `single_route_at_risk:false`
+   unless the operator explicitly accepts a single-route-at-risk capture.
+2. Run `scripts/capture-codex-wire.sh review captures/codex-wire-<TS>`
    against the capture root, not the raw `.flows` file.
-2. Confirm the summary includes the expected path/status mix for the
+3. Confirm the summary includes the expected path/status mix for the
    scenario being promoted: normal 200, 401 refresh, 429
    `usage_limit_reached`, compact, memory, or other Codex endpoint.
-3. Confirm `redaction_failures` and `malformed` are empty.
-4. Manually inspect the fixture-sized JSON selected for promotion.
+4. Confirm `redaction_failures` and `malformed` are empty.
+5. Manually inspect the fixture-sized JSON selected for promotion.
    The reviewer catches obvious token/JWT/API-key strings; it is not a
    formal proof that all account-identifying material is gone.
-5. Textual non-JSON responses such as `text/event-stream` may include
+6. Textual non-JSON responses such as `text/event-stream` may include
    `body_text` so the cassette replayer can serve realistic SSE frames.
    Keep only reviewed, fixture-sized text bodies and remove prompt,
    transcript, or account-identifying content before promotion.
-6. Commit only scrubbed per-flow JSON. Do not commit
+7. Commit only scrubbed per-flow JSON. Do not commit
    `captures/**/flows.binary`.
 
 ## 1. Endpoints Observed

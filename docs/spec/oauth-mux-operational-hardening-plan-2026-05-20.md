@@ -207,6 +207,7 @@ Completion metric:
 Test commands:
 
 ```bash
+scripts/capture-codex-wire.sh preflight
 just smoke-codex-cassette-replay-local
 just smoke-codex-cassette-all-exhausted-local
 just check-local
@@ -217,7 +218,12 @@ Todo:
 
 - [ ] Prepare the tracker reconciliation note for `TIN-950` versus `#176`;
   do not post it without explicit operator approval.
-- [ ] Re-run no-spend route truth immediately before capture.
+- [x] Add a no-spend capture preflight command that records installed
+  `oauth-mux` provenance, native Codex version, mitmproxy availability,
+  fallback readiness, latest status verdict, and stale-process hints before
+  starting the intercepting proxy.
+- [ ] Re-run no-spend route truth immediately before capture and keep the
+  generated preflight summary with the capture scratch directory.
 - [ ] Capture at least one normal `200` Codex turn with streaming preserved.
 - [ ] Capture or explicitly record not-observed status for `401`,
   `usage_limit_reached`, `usage_not_included`, and all-fallbacks-exhausted.
