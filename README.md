@@ -21,14 +21,14 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes are versioned by channel. The current verified release is
-`0.1.10` for GitHub Release, curl installer, deb/rpm assets, and Homebrew.
-The npm package lane still reports `0.1.9` until CI npm auth is repaired. The
-2026-05-18/19 install-parity work fixed a package-lane bug where a public
-Homebrew `codex` shim routed native admin commands such as `codex --version`
-through oauth-mux route election. Homebrew remains binary-only by default:
-`brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
-install or link a managed `codex` shim.
+Public install lanes are versioned by channel. This source tree is staged as
+`0.1.11`, carrying the Codex 0.132 SQLite resume authority fix and the Codex
+capture-review proxy metadata gate. The previously verified public release is
+`0.1.10` for GitHub Release, curl installer, deb/rpm assets, and Homebrew; npm
+still reports `0.1.9` until CI npm auth is repaired. After `v0.1.11` is tagged,
+verify each public lane before using it as installed truth. Homebrew remains
+binary-only by default: `brew install jesssullivan/omux/oauth-mux` installs
+`oauth-mux` and must not install or link a managed `codex` shim.
 
 What works today:
 

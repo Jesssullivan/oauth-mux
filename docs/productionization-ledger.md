@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-25
+Updated: 2026-05-26
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -8,19 +8,20 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` matches `origin/main` at `33133e3`, including the
-  BrokenPipe/client-disconnect hardening from PR #279, the 0.1.10
-  provenance/release preparation from PR #280, and the explicit Homebrew
-  formula-version guard from PR #281.
+- Repo state: `main` matches `origin/main` at `3a553bf`, including the
+  BrokenPipe/client-disconnect hardening from PR #279, the Codex 0.132 SQLite
+  resume authority fix from PR #289, and the Codex capture-review proxy
+  metadata gate from PR #290.
 - CI state: GitHub Actions is the live source for the latest run. Main CI for
   PR #281 completed green on 2026-05-25. Release workflow `26408682726`
   published `v0.1.10`; system package install QA `26409604539` passed against
   the published deb/rpm assets. npm dry-run/publish remains blocked by npm auth
   and returns `npm whoami` 401.
-- Version truth: GitHub Release, curl installer assets, deb/rpm assets, and the
-  public Homebrew tap resolve to `0.1.10`; this was rechecked on 2026-05-25.
-  npm `latest` is still `0.1.9` because the CI npm lane currently lacks usable
-  npm auth and fails `npm whoami` with 401. The 2026-05-18/19 shim
+- Version truth: source is staged for `0.1.11`; GitHub Release, curl installer
+  assets, deb/rpm assets, and the public Homebrew tap still resolve to
+  `0.1.10` until `v0.1.11` is tagged, the release workflow publishes, and lane
+  QA is checked. npm `latest` is still `0.1.9` because the CI npm lane currently
+  lacks usable npm auth and fails `npm whoami` with 401. The 2026-05-18/19 shim
   investigation fixed a package-lane ownership bug: the Homebrew formula must
   not install or link a managed `codex` shim by default.
 - Installed provenance: PATH may resolve Homebrew before user-local dogfood.
@@ -76,7 +77,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` and `logs_2.sqlite*` when present, with canonical `CODEX_SQLITE_HOME` for Codex 0.132+. |
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
-| Native Codex shim pass-through | Implemented in source, release pending | Admin/login/help/version paths bypass route election and exec native Codex. The 2026-05-18 package-lane fix must ship before public Homebrew/curl claims use this as installed truth. |
+| Native Codex shim pass-through | Implemented | Admin/login/help/version paths bypass route election and exec native Codex. Public Homebrew remains binary-only and must not install the shim by default. |
 | Home Manager lane | Implemented in source | Module defaults to binary-only install; managed `codex` shim is explicit opt-in. |
 | Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. Source after PR #279 also separates downstream client disconnects from upstream/provider failures so client `BrokenPipe` does not poison route health. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
@@ -141,7 +142,11 @@ and non-Codex provider work.
 
 ## Release And Distribution Posture
 
-`0.1.10` version availability is complete for GitHub Release, curl installer,
+`0.1.11` is the next staged release and should carry two focused changes:
+Codex 0.132 resume authority parity for `logs_2.sqlite*` / `CODEX_SQLITE_HOME`,
+and the #176 capture-review `--require-proxy-meta` gate. Run
+`just release-proof 0.1.11` before any tag or registry mutation. `0.1.10`
+version availability remains complete for GitHub Release, curl installer,
 deb/rpm assets, and Homebrew as of 2026-05-25: GitHub Release `v0.1.10` is
 published and non-draft, Homebrew stable/linked keg is `0.1.10`, and hosted
 system package install QA passed for the published `.deb` / `.rpm` assets. npm
