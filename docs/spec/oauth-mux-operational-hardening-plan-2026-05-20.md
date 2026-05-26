@@ -15,32 +15,36 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 
 ## Current Verified State
 
-- Local checkout: `main` is at `33133e3`, where PR #279 landed the
-  BrokenPipe/client-disconnect reliability slice, PR #280 prepared the
-  0.1.10 provenance/release lane, and PR #281 required explicit Homebrew
-  formula version metadata.
-- GitHub read-only refresh at 2026-05-25: no open PRs, no GitHub Discussions,
-  and open issues are `#67`, `#68`, `#163`, `#176`, and `#212`.
-- Linear: `TIN-1517` and `TIN-1518` are Done. `TIN-950` is marked Done, but
-  GitHub `#176` is still open for real Codex wire cassettes; treat that as a
-  tracker hygiene mismatch until reconciled. `TIN-1079` is Backlog, `TIN-938`
-  is Todo, and `TIN-736` is In Progress.
-- Release truth: public GitHub Release `v0.1.10` is published, not
-  draft/prerelease, with installer, Homebrew, tarball, deb/rpm, and checksum
-  assets; the public Homebrew tap reports stable and linked keg `0.1.10`.
-  `npm view oauth-mux version` still reports `0.1.9` because the CI npm lane
-  currently lacks usable npm auth and fails `npm whoami` with 401.
-- Current route truth from the 2026-05-25 refresh: active bare binary is
-  Homebrew `oauth-mux 0.1.10`; native Codex resolves outside oauth-mux;
-  explicit capability probes proved `max-1` and `max-2` available, so preflight
-  now has a selectable fallback. `max-3` is quota-exhausted, and `max-4` is
-  currently provider-degraded by an old still-running `0.1.9.reinstall`
-  managed resume process rather than by the installed 0.1.10 binary.
-- Local validation at 2026-05-21 03:20 UTC: `just check-local` passed with the
-  BrokenPipe/client-disconnect regression, upstream partial-stream
-  interruption regression, managed Codex smokes, and cassette replay smokes.
-  On 2026-05-25, dogfood logs showed the public/Homebrew `0.1.9` binary still
-  lacks that fix because it predates PR #279.
+- Local upstream `main` is at `0051c57`, after PR #292 tightened capture cookie
+  redaction. PR #289 fixed the Codex 0.132 SQLite resume authority regression,
+  PR #290 added the #176 `--require-proxy-meta` capture gate, and PR #291 cut
+  the `0.1.11` release.
+- GitHub read-only refresh at 2026-05-26: no open PRs; open issues remain
+  `#67`, `#68`, `#163`, `#176`, and `#212`.
+- Linear: `TIN-1624` is Done for the resume authority fix. `TIN-1591`,
+  `TIN-738`, `TIN-937`, `TIN-736`, `TIN-893`, and `TIN-895` remain In
+  Progress. `TIN-938` is Todo, `TIN-1079` is Backlog, and `TIN-950` is still
+  marked Done even though GitHub `#176` remains open for real cassette
+  acceptance.
+- Release truth: public GitHub Release `v0.1.11` is published, not
+  draft/prerelease, with installer, Homebrew, tarball, deb/rpm, npm tarball,
+  handoff, and checksum assets. The public Homebrew tap reports stable/linked
+  keg `0.1.11`, and `brew fetch --force jesssullivan/omux/oauth-mux` passes
+  after tap PR #8 corrected stale checksums. `npm view oauth-mux version` still
+  reports `0.1.9`; `oauth-mux@0.1.11` is not published to npm.
+- Current install truth: `/Users/jess/.local/bin/oauth-mux` is PATH-first and
+  reports `0.1.11` with build id `v0.1.11`; `/opt/homebrew/bin/oauth-mux` also
+  reports `0.1.11`. Native Codex resolves outside oauth-mux.
+- Current no-spend route truth: `oauth-mux codex preflight --profile codex-max
+  --capability codex-max --json` reports `ok:true`, `session_start_ready:true`,
+  `fallback_ready:true`, `selectable_fallback_routes:2`,
+  `single_route_at_risk:false`, `spends_provider_calls:false`, and
+  `mutates_route_health:false`.
+- Current process/fd truth for TIN-1591 remains containment, not resolution:
+  soft fd limit is `256`, there are still active Codex/oauth-mux processes and
+  orphan-listener candidates, and one-snapshot helper fanout is not leak proof.
+  Do not use dogfood probes for broad live reliability claims until repeated
+  clean-baseline snapshots support that claim.
 
 ## Workstream 1 - BrokenPipe And Network-Blip Reliability
 
@@ -88,9 +92,7 @@ Todo:
   provider-spend work. Landed as PR #279.
 - [x] Publish or install a build that contains PR #279 before treating new
   installed `oauth-mux codex resume` dogfood as fixed. Completed for GitHub
-  Release and Homebrew as `0.1.10`; existing long-running 0.1.9 processes still
-  need to exit or be restarted before their status artifacts stop showing the
-  old BrokenPipe behavior.
+  Release, user-local, and Homebrew as `0.1.11`.
 
 ## Workstream 2 - No-Spend Route And Process Truth Refresh
 
@@ -210,7 +212,9 @@ Test commands:
 scripts/capture-codex-wire.sh preflight
 scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
   --require-preflight-ok \
+  --require-proxy-meta \
   --require-path-kind responses \
+  --require-status 101 \
   --require-status 200 \
   --require-quota-type usage_limit_reached
 just smoke-codex-cassette-replay-local
@@ -232,21 +236,24 @@ Todo:
   `error.type` values.
 - [x] Re-run no-spend route truth immediately before capture and keep the
   generated preflight summary with the capture scratch directory.
-- [ ] Capture at least one normal `200` Codex turn with streaming preserved.
-- [ ] Capture or explicitly record not-observed status for `401`,
+- [x] Capture one successful live turn with the Codex 0.132
+  `/backend-api/codex/responses` WebSocket `101` path observed and
+  review-gated. Scratch capture: `captures/codex-wire-20260526T171741Z`
+  (gitignored, not committed).
+- [ ] Capture or explicitly record not-observed status for quota/error shapes:
   `usage_limit_reached`, `usage_not_included`, and all-fallbacks-exhausted.
 - [ ] Add one scrubbed real-shape replay fixture and wire it into CI-safe
   cassette smoke coverage.
 
 ## Workstream 4 - Release, Docs, And Workflow Hygiene
 
-Priority: P0/P1 mixed; low risk and can proceed while Workstream 1 is being
-prepared.
+Priority: P1. Release `0.1.11` is shipped; keep docs and install lanes aligned
+before expanding public claims.
 
 Completion metric:
 
-- Current-state docs describe `0.1.9` as the latest verified public release
-  truth and `0.1.10` as the next staged source/package version until published.
+- Current-state docs describe `0.1.11` as the latest verified public release
+  truth and npm `0.1.9` as a stale package-lane exception.
 - Historical docs may keep older versions only when clearly framed as
   historical evidence.
 - Manual workflow defaults use the current project version or are deliberately
@@ -274,8 +281,11 @@ Todo:
 - [x] Add a short pointer from the productionization ledger to this plan.
 - [x] Stage `0.1.10` source/release metadata for the post-`0.1.9` BrokenPipe
   and install-provenance fixes.
-- [x] Publish `v0.1.10` GitHub Release assets and update the public Homebrew tap
-  to `0.1.10`; npm remains blocked on CI npm auth.
+- [x] Publish `v0.1.11` GitHub Release assets and update the public Homebrew tap
+  to `0.1.11`; npm remains blocked/stale at `0.1.9`.
+- [x] Fix the post-release Homebrew checksum drift and verify
+  `brew fetch --force jesssullivan/omux/oauth-mux` passes against the public
+  tap.
 - [x] When running the stale-version search, confirm remaining older-version
   hits are explicitly historical, such as the 2026-05-17 no-spend snapshot or
   the `0.1.1` npm deprecation cleanup workflow.

@@ -8,50 +8,40 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` matches `origin/main` at `3a553bf`, including the
+- Repo state: `main` matches `origin/main` at `0051c57`, including the
   BrokenPipe/client-disconnect hardening from PR #279, the Codex 0.132 SQLite
-  resume authority fix from PR #289, and the Codex capture-review proxy
-  metadata gate from PR #290.
-- CI state: GitHub Actions is the live source for the latest run. Main CI for
-  PR #281 completed green on 2026-05-25. Release workflow `26408682726`
-  published `v0.1.10`; system package install QA `26409604539` passed against
-  the published deb/rpm assets. npm dry-run/publish remains blocked by npm auth
-  and returns `npm whoami` 401.
-- Version truth: source is staged for `0.1.11`; GitHub Release, curl installer
-  assets, deb/rpm assets, and the public Homebrew tap still resolve to
-  `0.1.10` until `v0.1.11` is tagged, the release workflow publishes, and lane
-  QA is checked. npm `latest` is still `0.1.9` because the CI npm lane currently
-  lacks usable npm auth and fails `npm whoami` with 401. The 2026-05-18/19 shim
-  investigation fixed a package-lane ownership bug: the Homebrew formula must
-  not install or link a managed `codex` shim by default.
-- Installed provenance: PATH may resolve Homebrew before user-local dogfood.
-  Use `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`, and
-  `codex preflight` before treating any installed-command run as release
-  evidence. `version --json` must be checked for both binary SHA-256 and
-  `runtime_identity.build_id`; source builds after this update report a git
-  describe-style build id, while tagged releases report the exact tag such as
-  `v0.1.10`.
+  resume authority fix from PR #289, the Codex capture-review proxy metadata
+  gate from PR #290, the `0.1.11` release from PR #291, and the post-release
+  capture cookie redaction hardening from PR #292.
+- CI/release state: GitHub Actions is the live source for release proof. Release
+  workflow `26463502300` published `v0.1.11`; release assets are present and
+  the public GitHub Release is non-draft/non-prerelease. npm dry-run/publish
+  remains blocked/stale; npm `latest` still reports `0.1.9`.
+- Version truth: source version is `0.1.11`. GitHub Release, curl installer
+  assets, deb/rpm assets, and the public Homebrew tap resolve to `0.1.11`. npm
+  remains stale at `0.1.9`. The Homebrew formula remains binary-only by
+  default and must not install or link a managed `codex` shim.
+- Installed provenance: user-local dogfood is PATH-first on neo and reports
+  `0.1.11` with build id `v0.1.11`; Homebrew also reports `0.1.11`. Continue
+  checking `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`,
+  and `codex preflight` before treating any installed-command run as release
+  evidence.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
-  0.1.10` and the local linked keg is `0.1.10`. Homebrew is a binary-only
-  package lane by default: QA must prove
-  `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux`, does not
-  install an `OMUX_CODEX_SHIM`, and leaves native `codex` command resolution
-  unchanged. The formula must declare explicit version metadata because Linux
-  Homebrew can infer `64-linux` from the x86_64 Linux tarball name.
-- Codex route truth: the 2026-05-25 dogfood refresh uses Homebrew
-  `oauth-mux 0.1.10` and native Codex `0.132.0`. Explicit capability probes
-  proved `codex:max-1#codex-max` and `codex:max-2#codex-max` available, so
-  current preflight reports `session_start_ready:true`, `fallback_ready:true`,
-  and `single_route_at_risk:false`. `codex:max-3#codex-max` is quota-exhausted
-  until reset. An extant managed resume process is still running from
-  `/opt/homebrew/Cellar/oauth-mux/0.1.9.reinstall/bin/oauth-mux`; its status
-  artifact continues to show pre-0.1.10 `BrokenPipe` provider-degraded events
-  and can re-poison `max-4` until that old process exits or is restarted.
-- Latest local status truth: `oauth-mux codex status-latest --json` currently
-  reports `brokered_without_fallback` from a rolling local artifact. This is
-  stale relative to current route truth and does not supersede the preserved
-  quota-handoff proof; status artifacts must be refreshed before being used in
-  public claims.
+  0.1.11`, the local linked keg is `0.1.11`, and
+  `brew fetch --force jesssullivan/omux/oauth-mux` passes after tap PR #8 fixed
+  stale `0.1.11` checksums. Homebrew is a binary-only package lane by default:
+  QA must prove it installs `oauth-mux`, does not install an
+  `OMUX_CODEX_SHIM`, and leaves native `codex` command resolution unchanged.
+- Codex route truth: the 2026-05-26 no-spend preflight uses user-local
+  `oauth-mux 0.1.11` and native Codex outside oauth-mux. It reports
+  `ok:true`, `session_start_ready:true`, `fallback_ready:true`,
+  `selectable_fallback_routes:2`, `single_route_at_risk:false`,
+  `spends_provider_calls:false`, and `mutates_route_health:false`.
+- Process/fd truth: TIN-1591 remains contained, not resolved. Current snapshots
+  still show active Codex/oauth-mux fanout, a soft fd limit of `256`, and
+  orphan-listener candidates. Treat dogfood evidence as local release/install
+  validation only until repeated clean-baseline snapshots support broader live
+  reliability claims.
 - Daemon truth: `oauth-mux daemon status --json` still reports
   `status:"not_running"`, `contract:"experimental_socket_stub"`, and
   `hosts_stay_afloat:false`; its foreground tick snapshot is observational only
@@ -134,25 +124,26 @@ MCP repair prompts, but oauth-mux must not claim to keep them alive.
 
 The current testable workstream plan lives at
 `docs/spec/oauth-mux-operational-hardening-plan-2026-05-20.md`. The BrokenPipe
-regression fix is landed in source; the immediate operational risk is stale
-installed package/dogfood provenance. Next work should prioritize installed
-build-id proof, package parity/release hygiene, no-spend route/process truth
-refresh, real Codex wire cassettes, tracker reconciliation, then later sidecar
-and non-Codex provider work.
+regression fix and Codex 0.132 resume authority fix are published in the
+current public release. The immediate operational risk is no longer stale
+install provenance; it is process/fd fanout contaminating dogfood evidence and
+the remaining lack of quota/error real cassettes. Next work should prioritize
+TIN-1591 cleanup policy, real Codex quota/error cassettes, the #176/TIN-950
+tracker mismatch, then later sidecar and non-Codex provider work.
 
 ## Release And Distribution Posture
 
-`0.1.11` is the next staged release and should carry two focused changes:
-Codex 0.132 resume authority parity for `logs_2.sqlite*` / `CODEX_SQLITE_HOME`,
-and the #176 capture-review `--require-proxy-meta` gate. Run
-`just release-proof 0.1.11` before any tag or registry mutation. `0.1.10`
-version availability remains complete for GitHub Release, curl installer,
-deb/rpm assets, and Homebrew as of 2026-05-25: GitHub Release `v0.1.10` is
-published and non-draft, Homebrew stable/linked keg is `0.1.10`, and hosted
-system package install QA passed for the published `.deb` / `.rpm` assets. npm
-publication remains blocked on npm auth; npm `latest` still reports `0.1.9`.
-Negative Codex
-cassettes, broader adapter proof, and daemon beta truth remain follow-up work.
+`0.1.11` is the current verified public release. It carries Codex 0.132 resume
+authority parity for `logs_2.sqlite*` / `CODEX_SQLITE_HOME` and the #176
+capture-review `--require-proxy-meta` gate. `just release-proof 0.1.11` passed
+before tag/release mutation. GitHub Release `v0.1.11` is published and
+non-draft with 23 assets. The public Homebrew tap is fixed for the published
+asset checksums; local `brew fetch --force jesssullivan/omux/oauth-mux` passes
+and both user-local and Homebrew installs report `0.1.11`. npm publication
+remains blocked/stale; npm `latest` still reports `0.1.9`. Post-release PR
+#292 tightened capture cookie redaction and is not part of the `v0.1.11` tag.
+Negative Codex cassettes, broader adapter proof, and daemon beta truth remain
+follow-up work.
 Windows managed-`codex` parity is intentionally assigned to the npm wrapper
 lane rather than raw tarballs until a native Windows operator need is proven.
 Future public install copy must avoid claiming a version or lane behavior until
@@ -183,7 +174,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Harness session authority bridge | TIN-979 / TIN-1624 | #191 / #288 | Closed for the original Codex bridge, with TIN-1624/#288 covering the Codex 0.132 `logs_2.sqlite*` / `CODEX_SQLITE_HOME` parity regression. Managed auth/config overlays bridge canonical session authority and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
-| Package parity and install lanes | TIN-1255 | #252 | `0.1.9` is published and verified across GitHub Release, npm, Homebrew, curl installer assets, and deb/rpm release assets. |
+| Package parity and install lanes | TIN-1255 | #252 | `0.1.11` is published and verified across GitHub Release, Homebrew, curl installer assets, and deb/rpm release assets; npm remains stale at `0.1.9`. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
