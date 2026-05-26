@@ -23,6 +23,8 @@ TOKEN_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
 ]
 
+COOKIE_HEADERS = {"cookie", "set-cookie"}
+
 
 def _walk_strings(node: Any):
     if isinstance(node, str):
@@ -47,6 +49,19 @@ def _path_kind(path: str) -> str:
     if "/oauth/token" in path:
         return "oauth_token"
     return "other"
+
+
+def _iter_headers(record: dict[str, Any]):
+    for side in ("request", "response"):
+        headers = record.get(side, {}).get("headers", [])
+        if not isinstance(headers, list):
+            continue
+        for item in headers:
+            if not isinstance(item, list) or len(item) != 2:
+                continue
+            name, value = item
+            if isinstance(name, str) and isinstance(value, str):
+                yield side, name, value
 
 
 def _find_http_dir(path: Path) -> Path:
@@ -132,6 +147,9 @@ def main() -> int:
                 if pat.search(s):
                     redaction_failures.append(f"{p.name}: possible secret-like value matched {pat.pattern}")
                     break
+        for side, name, value in _iter_headers(record):
+            if name.lower() in COOKIE_HEADERS and "<redacted>" not in value:
+                redaction_failures.append(f"{p.name}: {side} {name} header is not redacted")
 
     if args.require_preflight_ok:
         if not isinstance(preflight_summary, dict):

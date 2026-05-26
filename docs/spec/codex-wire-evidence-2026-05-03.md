@@ -1,6 +1,7 @@
 # Codex Wire Evidence — Phase 0 Capture
 Date: 2026-05-03
-Status: TOOLING LANDED; OPERATOR CAPTURE PENDING. Source-confirmed
+Status: TOOLING LANDED; PARTIAL OPERATOR CAPTURE LANDED; QUOTA CAPTURE
+PENDING. Source-confirmed
 entries are pre-populated from the 2026-05-03 reality-check pass against
 `openai/codex@67849d95`. Live operator-confirmed entries
 (`OPERATOR-CONFIRM`) get filled by running
@@ -66,6 +67,37 @@ confirm the shapes themselves match upstream reality.
 - Replay tooling: `scripts/test-cassette-upstream.py`
 - Synthetic replay smoke: `just smoke-codex-cassette-replay`
 
+2026-05-26 partial operator capture:
+
+- Capture run directory: `captures/codex-wire-20260526T171741Z/`
+  (ignored; raw `flows.binary` not committed).
+- Capture path: `oauth-mux codex broker-run --profile codex-max
+  --capability codex-max --confirm-spend --json` through mitmproxy.
+- oauth-mux provenance: user-local `0.1.11`, build id `v0.1.11`,
+  SHA256 `2e17634d95e32834ac2047f1424133e0cacdb361ef79be933aa66a3289ec4952`.
+- Codex binary: `codex-cli 0.132.0`.
+- mitmproxy: `12.2.2`.
+- Preflight: `ok:true`, `fallback_ready:true`,
+  `single_route_at_risk:false`, `selectable_fallback_routes:2`.
+- Review gate:
+  ```bash
+  scripts/capture-codex-wire.sh review captures/codex-wire-20260526T171741Z \
+    --require-preflight-ok \
+    --require-proxy-meta \
+    --require-path-kind responses \
+    --require-status 101 \
+    --require-status 200 \
+    --json
+  ```
+- Review result: `ok:true`, 11 flows, path counts `responses:1`,
+  `codex_other:2`, `other:8`; status counts `101:1`, `200:8`,
+  `204:1`, `401:1`; no redaction, malformed, or requirement
+  failures; no 429 quota shape observed.
+- Hygiene note: this run used the `Set-Cookie` redaction gate added in
+  the same #176 follow-up branch. Earlier scratch captures from the
+  same day are not fixture candidates because response cookies were not
+  yet redacted in per-flow JSON.
+
 ## Capture Promotion Checklist
 
 Before any captured flow is committed as a cassette or cited as live
@@ -88,7 +120,10 @@ evidence:
      --require-quota-type usage_limit_reached
    ```
    Add `--require-status 401`, `--require-status 429`, or other
-   `--require-*` gates for the specific evidence being promoted.
+   `--require-*` gates for the specific evidence being promoted. For
+   Codex 0.132 WebSocket turns, require `--require-status 101` for the
+   `/backend-api/codex/responses` upgrade instead of treating absent SSE
+   `POST /responses` as a green normal-turn fixture.
 3. Confirm the summary includes the expected path/status mix for the
    scenario being promoted: normal 200, 401 refresh, 429
    `usage_limit_reached`, compact, memory, or other Codex endpoint.
@@ -127,6 +162,16 @@ override for both subscription and API-key paths.
 _OPERATOR-CONFIRM_: capture wire shows EXACTLY these paths and no
 others under `/backend-api/codex/`.
 
+2026-05-26 operator capture observed these `/backend-api/codex/` paths
+for a broker-owned Codex 0.132 one-turn run:
+
+- `GET /backend-api/codex/models?client_version=0.132.0` -> 200
+- `POST /backend-api/codex/analytics-events/events` -> 200
+- `GET /backend-api/codex/responses` -> 101 WebSocket upgrade
+
+No `/backend-api/codex/responses/compact`, memory trace summarize, 429,
+or quota endpoint shape was observed in this capture.
+
 ## 2. Request Header Set on a Normal Turn
 
 **Source-confirmed full forward-unchanged set** (per
@@ -164,6 +209,16 @@ NOT sent (do not forge):
 _OPERATOR-CONFIRM_: capture a normal turn; verify exactly this header
 set, no surprise additions.
 
+2026-05-26 operator capture for the broker-owned Codex 0.132 WebSocket
+turn observed the auth-bound headers redacted as expected
+(`authorization`, `chatgpt-account-id`) plus WebSocket upgrade headers,
+`user-agent`, `originator: oauth-mux`, `openai-beta:
+responses_websockets=2026-02-06`, `version: 0.132.0`,
+`x-codex-beta-features`, `x-codex-turn-metadata`,
+`x-client-request-id`, `session-id`, `thread-id`, and
+`x-codex-window-id`. It did not exercise the older SSE `POST
+/responses` path.
+
 ## 3. Normal-Turn Response Frames
 
 **Source-confirmed** (per `codex-rs/exec/tests/fixtures/cli_responses_fixture.sse`):
@@ -192,6 +247,9 @@ Connection: close framing — the proxy never re-encodes SSE.
 
 _OPERATOR-CONFIRM_: capture a normal turn; verify SSE framing matches
 fixture shape.
+
+2026-05-26 operator capture did not observe SSE framing. Codex 0.132
+used the WebSocket transport for the one-turn broker-owned run.
 
 ## 4. 401 Unauthorized — Frame Sequence
 
@@ -351,6 +409,15 @@ adds WS pass-through.
 _OPERATOR-CONFIRM_: capture an upgrade attempt (force WS via codex
 config or the env that triggers it); verify `OpenAI-Beta` header
 shape.
+
+2026-05-26 operator capture observed `GET
+/backend-api/codex/responses` with `Connection: Upgrade`,
+`Upgrade: websocket`, `openai-beta: responses_websockets=2026-02-06`,
+and no `Sec-WebSocket-Protocol`. Upstream responded `101 Switching
+Protocols` with `upgrade: websocket`, `sec-websocket-accept`,
+`sec-websocket-extensions: permessage-deflate`, and redacted
+`Set-Cookie`. The proxy log observed bidirectional WebSocket text
+messages and then an abnormal close after the completed one-turn probe.
 
 ## 8. ID-Token Presence
 

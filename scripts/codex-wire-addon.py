@@ -10,7 +10,8 @@ mitmproxy .flows files must not be committed.
 
 Redactions:
   - Authorization values: keep scheme + first 6 chars + sha256(value)[:10]
-  - Cookie values: keep names only, replace values with "<redacted>"
+  - Cookie and Set-Cookie values: keep names only, replace values with
+    "<redacted>"
   - ChatGPT-Account-ID: keep first 6 chars + sha256(value)[:10]
   - Body fields tokens.access_token / refresh_token / id_token: replace
     with sha256(value)[:10] (so swap-correctness can be argued from the
@@ -81,6 +82,10 @@ def _redact_header(name: str, value: str) -> str:
             if kv:
                 names.append(kv[0])
         return "; ".join(f"{n}=<redacted>" for n in names)
+    if name_low == "set-cookie":
+        cookie = value.split(";", 1)[0].strip()
+        name = cookie.split("=", 1)[0].strip() if cookie else "set-cookie"
+        return f"{name}=<redacted>"
     if name_low == "chatgpt-account-id":
         return f"{value[:6]}-<{_hash10(value)}>"
     return value
