@@ -8,9 +8,10 @@ Status: active sprint todo list; subordinate to `AGENTS.md`,
 
 ## Sprint Goal
 
-Convert the `0.1.11` release into reliable next evidence: clean dogfood
-baselines, real Codex cassette coverage, and a disciplined backlog that does
-not expand public claims ahead of proof.
+Convert the post-`0.1.11` fixes into reliable next evidence: a `0.1.12`
+release for resume picker parity, clean dogfood baselines, real Codex cassette
+coverage, and a disciplined backlog that does not expand public claims ahead
+of proof.
 
 The product anchor stays unchanged: `oauth-mux codex` must keep a managed
 Codex harness usable when auth, quota, tier, or local runtime state changes.
@@ -22,8 +23,11 @@ support are not success metrics.
 - Before this P0 branch, `oauth-mux` main was clean and synced to
   `origin/main`.
 - Public release `v0.1.11` is published and verified for GitHub Release,
-  Homebrew, user-local dogfood, curl installer assets, and deb/rpm assets.
-- npm remains stale at `0.1.9`; do not claim npm `0.1.11`.
+  Homebrew, user-local dogfood, curl installer assets, and deb/rpm assets, but
+  it predates PR #295's provider-namespace resume picker fix.
+- Source is staged as `0.1.12` for that fix; run `just release-proof 0.1.12`
+  before any tag, registry, or tap mutation.
+- npm remains stale at `0.1.9`; do not claim npm `0.1.12`.
 - Current no-spend Codex preflight reports `fallback_ready:true`,
   `selectable_fallback_routes:2`, `session_start_ready:true`,
   `single_route_at_risk:false`, `spends_provider_calls:false`, and
@@ -68,7 +72,7 @@ Todos:
 - [x] Re-run `just test` and `just smoke-codex-cli-ux-local`.
 - [x] Reinstall the fixed binary locally and verify the live picker from a repo
   with known native and managed rows.
-- [ ] Update the release/HM plan after the fix lands on a clean public ref.
+- [x] Update the release/HM plan after the fix lands on a clean public ref.
 
 ## Non-Goals
 
@@ -207,26 +211,29 @@ Priority: P1.
 Completion metric:
 
 - Current-state docs consistently say `0.1.11` is published for GitHub Release
-  and Homebrew, while npm is stale at `0.1.9`.
+  and Homebrew but predates PR #295; `0.1.12` is required for public resume
+  picker parity, while npm is stale at `0.1.9`.
 - Historical snapshots remain clearly historical.
-- `SHA256SUMS.full` semantics are decided before `0.1.12`.
+- `SHA256SUMS.full` semantics are explicit before `0.1.12`: it remains a
+  checksum manifest for publishable payloads listed in `publish-files.txt`, not
+  for the generated handoff metadata files themselves.
 - Public copy does not claim non-Codex stay-afloat, daemon beta, sidecar UX, or
-  npm `0.1.11`.
+  npm `0.1.12`.
 
 Todos:
 
-- [ ] Audit current-state docs for stale `0.1.10` / staged `0.1.11` language.
+- [x] Audit current-state docs for stale `0.1.10` / staged `0.1.11` language.
 - [ ] Mark older no-spend snapshots as historical where they still mention
   outdated selected routes or stale installed binaries.
-- [ ] Decide whether `SHA256SUMS.full` must include `publish-files.txt` and
+- [x] Decide whether `SHA256SUMS.full` must include `publish-files.txt` and
   `release-handoff.md`.
-- [ ] Add a release hygiene todo for npm auth or explicitly keep npm out of the
-  `0.1.11` public claim.
+- [x] Add a release hygiene todo for npm auth or explicitly keep npm out of the
+  `0.1.12` public claim.
 
 Validation:
 
 ```bash
-rg -n "0\\.1\\.10|0\\.1\\.11 is the next staged|v0\\.1\\.10|npm.*0\\.1\\.11" \
+rg -n "0\\.1\\.10|0\\.1\\.11 is the next staged|v0\\.1\\.10|npm.*0\\.1\\.12" \
   README.md docs .github scripts || true
 npm view oauth-mux version --json
 brew info jesssullivan/omux/oauth-mux --json=v2 \
@@ -288,5 +295,6 @@ These are organizational tasks, not product blockers.
 - #176 has either a scrubbed real-shape fixture PR or a recorded blocker with
   exact missing evidence.
 - #212 has a current no-spend matrix and a clear go/no-go gate for spend.
-- Docs no longer imply `0.1.11` is staged or that npm is current.
+- Docs no longer imply `0.1.11` is current for resume picker parity or that npm
+  is current.
 - No new public continuity claims are made beyond the evidence above.

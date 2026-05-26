@@ -10,7 +10,7 @@ on:
       version:
         description: "Version to stage and publish"
         required: false
-        default: "0.1.11"
+        default: "0.1.12"
         type: string
       dry_run:
         description: "Run npm publish --dry-run instead of publishing"
