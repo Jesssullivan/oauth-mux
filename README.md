@@ -21,16 +21,14 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes are versioned by channel. This source tree is staged as
-`0.1.12`, carrying the Codex 0.132 SQLite resume authority fix, the Codex
-capture-review proxy metadata gate, and the provider-namespace resume picker
-fix from PR #295. The currently verified public release is `0.1.11` for GitHub
-Release, curl installer, deb/rpm assets, and Homebrew, but `0.1.11` predates
-the PR #295 resume picker fix. npm still reports `0.1.9` until CI npm auth is
-repaired. After `v0.1.12` is tagged, verify each public lane before using it as
-installed truth. Homebrew remains binary-only by default:
-`brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
-install or link a managed `codex` shim.
+Public install lanes are versioned by channel. `0.1.12` is the current verified
+public release for GitHub Release, curl installer, deb/rpm assets, Homebrew,
+user-local dogfood, and the Home Manager source lane. It carries the Codex
+0.132 SQLite resume authority fix, the Codex capture-review proxy metadata
+gate, and the provider-namespace resume picker fix from PR #295. npm still
+reports `0.1.9` until CI npm auth is repaired. Homebrew remains binary-only by
+default: `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and
+must not install or link a managed `codex` shim.
 
 What works today:
 
