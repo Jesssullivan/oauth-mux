@@ -85,7 +85,10 @@ cat >"$CAP/00002-POST-backend-api_codex_responses.json" <<'JSON'
   "response": {
     "status": 200,
     "reason": "OK",
-    "headers": [["content-type", "text/event-stream"]],
+    "headers": [
+      ["content-type", "text/event-stream"],
+      ["set-cookie", "__cf_bm=<redacted>"]
+    ],
     "body": {
       "__non_json__": true,
       "len": 62,
@@ -215,6 +218,50 @@ import sys
 summary = json.load(open(sys.argv[1]))
 assert summary["ok"] is False, summary
 assert summary["redaction_failures"], summary
+PY
+
+BAD_COOKIE="$TMP/codex-wire-bad-cookie"
+mkdir -p "$BAD_COOKIE/http"
+cp "$TMP/codex-wire-synth/capture-preflight-summary.json" "$BAD_COOKIE/capture-preflight-summary.json"
+cp "$TMP/codex-wire-synth/meta.json" "$BAD_COOKIE/meta.json"
+cat >"$BAD_COOKIE/http/00001-GET-backend-api_codex_responses.json" <<'JSON'
+{
+  "captured_at": 1788000002.0,
+  "host": "chatgpt.com",
+  "scheme": "https",
+  "method": "GET",
+  "path": "/backend-api/codex/responses",
+  "request": {
+    "headers": [
+      ["Cookie", "__Host-next-auth.csrf-token=live-cookie-value-that-should-never-be-promoted"]
+    ],
+    "body": {}
+  },
+  "response": {
+    "status": 101,
+    "reason": "Switching Protocols",
+    "headers": [
+      ["Set-Cookie", "__cf_bm=live-set-cookie-value-that-should-never-be-promoted; path=/; HttpOnly; Secure"]
+    ],
+    "body": {}
+  },
+  "timing_ms": 1
+}
+JSON
+
+if python3 "$ROOT/scripts/review-codex-wire-capture.py" "$BAD_COOKIE" --json >"$TMP/bad-cookie-summary.json"; then
+  echo "smoke-codex-capture-review: expected unredacted cookie headers to fail" >&2
+  exit 1
+fi
+
+python3 - "$TMP/bad-cookie-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is False, summary
+failures = "\n".join(summary["redaction_failures"])
+assert "request Cookie header is not redacted" in failures, summary
+assert "response Set-Cookie header is not redacted" in failures, summary
 PY
 
 BIN="$TMP/bin"
