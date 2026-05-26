@@ -98,14 +98,14 @@ Completion metric:
 
 Todos:
 
-- [ ] Add a short `TIN-1591` runbook section to `docs/dogfood-process-fanout.md`
+- [x] Add a short `TIN-1591` runbook section to `docs/dogfood-process-fanout.md`
   or a sibling doc with the exact snapshot command, interpretation rules, and
   cleanup approval policy.
 - [ ] Re-run `python3 scripts/dogfood-process-snapshot.py --json` from a clean
   shell and save only a redacted summary if it changes the claim posture.
 - [ ] Decide whether the soft fd limit `256` is acceptable for dogfood evidence
   or whether the runbook must require a higher limit.
-- [ ] Define which process classes are never killed by automation.
+- [x] Define which process classes are never killed by automation.
 - [ ] Re-check no proxy/capture/long-running validation processes before each
   live or cassette run.
 

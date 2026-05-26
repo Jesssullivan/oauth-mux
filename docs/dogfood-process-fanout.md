@@ -40,6 +40,8 @@ The report groups visible Codex, Claude, and oauth-mux process trees and records
 - elapsed time;
 - instantaneous CPU percent from `ps`;
 - RSS in KiB and MiB;
+- current `RLIMIT_NOFILE` soft/hard limits;
+- visible per-process file descriptor counts for agent/helper processes;
 - helper child count;
 - listening TCP ports visible through `lsof`;
 - duplicate helper command groups;
@@ -92,6 +94,30 @@ Use these labels when filing follow-up evidence:
 - `suspected_rss_growth`: same PID crosses the configured growth threshold.
 - `stable_or_session_churn`: processes are stable, appeared, or disappeared
   without same-PID growth.
+
+## TIN-1591 Evidence Gate
+
+Before using dogfood evidence for live reliability claims, collect a no-spend
+snapshot and inspect:
+
+```bash
+python3 scripts/dogfood-process-snapshot.py --json \
+  | jq '{summary, process_summary, resource_limits, fd_summary, safe_cleanup}'
+```
+
+Treat the evidence as contaminated when the snapshot shows active work you
+cannot classify, such as:
+
+- active oauth-mux/Codex parent processes owned by another shell;
+- duplicated MCP/helper groups without a known active parent session;
+- orphan listener candidates that persist across a second snapshot;
+- file descriptor usage close enough to the soft limit that a live run could
+  fail locally before proving provider behavior.
+
+Containment is enough to proceed with local release/install validation. Real
+cassette or live quota claims need either a clean baseline or an explicit note
+that the process/fd state was known, bounded, and unrelated to the observed
+provider behavior.
 
 ## Cleanup Rules
 

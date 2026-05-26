@@ -20,6 +20,9 @@ jq -e '
   and .safe_cleanup.automation_may_kill == false
   and .safe_cleanup.requires_operator_approval == true
   and (.process_summary.oauth_mux_processes | type == "number")
+  and (.resource_limits.nofile.available | type == "boolean")
+  and (.fd_summary.visible_fd_process_count | type == "number")
+  and (.fd_summary.top_processes | type == "array")
   and (.agent_trees | type == "array")
   and (.orphan_listener_candidates | type == "array")
   and (.duplicate_helper_groups | type == "array")
