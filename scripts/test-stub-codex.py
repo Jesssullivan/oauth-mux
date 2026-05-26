@@ -59,9 +59,11 @@ from pathlib import Path
 
 def _read_proxy_url(codex_home: Path) -> str:
     cfg = (codex_home / "config.toml").read_text()
-    m = re.search(r'base_url\s*=\s*"([^"]+)"', cfg)
+    m = re.search(r'openai_base_url\s*=\s*"([^"]+)"', cfg)
     if not m:
-        print("stub-codex: config.toml missing base_url", file=sys.stderr)
+        m = re.search(r'base_url\s*=\s*"([^"]+)"', cfg)
+    if not m:
+        print("stub-codex: config.toml missing proxy base URL", file=sys.stderr)
         sys.exit(2)
     return m.group(1)
 
@@ -70,9 +72,12 @@ def _config_report(codex_home: Path) -> dict:
     cfg = (codex_home / "config.toml").read_text()
     return {
         "checked": True,
-        "proxy_provider_selected": 'model_provider = "oauth_mux_openai"' in cfg,
-        "proxy_provider_present": "[model_providers.oauth_mux_openai]" in cfg,
-        "config_layout_root_partitioned": cfg.find('model_provider = "oauth_mux_openai"') < cfg.find("[tui.model_availability_nux]")
+        "native_provider_namespace": 'model_provider = "openai"' in cfg,
+        "proxy_base_url_present": 'openai_base_url = "http://127.0.0.1:' in cfg
+        and "/backend-api" in cfg,
+        "shadow_mux_provider_absent": 'model_provider = "oauth_mux_openai"' not in cfg
+        and "[model_providers.oauth_mux_openai]" not in cfg,
+        "config_layout_root_partitioned": cfg.find('model_provider = "openai"') < cfg.find("[tui.model_availability_nux]")
         if "[tui.model_availability_nux]" in cfg
         else True,
         "user_feature_apps": "apps = true" in cfg,

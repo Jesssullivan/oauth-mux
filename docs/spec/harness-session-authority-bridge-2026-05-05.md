@@ -113,9 +113,9 @@ Adapter-controlled configuration needed to interpose the broker:
 - account/profile policy settings that belong to oauth-mux.
 
 oauth-mux owns this boundary. For Codex, this is the generated
-`config.toml` selecting `model_provider = "oauth_mux_openai"` and a
-localhost proxy base URL. The adapter must not write that configuration into
-the canonical `~/.codex/config.toml` by default.
+`config.toml` selecting `model_provider = "openai"` and `openai_base_url =
+"http://127.0.0.1:<port>/backend-api"`. The adapter must not write that
+configuration into the canonical `~/.codex/config.toml` by default.
 
 Managed config is not permission to erase harness behavior settings. For Codex,
 the temporary overlay must preserve or deliberately reapply unrelated native
@@ -127,10 +127,10 @@ initial implementation is landed. Config authority follows
 `~/.codex`, and is independent from session authority. A parent `CODEX_HOME`
 that is itself an oauth-mux temporary overlay is not reusable authority;
 nested managed sessions fall back to canonical config/session state instead of
-recursively inheriting a reduced overlay. oauth-mux removes provider-selection
-conflicts, including profile-scoped `model_provider`, then appends the managed
-proxy provider. Forwarded `--config` / `-c` attempts to override mux-owned
-provider keys fail before child spawn with redacted status.
+recursively inheriting a reduced overlay. oauth-mux removes routing conflicts,
+including profile-scoped `model_provider` and `openai_base_url`, then appends
+the managed proxy base URL. Forwarded `--config` / `-c` attempts to override
+mux-owned provider/base-url keys fail before child spawn with redacted status.
 
 ### 2.3 Session Authority Store
 

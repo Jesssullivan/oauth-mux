@@ -134,9 +134,10 @@ Adapter-owned options are consumed by oauth-mux:
 Harness-owned args are forwarded exactly, in order, without reinterpretation.
 The only exception is mux-owned provider configuration: forwarded Codex
 `--config` / `-c` assignments that override `model_provider`,
-`*.model_provider`, or `model_providers.oauth_mux_openai*` MUST fail before
-child spawn with a redacted typed diagnostic. Other Codex config overrides
-remain harness-owned and are forwarded.
+`*.model_provider`, `openai_base_url`, or
+`model_providers.oauth_mux_openai*` MUST fail before child spawn with a
+redacted typed diagnostic. Other Codex config overrides remain harness-owned
+and are forwarded.
 
 ### 3.3 Parser Rules
 

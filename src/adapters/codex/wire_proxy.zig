@@ -7,10 +7,11 @@
 //! The proxy is the load-bearing piece that lets account swap happen
 //! without restarting the unmodified `codex` child process. It sits at
 //! 127.0.0.1:<dynamic-port> with codex's generated
-//! `model_provider = "oauth_mux_openai"` / custom model provider block
-//! pointed at it (via a generated config.toml in the per-session
-//! CODEX_HOME). Codex 0.128+ rejects overriding the reserved built-in
-//! `openai` provider id, so the adapter must select a custom provider id.
+//! `openai_base_url` pointed at it while keeping Codex's built-in
+//! `model_provider = "openai"` namespace (via a generated config.toml in
+//! the per-session CODEX_HOME). Keeping the built-in provider id is
+//! load-bearing for native resume-picker parity because Codex filters
+//! persisted sessions by `threads.model_provider`.
 //! On every request:
 //!
 //!   1. Read the inbound request from codex.
@@ -1253,7 +1254,9 @@ fn forwardAndStream(
     defer if (!std.mem.eql(u8, scheme, DEFAULT_UPSTREAM_SCHEME)) a.free(scheme);
     const host = upstreamHost(a);
     defer if (!std.mem.eql(u8, host, DEFAULT_UPSTREAM_HOST)) a.free(host);
-    const url = try std.fmt.allocPrint(a, "{s}://{s}{s}", .{ scheme, host, req.path });
+    const upstream_path = try upstreamPathForRequest(a, req.path);
+    defer a.free(upstream_path);
+    const url = try std.fmt.allocPrint(a, "{s}://{s}{s}", .{ scheme, host, upstream_path });
     defer a.free(url);
     const uri = try std.Uri.parse(url);
 
@@ -1314,12 +1317,40 @@ fn forwardAndStream(
 fn pathKind(path: []const u8) []const u8 {
     if (std.mem.eql(u8, path, "/backend-api/codex/responses")) return "responses";
     if (std.mem.startsWith(u8, path, "/backend-api/codex/responses?")) return "responses";
+    if (std.mem.eql(u8, path, "/backend-api/responses")) return "responses";
+    if (std.mem.startsWith(u8, path, "/backend-api/responses?")) return "responses";
     if (std.mem.eql(u8, path, "/backend-api/codex/responses/compact")) return "responses_compact";
     if (std.mem.startsWith(u8, path, "/backend-api/codex/responses/compact?")) return "responses_compact";
+    if (std.mem.eql(u8, path, "/backend-api/responses/compact")) return "responses_compact";
+    if (std.mem.startsWith(u8, path, "/backend-api/responses/compact?")) return "responses_compact";
+    if (std.mem.eql(u8, path, "/backend-api/models")) return "models";
+    if (std.mem.startsWith(u8, path, "/backend-api/models?")) return "models";
+    if (std.mem.eql(u8, path, "/backend-api/codex/models")) return "models";
+    if (std.mem.startsWith(u8, path, "/backend-api/codex/models?")) return "models";
     if (std.mem.indexOf(u8, path, "/backend-api/codex/memories/trace_summarize") != null) return "memories_trace_summarize";
     if (std.mem.indexOf(u8, path, "responses_websockets") != null) return "responses_websocket";
     if (std.mem.startsWith(u8, path, "/backend-api/codex/")) return "codex_other";
     return "unknown";
+}
+
+fn upstreamPathForRequest(a: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.startsWith(u8, path, "/backend-api/codex/")) {
+        return try a.dupe(u8, path);
+    }
+    if (pathHasEndpointPrefix(path, "/backend-api/responses")) {
+        return try std.fmt.allocPrint(a, "/backend-api/codex{s}", .{path["/backend-api".len..]});
+    }
+    if (pathHasEndpointPrefix(path, "/backend-api/models")) {
+        return try std.fmt.allocPrint(a, "/backend-api/codex{s}", .{path["/backend-api".len..]});
+    }
+    return try a.dupe(u8, path);
+}
+
+fn pathHasEndpointPrefix(path: []const u8, endpoint: []const u8) bool {
+    if (std.mem.eql(u8, path, endpoint)) return true;
+    if (!std.mem.startsWith(u8, path, endpoint)) return false;
+    if (path.len <= endpoint.len) return false;
+    return path[endpoint.len] == '?' or path[endpoint.len] == '/';
 }
 
 fn classifyHttpErrorBody(body: []const u8) []const u8 {
@@ -1708,11 +1739,39 @@ test "classify 401 -> auth_unauthorized" {
 test "pathKind redacts Codex endpoint paths into stable classes" {
     try std.testing.expectEqualStrings("responses", pathKind("/backend-api/codex/responses"));
     try std.testing.expectEqualStrings("responses", pathKind("/backend-api/codex/responses?after=1"));
+    try std.testing.expectEqualStrings("responses", pathKind("/backend-api/responses"));
+    try std.testing.expectEqualStrings("responses", pathKind("/backend-api/responses?after=1"));
     try std.testing.expectEqualStrings("responses_compact", pathKind("/backend-api/codex/responses/compact"));
     try std.testing.expectEqualStrings("responses_compact", pathKind("/backend-api/codex/responses/compact?after=1"));
+    try std.testing.expectEqualStrings("responses_compact", pathKind("/backend-api/responses/compact"));
+    try std.testing.expectEqualStrings("responses_compact", pathKind("/backend-api/responses/compact?after=1"));
+    try std.testing.expectEqualStrings("models", pathKind("/backend-api/models?client_version=0.132.0"));
+    try std.testing.expectEqualStrings("models", pathKind("/backend-api/codex/models?client_version=0.132.0"));
     try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/codex/memories/trace_summarize"));
     try std.testing.expectEqualStrings("codex_other", pathKind("/backend-api/codex/unknown/shape"));
     try std.testing.expectEqualStrings("unknown", pathKind("/not-codex"));
+}
+
+test "upstreamPathForRequest maps built-in openai provider paths to Codex upstream" {
+    const responses = try upstreamPathForRequest(std.testing.allocator, "/backend-api/responses?after=1");
+    defer std.testing.allocator.free(responses);
+    try std.testing.expectEqualStrings("/backend-api/codex/responses?after=1", responses);
+
+    const compact = try upstreamPathForRequest(std.testing.allocator, "/backend-api/responses/compact");
+    defer std.testing.allocator.free(compact);
+    try std.testing.expectEqualStrings("/backend-api/codex/responses/compact", compact);
+
+    const models = try upstreamPathForRequest(std.testing.allocator, "/backend-api/models?client_version=0.132.0");
+    defer std.testing.allocator.free(models);
+    try std.testing.expectEqualStrings("/backend-api/codex/models?client_version=0.132.0", models);
+
+    const already_codex = try upstreamPathForRequest(std.testing.allocator, "/backend-api/codex/responses");
+    defer std.testing.allocator.free(already_codex);
+    try std.testing.expectEqualStrings("/backend-api/codex/responses", already_codex);
+
+    const adjacent = try upstreamPathForRequest(std.testing.allocator, "/backend-api/responses_websockets");
+    defer std.testing.allocator.free(adjacent);
+    try std.testing.expectEqualStrings("/backend-api/responses_websockets", adjacent);
 }
 
 const TestSinkWriter = struct {

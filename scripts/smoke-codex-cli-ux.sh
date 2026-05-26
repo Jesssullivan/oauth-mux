@@ -261,8 +261,9 @@ run_case() {
         exit 1
     fi
 
-    if [[ "$(jq -r .config.proxy_provider_selected "$report")" == "true" \
-          && "$(jq -r .config.proxy_provider_present "$report")" == "true" \
+    if [[ "$(jq -r .config.native_provider_namespace "$report")" == "true" \
+          && "$(jq -r .config.proxy_base_url_present "$report")" == "true" \
+          && "$(jq -r .config.shadow_mux_provider_absent "$report")" == "true" \
           && "$(jq -r .config.user_feature_apps "$report")" == "true" \
           && "$(jq -r .config.user_feature_memories "$report")" == "true" \
           && "$(jq -r .config.user_feature_multi_agent "$report")" == "true" \
@@ -486,7 +487,7 @@ if [[ -e "$BAD_CONFIG_REPORT" ]]; then
 else
     echo "  ✓ config override fails before child spawn"
 fi
-if grep -q -E 'openai|profile_provider|'"$CANONICAL_SESSION_HOME" "$BAD_CONFIG_NDJSON" "$BAD_CONFIG_STDERR"; then
+if grep -q -E 'model_provider="openai"|profile_provider|https://example.invalid|'"$CANONICAL_SESSION_HOME" "$BAD_CONFIG_NDJSON" "$BAD_CONFIG_STDERR"; then
     echo "  ✗ config override diagnostic leaked value or path" >&2
     cat "$BAD_CONFIG_NDJSON" >&2
     cat "$BAD_CONFIG_STDERR" >&2

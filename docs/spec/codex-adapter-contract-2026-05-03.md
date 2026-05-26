@@ -81,8 +81,8 @@ startup diagnostics, not quota-handoff evidence.
 
 Implementation update, 2026-05-09: the managed overlay now preserves canonical
 Codex `config.toml` behavior settings when a canonical config is present, while
-stripping oauth-mux-owned provider-selection conflicts before appending the
-managed proxy provider. This protects `/experimental` / `[features]`, MCP,
+stripping oauth-mux-owned routing conflicts before appending the managed proxy
+base URL. This protects `/experimental` / `[features]`, MCP,
 hooks/rules, approval/sandbox, profiles, model defaults, and custom
 non-managed provider definitions from being silently shadowed by the temporary
 `CODEX_HOME`. Config authority is independent from session authority:
@@ -95,17 +95,14 @@ canonical config instead of inheriting a reduced generated overlay.
 Profile-scoped `model_provider` lines are removed, stale
 `[model_providers.oauth_mux_openai]` tables and subtables are removed, and
 forwarded Codex `--config` / `-c` assignments that attempt to override
-`model_provider`, `*.model_provider`, or `model_providers.oauth_mux_openai*`
-fail before child spawn with a redacted `config_passthrough_check` status
-event. Track remaining edge-layer work in
+`model_provider`, `*.model_provider`, `openai_base_url`, or
+`model_providers.oauth_mux_openai*` fail before child spawn with a redacted
+`config_passthrough_check` status event. Track remaining edge-layer work in
 <https://github.com/Jesssullivan/oauth-mux/issues/211>.
 
 Implementation update, 2026-05-10: the managed config writer now partitions
-canonical config into root lines and table sections. `model_provider =
-"oauth_mux_openai"` is emitted only at TOML root, stale
-`[model_providers.oauth_mux_openai*]` sections are stripped, preserved user
-tables remain below the root override, and the generated provider table is
-appended after preserved user tables. The regression fixture is a canonical
+canonical config into root lines and table sections. The managed root override
+is emitted before preserved user tables. The regression fixture is a canonical
 config ending in `[tui.model_availability_nux]` with `"gpt-5.5" = 2`.
 `session_started` reports `config_layout:"root_partitioned"`.
 
@@ -120,6 +117,15 @@ back to the legacy `sessions/`, `shell_snapshots/`, `history.jsonl`, and
 `session_index.jsonl` authority set. Redacted status reports
 `sqlite_authority`, `resume_authority_state_db_bridged`,
 `resume_authority_logs_db_bridged`, and `resume_lookup_source`.
+
+Implementation update, 2026-05-26: native resume picker parity also depends on
+the active provider namespace. Codex filters persisted `threads` by
+`model_provider`; a custom `oauth_mux_openai` provider made managed resume show
+only oauth-mux-created rows. The managed config therefore keeps
+`model_provider = "openai"` and sets `openai_base_url` to the localhost mux
+proxy. The proxy accepts built-in OpenAI-provider paths such as
+`/backend-api/responses` and forwards them to the ChatGPT Codex upstream shape
+under `/backend-api/codex/...`, adding the currently elected account headers.
 
 Implementation update, 2026-05-10: managed launch no longer runs broad
 `repairRefreshableCodexAuthFailures()` before child spawn. Network refresh is
@@ -202,13 +208,12 @@ both layers, Level 3 is the default and Level 4 is reachable.
 3. Materializes that account's `auth.json`-equivalent tuple.
 4. Writes a temporary, adapter-owned `CODEX_HOME` directory containing the
    selected account's `auth.json` and a generated `config.toml` whose
-   selected custom provider (`model_provider = "oauth_mux_openai"` and
-   `[model_providers.oauth_mux_openai]`) points at the wire-layer proxy.
-   Codex 0.128+ rejects overriding the reserved built-in `openai`
-   provider id. The generated config preserves canonical user behavior
-   settings and strips only mux-owned provider-selection conflicts. Unsafe
-   forwarded `--config` / `-c` provider overrides fail before child spawn with
-   redacted status. Session-authority paths are bridged per
+   built-in provider namespace (`model_provider = "openai"`) points at the
+   wire-layer proxy via `openai_base_url`. The generated config preserves
+   canonical user behavior settings and strips only mux-owned routing
+   conflicts. Unsafe forwarded `--config` / `-c` provider/base-url overrides
+   fail before child spawn with redacted status. Session-authority paths are
+   bridged per
    `docs/spec/harness-session-authority-bridge-2026-05-05.md`, not copied
    wholesale into this overlay. Operators may pass `--isolated-session-store`
    for a test/private namespace or `--session-home <path>` for an explicit
