@@ -225,6 +225,10 @@ if [ "$1" = "--version" ]; then
   echo "Mitmproxy: 12.0.0"
   exit 0
 fi
+if [ -n "${OMUX_FAKE_MITMDUMP_LOG:-}" ]; then
+  printf '%s\n' "$@" >"$OMUX_FAKE_MITMDUMP_LOG"
+  exit 0
+fi
 echo "unexpected mitmdump args: $*" >&2
 exit 2
 SH
@@ -256,6 +260,29 @@ assert summary["oauth_mux"]["build_id"] == "v0.1.10", summary
 assert summary["status_verdict"] == "brokered_with_fallback", summary
 assert summary["blocked_route_reasons"][0]["reason"] == "quota_exhausted", summary
 PY
+
+PROXY_MITMDUMP_LOG="$TMP/proxy-mitmdump-args.txt"
+OMUX_CAPTURE_DIR="$TMP/proxy-captures" OMUX_MITMPROXY_CA="$MITMPROXY_CA" SSL_CERT_FILE="$MITMPROXY_CA" OMUX_FAKE_MITMDUMP_LOG="$PROXY_MITMDUMP_LOG" PATH="$BIN:$PATH" \
+  "$ROOT/scripts/capture-codex-wire.sh" proxy >"$TMP/proxy.out"
+
+PROXY_SUMMARY="$(find "$TMP/proxy-captures" -name capture-preflight-summary.json -print | head -1)"
+PROXY_META="$(find "$TMP/proxy-captures" -name meta.json -print | head -1)"
+test -n "$PROXY_SUMMARY"
+test -n "$PROXY_META"
+test -s "$PROXY_MITMDUMP_LOG"
+
+python3 - "$PROXY_SUMMARY" "$PROXY_META" <<'PY'
+import json
+import pathlib
+import sys
+summary = json.load(open(sys.argv[1]))
+meta = json.load(open(sys.argv[2]))
+assert summary["ok"] is True, summary
+assert meta["preflight_summary"] == "capture-preflight-summary.json", meta
+assert pathlib.Path(sys.argv[1]).parent == pathlib.Path(sys.argv[2]).parent, (sys.argv[1], sys.argv[2])
+PY
+
+grep -q -- '--set' "$PROXY_MITMDUMP_LOG"
 
 if OMUX_CAPTURE_DIR="$TMP/captures-missing-ca" OMUX_MITMPROXY_CA="$TMP/missing-mitmproxy-ca.cer" PATH="$BIN:$PATH" \
   "$ROOT/scripts/capture-codex-wire.sh" preflight >"$TMP/preflight-missing-ca.out"; then

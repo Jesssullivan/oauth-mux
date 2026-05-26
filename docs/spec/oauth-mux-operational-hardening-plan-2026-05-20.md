@@ -230,7 +230,7 @@ Todo:
 - [x] Add explicit capture review promotion gates for preflight success,
   required endpoint path kinds, required HTTP statuses, and required quota
   `error.type` values.
-- [ ] Re-run no-spend route truth immediately before capture and keep the
+- [x] Re-run no-spend route truth immediately before capture and keep the
   generated preflight summary with the capture scratch directory.
 - [ ] Capture at least one normal `200` Codex turn with streaming preserved.
 - [ ] Capture or explicitly record not-observed status for `401`,

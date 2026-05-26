@@ -43,11 +43,13 @@ WORKFLOW
   2. Run the no-spend capture preflight:
        scripts/capture-codex-wire.sh preflight
      It records installed binary identity, Codex version, mitmproxy
-     availability, route fallback readiness, latest status summary, and
-     active oauth-mux/Codex process hints under captures/.
+     availability, mitmproxy CA readiness, route fallback readiness,
+     latest status summary, and active oauth-mux/Codex process hints
+     under captures/.
   3. In one shell:
        scripts/capture-codex-wire.sh proxy
-     The proxy listens on 127.0.0.1:9080 as a normal HTTP proxy.
+     The proxy first reruns the no-spend preflight into the same capture
+     root, then listens on 127.0.0.1:9080 as a normal HTTP proxy.
   4. In another shell:
        export HTTPS_PROXY=http://127.0.0.1:9080
        export HTTP_PROXY=http://127.0.0.1:9080
@@ -281,16 +283,21 @@ cmd_proxy() {
     echo "error: missing $addon" >&2
     exit 65
   fi
+
+  echo "capture run dir: $RUN_DIR"
+  echo "running no-spend capture preflight into the capture root..."
+  OMUX_CAPTURE_PREFLIGHT_DIR="$RUN_DIR" cmd_preflight
+
   cat >"$RUN_DIR/meta.json" <<META
 {
   "ts_utc": "$TS",
   "kind": "phase_0_wire_capture",
   "addon": "scripts/codex-wire-addon.py",
+  "preflight_summary": "capture-preflight-summary.json",
   "host_filter": "chatgpt.com",
   "ports": { "http": 9080, "https": 9080 }
 }
 META
-  echo "capture run dir: $RUN_DIR"
   echo "proxy listening on 127.0.0.1:9080 (combined HTTP+HTTPS)"
   echo "stop with ^C"
   exec mitmdump \
