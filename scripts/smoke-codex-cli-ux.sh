@@ -52,6 +52,9 @@ printf '%s\n' '{"bridge":"preexisting"}' >"$CANONICAL_SESSION_HOME/sessions/omux
 printf '%s\n' 'managed-good-session' >"$CANONICAL_SESSION_HOME/state_5.sqlite"
 printf '%s\n' 'managed-good-session-wal' >"$CANONICAL_SESSION_HOME/state_5.sqlite-wal"
 printf '%s\n' 'managed-good-session-shm' >"$CANONICAL_SESSION_HOME/state_5.sqlite-shm"
+printf '%s\n' 'managed-good-session' >"$CANONICAL_SESSION_HOME/logs_2.sqlite"
+printf '%s\n' 'managed-good-session-logs-wal' >"$CANONICAL_SESSION_HOME/logs_2.sqlite-wal"
+printf '%s\n' 'managed-good-session-logs-shm' >"$CANONICAL_SESSION_HOME/logs_2.sqlite-shm"
 cat >"$CANONICAL_SESSION_HOME/config.toml" <<'EOF'
 model = "gpt-5.5"
 model_provider = "user_provider"
@@ -187,6 +190,7 @@ run_case() {
 
     assert_grep "$label session_started" '"kind":"session_started"' "$ndjson"
     assert_grep "$label canonical session bridge" '"session_authority":"canonical_bridge"' "$ndjson"
+    assert_grep "$label canonical sqlite authority" '"sqlite_authority":"canonical_env"' "$ndjson"
     assert_grep "$label config passthrough status" '"config_passthrough":true,"user_config_present":true' "$ndjson"
     assert_grep "$label config layout" '"config_layout":"root_partitioned"' "$ndjson"
     assert_grep "$label experimental defaults injected" '"experimental_feature_defaults_injected":4' "$ndjson"
@@ -197,6 +201,7 @@ run_case() {
     if [[ "$label" == "resume-chooser" ]]; then
         assert_grep "$label resume authority check" '"kind":"resume_authority_check".*"ok":true' "$ndjson"
         assert_grep "$label state db authority" '"kind":"resume_authority_check".*"resume_authority_state_db_bridged":true' "$ndjson"
+        assert_grep "$label logs db authority" '"kind":"resume_authority_check".*"resume_authority_logs_db_bridged":true' "$ndjson"
         assert_grep "$label no chooser rollout scan before spawn" '"kind":"resume_preflight".*"mode":"chooser".*"rollouts_before":0' "$ndjson"
         assert_grep "$label chooser lookup not scanned" '"kind":"resume_preflight".*"mode":"chooser".*"resume_lookup_source":"not_scanned"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"mode":"chooser"' "$ndjson"
@@ -233,7 +238,13 @@ run_case() {
           && "$(jq -r .session_bridge.shell_snapshots_samefile "$report")" == "true" \
           && "$(jq -r .session_bridge.state_db_samefile "$report")" == "true" \
           && "$(jq -r .session_bridge.state_db_wal_samefile "$report")" == "true" \
-          && "$(jq -r .session_bridge.state_db_shm_samefile "$report")" == "true" ]]; then
+          && "$(jq -r .session_bridge.state_db_shm_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.logs_db_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.logs_db_wal_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.logs_db_shm_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.sqlite_home_env_set "$report")" == "true" \
+          && "$(jq -r .session_bridge.sqlite_home_samefile "$report")" == "true" \
+          && "$(jq -r .session_bridge.sqlite_home_path_printed "$report")" == "false" ]]; then
         echo "  ✓ $label bridged canonical session authority"
     else
         echo "  ✗ $label session bridge failed" >&2
@@ -283,6 +294,31 @@ run_case top "resume-last" '["resume","--last"]' resume --last
 run_case top "resume-id" '["resume","managed-good-session"]' resume managed-good-session
 run_case top "resume-chooser" '["resume"]' resume
 run_case raw "raw-run" '["resume","--last"]' resume --last
+
+echo "smoke-codex-cli-ux: isolated session store keeps sqlite authority local"
+ISOLATED_NDJSON="$TMP/isolated-status.ndjson"
+ISOLATED_STDERR="$TMP/isolated.stderr"
+ISOLATED_REPORT="$TMP/isolated.report"
+env \
+  OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
+  CODEX_HOME="$CANONICAL_SESSION_HOME" \
+  CODEX_SQLITE_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_STUB_CODEX_TURNS=0 \
+  OMUX_STUB_CODEX_REPORT="$ISOLATED_REPORT" \
+  "$BIN" codex --profile codex-max --isolated-session-store --json-status-file "$ISOLATED_NDJSON" resume --last 2>"$ISOLATED_STDERR"
+assert_grep "isolated session authority" '"kind":"session_started".*"session_authority":"isolated"' "$ISOLATED_NDJSON"
+assert_grep "isolated sqlite authority" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$ISOLATED_NDJSON"
+if [[ "$(jq -r .sqlite_env.codex_sqlite_home_env_set "$ISOLATED_REPORT")" == "false" \
+      && "$(jq -r .sqlite_env.path_printed "$ISOLATED_REPORT")" == "false" ]]; then
+    echo "  ✓ isolated run scrubbed inherited CODEX_SQLITE_HOME"
+else
+    echo "  ✗ isolated run leaked CODEX_SQLITE_HOME" >&2
+    cat "$ISOLATED_REPORT" >&2
+    exit 1
+fi
 
 echo "smoke-codex-cli-ux: capability-scoped route election matches broker-session-plan"
 MIXED_CONFIG="$TMP/mixed-capability.config.json"

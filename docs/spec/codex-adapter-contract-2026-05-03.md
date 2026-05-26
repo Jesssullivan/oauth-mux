@@ -109,13 +109,17 @@ appended after preserved user tables. The regression fixture is a canonical
 config ending in `[tui.model_availability_nux]` with `"gpt-5.5" = 2`.
 `session_started` reports `config_layout:"root_partitioned"`.
 
-Implementation update, 2026-05-10: the session-authority bridge now also
-symlinks `state_5.sqlite`, `state_5.sqlite-wal`, and `state_5.sqlite-shm` when
-canonical Codex has them. `state_5.sqlite` is treated as native chooser
-authority when present; older Codex homes still fall back to the legacy
-`sessions/`, `shell_snapshots/`, `history.jsonl`, and `session_index.jsonl`
-authority set. Redacted status reports `resume_authority_state_db_bridged` and
-`resume_lookup_source`.
+Implementation update, 2026-05-26: Codex 0.132 split native resume state
+between `state_5.sqlite*` and `logs_2.sqlite*`, and native Codex reads those
+databases from `CODEX_SQLITE_HOME` when set. In canonical bridge mode,
+oauth-mux keeps `CODEX_HOME` as the mux-owned auth/config overlay but sets
+child `CODEX_SQLITE_HOME` to the canonical session authority home. The overlay
+also symlinks `state_5.sqlite*` and `logs_2.sqlite*` when canonical Codex has
+them, so drift is visible in no-spend smoke tests. Older Codex homes still fall
+back to the legacy `sessions/`, `shell_snapshots/`, `history.jsonl`, and
+`session_index.jsonl` authority set. Redacted status reports
+`sqlite_authority`, `resume_authority_state_db_bridged`,
+`resume_authority_logs_db_bridged`, and `resume_lookup_source`.
 
 Implementation update, 2026-05-10: managed launch no longer runs broad
 `repairRefreshableCodexAuthFailures()` before child spawn. Network refresh is

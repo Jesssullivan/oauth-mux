@@ -217,6 +217,14 @@ def _session_bridge_report(codex_home: Path) -> dict:
     wal_canonical = canonical / "state_5.sqlite-wal"
     shm_overlay = codex_home / "state_5.sqlite-shm"
     shm_canonical = canonical / "state_5.sqlite-shm"
+    logs_overlay = codex_home / "logs_2.sqlite"
+    logs_canonical = canonical / "logs_2.sqlite"
+    logs_wal_overlay = codex_home / "logs_2.sqlite-wal"
+    logs_wal_canonical = canonical / "logs_2.sqlite-wal"
+    logs_shm_overlay = codex_home / "logs_2.sqlite-shm"
+    logs_shm_canonical = canonical / "logs_2.sqlite-shm"
+    sqlite_home_raw = os.environ.get("CODEX_SQLITE_HOME")
+    sqlite_home = Path(sqlite_home_raw) if sqlite_home_raw else None
 
     marker = sessions_overlay / "omux-session-bridge-smoke.jsonl"
     marker.write_text('{"bridge":"ok"}\n')
@@ -230,6 +238,12 @@ def _session_bridge_report(codex_home: Path) -> dict:
         "state_db_samefile": state_canonical.exists() and os.path.samefile(state_overlay, state_canonical),
         "state_db_wal_samefile": wal_canonical.exists() and os.path.samefile(wal_overlay, wal_canonical),
         "state_db_shm_samefile": (not shm_canonical.exists()) or os.path.samefile(shm_overlay, shm_canonical),
+        "logs_db_samefile": logs_canonical.exists() and os.path.samefile(logs_overlay, logs_canonical),
+        "logs_db_wal_samefile": logs_wal_canonical.exists() and os.path.samefile(logs_wal_overlay, logs_wal_canonical),
+        "logs_db_shm_samefile": (not logs_shm_canonical.exists()) or os.path.samefile(logs_shm_overlay, logs_shm_canonical),
+        "sqlite_home_env_set": sqlite_home is not None,
+        "sqlite_home_samefile": sqlite_home is not None and os.path.samefile(sqlite_home, canonical),
+        "sqlite_home_path_printed": False,
         "marker_written_via_overlay": marker.exists(),
         "canonical_marker_exists": (sessions_canonical / marker.name).exists(),
         "paths_printed": False,
@@ -246,6 +260,13 @@ def _append_session_marker(codex_home: Path) -> dict:
         handle.write(json.dumps({"stub_resume_write": True, "argv_len": len(sys.argv) - 1}) + "\n")
     return {
         "checked": True,
+        "path_printed": False,
+    }
+
+
+def _sqlite_env_report() -> dict:
+    return {
+        "codex_sqlite_home_env_set": bool(os.environ.get("CODEX_SQLITE_HOME")),
         "path_printed": False,
     }
 
@@ -277,6 +298,7 @@ def main() -> int:
     config_report = _config_report(codex_home)
     session_bridge = _session_bridge_report(codex_home)
     session_append = _append_session_marker(codex_home)
+    sqlite_env = _sqlite_env_report()
     auth_rewrite = _rewrite_auth_json(codex_home)
 
     started_at = time.time()
@@ -314,6 +336,7 @@ def main() -> int:
         "config": config_report,
         "session_bridge": session_bridge,
         "session_append": session_append,
+        "sqlite_env": sqlite_env,
         "auth_rewrite": auth_rewrite,
     }
     report_path.write_text(json.dumps(report, indent=2))

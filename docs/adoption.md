@@ -155,9 +155,11 @@ session authority is bridged by reference to the canonical Codex home unless
 `--isolated-session-store` is set. `oauth-mux codex resume` with no id keeps
 native Codex chooser ownership; oauth-mux only checks before spawn that the
 managed overlay exposes the same required session-authority entries so the
-chooser does not open empty. When canonical Codex has `state_5.sqlite*`, those
-files are bridged by reference and `state_5.sqlite` is treated as chooser
-authority; older homes use the legacy session/history/index/snapshot set.
+chooser does not open empty. When canonical Codex has `state_5.sqlite*` or
+`logs_2.sqlite*`, those files are bridged by reference; in canonical bridge
+mode `CODEX_SQLITE_HOME` points at the canonical authority home so Codex 0.132+
+uses the same SQLite resume store as bare Codex. Older homes use the legacy
+session/history/index/snapshot set.
 The portability policy is
 `docs/spec/codex-session-store-portability-policy-2026-05-18.md`: oauth-mux
 does not silently copy or import unmanaged rollout stores into route-local
