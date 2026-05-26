@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "issues": [],
+  "warnings": [],
+  "oauth_mux": {
+    "version": "0.1.12",
+    "build_id": "v0.1.12",
+    "binary_source": "user_local"
+  },
+  "route_summary": {
+    "session_start_ready": true,
+    "fallback_ready": true,
+    "single_route_at_risk": false,
+    "selectable_fallback_routes": 2
+  }
+}

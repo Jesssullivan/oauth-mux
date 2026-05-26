@@ -135,9 +135,15 @@ Known evidence:
 
 - Clean scratch capture `captures/codex-wire-20260526T171741Z` exists locally
   and is gitignored.
+- Current-release auth-failure scratch capture
+  `captures/codex-wire-20260526T193856Z` exists locally and is gitignored;
+  it observed `refresh_token_reused` on `/oauth/token` and `token_expired`
+  on `/backend-api/codex/responses`, with same-run proxy metadata and no
+  review failures after the local-path redaction addon fix.
 - Codex 0.132 `/backend-api/codex/responses` was observed as a WebSocket `101`,
   not a simple `200` SSE-only path.
 - Cookie and `Set-Cookie` redaction is now review-gated after PR `#292`.
+- Local workspace path redaction is review-gated before fixture promotion.
 - No quota/exhaustion shapes have been captured yet.
 
 Todos:
@@ -149,6 +155,7 @@ Todos:
   capacity, not from a single-route-at-risk state.
 - [ ] Promote the smallest scrubbed fixture that proves the real path shape.
 - [ ] Add or extend CI-safe replay smoke coverage for the scrubbed fixture.
+- [x] Gate obvious local home/tmp paths before any cassette fixture promotion.
 - [ ] Reconcile `TIN-950` Done versus GitHub `#176` open after the fixture and
   error-shape decision are recorded.
 
