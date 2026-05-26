@@ -82,6 +82,7 @@ evidence:
    ```bash
    scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
      --require-preflight-ok \
+     --require-proxy-meta \
      --require-path-kind responses \
      --require-status 200 \
      --require-quota-type usage_limit_reached
