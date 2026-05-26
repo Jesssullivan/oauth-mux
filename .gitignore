@@ -36,6 +36,7 @@ bazel-*
 
 # Distribution artifacts
 dist/build/
+dist/dogfood/
 dist/out/
 dist/live-qa/
 dist/codex-canary/

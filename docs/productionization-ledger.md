@@ -14,7 +14,9 @@ refreshed when release truth, route evidence, or tracker state changes.
   gate from PR #290, the `0.1.11` release from PR #291, the post-release
   capture cookie redaction hardening from PR #292, and the provider-namespace
   resume picker parity fix from PR #295, followed by the `0.1.12` release prep
-  from PR #296.
+  from PR #296. Main after the release also includes PR #299, which promoted a
+  scrubbed auth-failure cassette fixture and local-path redaction gate; that
+  follow-up is not part of the published `0.1.12` release.
 - CI/release state: GitHub Actions is the live source for release proof. Release
   workflow `26469045026` published `v0.1.12`; release assets are present and
   the public GitHub Release is non-draft/non-prerelease. npm dry-run/publish
@@ -42,10 +44,10 @@ refreshed when release truth, route evidence, or tracker state changes.
   `selectable_fallback_routes:2`, `single_route_at_risk:false`,
   `spends_provider_calls:false`, and `mutates_route_health:false`.
 - Process/fd truth: TIN-1591 remains contained, not resolved. Current snapshots
-  still show active Codex/oauth-mux fanout, a soft fd limit of `256`, and
-  orphan-listener candidates. Treat dogfood evidence as local release/install
-  validation only until repeated clean-baseline snapshots support broader live
-  reliability claims.
+  still show active Codex/oauth-mux fanout, a soft fd limit of `256`, max
+  visible fd use at 73.4% of that limit, and orphan-listener candidates. Treat
+  dogfood evidence as local release/install validation only until repeated
+  clean-baseline snapshots support broader live reliability claims.
 - Daemon truth: `oauth-mux daemon status --json` still reports
   `status:"not_running"`, `contract:"experimental_socket_stub"`, and
   `hosts_stay_afloat:false`; its foreground tick snapshot is observational only
@@ -176,7 +178,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Codex next-turn broker switch | TIN-916 | #131 | Closed for the proven managed Codex live handoff. Remaining negative/permutation work lives in #212/#176; same-thread, mid-turn, and unmanaged daemon behavior remain separate non-claims. |
 | Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Wire cassette coverage | TIN-950 | #176 | Still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile only after real cassette acceptance or an explicit tracker correction. |
+| Wire cassette coverage | TIN-950 | #176 | PR #299 promoted a scrubbed current-release auth-failure fixture and replay smoke. Quota/rate-limit and all-fallbacks-exhausted cassette evidence is still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile only after real cassette acceptance or an explicit tracker correction. |
 | Harness session authority bridge | TIN-979 / TIN-1624 | #191 / #288 | Closed for the original Codex bridge, with TIN-1624/#288 covering the Codex 0.132 `logs_2.sqlite*` / `CODEX_SQLITE_HOME` parity regression. Managed auth/config overlays bridge canonical session authority and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
