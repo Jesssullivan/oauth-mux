@@ -8,10 +8,9 @@ Status: active sprint todo list; subordinate to `AGENTS.md`,
 
 ## Sprint Goal
 
-Convert the post-`0.1.11` fixes into reliable next evidence: a `0.1.12`
-release for resume picker parity, clean dogfood baselines, real Codex cassette
-coverage, and a disciplined backlog that does not expand public claims ahead
-of proof.
+Convert the `0.1.12` release into reliable next evidence: clean dogfood
+baselines, real Codex cassette coverage, and a disciplined backlog that does
+not expand public claims ahead of proof.
 
 The product anchor stays unchanged: `oauth-mux codex` must keep a managed
 Codex harness usable when auth, quota, tier, or local runtime state changes.
@@ -22,11 +21,9 @@ support are not success metrics.
 
 - Before this P0 branch, `oauth-mux` main was clean and synced to
   `origin/main`.
-- Public release `v0.1.11` is published and verified for GitHub Release,
-  Homebrew, user-local dogfood, curl installer assets, and deb/rpm assets, but
-  it predates PR #295's provider-namespace resume picker fix.
-- Source is staged as `0.1.12` for that fix; run `just release-proof 0.1.12`
-  before any tag, registry, or tap mutation.
+- Public release `v0.1.12` is published and verified for GitHub Release,
+  Homebrew, user-local dogfood, curl installer assets, deb/rpm assets, and the
+  lab Home Manager source pin.
 - npm remains stale at `0.1.9`; do not claim npm `0.1.12`.
 - Current no-spend Codex preflight reports `fallback_ready:true`,
   `selectable_fallback_routes:2`, `session_start_ready:true`,
@@ -210,9 +207,8 @@ Priority: P1.
 
 Completion metric:
 
-- Current-state docs consistently say `0.1.11` is published for GitHub Release
-  and Homebrew but predates PR #295; `0.1.12` is required for public resume
-  picker parity, while npm is stale at `0.1.9`.
+- Current-state docs consistently say `0.1.12` is published for GitHub Release
+  and Homebrew, while npm is stale at `0.1.9`.
 - Historical snapshots remain clearly historical.
 - `SHA256SUMS.full` semantics are explicit before `0.1.12`: it remains a
   checksum manifest for publishable payloads listed in `publish-files.txt`, not
