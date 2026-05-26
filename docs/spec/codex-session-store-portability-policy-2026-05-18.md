@@ -42,11 +42,17 @@ present:
 - `state_5.sqlite`
 - `state_5.sqlite-wal`
 - `state_5.sqlite-shm`
+- `logs_2.sqlite`
+- `logs_2.sqlite-wal`
+- `logs_2.sqlite-shm`
 
-`state_5.sqlite` is treated as native chooser authority when present. Older
-Codex homes fall back to the legacy session/history/index/snapshot set. Other
-SQLite databases, logs, caches, and telemetry state are not bridged unless a
-future Codex version proves they are required for normal resume/chooser parity.
+`state_5.sqlite` and `logs_2.sqlite` are treated as native chooser authority
+when present. In canonical bridge mode oauth-mux sets child `CODEX_SQLITE_HOME`
+to the canonical session authority home so Codex 0.132+ reads the same runtime
+SQLite store as bare Codex. Older Codex homes fall back to the legacy
+session/history/index/snapshot set. Other SQLite databases, logs, caches, and
+telemetry state are not bridged unless a future Codex version proves they are
+required for normal resume/chooser parity.
 
 ## Resume And Write Policy
 
@@ -82,7 +88,8 @@ Current no-spend regression coverage:
   - proves first-class managed `resume`, `resume --last`, and `resume <id>`
     forwarding;
   - proves canonical `sessions/`, `history.jsonl`, `session_index.jsonl`,
-    `shell_snapshots/`, and `state_5.sqlite*` are bridged by reference;
+    `shell_snapshots/`, `state_5.sqlite*`, and `logs_2.sqlite*` are bridged by
+    reference, with `CODEX_SQLITE_HOME` pointed at the canonical authority home;
   - proves a managed child write appends through bridged session authority;
   - proves missing chooser authority fails before child spawn;
   - proves status output redacts session ids and paths.
@@ -111,4 +118,3 @@ new issue and all of these gates:
 
 Until those gates exist, the supported portability answer is the canonical
 session bridge, not import/export.
-

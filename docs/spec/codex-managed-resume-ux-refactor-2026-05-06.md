@@ -73,6 +73,9 @@ Already real on `main`:
 - `sessions/`, `history.jsonl`, `session_index.jsonl`, and
   `shell_snapshots/` are bridged by reference to canonical Codex session
   authority by default.
+- `state_5.sqlite*` and `logs_2.sqlite*` are bridged by reference when present;
+  canonical bridge mode also sets `CODEX_SQLITE_HOME` to the canonical session
+  authority home for Codex 0.132+.
 - `--session-home`, `OMUX_CODEX_SESSION_HOME`, and
   `--isolated-session-store` exist.
 - `oauth-mux codex resume` with no id preserves the native chooser. Before
@@ -608,7 +611,7 @@ Evidence:
 
 - The adapter did start a broker-owned managed frame:
   `session_started`, `auth_authority:"mux_owned_overlay"`,
-  `session_authority:"canonical_bridge"`.
+  `session_authority:"canonical_bridge"`, `sqlite_authority:"canonical_env"`.
 - The explicit resume target was found before launch and writeback was observed.
 - Every proxied upstream request returned `401 auth_unauthorized`, including
   the main `POST /backend-api/codex/responses` turns.

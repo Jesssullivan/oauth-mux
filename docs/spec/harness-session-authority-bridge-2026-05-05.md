@@ -20,20 +20,22 @@ when set, otherwise `~/.codex`; `OMUX_CODEX_SESSION_HOME` and
 opts out for tests/privacy.
 
 The synthetic acceptance smoke proves the managed overlay exposes
-`sessions/`, `history.jsonl`, `session_index.jsonl`, and `shell_snapshots/` by
-reference without printing paths. `oauth-mux codex resume` with no id now runs
-the native chooser path only after a pre-spawn authority check verifies those
-entries are available; missing authority emits redacted `resume_authority_check`
-status and exits before spawning Codex. Installed-runtime dogfood has also
-proven managed resume/load through the proxy, including live quota handoff
-evidence tracked in
+`sessions/`, `history.jsonl`, `session_index.jsonl`, `shell_snapshots/`, and
+documented Codex SQLite authority by reference without printing paths.
+`oauth-mux codex resume` with no id now runs the native chooser path only after
+a pre-spawn authority check verifies those entries are available; missing
+authority emits redacted `resume_authority_check` status and exits before
+spawning Codex. Installed-runtime dogfood has also proven managed resume/load
+through the proxy, including live quota handoff evidence tracked in
 `docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`.
 
-Implementation update, 2026-05-10: newer Codex chooser state can live in
-`state_5.sqlite*`. The managed overlay now bridges `state_5.sqlite`,
-`state_5.sqlite-wal`, and `state_5.sqlite-shm` by reference when canonical
-Codex has them. `state_5.sqlite` is accepted as chooser authority when
-present; older Codex homes still use the legacy file set above.
+Implementation update, 2026-05-26: Codex 0.132 reads native SQLite resume
+state from `CODEX_SQLITE_HOME` when set, and the chooser can depend on
+`logs_2.sqlite*` as well as `state_5.sqlite*`. Canonical bridge mode keeps the
+managed `CODEX_HOME` as mux-owned auth/config, sets child `CODEX_SQLITE_HOME`
+to the canonical session authority home, and bridges both SQLite families by
+reference when present. Isolated mode leaves SQLite state in the overlay and
+removes inherited `CODEX_SQLITE_HOME`.
 
 The 2026-05-06 dogfood-6 auth failure exposed the auth-side counterpart:
 Codex can refresh tokens inside the managed overlay, and the adapter must
@@ -151,13 +153,15 @@ For Codex today, candidate session-authority files are:
 - `~/.codex/session_index.jsonl`
 - `~/.codex/history.jsonl`
 - `~/.codex/shell_snapshots/`
-- `~/.codex/state_5.sqlite*` when present, for newer native chooser state
+- `~/.codex/state_5.sqlite*` when present, for native SQLite state
+- `~/.codex/logs_2.sqlite*` when present, for Codex 0.132+ native chooser
+  previews
 
 The current required set is pinned by fixture smoke coverage and pre-spawn
-chooser authority checks. `state_5.sqlite` is sufficient chooser authority
-when present; otherwise the legacy entries above remain the fallback authority
-set. Add new entries only with evidence that native Codex requires them for
-chooser/resume parity.
+chooser authority checks. `logs_2.sqlite` or `state_5.sqlite` is sufficient
+chooser authority when present; otherwise the legacy entries above remain the
+fallback authority set. Add new entries only with evidence that native Codex
+requires them for chooser/resume parity.
 
 ### 2.4 Cache, Log, and Runtime State
 
@@ -173,9 +177,10 @@ normal operation. Keep this state local to the managed overlay or to an
 oauth-mux-owned runtime directory. If a harness needs a cache bridge, it must
 be explicit and documented separately from session authority.
 
-For Codex, `state_5.sqlite*` is now a narrowly scoped session-authority bridge
-for native chooser parity. Other `logs_*.sqlite`, `state_*.sqlite`, and model
-caches are not bridged by default.
+For Codex, `state_5.sqlite*` and `logs_2.sqlite*` are narrowly scoped
+session-authority bridges for native chooser parity. Other `logs_*.sqlite`,
+`state_*.sqlite`, and model caches are not bridged by default without fresh
+native evidence.
 
 ### 2.5 oauth-mux Evidence Store
 
@@ -243,10 +248,14 @@ For Codex on Unix-like systems, a candidate overlay is:
   state_5.sqlite -> ~/.codex/state_5.sqlite       # when canonical has it
   state_5.sqlite-wal -> ~/.codex/state_5.sqlite-wal
   state_5.sqlite-shm -> ~/.codex/state_5.sqlite-shm
+  logs_2.sqlite -> ~/.codex/logs_2.sqlite         # when canonical has it
+  logs_2.sqlite-wal -> ~/.codex/logs_2.sqlite-wal
+  logs_2.sqlite-shm -> ~/.codex/logs_2.sqlite-shm
 ```
 
 This keeps `resume <id>` and `resume --last` pointed at the canonical session
-authority without mutating canonical auth/config.
+authority without mutating canonical auth/config. For Codex 0.132+,
+`CODEX_SQLITE_HOME` is also set to the canonical authority home in this mode.
 
 Risks to resolve:
 
@@ -314,7 +323,8 @@ adapters can report this consistently:
   "session_authority": "canonical_bridge",
   "auth_authority": "mux_owned_overlay",
   "managed_config": "mux_owned_overlay",
-  "session_paths_printed": false
+  "session_paths_printed": false,
+  "sqlite_authority": "canonical_env"
 }
 ```
 

@@ -48,7 +48,7 @@ capability, such as `codex:max-3#codex-max`.
 
 | Pattern | Entry | Evidence required | Current status |
 | --- | --- | --- | --- |
-| Managed resume chooser | `oauth-mux codex resume` | `resume_authority_check`, native chooser argv, `resume_authority_state_db_bridged` when `state_5.sqlite*` exists, no recursive pre-spawn rollout scan | covered by CLI smoke |
+| Managed resume chooser | `oauth-mux codex resume` | `resume_authority_check`, native chooser argv, `sqlite_authority:"canonical_env"`, `resume_authority_state_db_bridged` / `resume_authority_logs_db_bridged` when Codex SQLite authority exists, no recursive pre-spawn rollout scan | covered by CLI smoke |
 | Managed explicit resume | `oauth-mux codex resume <id>` | canonical session bridge, `resume_lookup_source`, redacted status, runtime identity | live-proven path |
 | Managed last resume | `oauth-mux codex resume --last` | canonical session bridge, writeback check | covered by CLI smoke |
 | Labeled reauth | `oauth-mux codex login-device <account>` | action says `user_handoff`, route label named, no raw identity | live operator flow |

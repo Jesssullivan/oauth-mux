@@ -83,9 +83,22 @@ const SessionAuthorityMode = enum {
     }
 };
 
+const CodexSqliteAuthorityMode = enum {
+    canonical_env,
+    isolated_overlay,
+
+    fn toString(self: CodexSqliteAuthorityMode) []const u8 {
+        return switch (self) {
+            .canonical_env => "canonical_env",
+            .isolated_overlay => "isolated_overlay",
+        };
+    }
+};
+
 const SessionCodexHome = struct {
     path: []u8,
     session_authority: SessionAuthorityMode,
+    sqlite_authority: CodexSqliteAuthorityMode,
     authority_home: ?[]u8 = null,
     config_authority_home: ?[]u8 = null,
     auth_initial_hash: [32]u8,
@@ -155,6 +168,7 @@ const RolloutSnapshot = struct {
 
 const ResumeLookupSource = enum {
     state_db,
+    logs_db,
     session_index,
     filename_scan,
     not_scanned,
@@ -162,6 +176,7 @@ const ResumeLookupSource = enum {
     fn toString(self: ResumeLookupSource) []const u8 {
         return switch (self) {
             .state_db => "state_db",
+            .logs_db => "logs_db",
             .session_index => "session_index",
             .filename_scan => "filename_scan",
             .not_scanned => "not_scanned",
@@ -415,21 +430,31 @@ const codex_session_authority_entries = [_]SessionAuthorityEntry{
     .{ .name = "session_index.jsonl", .kind = .file },
 };
 
-const codex_optional_session_authority_entries = [_]SessionAuthorityEntry{
+const codex_optional_state_authority_entries = [_]SessionAuthorityEntry{
     .{ .name = "state_5.sqlite", .kind = .file },
     .{ .name = "state_5.sqlite-wal", .kind = .file },
     .{ .name = "state_5.sqlite-shm", .kind = .file },
 };
 
+const codex_optional_logs_authority_entries = [_]SessionAuthorityEntry{
+    .{ .name = "logs_2.sqlite", .kind = .file },
+    .{ .name = "logs_2.sqlite-wal", .kind = .file },
+    .{ .name = "logs_2.sqlite-shm", .kind = .file },
+};
+
 const ResumeAuthorityCheck = struct {
     mode: ResumeMode,
     authority: SessionAuthorityMode,
+    sqlite_authority: CodexSqliteAuthorityMode,
     required_total: usize = codex_session_authority_entries.len,
     canonical_present: usize = 0,
     overlay_present: usize = 0,
     state_db_canonical_present: bool = false,
     state_db_overlay_present: bool = false,
     state_db_bridged: bool = false,
+    logs_db_canonical_present: bool = false,
+    logs_db_overlay_present: bool = false,
+    logs_db_bridged: bool = false,
     ok: bool = false,
     diagnostic: []const u8 = "not_checked",
 };
@@ -541,6 +566,7 @@ fn traceManagedOverlay(
         trace.string("managed_config", "mux_owned_overlay"),
         trace.string("config_layout", codex_home.config_layout),
         trace.string("session_authority", codex_home.session_authority.toString()),
+        trace.string("sqlite_authority", codex_home.sqlite_authority.toString()),
         trace.boolean("config_passthrough", codex_home.config_passthrough),
         trace.boolean("user_config_present", codex_home.config_source_present),
         trace.uint("config_overridden_keys", @intCast(codex_home.config_overridden_keys)),
@@ -569,6 +595,7 @@ fn traceManagedSessionStart(
         trace.string("claim_level", "broker_owned"),
         trace.string("resume_mode", resume_mode.toString()),
         trace.string("session_authority", codex_home.session_authority.toString()),
+        trace.string("sqlite_authority", codex_home.sqlite_authority.toString()),
         trace.uint("forwarded_arg_count", @intCast(forwarded_arg_count)),
         trace.boolean("child_stdio_inherited", true),
         trace.boolean("codex_home_path_printed", false),
@@ -595,6 +622,7 @@ fn traceManagedSessionEnd(
         trace.int("term_code", if (term) |value| childTermCode(value) else -1),
         trace.string("final_claim_level", proxy.peakClaimLevel().toString()),
         trace.string("session_authority", codex_home.session_authority.toString()),
+        trace.string("sqlite_authority", codex_home.sqlite_authority.toString()),
         trace.boolean("synthetic_swap_observed", proxy.syntheticSwapSeen()),
         trace.boolean("codex_home_path_printed", false),
         trace.boolean("token_material_printed", false),
@@ -1253,8 +1281,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         const installed_local_mismatch = envFlag("OMUX_INSTALLED_LOCAL_MISMATCH");
 
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{",
-            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.mcp_stdio_unsupported_fields_removed, codex_home.session_authority.toString(), status_file_path != null },
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"sqlite_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{",
+            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.mcp_stdio_unsupported_fields_removed, codex_home.session_authority.toString(), codex_home.sqlite_authority.toString(), status_file_path != null },
         );
         try runtime_identity.writeJsonFields(status_writer);
         try status_writer.writeAll(",\"command_spelling\":");
@@ -1307,6 +1335,16 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     try env_map.put("CODEX_HOME", codex_home.path);
     if (codex_home.authority_home) |authority_home| {
         try env_map.put("OMUX_CODEX_SESSION_HOME", authority_home);
+    }
+    switch (codex_home.sqlite_authority) {
+        .canonical_env => {
+            if (codex_home.authority_home) |authority_home| {
+                try env_map.put("CODEX_SQLITE_HOME", authority_home);
+            }
+        },
+        .isolated_overlay => {
+            _ = env_map.remove("CODEX_SQLITE_HOME");
+        },
     }
     if (codex_home.config_authority_home) |config_home| {
         try env_map.put("OMUX_CODEX_CONFIG_HOME", config_home);
@@ -1642,6 +1680,7 @@ fn createSessionCodexHomeUnder(
     return .{
         .path = session_home,
         .session_authority = session_authority,
+        .sqlite_authority = if (session_authority == .canonical_bridge) .canonical_env else .isolated_overlay,
         .authority_home = if (session_authority_home) |home| try allocator.dupe(u8, home) else null,
         .config_authority_home = if (config_authority_home) |home| try allocator.dupe(u8, home) else null,
         .auth_initial_hash = auth_initial_hash,
@@ -1727,7 +1766,15 @@ fn bridgeCodexSessionAuthority(
         defer allocator.free(link);
         try std.fs.symLinkAbsolute(target, link, .{ .is_directory = entry.kind == .directory });
     }
-    for (codex_optional_session_authority_entries) |entry| {
+    for (codex_optional_state_authority_entries) |entry| {
+        const target = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
+        defer allocator.free(target);
+        if (!authorityEntryPresent(target, entry.kind)) continue;
+        const link = try std.fs.path.join(allocator, &.{ session_home, entry.name });
+        defer allocator.free(link);
+        try std.fs.symLinkAbsolute(target, link, .{ .is_directory = entry.kind == .directory });
+    }
+    for (codex_optional_logs_authority_entries) |entry| {
         const target = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
         defer allocator.free(target);
         if (!authorityEntryPresent(target, entry.kind)) continue;
@@ -1745,6 +1792,7 @@ fn checkResumeAuthority(
     var result = ResumeAuthorityCheck{
         .mode = request.mode,
         .authority = codex_home.session_authority,
+        .sqlite_authority = codex_home.sqlite_authority,
         .ok = true,
         .diagnostic = "not_required",
     };
@@ -1766,6 +1814,9 @@ fn checkResumeAuthority(
     result.state_db_canonical_present = authorityStateDbPresent(allocator, authority_home) catch false;
     result.state_db_overlay_present = authorityStateDbPresent(allocator, codex_home.path) catch false;
     result.state_db_bridged = result.state_db_canonical_present and result.state_db_overlay_present;
+    result.logs_db_canonical_present = authorityLogsDbPresent(allocator, authority_home) catch false;
+    result.logs_db_overlay_present = authorityLogsDbPresent(allocator, codex_home.path) catch false;
+    result.logs_db_bridged = result.logs_db_canonical_present and result.logs_db_overlay_present;
 
     var legacy_ok = true;
     for (codex_session_authority_entries) |entry| {
@@ -1787,8 +1838,10 @@ fn checkResumeAuthority(
             result.diagnostic = "overlay_entry_missing";
         }
     }
-    result.ok = result.state_db_bridged or legacy_ok;
-    if (result.ok) result.diagnostic = if (result.state_db_bridged) "state_db_available" else "available";
+    result.ok = result.logs_db_bridged or result.state_db_bridged or legacy_ok;
+    if (result.ok) {
+        result.diagnostic = if (result.logs_db_bridged) "logs_db_available" else if (result.state_db_bridged) "state_db_available" else "available";
+    }
     return result;
 }
 
@@ -1802,6 +1855,12 @@ fn authorityEntryPresent(path: []const u8, kind: SessionAuthorityEntryKind) bool
 
 fn authorityStateDbPresent(allocator: std.mem.Allocator, home: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ home, "state_5.sqlite" });
+    defer allocator.free(path);
+    return authorityEntryPresent(path, .file);
+}
+
+fn authorityLogsDbPresent(allocator: std.mem.Allocator, home: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ home, "logs_2.sqlite" });
     defer allocator.free(path);
     return authorityEntryPresent(path, .file);
 }
@@ -1881,6 +1940,13 @@ fn lookupExplicitResumePreflight(
         return result;
     }
 
+    if (try logsDbContainsResumeId(allocator, authority_home, explicit_id)) {
+        result.lookup_source = .logs_db;
+        result.explicit_target_found_before = true;
+        result.target_snapshot = try findRolloutTargetByFilename(allocator, authority_home, explicit_id);
+        return result;
+    }
+
     if (try sessionIndexContainsResumeId(allocator, authority_home, explicit_id)) {
         result.lookup_source = .session_index;
         result.explicit_target_found_before = true;
@@ -1901,7 +1967,20 @@ fn stateDbContainsResumeId(
     authority_home: []const u8,
     explicit_id: []const u8,
 ) !bool {
-    for (codex_optional_session_authority_entries) |entry| {
+    for (codex_optional_state_authority_entries) |entry| {
+        const path = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
+        defer allocator.free(path);
+        if (try fileContainsNeedleBounded(allocator, path, explicit_id)) return true;
+    }
+    return false;
+}
+
+fn logsDbContainsResumeId(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    explicit_id: []const u8,
+) !bool {
+    for (codex_optional_logs_authority_entries) |entry| {
         const path = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
         defer allocator.free(path);
         if (try fileContainsNeedleBounded(allocator, path, explicit_id)) return true;
@@ -2096,10 +2175,11 @@ fn writeResumeAuthorityCheckStatus(
     check: ResumeAuthorityCheck,
 ) !void {
     try writer.print(
-        "{{\"kind\":\"resume_authority_check\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"required_entries\":{d},\"canonical_present\":{d},\"overlay_present\":{d},\"resume_authority_state_db_bridged\":{any},\"state_db_canonical_present\":{any},\"state_db_overlay_present\":{any},\"session_id_printed\":false,\"path_printed\":false}}\n",
+        "{{\"kind\":\"resume_authority_check\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"sqlite_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"required_entries\":{d},\"canonical_present\":{d},\"overlay_present\":{d},\"resume_authority_state_db_bridged\":{any},\"state_db_canonical_present\":{any},\"state_db_overlay_present\":{any},\"resume_authority_logs_db_bridged\":{any},\"logs_db_canonical_present\":{any},\"logs_db_overlay_present\":{any},\"session_id_printed\":false,\"path_printed\":false}}\n",
         .{
             check.mode.toString(),
             check.authority.toString(),
+            check.sqlite_authority.toString(),
             check.ok,
             check.diagnostic,
             check.required_total,
@@ -2108,6 +2188,9 @@ fn writeResumeAuthorityCheckStatus(
             check.state_db_bridged,
             check.state_db_canonical_present,
             check.state_db_overlay_present,
+            check.logs_db_bridged,
+            check.logs_db_canonical_present,
+            check.logs_db_overlay_present,
         },
     );
 }
@@ -2930,6 +3013,7 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.isolated, codex_home.session_authority);
+    try std.testing.expectEqual(CodexSqliteAuthorityMode.isolated_overlay, codex_home.sqlite_authority);
 
     const session_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
     defer std.testing.allocator.free(session_auth);
@@ -3258,6 +3342,7 @@ test "config passthrough is independent from session authority" {
     const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, session_path, config_path);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
+    try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, codex_home.sqlite_authority);
     try std.testing.expect(codex_home.config_source_present);
     try std.testing.expect(codex_home.config_passthrough);
 
@@ -3455,6 +3540,16 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
         defer wal.close();
         try wal.writeAll("wal");
     }
+    {
+        const logs = try tmp.dir.createFile("canonical/logs_2.sqlite", .{ .mode = 0o600 });
+        defer logs.close();
+        try logs.writeAll("managed-good-session");
+    }
+    {
+        const logs_wal = try tmp.dir.createFile("canonical/logs_2.sqlite-wal", .{ .mode = 0o600 });
+        defer logs_wal.close();
+        try logs_wal.writeAll("logs-wal");
+    }
 
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root_path);
@@ -3466,6 +3561,7 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
     const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
+    try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, codex_home.sqlite_authority);
 
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const sessions_link = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "sessions" });
@@ -3490,6 +3586,22 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
     const expected_wal_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "state_5.sqlite-wal" });
     defer std.testing.allocator.free(expected_wal_target);
     try std.testing.expectEqualStrings(expected_wal_target, wal_target);
+
+    const logs_link = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "logs_2.sqlite" });
+    defer std.testing.allocator.free(logs_link);
+    var logs_link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const logs_target = try std.fs.readLinkAbsolute(logs_link, &logs_link_buf);
+    const expected_logs_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "logs_2.sqlite" });
+    defer std.testing.allocator.free(expected_logs_target);
+    try std.testing.expectEqualStrings(expected_logs_target, logs_target);
+
+    const logs_wal_link = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "logs_2.sqlite-wal" });
+    defer std.testing.allocator.free(logs_wal_link);
+    var logs_wal_link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const logs_wal_target = try std.fs.readLinkAbsolute(logs_wal_link, &logs_wal_link_buf);
+    const expected_logs_wal_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "logs_2.sqlite-wal" });
+    defer std.testing.allocator.free(expected_logs_wal_target);
+    try std.testing.expectEqualStrings(expected_logs_wal_target, logs_wal_target);
 
     const bridged_session = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "sessions", "2026", "05", "05", "session.jsonl" });
     defer std.testing.allocator.free(bridged_session);
@@ -3546,7 +3658,43 @@ test "resume authority accepts bridged state db as chooser authority" {
     const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
     try std.testing.expect(check.ok);
     try std.testing.expect(check.state_db_bridged);
+    try std.testing.expect(!check.logs_db_bridged);
     try std.testing.expectEqualStrings("state_db_available", check.diagnostic);
+}
+
+test "resume authority accepts bridged logs db as chooser authority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const logs = try tmp.dir.createFile("canonical/logs_2.sqlite", .{ .mode = 0o600 });
+        defer logs.close();
+        try logs.writeAll("managed-good-session");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
+    try std.testing.expect(check.ok);
+    try std.testing.expect(!check.state_db_bridged);
+    try std.testing.expect(check.logs_db_bridged);
+    try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, check.sqlite_authority);
+    try std.testing.expectEqualStrings("logs_db_available", check.diagnostic);
 }
 
 test "explicit resume preflight prefers state db and targeted rollout stat" {
@@ -3597,6 +3745,30 @@ test "explicit resume preflight can use state db without scanning rollout files"
     var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "state-only-session");
     defer preflight.deinit();
     try std.testing.expectEqual(ResumeLookupSource.state_db, preflight.lookup_source);
+    try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
+    try std.testing.expect(preflight.target_snapshot == null);
+    try std.testing.expectEqual(@as(usize, 0), preflight.rolloutsBefore());
+}
+
+test "explicit resume preflight can use logs db without scanning rollout files" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("canonical");
+    {
+        const logs = try tmp.dir.createFile("canonical/logs_2.sqlite", .{ .mode = 0o600 });
+        defer logs.close();
+        try logs.writeAll("logs-only-session");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "logs-only-session");
+    defer preflight.deinit();
+    try std.testing.expectEqual(ResumeLookupSource.logs_db, preflight.lookup_source);
     try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
     try std.testing.expect(preflight.target_snapshot == null);
     try std.testing.expectEqual(@as(usize, 0), preflight.rolloutsBefore());

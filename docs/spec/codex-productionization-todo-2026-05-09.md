@@ -23,9 +23,10 @@ Proven:
   regressions in the managed launch path: generated `config.toml` is
   root-partitioned so trailing user tables such as
   `[tui.model_availability_nux]` cannot swallow the managed
-  `model_provider`; `state_5.sqlite*` is bridged by reference when present for
-  native chooser parity; and broad pre-spawn Codex auth repair has been removed
-  from launch.
+  `model_provider`; `state_5.sqlite*` and `logs_2.sqlite*` are bridged by
+  reference when present for native chooser parity; canonical bridge mode sets
+  `CODEX_SQLITE_HOME` to the canonical authority home for Codex 0.132+; and
+  broad pre-spawn Codex auth repair has been removed from launch.
 
 Not proven:
 
@@ -76,10 +77,12 @@ Not proven:
   route-local silent import/copy remains rejected until a separate confirmed
   import command exists. See
   `docs/spec/codex-session-store-portability-policy-2026-05-18.md`.
-- [x] Bridge newer Codex `state_5.sqlite*` chooser authority by reference when
-  canonical Codex has it. Treat `state_5.sqlite` as chooser authority when
-  present and fall back to legacy `sessions` / `history.jsonl` /
-  `session_index.jsonl` / `shell_snapshots` authority for older Codex homes.
+- [x] Bridge newer Codex `state_5.sqlite*` and `logs_2.sqlite*` chooser
+  authority by reference when canonical Codex has it. Treat `state_5.sqlite`
+  or `logs_2.sqlite` as chooser authority when present, set
+  `CODEX_SQLITE_HOME` to canonical authority in bridge mode, and fall back to
+  legacy `sessions` / `history.jsonl` / `session_index.jsonl` /
+  `shell_snapshots` authority for older Codex homes.
 - [x] Add a managed config passthrough regression with a canonical
   `config.toml` fixture containing representative `[features]`,
   `experimental_*`, MCP, approval/sandbox, profile, custom provider, and model
@@ -158,8 +161,8 @@ Not proven:
 
 - [x] Explicit `oauth-mux codex resume <id>` no longer recursively snapshots all
   rollouts before spawn. It resolves targeted evidence from `state_5.sqlite*`,
-  then `session_index.jsonl`, then a bounded filename lookup, and reports
-  `resume_lookup_source` in redacted status.
+  then `logs_2.sqlite*`, then `session_index.jsonl`, then a bounded filename
+  lookup, and reports `resume_lookup_source` in redacted status.
 - [x] Bare `oauth-mux codex resume` reports authority readiness without scanning
   rollouts before child spawn. The `child_spawn_elapsed_ms` launch timing
   remains the primary startup UX metric.

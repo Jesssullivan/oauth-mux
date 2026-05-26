@@ -73,7 +73,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | --- | --- | --- |
 | Managed Codex launch/resume | Live-proven | Reference adapter path for `oauth-mux codex` and `oauth-mux codex resume`. |
 | Codex quota handoff | Live-proven for managed Codex | Strongest preserved proof lives in `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` when present. |
+| Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` and `logs_2.sqlite*` when present, with canonical `CODEX_SQLITE_HOME` for Codex 0.132+. |
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
 | Native Codex shim pass-through | Implemented in source, release pending | Admin/login/help/version paths bypass route election and exec native Codex. The 2026-05-18 package-lane fix must ship before public Homebrew/curl claims use this as installed truth. |
@@ -175,7 +175,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
 | Wire cassette coverage | TIN-950 | #176 | Still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile only after real cassette acceptance or an explicit tracker correction. |
-| Harness session authority bridge | TIN-979 | #191 | Closed for Codex: managed auth/config overlays bridge canonical session authority, `state_5.sqlite*`, and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
+| Harness session authority bridge | TIN-979 / TIN-1624 | #191 / #288 | Closed for the original Codex bridge, with TIN-1624/#288 covering the Codex 0.132 `logs_2.sqlite*` / `CODEX_SQLITE_HOME` parity regression. Managed auth/config overlays bridge canonical session authority and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
 | Package parity and install lanes | TIN-1255 | #252 | `0.1.9` is published and verified across GitHub Release, npm, Homebrew, curl installer assets, and deb/rpm release assets. |
