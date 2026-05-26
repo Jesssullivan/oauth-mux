@@ -25,8 +25,9 @@ TIN-950 adds the capture/replay tooling only:
   current route fallback readiness, latest status verdict, and
   stale-process hints. Run this immediately before starting any
   intercepting proxy or live provider spend.
-- `scripts/capture-codex-wire.sh` starts the operator-controlled
-  mitmproxy HTTP capture path.
+- `scripts/capture-codex-wire.sh proxy` starts the operator-controlled
+  mitmproxy HTTP capture path after rerunning the no-spend preflight
+  into the same capture root.
 - `scripts/codex-wire-addon.py` writes reviewed, redacted per-flow JSON
   from that capture path.
 - `scripts/capture-codex-wire.sh review captures/codex-wire-<TS>`
@@ -73,6 +74,9 @@ evidence:
 1. Run `scripts/capture-codex-wire.sh preflight` and confirm
    `ok:true`, `fallback_ready:true`, and `single_route_at_risk:false`
    unless the operator explicitly accepts a single-route-at-risk capture.
+   `scripts/capture-codex-wire.sh proxy` reruns this check into the
+   capture root before starting mitmproxy, so promoted captures must keep
+   that same-run `capture-preflight-summary.json`.
 2. Run the gated review against the capture root, not the raw `.flows`
    file:
    ```bash
