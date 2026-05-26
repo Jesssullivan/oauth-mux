@@ -1,5 +1,11 @@
 # P1: Preserve Codex config and experimental settings in managed overlay
 
+2026-05-26 note: the custom `oauth_mux_openai` provider described in this
+historical tracker update was superseded by the resume-picker namespace parity
+fix. Managed Codex now keeps `model_provider = "openai"` and routes through the
+localhost mux with `openai_base_url`, because Codex filters persisted resume
+threads by provider namespace.
+
 ## Problem
 
 `oauth-mux codex` currently creates a temporary `CODEX_HOME` and writes a fresh

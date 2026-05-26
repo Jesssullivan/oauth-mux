@@ -150,7 +150,7 @@ oauth-mux codex resume <session-id>
 ```
 
 These commands launch the real Codex CLI inside an oauth-mux managed frame.
-Auth and the proxy provider are mux-owned in a temporary overlay, while Codex
+Auth and the proxy base URL are mux-owned in a temporary overlay, while Codex
 session authority is bridged by reference to the canonical Codex home unless
 `--isolated-session-store` is set. `oauth-mux codex resume` with no id keeps
 native Codex chooser ownership; oauth-mux only checks before spawn that the
@@ -170,10 +170,12 @@ canonical config authority from `OMUX_CODEX_CONFIG_HOME`, then parent
 `CODEX_HOME`, then `~/.codex`, preserving settings such as `[features]`,
 legacy `experimental_*`, MCP servers, approval/sandbox policy, profiles, model
 defaults, and custom non-managed providers. oauth-mux strips the selected
-`model_provider` and stale `[model_providers.oauth_mux_openai]` entries before
-appending its proxy provider. Forwarded Codex `--config` / `-c` assignments
-that try to override mux-owned provider keys fail before child spawn with a
-redacted `config_passthrough_check` status event. The generated config uses
+`model_provider`, `openai_base_url`, and stale
+`[model_providers.oauth_mux_openai]` entries before appending
+`model_provider = "openai"` plus a localhost `openai_base_url`. Forwarded Codex
+`--config` / `-c` assignments that try to override mux-owned provider/base-url
+keys fail before child spawn with a redacted `config_passthrough_check` status
+event. The generated config uses
 `config_layout:"root_partitioned"` so managed root keys cannot land inside a
 trailing user table.
 When a Codex experimental feature key is absent, the managed overlay defaults

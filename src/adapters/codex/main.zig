@@ -278,6 +278,7 @@ const ConfigOverrideCheck = struct {
     total_config_overrides: usize = 0,
     mux_owned_overrides: usize = 0,
     model_provider_override: bool = false,
+    openai_base_url_override: bool = false,
     managed_provider_override: bool = false,
 };
 
@@ -2436,6 +2437,7 @@ fn writeManagedConfigToml(
                 &feature_defaults,
                 &observation.experimental_feature_defaults_injected,
                 &observation.mcp_stdio_unsupported_fields_removed,
+                proxy_port,
             );
             managed_root_written = true;
             if (contents.items.len != 0 and contents.items[contents.items.len - 1] != '\n') try w.writeAll("\n");
@@ -2449,15 +2451,9 @@ fn writeManagedConfigToml(
     if (!managed_root_written) {
         observation.experimental_feature_defaults_injected += try feature_defaults.writeMissingAsRootDotted(w);
         if (observation.experimental_feature_defaults_injected != 0) try w.writeAll("\n");
-        try writeManagedConfigRoot(w);
+        try writeManagedConfigRoot(w, proxy_port);
     }
-    observation.overridden_keys += 1;
-    try w.print("[model_providers.oauth_mux_openai]\n", .{});
-    try w.print("name = \"oauth-mux OpenAI proxy\"\n", .{});
-    try w.print("base_url = \"http://127.0.0.1:{d}/backend-api/codex\"\n", .{proxy_port});
-    try w.writeAll("wire_api = \"responses\"\n");
-    try w.writeAll("requires_openai_auth = true\n");
-    observation.overridden_keys += 1;
+    observation.overridden_keys += 2;
 
     const f = try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
     defer f.close();
@@ -2465,10 +2461,11 @@ fn writeManagedConfigToml(
     return observation;
 }
 
-fn writeManagedConfigRoot(writer: anytype) !void {
+fn writeManagedConfigRoot(writer: anytype, proxy_port: u16) !void {
     try writer.writeAll("# Managed by oauth-mux. Proxy override; unrelated Codex config above is preserved.\n");
     try writer.writeAll("# Anchor: docs/spec/codex-adapter-contract-2026-05-03.md §4\n\n");
-    try writer.writeAll("model_provider = \"oauth_mux_openai\"\n\n");
+    try writer.writeAll("model_provider = \"openai\"\n");
+    try writer.print("openai_base_url = \"http://127.0.0.1:{d}/backend-api\"\n\n", .{proxy_port});
 }
 
 fn writeConfigPassthrough(
@@ -2478,6 +2475,7 @@ fn writeConfigPassthrough(
     feature_defaults: *CodexExperimentalFeatureDefaults,
     experimental_feature_defaults_injected: *usize,
     mcp_stdio_unsupported_fields_removed: *usize,
+    proxy_port: u16,
 ) !usize {
     var overridden: usize = 0;
     var root = std.ArrayListUnmanaged(u8){};
@@ -2524,6 +2522,10 @@ fn writeConfigPassthrough(
                         overridden += 1;
                         continue;
                     },
+                    .openai_base_url => {
+                        overridden += 1;
+                        continue;
+                    },
                 }
             }
             try root.writer(allocator).writeAll(line);
@@ -2536,6 +2538,10 @@ fn writeConfigPassthrough(
         if (configAssignmentOverridesMuxProvider(trimmed_left)) |classification| {
             switch (classification) {
                 .model_provider, .managed_provider => {
+                    overridden += 1;
+                    continue;
+                },
+                .openai_base_url => {
                     overridden += 1;
                     continue;
                 },
@@ -2568,7 +2574,7 @@ fn writeConfigPassthrough(
         try writer.writeAll(root.items);
         if (root.items[root.items.len - 1] != '\n') try writer.writeAll("\n");
     }
-    try writeManagedConfigRoot(writer);
+    try writeManagedConfigRoot(writer, proxy_port);
     if (tables.items.len != 0) {
         try writer.writeAll(tables.items);
         if (tables.items[tables.items.len - 1] != '\n') try writer.writeAll("\n");
@@ -2711,6 +2717,7 @@ fn recordConfigOverride(result: *ConfigOverrideCheck, assignment: []const u8) vo
         result.mux_owned_overrides += 1;
         switch (classification) {
             .model_provider => result.model_provider_override = true,
+            .openai_base_url => result.openai_base_url_override = true,
             .managed_provider => result.managed_provider_override = true,
         }
     }
@@ -2718,6 +2725,7 @@ fn recordConfigOverride(result: *ConfigOverrideCheck, assignment: []const u8) vo
 
 const ConfigOverrideClassification = enum {
     model_provider,
+    openai_base_url,
     managed_provider,
 };
 
@@ -2725,6 +2733,9 @@ fn configAssignmentOverridesMuxProvider(assignment: []const u8) ?ConfigOverrideC
     const key = tomlAssignmentKey(assignment) orelse return null;
     if (std.mem.eql(u8, key, "model_provider") or std.mem.endsWith(u8, key, ".model_provider")) {
         return .model_provider;
+    }
+    if (std.mem.eql(u8, key, "openai_base_url")) {
+        return .openai_base_url;
     }
     if (std.mem.eql(u8, key, "model_providers.oauth_mux_openai") or
         std.mem.startsWith(u8, key, "model_providers.oauth_mux_openai."))
@@ -2736,12 +2747,13 @@ fn configAssignmentOverridesMuxProvider(assignment: []const u8) ?ConfigOverrideC
 
 fn writeConfigOverrideCheckStatus(writer: anytype, check: ConfigOverrideCheck) !void {
     try writer.print(
-        "{{\"kind\":\"config_passthrough_check\",\"ok\":{any},\"total_config_overrides\":{d},\"mux_owned_overrides\":{d},\"model_provider_override\":{any},\"managed_provider_override\":{any},\"paths_printed\":false,\"values_printed\":false}}\n",
+        "{{\"kind\":\"config_passthrough_check\",\"ok\":{any},\"total_config_overrides\":{d},\"mux_owned_overrides\":{d},\"model_provider_override\":{any},\"openai_base_url_override\":{any},\"managed_provider_override\":{any},\"paths_printed\":false,\"values_printed\":false}}\n",
         .{
             check.ok,
             check.total_config_overrides,
             check.mux_owned_overrides,
             check.model_provider_override,
+            check.openai_base_url_override,
             check.managed_provider_override,
         },
     );
@@ -3032,8 +3044,9 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, session_config, 4096);
     defer std.testing.allocator.free(generated_config);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "127.0.0.1:45678") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "openai_base_url = \"http://127.0.0.1:45678/backend-api\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.openai]") == null);
     try std.testing.expectEqual(@as(usize, 5), codex_home.experimental_feature_defaults_injected);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.terminal_resize_reflow = true") != null);
@@ -3140,15 +3153,17 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "\"gpt-5.5\" = 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "https://stale.invalid") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"user_provider\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"") != null);
-    const managed_provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"").?;
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "model_provider = \"openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "openai_base_url = \"http://127.0.0.1:45678/backend-api\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") == null);
+    const managed_provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"openai\"").?;
     const tui_table_idx = std.mem.indexOf(u8, generated_config, "[tui.model_availability_nux]").?;
     const features_idx = std.mem.indexOf(u8, generated_config, "[features]").?;
     const mcp_idx = std.mem.indexOf(u8, generated_config, "[mcp_servers.design]").?;
     try std.testing.expect(managed_provider_idx < tui_table_idx);
     try std.testing.expect(features_idx < mcp_idx);
     try std.testing.expect(std.mem.indexOf(u8, generated_config[features_idx..mcp_idx], "terminal_resize_reflow = true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "http://127.0.0.1:45678/backend-api/codex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "http://127.0.0.1:45678/backend-api") != null);
 }
 
 test "config passthrough preserves explicit experimental feature choices" {
@@ -3234,11 +3249,13 @@ test "config passthrough partitions root model provider before trailing table" {
     const generated_config = try std.fs.cwd().readFileAlloc(std.testing.allocator, overlay_config, 8192);
     defer std.testing.allocator.free(generated_config);
 
-    const provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"oauth_mux_openai\"").?;
+    const provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"openai\"").?;
+    const base_url_idx = std.mem.indexOf(u8, generated_config, "openai_base_url = \"http://127.0.0.1:45678/backend-api\"").?;
     const tui_idx = std.mem.indexOf(u8, generated_config, "[tui.model_availability_nux]").?;
-    const managed_table_idx = std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]").?;
     try std.testing.expect(provider_idx < tui_idx);
-    try std.testing.expect(tui_idx < managed_table_idx);
+    try std.testing.expect(provider_idx < base_url_idx);
+    try std.testing.expect(base_url_idx < tui_idx);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "\"gpt-5.5\" = 2") != null);
 }
 
@@ -3258,7 +3275,7 @@ test "config passthrough strips profile-scoped model_provider overrides" {
         \\experimental_apply_patch = true
         \\
     ;
-    const overridden = try writeConfigPassthrough(std.testing.allocator, buf.writer(std.testing.allocator), source, &feature_defaults, &experimental_feature_defaults_injected, &mcp_stdio_unsupported_fields_removed);
+    const overridden = try writeConfigPassthrough(std.testing.allocator, buf.writer(std.testing.allocator), source, &feature_defaults, &experimental_feature_defaults_injected, &mcp_stdio_unsupported_fields_removed, 45678);
 
     try std.testing.expectEqual(@as(usize, 1), overridden);
     try std.testing.expectEqual(@as(usize, 5), experimental_feature_defaults_injected);
@@ -3283,13 +3300,15 @@ test "forwarded Codex config overrides cannot replace managed provider" {
     const unsafe_argv = [_][]const u8{
         "--config",                                         "model_provider=\"openai\"",
         "--config=profiles.work.model_provider=\"custom\"", "-c=model_providers.oauth_mux_openai.base_url=\"https://example.invalid\"",
+        "-c",                                               "openai_base_url=\"https://example.invalid\"",
         "--model",                                          "gpt-5.5",
     };
     const unsafe = checkForwardedConfigOverrides(&unsafe_argv);
     try std.testing.expect(!unsafe.ok);
-    try std.testing.expectEqual(@as(usize, 3), unsafe.total_config_overrides);
-    try std.testing.expectEqual(@as(usize, 3), unsafe.mux_owned_overrides);
+    try std.testing.expectEqual(@as(usize, 4), unsafe.total_config_overrides);
+    try std.testing.expectEqual(@as(usize, 4), unsafe.mux_owned_overrides);
     try std.testing.expect(unsafe.model_provider_override);
+    try std.testing.expect(unsafe.openai_base_url_override);
     try std.testing.expect(unsafe.managed_provider_override);
 }
 

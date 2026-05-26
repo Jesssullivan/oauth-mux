@@ -23,10 +23,11 @@ Proven:
   regressions in the managed launch path: generated `config.toml` is
   root-partitioned so trailing user tables such as
   `[tui.model_availability_nux]` cannot swallow the managed
-  `model_provider`; `state_5.sqlite*` and `logs_2.sqlite*` are bridged by
-  reference when present for native chooser parity; canonical bridge mode sets
-  `CODEX_SQLITE_HOME` to the canonical authority home for Codex 0.132+; and
-  broad pre-spawn Codex auth repair has been removed from launch.
+  `model_provider` / `openai_base_url`; `state_5.sqlite*` and
+  `logs_2.sqlite*` are bridged by reference when present for native chooser
+  parity; canonical bridge mode sets `CODEX_SQLITE_HOME` to the canonical
+  authority home for Codex 0.132+; and broad pre-spawn Codex auth repair has
+  been removed from launch.
 
 Not proven:
 
@@ -59,7 +60,7 @@ Not proven:
   initial slice):
   `/experimental` / `[features]`, MCP, hooks/rules, approval/sandbox, profiles,
   model defaults, and other user behavior settings must pass through while
-  oauth-mux overrides only the proxy provider keys.
+  oauth-mux overrides only the proxy routing keys.
 - [x] Default missing Codex experimental feature keys in the managed child
   config (`terminal_resize_reflow`, `memories`, `external_migration`, `goals`,
   and `prevent_idle_sleep`) while preserving explicit canonical values,
