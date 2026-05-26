@@ -27,6 +27,17 @@ cat >"$TMP/codex-wire-synth/capture-preflight-summary.json" <<'JSON'
 }
 JSON
 
+cat >"$TMP/codex-wire-synth/meta.json" <<'JSON'
+{
+  "ts_utc": "20260526T000000Z",
+  "kind": "phase_0_wire_capture",
+  "addon": "scripts/codex-wire-addon.py",
+  "preflight_summary": "capture-preflight-summary.json",
+  "host_filter": "chatgpt.com",
+  "ports": { "http": 9080, "https": 9080 }
+}
+JSON
+
 cat >"$CAP/00001-POST-backend-api_codex_responses.json" <<'JSON'
 {
   "captured_at": 1788000000.0,
@@ -89,6 +100,7 @@ JSON
 
 "$ROOT/scripts/capture-codex-wire.sh" review "$TMP/codex-wire-synth" \
   --require-preflight-ok \
+  --require-proxy-meta \
   --require-path-kind responses \
   --require-status 200 \
   --require-status 429 \
@@ -103,6 +115,10 @@ assert summary["ok"] is True, summary
 assert summary["flow_count"] == 2, summary
 assert summary["preflight"]["present"] is True, summary
 assert summary["preflight"]["ok"] is True, summary
+assert summary["meta"]["present"] is True, summary
+assert summary["meta"]["kind"] == "phase_0_wire_capture", summary
+assert summary["meta"]["preflight_summary"] == "capture-preflight-summary.json", summary
+assert summary["meta"]["preflight_summary_present"] is True, summary
 assert summary["path_counts"]["responses"] == 2, summary
 assert summary["status_counts"]["200"] == 1, summary
 assert summary["status_counts"]["429"] == 1, summary
@@ -111,6 +127,34 @@ assert shape["error_type"] == "usage_limit_reached", shape
 assert shape["has_resets_at"] is True, shape
 assert shape["plan_type"] == "pro", shape
 assert summary["requirement_failures"] == [], summary
+PY
+
+BAD_META="$TMP/codex-wire-bad-meta"
+mkdir -p "$BAD_META/http"
+cp "$TMP/codex-wire-synth/capture-preflight-summary.json" "$BAD_META/capture-preflight-summary.json"
+cp "$CAP/00001-POST-backend-api_codex_responses.json" "$BAD_META/http/00001-POST-backend-api_codex_responses.json"
+cat >"$BAD_META/meta.json" <<'JSON'
+{
+  "kind": "phase_0_wire_capture",
+  "preflight_summary": "wrong-preflight-summary.json"
+}
+JSON
+
+if "$ROOT/scripts/capture-codex-wire.sh" review "$BAD_META" \
+  --require-preflight-ok \
+  --require-proxy-meta \
+  --json >"$TMP/bad-meta-summary.json"; then
+  echo "smoke-codex-capture-review: expected bad proxy metadata to fail" >&2
+  exit 1
+fi
+
+python3 - "$TMP/bad-meta-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is False, summary
+assert summary["redaction_failures"] == [], summary
+assert "capture meta.json does not point at capture-preflight-summary.json" in summary["requirement_failures"], summary
 PY
 
 if "$ROOT/scripts/capture-codex-wire.sh" review "$TMP/codex-wire-synth" \

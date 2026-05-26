@@ -75,6 +75,7 @@ def main() -> int:
     parser.add_argument("capture_dir", help="capture run dir or its http/ subdir")
     parser.add_argument("--json", action="store_true", help="emit machine-readable summary")
     parser.add_argument("--require-preflight-ok", action="store_true", help="fail unless capture-preflight-summary.json is present and ok:true")
+    parser.add_argument("--require-proxy-meta", action="store_true", help="fail unless meta.json records same-run proxy preflight metadata")
     parser.add_argument("--require-path-kind", action="append", default=[], help="fail unless at least one flow has this normalized path kind")
     parser.add_argument("--require-status", action="append", type=int, default=[], help="fail unless at least one flow has this HTTP status")
     parser.add_argument("--require-quota-type", action="append", default=[], help="fail unless at least one 429 error.type matches this value")
@@ -89,6 +90,8 @@ def main() -> int:
 
     preflight_path = capture_root / "capture-preflight-summary.json"
     preflight_summary = _load_optional_json(preflight_path)
+    meta_path = capture_root / "meta.json"
+    meta_summary = _load_optional_json(meta_path)
     flows = []
     redaction_failures: list[str] = []
     malformed: list[str] = []
@@ -138,6 +141,24 @@ def main() -> int:
             detail = f": {issues}" if issues else ""
             requirement_failures.append(f"capture preflight was not ok{detail}")
 
+    meta_preflight_summary = None
+    meta_preflight_present = False
+    if isinstance(meta_summary, dict):
+        meta_preflight_summary = meta_summary.get("preflight_summary")
+        if isinstance(meta_preflight_summary, str) and meta_preflight_summary:
+            meta_preflight_present = (capture_root / meta_preflight_summary).is_file()
+
+    if args.require_proxy_meta:
+        if not isinstance(meta_summary, dict):
+            requirement_failures.append("capture meta.json is missing or unreadable")
+        else:
+            if meta_summary.get("kind") != "phase_0_wire_capture":
+                requirement_failures.append("capture meta.json kind is not phase_0_wire_capture")
+            if meta_preflight_summary != "capture-preflight-summary.json":
+                requirement_failures.append("capture meta.json does not point at capture-preflight-summary.json")
+            elif not meta_preflight_present:
+                requirement_failures.append("capture meta.json preflight summary is missing")
+
     for kind in args.require_path_kind:
         if path_counts.get(kind, 0) < 1:
             requirement_failures.append(f"required path kind not observed: {kind}")
@@ -159,6 +180,12 @@ def main() -> int:
             "ok": preflight_summary.get("ok") if isinstance(preflight_summary, dict) else None,
             "issues": preflight_summary.get("issues", []) if isinstance(preflight_summary, dict) else [],
         },
+        "meta": {
+            "present": isinstance(meta_summary, dict),
+            "kind": meta_summary.get("kind") if isinstance(meta_summary, dict) else None,
+            "preflight_summary": meta_preflight_summary,
+            "preflight_summary_present": meta_preflight_present,
+        },
         "path_counts": path_counts,
         "status_counts": status_counts,
         "quota_shapes": quota_shapes,
@@ -172,6 +199,7 @@ def main() -> int:
     else:
         print(f"flows: {summary['flow_count']}")
         print(f"preflight: {json.dumps(summary['preflight'], sort_keys=True)}")
+        print(f"meta: {json.dumps(summary['meta'], sort_keys=True)}")
         print(f"paths: {json.dumps(path_counts, sort_keys=True)}")
         print(f"statuses: {json.dumps(status_counts, sort_keys=True)}")
         if quota_shapes:
