@@ -8,24 +8,27 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Repo state: `main` matches `origin/main` at `0051c57`, including the
+- Repo state: `main` matches `origin/main` at `a38f4f3`, including the
   BrokenPipe/client-disconnect hardening from PR #279, the Codex 0.132 SQLite
   resume authority fix from PR #289, the Codex capture-review proxy metadata
-  gate from PR #290, the `0.1.11` release from PR #291, and the post-release
-  capture cookie redaction hardening from PR #292.
+  gate from PR #290, the `0.1.11` release from PR #291, the post-release
+  capture cookie redaction hardening from PR #292, and the provider-namespace
+  resume picker parity fix from PR #295.
 - CI/release state: GitHub Actions is the live source for release proof. Release
   workflow `26463502300` published `v0.1.11`; release assets are present and
-  the public GitHub Release is non-draft/non-prerelease. npm dry-run/publish
-  remains blocked/stale; npm `latest` still reports `0.1.9`.
-- Version truth: source version is `0.1.11`. GitHub Release, curl installer
-  assets, deb/rpm assets, and the public Homebrew tap resolve to `0.1.11`. npm
-  remains stale at `0.1.9`. The Homebrew formula remains binary-only by
-  default and must not install or link a managed `codex` shim.
-- Installed provenance: user-local dogfood is PATH-first on neo and reports
-  `0.1.11` with build id `v0.1.11`; Homebrew also reports `0.1.11`. Continue
-  checking `which -a oauth-mux`, `which -a codex`, `oauth-mux version --json`,
-  and `codex preflight` before treating any installed-command run as release
-  evidence.
+  the public GitHub Release is non-draft/non-prerelease. `v0.1.11` predates
+  PR #295, so `0.1.12` is the next required public release before public
+  install lanes can claim native/managed resume picker parity. npm
+  dry-run/publish remains blocked/stale; npm `latest` still reports `0.1.9`.
+- Version truth: source version is `0.1.12`. GitHub Release, curl installer
+  assets, deb/rpm assets, and the public Homebrew tap currently resolve to
+  `0.1.11`. npm remains stale at `0.1.9`. The Homebrew formula remains
+  binary-only by default and must not install or link a managed `codex` shim.
+- Installed provenance: user-local dogfood is PATH-first in the oauth-mux repo
+  shell and reports the post-PR #295 source build; Homebrew also reports
+  `0.1.11`. Continue checking `which -a oauth-mux`, `which -a codex`,
+  `oauth-mux version --json`, and `codex preflight` before treating any
+  installed-command run as release evidence.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
   0.1.11`, the local linked keg is `0.1.11`, and
   `brew fetch --force jesssullivan/omux/oauth-mux` passes after tap PR #8 fixed
@@ -33,7 +36,7 @@ refreshed when release truth, route evidence, or tracker state changes.
   QA must prove it installs `oauth-mux`, does not install an
   `OMUX_CODEX_SHIM`, and leaves native `codex` command resolution unchanged.
 - Codex route truth: the 2026-05-26 no-spend preflight uses user-local
-  `oauth-mux 0.1.11` and native Codex outside oauth-mux. It reports
+  post-PR #295 oauth-mux and native Codex outside oauth-mux. It reports
   `ok:true`, `session_start_ready:true`, `fallback_ready:true`,
   `selectable_fallback_routes:2`, `single_route_at_risk:false`,
   `spends_provider_calls:false`, and `mutates_route_health:false`.
@@ -65,6 +68,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Managed Codex launch/resume | Live-proven | Reference adapter path for `oauth-mux codex` and `oauth-mux codex resume`. |
 | Codex quota handoff | Live-proven for managed Codex | Strongest preserved proof lives in `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
 | Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` and `logs_2.sqlite*` when present, with canonical `CODEX_SQLITE_HOME` for Codex 0.132+. |
+| Resume picker namespace parity | Implemented in source | PR #295 keeps managed Codex on the built-in `openai` provider namespace while routing through mux via `openai_base_url`, so native and managed `codex resume` enumerate the same provider-filtered session rows. Public packages need `0.1.12` before this can be claimed for installed lanes. |
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
 | Native Codex shim pass-through | Implemented | Admin/login/help/version paths bypass route election and exec native Codex. Public Homebrew remains binary-only and must not install the shim by default. |
@@ -135,15 +139,15 @@ tracker mismatch, then later sidecar and non-Codex provider work.
 
 `0.1.11` is the current verified public release. It carries Codex 0.132 resume
 authority parity for `logs_2.sqlite*` / `CODEX_SQLITE_HOME` and the #176
-capture-review `--require-proxy-meta` gate. `just release-proof 0.1.11` passed
-before tag/release mutation. GitHub Release `v0.1.11` is published and
+capture-review `--require-proxy-meta` gate, but it does not carry PR #295's
+provider-namespace resume picker fix. `0.1.12` is the next release candidate
+for public install lanes. Run `just release-proof 0.1.12` before any tag,
+registry, or tap mutation. GitHub Release `v0.1.11` remains published and
 non-draft with 23 assets. The public Homebrew tap is fixed for the published
-asset checksums; local `brew fetch --force jesssullivan/omux/oauth-mux` passes
-and both user-local and Homebrew installs report `0.1.11`. npm publication
-remains blocked/stale; npm `latest` still reports `0.1.9`. Post-release PR
-#292 tightened capture cookie redaction and is not part of the `v0.1.11` tag.
-Negative Codex cassettes, broader adapter proof, and daemon beta truth remain
-follow-up work.
+`0.1.11` asset checksums; local `brew fetch --force
+jesssullivan/omux/oauth-mux` passes. npm publication remains blocked/stale;
+npm `latest` still reports `0.1.9`. Negative Codex cassettes, broader adapter
+proof, and daemon beta truth remain follow-up work.
 Windows managed-`codex` parity is intentionally assigned to the npm wrapper
 lane rather than raw tarballs until a native Windows operator need is proven.
 Future public install copy must avoid claiming a version or lane behavior until
@@ -174,7 +178,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Harness session authority bridge | TIN-979 / TIN-1624 | #191 / #288 | Closed for the original Codex bridge, with TIN-1624/#288 covering the Codex 0.132 `logs_2.sqlite*` / `CODEX_SQLITE_HOME` parity regression. Managed auth/config overlays bridge canonical session authority and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
-| Package parity and install lanes | TIN-1255 | #252 | `0.1.11` is published and verified across GitHub Release, Homebrew, curl installer assets, and deb/rpm release assets; npm remains stale at `0.1.9`. |
+| Package parity and install lanes | TIN-1255 | #252 | `0.1.11` is published and verified across GitHub Release, Homebrew, curl installer assets, and deb/rpm release assets, but it predates PR #295; `0.1.12` is required for public resume picker parity. npm remains stale at `0.1.9`. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
