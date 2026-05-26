@@ -15,10 +15,12 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 
 ## Current Verified State
 
-- Local upstream `main` is at `0051c57`, after PR #292 tightened capture cookie
-  redaction. PR #289 fixed the Codex 0.132 SQLite resume authority regression,
-  PR #290 added the #176 `--require-proxy-meta` capture gate, and PR #291 cut
-  the `0.1.11` release.
+- Local upstream `main` is at `7a06632`, after PR #299 promoted a scrubbed
+  current-release auth-failure wire fixture and local-path redaction gate.
+  PR #289 fixed the Codex 0.132 SQLite resume authority regression, PR #290
+  added the #176 `--require-proxy-meta` capture gate, PR #291 cut the
+  `0.1.11` release, and PR #296 cut the `0.1.12` release for resume-picker
+  namespace parity.
 - GitHub read-only refresh at 2026-05-26: no open PRs; open issues remain
   `#67`, `#68`, `#163`, `#176`, and `#212`.
 - Linear: `TIN-1624` is Done for the resume authority fix. `TIN-1591`,
@@ -26,25 +28,25 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
   Progress. `TIN-938` is Todo, `TIN-1079` is Backlog, and `TIN-950` is still
   marked Done even though GitHub `#176` remains open for real cassette
   acceptance.
-- Release truth: public GitHub Release `v0.1.11` is published, not
+- Release truth: public GitHub Release `v0.1.12` is published, not
   draft/prerelease, with installer, Homebrew, tarball, deb/rpm, npm tarball,
   handoff, and checksum assets. The public Homebrew tap reports stable/linked
-  keg `0.1.11`, and `brew fetch --force jesssullivan/omux/oauth-mux` passes
-  after tap PR #8 corrected stale checksums. `npm view oauth-mux version` still
-  reports `0.1.9`; `oauth-mux@0.1.11` is not published to npm.
+  keg `0.1.12`. `npm view oauth-mux version` still reports `0.1.9`;
+  `oauth-mux@0.1.12` is not published to npm.
 - Current install truth: `/Users/jess/.local/bin/oauth-mux` is PATH-first and
-  reports `0.1.11` with build id `v0.1.11`; `/opt/homebrew/bin/oauth-mux` also
-  reports `0.1.11`. Native Codex resolves outside oauth-mux.
+  reports `0.1.12` with build id `v0.1.12`; `/opt/homebrew/bin/oauth-mux` also
+  reports `0.1.12`. Native Codex resolves outside oauth-mux.
 - Current no-spend route truth: `oauth-mux codex preflight --profile codex-max
   --capability codex-max --json` reports `ok:true`, `session_start_ready:true`,
   `fallback_ready:true`, `selectable_fallback_routes:2`,
   `single_route_at_risk:false`, `spends_provider_calls:false`, and
   `mutates_route_health:false`.
 - Current process/fd truth for TIN-1591 remains containment, not resolution:
-  soft fd limit is `256`, there are still active Codex/oauth-mux processes and
-  orphan-listener candidates, and one-snapshot helper fanout is not leak proof.
-  Do not use dogfood probes for broad live reliability claims until repeated
-  clean-baseline snapshots support that claim.
+  the fresh 2026-05-26 snapshot shows soft fd limit `256`, max visible fd use
+  at 73.4% of that limit, active Codex/oauth-mux processes, and orphan-listener
+  candidates. One-snapshot helper fanout is not leak proof. Do not use dogfood
+  probes for broad live reliability claims until repeated clean-baseline
+  snapshots support that claim.
 
 ## Workstream 1 - BrokenPipe And Network-Blip Reliability
 
@@ -92,7 +94,8 @@ Todo:
   provider-spend work. Landed as PR #279.
 - [x] Publish or install a build that contains PR #279 before treating new
   installed `oauth-mux codex resume` dogfood as fixed. Completed for GitHub
-  Release, user-local, and Homebrew as `0.1.11`.
+  Release, user-local, and Homebrew as `0.1.11`; the fix remains included in
+  current release `0.1.12`.
 
 ## Workstream 2 - No-Spend Route And Process Truth Refresh
 
@@ -242,17 +245,17 @@ Todo:
   (gitignored, not committed).
 - [ ] Capture or explicitly record not-observed status for quota/error shapes:
   `usage_limit_reached`, `usage_not_included`, and all-fallbacks-exhausted.
-- [ ] Add one scrubbed real-shape replay fixture and wire it into CI-safe
+- [x] Add one scrubbed real-shape replay fixture and wire it into CI-safe
   cassette smoke coverage.
 
 ## Workstream 4 - Release, Docs, And Workflow Hygiene
 
-Priority: P1. Release `0.1.11` is shipped; keep docs and install lanes aligned
+Priority: P1. Release `0.1.12` is shipped; keep docs and install lanes aligned
 before expanding public claims.
 
 Completion metric:
 
-- Current-state docs describe `0.1.11` as the latest verified public release
+- Current-state docs describe `0.1.12` as the latest verified public release
   truth and npm `0.1.9` as a stale package-lane exception.
 - Historical docs may keep older versions only when clearly framed as
   historical evidence.
@@ -265,9 +268,9 @@ Test commands:
 
 ```bash
 scripts/project-version.sh
-gh release view v0.1.9 --json tagName,publishedAt,url
-npm view oauth-mux version
-brew info --json=v2 jesssullivan/omux/oauth-mux | jq -r '.formulae[0].versions.stable'
+gh release view v0.1.12 --json tagName,publishedAt,url
+npm_config_cache=/private/tmp/omux-npm-cache npm view oauth-mux version
+HOMEBREW_NO_INSTALL_FROM_API=1 brew info --json=v2 jesssullivan/omux/oauth-mux | jq -r '.formulae[0].versions.stable'
 rg -n "0\\.1\\.[0-8]" README.md docs/productionization-ledger.md docs/adoption.md docs/qa-handoff-matrix.md .github/workflows
 git diff --check
 ```
@@ -283,6 +286,8 @@ Todo:
   and install-provenance fixes.
 - [x] Publish `v0.1.11` GitHub Release assets and update the public Homebrew tap
   to `0.1.11`; npm remains blocked/stale at `0.1.9`.
+- [x] Publish `v0.1.12` GitHub Release assets and update the public Homebrew tap
+  to `0.1.12`; npm remains blocked/stale at `0.1.9`.
 - [x] Fix the post-release Homebrew checksum drift and verify
   `brew fetch --force jesssullivan/omux/oauth-mux` passes against the public
   tap.

@@ -19,8 +19,9 @@ support are not success metrics.
 
 ## Current Truth
 
-- Before this P0 branch, `oauth-mux` main was clean and synced to
-  `origin/main`.
+- `oauth-mux` main is clean and synced to `origin/main` at `7a06632`
+  after PR #299 promoted the scrubbed auth-failure fixture and local-path
+  redaction gate.
 - Public release `v0.1.12` is published and verified for GitHub Release,
   Homebrew, user-local dogfood, curl installer assets, deb/rpm assets, and the
   lab Home Manager source pin.
@@ -29,9 +30,15 @@ support are not success metrics.
   `selectable_fallback_routes:2`, `session_start_ready:true`,
   `single_route_at_risk:false`, `spends_provider_calls:false`, and
   `mutates_route_health:false`.
-- `TIN-1591` remains contained, not resolved. Dogfood evidence is local
-  release/install validation until process/fd baselines are clean enough for
-  broader live reliability claims.
+- Current no-spend route matrix selects `codex:max-1#codex-max`, keeps
+  `max-2` and `max-4` as selectable fallbacks, and leaves `max-3` as
+  `probe_needed` / `unrecorded`; probing `max-3` would spend provider calls.
+- `TIN-1591` remains contained, not resolved. Fresh no-spend snapshot
+  `process-snapshot-20260526T200604Z-baseline-20260526` recorded
+  `nofile.soft:256`, `process_count:653`, `managed_codex_children:2`,
+  `orphan_listener_candidate_count:8`, and `max_fd_soft_limit_pct:73.4`.
+  Dogfood evidence remains local release/install validation until process/fd
+  baselines are clean enough for broader live reliability claims.
 - GitHub `#176` remains open even though Linear `TIN-950` is Done. Treat that
   as a tracker mismatch until real quota/error cassettes land or Linear is
   explicitly clarified.
@@ -101,10 +108,14 @@ Todos:
 - [x] Add a short `TIN-1591` runbook section to `docs/dogfood-process-fanout.md`
   or a sibling doc with the exact snapshot command, interpretation rules, and
   cleanup approval policy.
-- [ ] Re-run `python3 scripts/dogfood-process-snapshot.py --json` from a clean
+- [x] Re-run `python3 scripts/dogfood-process-snapshot.py --json` from a clean
   shell and save only a redacted summary if it changes the claim posture.
-- [ ] Decide whether the soft fd limit `256` is acceptable for dogfood evidence
-  or whether the runbook must require a higher limit.
+- [x] Decide whether the soft fd limit `256` is acceptable for dogfood evidence
+  or whether the runbook must require a higher limit. Decision: `256` is not
+  acceptable for broad live reliability or quota-cassette claims when the fresh
+  snapshot already shows 73.4% of the soft limit and active agent fanout.
+  Proceed only with local/no-spend evidence, or raise the limit and collect a
+  cleaner repeated baseline before live claims.
 - [x] Define which process classes are never killed by automation.
 - [ ] Re-check no proxy/capture/long-running validation processes before each
   live or cassette run.
@@ -140,6 +151,10 @@ Known evidence:
   it observed `refresh_token_reused` on `/oauth/token` and `token_expired`
   on `/backend-api/codex/responses`, with same-run proxy metadata and no
   review failures after the local-path redaction addon fix.
+- PR #299 promoted a scrubbed auth-failure fixture from that run and wired it
+  into CI-safe capture-review and replay smokes. The committed fixture
+  deliberately sanitizes secret-shaped strings and local paths; the raw
+  capture remains gitignored.
 - Codex 0.132 `/backend-api/codex/responses` was observed as a WebSocket `101`,
   not a simple `200` SSE-only path.
 - Cookie and `Set-Cookie` redaction is now review-gated after PR `#292`.
@@ -153,8 +168,8 @@ Todos:
   beyond the existing WebSocket `101` shape.
 - [ ] Target quota/error capture under explicit spend approval and fallback
   capacity, not from a single-route-at-risk state.
-- [ ] Promote the smallest scrubbed fixture that proves the real path shape.
-- [ ] Add or extend CI-safe replay smoke coverage for the scrubbed fixture.
+- [x] Promote the smallest scrubbed fixture that proves the real path shape.
+- [x] Add or extend CI-safe replay smoke coverage for the scrubbed fixture.
 - [x] Gate obvious local home/tmp paths before any cassette fixture promotion.
 - [ ] Reconcile `TIN-950` Done versus GitHub `#176` open after the fixture and
   error-shape decision are recorded.
@@ -190,7 +205,7 @@ Completion metric:
 
 Todos:
 
-- [ ] Refresh no-spend route inventory with `accounts list`, `route explain`,
+- [x] Refresh no-spend route inventory with `accounts list`, `route explain`,
   `codex preflight`, and `broker-session-plan`.
 - [ ] Identify one intentionally exhausted or limited route and one credited
   fallback route for a controlled run.
@@ -238,8 +253,8 @@ Validation:
 ```bash
 rg -n "0\\.1\\.10|0\\.1\\.11 is the next staged|v0\\.1\\.10|npm.*0\\.1\\.12" \
   README.md docs .github scripts || true
-npm view oauth-mux version --json
-brew info jesssullivan/omux/oauth-mux --json=v2 \
+npm_config_cache=/private/tmp/omux-npm-cache npm view oauth-mux version --json
+HOMEBREW_NO_INSTALL_FROM_API=1 brew info jesssullivan/omux/oauth-mux --json=v2 \
   | jq '.formulae[] | {stable: .versions.stable, installed: [.installed[]?.version]}'
 git diff --check
 ```
