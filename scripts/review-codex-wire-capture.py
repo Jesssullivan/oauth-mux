@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -24,6 +25,21 @@ TOKEN_PATTERNS = [
 ]
 
 COOKIE_HEADERS = {"cookie", "set-cookie"}
+
+
+def _local_path_patterns() -> list[re.Pattern[str]]:
+    patterns = [
+        re.compile(r"/Users/[A-Za-z0-9._-]+(?:/[^\s\"']*)?"),
+        re.compile(r"/home/[A-Za-z0-9._-]+(?:/[^\s\"']*)?"),
+        re.compile(r"/private/tmp/[^\s\"']+"),
+        re.compile(r"/tmp/[^\s\"']+"),
+        re.compile(r"/private/var/folders/[^\s\"']+"),
+        re.compile(r"/var/folders/[^\s\"']+"),
+    ]
+    home = os.environ.get("HOME")
+    if home:
+        patterns.insert(0, re.compile(re.escape(home) + r"(?:/[^\s\"']*)?"))
+    return patterns
 
 
 def _walk_strings(node: Any):
@@ -114,6 +130,7 @@ def main() -> int:
     path_counts: dict[str, int] = {}
     status_counts: dict[str, int] = {}
     quota_shapes: list[dict[str, Any]] = []
+    local_path_patterns = _local_path_patterns()
 
     for p in sorted(http_dir.glob("*.json")):
         try:
@@ -146,6 +163,10 @@ def main() -> int:
             for pat in TOKEN_PATTERNS:
                 if pat.search(s):
                     redaction_failures.append(f"{p.name}: possible secret-like value matched {pat.pattern}")
+                    break
+            for pat in local_path_patterns:
+                if pat.search(s):
+                    redaction_failures.append(f"{p.name}: local path is not redacted")
                     break
         for side, name, value in _iter_headers(record):
             if name.lower() in COOKIE_HEADERS and "<redacted>" not in value:

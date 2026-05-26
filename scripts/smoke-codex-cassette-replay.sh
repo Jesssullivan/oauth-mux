@@ -193,3 +193,72 @@ print("smoke-codex-cassette-replay: all 12 assertions passed.")
 print(f"  cassette dir: {portfile.parent / 'cassette'}")
 print(f"  replay log: {logfile}")
 PY
+
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+unset SERVER_PID
+
+FIXTURE="$ROOT/test/fixtures/codex-wire/auth-refresh-token-expired/http"
+FIXTURE_PORTFILE="$TMP/auth-fixture.port"
+FIXTURE_LOGFILE="$TMP/auth-fixture.log"
+FIXTURE_ERR="$TMP/auth-fixture.stderr"
+
+OMUX_CASSETTE_DIR="$FIXTURE" \
+  OMUX_STUB_PORT=0 \
+  OMUX_STUB_PORTFILE="$FIXTURE_PORTFILE" \
+  OMUX_STUB_LOGFILE="$FIXTURE_LOGFILE" \
+  python3 "$ROOT/scripts/test-cassette-upstream.py" 2>"$FIXTURE_ERR" &
+SERVER_PID=$!
+
+python3 - "$FIXTURE_PORTFILE" "$FIXTURE_LOGFILE" "$FIXTURE_ERR" <<'PY'
+import http.client
+import json
+import pathlib
+import sys
+import time
+
+portfile = pathlib.Path(sys.argv[1])
+logfile = pathlib.Path(sys.argv[2])
+server_err = pathlib.Path(sys.argv[3])
+
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    if portfile.exists() and portfile.read_text().strip():
+        break
+    time.sleep(0.05)
+else:
+    print("smoke-codex-cassette-replay: auth fixture server did not write port", file=sys.stderr)
+    print(server_err.read_text() if server_err.exists() else "", file=sys.stderr)
+    raise SystemExit(1)
+
+port = int(portfile.read_text().strip())
+
+def request(method: str, path: str):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path, body=b"{}" if method == "POST" else None)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", "replace")
+        return resp.status, body
+    finally:
+        conn.close()
+
+status1, body1 = request("POST", "/oauth/token")
+assert status1 == 401, (status1, body1)
+assert json.loads(body1)["error"]["code"] == "redacted_refresh_reused", body1
+
+status2, body2 = request("GET", "/backend-api/codex/responses")
+assert status2 == 401, (status2, body2)
+err = json.loads(body2)["error"]
+assert err["code"] == "token_expired", err
+
+deadline = time.monotonic() + 2
+while True:
+    records = [json.loads(line) for line in logfile.read_text().splitlines() if line.strip()]
+    if len(records) >= 2 or time.monotonic() >= deadline:
+        break
+    time.sleep(0.02)
+assert [r["status_replayed"] for r in records if r.get("match") is True] == [401, 401], records
+
+print("smoke-codex-cassette-replay: auth failure fixture replay passed.")
+PY

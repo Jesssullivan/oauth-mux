@@ -1,0 +1,11 @@
+{
+  "ts_utc": "20260526T193856Z",
+  "kind": "phase_0_wire_capture",
+  "addon": "scripts/codex-wire-addon.py",
+  "preflight_summary": "capture-preflight-summary.json",
+  "host_filter": "chatgpt.com",
+  "ports": {
+    "http": 9080,
+    "https": 9080
+  }
+}

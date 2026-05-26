@@ -132,6 +132,26 @@ assert shape["plan_type"] == "pro", shape
 assert summary["requirement_failures"] == [], summary
 PY
 
+FIXTURE="$ROOT/test/fixtures/codex-wire/auth-refresh-token-expired"
+"$ROOT/scripts/capture-codex-wire.sh" review "$FIXTURE" \
+  --require-preflight-ok \
+  --require-proxy-meta \
+  --require-path-kind responses \
+  --require-status 401 \
+  --json >"$TMP/auth-failure-fixture-summary.json"
+
+python3 - "$TMP/auth-failure-fixture-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is True, summary
+assert summary["flow_count"] == 2, summary
+assert summary["path_counts"]["oauth_token"] == 1, summary
+assert summary["path_counts"]["responses"] == 1, summary
+assert summary["status_counts"]["401"] == 2, summary
+assert summary["redaction_failures"] == [], summary
+PY
+
 BAD_META="$TMP/codex-wire-bad-meta"
 mkdir -p "$BAD_META/http"
 cp "$TMP/codex-wire-synth/capture-preflight-summary.json" "$BAD_META/capture-preflight-summary.json"
@@ -262,6 +282,49 @@ assert summary["ok"] is False, summary
 failures = "\n".join(summary["redaction_failures"])
 assert "request Cookie header is not redacted" in failures, summary
 assert "response Set-Cookie header is not redacted" in failures, summary
+PY
+
+BAD_LOCAL_PATH="$TMP/codex-wire-bad-local-path"
+mkdir -p "$BAD_LOCAL_PATH/http"
+cp "$TMP/codex-wire-synth/capture-preflight-summary.json" "$BAD_LOCAL_PATH/capture-preflight-summary.json"
+cp "$TMP/codex-wire-synth/meta.json" "$BAD_LOCAL_PATH/meta.json"
+cat >"$BAD_LOCAL_PATH/http/00001-GET-backend-api_codex_responses.json" <<'JSON'
+{
+  "captured_at": 1788000003.0,
+  "host": "chatgpt.com",
+  "scheme": "https",
+  "method": "GET",
+  "path": "/backend-api/codex/responses",
+  "request": {
+    "headers": [
+      ["x-codex-turn-metadata", "{\"workspaces\":{\"/Users/jess/git/oauth-mux\":{\"has_changes\":false}}}"]
+    ],
+    "body": {}
+  },
+  "response": {
+    "status": 401,
+    "reason": "Unauthorized",
+    "headers": [["content-type", "application/json"]],
+    "body": {
+      "error": {"code": "token_expired"}
+    }
+  },
+  "timing_ms": 1
+}
+JSON
+
+if python3 "$ROOT/scripts/review-codex-wire-capture.py" "$BAD_LOCAL_PATH" --json >"$TMP/bad-local-path-summary.json"; then
+  echo "smoke-codex-capture-review: expected unredacted local path fixture to fail" >&2
+  exit 1
+fi
+
+python3 - "$TMP/bad-local-path-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is False, summary
+failures = "\n".join(summary["redaction_failures"])
+assert "local path is not redacted" in failures, summary
 PY
 
 BIN="$TMP/bin"

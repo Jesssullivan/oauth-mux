@@ -13,6 +13,7 @@ Redactions:
   - Cookie and Set-Cookie values: keep names only, replace values with
     "<redacted>"
   - ChatGPT-Account-ID: keep first 6 chars + sha256(value)[:10]
+  - Local home/tmp paths: replace with "~" or "<tmp>"
   - Body fields tokens.access_token / refresh_token / id_token: replace
     with sha256(value)[:10] (so swap-correctness can be argued from the
     capture without leaking material)
@@ -64,6 +65,17 @@ def _hash10(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:10]
 
 
+def _redact_text(value: str) -> str:
+    out = value
+    home = os.environ.get("HOME")
+    if home:
+        out = out.replace(home, "~")
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        out = out.replace(tmpdir.rstrip("/"), "<tmp>")
+    return out.replace("/private/tmp/", "<tmp>/").replace("/tmp/", "<tmp>/")
+
+
 def _redact_header(name: str, value: str) -> str:
     name_low = name.lower()
     if name_low == "authorization":
@@ -88,7 +100,7 @@ def _redact_header(name: str, value: str) -> str:
         return f"{name}=<redacted>"
     if name_low == "chatgpt-account-id":
         return f"{value[:6]}-<{_hash10(value)}>"
-    return value
+    return _redact_text(value)
 
 
 def _redact_obj(node: Any) -> Any:
@@ -102,6 +114,8 @@ def _redact_obj(node: Any) -> Any:
         return out
     if isinstance(node, list):
         return [_redact_obj(x) for x in node]
+    if isinstance(node, str):
+        return _redact_text(node)
     return node
 
 

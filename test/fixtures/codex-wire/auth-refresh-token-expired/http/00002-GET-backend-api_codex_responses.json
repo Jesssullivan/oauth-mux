@@ -1,0 +1,188 @@
+{
+  "captured_at": 1779824355.767891,
+  "host": "chatgpt.com",
+  "scheme": "https",
+  "method": "GET",
+  "path": "/backend-api/codex/responses",
+  "request": {
+    "headers": [
+      [
+        "Host",
+        "chatgpt.com"
+      ],
+      [
+        "Connection",
+        "Upgrade"
+      ],
+      [
+        "Upgrade",
+        "websocket"
+      ],
+      [
+        "Sec-WebSocket-Version",
+        "13"
+      ],
+      [
+        "Sec-WebSocket-Key",
+        "redacted"
+      ],
+      [
+        "chatgpt-account-id",
+        "79b941-<38079d6ace>"
+      ],
+      [
+        "authorization",
+        "<redacted>"
+      ],
+      [
+        "user-agent",
+        "codex_exec/0.132.0 (Mac OS 26.5.0; arm64) ghostty/1.3.2-HEAD-_ff6e126 (codex_exec; 0.132.0)"
+      ],
+      [
+        "originator",
+        "codex_exec"
+      ],
+      [
+        "openai-beta",
+        "responses_websockets=2026-02-06"
+      ],
+      [
+        "version",
+        "0.132.0"
+      ],
+      [
+        "x-codex-beta-features",
+        "terminal_resize_reflow,prevent_idle_sleep"
+      ],
+      [
+        "x-codex-turn-metadata",
+        "{\"session_id\":\"redacted\",\"thread_id\":\"redacted\",\"turn_id\":\"\",\"workspaces\":{\"~/repo\":{\"associated_remote_urls\":{\"origin\":\"redacted\"},\"latest_git_commit_hash\":\"redacted\",\"has_changes\":true}},\"sandbox\":\"seatbelt\"}"
+      ],
+      [
+        "x-client-request-id",
+        "redacted"
+      ],
+      [
+        "session-id",
+        "redacted"
+      ],
+      [
+        "thread-id",
+        "redacted"
+      ],
+      [
+        "x-codex-window-id",
+        "redacted"
+      ],
+      [
+        "sec-websocket-extensions",
+        "permessage-deflate; client_max_window_bits"
+      ]
+    ],
+    "body": {
+      "__non_json__": true,
+      "len": 0,
+      "head_hex": ""
+    }
+  },
+  "response": {
+    "status": 401,
+    "reason": "Unauthorized",
+    "headers": [
+      [
+        "Date",
+        "Tue, 26 May 2026 19:39:15 GMT"
+      ],
+      [
+        "Content-Type",
+        "text/plain"
+      ],
+      [
+        "Content-Length",
+        "191"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "x-openai-ide-error-code",
+        "token_expired"
+      ],
+      [
+        "x-openai-authorization-error",
+        "401"
+      ],
+      [
+        "x-error-json",
+        "ewogICJlcnJvciI6IHsKICAgICJtZXNzYWdlIjogIlByb3ZpZGVkIGF1dGhlbnRpY2F0aW9uIHRva2VuIGlzIGV4cGlyZWQuIFBsZWFzZSB0cnkgc2lnbmluZyBpbiBhZ2Fpbi4iLAogICAgInR5cGUiOiBudWxsLAogICAgImNvZGUiOiAidG9rZW5fZXhwaXJlZCIsCiAgICAicGFyYW0iOiBudWxsCiAgfSwKICAic3RhdHVzIjogNDAxCn0="
+      ],
+      [
+        "x-request-id",
+        "c10e77d7-4ad2-4461-9d11-2be750ddc6c2"
+      ],
+      [
+        "x-openai-internal-caller",
+        "unknown_through_ide"
+      ],
+      [
+        "x-openai-proxy-wasm",
+        "v0.1"
+      ],
+      [
+        "cf-cache-status",
+        "DYNAMIC"
+      ],
+      [
+        "Set-Cookie",
+        "__cf_bm=<redacted>"
+      ],
+      [
+        "Report-To",
+        "{\"endpoints\":[{\"url\":\"https:\\/\\/a.nel.cloudflare.com\\/report\\/v4?s=%2Fopwod1nbsMKu4wb%2Bm7lRWp7zl3nieVaT6J3RYaV3Nw0whw2d%2B70S3dKxv1CtA%2FUwb3zPRHybfcTYRaUuG%2BWXxBYrIGqrzUZk6u6YfehC2yGXOFn%2BTt3nxWBxyEb\"}],\"group\":\"cf-nel\",\"max_age\":604800}"
+      ],
+      [
+        "NEL",
+        "{\"success_fraction\":0.01,\"report_to\":\"cf-nel\",\"max_age\":604800}"
+      ],
+      [
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "X-Content-Type-Options",
+        "nosniff"
+      ],
+      [
+        "Referrer-Policy",
+        "strict-origin-when-cross-origin"
+      ],
+      [
+        "Cross-Origin-Opener-Policy",
+        "same-origin-allow-popups"
+      ],
+      [
+        "Server",
+        "cloudflare"
+      ],
+      [
+        "CF-RAY",
+        "a01f3eae79a1f5c2-BOS"
+      ],
+      [
+        "alt-svc",
+        "h3=\":443\"; ma=86400"
+      ]
+    ],
+    "body": {
+      "error": {
+        "message": "Provided authentication token is expired. Please try signing in again.",
+        "type": null,
+        "code": "token_expired",
+        "param": null
+      },
+      "status": 401
+    }
+  },
+  "timing_ms": 232
+}

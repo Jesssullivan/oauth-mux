@@ -1,0 +1,118 @@
+{
+  "captured_at": 1779824348.660991,
+  "host": "auth.openai.com",
+  "scheme": "https",
+  "method": "POST",
+  "path": "/oauth/token",
+  "request": {
+    "headers": [
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "originator",
+        "codex_exec"
+      ],
+      [
+        "user-agent",
+        "codex_exec/0.132.0 (Mac OS 26.5.0; arm64) ghostty/1.3.2-HEAD-_ff6e126"
+      ],
+      [
+        "content-length",
+        "182"
+      ]
+    ],
+    "body": {
+      "client_id": "<redacted-public-client-id>",
+      "grant_type": "<redacted>"
+    }
+  },
+  "response": {
+    "status": 401,
+    "reason": "",
+    "headers": [
+      [
+        "date",
+        "Tue, 26 May 2026 19:39:08 GMT"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "content-length",
+        "231"
+      ],
+      [
+        "server",
+        "cloudflare"
+      ],
+      [
+        "openai-version",
+        "2020-10-01"
+      ],
+      [
+        "x-request-id",
+        "08a3605a-c3e7-4595-9541-95486f79bb3f"
+      ],
+      [
+        "openai-processing-ms",
+        "21"
+      ],
+      [
+        "x-content-type-options",
+        "nosniff"
+      ],
+      [
+        "x-openai-proxy-wasm",
+        "v0.1"
+      ],
+      [
+        "set-cookie",
+        "unified_session_manifest=<redacted>"
+      ],
+      [
+        "timing-allow-origin",
+        "*"
+      ],
+      [
+        "cf-cache-status",
+        "DYNAMIC"
+      ],
+      [
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+      ],
+      [
+        "nel",
+        "{\"report_to\":\"cf-nel\",\"success_fraction\":0.1,\"max_age\":604800}"
+      ],
+      [
+        "report-to",
+        "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=vWbl9DG9r0Mwerk4hGdnZKr%2FhuVPPSsSYleQJ0mRgZQNelhLauEZ4psKPqWz9NyZBiRPIQuEEMy3ffFFvbO%2FBVqCCV9jhMw1NR9eXVASApTPSTV4mOVQc5XGs6AK4FXOzg%3D%3D\"}]}"
+      ],
+      [
+        "cf-ray",
+        "a01f3e832bfd1275-BOS"
+      ],
+      [
+        "alt-svc",
+        "h3=\":443\"; ma=86400"
+      ]
+    ],
+    "body": {
+      "error": {
+        "message": "Your OAuth refresh credential has already been used. Please try signing in again.",
+        "type": "invalid_request_error",
+        "param": null,
+        "code": "redacted_refresh_reused"
+      }
+    }
+  },
+  "timing_ms": 59
+}

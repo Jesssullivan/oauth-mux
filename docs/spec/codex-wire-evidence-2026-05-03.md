@@ -98,6 +98,38 @@ confirm the shapes themselves match upstream reality.
   same day are not fixture candidates because response cookies were not
   yet redacted in per-flow JSON.
 
+2026-05-26 current-release auth-failure capture:
+
+- Capture run directory: `captures/codex-wire-20260526T193856Z/`
+  (ignored; raw `flows.binary` not committed).
+- Capture path: `codex exec` through mitmproxy with `SSL_CERT_FILE`
+  pointed at the mitmproxy CA, after a same-run proxy preflight.
+- oauth-mux provenance: user-local `0.1.12`, build id `v0.1.12`,
+  SHA256 `caa5fb51a34eed5f01ba52e494b14baaf62b4631450a4f33ec6333c04b804787`.
+- Preflight: `ok:true`, `fallback_ready:true`,
+  `single_route_at_risk:false`, `selectable_fallback_routes:2`.
+- Review gate:
+  ```bash
+  scripts/capture-codex-wire.sh review captures/codex-wire-20260526T193856Z \
+    --require-preflight-ok \
+    --require-proxy-meta \
+    --require-path-kind responses \
+    --require-status 401 \
+    --json
+  ```
+- Review result after the local-path gate: `ok:true`, 11 flows, path counts
+  `responses:4`, `oauth_token:2`, `codex_other:1`, `other:4`; status counts
+  `401:11`; no malformed, redaction, or requirement failures.
+- Observed auth shape: `/oauth/token` returned
+  `invalid_request_error` / `refresh_token_reused`; repeated
+  `/backend-api/codex/responses` WebSocket upgrade attempts returned
+  `401 token_expired`.
+- Hygiene note: an earlier scratch run
+  `captures/codex-wire-20260526T193558Z/` exposed that
+  `x-codex-turn-metadata` can include local workspace paths in per-flow JSON.
+  The current capture was taken after the addon redaction fix and passed the
+  local-path review gate.
+
 ## Capture Promotion Checklist
 
 Before any captured flow is committed as a cassette or cited as live
@@ -131,7 +163,9 @@ evidence:
    are empty.
 5. Manually inspect the fixture-sized JSON selected for promotion.
    The reviewer catches obvious token/JWT/API-key strings; it is not a
-   formal proof that all account-identifying material is gone.
+   formal proof that all account-identifying material is gone. It also
+   rejects obvious local home/tmp paths because Codex turn metadata can
+   include workspace paths.
 6. Textual non-JSON responses such as `text/event-stream` may include
    `body_text` so the cassette replayer can serve realistic SSE frames.
    Keep only reviewed, fixture-sized text bodies and remove prompt,
