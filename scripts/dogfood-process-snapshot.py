@@ -15,6 +15,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on some non-Unix targets.
+    resource = None  # type: ignore[assignment]
+
 
 AGENT_NAMES = {"codex", "claude", "claude-code", "claude_code"}
 ROOT_NAMES = AGENT_NAMES | {"oauth-mux"}
@@ -155,6 +160,60 @@ def parse_lsof() -> tuple[dict[int, list[str]], list[str]]:
     return listeners, warnings
 
 
+def nofile_limit_snapshot() -> dict[str, Any]:
+    if resource is None:
+        return {
+            "available": False,
+            "soft": None,
+            "hard": None,
+            "hard_label": "unknown",
+        }
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    hard_is_unlimited = hard == resource.RLIM_INFINITY
+    return {
+        "available": True,
+        "soft": soft,
+        "hard": None if hard_is_unlimited else hard,
+        "hard_label": "unlimited" if hard_is_unlimited else str(hard),
+    }
+
+
+def parse_fd_counts(pids: list[int]) -> tuple[dict[int, int], list[str]]:
+    warnings: list[str] = []
+    counts: dict[int, int] = {}
+    if not pids:
+        return counts, warnings
+
+    chunk_size = 80
+    for start in range(0, len(pids), chunk_size):
+        chunk = pids[start : start + chunk_size]
+        code, stdout, stderr = run_command(["lsof", "-nP", "-F", "pf", "-p", ",".join(str(pid) for pid in chunk)])
+        if code != 0 and not stdout:
+            warnings.append(f"lsof fd-count scan unavailable for pid chunk: {redact(stderr.strip())}")
+            continue
+        current_pid: int | None = None
+        for line in stdout.splitlines():
+            if not line:
+                continue
+            tag = line[0]
+            value = line[1:]
+            if tag == "p":
+                try:
+                    current_pid = int(value)
+                    counts.setdefault(current_pid, 0)
+                except ValueError:
+                    current_pid = None
+            elif tag == "f" and current_pid is not None:
+                counts[current_pid] = counts.get(current_pid, 0) + 1
+    return counts, warnings
+
+
+def fd_soft_limit_pct(fd_count: int, soft_limit: Any) -> float | None:
+    if not isinstance(soft_limit, int) or soft_limit <= 0:
+        return None
+    return round((fd_count / soft_limit) * 100, 1)
+
+
 def is_agent_process(proc: dict[str, Any]) -> bool:
     name = proc["command_name"].lower()
     if name in AGENT_NAMES:
@@ -245,7 +304,13 @@ def listener_ports(names: list[str]) -> list[str]:
 def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     processes, ps_warnings = parse_ps()
     listeners, lsof_warnings = parse_lsof()
-    warnings = ps_warnings + lsof_warnings
+    fd_target_pids = [
+        proc["pid"]
+        for proc in processes
+        if is_root_process(proc) or is_helper_process(proc)
+    ]
+    fd_counts, fd_warnings = parse_fd_counts(fd_target_pids)
+    warnings = ps_warnings + lsof_warnings + fd_warnings
 
     by_pid = {proc["pid"]: proc for proc in processes}
     children: dict[int, list[int]] = {}
@@ -255,6 +320,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     for pid, proc in by_pid.items():
         proc["listeners"] = listeners.get(pid, [])
         proc["listener_ports"] = listener_ports(proc["listeners"])
+        proc["fd_count"] = fd_counts.get(pid)
         proc["is_agent"] = is_agent_process(proc)
         proc["is_helper"] = is_helper_process(proc)
         proc["is_oauth_mux"] = is_oauth_mux_process(proc)
@@ -318,6 +384,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
                     "rss_kib": proc["rss_kib"],
                     "rss_mib": proc["rss_mib"],
                     "cpu_pct": proc["cpu_pct"],
+                    "fd_count": proc["fd_count"],
                     "elapsed": proc["elapsed"],
                     "elapsed_seconds": proc["elapsed_seconds"],
                     "listeners": names,
@@ -361,6 +428,29 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     claude_processes = [proc for proc in processes if proc["is_claude"]]
     managed_codex_children = [proc for proc in codex_processes if proc["role"] == "managed_codex_child"]
     unmanaged_codex_processes = [proc for proc in codex_processes if proc["role"] == "native_codex"]
+    fd_rows = [proc for proc in processes if proc.get("fd_count") is not None]
+    fd_limit = nofile_limit_snapshot()
+    soft_limit = fd_limit.get("soft")
+    top_fd_processes = []
+    for proc in sorted(fd_rows, key=lambda row: (row.get("fd_count") or 0), reverse=True)[:10]:
+        fd_count = proc.get("fd_count") or 0
+        top_fd_processes.append(
+            {
+                "pid": proc["pid"],
+                "ppid": proc["ppid"],
+                "command_name": proc["command_name"],
+                "role": proc["role"],
+                "fd_count": fd_count,
+                "fd_soft_limit_pct": fd_soft_limit_pct(fd_count, soft_limit),
+            }
+        )
+    max_fd_count = top_fd_processes[0]["fd_count"] if top_fd_processes else None
+    fd_summary = {
+        "visible_fd_process_count": len(fd_rows),
+        "max_fd_count": max_fd_count,
+        "max_fd_soft_limit_pct": fd_soft_limit_pct(max_fd_count, soft_limit) if isinstance(max_fd_count, int) else None,
+        "top_processes": top_fd_processes,
+    }
     process_summary = {
         "oauth_mux_processes": len(oauth_mux_processes),
         "codex_processes": len(codex_processes),
@@ -386,6 +476,9 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         "kills_processes": False,
         "sleeps": False,
         "foreground_sleep": False,
+        "resource_limits": {
+            "nofile": fd_limit,
+        },
         "tag": args.tag,
         "thresholds": {
             "accumulated_seconds": args.accumulated_seconds,
@@ -402,6 +495,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "heap_leak_evidence": "single snapshot only; compare two snapshots before calling this a leak",
         },
         "process_summary": process_summary,
+        "fd_summary": fd_summary,
         "claim": {
             "current_process_hotswap": False,
             "unmanaged_tui_hotswap": False,
@@ -535,6 +629,23 @@ def render_snapshot_md(snapshot: dict[str, Any]) -> str:
     lines.append("")
     for key, value in snapshot["process_summary"].items():
         lines.append(f"- `{key}`: {value}")
+    lines.extend(["", "## Resource Limits", ""])
+    nofile = snapshot["resource_limits"]["nofile"]
+    lines.append(f"- `nofile.available`: {nofile['available']}")
+    lines.append(f"- `nofile.soft`: {nofile['soft']}")
+    lines.append(f"- `nofile.hard`: {nofile['hard_label']}")
+    lines.extend(["", "## File Descriptor Summary", ""])
+    for key, value in snapshot["fd_summary"].items():
+        if key != "top_processes":
+            lines.append(f"- `{key}`: {value}")
+    if snapshot["fd_summary"]["top_processes"]:
+        lines.extend(["", "| pid | ppid | role | command | fd count | fd soft limit pct |"])
+        lines.append("| ---: | ---: | --- | --- | ---: | ---: |")
+        for proc in snapshot["fd_summary"]["top_processes"]:
+            lines.append(
+                f"| {proc['pid']} | {proc['ppid']} | `{proc['role']}` | `{proc['command_name']}` | "
+                f"{proc['fd_count']} | {proc['fd_soft_limit_pct']} |"
+            )
     if snapshot.get("warnings"):
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- {warning}" for warning in snapshot["warnings"])
@@ -555,16 +666,17 @@ def render_snapshot_md(snapshot: dict[str, Any]) -> str:
                 f"- child count: `{tree['child_count']}`",
                 f"- helper count: `{tree['helper_count']}`",
                 "",
-                "| depth | pid | ppid | role | cpu | rss MiB | elapsed | listeners | command |",
-                "| ---: | ---: | ---: | --- | ---: | ---: | --- | --- | --- |",
+                "| depth | pid | ppid | role | cpu | rss MiB | elapsed | listeners | fd count | command |",
+                "| ---: | ---: | ---: | --- | ---: | ---: | --- | --- | ---: | --- |",
             ]
         )
         for proc in tree["processes"]:
             listeners = ", ".join(proc["listener_ports"]) if proc["listener_ports"] else ""
             command = proc["command"].replace("|", "\\|")
+            fd_count = proc["fd_count"] if proc.get("fd_count") is not None else ""
             lines.append(
                 f"| {proc['depth']} | {proc['pid']} | {proc['ppid']} | `{proc['role']}` | {proc['cpu_pct']} | "
-                f"{proc['rss_mib']} | {proc['elapsed']} | {listeners} | `{command}` |"
+                f"{proc['rss_mib']} | {proc['elapsed']} | {listeners} | {fd_count} | `{command}` |"
             )
         lines.append("")
 
@@ -572,14 +684,15 @@ def render_snapshot_md(snapshot: dict[str, Any]) -> str:
     if not snapshot["orphan_listener_candidates"]:
         lines.append("No helper/listener candidates were visible outside the agent trees.")
     else:
-        lines.append("| pid | ppid | role | cpu | rss MiB | elapsed | listeners | command |")
-        lines.append("| ---: | ---: | --- | ---: | ---: | --- | --- | --- |")
+        lines.append("| pid | ppid | role | cpu | rss MiB | elapsed | listeners | fd count | command |")
+        lines.append("| ---: | ---: | --- | ---: | ---: | --- | --- | ---: | --- |")
         for proc in snapshot["orphan_listener_candidates"]:
             listeners = ", ".join(proc["listener_ports"]) if proc["listener_ports"] else ", ".join(proc["listeners"])
             command = proc["command"].replace("|", "\\|")
+            fd_count = proc["fd_count"] if proc.get("fd_count") is not None else ""
             lines.append(
                 f"| {proc['pid']} | {proc['ppid']} | `{proc.get('role', 'helper')}` | {proc['cpu_pct']} | {proc['rss_mib']} | "
-                f"{proc['elapsed']} | {listeners} | `{command}` |"
+                f"{proc['elapsed']} | {listeners} | {fd_count} | `{command}` |"
             )
 
     lines.extend(["", "## Duplicate Helper Groups", ""])
