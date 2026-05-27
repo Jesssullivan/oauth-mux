@@ -401,6 +401,64 @@ run_local_transport_retry_case() {
     echo "  ✓ route health was not polluted by recovered local retry"
 }
 
+run_upstream_header_stall_retry_case() {
+    local case_dir="$TMP/upstream-header-stall-retry"
+    local portfile="$case_dir/upstream.port"
+    local uplog="$case_dir/upstream.log"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_LOGFILE="$uplog" \
+      OMUX_STUB_ACCOUNT_STALL_MS_JSON='{"acc-A-id":1000}' \
+      OMUX_STUB_ACCOUNT_STALL_COUNT_JSON='{"acc-A-id":1}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: upstream-header-stall-retry stub pid=$upstream_pid port=$upstream_port first=max-1-stall second=max-1-200"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_PROXY_UPSTREAM_RESPONSE_TIMEOUT_MS=250 \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in upstream-header-stall-retry case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: upstream-header-stall-retry assertions"
+    assert_grep "header stall recorded local retry" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":false' "$ndjson"
+    assert_grep "header stall recovered on same account" '"kind":"proxy_transport_local_retry_recovered".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_grep "same account returned 200 after header stall" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_no_grep "header stall did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
+    assert_no_grep "header stall did not switch accounts" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
+    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured header-stall retry without raw account ids"
+    jq -s -e '[.[] | select(.response_classification == "transport_stall" and .account_id == "acc-A-id" and .stall_ms == 1000)] | length == 1' "$uplog" >/dev/null
+    echo "  ✓ upstream fixture stalled the first account once before headers"
+    jq -e '([.turns[] | select(.status == 200)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex stayed in one process and saw the turn recover"
+    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ route health was not polluted by recovered header stall"
+}
+
 run_transport_fallback_case() {
     local case_dir="$TMP/transport-fallback"
     local portfile="$case_dir/upstream.port"
@@ -614,6 +672,7 @@ run_fallback_case
 run_no_fallback_case
 run_transport_failure_case
 run_local_transport_retry_case
+run_upstream_header_stall_retry_case
 run_transport_fallback_case
 run_upstream_interrupted_case
 run_client_disconnect_case
