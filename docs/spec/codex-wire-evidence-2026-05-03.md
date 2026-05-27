@@ -166,9 +166,11 @@ confirm the shapes themselves match upstream reality.
   `204:1`, `401:1`; no malformed, redaction, or requirement failures.
 - Promoted fixture:
   `test/fixtures/codex-wire/broker-owned-websocket-success/`.
-  It keeps the scrubbed `/backend-api/codex/responses` WebSocket upgrade
-  flow and same-run proxy metadata, and CI replays it through
-  `just smoke-codex-cassette-replay`.
+  It keeps the scrubbed `/backend-api/codex/responses` HTTP upgrade request
+  and `101 Switching Protocols` response shape plus same-run proxy metadata.
+  CI replays the recorded method/path/status fixture through
+  `just smoke-codex-cassette-replay`; this is cassette-shape coverage, not a
+  full WebSocket frame/session replay.
 
 ## Capture Promotion Checklist
 

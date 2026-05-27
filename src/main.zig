@@ -10222,7 +10222,7 @@ fn writeCodexPreflightAgentSafeNextActionsJson(
         defer allocator.free(plan);
         try writeCodexPreflightActionObjectJson(writer, &first, .{
             .kind = "broker_session_plan",
-            .label = "no-spend broker route plan",
+            .label = "local broker route plan",
             .command = plan,
             .budget = "free_local",
             .agent_safe = true,
@@ -10380,7 +10380,7 @@ fn writeCodexPreflightNextActionsText(
     if (!session_start_ready or !fallback_ready) {
         const plan = try codexPreflightPlanCommand(allocator, profile, capability);
         defer allocator.free(plan);
-        try writer.writeAll("\nNo-spend diagnostics:\n");
+        try writer.writeAll("\nLocal diagnostics:\n");
         try writer.print("  {s}\n", .{plan});
     }
     if ((!session_start_ready or !fallback_ready) and spend_confirmed_repair_available) {
@@ -12184,7 +12184,7 @@ fn runCodexBrokerSessionSmoke(
         } else {
             try writer.writeAll("oauth-mux Codex broker-owned session smoke\n\n");
             try writer.writeAll("  confirmation required: --confirm-broker\n");
-            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local no-spend Responses mock using broker-session-plan route semantics\n");
+            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local Responses mock using broker-session-plan route semantics\n");
         }
         return;
     }
@@ -13009,7 +13009,7 @@ fn runCodexBroker401Smoke(
         } else {
             try writer.writeAll("oauth-mux Codex app-server 401 broker smoke\n\n");
             try writer.writeAll("  confirmation required: --confirm-broker\n");
-            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local no-spend Responses mock and verifies 401 retry fallback\n");
+            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local Responses mock and verifies 401 retry fallback\n");
         }
         return;
     }
@@ -13233,7 +13233,7 @@ fn runCodexBrokerQuotaSmoke(
         } else {
             try writer.writeAll("oauth-mux Codex app-server quota broker smoke\n\n");
             try writer.writeAll("  confirmation required: --confirm-broker\n");
-            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local no-spend Responses mock and verifies next-turn quota fallback\n");
+            try writer.writeAll("  this starts a broker-owned Codex app-server child plus a local Responses mock and verifies next-turn quota fallback\n");
         }
         return;
     }
