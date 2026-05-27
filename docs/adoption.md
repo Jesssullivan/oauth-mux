@@ -178,6 +178,13 @@ keys fail before child spawn with a redacted `config_passthrough_check` status
 event. The generated config uses
 `config_layout:"root_partitioned"` so managed root keys cannot land inside a
 trailing user table.
+
+If a resume chooser still appears different after upgrading, check the managed
+status stream before editing Codex state. `resume_authority_check` reports
+whether canonical SQLite authority is bridged and whether legacy
+`oauth_mux_openai` provider-namespace residue was detected. oauth-mux does not
+rewrite canonical `state_5.sqlite*` or `logs_2.sqlite*`; cleanup must be an
+explicit, backed-up operator action.
 When a Codex experimental feature key is absent, the managed overlay defaults
 `terminal_resize_reflow`, `memories`, `external_migration`, `goals`, and
 `prevent_idle_sleep` on for the child config only. Explicit canonical values,

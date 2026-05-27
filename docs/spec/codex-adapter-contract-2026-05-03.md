@@ -127,6 +127,16 @@ proxy. The proxy accepts built-in OpenAI-provider paths such as
 `/backend-api/responses` and forwards them to the ChatGPT Codex upstream shape
 under `/backend-api/codex/...`, adding the currently elected account headers.
 
+Implementation update, 2026-05-27: resume chooser diagnostics now surface
+historical provider-namespace residue without silently repairing it. In
+canonical bridge mode, `resume_authority_check` scans the canonical
+`state_5.sqlite*` and `logs_2.sqlite*` authority files for the legacy
+`oauth_mux_openai` namespace and reports redacted booleans such as
+`legacy_provider_namespace_detected`. The diagnostic does not print paths,
+session ids, SQL rows, token material, or provider response bodies, and it
+does not mutate SQLite. Any cleanup of canonical Codex SQLite state remains an
+explicit operator action that must be backed up and reversible.
+
 Implementation update, 2026-05-10: managed launch no longer runs broad
 `repairRefreshableCodexAuthFailures()` before child spawn. Network refresh is
 deferred to actual credential materialization for the selected/fallback route,
