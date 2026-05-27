@@ -173,14 +173,21 @@ a compact blocked-route rollup for agents that need to distinguish expired
 quota-window revalidation, auth handoff, runtime repair, and wait-only states
 without scraping per-route diagnostics.
 
-On macOS, remove the old Mach-O before copying the dogfood binary. Overwriting in
-place can leave stale taskgated/code-signing state on the old vnode and produce
-an immediate `SIGKILL` / status `137`.
+On macOS, do not overwrite the old Mach-O in place. A direct `cp` over the
+installed binary can leave stale taskgated/code-signing state on the old vnode
+and produce an immediate `SIGKILL` / status `137`.
 
-`just install-local-dogfood` uses that remove-then-copy lane, verifies the
-installed binary hash against `./zig-out/bin/oauth-mux`, and leaves the native
-`codex` command unshadowed by default. Use `just install-local-dogfood-shim` or
-set `OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` only when you intentionally want
+`just install-local-dogfood` stages the new binary in the install directory,
+renames it into place, verifies the installed hash against
+`./zig-out/bin/oauth-mux`, prints the installed version, and leaves the native
+`codex` command unshadowed by default. Before replacing the binary, it refuses
+when active managed `oauth-mux codex` sessions are visible and prints a redacted
+parent/child PID and listener-port report. Re-run with
+`OMUX_DOGFOOD_ALLOW_ACTIVE_SESSIONS=1` only after explicitly accepting that
+already-running sessions keep their current process image.
+
+Use `just install-local-dogfood-shim` or set
+`OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` only when you intentionally want
 `~/.local/bin/codex` to enter managed Codex sessions through oauth-mux. The shim
 resolves the native upstream Codex executable, passes native admin commands
 through, and enters `oauth-mux codex` for managed session commands. It refuses

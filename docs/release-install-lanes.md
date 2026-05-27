@@ -145,17 +145,23 @@ the `codex` executable owner did not change.
 On macOS, do not overwrite an existing Mach-O in place for this lane. A direct
 `cp` over `~/.local/bin/oauth-mux` can leave stale taskgated/code-signing state
 on the old vnode; the symptom is immediate `SIGKILL` / shell status `137` with
-a DiagnosticReports entry saying `Taskgated Invalid Signature`. Remove the old
-file first, then copy the new build so the installed file has a fresh vnode and
-the hash still matches the worktree binary. Re-signing the installed copy is a
-separate repair fallback, but it changes the hash and no longer proves byte
-identity with `./zig-out/bin/oauth-mux`.
+a DiagnosticReports entry saying `Taskgated Invalid Signature`. The local
+installer copies to a temporary file in the install directory, then renames the
+new file into place so the installed file has a fresh vnode and the hash still
+matches the worktree binary. Re-signing the installed copy is a separate repair
+fallback, but it changes the hash and no longer proves byte identity with
+`./zig-out/bin/oauth-mux`.
 
 The local installer installs only `~/.local/bin/oauth-mux` by default and leaves
-the native `codex` command unshadowed. Use
-`OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` or `just install-local-dogfood-shim` only
-when managed-shim dogfood is the point of the test. The local installer refuses
-to replace an existing non-oauth-mux `~/.local/bin/codex` unless
+the native `codex` command unshadowed. Before replacing the binary, it refuses
+when active managed `oauth-mux codex` sessions are visible and prints a redacted
+parent/child PID and listener-port report. Use
+`OMUX_DOGFOOD_ALLOW_ACTIVE_SESSIONS=1` only after explicitly accepting that
+already-running sessions keep their current process image.
+
+Use `OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` or `just install-local-dogfood-shim`
+only when managed-shim dogfood is the point of the test. The local installer
+refuses to replace an existing non-oauth-mux `~/.local/bin/codex` unless
 `OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Use `just uninstall-local-dogfood` to
 remove the local dogfood binary and any oauth-mux-marked `codex` shim without
 touching a native Codex executable.
