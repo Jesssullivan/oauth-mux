@@ -87,10 +87,18 @@ ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 # status codes, e.g. {"acc-A-id":401}. Accounts not listed follow the normal
 # OK_BEFORE_429 flow. This lets smokes model a dead active account with a
 # healthy fallback account.
+# OMUX_STUB_ACCOUNT_RESET_JSON maps ChatGPT-Account-ID values to reset modes,
+# e.g. {"acc-A-id":"before_response"}. Matching accounts reset the connection
+# after the request body is read and before any response is written.
 try:
     ACCOUNT_STATUS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STATUS_JSON", "{}"))
 except json.JSONDecodeError:
     ACCOUNT_STATUS = {}
+
+try:
+    ACCOUNT_RESET = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_RESET_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_RESET = {}
 
 
 # Per-account request counter. Reset only on process restart.
@@ -200,6 +208,27 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             }
         return 429, body
 
+    def _reset_before_response_if_configured(self, path: str) -> bool:
+        acct = self._account_id()
+        if acct not in ACCOUNT_RESET:
+            return False
+        _log({
+            "path": path,
+            "method": self.command,
+            "account_id": acct,
+            "auth_prefix": self._auth_prefix(),
+            "status_returned": "reset_before_response",
+            "response_classification": "transport_reset",
+        })
+        try:
+            linger = struct.pack("ii", 1, 0)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+        except OSError:
+            pass
+        self.close_connection = True
+        self.connection.close()
+        return True
+
     def _serve(self) -> None:
         path = urlparse(self.path).path
         if not path.startswith("/backend-api/codex"):
@@ -211,6 +240,8 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
 
         body_bytes = self._read_body()
         _ = body_bytes  # request bodies are unused; we don't echo
+        if self._reset_before_response_if_configured(path):
+            return
 
         status, body = self._classify_for_account()
         if "_text" in body:
