@@ -213,8 +213,23 @@ def _websocket_probe(proxy_url: str) -> dict:
         print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
         sys.exit(2)
     netloc, prefix = m.group(1), m.group(2)
-    conn = http.client.HTTPConnection(netloc, timeout=15)
-    headers = {
+    def run_get(label: str, headers: dict) -> dict:
+        conn = http.client.HTTPConnection(netloc, timeout=15)
+        try:
+            conn.request("GET", prefix + "/responses", headers=headers)
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "label": label,
+                "status": resp.status,
+                "body_has_unsupported_transport": "oauth_mux_unsupported_transport" in body,
+                "path_printed": False,
+                "token_material_printed": False,
+            }
+        finally:
+            conn.close()
+
+    websocket_headers = {
         "Connection": "keep-alive, Upgrade",
         "Upgrade": "websocket",
         "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
@@ -226,22 +241,33 @@ def _websocket_probe(proxy_url: str) -> dict:
     account_id = os.environ.get("OMUX_STUB_CODEX_CHATGPT_ACCOUNT_ID")
     auth_token = _auth_token_for_turn(0)
     if account_id:
-        headers["ChatGPT-Account-ID"] = account_id
+        websocket_headers["ChatGPT-Account-ID"] = account_id
     if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    try:
-        conn.request("GET", prefix + "/responses", headers=headers)
-        resp = conn.getresponse()
-        body = resp.read().decode("utf-8", errors="replace")
-        return {
-            "checked": True,
-            "status": resp.status,
-            "body_has_unsupported_transport": "oauth_mux_unsupported_transport" in body,
-            "path_printed": False,
-            "token_material_printed": False,
-        }
-    finally:
-        conn.close()
+        websocket_headers["Authorization"] = f"Bearer {auth_token}"
+
+    beta_only_headers = {
+        "User-Agent": "stub-codex/0",
+        "x-codex-installation-id": "stub-install-1",
+        "OpenAI-Beta": "responses_websockets=2026-02-06",
+    }
+    if account_id:
+        beta_only_headers["ChatGPT-Account-ID"] = account_id
+    if auth_token:
+        beta_only_headers["Authorization"] = f"Bearer {auth_token}"
+
+    variants = [
+        run_get("websocket_upgrade", websocket_headers),
+        run_get("responses_get_beta_only", beta_only_headers),
+    ]
+    primary = variants[0]
+    return {
+        "checked": True,
+        "status": primary["status"],
+        "body_has_unsupported_transport": primary["body_has_unsupported_transport"],
+        "path_printed": False,
+        "token_material_printed": False,
+        "variants": variants,
+    }
 
 
 def _session_bridge_report(codex_home: Path) -> dict:

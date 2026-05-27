@@ -188,6 +188,7 @@ assert_grep "runtime identity records binary sha" '"binary_sha256":"[0-9a-f]{64}
 assert_grep "runtime identity marks path printed" '"path_printed":true' "$NDJSON"
 assert_grep "runtime identity records installed/local mismatch bit" '"installed_local_mismatch_detected":false' "$NDJSON"
 assert_grep "websocket upgrade got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"websocket".*"method":"GET".*"path_kind":"responses".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
+assert_grep "plain responses GET got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"responses_get".*"method":"GET".*"path_kind":"responses".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
 if grep -q -E '"kind":"proxy_turn".*"method":"GET".*"path_kind":"responses".*"status":405.*"classification":"ok"' "$NDJSON"; then
     echo "  ✗ websocket upgrade was forwarded as plain GET and misclassified as ok" >&2
     cat "$NDJSON" >&2
@@ -252,7 +253,9 @@ if jq -e '.websocket_probe.checked == true
           and .websocket_probe.status == 426
           and .websocket_probe.body_has_unsupported_transport == true
           and .websocket_probe.path_printed == false
-          and .websocket_probe.token_material_printed == false' "$STUB_REPORT" >/dev/null; then
+          and .websocket_probe.token_material_printed == false
+          and (.websocket_probe.variants | length) == 2
+          and all(.websocket_probe.variants[]; .status == 426 and .body_has_unsupported_transport == true and .path_printed == false and .token_material_printed == false)' "$STUB_REPORT" >/dev/null; then
     echo "  ✓ child saw typed local WebSocket fallback response"
 else
     echo "  ✗ child WebSocket probe did not see local fallback response" >&2
