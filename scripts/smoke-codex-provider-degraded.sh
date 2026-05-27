@@ -560,6 +560,56 @@ run_client_disconnect_case() {
     echo "  ✓ route health was not polluted by downstream disconnect"
 }
 
+run_local_client_stall_case() {
+    local case_dir="$TMP/local-client-stall"
+    local portfile="$case_dir/upstream.port"
+    local ndjson="$case_dir/status.ndjson"
+    local trace_file="$case_dir/trace.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-report.json"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: local-client-stall stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_PROXY_IO_TIMEOUT_MS=250 \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_PARTIAL_STALL_MS=3000 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in local-client-stall case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: local-client-stall assertions"
+    assert_grep "partial request timed out locally" '"kind":"proxy_request_parse_error","err":"ConnectionTimedOut"' "$ndjson"
+    assert_grep "queued valid turn still completed" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_no_grep "local stall did not record upstream failure" '"kind":"proxy_upstream_failed"' "$ndjson"
+    assert_no_grep "adapter stderr suppresses local timeout" 'proxy: serveOne: ConnectionTimedOut' "$adapter_stderr"
+    jq -e '.partial_stall.enabled == true and .partial_stall.hold_ms == 3000 and .duration_s < 2.0' "$stub_report" >/dev/null
+    echo "  ✓ half-open local socket did not pin the proxy loop"
+    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ route health was not polluted by local client stall"
+}
+
 run_fallback_case
 run_no_fallback_case
 run_transport_failure_case
@@ -567,6 +617,7 @@ run_local_transport_retry_case
 run_transport_fallback_case
 run_upstream_interrupted_case
 run_client_disconnect_case
+run_local_client_stall_case
 
 echo
 echo "smoke-codex-provider-degraded: all assertions passed."

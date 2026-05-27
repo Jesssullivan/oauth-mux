@@ -73,6 +73,8 @@ const DEFAULT_UPSTREAM_HOST = "chatgpt.com";
 const DEFAULT_UPSTREAM_SCHEME = "https";
 const UPSTREAM_BASE_PATH = "/backend-api/codex";
 const TRANSPORT_LOCAL_RETRY_BACKOFF_MS = [_]u64{ 150, 500 };
+const PROXY_IO_TIMEOUT_DEFAULT_MS: i32 = 30_000;
+const PROXY_IO_TIMEOUT_MAX_MS: i32 = 10 * 60 * 1000;
 
 pub const RouteState = enum {
     available,
@@ -109,6 +111,59 @@ fn upstreamScheme(allocator: std.mem.Allocator) []const u8 {
         return allocator.dupe(u8, DEFAULT_UPSTREAM_SCHEME) catch DEFAULT_UPSTREAM_SCHEME;
     }
 }
+
+fn configuredProxyIoTimeoutMs(allocator: std.mem.Allocator) i32 {
+    const raw = std.process.getEnvVarOwned(allocator, "OMUX_PROXY_IO_TIMEOUT_MS") catch {
+        return PROXY_IO_TIMEOUT_DEFAULT_MS;
+    };
+    defer allocator.free(raw);
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    const parsed = std.fmt.parseInt(i32, trimmed, 10) catch return PROXY_IO_TIMEOUT_DEFAULT_MS;
+    if (parsed <= 0) return PROXY_IO_TIMEOUT_DEFAULT_MS;
+    return @min(parsed, PROXY_IO_TIMEOUT_MAX_MS);
+}
+
+const ProxyIoWaitError = std.posix.PollError || error{ConnectionTimedOut};
+
+fn waitForSocket(handle: std.posix.socket_t, events: i16, timeout_ms: i32) ProxyIoWaitError!void {
+    var fds = [_]std.posix.pollfd{.{
+        .fd = handle,
+        .events = events,
+        .revents = 0,
+    }};
+    const ready = try std.posix.poll(&fds, timeout_ms);
+    if (ready == 0) return error.ConnectionTimedOut;
+}
+
+const TimedProxyStream = struct {
+    stream: std.net.Stream,
+    timeout_ms: i32,
+
+    pub const ReadError = std.net.Stream.ReadError || ProxyIoWaitError;
+    pub const WriteError = std.net.Stream.WriteError || ProxyIoWaitError;
+    pub const Reader = std.io.Reader(TimedProxyStream, ReadError, read);
+    pub const Writer = std.io.Writer(TimedProxyStream, WriteError, write);
+
+    pub fn reader(self: TimedProxyStream) Reader {
+        return .{ .context = self };
+    }
+
+    pub fn writer(self: TimedProxyStream) Writer {
+        return .{ .context = self };
+    }
+
+    pub fn read(self: TimedProxyStream, buffer: []u8) ReadError!usize {
+        if (buffer.len == 0) return 0;
+        try waitForSocket(self.stream.handle, @intCast(std.posix.POLL.IN), self.timeout_ms);
+        return self.stream.read(buffer);
+    }
+
+    pub fn write(self: TimedProxyStream, bytes: []const u8) WriteError!usize {
+        if (bytes.len == 0) return 0;
+        try waitForSocket(self.stream.handle, @intCast(std.posix.POLL.OUT), self.timeout_ms);
+        return self.stream.write(bytes);
+    }
+};
 
 pub const Proxy = struct {
     allocator: std.mem.Allocator,
@@ -213,12 +268,16 @@ pub const Proxy = struct {
     pub fn serveOne(self: *Proxy) !void {
         var conn = try self.server.accept();
         defer conn.stream.close();
-        try self.handleConnection(conn);
+        const stream = TimedProxyStream{
+            .stream = conn.stream,
+            .timeout_ms = configuredProxyIoTimeoutMs(self.allocator),
+        };
+        try self.handleConnection(stream);
     }
 
-    fn handleConnection(self: *Proxy, conn: std.net.Server.Connection) !void {
-        const reader = conn.stream.reader();
-        const writer = conn.stream.writer();
+    fn handleConnection(self: *Proxy, stream: TimedProxyStream) !void {
+        const reader = stream.reader();
+        const writer = stream.writer();
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
