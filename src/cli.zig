@@ -1244,7 +1244,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Validate a selected account and run its capability probe when configured.
         \\
         \\  doctor [--json]
-        \\      Run no-spend config readiness checks and print first-run next commands.
+        \\      Run local config readiness checks and print first-run next commands.
         \\
         \\  doctor runtime [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Check local runtime readiness without reading token values.
@@ -1344,7 +1344,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Bootstrap isolated Codex account stores and login flow.
         \\
         \\  codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
-        \\      Run a no-spend Codex Max readiness check; --live runs probes.
+        \\      Run Codex Max readiness checks; --live contacts provider endpoints.
         \\
         \\  codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
         \\      Run confirmed Codex route probes and record route evidence.
@@ -1356,7 +1356,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Probe every selected Codex account/capability route.
         \\
         \\  codex preflight [--profile name] [--capability c] [--account a] [--json]
-        \\      No-spend managed Codex readiness snapshot: install, policy, routes, and next actions.
+        \\      Managed Codex readiness snapshot: install, policy, routes, and next actions.
         \\
         \\  codex managed-plan [--profile name] [--capability c] [--json]
         \\      Plan a managed native Codex launch with route-local resume semantics.
@@ -1458,9 +1458,9 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  oauth-mux codex login-status-all [--accounts a,b,c] [--store-root path]
         \\
         \\Safety:
-        \\  canary is no-spend unless --live is provided.
+        \\  canary reads local readiness by default; --live contacts provider endpoints.
         \\  live-qa, revalidate-exhausted, probe-all, and canary --live run real provider probes.
-        \\  managed-plan is no-spend. managed launches native Codex under the
+        \\  managed-plan only inspects readiness. managed launches native Codex under the
         \\  selected route-local CODEX_HOME, so provider calls depend on the
         \\  Codex child process and are not made during planning.
         \\  broker-smoke, broker-refresh-smoke, broker-401-smoke,
@@ -1472,7 +1472,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  and, with --continue-on-failure, start a fresh broker-owned session on
         \\  the next selected route.
         \\  broker-fallback-drill mutates only oauth-mux route health; it does
-        \\  not spend provider calls or print secrets.
+        \\  not contact provider endpoints or print secrets.
         \\  live-qa, revalidate-exhausted, and broker-run require --confirm-spend or
         \\  OMUX_LIVE_QA_CONFIRM=spend-real-calls.
         \\  --help and -h are non-mutating for every Codex subcommand.
