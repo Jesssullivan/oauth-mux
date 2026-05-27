@@ -525,11 +525,13 @@ fi
 
 echo "smoke-codex-cli-ux: local dogfood install keeps native codex unshadowed by default"
 DOGFOOD_BIN="$TMP/dogfood-bin"
-NATIVE_CODEX="$TMP/native-codex"
+DOGFOOD_TOOL_STUBS="$TMP/dogfood-tool-stubs"
+NATIVE_CODEX_DIR="$TMP/native-codex-bin"
+NATIVE_CODEX="$NATIVE_CODEX_DIR/codex"
 NATIVE_REPORT="$TMP/native-codex.report"
 NATIVE_STDOUT="$TMP/native-codex.stdout"
 SHIM_TRACE="$TMP/shim-trace.ndjson"
-mkdir -p "$DOGFOOD_BIN"
+mkdir -p "$DOGFOOD_BIN" "$DOGFOOD_TOOL_STUBS" "$NATIVE_CODEX_DIR"
 cat >"$NATIVE_CODEX" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -550,11 +552,83 @@ esac
 EOF
 chmod 0755 "$NATIVE_CODEX"
 
+cat >"$DOGFOOD_TOOL_STUBS/lsof" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+    *" 4242 "*)
+        printf '%s\n' 'COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME'
+        printf '%s\n' 'oauth-mux 4242 test   7u  IPv4      0      0t0  TCP 127.0.0.1:57257 (LISTEN)'
+        ;;
+    *" 4243 "*)
+        exit 1
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOF
+chmod 0755 "$DOGFOOD_TOOL_STUBS/lsof"
+
+write_dogfood_ps_stub() {
+    local mode="$1"
+    if [[ "$mode" == "active" ]]; then
+        cat >"$DOGFOOD_TOOL_STUBS/ps" <<EOF
+#!/usr/bin/env bash
+cat <<'PSROWS'
+ 4242     1 $DOGFOOD_BIN/oauth-mux codex resume --last
+ 4243  4242 $NATIVE_CODEX resume --last
+ 5252     1 /usr/bin/zsh
+PSROWS
+EOF
+    else
+        cat >"$DOGFOOD_TOOL_STUBS/ps" <<'EOF'
+#!/usr/bin/env bash
+cat <<'PSROWS'
+ 5252     1 /usr/bin/zsh
+PSROWS
+EOF
+    fi
+    chmod 0755 "$DOGFOOD_TOOL_STUBS/ps"
+}
+
+write_dogfood_ps_stub active
+if PATH="$DOGFOOD_TOOL_STUBS:$PATH" \
+  INSTALL_DIR="$DOGFOOD_BIN" \
+  OMUX_DOGFOOD_SKIP_BUILD=1 \
+  OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  "$ROOT/scripts/install-local-dogfood.sh" >"$TMP/dogfood-install-active.stdout" 2>"$TMP/dogfood-install-active.stderr"; then
+    echo "  ✗ default local dogfood install ignored active managed Codex sessions" >&2
+    cat "$TMP/dogfood-install-active.stdout" >&2
+    cat "$TMP/dogfood-install-active.stderr" >&2
+    exit 1
+fi
+test ! -e "$DOGFOOD_BIN/oauth-mux"
+assert_grep "active-session guard refused install" 'status: active_session_guard_failed' "$TMP/dogfood-install-active.stderr"
+assert_grep "active-session guard reported parent" 'pid=4242 .*role=oauth_mux_codex_parent.*listener_ports=57257' "$TMP/dogfood-install-active.stderr"
+assert_grep "active-session guard reported child" 'pid=4243 .*role=managed_codex_child' "$TMP/dogfood-install-active.stderr"
+assert_grep "active-session guard prints explicit force" 'OMUX_DOGFOOD_ALLOW_ACTIVE_SESSIONS=1' "$TMP/dogfood-install-active.stderr"
+echo "  ✓ default local dogfood install refuses while managed Codex sessions are visible"
+
+PATH="$DOGFOOD_TOOL_STUBS:$PATH" \
+  INSTALL_DIR="$DOGFOOD_BIN" \
+  OMUX_DOGFOOD_SKIP_BUILD=1 \
+  OMUX_DOGFOOD_ALLOW_ACTIVE_SESSIONS=1 \
+  OMUX_CODEX_BIN="$NATIVE_CODEX" \
+  "$ROOT/scripts/install-local-dogfood.sh" >"$TMP/dogfood-install-force.stdout" 2>"$TMP/dogfood-install-force.stderr"
+test -x "$DOGFOOD_BIN/oauth-mux"
+assert_grep "active-session force reports active state" 'active managed Codex sessions before install: force-allowed' "$TMP/dogfood-install-force.stderr"
+assert_grep "force install verifies version" 'oauth-mux version:' "$TMP/dogfood-install-force.stdout"
+rm -f "$DOGFOOD_BIN/oauth-mux"
+echo "  ✓ explicit force allows local dogfood install with an active-session report"
+
+write_dogfood_ps_stub inactive
 INSTALL_DIR="$DOGFOOD_BIN" \
+  PATH="$DOGFOOD_TOOL_STUBS:$PATH" \
   OMUX_DOGFOOD_SKIP_BUILD=1 \
   OMUX_CODEX_BIN="$NATIVE_CODEX" \
   "$ROOT/scripts/install-local-dogfood.sh" >"$TMP/dogfood-install.stdout"
 test -x "$DOGFOOD_BIN/oauth-mux"
+assert_grep "default install reports no active managed sessions" 'active managed Codex sessions before install: none' "$TMP/dogfood-install.stdout"
 if [[ -e "$DOGFOOD_BIN/codex" ]]; then
     echo "  ✗ default local dogfood install unexpectedly created a codex shim" >&2
     cat "$TMP/dogfood-install.stdout" >&2
@@ -565,6 +639,7 @@ fi
 
 echo "smoke-codex-cli-ux: managed codex shim opt-in passes native admin commands through"
 INSTALL_DIR="$DOGFOOD_BIN" \
+  PATH="$DOGFOOD_TOOL_STUBS:$PATH" \
   OMUX_DOGFOOD_SKIP_BUILD=1 \
   OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1 \
   OMUX_CODEX_BIN="$NATIVE_CODEX" \
