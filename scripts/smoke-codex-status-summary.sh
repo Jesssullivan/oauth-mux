@@ -23,6 +23,8 @@ AUTH_FALLBACK_CHAIN="$TMP/auth-fallback-chain.ndjson"
 INCOMPLETE="$TMP/incomplete.ndjson"
 SIGNALED="$TMP/signaled.ndjson"
 PRE_SPAWN="$TMP/pre-spawn.ndjson"
+TRANSPORT_RECOVERY="$TMP/transport-recovery.ndjson"
+BAD_405="$TMP/bad-405.ndjson"
 
 cat >"$BROKERED" <<'EOF'
 {"kind":"launch_timing","phase":"config_health_load","duration_ms":4,"elapsed_ms":4,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
@@ -101,6 +103,21 @@ EOF
 cat >"$PRE_SPAWN" <<'EOF'
 {"kind":"launch_timing","phase":"config_health_load","duration_ms":3,"elapsed_ms":3,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
 {"kind":"session_aborted","adapter":"codex","reason":"no_account_selectable","phase":"route_election","error":"NoAccountSelectable","exit_code":-1,"term_kind":null,"term_code":null,"signal_name":null,"final_claim_level":"none","synthetic_swap_observed":false,"pre_spawn":true,"child_spawned":false,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
+EOF
+
+cat >"$TRANSPORT_RECOVERY" <<'EOF'
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"proxy_upstream_failed","account":"codex:max-1","err":"ConnectionResetByPeer"}
+{"kind":"proxy_provider_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"provider_5xx","dropped":"x-codex-turn-state"}
+{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
+{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
+{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":true}
+EOF
+
+cat >"$BAD_405" <<'EOF'
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses","status":405,"classification":"ok","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":true}
+{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
 
 BROKERED_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$BROKERED" --require-brokered)"
@@ -308,6 +325,69 @@ fi
 if [[ "$(jq -r .terminal_event.term_kind <<<"$PRE_SPAWN_SUMMARY")" != "null" ]]; then
     echo "pre-spawn artifact should not fake a child term kind" >&2
     echo "$PRE_SPAWN_SUMMARY" >&2
+    exit 1
+fi
+
+TRANSPORT_RECOVERY_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$TRANSPORT_RECOVERY" --require-brokered)"
+if [[ "$(jq -r .verdict <<<"$TRANSPORT_RECOVERY_SUMMARY")" != "transport_fallback_recovered" ]]; then
+    echo "transport-recovery verdict mismatch" >&2
+    echo "$TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_failure_observed <<<"$TRANSPORT_RECOVERY_SUMMARY")" != "true" ]]; then
+    echo "transport-recovery should report transport failure evidence" >&2
+    echo "$TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_recovery_observed <<<"$TRANSPORT_RECOVERY_SUMMARY")" != "true" ]]; then
+    echo "transport-recovery should report recovery" >&2
+    echo "$TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .upstream_failure_events <<<"$TRANSPORT_RECOVERY_SUMMARY")" != "1" ]]; then
+    echo "transport-recovery upstream failure count mismatch" >&2
+    echo "$TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .provider_same_turn_retry_events <<<"$TRANSPORT_RECOVERY_SUMMARY")" != "1" ]]; then
+    echo "transport-recovery provider retry count mismatch" >&2
+    echo "$TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+
+TRANSPORT_RECOVERY_NATIVE_SUMMARY="$("$ROOT/zig-out/bin/oauth-mux" codex status-latest --status-file "$TRANSPORT_RECOVERY" --json)"
+if [[ "$(jq -r .verdict <<<"$TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "transport_fallback_recovered" ]]; then
+    echo "native transport-recovery verdict mismatch" >&2
+    echo "$TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_recovery_observed <<<"$TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "true" ]]; then
+    echo "native transport-recovery should report recovery" >&2
+    echo "$TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
+    exit 1
+fi
+
+BAD_405_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$BAD_405" --require-brokered)"
+if [[ "$(jq -r .verdict <<<"$BAD_405_SUMMARY")" != "transport_regression_405_misclassified" ]]; then
+    echo "bad-405 verdict mismatch" >&2
+    echo "$BAD_405_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .responses_get_405_misclassified_ok <<<"$BAD_405_SUMMARY")" != "1" ]]; then
+    echo "bad-405 regression count mismatch" >&2
+    echo "$BAD_405_SUMMARY" >&2
+    exit 1
+fi
+
+BAD_405_NATIVE_SUMMARY="$("$ROOT/zig-out/bin/oauth-mux" codex status-latest --status-file "$BAD_405" --json)"
+if [[ "$(jq -r .verdict <<<"$BAD_405_NATIVE_SUMMARY")" != "transport_regression_405_misclassified" ]]; then
+    echo "native bad-405 verdict mismatch" >&2
+    echo "$BAD_405_NATIVE_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .responses_get_405_misclassified_ok <<<"$BAD_405_NATIVE_SUMMARY")" != "1" ]]; then
+    echo "native bad-405 regression count mismatch" >&2
+    echo "$BAD_405_NATIVE_SUMMARY" >&2
     exit 1
 fi
 

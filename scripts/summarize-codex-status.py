@@ -249,6 +249,54 @@ def find_auth_fallback_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def find_transport_recovery_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
+    failure_event: dict[str, Any] | None = None
+    retry_event: dict[str, Any] | None = None
+    recovery_turn: dict[str, Any] | None = None
+
+    for idx, event in enumerate(events):
+        if event.get("kind") != "proxy_upstream_failed":
+            continue
+        failure_event = event
+        failure_account = event.get("account")
+
+        for later in events[idx + 1 :]:
+            kind = later.get("kind")
+            if kind == "proxy_provider_same_turn_retry":
+                retry_event = later
+                continue
+            if kind != "proxy_turn" or later.get("status") != 200:
+                continue
+            if retry_event is not None and later.get("account") == retry_event.get("to"):
+                recovery_turn = later
+                break
+            if failure_account is not None and later.get("account") != failure_account:
+                recovery_turn = later
+                break
+        break
+
+    if failure_event is None:
+        return {
+            "observed": False,
+            "reason": "no proxy_upstream_failed event",
+        }
+    if recovery_turn is None:
+        return {
+            "observed": False,
+            "reason": "upstream failure without successful fallback turn",
+            "failure": failure_event,
+            "retry": retry_event,
+        }
+    return {
+        "observed": True,
+        "failure": failure_event,
+        "retry": retry_event,
+        "fallback_account": recovery_turn.get("account"),
+        "fallback_status": recovery_turn.get("status"),
+        "fallback_path_kind": recovery_turn.get("path_kind"),
+    }
+
+
 def summarize(path: Path) -> dict[str, Any]:
     events = load_events(path)
     proxy_turns = [e for e in events if e.get("kind") == "proxy_turn"]
@@ -267,6 +315,7 @@ def summarize(path: Path) -> dict[str, Any]:
     fallback = find_fallback_sequence(events)
     quota_failure = find_quota_handoff_failure(events)
     auth_fallback = find_auth_fallback_sequence(events)
+    transport_recovery = find_transport_recovery_sequence(events)
     auth_health_events = [e for e in events if e.get("kind") == "auth_health_observed"]
     auth_unauthorized_turns = [
         e
@@ -284,6 +333,27 @@ def summarize(path: Path) -> dict[str, Any]:
         for e in proxy_turns
         if e.get("status") == 429 and e.get("classification") == "quota_exhausted"
     ]
+    bad_responses_get_405 = [
+        e
+        for e in proxy_turns
+        if e.get("method") == "GET"
+        and e.get("path_kind") == "responses"
+        and e.get("status") == 405
+        and e.get("classification") == "ok"
+    ]
+    unsupported_transport_events = [e for e in events if e.get("kind") == "proxy_unsupported_transport"]
+    upstream_failure_events = [e for e in events if e.get("kind") == "proxy_upstream_failed"]
+    provider_retry_events = [e for e in events if e.get("kind") == "proxy_provider_same_turn_retry"]
+    provider_retry_unavailable_events = [e for e in events if e.get("kind") == "proxy_provider_retry_unavailable"]
+    stream_interrupted_events = [e for e in events if e.get("kind") == "proxy_stream_interrupted"]
+    client_disconnected_events = [e for e in events if e.get("kind") == "proxy_client_disconnected"]
+    transport_failure_observed = bool(
+        bad_responses_get_405
+        or unsupported_transport_events
+        or upstream_failure_events
+        or provider_retry_unavailable_events
+        or stream_interrupted_events
+    )
 
     brokered_session = (
         session_started.get("claim_level") == "broker_owned"
@@ -327,6 +397,24 @@ def summarize(path: Path) -> dict[str, Any]:
     elif auth_fallback.get("observed"):
         verdict = "auth_fallback_sequence_observed"
         next_action = "continue_managed_dogfood"
+    elif bad_responses_get_405:
+        verdict = "transport_regression_405_misclassified"
+        next_action = "contain_reconnect_get_transport"
+    elif transport_recovery.get("observed"):
+        verdict = "transport_fallback_recovered"
+        next_action = "continue_managed_dogfood"
+    elif provider_retry_unavailable_events or upstream_failure_events:
+        verdict = "transport_failure_unavailable"
+        next_action = "inspect_transport_failure_and_route_capacity"
+    elif unsupported_transport_events:
+        verdict = "transport_unsupported_contained"
+        next_action = "continue_managed_dogfood"
+    elif stream_interrupted_events:
+        verdict = "stream_interrupted_partial"
+        next_action = "inspect_provider_stream_stability"
+    elif client_disconnected_events:
+        verdict = "client_disconnected"
+        next_action = "continue_managed_dogfood"
     elif brokered_session and auth_failure_observed and not terminal_event_observed:
         verdict = "brokered_incomplete_auth_failed"
         next_action = "inspect_incomplete_run"
@@ -363,6 +451,16 @@ def summarize(path: Path) -> dict[str, Any]:
         "auth_health_quota_claim_observed": any(e.get("quota_claim") is True for e in auth_health_events),
         "quota_event_observed": bool(quota_turns),
         "quota_handoff_observed": bool(fallback.get("observed")),
+        "transport_failure_observed": transport_failure_observed,
+        "transport_recovery_observed": bool(transport_recovery.get("observed")),
+        "transport_recovery_sequence": transport_recovery,
+        "unsupported_transport_events": len(unsupported_transport_events),
+        "upstream_failure_events": len(upstream_failure_events),
+        "provider_same_turn_retry_events": len(provider_retry_events),
+        "provider_retry_unavailable_events": len(provider_retry_unavailable_events),
+        "stream_interrupted_events": len(stream_interrupted_events),
+        "client_disconnected_events": len(client_disconnected_events),
+        "responses_get_405_misclassified_ok": len(bad_responses_get_405),
         "quota_handoff_failed_reason": quota_failure.get("reason")
         if quota_failure.get("observed")
         else None,
