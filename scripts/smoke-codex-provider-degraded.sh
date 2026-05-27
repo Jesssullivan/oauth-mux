@@ -344,6 +344,62 @@ PY
     fi
 }
 
+run_transport_fallback_case() {
+    local case_dir="$TMP/transport-fallback"
+    local portfile="$case_dir/upstream.port"
+    local uplog="$case_dir/upstream.log"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_two_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_LOGFILE="$uplog" \
+      OMUX_STUB_ACCOUNT_RESET_JSON='{"acc-A-id":"before_response"}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: transport-fallback stub pid=$upstream_pid port=$upstream_port max-1=reset max-2=200"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=3 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in transport-fallback case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: transport-fallback assertions"
+    assert_grep "transport reset recorded upstream failure" '"kind":"proxy_upstream_failed".*"account":"codex:max-1"' "$ndjson"
+    assert_grep "transport reset retried fallback account" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
+    assert_grep "transport fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_no_grep "transport fallback did not emit terminal provider unavailable" '"kind":"proxy_provider_retry_unavailable"' "$ndjson"
+    assert_no_grep "transport fallback did not leak route-repair body" 'oauth_mux_no_account_selectable' "$stub_report"
+    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured transport reset without raw account ids"
+    jq -e 'select(.response_classification == "transport_reset" and .account_id == "acc-A-id")' "$uplog" >/dev/null
+    echo "  ✓ upstream fixture reset the first account before response"
+    jq -e '([.turns[] | select(.status == 200)] | length == 3) and (.pid_stable == true)' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex stayed in one process and saw all turns recover"
+    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ transport reset recorded provider-degraded route evidence"
+}
+
 run_upstream_interrupted_case() {
     local case_dir="$TMP/upstream-interrupted"
     local portfile="$case_dir/upstream.port"
@@ -448,6 +504,7 @@ run_client_disconnect_case() {
 run_fallback_case
 run_no_fallback_case
 run_transport_failure_case
+run_transport_fallback_case
 run_upstream_interrupted_case
 run_client_disconnect_case
 
