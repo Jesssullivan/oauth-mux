@@ -436,9 +436,12 @@ request, **NOT as a `Sec-WebSocket-Protocol` value.** The original
 spec was wrong on this; the wire proxy must not advertise it as a
 WS subprotocol upstream.
 
-The Phase 2 v1 wire proxy does NOT support WS upgrade; codex falls
-back to chunked HTTP / SSE when the upgrade is rejected. Phase 2.2
-adds WS pass-through.
+The Phase 2 v1 managed wire proxy does NOT support WS upgrade. When a
+Responses WebSocket upgrade reaches the proxy, oauth-mux returns a local
+HTTP `426 Upgrade Required` fallback signal with typed
+`oauth_mux_unsupported_transport` JSON and does not call upstream. Codex
+0.132 treats that 426 as its HTTP/SSE fallback path. Phase 2.2+ may add WS
+pass-through only after cassette evidence proves the managed semantics.
 
 _OPERATOR-CONFIRM_: capture an upgrade attempt (force WS via codex
 config or the env that triggers it); verify `OpenAI-Beta` header

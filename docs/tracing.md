@@ -64,6 +64,9 @@ The traced decisions are:
   printing token material, raw account ids, `CODEX_HOME`, or session ids.
 - `codex.proxy.turn`: per-request Codex proxy classification, path kind,
   status, claim level, streaming/delivery flags, and selected route label.
+- `codex.proxy.unsupported_transport`: local containment of an unsupported
+  Codex transport, including the fallback signal and proof that upstream was
+  not called.
 - `codex.proxy.retry`: same-turn retry boundary, including reason and the
   class of sticky header dropped before switching account routes.
 - `codex.proxy.no_account_selectable`: terminal no-account condition with only
