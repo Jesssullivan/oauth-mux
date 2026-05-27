@@ -152,6 +152,25 @@ assert summary["status_counts"]["401"] == 2, summary
 assert summary["redaction_failures"] == [], summary
 PY
 
+WS_FIXTURE="$ROOT/test/fixtures/codex-wire/broker-owned-websocket-success"
+"$ROOT/scripts/capture-codex-wire.sh" review "$WS_FIXTURE" \
+  --require-preflight-ok \
+  --require-proxy-meta \
+  --require-path-kind responses \
+  --require-status 101 \
+  --json >"$TMP/websocket-success-fixture-summary.json"
+
+python3 - "$TMP/websocket-success-fixture-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is True, summary
+assert summary["flow_count"] == 1, summary
+assert summary["path_counts"]["responses"] == 1, summary
+assert summary["status_counts"]["101"] == 1, summary
+assert summary["redaction_failures"] == [], summary
+PY
+
 BAD_META="$TMP/codex-wire-bad-meta"
 mkdir -p "$BAD_META/http"
 cp "$TMP/codex-wire-synth/capture-preflight-summary.json" "$BAD_META/capture-preflight-summary.json"

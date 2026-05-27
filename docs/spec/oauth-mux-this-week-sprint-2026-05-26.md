@@ -166,10 +166,18 @@ Known evidence:
   deliberately sanitizes secret-shaped strings and local paths; the raw
   capture remains gitignored.
 - Codex 0.132 `/backend-api/codex/responses` was observed as a WebSocket `101`,
-  not a simple `200` SSE-only path. That remains raw upstream wire evidence
-  until recaptured with the current local-path redaction gate. Managed
-  oauth-mux currently contains WS attempts with a local HTTP 426 fallback
-  signal until WS pass-through has cassette-backed semantics.
+  not a simple `200` SSE-only path. The earlier raw capture remains
+  unpromotable, but the 2026-05-27 broker-owned capture below is now the
+  promoted fixture for the normal WebSocket upgrade shape.
+- Current-release broker-owned scratch capture
+  `captures/codex-wire-20260527T133757Z` exists locally and is gitignored;
+  it was captured from `oauth-mux codex broker-run --confirm-spend`, completed
+  one live provider turn, and passed the current proxy-meta and redaction
+  gates with `/backend-api/codex/responses -> 101`.
+- The scrubbed fixture
+  `test/fixtures/codex-wire/broker-owned-websocket-success/` now preserves
+  that normal WebSocket upgrade shape and is covered by capture-review and
+  cassette-replay smokes.
 - Cookie and `Set-Cookie` redaction is now review-gated after PR `#292`.
 - Local workspace path redaction is review-gated before fixture promotion.
 - No quota/exhaustion shapes have been captured yet.
@@ -177,7 +185,7 @@ Known evidence:
 Todos:
 
 - [ ] Run a just-in-time capture preflight before any proxy.
-- [ ] Recapture a successful-turn cassette with current local-path redaction
+- [x] Recapture a successful-turn cassette with current local-path redaction
   before promoting any normal-turn WebSocket fixture.
 - [ ] Target quota/error capture with current fallback capacity and capture
   provenance, not from a single-route-at-risk state.

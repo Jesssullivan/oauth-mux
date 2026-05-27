@@ -134,6 +134,42 @@ confirm the shapes themselves match upstream reality.
   The current capture was taken after the addon redaction fix and passed the
   local-path review gate.
 
+2026-05-27 broker-owned WebSocket success capture:
+
+- Capture run directory: `captures/codex-wire-20260527T133757Z/`
+  (ignored; raw `flows.binary` not committed).
+- Capture path: `oauth-mux codex broker-run --profile codex-max
+  --capability codex-max --prompt ... --confirm-spend --json` through
+  mitmproxy.
+- oauth-mux provenance: user-local `0.1.12`, build id
+  `v0.1.12-7-g01b4069`, SHA256
+  `6e32a3952dc1faa6b0a1960c1e0b8f6440bdd2ce473687fe5cabd1ac594bdf29`.
+- Codex binary: `codex-cli 0.132.0`.
+- Preflight: `ok:true`, `fallback_ready:true`,
+  `single_route_at_risk:false`, `selectable_fallback_routes:1`.
+- Broker-run result: `ok:true`, `reason:"live_turn_completed"`,
+  `proof_status:"live_broker_owned_session_one_turn"`,
+  `spare_fallback_ready:true`, `mutates_route_health:false`, and
+  token/account/prompt transcript redaction reported true.
+- Review gate:
+  ```bash
+  scripts/capture-codex-wire.sh review captures/codex-wire-20260527T133757Z \
+    --require-preflight-ok \
+    --require-proxy-meta \
+    --require-path-kind responses \
+    --require-status 101 \
+    --require-status 200 \
+    --json
+  ```
+- Review result: `ok:true`, 11 flows, path counts `responses:1`,
+  `codex_other:2`, `other:8`; status counts `101:1`, `200:8`,
+  `204:1`, `401:1`; no malformed, redaction, or requirement failures.
+- Promoted fixture:
+  `test/fixtures/codex-wire/broker-owned-websocket-success/`.
+  It keeps the scrubbed `/backend-api/codex/responses` WebSocket upgrade
+  flow and same-run proxy metadata, and CI replays it through
+  `just smoke-codex-cassette-replay`.
+
 ## Capture Promotion Checklist
 
 Before any captured flow is committed as a cassette or cited as live
