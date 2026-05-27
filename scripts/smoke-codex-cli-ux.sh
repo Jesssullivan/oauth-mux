@@ -461,6 +461,50 @@ if grep -q -E 'managed-good-session|'"$BAD_AUTHORITY_HOME" "$BAD_AUTHORITY_NDJSO
     exit 1
 fi
 
+echo "smoke-codex-cli-ux: sqlite lock shaped child startup failure records abort"
+SQLITE_LOCK_NDJSON="$TMP/sqlite-lock/status.ndjson"
+SQLITE_LOCK_STDERR="$TMP/sqlite-lock.stderr"
+SQLITE_LOCK_REPORT="$TMP/sqlite-lock.report"
+SQLITE_LOCK_HEALTH_BEFORE="$TMP/sqlite-lock.health.before"
+mkdir -p "$(dirname "$SQLITE_LOCK_NDJSON")"
+cp "$STATE_DIR/health.json" "$SQLITE_LOCK_HEALTH_BEFORE"
+if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+     OMUX_STATE_DIR="$STATE_DIR" \
+     OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+     CODEX_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_FAIL_MODE="sqlite_locked" \
+     OMUX_STUB_CODEX_REPORT="$SQLITE_LOCK_REPORT" \
+     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_LOCK_NDJSON" resume 2>"$SQLITE_LOCK_STDERR"; then
+    echo "  ✗ sqlite lock failure unexpectedly succeeded" >&2
+    exit 1
+fi
+assert_grep "sqlite lock session started" '"kind":"session_started".*"sqlite_authority":"canonical_env"' "$SQLITE_LOCK_NDJSON"
+assert_grep "sqlite lock terminal abort status" '"kind":"session_aborted".*"reason":"child_exit_nonzero".*"exit_code":1.*"term_kind":"exited".*"term_code":1' "$SQLITE_LOCK_NDJSON"
+assert_grep "sqlite lock stderr preserved" 'database is locked' "$SQLITE_LOCK_STDERR"
+if grep -q '"kind":"session_ended"' "$SQLITE_LOCK_NDJSON"; then
+    echo "  ✗ sqlite lock failure was recorded as a normal session end" >&2
+    cat "$SQLITE_LOCK_NDJSON" >&2
+    exit 1
+fi
+if [[ -e "$SQLITE_LOCK_REPORT" ]]; then
+    echo "  ✗ sqlite lock startup failure wrote a normal stub report unexpectedly" >&2
+    cat "$SQLITE_LOCK_REPORT" >&2
+    exit 1
+fi
+if ! cmp -s "$STATE_DIR/health.json" "$SQLITE_LOCK_HEALTH_BEFORE"; then
+    echo "  ✗ sqlite lock failure mutated route health" >&2
+    diff -u "$SQLITE_LOCK_HEALTH_BEFORE" "$STATE_DIR/health.json" >&2 || true
+    exit 1
+fi
+if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_LOCK_NDJSON"; then
+    echo "  ✗ sqlite lock status leaked path or session id" >&2
+    cat "$SQLITE_LOCK_NDJSON" >&2
+    exit 1
+fi
+echo "  ✓ sqlite lock shaped startup failure records abort without route-health mutation"
+
 echo "smoke-codex-cli-ux: forwarded config provider override fails before spawn"
 BAD_CONFIG_NDJSON="$TMP/bad-config/status.ndjson"
 BAD_CONFIG_STDERR="$TMP/bad-config.stderr"

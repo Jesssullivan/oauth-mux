@@ -395,7 +395,7 @@ fn childTermCode(term: std.process.Child.Term) u32 {
 
 fn childTermAbortReason(term: std.process.Child.Term) ?[]const u8 {
     return switch (term) {
-        .Exited => null,
+        .Exited => |code| if (code == 0) null else "child_exit_nonzero",
         .Signal => "child_signal",
         .Stopped => "child_stopped",
         .Unknown => "child_unknown",
@@ -1632,6 +1632,12 @@ test "proxy thread suppresses expected localhost connection close errors" {
     try std.testing.expect(isBenignProxyConnectionClose(error.ConnectionResetByPeer));
     try std.testing.expect(isBenignProxyConnectionClose(error.EndOfStream));
     try std.testing.expect(!isBenignProxyConnectionClose(error.Unexpected));
+}
+
+test "nonzero Codex child exit is an aborted managed session" {
+    try std.testing.expect(childTermAbortReason(.{ .Exited = 0 }) == null);
+    try std.testing.expectEqualStrings("child_exit_nonzero", childTermAbortReason(.{ .Exited = 1 }).?);
+    try std.testing.expectEqualStrings("child_exit_nonzero", childTermAbortReason(.{ .Exited = 2 }).?);
 }
 
 /// Open a TCP connection to the proxy and immediately close it. This
