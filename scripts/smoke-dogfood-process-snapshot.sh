@@ -65,6 +65,17 @@ assert module.is_numeric_fd_tag("cwd") is False
 assert module.is_numeric_fd_tag("txt") is False
 assert module.is_numeric_fd_tag("mem") is False
 assert module.is_numeric_fd_tag("") is False
+
+original_subprocess_run = module.subprocess.run
+try:
+    module.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted", "ps"))
+    code, stdout, stderr = module.run_command(["ps"])
+    assert code == 126
+    assert stdout == ""
+    assert "Operation not permitted" in stderr
+finally:
+    module.subprocess.run = original_subprocess_run
+
 oauth_mux_codex_parent = {
     "command_name": "oauth-mux",
     "command": "/Users/test/bin/oauth-mux codex resume --last",

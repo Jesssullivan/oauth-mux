@@ -68,6 +68,8 @@ def run_command(argv: list[str]) -> tuple[int, str, str]:
         return proc.returncode, proc.stdout, proc.stderr
     except FileNotFoundError as exc:
         return 127, "", str(exc)
+    except OSError as exc:
+        return 126, "", str(exc)
 
 
 def command_name(command: str) -> str:
