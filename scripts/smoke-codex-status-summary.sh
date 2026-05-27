@@ -24,6 +24,7 @@ INCOMPLETE="$TMP/incomplete.ndjson"
 SIGNALED="$TMP/signaled.ndjson"
 PRE_SPAWN="$TMP/pre-spawn.ndjson"
 TRANSPORT_RECOVERY="$TMP/transport-recovery.ndjson"
+LOCAL_TRANSPORT_RECOVERY="$TMP/local-transport-recovery.ndjson"
 BAD_405="$TMP/bad-405.ndjson"
 
 cat >"$BROKERED" <<'EOF'
@@ -112,6 +113,14 @@ cat >"$TRANSPORT_RECOVERY" <<'EOF'
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":true}
+EOF
+
+cat >"$LOCAL_TRANSPORT_RECOVERY" <<'EOF'
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"proxy_transport_local_retry","account":"codex:max-1","method":"POST","path_kind":"responses","err":"ConnectionResetByPeer","attempt":1,"max_attempts":2,"backoff_ms":150,"delivered_to_codex":false}
+{"kind":"proxy_transport_local_retry_recovered","account":"codex:max-1","method":"POST","path_kind":"responses","attempts":1,"status":200,"classification":"ok","delivered_to_codex":true}
+{"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
+{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
 
 cat >"$BAD_405" <<'EOF'
@@ -364,6 +373,45 @@ fi
 if [[ "$(jq -r .transport_recovery_observed <<<"$TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "true" ]]; then
     echo "native transport-recovery should report recovery" >&2
     echo "$TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
+    exit 1
+fi
+
+LOCAL_TRANSPORT_RECOVERY_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$LOCAL_TRANSPORT_RECOVERY" --require-brokered)"
+if [[ "$(jq -r .verdict <<<"$LOCAL_TRANSPORT_RECOVERY_SUMMARY")" != "transport_local_retry_recovered" ]]; then
+    echo "local-transport-recovery verdict mismatch" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_failure_observed <<<"$LOCAL_TRANSPORT_RECOVERY_SUMMARY")" != "true" ]]; then
+    echo "local-transport-recovery should report transport failure evidence" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_recovery_observed <<<"$LOCAL_TRANSPORT_RECOVERY_SUMMARY")" != "true" ]]; then
+    echo "local-transport-recovery should report recovery" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_local_retry_events <<<"$LOCAL_TRANSPORT_RECOVERY_SUMMARY")" != "1" ]]; then
+    echo "local-transport-recovery retry count mismatch" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_local_retry_recovered_events <<<"$LOCAL_TRANSPORT_RECOVERY_SUMMARY")" != "1" ]]; then
+    echo "local-transport-recovery recovered count mismatch" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_SUMMARY" >&2
+    exit 1
+fi
+
+LOCAL_TRANSPORT_RECOVERY_NATIVE_SUMMARY="$("$ROOT/zig-out/bin/oauth-mux" codex status-latest --status-file "$LOCAL_TRANSPORT_RECOVERY" --json)"
+if [[ "$(jq -r .verdict <<<"$LOCAL_TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "transport_local_retry_recovered" ]]; then
+    echo "native local-transport-recovery verdict mismatch" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .transport_local_retry_events <<<"$LOCAL_TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "1" ]]; then
+    echo "native local-transport-recovery retry count mismatch" >&2
+    echo "$LOCAL_TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
     exit 1
 fi
 

@@ -90,6 +90,8 @@ ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 # OMUX_STUB_ACCOUNT_RESET_JSON maps ChatGPT-Account-ID values to reset modes,
 # e.g. {"acc-A-id":"before_response"}. Matching accounts reset the connection
 # after the request body is read and before any response is written.
+# OMUX_STUB_ACCOUNT_RESET_COUNT_JSON optionally caps reset count per account,
+# e.g. {"acc-A-id":1}. When omitted, matching accounts reset every request.
 try:
     ACCOUNT_STATUS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STATUS_JSON", "{}"))
 except json.JSONDecodeError:
@@ -99,6 +101,11 @@ try:
     ACCOUNT_RESET = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_RESET_JSON", "{}"))
 except json.JSONDecodeError:
     ACCOUNT_RESET = {}
+
+try:
+    ACCOUNT_RESET_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_RESET_COUNT_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_RESET_COUNT = {}
 
 
 # Per-account request counter. Reset only on process restart.
@@ -212,6 +219,11 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         acct = self._account_id()
         if acct not in ACCOUNT_RESET:
             return False
+        if acct in ACCOUNT_RESET_COUNT:
+            remaining = int(ACCOUNT_RESET_COUNT.get(acct, 0))
+            if remaining <= 0:
+                return False
+            ACCOUNT_RESET_COUNT[acct] = remaining - 1
         _log({
             "path": path,
             "method": self.command,

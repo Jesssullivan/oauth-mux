@@ -103,6 +103,26 @@ pub const AccountPool = struct {
         return types.BrokerError.AccountNotFound;
     }
 
+    /// Mark a route as provider-degraded for a short retry window. This is not
+    /// credential death; the account can become selectable again once the
+    /// transport/provider window passes.
+    pub fn markProviderDegraded(
+        self: *AccountPool,
+        account_id: []const u8,
+        retry_after_at: i64,
+    ) types.BrokerError!void {
+        for (self.accounts.items) |*a| {
+            if (std.mem.eql(u8, a.id, account_id)) {
+                a.liveness = .degraded;
+                a.availability = .cooldown;
+                a.next_eligible_at = retry_after_at;
+                a.selectable = false;
+                return;
+            }
+        }
+        return types.BrokerError.AccountNotFound;
+    }
+
     /// Mark an account as authorization-failed (401). Becomes
     /// non-selectable; recovery requires either credential refresh
     /// (Phase 3) or operator re-enrollment.
@@ -129,6 +149,7 @@ pub const AccountPool = struct {
                     // Reset to available; selectability flag follows.
                     a.availability = .available;
                     a.next_eligible_at = null;
+                    if (a.liveness == .degraded) a.liveness = .live;
                     if (a.liveness != .dead) a.selectable = true;
                 }
             }
@@ -246,6 +267,33 @@ test "AccountPool markQuotaExhausted blocks selection until reset" {
     for (pool.accounts.items) |entry| {
         if (std.mem.eql(u8, entry.id, "codex:max-1")) {
             try std.testing.expect(entry.selectable);
+            try std.testing.expectEqual(Availability.available, entry.availability);
+            found_max1_available = true;
+        }
+    }
+    try std.testing.expect(found_max1_available);
+}
+
+test "AccountPool markProviderDegraded blocks selection until retry window" {
+    var pool = AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{ .id = "codex:max-1", .selectable = true, .liveness = .live, .availability = .available });
+    try pool.add(.{ .id = "codex:max-2", .selectable = true, .liveness = .live, .availability = .available });
+
+    try pool.markProviderDegraded("codex:max-1", 1_800_000_060);
+    const elected = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
+
+    pool.refreshTimeBased(1_800_000_059);
+    const before_window = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-2", before_window.id);
+
+    pool.refreshTimeBased(1_800_000_060);
+    var found_max1_available = false;
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) {
+            try std.testing.expect(entry.selectable);
+            try std.testing.expectEqual(Liveness.live, entry.liveness);
             try std.testing.expectEqual(Availability.available, entry.availability);
             found_max1_available = true;
         }

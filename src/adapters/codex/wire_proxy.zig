@@ -72,6 +72,7 @@ const core_types = @import("../../types.zig");
 const DEFAULT_UPSTREAM_HOST = "chatgpt.com";
 const DEFAULT_UPSTREAM_SCHEME = "https";
 const UPSTREAM_BASE_PATH = "/backend-api/codex";
+const TRANSPORT_LOCAL_RETRY_BACKOFF_MS = [_]u64{ 150, 500 };
 
 pub const RouteState = enum {
     available,
@@ -397,11 +398,12 @@ pub const Proxy = struct {
             // fixed. We don't transform the body.
 
             // ── 4. Forward to upstream + stream/buffer response ────
-            const status_and_class = forwardAndStream(a, req, out_headers, writer) catch |err| {
+            const status_and_class = self.forwardAndStreamWithLocalTransportRetry(a, req, out_headers, writer, elected.id) catch |err| {
                 appendRejection(a, &rejections, elected.id, .provider_degraded, @errorName(err)) catch {};
                 self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
                 self.traceUpstreamFailure(req, elected.id, @errorName(err));
                 self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
+                self.pool.markProviderDegraded(elected.id, std.time.timestamp() + 60) catch {};
                 pending_failure_kind = .provider_5xx;
                 pending_failure_account = elected.id;
                 pending_transport_error = @errorName(err);
@@ -438,6 +440,7 @@ pub const Proxy = struct {
                 });
                 self.traceUpstreamFailure(req, elected.id, err_name);
                 self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
+                self.pool.markProviderDegraded(elected.id, std.time.timestamp() + 60) catch {};
                 final_account = elected.id;
                 break;
             }
@@ -472,6 +475,76 @@ pub const Proxy = struct {
         if (final_account) |account| {
             if (self.previous_account) |old| self.allocator.free(old);
             self.previous_account = self.allocator.dupe(u8, account) catch null;
+        }
+    }
+
+    fn forwardAndStreamWithLocalTransportRetry(
+        self: *Proxy,
+        a: std.mem.Allocator,
+        req: Request,
+        out_headers: HeaderList,
+        client_writer: anytype,
+        account_id: []const u8,
+    ) !StatusAndClassification {
+        var retry_index: usize = 0;
+        while (true) {
+            const status_and_class = forwardAndStream(a, req, out_headers, client_writer) catch |err| {
+                if (!isRetryablePreResponseTransportError(err) or retry_index >= TRANSPORT_LOCAL_RETRY_BACKOFF_MS.len) {
+                    return err;
+                }
+
+                retry_index += 1;
+                const backoff_ms = TRANSPORT_LOCAL_RETRY_BACKOFF_MS[retry_index - 1];
+                self.logEvent("proxy_transport_local_retry", .{
+                    .account = account_id,
+                    .method = req.method,
+                    .path_kind = pathKind(req.path),
+                    .err = @errorName(err),
+                    .attempt = retry_index,
+                    .max_attempts = TRANSPORT_LOCAL_RETRY_BACKOFF_MS.len,
+                    .backoff_ms = backoff_ms,
+                    .delivered_to_codex = false,
+                });
+                trace.append(self.allocator, "codex.proxy.transport_local_retry", .warn, &.{
+                    trace.string("provider", "codex"),
+                    trace.string("method", req.method),
+                    trace.string("path_kind", pathKind(req.path)),
+                    trace.string("transport_error", @errorName(err)),
+                    trace.uint("attempt", @intCast(retry_index)),
+                    trace.uint("max_attempts", @intCast(TRANSPORT_LOCAL_RETRY_BACKOFF_MS.len)),
+                    trace.uint("backoff_ms", backoff_ms),
+                    trace.boolean("delivered_to_codex", false),
+                    trace.boolean("token_material_printed", false),
+                    trace.boolean("raw_account_id_printed", false),
+                    trace.boolean("session_ids_printed", false),
+                });
+                std.time.sleep(backoff_ms * std.time.ns_per_ms);
+                continue;
+            };
+
+            if (retry_index > 0) {
+                self.logEvent("proxy_transport_local_retry_recovered", .{
+                    .account = account_id,
+                    .method = req.method,
+                    .path_kind = pathKind(req.path),
+                    .attempts = retry_index,
+                    .status = status_and_class.status,
+                    .classification = @tagName(status_and_class.classification.kind),
+                    .delivered_to_codex = status_and_class.stream_outcome.kind != .client_disconnected,
+                });
+                trace.append(self.allocator, "codex.proxy.transport_local_retry_recovered", .info, &.{
+                    trace.string("provider", "codex"),
+                    trace.string("method", req.method),
+                    trace.string("path_kind", pathKind(req.path)),
+                    trace.uint("attempts", @intCast(retry_index)),
+                    trace.uint("status", status_and_class.status),
+                    trace.string("classification", @tagName(status_and_class.classification.kind)),
+                    trace.boolean("token_material_printed", false),
+                    trace.boolean("raw_account_id_printed", false),
+                    trace.boolean("session_ids_printed", false),
+                });
+            }
+            return status_and_class;
         }
     }
 
@@ -714,6 +787,7 @@ fn retryAfterSeconds(now_unix: i64, resets_at: ?i64, kind: broker_types.QuotaKin
     const reset = resets_at orelse return switch (kind) {
         .quota_exhausted => 7 * 24 * 60 * 60,
         .rate_limited => 60,
+        .provider_5xx => 60,
         else => null,
     };
     if (reset <= now_unix) return 0;
@@ -741,7 +815,8 @@ fn applyClassificationWithStore(
             try pool.markRateLimited(account_id, until);
         },
         .auth_unauthorized => try pool.markUnauthorized(account_id),
-        .tier_insufficient, .provider_5xx => {
+        .provider_5xx => try pool.markProviderDegraded(account_id, now_unix + 60),
+        .tier_insufficient => {
             // Recorded for telemetry only; no pool mutation.
         },
     }
@@ -1367,6 +1442,21 @@ fn forwardAndStream(
         .streamed = true,
         .stream_outcome = stream_outcome,
     };
+}
+
+fn isRetryablePreResponseTransportError(err: anyerror) bool {
+    return err == error.BrokenPipe or
+        err == error.ConnectionResetByPeer or
+        err == error.ConnectionRefused or
+        err == error.ConnectionTimedOut or
+        err == error.NetworkUnreachable or
+        err == error.HostLacksNetworkAddresses or
+        err == error.TemporaryNameServerFailure or
+        err == error.NameServerFailure or
+        err == error.UnknownHostName or
+        err == error.EndOfStream or
+        err == error.HttpConnectionClosing or
+        err == error.TlsConnectionTruncated;
 }
 
 fn pathKind(path: []const u8) []const u8 {
@@ -2067,6 +2157,15 @@ test "provider_5xx retries same turn and records provider-degraded route state" 
     try std.testing.expectEqual(RouteState.provider_degraded, routeStateFromClassification(.provider_5xx));
 }
 
+test "pre-response transport retry classifier covers transient network failures" {
+    try std.testing.expect(isRetryablePreResponseTransportError(error.BrokenPipe));
+    try std.testing.expect(isRetryablePreResponseTransportError(error.ConnectionResetByPeer));
+    try std.testing.expect(isRetryablePreResponseTransportError(error.ConnectionRefused));
+    try std.testing.expect(isRetryablePreResponseTransportError(error.NetworkUnreachable));
+    try std.testing.expect(isRetryablePreResponseTransportError(error.UnknownHostName));
+    try std.testing.expect(!isRetryablePreResponseTransportError(error.OutOfMemory));
+}
+
 test "classify 429 + usage_limit_reached -> quota_exhausted with resets_at" {
     const body =
         \\{"error":{"type":"usage_limit_reached","plan_type":"pro","resets_at":1788000000}}
@@ -2209,6 +2308,36 @@ test "quota evidence is recorded before same-turn retry election" {
     // the selected route has durable quota evidence and is blocked in-pool.
     const elected = try pool.elect(null, null, &.{});
     try std.testing.expectEqualStrings("codex:max-2", elected.id);
+}
+
+test "provider 5xx evidence blocks in-session route until retry window" {
+    var pool = account_pool_mod.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{ .id = "codex:max-1", .selectable = true, .liveness = .live, .availability = .available });
+    try pool.add(.{ .id = "codex:max-2", .selectable = true, .liveness = .live, .availability = .available });
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    const now: i64 = 1_788_000_000;
+    try applyClassificationWithStore(&pool, &store, "codex:max-1", .{
+        .kind = .provider_5xx,
+    }, now, "codex-max");
+
+    const recorded = store.accounts.get("codex:max-1#codex-max") orelse {
+        return error.ExpectedProviderEvidence;
+    };
+    try std.testing.expectEqual(@as(?u16, 500), recorded.last_http_status);
+    try std.testing.expectEqual(@as(?u32, 60), recorded.last_probe_retry_after_s);
+    try std.testing.expectEqual(health_mod.ProbeHintClass.provider_degraded, recorded.last_probe_hint_class.?);
+    try std.testing.expectEqual(core_types.MuxDecision.try_next_provider, recorded.last_probe_decision.?);
+
+    const elected = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
+
+    pool.refreshTimeBased(now + 60);
+    const recovered = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-1", recovered.id);
 }
 
 test "successful managed proxy turn records capability route health" {
