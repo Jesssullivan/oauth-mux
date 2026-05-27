@@ -156,7 +156,9 @@ Known evidence:
   deliberately sanitizes secret-shaped strings and local paths; the raw
   capture remains gitignored.
 - Codex 0.132 `/backend-api/codex/responses` was observed as a WebSocket `101`,
-  not a simple `200` SSE-only path.
+  not a simple `200` SSE-only path. That remains raw upstream wire evidence;
+  managed oauth-mux currently contains WS attempts with a local HTTP 426
+  fallback signal until WS pass-through has cassette-backed semantics.
 - Cookie and `Set-Cookie` redaction is now review-gated after PR `#292`.
 - Local workspace path redaction is review-gated before fixture promotion.
 - No quota/exhaustion shapes have been captured yet.
@@ -165,7 +167,8 @@ Todos:
 
 - [ ] Run a just-in-time no-spend preflight before any proxy.
 - [ ] Capture another successful-turn cassette only if it adds fixture value
-  beyond the existing WebSocket `101` shape.
+  beyond the existing raw WebSocket `101` shape or proves managed HTTP/SSE
+  fallback behavior.
 - [ ] Target quota/error capture under explicit spend approval and fallback
   capacity, not from a single-route-at-risk state.
 - [x] Promote the smallest scrubbed fixture that proves the real path shape.

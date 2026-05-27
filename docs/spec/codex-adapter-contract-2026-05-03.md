@@ -282,8 +282,9 @@ upstream's path layout — see `model-provider-info/src/lib.rs` L233–240):
 - `POST /backend-api/codex/responses`
 - `POST /backend-api/codex/responses/compact`
 - `POST /backend-api/codex/memories/trace_summarize`
-- WebSocket upgrade on the same base, protocol header
-  `responses_websockets=2026-02-06` (per `core/src/client.rs` L132–134).
+- WebSocket upgrade attempts on the same base, with
+  `OpenAI-Beta: responses_websockets=2026-02-06`, must be contained locally
+  until managed WS pass-through is implemented.
 
 The proxy MUST forward all other paths under that prefix transparently
 (future endpoints) and MUST NOT block on unknown paths.
@@ -356,15 +357,19 @@ committed.
 
 ### 4.5 WebSocket handling
 
-If the WS upgrade variant is in use (`responses_websockets=2026-02-06`),
-the proxy upgrades the inbound socket and opens a corresponding outbound
-TLS WS to chatgpt.com, signed with the elected account's headers at
-upgrade time. WS-level account swap mid-connection is **not implemented in
-Phase 2**; the proxy closes the WS cleanly on `usage_limit_reached`
-detection (which arrives over the WS frame stream as an error type the
-app-server then surfaces) and lets the app-server reopen against the new
-account on the next user turn. Phase 4+ may revisit if wire capture proves
-WS reauth is feasible without thread-id loss.
+Phase 2 managed Codex does **not** implement WebSocket pass-through. If
+Codex opens the Responses WebSocket transport anyway, the proxy MUST return a
+local HTTP `426 Upgrade Required` response with typed
+`oauth_mux_unsupported_transport` JSON, emit `proxy_unsupported_transport`,
+emit `codex.proxy.unsupported_transport`, and MUST NOT call upstream. Codex
+0.132 treats HTTP 426 from the WS attempt as its own signal to fall back to
+the HTTP/SSE Responses transport.
+
+This is a containment boundary, not a product success claim. Forwarding a WS
+upgrade as a plain HTTP `GET` is forbidden because it can surface as upstream
+`405 Method Not Allowed` and be misclassified as an ordinary `ok` proxy turn.
+Actual WS pass-through remains future work and must be backed by cassette
+evidence before being presented as managed transport support.
 
 ## 5. TUI Strategy
 

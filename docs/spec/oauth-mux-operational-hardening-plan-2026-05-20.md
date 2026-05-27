@@ -240,9 +240,10 @@ Todo:
 - [x] Re-run no-spend route truth immediately before capture and keep the
   generated preflight summary with the capture scratch directory.
 - [x] Capture one successful live turn with the Codex 0.132
-  `/backend-api/codex/responses` WebSocket `101` path observed and
-  review-gated. Scratch capture: `captures/codex-wire-20260526T171741Z`
-  (gitignored, not committed).
+  `/backend-api/codex/responses` WebSocket `101` raw upstream path observed
+  and review-gated. This is cassette evidence for upstream shape, not a
+  managed WS support claim. Scratch capture:
+  `captures/codex-wire-20260526T171741Z` (gitignored, not committed).
 - [ ] Capture or explicitly record not-observed status for quota/error shapes:
   `usage_limit_reached`, `usage_not_included`, and all-fallbacks-exhausted.
 - [x] Add one scrubbed real-shape replay fixture and wire it into CI-safe

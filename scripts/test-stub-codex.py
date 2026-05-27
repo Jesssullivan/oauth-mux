@@ -40,6 +40,8 @@ Env (set by the smoke harness):
   OMUX_STUB_CODEX_DISCONNECT_TURNS — optional comma-separated turn indexes that
                             should send the request then close the proxy socket
                             before reading the streamed response.
+  OMUX_STUB_CODEX_WEBSOCKET_PROBE — optional "1" to send a Codex-shaped
+                            WebSocket upgrade GET before normal POST turns.
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -202,6 +204,46 @@ def _post_and_disconnect(proxy_url: str, body: bytes, turn: int) -> tuple[int, s
     return 0, "client_disconnected_before_response"
 
 
+def _websocket_probe(proxy_url: str) -> dict:
+    if os.environ.get("OMUX_STUB_CODEX_WEBSOCKET_PROBE") != "1":
+        return {"checked": False}
+
+    m = re.match(r"http://([^/]+)(/.*)$", proxy_url)
+    if not m:
+        print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
+        sys.exit(2)
+    netloc, prefix = m.group(1), m.group(2)
+    conn = http.client.HTTPConnection(netloc, timeout=15)
+    headers = {
+        "Connection": "keep-alive, Upgrade",
+        "Upgrade": "websocket",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version": "13",
+        "User-Agent": "stub-codex/0",
+        "x-codex-installation-id": "stub-install-1",
+        "OpenAI-Beta": "responses_websockets=2026-02-06",
+    }
+    account_id = os.environ.get("OMUX_STUB_CODEX_CHATGPT_ACCOUNT_ID")
+    auth_token = _auth_token_for_turn(0)
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    try:
+        conn.request("GET", prefix + "/responses", headers=headers)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return {
+            "checked": True,
+            "status": resp.status,
+            "body_has_unsupported_transport": "oauth_mux_unsupported_transport" in body,
+            "path_printed": False,
+            "token_material_printed": False,
+        }
+    finally:
+        conn.close()
+
+
 def _session_bridge_report(codex_home: Path) -> dict:
     canonical_raw = os.environ.get("OMUX_STUB_CANONICAL_SESSION_HOME")
     if not canonical_raw:
@@ -305,6 +347,7 @@ def main() -> int:
     session_append = _append_session_marker(codex_home)
     sqlite_env = _sqlite_env_report()
     auth_rewrite = _rewrite_auth_json(codex_home)
+    websocket_probe = _websocket_probe(proxy_url)
 
     started_at = time.time()
     print(
@@ -343,6 +386,7 @@ def main() -> int:
         "session_append": session_append,
         "sqlite_env": sqlite_env,
         "auth_rewrite": auth_rewrite,
+        "websocket_probe": websocket_probe,
     }
     report_path.write_text(json.dumps(report, indent=2))
     print(f"stub-codex: pid_stable={report['pid_stable']} turns={turns}", file=sys.stderr, flush=True)

@@ -26,7 +26,8 @@
 //!      load-bearing ones from §4.2 (User-Agent, originator,
 //!      x-codex-installation-id, x-codex-turn-state,
 //!      x-codex-turn-metadata, OpenAI-Beta, traceparent, tracestate).
-//!   4. Send to chatgpt.com over TLS.
+//!   4. Reject unsupported WebSocket upgrade attempts locally; otherwise send
+//!      to chatgpt.com over TLS.
 //!   5. Classify the response (200 / 401 / 429+usage_limit_reached /
 //!      429+usage_not_included / other-429 / 5xx).
 //!   6. Report quota/observe to the broker pool. On
@@ -51,9 +52,9 @@
 //!     framing — the TUI animation moves in real time. Error responses are
 //!     small and need a retry decision before any bytes reach Codex, so they
 //!     stay buffered (with a 64 KiB cap).
-//!   - No WebSocket upgrade support; if codex requests a WS upgrade
-//!     we propagate the upstream's response (which on `chatgpt.com`
-//!     is HTTP 426 / falls back to chunked). Phase 2.2 adds WS.
+//!   - No WebSocket upgrade support. If Codex requests a WS upgrade, the proxy
+//!     returns a local HTTP 426 fallback signal and never forwards it upstream
+//!     as a plain HTTP GET. Phase 2.2 adds WS pass-through.
 //!   - Same-turn retry is attempted for buffered 429 `usage_limit_reached`
 //!     responses before any bytes are written to codex. The retry drops
 //!     `x-codex-turn-state` because that token is likely tied to the previous
@@ -231,6 +232,33 @@ pub const Proxy = struct {
             try writeStatus(writer, 400, "Bad Request");
             return;
         };
+
+        if (isWebSocketUpgradeRequest(&req)) {
+            self.logEvent("proxy_unsupported_transport", .{
+                .transport = "websocket",
+                .method = req.method,
+                .path_kind = pathKind(req.path),
+                .status = 426,
+                .fallback_signal = "http_426",
+                .upstream_called = false,
+                .delivered_to_codex = true,
+            });
+            trace.append(self.allocator, "codex.proxy.unsupported_transport", .warn, &.{
+                trace.string("provider", "codex"),
+                trace.string("transport", "websocket"),
+                trace.string("method", req.method),
+                trace.string("path_kind", pathKind(req.path)),
+                trace.uint("status", 426),
+                trace.string("fallback_signal", "http_426"),
+                trace.boolean("upstream_called", false),
+                trace.boolean("delivered_to_codex", true),
+                trace.boolean("token_material_printed", false),
+                trace.boolean("raw_account_id_printed", false),
+                trace.boolean("session_ids_printed", false),
+            });
+            try writeUnsupportedWebSocketResponse(writer);
+            return;
+        }
 
         var attempted = std.ArrayListUnmanaged([]const u8){};
         var rejections = std.ArrayListUnmanaged(CandidateRejection){};
@@ -1036,6 +1064,26 @@ fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+fn asciiTokenContainsIgnoreCase(value: []const u8, expected: []const u8) bool {
+    var parts = std.mem.splitScalar(u8, value, ',');
+    while (parts.next()) |part| {
+        const token = std.mem.trim(u8, part, " \t\r\n");
+        if (asciiEqlIgnoreCase(token, expected)) return true;
+    }
+    return false;
+}
+
+fn isWebSocketUpgradeRequest(req: *const Request) bool {
+    if (!std.mem.eql(u8, req.method, "GET")) return false;
+    if (req.headers.find("Sec-WebSocket-Key") != null) return true;
+    const upgrade = req.headers.find("Upgrade") orelse return false;
+    if (!asciiTokenContainsIgnoreCase(upgrade, "websocket")) return false;
+    if (req.headers.find("Connection")) |connection| {
+        return asciiTokenContainsIgnoreCase(connection, "upgrade");
+    }
+    return true;
+}
+
 fn parseRequest(a: std.mem.Allocator, reader: anytype) !Request {
     // Request line: METHOD SP PATH SP HTTP/1.1 CRLF
     const start_line = try readLine(a, reader, 8 * 1024);
@@ -1549,6 +1597,16 @@ fn writeNoAccountNextActionJson(writer: anytype, action: NoAccountNextAction) !v
     try writer.writeByte('}');
 }
 
+fn writeUnsupportedWebSocketResponse(writer: anytype) !void {
+    const body =
+        "{\"error\":{\"type\":\"oauth_mux_unsupported_transport\",\"code\":\"oauth_mux_unsupported_transport\",\"message\":\"oauth-mux: Codex WebSocket responses transport is not supported by this managed proxy; falling back to HTTP Responses transport.\"}}\n";
+    try writer.writeAll("HTTP/1.1 426 Upgrade Required\r\n");
+    try writer.writeAll("Content-Type: application/json\r\n");
+    try writer.print("Content-Length: {d}\r\n", .{body.len});
+    try writer.writeAll("Connection: close\r\n\r\n");
+    try writer.writeAll(body);
+}
+
 fn writeNoAccountRejectionSummaryJson(writer: anytype, rejections: []const CandidateRejection) !void {
     try writer.writeByte('{');
     try writer.print("\"total\":{d}", .{rejections.len});
@@ -1772,6 +1830,48 @@ test "upstreamPathForRequest maps built-in openai provider paths to Codex upstre
     const adjacent = try upstreamPathForRequest(std.testing.allocator, "/backend-api/responses_websockets");
     defer std.testing.allocator.free(adjacent);
     try std.testing.expectEqualStrings("/backend-api/responses_websockets", adjacent);
+}
+
+test "websocket upgrade requests are detected before upstream forwarding" {
+    var headers = HeaderList.init(std.testing.allocator);
+    defer headers.items.deinit(std.testing.allocator);
+    try headers.append("Host", "127.0.0.1:1234");
+    try headers.append("Connection", "keep-alive, Upgrade");
+    try headers.append("Upgrade", "websocket");
+    try headers.append("Sec-WebSocket-Key", "fixture");
+    try headers.append("OpenAI-Beta", "responses_websockets=2026-02-06");
+
+    const req = Request{
+        .method = "GET",
+        .path = "/backend-api/responses",
+        .headers = headers,
+        .body = &.{},
+    };
+    try std.testing.expect(isWebSocketUpgradeRequest(&req));
+}
+
+test "plain responses GET is not classified as websocket upgrade" {
+    var headers = HeaderList.init(std.testing.allocator);
+    defer headers.items.deinit(std.testing.allocator);
+    try headers.append("Host", "127.0.0.1:1234");
+
+    const req = Request{
+        .method = "GET",
+        .path = "/backend-api/responses",
+        .headers = headers,
+        .body = &.{},
+    };
+    try std.testing.expect(!isWebSocketUpgradeRequest(&req));
+}
+
+test "unsupported websocket response is local and explicit" {
+    var out = std.ArrayListUnmanaged(u8){};
+    defer out.deinit(std.testing.allocator);
+    try writeUnsupportedWebSocketResponse(out.writer(std.testing.allocator));
+    try std.testing.expect(std.mem.startsWith(u8, out.items, "HTTP/1.1 426 Upgrade Required\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "oauth_mux_unsupported_transport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "falling back to HTTP Responses transport") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "Connection: close\r\n") != null);
 }
 
 const TestSinkWriter = struct {
