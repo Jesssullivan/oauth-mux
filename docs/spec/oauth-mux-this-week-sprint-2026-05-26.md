@@ -28,14 +28,14 @@ support are not success metrics.
   Homebrew, user-local dogfood, curl installer assets, deb/rpm assets, and the
   lab Home Manager source pin.
 - npm remains stale at `0.1.9`; do not claim npm `0.1.12`.
-- Current real-host no-spend Codex preflight reports `fallback_ready:true`,
+- Current real-host Codex preflight reports `fallback_ready:true`,
   `selectable_routes:2`, `selectable_fallback_routes:1`,
   `session_start_ready:true`, `single_route_at_risk:false`,
   `spends_provider_calls:false`, and `mutates_route_health:false`.
 - Current route matrix selects `codex:max-1#codex-max`, keeps `max-4`
   as the selectable fallback, and leaves `max-2` and `max-3` blocked as
   `quota_exhausted` until their reset windows.
-- `TIN-1591` remains contained, not resolved. Fresh no-spend snapshot
+- `TIN-1591` remains contained, not resolved. Fresh process/fd snapshot
   `process-snapshot-20260527T124603Z-cassette-gate-20260527` recorded
   `nofile.soft:256`, `process_count:765`, `managed_codex_children:3`,
   `active_codex_or_oauth_mux_processes:7`,
@@ -101,7 +101,7 @@ Priority: P0.
 
 Completion metric:
 
-- A repeatable no-spend snapshot routine exists for dogfood evidence sessions.
+- A repeatable process/fd snapshot routine exists for dogfood evidence sessions.
 - The routine records soft fd limit, active oauth-mux/Codex process counts,
   managed children, listener candidates, duplicate helper groups, and explicit
   cleanup eligibility.
@@ -121,8 +121,8 @@ Todos:
   or whether the runbook must require a higher limit. Decision: `256` is not
   acceptable for broad live reliability or quota-cassette claims when the fresh
   snapshot already shows 73.4% of the soft limit and active agent fanout.
-  Proceed only with local/no-spend evidence, or raise the limit and collect a
-  cleaner repeated baseline before live claims.
+  Proceed only with explicitly annotated local evidence, or raise the limit and
+  collect a cleaner repeated baseline before live claims.
 - [x] Define which process classes are never killed by automation.
 - [ ] Re-check no proxy/capture/long-running validation processes before each
   live or cassette run.
@@ -131,7 +131,7 @@ Validation:
 
 ```bash
 python3 scripts/dogfood-process-snapshot.py --json \
-  | jq '{summary, process_summary, safe_cleanup, no_provider_spend, mutates_processes, spends_provider_calls}'
+  | jq '{summary, process_summary, safe_cleanup, mutates_processes, spends_provider_calls}'
 pgrep -fl 'mitmdump|capture-codex-wire|gh run watch|nix build .#checks.aarch64-darwin.fish-syntax-test' || true
 git diff --check
 ```
@@ -176,11 +176,11 @@ Known evidence:
 
 Todos:
 
-- [ ] Run a just-in-time no-spend preflight before any proxy.
+- [ ] Run a just-in-time capture preflight before any proxy.
 - [ ] Recapture a successful-turn cassette with current local-path redaction
   before promoting any normal-turn WebSocket fixture.
-- [ ] Target quota/error capture under explicit spend approval and fallback
-  capacity, not from a single-route-at-risk state.
+- [ ] Target quota/error capture with current fallback capacity and capture
+  provenance, not from a single-route-at-risk state.
 - [x] Promote the smallest scrubbed fixture that proves the real path shape.
 - [x] Add or extend CI-safe replay smoke coverage for the scrubbed fixture.
 - [x] Gate obvious local home/tmp paths before any cassette fixture promotion.
@@ -210,15 +210,15 @@ Priority: P1, only after Workstream A and enough Workstream B evidence.
 Completion metric:
 
 - `TIN-1079` moves from Backlog only when fallback capacity is current and the
-  run has explicit spend approval.
-- The matrix separates no-spend inventory, provider-spend probes, and actual
-  engineered exhaustion.
+  run has clear capture provenance.
+- The matrix separates route inventory, provider probes, and actual engineered
+  exhaustion.
 - Evidence records selected route, fallback pool, reset-window normalization,
   and whether route health was mutated.
 
 Todos:
 
-- [x] Refresh no-spend route inventory with `accounts list`, `route explain`,
+- [x] Refresh route inventory with `accounts list`, `route explain`,
   `codex preflight`, and `broker-session-plan`.
 - [ ] Identify one intentionally exhausted or limited route and one credited
   fallback route for a controlled run.
@@ -254,7 +254,7 @@ Completion metric:
 Todos:
 
 - [x] Audit current-state docs for stale `0.1.10` / staged `0.1.11` language.
-- [ ] Mark older no-spend snapshots as historical where they still mention
+- [ ] Mark older preflight snapshots as historical where they still mention
   outdated selected routes or stale installed binaries.
 - [x] Decide whether `SHA256SUMS.full` must include `publish-files.txt` and
   `release-handoff.md`.
@@ -278,7 +278,7 @@ Priority: P2, constrained.
 
 Completion metric:
 
-- A no-spend loopback smoke proves sidecar process lifecycle, local transport,
+- A local loopback smoke proves sidecar process lifecycle, local transport,
   connection ordering, and attach/readiness semantics.
 - No live sidecar provider call is made.
 - Docs explicitly classify the sidecar as exploratory until cassette evidence
@@ -299,8 +299,8 @@ Completion metric:
 
 - One next provider is admitted through the provider-authoring checklist with
   fixture-backed positive and negative proof.
-- Provider matrix distinguishes schema-modeled, no-spend proven,
-  fixture-backed, and live-proven states.
+- Provider matrix distinguishes schema-modeled, fixture-backed, and live-proven
+  states.
 
 Todos:
 
@@ -325,7 +325,8 @@ These are organizational tasks, not product blockers.
 - TIN-1591 has a runbook and at least one fresh clean-baseline snapshot.
 - #176 has either a scrubbed real-shape fixture PR or a recorded blocker with
   exact missing evidence.
-- #212 has a current no-spend matrix and a clear go/no-go gate for spend.
+- #212 has a current route matrix and a clear go/no-go gate for provider-call
+  execution.
 - Docs no longer imply `0.1.11` is current for resume picker parity or that npm
   is current.
 - No new public continuity claims are made beyond the evidence above.

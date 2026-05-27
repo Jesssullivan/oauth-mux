@@ -6,7 +6,7 @@ Use this runbook when Codex/Claude dogfood feels persistently slow, duplicated,
 or memory-heavy and you need to distinguish normal accumulated sessions from
 orphan helper fanout or a suspected RSS leak.
 
-The snapshot path is no-spend and non-mutating:
+The snapshot path is read-only and non-mutating:
 
 - it does not call provider APIs;
 - it does not mutate oauth-mux config, route health, or credential stores;
@@ -99,8 +99,8 @@ Use these labels when filing follow-up evidence:
 
 ## TIN-1591 Evidence Gate
 
-Before using dogfood evidence for live reliability claims, collect a no-spend
-snapshot and inspect:
+Before using dogfood evidence for live reliability claims, collect a read-only
+process/fd snapshot and inspect:
 
 ```bash
 python3 scripts/dogfood-process-snapshot.py --json \
