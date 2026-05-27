@@ -29,7 +29,7 @@ capture-codex-wire.sh - Phase 0 evidence capture for the Codex adapter.
 
 USAGE
   scripts/capture-codex-wire.sh init             # one-time mitmproxy CA install check
-  scripts/capture-codex-wire.sh preflight        # no-spend capture readiness report
+  scripts/capture-codex-wire.sh preflight        # capture readiness report
   scripts/capture-codex-wire.sh proxy            # start the HTTP capture proxy in foreground
   scripts/capture-codex-wire.sh review DIR [REVIEW_FLAGS...]
                                               # summarize/redaction-check a capture
@@ -40,7 +40,7 @@ WORKFLOW
      mitmproxy CA, follow the instructions it prints. macOS:
        security add-trusted-cert -d -r trustRoot \
          -k ~/Library/Keychains/login.keychain-db ~/.mitmproxy/mitmproxy-ca-cert.cer
-  2. Run the no-spend capture preflight:
+  2. Run the capture preflight:
        scripts/capture-codex-wire.sh preflight
      It records installed binary identity, Codex version, mitmproxy
      availability, mitmproxy CA readiness, route fallback readiness,
@@ -48,7 +48,7 @@ WORKFLOW
      under captures/.
   3. In one shell:
        scripts/capture-codex-wire.sh proxy
-     The proxy first reruns the no-spend preflight into the same capture
+     The proxy first reruns the preflight into the same capture
      root, then listens on 127.0.0.1:9080 as a normal HTTP proxy.
   4. In another shell:
        export HTTPS_PROXY=http://127.0.0.1:9080
@@ -285,7 +285,7 @@ cmd_proxy() {
   fi
 
   echo "capture run dir: $RUN_DIR"
-  echo "running no-spend capture preflight into the capture root..."
+  echo "running capture preflight into the capture root..."
   OMUX_CAPTURE_PREFLIGHT_DIR="$RUN_DIR" cmd_preflight
 
   cat >"$RUN_DIR/meta.json" <<META
