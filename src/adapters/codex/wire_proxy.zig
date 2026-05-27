@@ -233,9 +233,9 @@ pub const Proxy = struct {
             return;
         };
 
-        if (isWebSocketUpgradeRequest(&req)) {
+        if (unsupportedResponsesGetTransport(&req)) |transport| {
             self.logEvent("proxy_unsupported_transport", .{
-                .transport = "websocket",
+                .transport = transport,
                 .method = req.method,
                 .path_kind = pathKind(req.path),
                 .status = 426,
@@ -245,7 +245,7 @@ pub const Proxy = struct {
             });
             trace.append(self.allocator, "codex.proxy.unsupported_transport", .warn, &.{
                 trace.string("provider", "codex"),
-                trace.string("transport", "websocket"),
+                trace.string("transport", transport),
                 trace.string("method", req.method),
                 trace.string("path_kind", pathKind(req.path)),
                 trace.uint("status", 426),
@@ -1084,6 +1084,13 @@ fn isWebSocketUpgradeRequest(req: *const Request) bool {
     return true;
 }
 
+fn unsupportedResponsesGetTransport(req: *const Request) ?[]const u8 {
+    if (!std.mem.eql(u8, req.method, "GET")) return null;
+    if (!std.mem.eql(u8, pathKind(req.path), "responses")) return null;
+    if (isWebSocketUpgradeRequest(req)) return "websocket";
+    return "responses_get";
+}
+
 fn parseRequest(a: std.mem.Allocator, reader: anytype) !Request {
     // Request line: METHOD SP PATH SP HTTP/1.1 CRLF
     const start_line = try readLine(a, reader, 8 * 1024);
@@ -1862,6 +1869,51 @@ test "plain responses GET is not classified as websocket upgrade" {
         .body = &.{},
     };
     try std.testing.expect(!isWebSocketUpgradeRequest(&req));
+}
+
+test "responses GET reconnect requests are contained locally" {
+    var headers = HeaderList.init(std.testing.allocator);
+    defer headers.items.deinit(std.testing.allocator);
+    try headers.append("Host", "127.0.0.1:1234");
+    try headers.append("OpenAI-Beta", "responses_websockets=2026-02-06");
+
+    const req = Request{
+        .method = "GET",
+        .path = "/backend-api/responses",
+        .headers = headers,
+        .body = &.{},
+    };
+    try std.testing.expectEqualStrings("responses_get", unsupportedResponsesGetTransport(&req) orelse "none");
+}
+
+test "websocket responses GET reports websocket transport" {
+    var headers = HeaderList.init(std.testing.allocator);
+    defer headers.items.deinit(std.testing.allocator);
+    try headers.append("Host", "127.0.0.1:1234");
+    try headers.append("Upgrade", "websocket");
+    try headers.append("OpenAI-Beta", "responses_websockets=2026-02-06");
+
+    const req = Request{
+        .method = "GET",
+        .path = "/backend-api/responses",
+        .headers = headers,
+        .body = &.{},
+    };
+    try std.testing.expectEqualStrings("websocket", unsupportedResponsesGetTransport(&req) orelse "none");
+}
+
+test "non-responses GET requests are still proxyable" {
+    var headers = HeaderList.init(std.testing.allocator);
+    defer headers.items.deinit(std.testing.allocator);
+    try headers.append("Host", "127.0.0.1:1234");
+
+    const req = Request{
+        .method = "GET",
+        .path = "/backend-api/models",
+        .headers = headers,
+        .body = &.{},
+    };
+    try std.testing.expect(unsupportedResponsesGetTransport(&req) == null);
 }
 
 test "unsupported websocket response is local and explicit" {
