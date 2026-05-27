@@ -23,9 +23,14 @@ except ImportError:  # pragma: no cover - unavailable on some non-Unix targets.
 
 AGENT_NAMES = {"codex", "claude", "claude-code", "claude_code"}
 ROOT_NAMES = AGENT_NAMES | {"oauth-mux"}
+LIVE_CLAIM_FD_SOFT_LIMIT_PCT = 70.0
 HELPER_RE = re.compile(
     r"(mcp|figma-console|serena|language-server|node|npm|npx|bun|uvx|"
     r"playwright|puppeteer|chrome-devtools)",
+    re.IGNORECASE,
+)
+LIVE_VALIDATION_RE = re.compile(
+    r"(mitmdump|capture-codex-wire|gh\s+run\s+watch|nix\s+build\s+\.#checks)",
     re.IGNORECASE,
 )
 SECRET_REDACTIONS = [
@@ -203,9 +208,13 @@ def parse_fd_counts(pids: list[int]) -> tuple[dict[int, int], list[str]]:
                     counts.setdefault(current_pid, 0)
                 except ValueError:
                     current_pid = None
-            elif tag == "f" and current_pid is not None:
+            elif tag == "f" and current_pid is not None and is_numeric_fd_tag(value):
                 counts[current_pid] = counts.get(current_pid, 0) + 1
     return counts, warnings
+
+
+def is_numeric_fd_tag(value: str) -> bool:
+    return bool(value and value[0].isdigit())
 
 
 def fd_soft_limit_pct(fd_count: int, soft_limit: Any) -> float | None:
@@ -247,6 +256,10 @@ def is_codex_process(proc: dict[str, Any]) -> bool:
 def is_claude_process(proc: dict[str, Any]) -> bool:
     command = proc["command"].lower()
     return proc["command_name"].lower() in {"claude", "claude-code", "claude_code"} or " claude" in command
+
+
+def is_live_validation_process(proc: dict[str, Any]) -> bool:
+    return bool(LIVE_VALIDATION_RE.search(proc["command"]))
 
 
 def descendants(pid: int, children: dict[int, list[int]]) -> list[int]:
@@ -299,6 +312,104 @@ def listener_ports(names: list[str]) -> list[str]:
         if match:
             ports.append(match.group(1))
     return ports
+
+
+def gate_reason(reason: str, count: int | None = None, detail: str | None = None) -> dict[str, Any]:
+    row: dict[str, Any] = {"reason": reason}
+    if count is not None:
+        row["count"] = count
+    if detail is not None:
+        row["detail"] = detail
+    return row
+
+
+def build_evidence_gate(
+    process_summary: dict[str, Any],
+    fd_summary: dict[str, Any],
+    warnings: list[str],
+    orphan_listener_candidates: list[dict[str, Any]],
+    duplicate_helper_groups: list[dict[str, Any]],
+    accumulated_sessions: list[dict[str, Any]],
+    live_validation_processes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    blocking_reasons: list[dict[str, Any]] = []
+    caution_reasons: list[dict[str, Any]] = []
+
+    if warnings:
+        blocking_reasons.append(gate_reason("snapshot_warnings_present", len(warnings)))
+
+    active_codex_mux = int(process_summary["active_codex_or_oauth_mux_processes"])
+    if active_codex_mux:
+        blocking_reasons.append(
+            gate_reason(
+                "active_oauth_mux_or_codex_processes",
+                active_codex_mux,
+                "close or explicitly account for active managed/native Codex sessions before live claims",
+            )
+        )
+
+    if orphan_listener_candidates:
+        blocking_reasons.append(
+            gate_reason(
+                "orphan_listener_candidates",
+                len(orphan_listener_candidates),
+                "collect a second snapshot or close known-idle helper sessions before live claims",
+            )
+        )
+
+    if live_validation_processes:
+        blocking_reasons.append(
+            gate_reason(
+                "live_validation_processes_running",
+                len(live_validation_processes),
+                "wait for capture/watch/build processes to finish before using evidence",
+            )
+        )
+
+    max_fd_pct = fd_summary.get("max_fd_soft_limit_pct")
+    if isinstance(max_fd_pct, (int, float)) and max_fd_pct >= LIVE_CLAIM_FD_SOFT_LIMIT_PCT:
+        blocking_reasons.append(
+            gate_reason(
+                "fd_pressure_high",
+                detail=f"max visible fd usage is {max_fd_pct}% of the collector soft limit; threshold is {LIVE_CLAIM_FD_SOFT_LIMIT_PCT}%",
+            )
+        )
+
+    if accumulated_sessions:
+        caution_reasons.append(
+            gate_reason(
+                "accumulated_sessions_visible",
+                len(accumulated_sessions),
+                "old visible agent sessions may be normal, but must be classified before broad claims",
+            )
+        )
+
+    if duplicate_helper_groups:
+        caution_reasons.append(
+            gate_reason(
+                "duplicate_helper_groups_visible",
+                len(duplicate_helper_groups),
+                "duplicate helper signatures may be normal MCP fanout, but need classification before broad claims",
+            )
+        )
+
+    clean = not blocking_reasons and not caution_reasons
+    return {
+        "process_fd_clean_baseline": clean,
+        "unannotated_live_claims_admitted": clean,
+        "quota_cassette_claims_admitted": clean,
+        "local_release_validation_admitted": True,
+        "requires_operator_annotation": not clean,
+        "fd_soft_limit_pct_threshold": LIVE_CLAIM_FD_SOFT_LIMIT_PCT,
+        "blocking_reasons": blocking_reasons,
+        "caution_reasons": caution_reasons,
+        "next_actions": [
+            "close or account for active Codex/oauth-mux sessions",
+            "raise the fd soft limit or reduce helper fanout when fd pressure is high",
+            "collect a second snapshot before calling process state clean",
+            "do not kill processes automatically; get explicit operator approval",
+        ] if not clean else [],
+    }
 
 
 def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
@@ -410,6 +521,19 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         for signature, group in sorted(helper_groups.items())
         if len(group) > 1
     ]
+    live_validation_processes = [
+        {
+            "pid": proc["pid"],
+            "ppid": proc["ppid"],
+            "command_name": proc["command_name"],
+            "role": proc["role"],
+            "command": proc["command"],
+            "elapsed": proc["elapsed"],
+            "elapsed_seconds": proc["elapsed_seconds"],
+        }
+        for proc in processes
+        if is_live_validation_process(proc)
+    ]
 
     accumulated_sessions = [
         {
@@ -425,6 +549,9 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     ]
     oauth_mux_processes = [proc for proc in processes if proc["is_oauth_mux"]]
     codex_processes = [proc for proc in processes if proc["is_codex"]]
+    active_codex_or_oauth_mux_processes = [
+        proc for proc in processes if proc["is_oauth_mux"] or proc["is_codex"]
+    ]
     claude_processes = [proc for proc in processes if proc["is_claude"]]
     managed_codex_children = [proc for proc in codex_processes if proc["role"] == "managed_codex_child"]
     unmanaged_codex_processes = [proc for proc in codex_processes if proc["role"] == "native_codex"]
@@ -447,6 +574,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     max_fd_count = top_fd_processes[0]["fd_count"] if top_fd_processes else None
     fd_summary = {
         "visible_fd_process_count": len(fd_rows),
+        "fd_soft_limit_basis": "collector_process_nofile_soft_limit",
         "max_fd_count": max_fd_count,
         "max_fd_soft_limit_pct": fd_soft_limit_pct(max_fd_count, soft_limit) if isinstance(max_fd_count, int) else None,
         "top_processes": top_fd_processes,
@@ -454,11 +582,21 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     process_summary = {
         "oauth_mux_processes": len(oauth_mux_processes),
         "codex_processes": len(codex_processes),
+        "active_codex_or_oauth_mux_processes": len(active_codex_or_oauth_mux_processes),
         "claude_processes": len(claude_processes),
         "managed_codex_children": len(managed_codex_children),
         "unmanaged_codex_processes": len(unmanaged_codex_processes),
         "ambiguous_processes": len(orphan_listener_candidates),
     }
+    evidence_gate = build_evidence_gate(
+        process_summary,
+        fd_summary,
+        warnings,
+        orphan_listener_candidates,
+        duplicate_helper_groups,
+        accumulated_sessions,
+        live_validation_processes,
+    )
 
     return {
         "kind": "dogfood_process_snapshot",
@@ -491,11 +629,13 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "orphan_listener_candidate_count": len(orphan_listener_candidates),
             "duplicate_helper_group_count": len(duplicate_helper_groups),
             "accumulated_session_count": len(accumulated_sessions),
+            "live_validation_process_count": len(live_validation_processes),
             "heap_leak_proven": False,
             "heap_leak_evidence": "single snapshot only; compare two snapshots before calling this a leak",
         },
         "process_summary": process_summary,
         "fd_summary": fd_summary,
+        "evidence_gate": evidence_gate,
         "claim": {
             "current_process_hotswap": False,
             "unmanaged_tui_hotswap": False,
@@ -504,6 +644,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         "agent_trees": trees,
         "orphan_listener_candidates": orphan_listener_candidates,
         "duplicate_helper_groups": duplicate_helper_groups,
+        "live_validation_processes": live_validation_processes,
         "accumulated_sessions": accumulated_sessions,
         "safe_cleanup": {
             "automation_may_kill": False,
@@ -624,6 +765,30 @@ def render_snapshot_md(snapshot: dict[str, Any]) -> str:
     ]
     for key, value in snapshot["summary"].items():
         lines.append(f"- `{key}`: {value}")
+    gate = snapshot.get("evidence_gate", {})
+    lines.extend(["", "## Evidence Gate", ""])
+    for key in (
+        "process_fd_clean_baseline",
+        "unannotated_live_claims_admitted",
+        "quota_cassette_claims_admitted",
+        "local_release_validation_admitted",
+        "requires_operator_annotation",
+        "fd_soft_limit_pct_threshold",
+    ):
+        if key in gate:
+            lines.append(f"- `{key}`: {gate[key]}")
+    if gate.get("blocking_reasons"):
+        lines.extend(["", "Blocking reasons:"])
+        for item in gate["blocking_reasons"]:
+            detail = f" - {item['detail']}" if item.get("detail") else ""
+            count = f" ({item['count']})" if "count" in item else ""
+            lines.append(f"- `{item['reason']}`{count}{detail}")
+    if gate.get("caution_reasons"):
+        lines.extend(["", "Caution reasons:"])
+        for item in gate["caution_reasons"]:
+            detail = f" - {item['detail']}" if item.get("detail") else ""
+            count = f" ({item['count']})" if "count" in item else ""
+            lines.append(f"- `{item['reason']}`{count}{detail}")
     lines.append("")
     lines.append("## Process Summary")
     lines.append("")

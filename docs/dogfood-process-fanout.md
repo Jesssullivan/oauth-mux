@@ -46,6 +46,8 @@ The report groups visible Codex, Claude, and oauth-mux process trees and records
 - listening TCP ports visible through `lsof`;
 - duplicate helper command groups;
 - helper/listener processes that are not inside a visible agent tree.
+- an `evidence_gate` verdict for whether the current process/fd state is clean
+  enough for unannotated live reliability or quota-cassette claims.
 
 Commands, temp paths, home paths, and common bearer/token spellings are redacted.
 The script intentionally does not read process environments.
@@ -102,17 +104,33 @@ snapshot and inspect:
 
 ```bash
 python3 scripts/dogfood-process-snapshot.py --json \
-  | jq '{summary, process_summary, resource_limits, fd_summary, safe_cleanup}'
+  | jq '{summary, process_summary, resource_limits, fd_summary, evidence_gate, safe_cleanup}'
 ```
 
 Treat the evidence as contaminated when the snapshot shows active work you
 cannot classify, such as:
 
-- active oauth-mux/Codex parent processes owned by another shell;
+- any visible oauth-mux/Codex process, including managed Codex children;
 - duplicated MCP/helper groups without a known active parent session;
-- orphan listener candidates that persist across a second snapshot;
+- orphan listener candidates on the first snapshot;
+- active capture, CI watch, or local release-proof processes;
 - file descriptor usage close enough to the soft limit that a live run could
   fail locally before proving provider behavior.
+
+The machine-readable gate is intentionally conservative:
+
+- `evidence_gate.process_fd_clean_baseline` must be `true` before treating
+  dogfood state as a clean baseline.
+- `evidence_gate.unannotated_live_claims_admitted` must be `true` before making
+  broad live reliability claims without an explicit process/fd caveat.
+- `evidence_gate.quota_cassette_claims_admitted` must be `true` before using a
+  quota/rate-limit cassette as clean process/fd evidence.
+- `evidence_gate.local_release_validation_admitted` can remain `true` even when
+  live claims are blocked; release/install checks can proceed with the caveat
+  that process fanout is not clean reliability proof.
+- `evidence_gate.fd_soft_limit_pct_threshold` is currently `70.0`. The
+  percentage uses the collector process's soft `nofile` limit as a local
+  pressure proxy; it is not a per-target process rlimit read.
 
 Containment is enough to proceed with local release/install validation. Real
 cassette or live quota claims need either a clean baseline or an explicit note
