@@ -19,26 +19,30 @@ support are not success metrics.
 
 ## Current Truth
 
-- `oauth-mux` main is clean and synced to `origin/main` at `7a06632`
-  after PR #299 promoted the scrubbed auth-failure fixture and local-path
-  redaction gate.
+- `oauth-mux` main is clean and synced to `origin/main` at `01b4069`
+  after PR #305 exposed legacy Codex resume namespace diagnostics.
+- `../lab` main is clean and synced to `origin/main` at `3d9aef59`
+  after PR #510 updated the Home Manager oauth-mux pin to the PR #305
+  source revision.
 - Public release `v0.1.12` is published and verified for GitHub Release,
   Homebrew, user-local dogfood, curl installer assets, deb/rpm assets, and the
   lab Home Manager source pin.
 - npm remains stale at `0.1.9`; do not claim npm `0.1.12`.
-- Current no-spend Codex preflight reports `fallback_ready:true`,
-  `selectable_fallback_routes:2`, `session_start_ready:true`,
-  `single_route_at_risk:false`, `spends_provider_calls:false`, and
-  `mutates_route_health:false`.
-- Current no-spend route matrix selects `codex:max-1#codex-max`, keeps
-  `max-2` and `max-4` as selectable fallbacks, and leaves `max-3` as
-  `probe_needed` / `unrecorded`; probing `max-3` would spend provider calls.
+- Current real-host no-spend Codex preflight reports `fallback_ready:true`,
+  `selectable_routes:2`, `selectable_fallback_routes:1`,
+  `session_start_ready:true`, `single_route_at_risk:false`,
+  `spends_provider_calls:false`, and `mutates_route_health:false`.
+- Current route matrix selects `codex:max-1#codex-max`, keeps `max-4`
+  as the selectable fallback, and leaves `max-2` and `max-3` blocked as
+  `quota_exhausted` until their reset windows.
 - `TIN-1591` remains contained, not resolved. Fresh no-spend snapshot
-  `process-snapshot-20260526T200604Z-baseline-20260526` recorded
-  `nofile.soft:256`, `process_count:653`, `managed_codex_children:2`,
-  `orphan_listener_candidate_count:8`, and `max_fd_soft_limit_pct:73.4`.
-  Dogfood evidence remains local release/install validation until process/fd
-  baselines are clean enough for broader live reliability claims.
+  `process-snapshot-20260527T124603Z-cassette-gate-20260527` recorded
+  `nofile.soft:256`, `process_count:765`, `managed_codex_children:3`,
+  `active_codex_or_oauth_mux_processes:7`,
+  `orphan_listener_candidate_count:3`, and `max_fd_soft_limit_pct:68.8`.
+  The gate admits local release validation, but blocks unannotated live
+  reliability and quota-cassette claims until active sessions/listeners are
+  closed or explicitly accounted for.
 - GitHub `#176` remains open even though Linear `TIN-950` is Done. Treat that
   as a tracker mismatch until real quota/error cassettes land or Linear is
   explicitly clarified.
@@ -51,6 +55,9 @@ support are not success metrics.
   `just smoke-codex-cli-ux-local`, local dogfood reinstall, and a live
   `/Users/jess/git/blahaj` resume-picker check all passed with managed resume
   showing the same `[Cwd]` rows as native Codex.
+- PR #305 added non-mutating diagnostics for legacy
+  `oauth_mux_openai` resume rows. It does not rewrite SQLite; any repair must
+  be operator-explicit and backed up.
 
 ## Workstream P0 - Resume Picker Namespace Parity
 
@@ -144,8 +151,11 @@ Completion metric:
 
 Known evidence:
 
-- Clean scratch capture `captures/codex-wire-20260526T171741Z` exists locally
-  and is gitignored.
+- Scratch capture `captures/codex-wire-20260526T171741Z` exists locally and
+  is gitignored. It is useful raw normal-turn evidence for Codex 0.132
+  WebSocket `101` behavior, but it is not a fixture candidate: the current
+  reviewer rejects it because `x-codex-turn-metadata` still contains a local
+  workspace path in the per-flow JSON.
 - Current-release auth-failure scratch capture
   `captures/codex-wire-20260526T193856Z` exists locally and is gitignored;
   it observed `refresh_token_reused` on `/oauth/token` and `token_expired`
@@ -156,9 +166,10 @@ Known evidence:
   deliberately sanitizes secret-shaped strings and local paths; the raw
   capture remains gitignored.
 - Codex 0.132 `/backend-api/codex/responses` was observed as a WebSocket `101`,
-  not a simple `200` SSE-only path. That remains raw upstream wire evidence;
-  managed oauth-mux currently contains WS attempts with a local HTTP 426
-  fallback signal until WS pass-through has cassette-backed semantics.
+  not a simple `200` SSE-only path. That remains raw upstream wire evidence
+  until recaptured with the current local-path redaction gate. Managed
+  oauth-mux currently contains WS attempts with a local HTTP 426 fallback
+  signal until WS pass-through has cassette-backed semantics.
 - Cookie and `Set-Cookie` redaction is now review-gated after PR `#292`.
 - Local workspace path redaction is review-gated before fixture promotion.
 - No quota/exhaustion shapes have been captured yet.
@@ -166,9 +177,8 @@ Known evidence:
 Todos:
 
 - [ ] Run a just-in-time no-spend preflight before any proxy.
-- [ ] Capture another successful-turn cassette only if it adds fixture value
-  beyond the existing raw WebSocket `101` shape or proves managed HTTP/SSE
-  fallback behavior.
+- [ ] Recapture a successful-turn cassette with current local-path redaction
+  before promoting any normal-turn WebSocket fixture.
 - [ ] Target quota/error capture under explicit spend approval and fallback
   capacity, not from a single-route-at-risk state.
 - [x] Promote the smallest scrubbed fixture that proves the real path shape.

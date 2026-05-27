@@ -89,14 +89,18 @@ confirm the shapes themselves match upstream reality.
     --require-status 200 \
     --json
   ```
-- Review result: `ok:true`, 11 flows, path counts `responses:1`,
-  `codex_other:2`, `other:8`; status counts `101:1`, `200:8`,
-  `204:1`, `401:1`; no redaction, malformed, or requirement
-  failures; no 429 quota shape observed.
-- Hygiene note: this run used the `Set-Cookie` redaction gate added in
-  the same #176 follow-up branch. Earlier scratch captures from the
-  same day are not fixture candidates because response cookies were not
-  yet redacted in per-flow JSON.
+- Current review result: `ok:false`, 11 flows, path counts
+  `responses:1`, `codex_other:2`, `other:8`; status counts `101:1`,
+  `200:8`, `204:1`, `401:1`; no malformed or requirement failures;
+  no 429 quota shape observed.
+- Promotion blocker: the current local-path gate rejects
+  `x-codex-turn-metadata` because the per-flow JSON still contains a
+  local workspace path. Treat this run as raw upstream evidence only,
+  not as a promotable cassette fixture. Recapture a successful turn with
+  the current addon before committing a normal-turn WebSocket fixture.
+- Hygiene note: earlier scratch captures from the same day are not
+  fixture candidates because response cookies or local workspace paths
+  were not yet redacted in per-flow JSON.
 
 2026-05-26 current-release auth-failure capture:
 
