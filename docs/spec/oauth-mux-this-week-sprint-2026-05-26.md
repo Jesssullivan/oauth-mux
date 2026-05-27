@@ -36,13 +36,14 @@ support are not success metrics.
   as the selectable fallback, and leaves `max-2` and `max-3` blocked as
   `quota_exhausted` until their reset windows.
 - `TIN-1591` remains contained, not resolved. Fresh process/fd snapshot
-  `process-snapshot-20260527T124603Z-cassette-gate-20260527` recorded
-  `nofile.soft:256`, `process_count:765`, `managed_codex_children:3`,
-  `active_codex_or_oauth_mux_processes:7`,
-  `orphan_listener_candidate_count:3`, and `max_fd_soft_limit_pct:68.8`.
-  The gate admits local release validation, but blocks unannotated live
-  reliability and quota-cassette claims until active sessions/listeners are
-  closed or explicitly accounted for.
+  `process-snapshot-20260527T144821Z-tin1591-gate-20260527` recorded
+  `nofile.soft:256`, `process_count:595`, `managed_codex_children:4`,
+  `active_codex_or_oauth_mux_processes:9`,
+  `orphan_listener_candidate_count:3`, and `max_fd_soft_limit_pct:43.4`.
+  The fail-closed gate admits local release validation, but blocks unannotated
+  live reliability and quota-cassette claims until active sessions/listeners
+  are closed or explicitly accounted for. The current blocker is process
+  topology, not fd pressure.
 - GitHub `#176` remains open even though Linear `TIN-950` is Done. Treat that
   as a tracker mismatch until real quota/error cassettes land or Linear is
   explicitly clarified.
@@ -115,23 +116,37 @@ Todos:
 - [x] Add a short `TIN-1591` runbook section to `docs/dogfood-process-fanout.md`
   or a sibling doc with the exact snapshot command, interpretation rules, and
   cleanup approval policy.
-- [x] Re-run `python3 scripts/dogfood-process-snapshot.py --json` from a clean
-  shell and save only a redacted summary if it changes the claim posture.
+- [x] Re-run `python3 scripts/dogfood-process-snapshot.py --json` and save only
+  a redacted summary if it changes the claim posture.
+- [x] Add a fail-closed `--require-gate quota_cassette_claims_admitted` mode so
+  cassette capture can refuse contaminated process/fd evidence before the proxy
+  starts.
+- [x] Add capture-review `--require-process-gate
+  quota_cassette_claims_admitted` so fixture promotion fails when same-run
+  process/fd provenance is missing or blocked.
+- [x] Fix `oauth-mux codex ...` parent classification so oauth-mux adapter
+  parents are not mislabeled as native Codex processes.
 - [x] Decide whether the soft fd limit `256` is acceptable for dogfood evidence
   or whether the runbook must require a higher limit. Decision: `256` is not
-  acceptable for broad live reliability or quota-cassette claims when the fresh
-  snapshot already shows 73.4% of the soft limit and active agent fanout.
-  Proceed only with explicitly annotated local evidence, or raise the limit and
-  collect a cleaner repeated baseline before live claims.
+  acceptable as the only baseline for broad live reliability or quota-cassette
+  claims. Current fd pressure is below the 70% gate, but active agent fanout and
+  orphan listener candidates still block clean evidence. Proceed only with
+  explicitly annotated local evidence, or reduce fanout and collect a cleaner
+  repeated baseline before live claims.
 - [x] Define which process classes are never killed by automation.
 - [ ] Re-check no proxy/capture/long-running validation processes before each
   live or cassette run.
+- [ ] Collect two clean-baseline snapshots after active oauth-mux/Codex sessions
+  and orphan listener candidates are closed or explicitly accounted for.
 
 Validation:
 
 ```bash
 python3 scripts/dogfood-process-snapshot.py --json \
   | jq '{summary, process_summary, safe_cleanup, mutates_processes, spends_provider_calls}'
+python3 scripts/dogfood-process-snapshot.py \
+  --require-gate quota_cassette_claims_admitted \
+  --json
 pgrep -fl 'mitmdump|capture-codex-wire|gh run watch|nix build .#checks.aarch64-darwin.fish-syntax-test' || true
 git diff --check
 ```
@@ -143,6 +158,10 @@ Priority: P0 after Workstream A baseline is clean enough.
 Completion metric:
 
 - Capture review requires proxy metadata and installed preflight proof.
+- Capture preflight includes the TIN-1591 process/fd gate and records whether
+  quota-cassette claims are admitted before proxy evidence is promoted.
+- Claim-bearing capture review requires the recorded process/fd gate to admit
+  `quota_cassette_claims_admitted`.
 - At least one scrubbed real-shape replay fixture is committed.
 - Quota/error shapes are captured or explicitly marked not observed:
   `usage_limit_reached`, `usage_not_included`, all-fallbacks-exhausted, and
@@ -203,6 +222,7 @@ scripts/capture-codex-wire.sh preflight
 scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
   --require-preflight-ok \
   --require-proxy-meta \
+  --require-process-gate quota_cassette_claims_admitted \
   --require-path-kind responses \
   --require-status 101 \
   --require-status 200

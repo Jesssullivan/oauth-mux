@@ -25,6 +25,12 @@ TOKEN_PATTERNS = [
 ]
 
 COOKIE_HEADERS = {"cookie", "set-cookie"}
+PROCESS_GATE_NAMES = {
+    "process_fd_clean_baseline",
+    "unannotated_live_claims_admitted",
+    "quota_cassette_claims_admitted",
+    "local_release_validation_admitted",
+}
 
 
 def _local_path_patterns() -> list[re.Pattern[str]]:
@@ -107,6 +113,13 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="emit machine-readable summary")
     parser.add_argument("--require-preflight-ok", action="store_true", help="fail unless capture-preflight-summary.json is present and ok:true")
     parser.add_argument("--require-proxy-meta", action="store_true", help="fail unless meta.json records same-run proxy preflight metadata")
+    parser.add_argument(
+        "--require-process-gate",
+        action="append",
+        choices=sorted(PROCESS_GATE_NAMES),
+        default=[],
+        help="fail unless capture preflight process_gate admits this gate",
+    )
     parser.add_argument("--require-path-kind", action="append", default=[], help="fail unless at least one flow has this normalized path kind")
     parser.add_argument("--require-status", action="append", type=int, default=[], help="fail unless at least one flow has this HTTP status")
     parser.add_argument("--require-quota-type", action="append", default=[], help="fail unless at least one 429 error.type matches this value")
@@ -180,6 +193,20 @@ def main() -> int:
             detail = f": {issues}" if issues else ""
             requirement_failures.append(f"capture preflight was not ok{detail}")
 
+    preflight_process_gate = None
+    if isinstance(preflight_summary, dict):
+        preflight_process_gate = preflight_summary.get("process_gate")
+
+    for gate_name in args.require_process_gate:
+        if not isinstance(preflight_summary, dict):
+            requirement_failures.append("capture preflight summary is missing or unreadable")
+            break
+        if not isinstance(preflight_process_gate, dict):
+            requirement_failures.append("capture preflight process_gate is missing or unreadable")
+            break
+        if preflight_process_gate.get(gate_name) is not True:
+            requirement_failures.append(f"capture preflight process gate not admitted: {gate_name}")
+
     meta_preflight_summary = None
     meta_preflight_present = False
     if isinstance(meta_summary, dict):
@@ -218,6 +245,7 @@ def main() -> int:
             "present": isinstance(preflight_summary, dict),
             "ok": preflight_summary.get("ok") if isinstance(preflight_summary, dict) else None,
             "issues": preflight_summary.get("issues", []) if isinstance(preflight_summary, dict) else [],
+            "process_gate": preflight_process_gate if isinstance(preflight_process_gate, dict) else None,
         },
         "meta": {
             "present": isinstance(meta_summary, dict),
@@ -238,6 +266,8 @@ def main() -> int:
     else:
         print(f"flows: {summary['flow_count']}")
         print(f"preflight: {json.dumps(summary['preflight'], sort_keys=True)}")
+        if summary["preflight"].get("process_gate") is not None:
+            print(f"process_gate: {json.dumps(summary['preflight']['process_gate'], sort_keys=True)}")
         print(f"meta: {json.dumps(summary['meta'], sort_keys=True)}")
         print(f"paths: {json.dumps(path_counts, sort_keys=True)}")
         print(f"statuses: {json.dumps(status_counts, sort_keys=True)}")

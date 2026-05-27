@@ -8,7 +8,7 @@ orphan helper fanout or a suspected RSS leak.
 
 The snapshot path is read-only and non-mutating:
 
-- it does not call provider APIs;
+- it does not contact provider endpoints;
 - it does not mutate oauth-mux config, route health, or credential stores;
 - it does not kill processes;
 - it does not sleep in the foreground;
@@ -48,6 +48,9 @@ The report groups visible Codex, Claude, and oauth-mux process trees and records
 - helper/listener processes that are not inside a visible agent tree.
 - an `evidence_gate` verdict for whether the current process/fd state is clean
   enough for unannotated live reliability or quota-cassette claims.
+- `safe_cleanup.review_groups` lists the exact active sessions, orphan listener
+  candidates, live validation processes, and high-fd processes that need
+  operator review before claim-bearing evidence.
 
 Commands, temp paths, home paths, and common bearer/token spellings are redacted.
 The script intentionally does not read process environments.
@@ -107,6 +110,27 @@ python3 scripts/dogfood-process-snapshot.py --json \
   | jq '{summary, process_summary, resource_limits, fd_summary, evidence_gate, safe_cleanup}'
 ```
 
+To make a claim-bearing workflow fail closed before cassette capture:
+
+```bash
+python3 scripts/dogfood-process-snapshot.py \
+  --require-gate quota_cassette_claims_admitted \
+  --json
+```
+
+`scripts/capture-codex-wire.sh preflight` also writes `process-gate.json` and
+summarizes the same gate in `capture-preflight-summary.json`. Treat that summary
+as capture provenance; use `--require-gate quota_cassette_claims_admitted`
+immediately before starting a claim-bearing proxy run when you need a hard stop,
+then require the captured provenance during promotion review:
+
+```bash
+scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
+  --require-preflight-ok \
+  --require-proxy-meta \
+  --require-process-gate quota_cassette_claims_admitted
+```
+
 Treat the evidence as contaminated when the snapshot shows active work you
 cannot classify, such as:
 
@@ -131,6 +155,10 @@ The machine-readable gate is intentionally conservative:
 - `evidence_gate.fd_soft_limit_pct_threshold` is currently `70.0`. The
   percentage uses the collector process's soft `nofile` limit as a local
   pressure proxy; it is not a per-target process rlimit read.
+- `--require-clean` exits nonzero unless `process_fd_clean_baseline` is true.
+  `--require-gate <name>` exits nonzero unless the named gate is true; use
+  `quota_cassette_claims_admitted` before calling a quota/rate-limit cassette
+  clean evidence.
 
 Containment is enough to proceed with local release/install validation. Real
 cassette or live quota claims need either a clean baseline or an explicit note

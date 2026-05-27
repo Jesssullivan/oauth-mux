@@ -44,8 +44,8 @@ WORKFLOW
        scripts/capture-codex-wire.sh preflight
      It records installed binary identity, Codex version, mitmproxy
      availability, mitmproxy CA readiness, route fallback readiness,
-     latest status summary, and active oauth-mux/Codex process hints
-     under captures/.
+     latest status summary, process/fd evidence gate, and active
+     oauth-mux/Codex process hints under captures/.
   3. In one shell:
        scripts/capture-codex-wire.sh proxy
      The proxy first reruns the preflight into the same capture
@@ -60,7 +60,10 @@ WORKFLOW
      usage_limit_reached body.
   5. Stop the proxy with ^C. Find captures under captures/.
   6. Run:
-       scripts/capture-codex-wire.sh review captures/codex-wire-<TS>
+       scripts/capture-codex-wire.sh review captures/codex-wire-<TS> \
+         --require-preflight-ok \
+         --require-proxy-meta \
+         --require-process-gate quota_cassette_claims_admitted
   7. Distill findings into docs/spec/codex-wire-evidence-2026-05-03.md.
 
 REDACTION
@@ -121,6 +124,8 @@ cmd_preflight() {
   local version_json="$report_dir/oauth-mux-version.json"
   local preflight_json="$report_dir/codex-preflight.json"
   local status_json="$report_dir/codex-status-latest.json"
+  local process_gate_json="$report_dir/process-gate.json"
+  local process_gate_stderr="$report_dir/process-gate.stderr"
   local codex_version_txt="$report_dir/codex-version.txt"
   local commands_txt="$report_dir/commands.txt"
   local processes_txt="$report_dir/processes.txt"
@@ -144,18 +149,19 @@ cmd_preflight() {
   codex --version >"$codex_version_txt" 2>&1 || true
   oauth-mux codex preflight --profile "$profile" --capability "$capability" --json >"$preflight_json" || true
   oauth-mux codex status-latest --json >"$status_json" 2>/dev/null || printf '{}\n' >"$status_json"
+  python3 "$ROOT/scripts/dogfood-process-snapshot.py" --json >"$process_gate_json" 2>"$process_gate_stderr" || printf '{}\n' >"$process_gate_json"
   ps -o pid,ppid,stat,lstart,etime,command -ax 2>/dev/null | grep -E 'oauth-mux codex|oauth-mux|codex' >"$processes_txt" || true
 
   if command -v mitmdump >/dev/null 2>&1; then
     mitmdump --version >"$report_dir/mitmdump-version.txt" 2>&1 || true
   fi
 
-  python3 - "$version_json" "$preflight_json" "$status_json" "$commands_txt" "$processes_txt" "$summary_json" "$profile" "$capability" "$require_fallback" "$mitmproxy_ca" "$ssl_cert_file" <<'PY'
+  python3 - "$version_json" "$preflight_json" "$status_json" "$process_gate_json" "$commands_txt" "$processes_txt" "$summary_json" "$profile" "$capability" "$require_fallback" "$mitmproxy_ca" "$ssl_cert_file" <<'PY'
 import json
 import pathlib
 import sys
 
-version_path, preflight_path, status_path, commands_path, processes_path, out_path, profile, capability, require_fallback, mitmproxy_ca_path, ssl_cert_file = sys.argv[1:]
+version_path, preflight_path, status_path, process_gate_path, commands_path, processes_path, out_path, profile, capability, require_fallback, mitmproxy_ca_path, ssl_cert_file = sys.argv[1:]
 
 
 def load_json(path):
@@ -168,12 +174,16 @@ def load_json(path):
 version = load_json(version_path)
 preflight = load_json(preflight_path)
 status = load_json(status_path)
+process_gate = load_json(process_gate_path)
 commands = pathlib.Path(commands_path).read_text(errors="replace")
 processes = pathlib.Path(processes_path).read_text(errors="replace")
 
 route_summary = preflight.get("route_summary") or {}
 selected = preflight.get("selected")
 runtime_identity = version.get("runtime_identity") or {}
+evidence_gate = process_gate.get("evidence_gate") or {}
+safe_cleanup = process_gate.get("safe_cleanup") or {}
+review_groups = safe_cleanup.get("review_groups") or {}
 mitmdump_available = bool([line for line in commands.splitlines() if line.strip().endswith("mitmdump") or "/mitmdump" in line])
 mitmproxy_ca = pathlib.Path(mitmproxy_ca_path).expanduser()
 mitmproxy_ca_exists = mitmproxy_ca.is_file()
@@ -243,12 +253,29 @@ summary = {
     "blocked_route_reasons": preflight.get("blocked_route_reasons") or [],
     "status_verdict": status.get("verdict"),
     "status_path": status.get("path"),
+    "process_gate": {
+        "present": bool(process_gate),
+        "process_fd_clean_baseline": evidence_gate.get("process_fd_clean_baseline"),
+        "unannotated_live_claims_admitted": evidence_gate.get("unannotated_live_claims_admitted"),
+        "quota_cassette_claims_admitted": evidence_gate.get("quota_cassette_claims_admitted"),
+        "local_release_validation_admitted": evidence_gate.get("local_release_validation_admitted"),
+        "requires_operator_annotation": evidence_gate.get("requires_operator_annotation"),
+        "blocking_reasons": evidence_gate.get("blocking_reasons") or [],
+        "caution_reasons": evidence_gate.get("caution_reasons") or [],
+        "safe_cleanup_review_counts": {
+            "active_codex_or_oauth_mux_processes": len(review_groups.get("active_codex_or_oauth_mux_processes") or []),
+            "orphan_listener_candidates": len(review_groups.get("orphan_listener_candidates") or []),
+            "live_validation_processes": len(review_groups.get("live_validation_processes") or []),
+            "high_fd_processes": len(review_groups.get("high_fd_processes") or []),
+        },
+    },
     "warnings": warnings,
     "stale_mux_process_hints": stale_mux_process_hints,
     "report_files": {
         "oauth_mux_version": pathlib.Path(version_path).name,
         "codex_preflight": pathlib.Path(preflight_path).name,
         "codex_status_latest": pathlib.Path(status_path).name,
+        "process_gate": pathlib.Path(process_gate_path).name,
         "commands": pathlib.Path(commands_path).name,
         "processes": pathlib.Path(processes_path).name,
     },
@@ -261,6 +288,7 @@ print(f"ok: {str(summary['ok']).lower()}")
 print(f"oauth-mux: {summary['oauth_mux'].get('version')} {summary['oauth_mux'].get('build_id')} {summary['oauth_mux'].get('binary_source')}")
 print(f"selected: {selected}")
 print(f"route_summary: {json.dumps(route_summary, sort_keys=True)}")
+print(f"process_gate: {json.dumps(summary['process_gate'], sort_keys=True)}")
 print(f"mitmproxy_ca: {json.dumps(summary['mitmproxy_ca'], sort_keys=True)}")
 if warnings:
     print("warnings:")
