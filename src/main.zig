@@ -10500,6 +10500,15 @@ const CodexStatusSummary = struct {
     auth_health_quota_claim_observed: bool = false,
     quota_event_observed: bool = false,
     quota_handoff_observed: bool = false,
+    transport_failure_observed: bool = false,
+    transport_recovery_observed: bool = false,
+    unsupported_transport_events: u64 = 0,
+    upstream_failure_events: u64 = 0,
+    provider_same_turn_retry_events: u64 = 0,
+    provider_retry_unavailable_events: u64 = 0,
+    stream_interrupted_events: u64 = 0,
+    client_disconnected_events: u64 = 0,
+    responses_get_405_misclassified_ok: u64 = 0,
     quota_handoff_failed_reason: ?[]const u8 = null,
     user_visible_failure_likely: bool = false,
     terminal_event_observed: bool = false,
@@ -10567,9 +10576,15 @@ const CodexStatusScanState = struct {
     auth_retry_seen: bool = false,
     ok_turns: u64 = 0,
     auth_recovered_observed: bool = false,
+    upstream_failure_seen: bool = false,
+    upstream_failure_account: ?[]const u8 = null,
+    provider_retry_after_upstream_failure: bool = false,
+    provider_retry_to: ?[]const u8 = null,
 
     fn deinit(self: *CodexStatusScanState, allocator: std.mem.Allocator) void {
         if (self.quota_account) |value| allocator.free(value);
+        if (self.upstream_failure_account) |value| allocator.free(value);
+        if (self.provider_retry_to) |value| allocator.free(value);
     }
 };
 
@@ -10672,6 +10687,30 @@ fn summarizeCodexStatusFile(allocator: std.mem.Allocator, path: []const u8) !Cod
                 if (scan.auth_seen) scan.auth_retry_seen = true;
             } else if (std.mem.eql(u8, k, "proxy_auth_retry_unavailable")) {
                 summary.auth_retry_unavailable_events += 1;
+            } else if (std.mem.eql(u8, k, "proxy_unsupported_transport")) {
+                summary.unsupported_transport_events += 1;
+                summary.transport_failure_observed = true;
+            } else if (std.mem.eql(u8, k, "proxy_upstream_failed")) {
+                summary.upstream_failure_events += 1;
+                summary.transport_failure_observed = true;
+                if (!scan.upstream_failure_seen) {
+                    scan.upstream_failure_seen = true;
+                    scan.upstream_failure_account = try dupeJsonString(allocator, object.get("account"));
+                }
+            } else if (std.mem.eql(u8, k, "proxy_provider_same_turn_retry")) {
+                summary.provider_same_turn_retry_events += 1;
+                if (scan.upstream_failure_seen) {
+                    scan.provider_retry_after_upstream_failure = true;
+                    if (jsonString(object.get("to"))) |to| try replaceOptionalString(allocator, &scan.provider_retry_to, to);
+                }
+            } else if (std.mem.eql(u8, k, "proxy_provider_retry_unavailable")) {
+                summary.provider_retry_unavailable_events += 1;
+                summary.transport_failure_observed = true;
+            } else if (std.mem.eql(u8, k, "proxy_stream_interrupted")) {
+                summary.stream_interrupted_events += 1;
+                summary.transport_failure_observed = true;
+            } else if (std.mem.eql(u8, k, "proxy_client_disconnected")) {
+                summary.client_disconnected_events += 1;
             } else if (std.mem.eql(u8, k, "proxy_same_turn_retry_unavailable")) {
                 summary.same_turn_retry_unavailable_events += 1;
                 if (scan.quota_seen and summary.quota_handoff_failed_reason == null) {
@@ -10719,6 +10758,24 @@ fn summarizeCodexStatusFile(allocator: std.mem.Allocator, path: []const u8) !Cod
         summary.next_action = "repair_route_health_or_add_fallback_account";
     } else if (scan.auth_recovered_observed and summary.auth_same_turn_retry_events > 0) {
         summary.verdict = "auth_fallback_sequence_observed";
+        summary.next_action = "continue_managed_dogfood";
+    } else if (summary.responses_get_405_misclassified_ok != 0) {
+        summary.verdict = "transport_regression_405_misclassified";
+        summary.next_action = "contain_reconnect_get_transport";
+    } else if (summary.transport_recovery_observed) {
+        summary.verdict = "transport_fallback_recovered";
+        summary.next_action = "continue_managed_dogfood";
+    } else if (summary.provider_retry_unavailable_events != 0 or summary.upstream_failure_events != 0) {
+        summary.verdict = "transport_failure_unavailable";
+        summary.next_action = "inspect_transport_failure_and_route_capacity";
+    } else if (summary.unsupported_transport_events != 0) {
+        summary.verdict = "transport_unsupported_contained";
+        summary.next_action = "continue_managed_dogfood";
+    } else if (summary.stream_interrupted_events != 0) {
+        summary.verdict = "stream_interrupted_partial";
+        summary.next_action = "inspect_provider_stream_stability";
+    } else if (summary.client_disconnected_events != 0) {
+        summary.verdict = "client_disconnected";
         summary.next_action = "continue_managed_dogfood";
     } else if (summary.brokered_session_observed and scan.auth_seen and !summary.terminal_event_observed) {
         summary.verdict = "brokered_incomplete_auth_failed";
@@ -10782,6 +10839,15 @@ fn summarizeProxyTurn(
     if (path_kind) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_path_kind, value);
     if (body_class) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_body_class, value);
 
+    if (stringEquals(jsonString(object.get("method")), "GET") and
+        stringEquals(path_kind, "responses") and
+        status != null and status.? == 405 and
+        stringEquals(classification, "ok"))
+    {
+        summary.responses_get_405_misclassified_ok += 1;
+        summary.transport_failure_observed = true;
+    }
+
     const is_auth = (status != null and status.? == 401) or stringEquals(classification, "auth_unauthorized");
     if (is_auth) {
         summary.auth_unauthorized_turns += 1;
@@ -10802,6 +10868,18 @@ fn summarizeProxyTurn(
     if (status != null and status.? == 200) {
         scan.ok_turns += 1;
         if (scan.auth_seen and scan.auth_retry_seen) scan.auth_recovered_observed = true;
+        if (scan.upstream_failure_seen and account != null) {
+            const recovered_via_retry = scan.provider_retry_after_upstream_failure and
+                scan.provider_retry_to != null and
+                std.mem.eql(u8, scan.provider_retry_to.?, account.?);
+            const recovered_via_different_account = if (scan.upstream_failure_account) |failed_account|
+                !std.mem.eql(u8, failed_account, account.?)
+            else
+                false;
+            if (recovered_via_retry or recovered_via_different_account) {
+                summary.transport_recovery_observed = true;
+            }
+        }
         if (scan.quota_seen and scan.retry_after_quota and account != null) {
             const quota_account = scan.quota_account;
             if (quota_account == null or !std.mem.eql(u8, quota_account.?, account.?)) {
@@ -10900,6 +10978,17 @@ fn writeCodexStatusSummaryJson(writer: anytype, summary: CodexStatusSummary) !vo
     try writer.writeAll(if (summary.quota_event_observed) "true" else "false");
     try writer.writeAll(",\"quota_handoff_observed\":");
     try writer.writeAll(if (summary.quota_handoff_observed) "true" else "false");
+    try writer.writeAll(",\"transport_failure_observed\":");
+    try writer.writeAll(if (summary.transport_failure_observed) "true" else "false");
+    try writer.writeAll(",\"transport_recovery_observed\":");
+    try writer.writeAll(if (summary.transport_recovery_observed) "true" else "false");
+    try writer.print(",\"unsupported_transport_events\":{d}", .{summary.unsupported_transport_events});
+    try writer.print(",\"upstream_failure_events\":{d}", .{summary.upstream_failure_events});
+    try writer.print(",\"provider_same_turn_retry_events\":{d}", .{summary.provider_same_turn_retry_events});
+    try writer.print(",\"provider_retry_unavailable_events\":{d}", .{summary.provider_retry_unavailable_events});
+    try writer.print(",\"stream_interrupted_events\":{d}", .{summary.stream_interrupted_events});
+    try writer.print(",\"client_disconnected_events\":{d}", .{summary.client_disconnected_events});
+    try writer.print(",\"responses_get_405_misclassified_ok\":{d}", .{summary.responses_get_405_misclassified_ok});
     try writer.writeAll(",\"quota_handoff_failed_reason\":");
     try writeOptionalJsonString(writer, summary.quota_handoff_failed_reason);
     try writer.writeAll(",\"user_visible_failure_likely\":");
@@ -10967,6 +11056,8 @@ fn writeCodexStatusSummaryText(writer: anytype, summary: CodexStatusSummary) !vo
     try writer.print("  selected_account: {s}\n", .{summary.selected_account orelse "null"});
     try writer.print("  quota_event_observed: {s}\n", .{if (summary.quota_event_observed) "true" else "false"});
     try writer.print("  quota_handoff_observed: {s}\n", .{if (summary.quota_handoff_observed) "true" else "false"});
+    try writer.print("  transport_failure_observed: {s}\n", .{if (summary.transport_failure_observed) "true" else "false"});
+    try writer.print("  transport_recovery_observed: {s}\n", .{if (summary.transport_recovery_observed) "true" else "false"});
     try writer.print("  proxy_turns: {d}\n", .{summary.proxy_turns});
     if (summary.launch_timing_events != 0) {
         try writer.print("  launch_timing_events: {d}\n", .{summary.launch_timing_events});
@@ -18238,6 +18329,65 @@ test "Codex status summary preserves child signal terminal evidence" {
     try std.testing.expectEqualStrings("signal", summary.terminal_term_kind.?);
     try std.testing.expectEqual(@as(i64, 9), summary.terminal_term_code.?);
     try std.testing.expectEqualStrings("SIGKILL", summary.terminal_signal_name.?);
+}
+
+test "Codex status summary reports transport fallback recovery" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const status_path = try std.fs.path.join(std.testing.allocator, &.{ root, "status.ndjson" });
+    defer std.testing.allocator.free(status_path);
+
+    var file = try tmp.dir.createFile("status.ndjson", .{});
+    defer file.close();
+    try file.writeAll(
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"proxy_upstream_failed","account":"codex:max-1","err":"ConnectionResetByPeer"}
+        \\{"kind":"proxy_provider_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"provider_5xx"}
+        \\{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
+        \\{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":true}
+        \\
+    );
+
+    var summary = try summarizeCodexStatusFile(std.testing.allocator, status_path);
+    defer summary.deinit();
+
+    try std.testing.expect(summary.brokered_session_observed);
+    try std.testing.expect(summary.transport_failure_observed);
+    try std.testing.expect(summary.transport_recovery_observed);
+    try std.testing.expectEqual(@as(u64, 1), summary.upstream_failure_events);
+    try std.testing.expectEqual(@as(u64, 1), summary.provider_same_turn_retry_events);
+    try std.testing.expectEqualStrings("transport_fallback_recovered", summary.verdict);
+}
+
+test "Codex status summary flags historical responses GET 405 ok regression" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const status_path = try std.fs.path.join(std.testing.allocator, &.{ root, "status.ndjson" });
+    defer std.testing.allocator.free(status_path);
+
+    var file = try tmp.dir.createFile("status.ndjson", .{});
+    defer file.close();
+    try file.writeAll(
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses","status":405,"classification":"ok","body_class":"json_error","delivered_to_codex":true}
+        \\{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
+        \\
+    );
+
+    var summary = try summarizeCodexStatusFile(std.testing.allocator, status_path);
+    defer summary.deinit();
+
+    try std.testing.expect(summary.transport_failure_observed);
+    try std.testing.expectEqual(@as(u64, 1), summary.responses_get_405_misclassified_ok);
+    try std.testing.expectEqualStrings("transport_regression_405_misclassified", summary.verdict);
 }
 
 // Pull in all module tests
