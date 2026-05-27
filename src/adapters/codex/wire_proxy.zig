@@ -75,6 +75,8 @@ const UPSTREAM_BASE_PATH = "/backend-api/codex";
 const TRANSPORT_LOCAL_RETRY_BACKOFF_MS = [_]u64{ 150, 500 };
 const PROXY_IO_TIMEOUT_DEFAULT_MS: i32 = 30_000;
 const PROXY_IO_TIMEOUT_MAX_MS: i32 = 10 * 60 * 1000;
+const PROXY_UPSTREAM_RESPONSE_TIMEOUT_DEFAULT_MS: i32 = 30_000;
+const PROXY_UPSTREAM_RESPONSE_TIMEOUT_MAX_MS: i32 = 10 * 60 * 1000;
 
 pub const RouteState = enum {
     available,
@@ -112,15 +114,36 @@ fn upstreamScheme(allocator: std.mem.Allocator) []const u8 {
     }
 }
 
-fn configuredProxyIoTimeoutMs(allocator: std.mem.Allocator) i32 {
-    const raw = std.process.getEnvVarOwned(allocator, "OMUX_PROXY_IO_TIMEOUT_MS") catch {
-        return PROXY_IO_TIMEOUT_DEFAULT_MS;
-    };
+fn configuredPositiveTimeoutMs(
+    allocator: std.mem.Allocator,
+    env_name: []const u8,
+    default_ms: i32,
+    max_ms: i32,
+) i32 {
+    const raw = std.process.getEnvVarOwned(allocator, env_name) catch return default_ms;
     defer allocator.free(raw);
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    const parsed = std.fmt.parseInt(i32, trimmed, 10) catch return PROXY_IO_TIMEOUT_DEFAULT_MS;
-    if (parsed <= 0) return PROXY_IO_TIMEOUT_DEFAULT_MS;
-    return @min(parsed, PROXY_IO_TIMEOUT_MAX_MS);
+    const parsed = std.fmt.parseInt(i32, trimmed, 10) catch return default_ms;
+    if (parsed <= 0) return default_ms;
+    return @min(parsed, max_ms);
+}
+
+fn configuredProxyIoTimeoutMs(allocator: std.mem.Allocator) i32 {
+    return configuredPositiveTimeoutMs(
+        allocator,
+        "OMUX_PROXY_IO_TIMEOUT_MS",
+        PROXY_IO_TIMEOUT_DEFAULT_MS,
+        PROXY_IO_TIMEOUT_MAX_MS,
+    );
+}
+
+fn configuredProxyUpstreamResponseTimeoutMs(allocator: std.mem.Allocator) i32 {
+    return configuredPositiveTimeoutMs(
+        allocator,
+        "OMUX_PROXY_UPSTREAM_RESPONSE_TIMEOUT_MS",
+        PROXY_UPSTREAM_RESPONSE_TIMEOUT_DEFAULT_MS,
+        PROXY_UPSTREAM_RESPONSE_TIMEOUT_MAX_MS,
+    );
 }
 
 const ProxyIoWaitError = std.posix.PollError || error{ConnectionTimedOut};
@@ -133,6 +156,11 @@ fn waitForSocket(handle: std.posix.socket_t, events: i16, timeout_ms: i32) Proxy
     }};
     const ready = try std.posix.poll(&fds, timeout_ms);
     if (ready == 0) return error.ConnectionTimedOut;
+}
+
+fn waitForUpstreamResponseStart(http_req: *std.http.Client.Request, timeout_ms: i32) ProxyIoWaitError!void {
+    const connection = http_req.connection orelse return;
+    try waitForSocket(connection.stream.handle, @intCast(std.posix.POLL.IN), timeout_ms);
 }
 
 const TimedProxyStream = struct {
@@ -1470,6 +1498,7 @@ fn forwardAndStream(
         try http_req.writeAll(req.body);
         try http_req.finish();
     }
+    try waitForUpstreamResponseStart(&http_req, configuredProxyUpstreamResponseTimeoutMs(a));
     try http_req.wait();
 
     const status_u16: u16 = @intFromEnum(http_req.response.status);

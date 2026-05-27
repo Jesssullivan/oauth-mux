@@ -92,6 +92,9 @@ ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 # after the request body is read and before any response is written.
 # OMUX_STUB_ACCOUNT_RESET_COUNT_JSON optionally caps reset count per account,
 # e.g. {"acc-A-id":1}. When omitted, matching accounts reset every request.
+# OMUX_STUB_ACCOUNT_STALL_MS_JSON maps ChatGPT-Account-ID values to a millisecond
+# stall before response headers are written, e.g. {"acc-A-id":1000}.
+# OMUX_STUB_ACCOUNT_STALL_COUNT_JSON optionally caps stall count per account.
 try:
     ACCOUNT_STATUS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STATUS_JSON", "{}"))
 except json.JSONDecodeError:
@@ -106,6 +109,16 @@ try:
     ACCOUNT_RESET_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_RESET_COUNT_JSON", "{}"))
 except json.JSONDecodeError:
     ACCOUNT_RESET_COUNT = {}
+
+try:
+    ACCOUNT_STALL_MS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STALL_MS_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_STALL_MS = {}
+
+try:
+    ACCOUNT_STALL_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STALL_COUNT_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_STALL_COUNT = {}
 
 
 # Per-account request counter. Reset only on process restart.
@@ -241,6 +254,29 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         self.connection.close()
         return True
 
+    def _stall_before_response_if_configured(self, path: str) -> None:
+        acct = self._account_id()
+        if acct not in ACCOUNT_STALL_MS:
+            return
+        if acct in ACCOUNT_STALL_COUNT:
+            remaining = int(ACCOUNT_STALL_COUNT.get(acct, 0))
+            if remaining <= 0:
+                return
+            ACCOUNT_STALL_COUNT[acct] = remaining - 1
+        stall_ms = int(ACCOUNT_STALL_MS.get(acct, 0))
+        if stall_ms <= 0:
+            return
+        _log({
+            "path": path,
+            "method": self.command,
+            "account_id": acct,
+            "auth_prefix": self._auth_prefix(),
+            "status_returned": "stall_before_response",
+            "response_classification": "transport_stall",
+            "stall_ms": stall_ms,
+        })
+        time.sleep(stall_ms / 1000)
+
     def _serve(self) -> None:
         path = urlparse(self.path).path
         if not path.startswith("/backend-api/codex"):
@@ -254,6 +290,7 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         _ = body_bytes  # request bodies are unused; we don't echo
         if self._reset_before_response_if_configured(path):
             return
+        self._stall_before_response_if_configured(path)
 
         status, body = self._classify_for_account()
         if "_text" in body:
@@ -314,7 +351,8 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
 
 def main() -> int:
     LOGFILE.unlink(missing_ok=True)
-    httpd = http.server.HTTPServer(("127.0.0.1", PORT), StubHandler)
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), StubHandler)
+    httpd.daemon_threads = True
     actual_port = httpd.server_address[1]
     PORTFILE.write_text(f"{actual_port}\n")
     print(f"stub-upstream: listening on 127.0.0.1:{actual_port}", file=sys.stderr, flush=True)
