@@ -176,8 +176,9 @@ Known evidence:
   gates with `/backend-api/codex/responses -> 101`.
 - The scrubbed fixture
   `test/fixtures/codex-wire/broker-owned-websocket-success/` now preserves
-  that normal WebSocket upgrade shape and is covered by capture-review and
-  cassette-replay smokes.
+  that normal HTTP upgrade request / `101 Switching Protocols` response shape
+  and is covered by capture-review and cassette-replay smokes. It does not
+  claim full WebSocket frame/session replay.
 - Cookie and `Set-Cookie` redaction is now review-gated after PR `#292`.
 - Local workspace path redaction is review-gated before fixture promotion.
 - No quota/exhaustion shapes have been captured yet.
