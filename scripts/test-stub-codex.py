@@ -40,6 +40,9 @@ Env (set by the smoke harness):
   OMUX_STUB_CODEX_DISCONNECT_TURNS — optional comma-separated turn indexes that
                             should send the request then close the proxy socket
                             before reading the streamed response.
+  OMUX_STUB_CODEX_PARTIAL_STALL_MS — optional millisecond hold for a deliberately
+                            incomplete request before normal turns. Used to prove
+                            the proxy loop is not pinned by a half-open local socket.
   OMUX_STUB_CODEX_WEBSOCKET_PROBE — optional "1" to send a Codex-shaped
                             WebSocket upgrade GET before normal POST turns.
   OMUX_STUB_CODEX_FAIL_MODE — optional startup failure mode. "sqlite_locked"
@@ -57,6 +60,7 @@ import re
 import socket
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -204,6 +208,32 @@ def _post_and_disconnect(proxy_url: str, body: bytes, turn: int) -> tuple[int, s
     finally:
         sock.close()
     return 0, "client_disconnected_before_response"
+
+
+def _start_partial_stall(proxy_url: str, hold_ms: int) -> dict:
+    if hold_ms <= 0:
+        return {"enabled": False}
+    m = re.match(r"http://([^/]+)(/.*)$", proxy_url)
+    if not m:
+        print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
+        sys.exit(2)
+    netloc, prefix = m.group(1), m.group(2)
+    host, port_s = netloc.rsplit(":", 1)
+    sock = socket.create_connection((host, int(port_s)), timeout=15)
+    partial = (
+        f"POST {prefix}/responses HTTP/1.1\r\n"
+        f"Host: {netloc}\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n"
+    ).encode("utf-8")
+    sock.sendall(partial)
+
+    def close_later() -> None:
+        time.sleep(hold_ms / 1000)
+        sock.close()
+
+    threading.Thread(target=close_later, daemon=True).start()
+    return {"enabled": True, "hold_ms": hold_ms}
 
 
 def _websocket_probe(proxy_url: str) -> dict:
@@ -392,6 +422,10 @@ def main() -> int:
     sqlite_env = _sqlite_env_report()
     auth_rewrite = _rewrite_auth_json(codex_home)
     websocket_probe = _websocket_probe(proxy_url)
+    partial_stall = _start_partial_stall(
+        proxy_url,
+        int(os.environ.get("OMUX_STUB_CODEX_PARTIAL_STALL_MS", "0")),
+    )
 
     started_at = time.time()
     print(
@@ -431,6 +465,7 @@ def main() -> int:
         "sqlite_env": sqlite_env,
         "auth_rewrite": auth_rewrite,
         "websocket_probe": websocket_probe,
+        "partial_stall": partial_stall,
     }
     report_path.write_text(json.dumps(report, indent=2))
     print(f"stub-codex: pid_stable={report['pid_stable']} turns={turns}", file=sys.stderr, flush=True)
