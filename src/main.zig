@@ -10503,6 +10503,8 @@ const CodexStatusSummary = struct {
     transport_failure_observed: bool = false,
     transport_recovery_observed: bool = false,
     unsupported_transport_events: u64 = 0,
+    transport_local_retry_events: u64 = 0,
+    transport_local_retry_recovered_events: u64 = 0,
     upstream_failure_events: u64 = 0,
     provider_same_turn_retry_events: u64 = 0,
     provider_retry_unavailable_events: u64 = 0,
@@ -10690,6 +10692,12 @@ fn summarizeCodexStatusFile(allocator: std.mem.Allocator, path: []const u8) !Cod
             } else if (std.mem.eql(u8, k, "proxy_unsupported_transport")) {
                 summary.unsupported_transport_events += 1;
                 summary.transport_failure_observed = true;
+            } else if (std.mem.eql(u8, k, "proxy_transport_local_retry")) {
+                summary.transport_local_retry_events += 1;
+                summary.transport_failure_observed = true;
+            } else if (std.mem.eql(u8, k, "proxy_transport_local_retry_recovered")) {
+                summary.transport_local_retry_recovered_events += 1;
+                summary.transport_recovery_observed = true;
             } else if (std.mem.eql(u8, k, "proxy_upstream_failed")) {
                 summary.upstream_failure_events += 1;
                 summary.transport_failure_observed = true;
@@ -10762,6 +10770,9 @@ fn summarizeCodexStatusFile(allocator: std.mem.Allocator, path: []const u8) !Cod
     } else if (summary.responses_get_405_misclassified_ok != 0) {
         summary.verdict = "transport_regression_405_misclassified";
         summary.next_action = "contain_reconnect_get_transport";
+    } else if (summary.transport_local_retry_recovered_events != 0) {
+        summary.verdict = "transport_local_retry_recovered";
+        summary.next_action = "continue_managed_dogfood";
     } else if (summary.transport_recovery_observed) {
         summary.verdict = "transport_fallback_recovered";
         summary.next_action = "continue_managed_dogfood";
@@ -10983,6 +10994,8 @@ fn writeCodexStatusSummaryJson(writer: anytype, summary: CodexStatusSummary) !vo
     try writer.writeAll(",\"transport_recovery_observed\":");
     try writer.writeAll(if (summary.transport_recovery_observed) "true" else "false");
     try writer.print(",\"unsupported_transport_events\":{d}", .{summary.unsupported_transport_events});
+    try writer.print(",\"transport_local_retry_events\":{d}", .{summary.transport_local_retry_events});
+    try writer.print(",\"transport_local_retry_recovered_events\":{d}", .{summary.transport_local_retry_recovered_events});
     try writer.print(",\"upstream_failure_events\":{d}", .{summary.upstream_failure_events});
     try writer.print(",\"provider_same_turn_retry_events\":{d}", .{summary.provider_same_turn_retry_events});
     try writer.print(",\"provider_retry_unavailable_events\":{d}", .{summary.provider_retry_unavailable_events});
@@ -11058,6 +11071,9 @@ fn writeCodexStatusSummaryText(writer: anytype, summary: CodexStatusSummary) !vo
     try writer.print("  quota_handoff_observed: {s}\n", .{if (summary.quota_handoff_observed) "true" else "false"});
     try writer.print("  transport_failure_observed: {s}\n", .{if (summary.transport_failure_observed) "true" else "false"});
     try writer.print("  transport_recovery_observed: {s}\n", .{if (summary.transport_recovery_observed) "true" else "false"});
+    if (summary.transport_local_retry_events != 0) {
+        try writer.print("  transport_local_retry_events: {d}\n", .{summary.transport_local_retry_events});
+    }
     try writer.print("  proxy_turns: {d}\n", .{summary.proxy_turns});
     if (summary.launch_timing_events != 0) {
         try writer.print("  launch_timing_events: {d}\n", .{summary.launch_timing_events});
@@ -18361,6 +18377,39 @@ test "Codex status summary reports transport fallback recovery" {
     try std.testing.expectEqual(@as(u64, 1), summary.upstream_failure_events);
     try std.testing.expectEqual(@as(u64, 1), summary.provider_same_turn_retry_events);
     try std.testing.expectEqualStrings("transport_fallback_recovered", summary.verdict);
+}
+
+test "Codex status summary reports local transport retry recovery" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const status_path = try std.fs.path.join(std.testing.allocator, &.{ root, "status.ndjson" });
+    defer std.testing.allocator.free(status_path);
+
+    var file = try tmp.dir.createFile("status.ndjson", .{});
+    defer file.close();
+    try file.writeAll(
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"proxy_transport_local_retry","account":"codex:max-1","method":"POST","path_kind":"responses","err":"ConnectionResetByPeer","attempt":1,"max_attempts":2,"backoff_ms":150,"delivered_to_codex":false}
+        \\{"kind":"proxy_transport_local_retry_recovered","account":"codex:max-1","method":"POST","path_kind":"responses","attempts":1,"status":200,"classification":"ok","delivered_to_codex":true}
+        \\{"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
+        \\{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
+        \\
+    );
+
+    var summary = try summarizeCodexStatusFile(std.testing.allocator, status_path);
+    defer summary.deinit();
+
+    try std.testing.expect(summary.brokered_session_observed);
+    try std.testing.expect(summary.transport_failure_observed);
+    try std.testing.expect(summary.transport_recovery_observed);
+    try std.testing.expectEqual(@as(u64, 1), summary.transport_local_retry_events);
+    try std.testing.expectEqual(@as(u64, 1), summary.transport_local_retry_recovered_events);
+    try std.testing.expectEqual(@as(u64, 0), summary.upstream_failure_events);
+    try std.testing.expectEqualStrings("transport_local_retry_recovered", summary.verdict);
 }
 
 test "Codex status summary flags historical responses GET 405 ok regression" {

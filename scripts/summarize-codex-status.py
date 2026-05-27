@@ -297,6 +297,45 @@ def find_transport_recovery_sequence(events: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def find_local_transport_recovery_sequence(events: list[dict[str, Any]]) -> dict[str, Any]:
+    retry_event: dict[str, Any] | None = None
+    recovered_event: dict[str, Any] | None = None
+
+    for idx, event in enumerate(events):
+        if event.get("kind") != "proxy_transport_local_retry":
+            continue
+        retry_event = event
+        retry_account = event.get("account")
+
+        for later in events[idx + 1 :]:
+            if later.get("kind") == "proxy_transport_local_retry_recovered":
+                if retry_account is None or later.get("account") == retry_account:
+                    recovered_event = later
+                    break
+        break
+
+    if retry_event is None:
+        return {
+            "observed": False,
+            "reason": "no proxy_transport_local_retry event",
+        }
+    if recovered_event is None:
+        return {
+            "observed": False,
+            "reason": "local transport retry without recovery event",
+            "retry": retry_event,
+        }
+    return {
+        "observed": True,
+        "retry": retry_event,
+        "recovered": recovered_event,
+        "account": recovered_event.get("account"),
+        "status": recovered_event.get("status"),
+        "path_kind": recovered_event.get("path_kind"),
+        "attempts": recovered_event.get("attempts"),
+    }
+
+
 def summarize(path: Path) -> dict[str, Any]:
     events = load_events(path)
     proxy_turns = [e for e in events if e.get("kind") == "proxy_turn"]
@@ -316,6 +355,7 @@ def summarize(path: Path) -> dict[str, Any]:
     quota_failure = find_quota_handoff_failure(events)
     auth_fallback = find_auth_fallback_sequence(events)
     transport_recovery = find_transport_recovery_sequence(events)
+    local_transport_recovery = find_local_transport_recovery_sequence(events)
     auth_health_events = [e for e in events if e.get("kind") == "auth_health_observed"]
     auth_unauthorized_turns = [
         e
@@ -342,6 +382,10 @@ def summarize(path: Path) -> dict[str, Any]:
         and e.get("classification") == "ok"
     ]
     unsupported_transport_events = [e for e in events if e.get("kind") == "proxy_unsupported_transport"]
+    local_transport_retry_events = [e for e in events if e.get("kind") == "proxy_transport_local_retry"]
+    local_transport_retry_recovered_events = [
+        e for e in events if e.get("kind") == "proxy_transport_local_retry_recovered"
+    ]
     upstream_failure_events = [e for e in events if e.get("kind") == "proxy_upstream_failed"]
     provider_retry_events = [e for e in events if e.get("kind") == "proxy_provider_same_turn_retry"]
     provider_retry_unavailable_events = [e for e in events if e.get("kind") == "proxy_provider_retry_unavailable"]
@@ -350,6 +394,7 @@ def summarize(path: Path) -> dict[str, Any]:
     transport_failure_observed = bool(
         bad_responses_get_405
         or unsupported_transport_events
+        or local_transport_retry_events
         or upstream_failure_events
         or provider_retry_unavailable_events
         or stream_interrupted_events
@@ -400,6 +445,9 @@ def summarize(path: Path) -> dict[str, Any]:
     elif bad_responses_get_405:
         verdict = "transport_regression_405_misclassified"
         next_action = "contain_reconnect_get_transport"
+    elif local_transport_recovery.get("observed"):
+        verdict = "transport_local_retry_recovered"
+        next_action = "continue_managed_dogfood"
     elif transport_recovery.get("observed"):
         verdict = "transport_fallback_recovered"
         next_action = "continue_managed_dogfood"
@@ -452,9 +500,13 @@ def summarize(path: Path) -> dict[str, Any]:
         "quota_event_observed": bool(quota_turns),
         "quota_handoff_observed": bool(fallback.get("observed")),
         "transport_failure_observed": transport_failure_observed,
-        "transport_recovery_observed": bool(transport_recovery.get("observed")),
+        "transport_recovery_observed": bool(transport_recovery.get("observed"))
+        or bool(local_transport_recovery.get("observed")),
         "transport_recovery_sequence": transport_recovery,
+        "transport_local_recovery_sequence": local_transport_recovery,
         "unsupported_transport_events": len(unsupported_transport_events),
+        "transport_local_retry_events": len(local_transport_retry_events),
+        "transport_local_retry_recovered_events": len(local_transport_retry_recovered_events),
         "upstream_failure_events": len(upstream_failure_events),
         "provider_same_turn_retry_events": len(provider_retry_events),
         "provider_retry_unavailable_events": len(provider_retry_unavailable_events),
