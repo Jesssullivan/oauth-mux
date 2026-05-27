@@ -250,6 +250,12 @@ provider selection conflicts and rejects forwarded `--config` / `-c` provider
 overrides before launching Codex. The generated TOML is root-partitioned, so a
 canonical config ending inside a table such as `[tui.model_availability_nux]`
 cannot capture the managed `model_provider` override.
+If the native and managed resume choosers still disagree after an upgrade,
+inspect `resume_authority_check` in the managed status file. It reports whether
+canonical SQLite authority is bridged and whether legacy `oauth_mux_openai`
+provider-namespace residue exists, without printing paths, session ids, or SQL
+rows. oauth-mux does not mutate canonical Codex SQLite during ordinary resume;
+any cleanup should be backed up and operator-driven.
 Missing Codex experimental feature defaults are enabled only in the managed
 child config: `terminal_resize_reflow`, `memories`, `external_migration`,
 `goals`, and `prevent_idle_sleep`. Existing canonical values, including

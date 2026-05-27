@@ -202,6 +202,7 @@ run_case() {
         assert_grep "$label resume authority check" '"kind":"resume_authority_check".*"ok":true' "$ndjson"
         assert_grep "$label state db authority" '"kind":"resume_authority_check".*"resume_authority_state_db_bridged":true' "$ndjson"
         assert_grep "$label logs db authority" '"kind":"resume_authority_check".*"resume_authority_logs_db_bridged":true' "$ndjson"
+        assert_grep "$label legacy provider namespace diagnostic" '"kind":"resume_authority_check".*"legacy_provider_namespace_detected":false.*"legacy_provider_namespace_repair":"operator_explicit_backup_required"' "$ndjson"
         assert_grep "$label no chooser rollout scan before spawn" '"kind":"resume_preflight".*"mode":"chooser".*"rollouts_before":0' "$ndjson"
         assert_grep "$label chooser lookup not scanned" '"kind":"resume_preflight".*"mode":"chooser".*"resume_lookup_source":"not_scanned"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"mode":"chooser"' "$ndjson"

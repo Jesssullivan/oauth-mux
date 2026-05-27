@@ -443,6 +443,8 @@ const codex_optional_logs_authority_entries = [_]SessionAuthorityEntry{
     .{ .name = "logs_2.sqlite-shm", .kind = .file },
 };
 
+const legacy_codex_provider_namespace = "oauth_mux_openai";
+
 const ResumeAuthorityCheck = struct {
     mode: ResumeMode,
     authority: SessionAuthorityMode,
@@ -456,9 +458,29 @@ const ResumeAuthorityCheck = struct {
     logs_db_canonical_present: bool = false,
     logs_db_overlay_present: bool = false,
     logs_db_bridged: bool = false,
+    legacy_provider_namespace_detected: bool = false,
+    legacy_provider_namespace_state_db_detected: bool = false,
+    legacy_provider_namespace_logs_db_detected: bool = false,
+    legacy_provider_namespace_scan_truncated: bool = false,
+    legacy_provider_namespace_scan_errors: usize = 0,
     ok: bool = false,
     diagnostic: []const u8 = "not_checked",
 };
+
+const LegacyProviderNamespaceScan = struct {
+    detected: bool = false,
+    state_db_detected: bool = false,
+    logs_db_detected: bool = false,
+    truncated: bool = false,
+    errors: usize = 0,
+};
+
+const FileNeedleScan = struct {
+    found: bool = false,
+    truncated: bool = false,
+};
+
+const max_legacy_provider_namespace_scan_bytes: u64 = 32 * 1024 * 1024;
 
 /// Resolve the account's source auth.json path. Order:
 ///   1. secret.path when secret.backend == "file" (the normal
@@ -1818,6 +1840,12 @@ fn checkResumeAuthority(
     result.logs_db_canonical_present = authorityLogsDbPresent(allocator, authority_home) catch false;
     result.logs_db_overlay_present = authorityLogsDbPresent(allocator, codex_home.path) catch false;
     result.logs_db_bridged = result.logs_db_canonical_present and result.logs_db_overlay_present;
+    const legacy_namespace = scanLegacyProviderNamespace(allocator, authority_home);
+    result.legacy_provider_namespace_detected = legacy_namespace.detected;
+    result.legacy_provider_namespace_state_db_detected = legacy_namespace.state_db_detected;
+    result.legacy_provider_namespace_logs_db_detected = legacy_namespace.logs_db_detected;
+    result.legacy_provider_namespace_scan_truncated = legacy_namespace.truncated;
+    result.legacy_provider_namespace_scan_errors = legacy_namespace.errors;
 
     var legacy_ok = true;
     for (codex_session_authority_entries) |entry| {
@@ -1842,6 +1870,100 @@ fn checkResumeAuthority(
     result.ok = result.logs_db_bridged or result.state_db_bridged or legacy_ok;
     if (result.ok) {
         result.diagnostic = if (result.logs_db_bridged) "logs_db_available" else if (result.state_db_bridged) "state_db_available" else "available";
+    }
+    return result;
+}
+
+fn scanLegacyProviderNamespace(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+) LegacyProviderNamespaceScan {
+    var result = LegacyProviderNamespaceScan{};
+    scanLegacyProviderNamespaceEntries(
+        allocator,
+        authority_home,
+        &codex_optional_state_authority_entries,
+        true,
+        &result,
+    );
+    scanLegacyProviderNamespaceEntries(
+        allocator,
+        authority_home,
+        &codex_optional_logs_authority_entries,
+        false,
+        &result,
+    );
+    result.detected = result.state_db_detected or result.logs_db_detected;
+    return result;
+}
+
+fn scanLegacyProviderNamespaceEntries(
+    allocator: std.mem.Allocator,
+    authority_home: []const u8,
+    entries: []const SessionAuthorityEntry,
+    state_db: bool,
+    result: *LegacyProviderNamespaceScan,
+) void {
+    for (entries) |entry| {
+        const path = std.fs.path.join(allocator, &.{ authority_home, entry.name }) catch {
+            result.errors += 1;
+            continue;
+        };
+        defer allocator.free(path);
+        const scan = fileContainsLegacyProviderNamespaceBounded(allocator, path) catch |e| switch (e) {
+            error.FileNotFound, error.AccessDenied, error.NotDir => FileNeedleScan{},
+            else => {
+                result.errors += 1;
+                continue;
+            },
+        };
+        result.truncated = result.truncated or scan.truncated;
+        if (!scan.found) continue;
+        if (state_db) {
+            result.state_db_detected = true;
+        } else {
+            result.logs_db_detected = true;
+        }
+    }
+}
+
+fn fileContainsLegacyProviderNamespaceBounded(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) !FileNeedleScan {
+    const file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
+        error.FileNotFound, error.AccessDenied, error.NotDir => return .{},
+        else => return e,
+    };
+    defer file.close();
+
+    const stat = try file.stat();
+    var result = FileNeedleScan{ .truncated = stat.size > max_legacy_provider_namespace_scan_bytes };
+    var previous = std.ArrayListUnmanaged(u8){};
+    defer previous.deinit(allocator);
+
+    var buf: [8192]u8 = undefined;
+    var scanned: u64 = 0;
+    while (scanned < max_legacy_provider_namespace_scan_bytes) {
+        const remaining = max_legacy_provider_namespace_scan_bytes - scanned;
+        const limit: usize = @intCast(@min(@as(u64, buf.len), remaining));
+        const n = try file.read(buf[0..limit]);
+        if (n == 0) break;
+        scanned += n;
+
+        var haystack = std.ArrayListUnmanaged(u8){};
+        defer haystack.deinit(allocator);
+        try haystack.appendSlice(allocator, previous.items);
+        try haystack.appendSlice(allocator, buf[0..n]);
+        if (std.mem.indexOf(u8, haystack.items, legacy_codex_provider_namespace) != null) {
+            result.found = true;
+            result.truncated = false;
+            return result;
+        }
+
+        previous.clearRetainingCapacity();
+        const keep = @min(legacy_codex_provider_namespace.len - 1, haystack.items.len);
+        if (keep != 0) try previous.appendSlice(allocator, haystack.items[haystack.items.len - keep ..]);
     }
     return result;
 }
@@ -2176,7 +2298,7 @@ fn writeResumeAuthorityCheckStatus(
     check: ResumeAuthorityCheck,
 ) !void {
     try writer.print(
-        "{{\"kind\":\"resume_authority_check\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"sqlite_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"required_entries\":{d},\"canonical_present\":{d},\"overlay_present\":{d},\"resume_authority_state_db_bridged\":{any},\"state_db_canonical_present\":{any},\"state_db_overlay_present\":{any},\"resume_authority_logs_db_bridged\":{any},\"logs_db_canonical_present\":{any},\"logs_db_overlay_present\":{any},\"session_id_printed\":false,\"path_printed\":false}}\n",
+        "{{\"kind\":\"resume_authority_check\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"sqlite_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"required_entries\":{d},\"canonical_present\":{d},\"overlay_present\":{d},\"resume_authority_state_db_bridged\":{any},\"state_db_canonical_present\":{any},\"state_db_overlay_present\":{any},\"resume_authority_logs_db_bridged\":{any},\"logs_db_canonical_present\":{any},\"logs_db_overlay_present\":{any},\"legacy_provider_namespace_detected\":{any},\"legacy_provider_namespace_state_db_detected\":{any},\"legacy_provider_namespace_logs_db_detected\":{any},\"legacy_provider_namespace_scan_truncated\":{any},\"legacy_provider_namespace_scan_errors\":{d},\"legacy_provider_namespace_repair\":\"operator_explicit_backup_required\",\"session_id_printed\":false,\"path_printed\":false}}\n",
         .{
             check.mode.toString(),
             check.authority.toString(),
@@ -2192,6 +2314,11 @@ fn writeResumeAuthorityCheckStatus(
             check.logs_db_bridged,
             check.logs_db_canonical_present,
             check.logs_db_overlay_present,
+            check.legacy_provider_namespace_detected,
+            check.legacy_provider_namespace_state_db_detected,
+            check.legacy_provider_namespace_logs_db_detected,
+            check.legacy_provider_namespace_scan_truncated,
+            check.legacy_provider_namespace_scan_errors,
         },
     );
 }
@@ -3714,6 +3841,55 @@ test "resume authority accepts bridged logs db as chooser authority" {
     try std.testing.expect(check.logs_db_bridged);
     try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, check.sqlite_authority);
     try std.testing.expectEqualStrings("logs_db_available", check.diagnostic);
+}
+
+test "resume authority reports legacy provider namespace residue without failing chooser" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
+        defer state.close();
+        try state.writeAll("threads model_provider openai");
+    }
+    {
+        const logs = try tmp.dir.createFile("canonical/logs_2.sqlite", .{ .mode = 0o600 });
+        defer logs.close();
+        try logs.writeAll("threads model_provider oauth_mux_openai");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    defer codex_home.deinit(std.testing.allocator);
+
+    const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
+    try std.testing.expect(check.ok);
+    try std.testing.expect(check.legacy_provider_namespace_detected);
+    try std.testing.expect(!check.legacy_provider_namespace_state_db_detected);
+    try std.testing.expect(check.legacy_provider_namespace_logs_db_detected);
+    try std.testing.expect(!check.legacy_provider_namespace_scan_truncated);
+    try std.testing.expectEqual(@as(usize, 0), check.legacy_provider_namespace_scan_errors);
+
+    var status = std.ArrayListUnmanaged(u8){};
+    defer status.deinit(std.testing.allocator);
+    try writeResumeAuthorityCheckStatus(status.writer(std.testing.allocator), check);
+    try std.testing.expect(std.mem.indexOf(u8, status.items, "\"legacy_provider_namespace_detected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status.items, "\"legacy_provider_namespace_logs_db_detected\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status.items, "oauth_mux_openai") == null);
+    try std.testing.expect(std.mem.indexOf(u8, status.items, canonical_path) == null);
 }
 
 test "explicit resume preflight prefers state db and targeted rollout stat" {
