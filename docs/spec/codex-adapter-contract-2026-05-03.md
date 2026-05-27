@@ -137,6 +137,16 @@ session ids, SQL rows, token material, or provider response bodies, and it
 does not mutate SQLite. Any cleanup of canonical Codex SQLite state remains an
 explicit operator action that must be backed up and reversible.
 
+Implementation update, 2026-05-27: managed resume checks canonical SQLite lock
+contention before spawning Codex. In canonical bridge mode, `oauth-mux codex
+resume...` probes the SQLite lock byte range on `state_5.sqlite` when present.
+If another process holds the lock, oauth-mux emits a redacted
+`sqlite_authority_check` with `db_basename:"state_5.sqlite"`,
+`sqlite_error_class:"database_locked"`, `sqlite_error_code:5`, then aborts
+pre-spawn with `reason:"session_authority_locked"`. The adapter does not kill
+other Codex processes, rewrite session state, or fall back to an overlay-local
+SQLite database.
+
 Implementation update, 2026-05-10: managed launch no longer runs broad
 `repairRefreshableCodexAuthFailures()` before child spawn. Network refresh is
 deferred to actual credential materialization for the selected/fallback route,
@@ -549,6 +559,10 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 // terminal status frame when the parent can run cleanup
 { "kind": "session_aborted", "adapter": "codex", "reason": "child_wait_error", "exit_code": -1, "final_claim_level": "broker_owned", "synthetic_swap_observed": false, "wait_error": "..." }
 { "kind": "session_aborted", "adapter": "codex", "reason": "child_signal", "exit_code": -1, "term_kind": "signal", "term_code": 9, "signal_name": "SIGKILL", "final_claim_level": "broker_owned", "synthetic_swap_observed": false }
+
+// canonical SQLite authority lock contention before child spawn
+{ "kind": "sqlite_authority_check", "mode": "resume", "sqlite_authority": "canonical_env", "ok": false, "diagnostic": "database_locked", "db_basename": "state_5.sqlite", "next_action": "close_or_wait_for_other_codex_process_then_retry", "sqlite_error_class": "database_locked", "sqlite_error_code": 5, "path_printed": false, "token_material_printed": false, "session_id_printed": false }
+{ "kind": "session_aborted", "adapter": "codex", "reason": "session_authority_locked", "phase": "sqlite_authority_check", "error": "SqliteStateLocked", "exit_code": -1, "term_kind": null, "term_code": null, "signal_name": null, "final_claim_level": "none", "synthetic_swap_observed": false, "pre_spawn": true, "child_spawned": false, "path_printed": false, "token_material_printed": false, "session_id_printed": false }
 ```
 
 These frames are the only structured surface the adapter publishes. The

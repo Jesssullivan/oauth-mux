@@ -42,7 +42,9 @@ What works today:
 - Native Codex chooser/session authority bridge, including canonical
   `state_5.sqlite*` and `logs_2.sqlite*` when present, with managed Codex using
   Codex's built-in `openai` provider namespace so the native and managed resume
-  pickers enumerate the same session rows.
+  pickers enumerate the same session rows. Managed resume also reports
+  canonical `state_5.sqlite` lock contention before child spawn instead of
+  forking or bypassing Codex's session authority.
 - Root-partitioned Codex config passthrough for user settings such as
   `[features]`, legacy `experimental_*`, MCP servers, approval/sandbox policy,
   profiles, model defaults, and non-managed provider definitions.
