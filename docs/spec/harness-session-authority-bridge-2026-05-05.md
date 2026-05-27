@@ -163,6 +163,13 @@ chooser authority when present; otherwise the legacy entries above remain the
 fallback authority set. Add new entries only with evidence that native Codex
 requires them for chooser/resume parity.
 
+For canonical Codex SQLite authority, managed resume may probe SQLite's
+standard lock byte range on `state_5.sqlite` before child spawn. A held lock is
+reported as redacted `session_authority_locked` / `database_locked` status with
+the database basename only. oauth-mux must not kill the lock holder, rewrite the
+canonical database, or create an overlay-local SQLite authority to bypass the
+lock.
+
 ### 2.4 Cache, Log, and Runtime State
 
 Local state that may be large, private, or not required for session continuity:

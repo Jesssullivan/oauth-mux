@@ -27,6 +27,7 @@
 //! `oauth-mux codex run` default path.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const broker = @import("../../broker/mod.zig");
 const broker_types = @import("../../broker/types.zig");
 const broker_loader = @import("../../broker_loader.zig");
@@ -67,6 +68,7 @@ pub const RunError = error{
     NoAccountSelectable,
     NoCodexHome,
     SessionAuthorityUnavailable,
+    SessionAuthorityLocked,
     ConfigOverrideUnavailable,
     CodexShimRecursion,
 };
@@ -366,6 +368,21 @@ const AuthWritebackObservation = struct {
 const ManagedAuthHealthObservation = struct {
     recorded: bool = false,
     reason: []const u8 = "not_observed",
+};
+
+const SqliteAuthorityLockObservation = struct {
+    checked: bool = false,
+    ok: bool = true,
+    diagnostic: []const u8 = "not_checked",
+    sqlite_authority: CodexSqliteAuthorityMode = .isolated_overlay,
+    db_basename: []const u8 = "state_5.sqlite",
+    sqlite_error_class: ?[]const u8 = null,
+    sqlite_error_code: ?u8 = null,
+    next_action: []const u8 = "none",
+
+    fn locked(self: SqliteAuthorityLockObservation) bool {
+        return self.checked and !self.ok;
+    }
 };
 
 const FinalSessionStatus = struct {
@@ -1286,6 +1303,17 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         return RunError.ConfigOverrideUnavailable;
     }
 
+    const sqlite_lock_check = try checkResumeSqliteAuthorityLock(allocator, &codex_home, resume_request);
+    if (emit_status and sqlite_lock_check.checked) {
+        try writeSqliteAuthorityCheckStatus(status_writer, sqlite_lock_check);
+    }
+    try launch_timer.mark(status_writer, emit_status, "sqlite_authority_check");
+    if (sqlite_lock_check.locked()) {
+        try stderr.writeAll("oauth-mux codex: canonical Codex sqlite state is locked by another Codex process; close or wait for that process, then retry\n");
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "session_authority_locked", "sqlite_authority_check", "SqliteStateLocked", session_started_emitted);
+        return RunError.SessionAuthorityLocked;
+    }
+
     var resume_preflight = ResumePreflightObservation{};
     defer resume_preflight.deinit();
     if (resume_request.mode == .explicit) {
@@ -1471,6 +1499,126 @@ fn openStatusFile(path: []const u8) !std.fs.File {
         try std.fs.cwd().makePath(dir);
     }
     return try std.fs.cwd().createFile(path, .{ .mode = 0o600, .truncate = true });
+}
+
+fn checkResumeSqliteAuthorityLock(
+    allocator: std.mem.Allocator,
+    codex_home: *const SessionCodexHome,
+    resume_request: ResumeRequest,
+) !SqliteAuthorityLockObservation {
+    var observation = SqliteAuthorityLockObservation{
+        .sqlite_authority = codex_home.sqlite_authority,
+    };
+    if (!resume_request.requested()) {
+        observation.diagnostic = "not_resume";
+        return observation;
+    }
+    if (codex_home.sqlite_authority != .canonical_env) {
+        observation.diagnostic = "not_canonical_sqlite_authority";
+        return observation;
+    }
+    const authority_home = codex_home.authority_home orelse {
+        observation.diagnostic = "missing_authority_home";
+        return observation;
+    };
+
+    const db_path = try std.fs.path.join(allocator, &.{ authority_home, observation.db_basename });
+    defer allocator.free(db_path);
+
+    var file = std.fs.openFileAbsolute(db_path, .{ .mode = .read_write }) catch |e| switch (e) {
+        error.FileNotFound => {
+            observation.diagnostic = "state_db_absent";
+            return observation;
+        },
+        error.AccessDenied => {
+            observation.checked = true;
+            observation.diagnostic = "state_db_probe_unavailable";
+            observation.next_action = "retry_without_lock_probe_or_check_file_permissions";
+            return observation;
+        },
+        else => {
+            observation.checked = true;
+            observation.diagnostic = "state_db_probe_unavailable";
+            observation.next_action = "retry_or_inspect_codex_state";
+            return observation;
+        },
+    };
+    defer file.close();
+
+    observation.checked = true;
+    const probe = try probeSqliteLockBytes(file);
+    switch (probe) {
+        .clear => {
+            observation.ok = true;
+            observation.diagnostic = "clear";
+        },
+        .locked => {
+            observation.ok = false;
+            observation.diagnostic = "database_locked";
+            observation.sqlite_error_class = "database_locked";
+            observation.sqlite_error_code = 5;
+            observation.next_action = "close_or_wait_for_other_codex_process_then_retry";
+        },
+        .unsupported => {
+            observation.ok = true;
+            observation.diagnostic = "lock_probe_unsupported";
+            observation.next_action = "retry_if_codex_reports_database_locked";
+        },
+    }
+    return observation;
+}
+
+const SqliteLockProbeResult = enum {
+    clear,
+    locked,
+    unsupported,
+};
+
+fn probeSqliteLockBytes(file: std.fs.File) !SqliteLockProbeResult {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return .unsupported;
+    }
+
+    const sqlite_pending_byte: u64 = 0x40000000;
+    const sqlite_lock_span: u64 = 512;
+    var lock = std.mem.zeroes(std.c.Flock);
+    lock.type = @intCast(std.c.F.WRLCK);
+    lock.whence = @intCast(std.c.SEEK.SET);
+    lock.start = @intCast(sqlite_pending_byte);
+    lock.len = @intCast(sqlite_lock_span);
+
+    _ = std.posix.fcntl(file.handle, std.c.F.SETLK, @intFromPtr(&lock)) catch |e| switch (e) {
+        error.Locked => return .locked,
+        error.FileBusy => return .locked,
+        error.LockedRegionLimitExceeded,
+        error.DeadLock,
+        error.PermissionDenied,
+        error.ProcessFdQuotaExceeded,
+        => return .unsupported,
+        else => return e,
+    };
+    lock.type = @intCast(std.c.F.UNLCK);
+    _ = std.posix.fcntl(file.handle, std.c.F.SETLK, @intFromPtr(&lock)) catch {};
+    return .clear;
+}
+
+fn writeSqliteAuthorityCheckStatus(writer: anytype, check: SqliteAuthorityLockObservation) !void {
+    try writer.print(
+        "{{\"kind\":\"sqlite_authority_check\",\"mode\":\"resume\",\"sqlite_authority\":\"{s}\",\"ok\":{any},\"diagnostic\":\"{s}\",\"db_basename\":\"{s}\",\"next_action\":\"{s}\",\"sqlite_error_class\":",
+        .{ check.sqlite_authority.toString(), check.ok, check.diagnostic, check.db_basename, check.next_action },
+    );
+    if (check.sqlite_error_class) |class| {
+        try std.json.stringify(class, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"sqlite_error_code\":");
+    if (check.sqlite_error_code) |code| {
+        try writer.print("{d}", .{code});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"path_printed\":false,\"token_material_printed\":false,\"session_id_printed\":false}\n");
 }
 
 fn writeManagedPreSpawnAbortStatus(

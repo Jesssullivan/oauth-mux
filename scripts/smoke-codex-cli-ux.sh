@@ -41,6 +41,10 @@ STATE_DIR="$TMP/state"
 CANONICAL_SESSION_HOME="$TMP/canonical-codex"
 
 cleanup() {
+    if [[ -n "${SQLITE_LOCK_PID:-}" ]]; then
+        kill "$SQLITE_LOCK_PID" 2>/dev/null || true
+        wait "$SQLITE_LOCK_PID" 2>/dev/null || true
+    fi
     rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -460,6 +464,85 @@ if grep -q -E 'managed-good-session|'"$BAD_AUTHORITY_HOME" "$BAD_AUTHORITY_NDJSO
     cat "$BAD_AUTHORITY_STDERR" >&2
     exit 1
 fi
+
+echo "smoke-codex-cli-ux: locked canonical sqlite authority fails before spawn"
+SQLITE_AUTH_LOCK_NDJSON="$TMP/sqlite-authority-lock/status.ndjson"
+SQLITE_AUTH_LOCK_STDERR="$TMP/sqlite-authority-lock.stderr"
+SQLITE_AUTH_LOCK_REPORT="$TMP/sqlite-authority-lock.report"
+SQLITE_AUTH_LOCK_HEALTH_BEFORE="$TMP/sqlite-authority-lock.health.before"
+SQLITE_LOCK_READY="$TMP/sqlite-authority-lock.ready"
+SQLITE_LOCK_RELEASE="$TMP/sqlite-authority-lock.release"
+mkdir -p "$(dirname "$SQLITE_AUTH_LOCK_NDJSON")"
+cp "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"
+python3 - "$CANONICAL_SESSION_HOME/state_5.sqlite" "$SQLITE_LOCK_READY" "$SQLITE_LOCK_RELEASE" <<'PY' &
+import fcntl
+import os
+import pathlib
+import sys
+import time
+
+db = pathlib.Path(sys.argv[1])
+ready = pathlib.Path(sys.argv[2])
+release = pathlib.Path(sys.argv[3])
+fd = os.open(db, os.O_RDWR)
+fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 512, 0x40000000, os.SEEK_SET)
+ready.write_text("ready\n", encoding="utf-8")
+try:
+    while not release.exists():
+        time.sleep(0.05)
+finally:
+    os.close(fd)
+PY
+SQLITE_LOCK_PID=$!
+for _ in $(seq 1 100); do
+    if [[ -e "$SQLITE_LOCK_READY" ]]; then
+        break
+    fi
+    if ! kill -0 "$SQLITE_LOCK_PID" 2>/dev/null; then
+        echo "  ✗ sqlite lock helper exited before ready" >&2
+        wait "$SQLITE_LOCK_PID" || true
+        exit 1
+    fi
+    sleep 0.05
+done
+if [[ ! -e "$SQLITE_LOCK_READY" ]]; then
+    echo "  ✗ sqlite lock helper did not become ready" >&2
+    exit 1
+fi
+if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+     OMUX_STATE_DIR="$STATE_DIR" \
+     OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+     CODEX_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_REPORT="$SQLITE_AUTH_LOCK_REPORT" \
+     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STDERR"; then
+    echo "  ✗ locked sqlite authority unexpectedly launched" >&2
+    exit 1
+fi
+touch "$SQLITE_LOCK_RELEASE"
+wait "$SQLITE_LOCK_PID"
+SQLITE_LOCK_PID=""
+assert_grep "sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock terminal status" '"kind":"session_aborted".*"reason":"session_authority_locked".*"phase":"sqlite_authority_check".*"pre_spawn":true.*"child_spawned":false' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock stderr" 'canonical Codex sqlite state is locked' "$SQLITE_AUTH_LOCK_STDERR"
+if [[ -e "$SQLITE_AUTH_LOCK_REPORT" ]]; then
+    echo "  ✗ locked sqlite authority launched stub unexpectedly" >&2
+    cat "$SQLITE_AUTH_LOCK_REPORT" >&2
+    exit 1
+fi
+if ! cmp -s "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"; then
+    echo "  ✗ locked sqlite authority mutated route health" >&2
+    diff -u "$SQLITE_AUTH_LOCK_HEALTH_BEFORE" "$STATE_DIR/health.json" >&2 || true
+    exit 1
+fi
+if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR"; then
+    echo "  ✗ locked sqlite authority leaked path or session id" >&2
+    cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
+    cat "$SQLITE_AUTH_LOCK_STDERR" >&2
+    exit 1
+fi
+echo "  ✓ locked canonical sqlite authority fails before child spawn"
 
 echo "smoke-codex-cli-ux: sqlite lock shaped child startup failure records abort"
 SQLITE_LOCK_NDJSON="$TMP/sqlite-lock/status.ndjson"
