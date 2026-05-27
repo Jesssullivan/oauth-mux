@@ -42,6 +42,8 @@ Env (set by the smoke harness):
                             before reading the streamed response.
   OMUX_STUB_CODEX_WEBSOCKET_PROBE — optional "1" to send a Codex-shaped
                             WebSocket upgrade GET before normal POST turns.
+  OMUX_STUB_CODEX_FAIL_MODE — optional startup failure mode. "sqlite_locked"
+                            emits Codex's sqlite lock startup error and exits 1.
   The report records argv after the stub binary so CLI forwarding smokes can
   assert `oauth-mux codex ...` command shape without provider traffic.
 """
@@ -367,6 +369,22 @@ def main() -> int:
     turn_delay_ms = int(os.environ.get("OMUX_STUB_CODEX_TURN_DELAY_MS", "50"))
 
     codex_home = Path(os.environ["CODEX_HOME"])
+    if os.environ.get("OMUX_STUB_CODEX_FAIL_MODE") == "sqlite_locked":
+        state_path = codex_home / "state_5.sqlite"
+        print("Codex couldn't start because another Codex process is using its local data.", file=sys.stderr)
+        print("Quit any other copies of Codex that may still be running, then try again.", file=sys.stderr)
+        print("Technical details:", file=sys.stderr)
+        print(f"  Location: {state_path}", file=sys.stderr)
+        print(
+            f"  Cause: failed to initialize state runtime at {codex_home}: error returned from database: (code: 5) database is locked",
+            file=sys.stderr,
+        )
+        print(
+            f"ERROR: failed to initialize sqlite state db at {state_path}: failed to initialize state runtime at {codex_home}: error returned from database: (code: 5) database is locked",
+            file=sys.stderr,
+        )
+        return 1
+
     proxy_url = _read_proxy_url(codex_home)
     config_report = _config_report(codex_home)
     session_bridge = _session_bridge_report(codex_home)
