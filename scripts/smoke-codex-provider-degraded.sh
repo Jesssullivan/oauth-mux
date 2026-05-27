@@ -618,6 +618,48 @@ run_client_disconnect_case() {
     echo "  ✓ route health was not polluted by downstream disconnect"
 }
 
+run_buffered_error_client_disconnect_case() {
+    local case_dir="$TMP/buffered-error-client-disconnect"
+    local portfile="$case_dir/upstream.port"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_ALWAYS_STATUS=503 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: buffered-error-client-disconnect stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_DISCONNECT_TURNS=0 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in buffered-error-client-disconnect case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: buffered-error-client-disconnect assertions"
+    assert_grep "buffered error close classified as client disconnect" '"kind":"proxy_client_disconnected".*"account":"codex:max-1".*"status":503.*"err":"(BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)".*"retry_attempted":true' "$ndjson"
+    assert_no_grep "buffered error close did not leak benign proxy write failure" 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)' "$adapter_stderr"
+    jq -e '[.turns[] | select(.status == 0 and (.body_head | contains("client_disconnected_before_response")))] | length == 1' "$stub_report" >/dev/null
+    echo "  ✓ buffered error write failure was classified as downstream disconnect"
+}
+
 run_local_client_stall_case() {
     local case_dir="$TMP/local-client-stall"
     local portfile="$case_dir/upstream.port"
@@ -676,6 +718,7 @@ run_upstream_header_stall_retry_case
 run_transport_fallback_case
 run_upstream_interrupted_case
 run_client_disconnect_case
+run_buffered_error_client_disconnect_case
 run_local_client_stall_case
 
 echo

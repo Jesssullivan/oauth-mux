@@ -372,27 +372,44 @@ pub const Proxy = struct {
                     self.logEvent("proxy_observed_401_codex_handles", .{
                         .account = pending_failure_account orelse "",
                     });
-                    try writeBufferedStoredResponse(writer, pending_buffered.?);
+                    _ = try self.writeBufferedStoredResponseOrClientDisconnect(
+                        writer,
+                        req,
+                        pending_failure_account orelse "",
+                        pending_buffered.?,
+                        true,
+                    );
                 } else if (pending_kind != null and pending_kind.? == .provider_5xx) {
-                    self.logEvent("proxy_provider_retry_unavailable", .{
-                        .from = pending_failure_account orelse "",
-                        .err = pending_transport_error orelse @errorName(err),
-                        .attempted = attempted.items,
-                        .rejections = rejections.items,
-                        .delivered_to_codex = true,
-                    });
-                    self.traceProviderUnavailable(req, pending_failure_account orelse "", pending_transport_error orelse @errorName(err), rejections.items);
+                    var delivered_to_codex = true;
+                    const retry_err = pending_transport_error orelse @errorName(err);
+                    const retry_account = pending_failure_account orelse "";
                     if (pending_buffered) |buffered| {
-                        try writeBufferedStoredResponse(writer, buffered);
+                        delivered_to_codex = try self.writeBufferedStoredResponseOrClientDisconnect(
+                            writer,
+                            req,
+                            retry_account,
+                            buffered,
+                            true,
+                        );
                     } else {
-                        try writeProviderUnavailableResponse(
+                        delivered_to_codex = try self.writeProviderUnavailableResponseOrClientDisconnect(
                             a,
                             writer,
-                            pending_failure_account orelse "",
-                            pending_transport_error orelse @errorName(err),
+                            req,
+                            retry_account,
+                            retry_err,
                             rejections.items,
+                            true,
                         );
                     }
+                    self.logEvent("proxy_provider_retry_unavailable", .{
+                        .from = retry_account,
+                        .err = retry_err,
+                        .attempted = attempted.items,
+                        .rejections = rejections.items,
+                        .delivered_to_codex = delivered_to_codex,
+                    });
+                    self.traceProviderUnavailable(req, retry_account, retry_err, rejections.items, delivered_to_codex);
                 } else if (pending_kind != null and (pending_kind.? == .quota_exhausted or pending_kind.? == .rate_limited)) {
                     self.logEvent("proxy_same_turn_retry_unavailable", .{
                         .from = pending_failure_account orelse "",
@@ -543,7 +560,13 @@ pub const Proxy = struct {
 
             if (!should_retry) {
                 if (status_and_class.buffered_response) |buffered| {
-                    try writeBufferedStoredResponse(writer, buffered);
+                    if (!try self.writeBufferedStoredResponseOrClientDisconnect(
+                        writer,
+                        req,
+                        elected.id,
+                        buffered,
+                        false,
+                    )) break;
                 }
                 break;
             }
@@ -633,6 +656,64 @@ pub const Proxy = struct {
             }
             return status_and_class;
         }
+    }
+
+    fn writeBufferedStoredResponseOrClientDisconnect(
+        self: *Proxy,
+        writer: anytype,
+        req: Request,
+        account_id: []const u8,
+        response: BufferedResponse,
+        retry_attempted: bool,
+    ) !bool {
+        writeBufferedStoredResponse(writer, response) catch |err| {
+            if (isClientDisconnectWriteError(err)) {
+                self.logClientDisconnected(account_id, req, response.status, @errorName(err), 0, retry_attempted);
+                return false;
+            }
+            return err;
+        };
+        return true;
+    }
+
+    fn writeProviderUnavailableResponseOrClientDisconnect(
+        self: *Proxy,
+        allocator: std.mem.Allocator,
+        writer: anytype,
+        req: Request,
+        account_id: []const u8,
+        err_name: []const u8,
+        rejections: []const CandidateRejection,
+        retry_attempted: bool,
+    ) !bool {
+        writeProviderUnavailableResponse(allocator, writer, account_id, err_name, rejections) catch |err| {
+            if (isClientDisconnectWriteError(err)) {
+                self.logClientDisconnected(account_id, req, 503, @errorName(err), 0, retry_attempted);
+                return false;
+            }
+            return err;
+        };
+        return true;
+    }
+
+    fn logClientDisconnected(
+        self: *Proxy,
+        account_id: []const u8,
+        req: Request,
+        status: u16,
+        err_name: []const u8,
+        bytes_streamed: usize,
+        retry_attempted: bool,
+    ) void {
+        self.logEvent("proxy_client_disconnected", .{
+            .account = account_id,
+            .method = req.method,
+            .path_kind = pathKind(req.path),
+            .status = status,
+            .err = err_name,
+            .bytes_streamed = bytes_streamed,
+            .retry_attempted = retry_attempted,
+        });
     }
 
     fn logProxyTurn(
@@ -786,6 +867,7 @@ pub const Proxy = struct {
         account_id: []const u8,
         err: []const u8,
         rejections: []const CandidateRejection,
+        delivered_to_codex: bool,
     ) void {
         trace.append(self.allocator, "codex.proxy.provider_unavailable", .warn, &.{
             trace.string("provider", "codex"),
@@ -794,7 +876,7 @@ pub const Proxy = struct {
             trace.string("path_kind", pathKind(req.path)),
             trace.string("transport_error", err),
             trace.uint("rejections_total", @intCast(rejections.len)),
-            trace.boolean("delivered_to_codex", true),
+            trace.boolean("delivered_to_codex", delivered_to_codex),
             trace.boolean("token_material_printed", false),
             trace.boolean("raw_account_id_printed", false),
             trace.boolean("session_ids_printed", false),
@@ -1545,6 +1627,13 @@ fn isRetryablePreResponseTransportError(err: anyerror) bool {
         err == error.EndOfStream or
         err == error.HttpConnectionClosing or
         err == error.TlsConnectionTruncated;
+}
+
+fn isClientDisconnectWriteError(err: anyerror) bool {
+    return err == error.BrokenPipe or
+        err == error.ConnectionResetByPeer or
+        err == error.ConnectionTimedOut or
+        err == error.EndOfStream;
 }
 
 fn pathKind(path: []const u8) []const u8 {
