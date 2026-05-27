@@ -262,3 +262,79 @@ assert [r["status_replayed"] for r in records if r.get("match") is True] == [401
 
 print("smoke-codex-cassette-replay: auth failure fixture replay passed.")
 PY
+
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+unset SERVER_PID
+
+WS_FIXTURE="$ROOT/test/fixtures/codex-wire/broker-owned-websocket-success/http"
+WS_PORTFILE="$TMP/ws-fixture.port"
+WS_LOGFILE="$TMP/ws-fixture.log"
+WS_ERR="$TMP/ws-fixture.stderr"
+
+OMUX_CASSETTE_DIR="$WS_FIXTURE" \
+  OMUX_STUB_PORT=0 \
+  OMUX_STUB_PORTFILE="$WS_PORTFILE" \
+  OMUX_STUB_LOGFILE="$WS_LOGFILE" \
+  python3 "$ROOT/scripts/test-cassette-upstream.py" 2>"$WS_ERR" &
+SERVER_PID=$!
+
+python3 - "$WS_PORTFILE" "$WS_LOGFILE" "$WS_ERR" <<'PY'
+import http.client
+import json
+import pathlib
+import sys
+import time
+
+portfile = pathlib.Path(sys.argv[1])
+logfile = pathlib.Path(sys.argv[2])
+server_err = pathlib.Path(sys.argv[3])
+
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    if portfile.exists() and portfile.read_text().strip():
+        break
+    time.sleep(0.05)
+else:
+    print("smoke-codex-cassette-replay: websocket fixture server did not write port", file=sys.stderr)
+    print(server_err.read_text() if server_err.exists() else "", file=sys.stderr)
+    raise SystemExit(1)
+
+port = int(portfile.read_text().strip())
+conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+try:
+    conn.request(
+        "GET",
+        "/backend-api/codex/responses",
+        headers={
+            "Connection": "Upgrade",
+            "Upgrade": "websocket",
+            "Sec-WebSocket-Version": "13",
+            "Sec-WebSocket-Key": "not-real",
+        },
+    )
+    resp = conn.getresponse()
+    body = resp.read()
+finally:
+    conn.close()
+
+assert resp.status == 101, (resp.status, body)
+assert body == b"", body
+
+deadline = time.monotonic() + 2
+while True:
+    if logfile.exists():
+        records = [json.loads(line) for line in logfile.read_text().splitlines() if line.strip()]
+    else:
+        records = []
+    if len(records) >= 1 or time.monotonic() >= deadline:
+        break
+    time.sleep(0.02)
+assert [r["status_replayed"] for r in records if r.get("match") is True] == [101], records
+
+print("smoke-codex-cassette-replay: websocket success fixture replay passed.")
+PY
+
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+unset SERVER_PID
