@@ -23,6 +23,15 @@ cat >"$TMP/codex-wire-synth/capture-preflight-summary.json" <<'JSON'
     "session_start_ready": true,
     "fallback_ready": true,
     "single_route_at_risk": false
+  },
+  "process_gate": {
+    "process_fd_clean_baseline": true,
+    "unannotated_live_claims_admitted": true,
+    "quota_cassette_claims_admitted": true,
+    "local_release_validation_admitted": true,
+    "requires_operator_annotation": false,
+    "blocking_reasons": [],
+    "caution_reasons": []
   }
 }
 JSON
@@ -104,6 +113,7 @@ JSON
 "$ROOT/scripts/capture-codex-wire.sh" review "$TMP/codex-wire-synth" \
   --require-preflight-ok \
   --require-proxy-meta \
+  --require-process-gate quota_cassette_claims_admitted \
   --require-path-kind responses \
   --require-status 200 \
   --require-status 429 \
@@ -118,6 +128,7 @@ assert summary["ok"] is True, summary
 assert summary["flow_count"] == 2, summary
 assert summary["preflight"]["present"] is True, summary
 assert summary["preflight"]["ok"] is True, summary
+assert summary["preflight"]["process_gate"]["quota_cassette_claims_admitted"] is True, summary
 assert summary["meta"]["present"] is True, summary
 assert summary["meta"]["kind"] == "phase_0_wire_capture", summary
 assert summary["meta"]["preflight_summary"] == "capture-preflight-summary.json", summary
@@ -130,6 +141,41 @@ assert shape["error_type"] == "usage_limit_reached", shape
 assert shape["has_resets_at"] is True, shape
 assert shape["plan_type"] == "pro", shape
 assert summary["requirement_failures"] == [], summary
+PY
+
+BAD_PROCESS_GATE="$TMP/codex-wire-bad-process-gate"
+mkdir -p "$BAD_PROCESS_GATE/http"
+cp "$TMP/codex-wire-synth/meta.json" "$BAD_PROCESS_GATE/meta.json"
+cp "$CAP/00001-POST-backend-api_codex_responses.json" "$BAD_PROCESS_GATE/http/00001-POST-backend-api_codex_responses.json"
+cat >"$BAD_PROCESS_GATE/capture-preflight-summary.json" <<'JSON'
+{
+  "ok": true,
+  "issues": [],
+  "process_gate": {
+    "quota_cassette_claims_admitted": false,
+    "blocking_reasons": [
+      {"reason": "active_oauth_mux_or_codex_processes", "count": 1}
+    ],
+    "caution_reasons": []
+  }
+}
+JSON
+
+if "$ROOT/scripts/capture-codex-wire.sh" review "$BAD_PROCESS_GATE" \
+  --require-preflight-ok \
+  --require-proxy-meta \
+  --require-process-gate quota_cassette_claims_admitted \
+  --json >"$TMP/bad-process-gate-summary.json"; then
+  echo "smoke-codex-capture-review: expected blocked process gate to fail" >&2
+  exit 1
+fi
+
+python3 - "$TMP/bad-process-gate-summary.json" <<'PY'
+import json
+import sys
+summary = json.load(open(sys.argv[1]))
+assert summary["ok"] is False, summary
+assert "capture preflight process gate not admitted: quota_cassette_claims_admitted" in summary["requirement_failures"], summary
 PY
 
 FIXTURE="$ROOT/test/fixtures/codex-wire/auth-refresh-token-expired"
@@ -429,6 +475,9 @@ assert summary["mitmproxy_ca"]["exists"] is True, summary
 assert summary["mitmproxy_ca"]["ssl_cert_file_matches_ca"] is True, summary
 assert summary["route_summary"]["fallback_ready"] is True, summary
 assert summary["route_summary"]["single_route_at_risk"] is False, summary
+assert summary["process_gate"]["present"] is True, summary
+assert isinstance(summary["process_gate"]["blocking_reasons"], list), summary
+assert isinstance(summary["process_gate"]["safe_cleanup_review_counts"]["active_codex_or_oauth_mux_processes"], int), summary
 assert summary["oauth_mux"]["build_id"] == "v0.1.10", summary
 assert summary["status_verdict"] == "brokered_with_fallback", summary
 assert summary["blocked_route_reasons"][0]["reason"] == "quota_exhausted", summary

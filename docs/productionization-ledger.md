@@ -38,16 +38,19 @@ refreshed when release truth, route evidence, or tracker state changes.
   Homebrew is a binary-only package lane by default: QA must prove it installs
   `oauth-mux`, does not install an `OMUX_CODEX_SHIM`, and leaves native `codex`
   command resolution unchanged.
-- Codex route truth: the 2026-05-26 no-spend preflight uses user-local
+- Codex route truth: the 2026-05-26 local preflight uses user-local
   post-PR #295 oauth-mux and native Codex outside oauth-mux. It reports
   `ok:true`, `session_start_ready:true`, `fallback_ready:true`,
   `selectable_fallback_routes:2`, `single_route_at_risk:false`,
   `spends_provider_calls:false`, and `mutates_route_health:false`.
 - Process/fd truth: TIN-1591 remains contained, not resolved. Current snapshots
-  still show active Codex/oauth-mux fanout, a soft fd limit of `256`, max
-  visible fd use at 73.4% of that limit, and orphan-listener candidates. Treat
-  dogfood evidence as local release/install validation only until repeated
-  clean-baseline snapshots support broader live reliability claims.
+  still show active Codex/oauth-mux fanout, a soft fd limit of `256`, and
+  orphan-listener candidates. The latest gate snapshot
+  `process-snapshot-20260527T144821Z-tin1591-gate-20260527` has max visible fd
+  use at 43.4% of the collector soft limit, so the current blocker is process
+  topology rather than fd pressure. Treat dogfood evidence as local
+  release/install validation only until repeated clean-baseline snapshots
+  support broader live reliability claims.
 - Daemon truth: `oauth-mux daemon status --json` still reports
   `status:"not_running"`, `contract:"experimental_socket_stub"`, and
   `hosts_stay_afloat:false`; its foreground tick snapshot is observational only
@@ -103,7 +106,7 @@ DX:
 
 AX:
 
-- Agents use no-spend inspection surfaces first: `discover`, `providers list`,
+- Agents use local inspection surfaces first: `discover`, `providers list`,
   `accounts list`, `doctor runtime`, `route explain`, `repair-plan`,
   `stay-afloat --once`, `codex preflight`, `status-latest`, and
   `daemon status`.
@@ -189,7 +192,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 
 ## Acceptance Gates
 
-- No-spend state refresh passes with current installed binary:
+- Local state refresh passes with current installed binary:
   `doctor`, `providers list`, `accounts list`, `route explain`,
   `codex preflight`, `broker-session-plan`, `stay-afloat next`,
   `status-latest`, and `daemon status`.

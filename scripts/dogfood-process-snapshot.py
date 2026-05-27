@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-spend agent process fanout snapshot for oauth-mux dogfood sessions."""
+"""Read-only agent process fanout snapshot for oauth-mux dogfood sessions."""
 
 from __future__ import annotations
 
@@ -249,6 +249,8 @@ def is_oauth_mux_process(proc: dict[str, Any]) -> bool:
 
 
 def is_codex_process(proc: dict[str, Any]) -> bool:
+    if is_oauth_mux_process(proc):
+        return False
     command = proc["command"].lower()
     return proc["command_name"].lower() == "codex" or "/codex" in command or " codex " in command
 
@@ -291,6 +293,18 @@ def has_ancestor(
             return True
         current = parent
     return False
+
+
+def current_invocation_ancestor_pids(by_pid: dict[int, dict[str, Any]], start_ppid: int | None = None) -> set[int]:
+    ancestors: set[int] = set()
+    current_pid = os.getppid() if start_ppid is None else start_ppid
+    while current_pid > 0 and current_pid not in ancestors:
+        current = by_pid.get(current_pid)
+        if current is None:
+            break
+        ancestors.add(current_pid)
+        current_pid = current["ppid"]
+    return ancestors
 
 
 def depth_first_tree(pid: int, children: dict[int, list[int]], by_pid: dict[int, dict[str, Any]], depth: int = 0) -> list[dict[str, Any]]:
@@ -412,6 +426,60 @@ def build_evidence_gate(
     }
 
 
+def process_review_row(proc: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pid": proc.get("pid"),
+        "ppid": proc.get("ppid"),
+        "command_name": proc.get("command_name"),
+        "role": proc.get("role"),
+        "elapsed": proc.get("elapsed"),
+        "elapsed_seconds": proc.get("elapsed_seconds"),
+        "rss_mib": proc.get("rss_mib"),
+        "cpu_pct": proc.get("cpu_pct"),
+        "fd_count": proc.get("fd_count"),
+        "listener_ports": proc.get("listener_ports", []),
+    }
+
+
+def build_safe_cleanup(
+    evidence_gate: dict[str, Any],
+    active_codex_or_oauth_mux_processes: list[dict[str, Any]],
+    orphan_listener_candidates: list[dict[str, Any]],
+    live_validation_processes: list[dict[str, Any]],
+    fd_summary: dict[str, Any],
+) -> dict[str, Any]:
+    high_fd_processes = [
+        proc
+        for proc in fd_summary.get("top_processes", [])
+        if isinstance(proc.get("fd_soft_limit_pct"), (int, float))
+        and proc["fd_soft_limit_pct"] >= LIVE_CLAIM_FD_SOFT_LIMIT_PCT
+    ]
+    return {
+        "automation_may_kill": False,
+        "requires_operator_approval": True,
+        "claim_blocking": not evidence_gate.get("process_fd_clean_baseline", False),
+        "review_groups": {
+            "active_codex_or_oauth_mux_processes": [
+                process_review_row(proc) for proc in active_codex_or_oauth_mux_processes
+            ],
+            "orphan_listener_candidates": [
+                process_review_row(proc) for proc in orphan_listener_candidates
+            ],
+            "live_validation_processes": [
+                process_review_row(proc) for proc in live_validation_processes
+            ],
+            "high_fd_processes": high_fd_processes,
+        },
+        "guidance": [
+            "Do not kill active Codex or Claude sessions from this report.",
+            "Close old shells or agent sessions manually when their work is complete.",
+            "Prefer the normal shell/session exit path before any PID-level action.",
+            "Collect a second snapshot after cleanup before treating process/fd state as clean.",
+            "Only collect a leak bug after repeated snapshots show unexplained RSS growth for the same PID.",
+        ],
+    }
+
+
 def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     processes, ps_warnings = parse_ps()
     listeners, lsof_warnings = parse_lsof()
@@ -521,6 +589,20 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         for signature, group in sorted(helper_groups.items())
         if len(group) > 1
     ]
+    current_ancestor_pids = current_invocation_ancestor_pids(by_pid)
+    ignored_current_invocation_live_validation_processes = [
+        {
+            "pid": proc["pid"],
+            "ppid": proc["ppid"],
+            "command_name": proc["command_name"],
+            "role": proc["role"],
+            "command": proc["command"],
+            "elapsed": proc["elapsed"],
+            "elapsed_seconds": proc["elapsed_seconds"],
+        }
+        for proc in processes
+        if proc["pid"] in current_ancestor_pids and is_live_validation_process(proc)
+    ]
     live_validation_processes = [
         {
             "pid": proc["pid"],
@@ -532,7 +614,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "elapsed_seconds": proc["elapsed_seconds"],
         }
         for proc in processes
-        if is_live_validation_process(proc)
+        if proc["pid"] not in current_ancestor_pids and is_live_validation_process(proc)
     ]
 
     accumulated_sessions = [
@@ -601,13 +683,12 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "kind": "dogfood_process_snapshot",
         "mode": "agent_process_fanout_snapshot",
-        "schema_version": 1,
+        "schema_version": 2,
         "collected_at": utc_now(),
         "host": os.uname().nodename,
         "pid": os.getpid(),
         "scope": "agent_process_fanout",
         "spends_provider_calls": False,
-        "no_provider_spend": True,
         "mutates_user_config": False,
         "mutates_route_health": False,
         "mutates_processes": False,
@@ -630,6 +711,7 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
             "duplicate_helper_group_count": len(duplicate_helper_groups),
             "accumulated_session_count": len(accumulated_sessions),
             "live_validation_process_count": len(live_validation_processes),
+            "ignored_current_invocation_live_validation_process_count": len(ignored_current_invocation_live_validation_processes),
             "heap_leak_proven": False,
             "heap_leak_evidence": "single snapshot only; compare two snapshots before calling this a leak",
         },
@@ -645,16 +727,15 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, Any]:
         "orphan_listener_candidates": orphan_listener_candidates,
         "duplicate_helper_groups": duplicate_helper_groups,
         "live_validation_processes": live_validation_processes,
+        "ignored_current_invocation_live_validation_processes": ignored_current_invocation_live_validation_processes,
         "accumulated_sessions": accumulated_sessions,
-        "safe_cleanup": {
-            "automation_may_kill": False,
-            "requires_operator_approval": True,
-            "guidance": [
-                "Do not kill active Codex or Claude sessions from this report.",
-                "Close old shells or agent sessions manually when their work is complete.",
-                "Only collect a leak bug after repeated snapshots show unexplained RSS growth for the same PID.",
-            ],
-        },
+        "safe_cleanup": build_safe_cleanup(
+            evidence_gate,
+            active_codex_or_oauth_mux_processes,
+            orphan_listener_candidates,
+            live_validation_processes,
+            fd_summary,
+        ),
         "warnings": warnings,
     }
 
@@ -977,6 +1058,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--out", help="write JSON and Markdown artifacts to this directory")
     parser.add_argument("--tag", help="short label to add to written artifact names")
     parser.add_argument("--compare", nargs=2, metavar=("BASELINE_JSON", "CURRENT_JSON"), help="compare two snapshot JSON files")
+    parser.add_argument("--require-clean", action="store_true", help="exit nonzero unless process/fd evidence is clean")
+    parser.add_argument(
+        "--require-gate",
+        choices=[
+            "process_fd_clean_baseline",
+            "unannotated_live_claims_admitted",
+            "quota_cassette_claims_admitted",
+            "local_release_validation_admitted",
+        ],
+        help="exit nonzero unless the named evidence gate is admitted",
+    )
     parser.add_argument("--schedule-followup-seconds", type=int, help="after writing --out artifacts, schedule a background follow-up snapshot")
     parser.add_argument("--accumulated-seconds", type=int, default=4 * 60 * 60, help="elapsed time threshold for accumulated-session classification")
     parser.add_argument("--rss-growth-kib", type=int, default=64 * 1024, help="minimum same-PID RSS growth for comparison suspicion")
@@ -990,6 +1082,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--schedule-followup-seconds requires --out")
     if args.followup_after_seconds is not None and not args.followup_baseline:
         parser.error("--followup-after-seconds requires --followup-baseline")
+    if args.compare and (args.require_clean or args.require_gate):
+        parser.error("--require-clean/--require-gate apply only to snapshots, not comparisons")
     return args
 
 
@@ -1029,6 +1123,15 @@ def main(argv: list[str]) -> int:
             "no foreground sleep is running",
             file=sys.stderr,
         )
+
+    if not args.compare:
+        gate = payload.get("evidence_gate", {})
+        required_gate = args.require_gate or ("process_fd_clean_baseline" if args.require_clean else None)
+        if required_gate is not None and gate.get(required_gate) is not True:
+            reasons = gate.get("blocking_reasons", []) + gate.get("caution_reasons", [])
+            reason_text = ", ".join(str(item.get("reason")) for item in reasons) or "gate_not_admitted"
+            print(f"process/fd evidence gate failed: {required_gate}: {reason_text}", file=sys.stderr)
+            return 2
 
     return 0
 
