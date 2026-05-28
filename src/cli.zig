@@ -1359,7 +1359,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Managed Codex readiness snapshot: install, policy, routes, and next actions.
         \\
         \\  codex managed-plan [--profile name] [--capability c] [--json]
-        \\      Plan a managed native Codex launch with route-local resume semantics.
+        \\      Plan a legacy route-local native Codex launch diagnostic.
         \\
         \\  codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
         \\      Launch native Codex through stay-afloat route selection and selected CODEX_HOME.
@@ -1460,9 +1460,10 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\Safety:
         \\  canary reads local readiness by default; --live contacts provider endpoints.
         \\  live-qa, revalidate-exhausted, probe-all, and canary --live run real provider probes.
-        \\  managed-plan only inspects readiness. managed launches native Codex under the
-        \\  selected route-local CODEX_HOME, so provider calls depend on the
-        \\  Codex child process and are not made during planning.
+        \\  managed-plan only inspects route-local launch readiness. managed launches
+        \\  native Codex under the selected route-local CODEX_HOME, so provider calls
+        \\  depend on the Codex child process and are not made during planning.
+        \\  For canonical Codex resume authority, use oauth-mux codex resume.
         \\  broker-smoke, broker-refresh-smoke, broker-401-smoke,
         \\  broker-quota-smoke, broker-session-smoke, and broker-run read a
         \\  selected Codex route secret and send it only to a broker-owned

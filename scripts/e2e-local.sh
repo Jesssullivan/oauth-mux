@@ -988,6 +988,9 @@ expect_contains "$managed_plan" '"level":"managed_codex_process"' "managed-plan 
 expect_contains "$managed_plan" '"proof_status":"managed_launch_planning_only"' "managed-plan scopes proof to planning"
 expect_contains "$managed_plan" '"route_local_resume":true' "managed-plan reports route-local resume namespace"
 expect_contains "$managed_plan" '"resume_namespace":"selected_route_codex_home"' "managed-plan names selected CODEX_HOME namespace"
+expect_contains "$managed_plan" '"diagnostic_only":true' "managed-plan marks route-local resume check as diagnostic"
+expect_contains "$managed_plan" '"canonical_resume_authority_checked":false' "managed-plan does not claim canonical resume authority"
+expect_contains "$managed_plan" '"canonical_resume_entrypoint":"oauth-mux codex resume"' "managed-plan points canonical resume to first-class adapter"
 expect_contains "$managed_plan" '"selected":{"provider":"codex","account":"max-2","capability":"codex-max"' "managed-plan selects first live route"
 expect_contains "$managed_plan" '"prepared_fallback":true' "managed-plan reports prepared fallback"
 expect_contains "$managed_plan" '"path_printed":false' "managed-plan does not print CODEX_HOME path"
@@ -1002,6 +1005,8 @@ expect_contains "$managed_resume_plan" '"mode":"codex_managed_session_plan"' "ma
 expect_contains "$managed_resume_plan" '"requested":true' "managed --json reports resume request"
 expect_contains "$managed_resume_plan" '"resume_last":true' "managed --json reports resume-last"
 expect_contains "$managed_resume_plan" '"status":"resume_last_unchecked"' "managed --json leaves resume-last to native Codex"
+expect_contains "$managed_resume_plan" '"canonical_resume_authority_checked":false' "managed --json does not claim canonical resume authority"
+expect_contains "$managed_resume_plan" '"canonical_resume_entrypoint":"oauth-mux codex resume"' "managed --json points canonical resume to first-class adapter"
 expect_contains "$managed_resume_plan" '"include_non_interactive":true' "managed --json reports include-non-interactive"
 expect_contains "$managed_resume_plan" '"passthrough_arg_count":2' "managed --json counts forwarded Codex args without printing them"
 expect_not_contains "$managed_resume_plan" 'gpt-5.5' "managed --json does not print forwarded model arg"
@@ -1011,6 +1016,8 @@ expect_contains "$managed_resume_found" '"ok":true' "managed explicit resume pla
 expect_contains "$managed_resume_found" '"checked":true' "managed explicit resume plan checks selected route store"
 expect_contains "$managed_resume_found" '"found_in_selected_store":true' "managed explicit resume plan reports route-local match"
 expect_contains "$managed_resume_found" '"status":"found_in_selected_store"' "managed explicit resume plan reports found status"
+expect_contains "$managed_resume_found" '"diagnostic_only":true' "managed explicit resume plan marks route-local scan as diagnostic"
+expect_contains "$managed_resume_found" '"canonical_resume_authority_checked":false' "managed explicit resume plan does not claim canonical resume authority"
 expect_contains "$managed_resume_found" '"session_index_match":true' "managed explicit resume plan uses session index evidence"
 expect_contains "$managed_resume_found" '"resume_id_printed":false' "managed explicit resume plan suppresses resume id"
 expect_not_contains "$managed_resume_found" 'managed-good-session' "managed explicit resume plan does not print resume id value"
@@ -1019,6 +1026,7 @@ managed_resume_missing="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_
 expect_contains "$managed_resume_missing" '"ok":false' "managed explicit resume plan fails when id is missing from selected route store"
 expect_contains "$managed_resume_missing" '"found_in_selected_store":false' "managed explicit resume plan reports missing route-local id"
 expect_contains "$managed_resume_missing" '"status":"not_found_in_selected_store"' "managed explicit resume plan reports missing status"
+expect_contains "$managed_resume_missing" '"canonical_resume_authority_checked":false' "managed explicit missing resume does not claim canonical resume authority"
 expect_contains "$managed_resume_missing" '"unmanaged_cross_route_resume":false' "managed explicit resume plan refuses cross-route import claim"
 expect_not_contains "$managed_resume_missing" 'missing-session' "managed explicit resume plan does not print missing resume id value"
 
@@ -1044,6 +1052,8 @@ if PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_should_not_ru
 fi
 managed_refusal="$(cat "$managed_refusal_out")"
 expect_contains "$managed_refusal" 'status: not_found_in_selected_store' "managed missing explicit resume reports route-local diagnostic"
+expect_contains "$managed_refusal" 'canonical_resume_authority_checked: false' "managed missing explicit resume text keeps canonical authority boundary explicit"
+expect_contains "$managed_refusal" 'canonical_resume_entrypoint: oauth-mux codex resume' "managed missing explicit resume text points to canonical entrypoint"
 expect_contains "$managed_refusal" 'resume_id_printed: false' "managed missing explicit resume suppresses id in text output"
 if [ -f "$managed_should_not_run" ]; then
   printf 'e2e assertion failed: managed explicit missing resume launched child unexpectedly\n' >&2
