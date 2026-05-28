@@ -126,6 +126,7 @@ EOF
 cat >"$BAD_405" <<'EOF'
 {"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses","status":405,"classification":"ok","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":true}
+{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses_websocket","status":405,"classification":"ok","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":true}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
 
@@ -421,7 +422,7 @@ if [[ "$(jq -r .verdict <<<"$BAD_405_SUMMARY")" != "transport_regression_405_mis
     echo "$BAD_405_SUMMARY" >&2
     exit 1
 fi
-if [[ "$(jq -r .responses_get_405_misclassified_ok <<<"$BAD_405_SUMMARY")" != "1" ]]; then
+if [[ "$(jq -r .responses_get_405_misclassified_ok <<<"$BAD_405_SUMMARY")" != "2" ]]; then
     echo "bad-405 regression count mismatch" >&2
     echo "$BAD_405_SUMMARY" >&2
     exit 1
@@ -433,7 +434,7 @@ if [[ "$(jq -r .verdict <<<"$BAD_405_NATIVE_SUMMARY")" != "transport_regression_
     echo "$BAD_405_NATIVE_SUMMARY" >&2
     exit 1
 fi
-if [[ "$(jq -r .responses_get_405_misclassified_ok <<<"$BAD_405_NATIVE_SUMMARY")" != "1" ]]; then
+if [[ "$(jq -r .responses_get_405_misclassified_ok <<<"$BAD_405_NATIVE_SUMMARY")" != "2" ]]; then
     echo "native bad-405 regression count mismatch" >&2
     echo "$BAD_405_NATIVE_SUMMARY" >&2
     exit 1

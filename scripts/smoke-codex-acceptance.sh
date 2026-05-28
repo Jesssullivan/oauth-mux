@@ -145,6 +145,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_TRACE_FILE="$TRACE_FILE" \
   OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_CODEX_WEBSOCKET_PROBE=1 \
+  OMUX_STUB_CODEX_WEBSOCKET_EXTRA_SUFFIX="/responses_websockets" \
   OMUX_STUB_CODEX_WEBSOCKET_RST_PROBE=1 \
   OMUX_STUB_CODEX_TURNS=3 \
   OMUX_STUB_CODEX_PIDFILE="$STUB_PIDFILE" \
@@ -201,6 +202,7 @@ assert_grep "runtime identity marks path printed" '"path_printed":true' "$NDJSON
 assert_grep "runtime identity records installed/local mismatch bit" '"installed_local_mismatch_detected":false' "$NDJSON"
 assert_grep "websocket upgrade got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"websocket".*"method":"GET".*"path_kind":"responses".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
 assert_grep "plain responses GET got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"responses_get".*"method":"GET".*"path_kind":"responses".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
+assert_grep "responses_websocket upgrade got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"websocket".*"method":"GET".*"path_kind":"responses_websocket".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
 assert_grep "websocket client reset is not counted as delivered" '"kind":"proxy_unsupported_transport".*"transport":"websocket".*"status":426.*"delivered_to_codex":false.*"err":"(BrokenPipe|ConnectionResetByPeer|ConnectionTimedOut|EndOfStream)"' "$NDJSON"
 assert_no_grep "websocket client reset did not leak serveOne error" 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)' "$ADAPTER_STDERR"
 if grep -q -E '"kind":"proxy_turn".*"method":"GET".*"path_kind":"responses".*"status":405.*"classification":"ok"' "$NDJSON"; then
@@ -209,6 +211,13 @@ if grep -q -E '"kind":"proxy_turn".*"method":"GET".*"path_kind":"responses".*"st
     exit 1
 else
     echo "  ✓ websocket upgrade was not misclassified as proxy_turn ok"
+fi
+if grep -q -E '"kind":"proxy_turn".*"method":"GET".*"path_kind":"responses_websocket".*"status":405.*"classification":"ok"' "$NDJSON"; then
+    echo "  ✗ responses_websocket upgrade was forwarded upstream and misclassified as ok" >&2
+    cat "$NDJSON" >&2
+    exit 1
+else
+    echo "  ✓ responses_websocket upgrade was not misclassified as proxy_turn ok"
 fi
 assert_grep "proxy_turn 200 ok"         '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "proxy_turn 429 quota_exhausted" '"kind":"proxy_turn".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"

@@ -267,10 +267,10 @@ def _websocket_probe(proxy_url: str) -> dict:
         print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
         sys.exit(2)
     netloc, prefix = m.group(1), m.group(2)
-    def run_get(label: str, headers: dict) -> dict:
+    def run_get(label: str, headers: dict, suffix: str = "/responses") -> dict:
         conn = http.client.HTTPConnection(netloc, timeout=15)
         try:
-            conn.request("GET", prefix + "/responses", headers=headers)
+            conn.request("GET", prefix + suffix, headers=headers)
             resp = conn.getresponse()
             body = resp.read().decode("utf-8", errors="replace")
             return {
@@ -336,6 +336,11 @@ def _websocket_probe(proxy_url: str) -> dict:
         run_get("websocket_upgrade", websocket_headers),
         run_get("responses_get_beta_only", beta_only_headers),
     ]
+    extra_suffix = os.environ.get("OMUX_STUB_CODEX_WEBSOCKET_EXTRA_SUFFIX")
+    if extra_suffix:
+        if not extra_suffix.startswith("/"):
+            extra_suffix = "/" + extra_suffix
+        variants.append(run_get("websocket_upgrade_extra_suffix", websocket_headers, extra_suffix))
     if os.environ.get("OMUX_STUB_CODEX_WEBSOCKET_RST_PROBE") == "1":
         variants.append(run_get_and_rst("websocket_upgrade_rst", websocket_headers))
     primary = variants[0]

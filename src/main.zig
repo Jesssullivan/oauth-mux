@@ -10850,8 +10850,10 @@ fn summarizeProxyTurn(
     if (path_kind) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_path_kind, value);
     if (body_class) |value| try incrementStringCount(allocator, &summary.proxy_turns_by_body_class, value);
 
+    const responses_get_path = stringEquals(path_kind, "responses") or
+        stringEquals(path_kind, "responses_websocket");
     if (stringEquals(jsonString(object.get("method")), "GET") and
-        stringEquals(path_kind, "responses") and
+        responses_get_path and
         status != null and status.? == 405 and
         stringEquals(classification, "ok"))
     {
