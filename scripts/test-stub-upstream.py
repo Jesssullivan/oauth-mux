@@ -27,6 +27,10 @@ Behavior (configurable via env):
                         response headers but before completing the response
                         head. Used to model upstream connections that become
                         readable, then stop before a complete HTTP response.
+  OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON — maps ChatGPT-Account-ID values to
+                        a millisecond stall after writing a complete response
+                        head and optional body prefix. Used to model upstream
+                        body streams that stop making progress.
 
 Per request:
   - Logs a JSON line with: ts, path, method, account_id (from
@@ -105,6 +109,14 @@ ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 # {"acc-A-id":1000}.
 # OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_COUNT_JSON optionally caps partial
 # header stalls per account.
+# OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON maps ChatGPT-Account-ID values to a
+# millisecond stall after response headers have been sent, e.g.
+# {"acc-A-id":1000}.
+# OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON maps ChatGPT-Account-ID values
+# to the number of response body bytes to write before stalling. Omitted means
+# stall before the first body byte.
+# OMUX_STUB_ACCOUNT_BODY_STALL_COUNT_JSON optionally caps body stalls per
+# account.
 try:
     ACCOUNT_STATUS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STATUS_JSON", "{}"))
 except json.JSONDecodeError:
@@ -139,6 +151,21 @@ try:
     ACCOUNT_PARTIAL_HEADER_STALL_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_COUNT_JSON", "{}"))
 except json.JSONDecodeError:
     ACCOUNT_PARTIAL_HEADER_STALL_COUNT = {}
+
+try:
+    ACCOUNT_BODY_STALL_MS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_BODY_STALL_MS = {}
+
+try:
+    ACCOUNT_BODY_STALL_AFTER_BYTES = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_BODY_STALL_AFTER_BYTES = {}
+
+try:
+    ACCOUNT_BODY_STALL_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_BODY_STALL_COUNT_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_BODY_STALL_COUNT = {}
 
 
 # Per-account request counter. Reset only on process restart.
@@ -346,6 +373,74 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
         return True
 
+    def _body_stall_if_configured(
+        self,
+        path: str,
+        status: int,
+        payload: bytes,
+        content_type: str,
+    ) -> bool:
+        acct = self._account_id()
+        if acct not in ACCOUNT_BODY_STALL_MS:
+            return False
+        if acct in ACCOUNT_BODY_STALL_COUNT:
+            remaining = int(ACCOUNT_BODY_STALL_COUNT.get(acct, 0))
+            if remaining <= 0:
+                return False
+            ACCOUNT_BODY_STALL_COUNT[acct] = remaining - 1
+        stall_ms = int(ACCOUNT_BODY_STALL_MS.get(acct, 0))
+        if stall_ms <= 0:
+            return False
+
+        after_bytes = int(ACCOUNT_BODY_STALL_AFTER_BYTES.get(acct, 0))
+        after_bytes = max(0, min(after_bytes, len(payload)))
+
+        _log({
+            "path": path,
+            "method": self.command,
+            "account_id": acct,
+            "auth_prefix": self._auth_prefix(),
+            "status_returned": status,
+            "response_classification": "transport_body_stall",
+            "stall_ms": stall_ms,
+            "bytes_before_stall": after_bytes,
+            "final_status": status,
+            "completed": False,
+        })
+
+        completed = False
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if after_bytes > 0:
+                self.wfile.write(payload[:after_bytes])
+            self.wfile.flush()
+            time.sleep(stall_ms / 1000)
+            self.wfile.write(payload[after_bytes:])
+            self.wfile.flush()
+            completed = True
+        except OSError:
+            pass
+
+        self.close_connection = True
+        if completed:
+            _log({
+                "path": path,
+                "method": self.command,
+                "account_id": acct,
+                "auth_prefix": self._auth_prefix(),
+                "status_returned": status,
+                "response_classification": "transport_body_stall_completed",
+                "stall_ms": stall_ms,
+                "bytes_before_stall": after_bytes,
+                "final_status": status,
+                "completed": completed,
+            })
+        return True
+
     def _serve(self) -> None:
         path = urlparse(self.path).path
         if not path.startswith("/backend-api/codex"):
@@ -371,6 +466,9 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             ct = "application/json"
 
         if self._partial_header_stall_if_configured(path, status, payload, ct):
+            return
+
+        if self._body_stall_if_configured(path, status, payload, ct):
             return
 
         if status == 200 and TRUNCATE_200_AFTER_BYTES > 0 and TRUNCATE_200_AFTER_BYTES < len(payload):
@@ -436,6 +534,8 @@ def main() -> int:
     print(f"stub-upstream: 429_type={ERROR_TYPE}", file=sys.stderr, flush=True)
     if ACCOUNT_PARTIAL_HEADER_STALL_MS:
         print("stub-upstream: partial_header_stall accounts configured", file=sys.stderr, flush=True)
+    if ACCOUNT_BODY_STALL_MS:
+        print("stub-upstream: body_stall accounts configured", file=sys.stderr, flush=True)
     if ALWAYS_STATUS:
         print(f"stub-upstream: always_status={ALWAYS_STATUS} (overrides classification)", file=sys.stderr, flush=True)
     try:

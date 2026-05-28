@@ -626,6 +626,118 @@ run_upstream_interrupted_case() {
     echo "  ✓ interrupted upstream stream recorded provider-degraded route health"
 }
 
+run_upstream_body_idle_timeout_case() {
+    local case_dir="$TMP/upstream-body-idle-timeout"
+    local portfile="$case_dir/upstream.port"
+    local uplog="$case_dir/upstream.log"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_LOGFILE="$uplog" \
+      OMUX_STUB_200_BODY_REPEAT=4096 \
+      OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":1000}' \
+      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":128}' \
+      OMUX_STUB_ACCOUNT_BODY_STALL_COUNT_JSON='{"acc-A-id":1}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: upstream-body-idle-timeout stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=250 \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in upstream-body-idle-timeout case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: upstream-body-idle-timeout assertions"
+    jq -e 'select(.kind == "proxy_stream_interrupted" and .account == "codex:max-1" and .status == 200 and .err == "ConnectionTimedOut" and .bytes_streamed > 0 and .delivered_to_codex == true and .retry_attempted == false)' "$ndjson" >/dev/null
+    echo "  ✓ idle upstream body classified as interrupted"
+    assert_no_grep "idle upstream body did not same-turn retry" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
+    assert_no_grep "idle upstream body did not become pre-response failure" '"kind":"proxy_upstream_failed"' "$ndjson"
+    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured body-idle timeout"
+    jq -s -e '[.[] | select(.response_classification == "transport_body_stall" and .account_id == "acc-A-id" and .stall_ms == 1000 and .bytes_before_stall == 128)] | length == 1' "$uplog" >/dev/null
+    echo "  ✓ upstream fixture stalled the body after partial delivery"
+    jq -e '[.turns[] | select(.status == 200 and (.body_head | contains("response.created")))] | length == 1' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex saw partial 200 stream"
+    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ idle upstream body recorded provider-degraded route health"
+}
+
+run_upstream_body_idle_recovery_case() {
+    local case_dir="$TMP/upstream-body-idle-recovery"
+    local portfile="$case_dir/upstream.port"
+    local uplog="$case_dir/upstream.log"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_LOGFILE="$uplog" \
+      OMUX_STUB_200_BODY_REPEAT=8 \
+      OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":100}' \
+      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":128}' \
+      OMUX_STUB_ACCOUNT_BODY_STALL_COUNT_JSON='{"acc-A-id":1}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: upstream-body-idle-recovery stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=1000 \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in upstream-body-idle-recovery case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: upstream-body-idle-recovery assertions"
+    assert_grep "body stall below idle timeout completed normally" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_no_grep "short body stall did not mark stream interrupted" '"kind":"proxy_stream_interrupted"' "$ndjson"
+    assert_no_grep "short body stall did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
+    jq -s -e '[.[] | select(.response_classification == "transport_body_stall_completed" and .account_id == "acc-A-id" and .stall_ms == 100 and .bytes_before_stall == 128 and .completed == true)] | length == 1' "$uplog" >/dev/null
+    echo "  ✓ upstream fixture resumed before the idle deadline"
+    jq -e '[.turns[] | select(.status == 200 and (.body_head | contains("response.created")))] | length == 1' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex saw the completed 200 stream"
+    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ route health was not polluted by a short body pause"
+}
+
 run_client_disconnect_case() {
     local case_dir="$TMP/client-disconnect"
     local portfile="$case_dir/upstream.port"
@@ -776,6 +888,8 @@ run_upstream_header_stall_retry_case
 run_upstream_partial_header_stall_retry_case
 run_transport_fallback_case
 run_upstream_interrupted_case
+run_upstream_body_idle_timeout_case
+run_upstream_body_idle_recovery_case
 run_client_disconnect_case
 run_buffered_error_client_disconnect_case
 run_local_client_stall_case
