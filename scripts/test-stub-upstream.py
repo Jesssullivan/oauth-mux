@@ -31,6 +31,11 @@ Behavior (configurable via env):
                         a millisecond stall after writing a complete response
                         head and optional body prefix. Used to model upstream
                         body streams that stop making progress.
+  OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_JSON — maps ChatGPT-Account-ID values
+                        to a truthy value that makes the upstream close with
+                        TCP RST after request headers but before reading the
+                        request body. Used to model BrokenPipe/ConnectionReset
+                        while the proxy is still writing the upstream request.
 
 Per request:
   - Logs a JSON line with: ts, path, method, account_id (from
@@ -101,6 +106,11 @@ ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 # after the request body is read and before any response is written.
 # OMUX_STUB_ACCOUNT_RESET_COUNT_JSON optionally caps reset count per account,
 # e.g. {"acc-A-id":1}. When omitted, matching accounts reset every request.
+# OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_JSON maps ChatGPT-Account-ID values to
+# a truthy value. Matching accounts reset the connection before the request body
+# is read, so the proxy sees a pre-response upstream write failure.
+# OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_COUNT_JSON optionally caps these closes
+# per account.
 # OMUX_STUB_ACCOUNT_STALL_MS_JSON maps ChatGPT-Account-ID values to a millisecond
 # stall before response headers are written, e.g. {"acc-A-id":1000}.
 # OMUX_STUB_ACCOUNT_STALL_COUNT_JSON optionally caps stall count per account.
@@ -131,6 +141,18 @@ try:
     ACCOUNT_RESET_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_RESET_COUNT_JSON", "{}"))
 except json.JSONDecodeError:
     ACCOUNT_RESET_COUNT = {}
+
+try:
+    ACCOUNT_CLOSE_DURING_REQUEST = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_CLOSE_DURING_REQUEST = {}
+
+try:
+    ACCOUNT_CLOSE_DURING_REQUEST_COUNT = json.loads(
+        os.environ.get("OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_COUNT_JSON", "{}")
+    )
+except json.JSONDecodeError:
+    ACCOUNT_CLOSE_DURING_REQUEST_COUNT = {}
 
 try:
     ACCOUNT_STALL_MS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STALL_MS_JSON", "{}"))
@@ -301,6 +323,34 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         self.connection.close()
         return True
 
+    def _close_during_request_if_configured(self, path: str) -> bool:
+        acct = self._account_id()
+        if acct not in ACCOUNT_CLOSE_DURING_REQUEST:
+            return False
+        if not ACCOUNT_CLOSE_DURING_REQUEST.get(acct):
+            return False
+        if acct in ACCOUNT_CLOSE_DURING_REQUEST_COUNT:
+            remaining = int(ACCOUNT_CLOSE_DURING_REQUEST_COUNT.get(acct, 0))
+            if remaining <= 0:
+                return False
+            ACCOUNT_CLOSE_DURING_REQUEST_COUNT[acct] = remaining - 1
+        _log({
+            "path": path,
+            "method": self.command,
+            "account_id": acct,
+            "auth_prefix": self._auth_prefix(),
+            "status_returned": "close_during_request",
+            "response_classification": "transport_request_write_reset",
+        })
+        try:
+            linger = struct.pack("ii", 1, 0)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+        except OSError:
+            pass
+        self.close_connection = True
+        self.connection.close()
+        return True
+
     def _stall_before_response_if_configured(self, path: str) -> None:
         acct = self._account_id()
         if acct not in ACCOUNT_STALL_MS:
@@ -448,6 +498,9 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.send_header("Connection", "close")
             self.end_headers()
+            return
+
+        if self._close_during_request_if_configured(path):
             return
 
         body_bytes = self._read_body()
