@@ -1708,7 +1708,13 @@ fn forwardAndStream(
     // before anything is written to Codex.
     if (status_u16 >= 400 and status_u16 < 600) {
         // Cap at 64 KiB — chatgpt.com's error JSON/HTML bodies are small.
-        const body = try http_req.reader().readAllAlloc(a, 64 * 1024);
+        const body_idle_timeout_ms = configuredProxyUpstreamBodyIdleTimeoutMs(a);
+        var upstream_body_reader = TimedUpstreamBodyReader{
+            .request = &http_req,
+            .timeout_ms = body_idle_timeout_ms,
+            .timeout_active = setUpstreamBodyIdleReadTimeoutIfSafe(&http_req, body_idle_timeout_ms),
+        };
+        const body = try upstream_body_reader.reader().readAllAlloc(a, 64 * 1024);
         const classification = classify(a, status_u16, body);
         return .{
             .status = status_u16,
