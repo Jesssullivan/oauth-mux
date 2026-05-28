@@ -63,6 +63,7 @@
 //!     runtime claim level.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const broker_types = @import("../../broker/types.zig");
 const account_pool_mod = @import("../../broker/account_pool.zig");
 const health_mod = @import("../../health.zig");
@@ -146,9 +147,9 @@ fn configuredProxyUpstreamResponseTimeoutMs(allocator: std.mem.Allocator) i32 {
     );
 }
 
-const ProxyIoWaitError = std.posix.PollError || error{ConnectionTimedOut};
+const ProxyIoWaitError = std.posix.PollError || error{ ConnectionTimedOut, ConnectionResetByPeer };
 
-fn waitForSocket(handle: std.posix.socket_t, events: i16, timeout_ms: i32) ProxyIoWaitError!void {
+fn pollSocket(handle: std.posix.socket_t, events: i16, timeout_ms: i32) ProxyIoWaitError!i16 {
     var fds = [_]std.posix.pollfd{.{
         .fd = handle,
         .events = events,
@@ -156,11 +157,76 @@ fn waitForSocket(handle: std.posix.socket_t, events: i16, timeout_ms: i32) Proxy
     }};
     const ready = try std.posix.poll(&fds, timeout_ms);
     if (ready == 0) return error.ConnectionTimedOut;
+    if (fds[0].revents & events == 0 and fds[0].revents & (std.posix.POLL.ERR | std.posix.POLL.NVAL | std.posix.POLL.HUP) != 0) {
+        return error.ConnectionResetByPeer;
+    }
+    return fds[0].revents;
 }
 
-fn waitForUpstreamResponseStart(http_req: *std.http.Client.Request, timeout_ms: i32) ProxyIoWaitError!void {
+fn waitForSocket(handle: std.posix.socket_t, events: i16, timeout_ms: i32) ProxyIoWaitError!void {
+    _ = try pollSocket(handle, events, timeout_ms);
+}
+
+fn waitForUpstreamResponseStart(http_req: *std.http.Client.Request, timeout_ms: i32) ProxyIoWaitError!i16 {
+    const connection = http_req.connection orelse return 0;
+    return try pollSocket(connection.stream.handle, @intCast(std.posix.POLL.IN), timeout_ms);
+}
+
+fn setSocketReceiveTimeoutMs(handle: std.posix.socket_t, timeout_ms: i32) std.posix.SetSockOptError!void {
+    if (builtin.os.tag == .windows) {
+        var timeout: u32 = @intCast(@max(timeout_ms, 0));
+        try std.posix.setsockopt(
+            handle,
+            std.posix.SOL.SOCKET,
+            std.posix.SO.RCVTIMEO,
+            std.mem.asBytes(&timeout),
+        );
+        return;
+    }
+
+    var timeout = std.posix.timeval{
+        .sec = @intCast(@divTrunc(timeout_ms, 1000)),
+        .usec = @intCast(@rem(timeout_ms, 1000) * 1000),
+    };
+    try std.posix.setsockopt(
+        handle,
+        std.posix.SOL.SOCKET,
+        std.posix.SO.RCVTIMEO,
+        std.mem.asBytes(&timeout),
+    );
+}
+
+fn setUpstreamResponseReadTimeout(http_req: *std.http.Client.Request, timeout_ms: i32) std.posix.SetSockOptError!void {
     const connection = http_req.connection orelse return;
-    try waitForSocket(connection.stream.handle, @intCast(std.posix.POLL.IN), timeout_ms);
+    try setSocketReceiveTimeoutMs(connection.stream.handle, timeout_ms);
+}
+
+fn clearUpstreamResponseReadTimeout(http_req: *std.http.Client.Request) void {
+    setUpstreamResponseReadTimeout(http_req, 0) catch {};
+}
+
+fn waitForUpstreamResponseHeaders(http_req: *std.http.Client.Request, timeout_ms: i32) !void {
+    const revents = try waitForUpstreamResponseStart(http_req, timeout_ms);
+    const can_set_deadline = revents & (std.posix.POLL.ERR | std.posix.POLL.NVAL | std.posix.POLL.HUP) == 0;
+    if (can_set_deadline) {
+        try setUpstreamResponseReadTimeout(http_req, timeout_ms);
+    }
+
+    const started_ns = std.time.nanoTimestamp();
+    http_req.wait() catch |err| {
+        if (err == error.ConnectionTimedOut) return error.ConnectionTimedOut;
+        if (err == error.UnexpectedReadFailure) {
+            const timeout_ns = @as(i128, timeout_ms) * std.time.ns_per_ms;
+            const slack_ns = 50 * std.time.ns_per_ms;
+            if (std.time.nanoTimestamp() - started_ns + slack_ns >= timeout_ns) {
+                return error.ConnectionTimedOut;
+            }
+        }
+        return err;
+    };
+    if (can_set_deadline) {
+        clearUpstreamResponseReadTimeout(http_req);
+    }
 }
 
 const TimedProxyStream = struct {
@@ -1580,8 +1646,7 @@ fn forwardAndStream(
         try http_req.writeAll(req.body);
         try http_req.finish();
     }
-    try waitForUpstreamResponseStart(&http_req, configuredProxyUpstreamResponseTimeoutMs(a));
-    try http_req.wait();
+    try waitForUpstreamResponseHeaders(&http_req, configuredProxyUpstreamResponseTimeoutMs(a));
 
     const status_u16: u16 = @intFromEnum(http_req.response.status);
 

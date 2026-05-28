@@ -22,6 +22,11 @@ Behavior (configurable via env):
                         of a 200 response body, then reset the connection.
                         Used to model upstream network interruption after a
                         partial streaming response reached the proxy.
+  OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_MS_JSON — maps ChatGPT-Account-ID
+                        values to a millisecond stall after writing partial
+                        response headers but before completing the response
+                        head. Used to model upstream connections that become
+                        readable, then stop before a complete HTTP response.
 
 Per request:
   - Logs a JSON line with: ts, path, method, account_id (from
@@ -95,6 +100,11 @@ ALWAYS_STATUS = os.environ.get("OMUX_STUB_ALWAYS_STATUS", "")
 # OMUX_STUB_ACCOUNT_STALL_MS_JSON maps ChatGPT-Account-ID values to a millisecond
 # stall before response headers are written, e.g. {"acc-A-id":1000}.
 # OMUX_STUB_ACCOUNT_STALL_COUNT_JSON optionally caps stall count per account.
+# OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_MS_JSON maps ChatGPT-Account-ID values
+# to a millisecond stall after partial response headers are written, e.g.
+# {"acc-A-id":1000}.
+# OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_COUNT_JSON optionally caps partial
+# header stalls per account.
 try:
     ACCOUNT_STATUS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STATUS_JSON", "{}"))
 except json.JSONDecodeError:
@@ -119,6 +129,16 @@ try:
     ACCOUNT_STALL_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_STALL_COUNT_JSON", "{}"))
 except json.JSONDecodeError:
     ACCOUNT_STALL_COUNT = {}
+
+try:
+    ACCOUNT_PARTIAL_HEADER_STALL_MS = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_MS_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_PARTIAL_HEADER_STALL_MS = {}
+
+try:
+    ACCOUNT_PARTIAL_HEADER_STALL_COUNT = json.loads(os.environ.get("OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_COUNT_JSON", "{}"))
+except json.JSONDecodeError:
+    ACCOUNT_PARTIAL_HEADER_STALL_COUNT = {}
 
 
 # Per-account request counter. Reset only on process restart.
@@ -277,6 +297,55 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         })
         time.sleep(stall_ms / 1000)
 
+    def _partial_header_stall_if_configured(
+        self,
+        path: str,
+        status: int,
+        payload: bytes,
+        content_type: str,
+    ) -> bool:
+        acct = self._account_id()
+        if acct not in ACCOUNT_PARTIAL_HEADER_STALL_MS:
+            return False
+        if acct in ACCOUNT_PARTIAL_HEADER_STALL_COUNT:
+            remaining = int(ACCOUNT_PARTIAL_HEADER_STALL_COUNT.get(acct, 0))
+            if remaining <= 0:
+                return False
+            ACCOUNT_PARTIAL_HEADER_STALL_COUNT[acct] = remaining - 1
+        stall_ms = int(ACCOUNT_PARTIAL_HEADER_STALL_MS.get(acct, 0))
+        if stall_ms <= 0:
+            return False
+
+        partial_head = (
+            f"HTTP/1.1 {status} Stub\r\n"
+            f"Content-Type: {content_type}\r\n"
+        ).encode("utf-8")
+        remaining_head = (
+            f"Content-Length: {len(payload)}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode("utf-8")
+
+        _log({
+            "path": path,
+            "method": self.command,
+            "account_id": acct,
+            "auth_prefix": self._auth_prefix(),
+            "status_returned": "partial_header_stall",
+            "response_classification": "transport_partial_header_stall",
+            "stall_ms": stall_ms,
+            "final_status": status,
+        })
+        try:
+            self.connection.sendall(partial_head)
+            time.sleep(stall_ms / 1000)
+            self.connection.sendall(remaining_head)
+            self.connection.sendall(payload)
+        except OSError:
+            pass
+        self.close_connection = True
+        return True
+
     def _serve(self) -> None:
         path = urlparse(self.path).path
         if not path.startswith("/backend-api/codex"):
@@ -300,6 +369,9 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
         else:
             payload = json.dumps(body).encode("utf-8")
             ct = "application/json"
+
+        if self._partial_header_stall_if_configured(path, status, payload, ct):
+            return
 
         if status == 200 and TRUNCATE_200_AFTER_BYTES > 0 and TRUNCATE_200_AFTER_BYTES < len(payload):
             self.send_response(status)
@@ -362,6 +434,8 @@ def main() -> int:
     print(f"stub-upstream: 200_body_repeat={BODY_REPEAT}", file=sys.stderr, flush=True)
     print(f"stub-upstream: truncate_200_after_bytes={TRUNCATE_200_AFTER_BYTES}", file=sys.stderr, flush=True)
     print(f"stub-upstream: 429_type={ERROR_TYPE}", file=sys.stderr, flush=True)
+    if ACCOUNT_PARTIAL_HEADER_STALL_MS:
+        print("stub-upstream: partial_header_stall accounts configured", file=sys.stderr, flush=True)
     if ALWAYS_STATUS:
         print(f"stub-upstream: always_status={ALWAYS_STATUS} (overrides classification)", file=sys.stderr, flush=True)
     try:
