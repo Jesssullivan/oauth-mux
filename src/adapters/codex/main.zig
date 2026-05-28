@@ -1772,12 +1772,14 @@ fn proxyThreadMain(p: *wire_proxy.Proxy, shutdown: *std.atomic.Value(bool)) void
 fn isBenignProxyConnectionClose(err: anyerror) bool {
     return err == error.BrokenPipe or
         err == error.ConnectionResetByPeer or
+        err == error.ConnectionTimedOut or
         err == error.EndOfStream;
 }
 
 test "proxy thread suppresses expected localhost connection close errors" {
     try std.testing.expect(isBenignProxyConnectionClose(error.BrokenPipe));
     try std.testing.expect(isBenignProxyConnectionClose(error.ConnectionResetByPeer));
+    try std.testing.expect(isBenignProxyConnectionClose(error.ConnectionTimedOut));
     try std.testing.expect(isBenignProxyConnectionClose(error.EndOfStream));
     try std.testing.expect(!isBenignProxyConnectionClose(error.Unexpected));
 }
