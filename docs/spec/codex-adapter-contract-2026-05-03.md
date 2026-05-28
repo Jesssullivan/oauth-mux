@@ -330,7 +330,8 @@ For transient failures such as `BrokenPipe`, `ConnectionResetByPeer`,
 `ConnectionRefused`, `NetworkUnreachable`, resolver failures, TLS
 setup/alert/failure errors, or early EOF before any upstream response bytes have
 reached Codex, the proxy retries the same request on the same elected account
-with a short bounded backoff. If that
+with a short bounded backoff. This includes incomplete buffered non-2xx response
+bodies that stall before the proxy can safely classify or deliver them. If that
 local retry recovers, it emits `proxy_transport_local_retry` and
 `proxy_transport_local_retry_recovered`, returns the successful response to
 Codex, and does not mark the route provider-degraded. If the local retry window
