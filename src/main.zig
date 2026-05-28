@@ -11135,6 +11135,8 @@ const CodexManagedResumeInspection = struct {
     explicit_id: bool = false,
     resume_last: bool = false,
     include_non_interactive: bool = false,
+    diagnostic_only: bool = true,
+    canonical_resume_authority_checked: bool = false,
     checked: bool = false,
     found: bool = false,
     selected_route_available: bool = false,
@@ -11148,6 +11150,7 @@ const CodexManagedResumeInspection = struct {
     path_printed: bool = false,
     status: []const u8 = "not_requested",
     diagnostic: []const u8 = "no resume id requested",
+    canonical_resume_entrypoint: []const u8 = "oauth-mux codex resume",
 };
 
 fn inspectCodexManagedResumeForArgs(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) !CodexManagedResumeInspection {
@@ -11195,7 +11198,7 @@ fn inspectCodexManagedResume(
     if (!result.requested) return result;
     if (args.resume_last and args.resume_id == null) {
         result.status = "resume_last_unchecked";
-        result.diagnostic = "resume --last is resolved by native Codex inside the selected route-local CODEX_HOME";
+        result.diagnostic = "resume --last is resolved by native Codex inside the selected route-local CODEX_HOME; canonical resume authority is checked by oauth-mux codex resume --last";
         result.selected_route_available = selected_route != null;
         return result;
     }
@@ -11205,14 +11208,14 @@ fn inspectCodexManagedResume(
 
     const route = selected_route orelse {
         result.status = "selected_route_unavailable";
-        result.diagnostic = "no selectable route is available, so oauth-mux cannot check a route-local Codex resume id";
+        result.diagnostic = "no selectable route is available, so oauth-mux cannot check this route-local Codex resume diagnostic";
         return result;
     };
     result.selected_route_available = true;
 
     const store_dir = try codexManagedRouteConfigDir(allocator, cfg, route) orelse {
         result.status = "selected_route_missing_store";
-        result.diagnostic = "selected Codex route does not define a CODEX_HOME store for resume lookup";
+        result.diagnostic = "selected Codex route does not define a CODEX_HOME store for this route-local resume diagnostic";
         return result;
     };
     defer allocator.free(store_dir);
@@ -11236,10 +11239,10 @@ fn inspectCodexManagedResume(
     result.found = result.session_index_match or result.rollout_filename_match or result.state_store_match;
     if (result.found) {
         result.status = "found_in_selected_store";
-        result.diagnostic = "resume id was found in the selected route-local Codex store";
+        result.diagnostic = "resume id was found in the selected route-local Codex store; canonical resume authority is checked by oauth-mux codex resume";
     } else {
         result.status = "not_found_in_selected_store";
-        result.diagnostic = "resume id was not found in the selected route-local Codex store; choose the route that owns it or start a new managed session";
+        result.diagnostic = "resume id was not found in the selected route-local Codex store; use oauth-mux codex resume for canonical session authority or choose the route that owns this route-local store";
     }
     return result;
 }
@@ -11359,6 +11362,12 @@ fn writeCodexManagedResumeJson(writer: anytype, inspection: CodexManagedResumeIn
     try writer.writeAll(if (inspection.resume_last) "true" else "false");
     try writer.writeAll(",\"resume_id_provided\":");
     try writer.writeAll(if (inspection.explicit_id) "true" else "false");
+    try writer.writeAll(",\"diagnostic_only\":");
+    try writer.writeAll(if (inspection.diagnostic_only) "true" else "false");
+    try writer.writeAll(",\"canonical_resume_authority_checked\":");
+    try writer.writeAll(if (inspection.canonical_resume_authority_checked) "true" else "false");
+    try writer.writeAll(",\"canonical_resume_entrypoint\":");
+    try std.json.stringify(inspection.canonical_resume_entrypoint, .{}, writer);
     try writer.writeAll(",\"checked\":");
     try writer.writeAll(if (inspection.checked) "true" else "false");
     try writer.writeAll(",\"found_in_selected_store\":");
@@ -11393,10 +11402,13 @@ fn writeCodexManagedResumeRefusalText(writer: anytype, inspection: CodexManagedR
     try writer.writeAll("oauth-mux Codex managed resume diagnostic\n\n");
     try writer.print("  ok: false\n  status: {s}\n", .{inspection.status});
     try writer.print("  selected_route_available: {s}\n", .{if (inspection.selected_route_available) "true" else "false"});
+    try writer.writeAll("  diagnostic_only: true\n");
+    try writer.writeAll("  canonical_resume_authority_checked: false\n");
+    try writer.print("  canonical_resume_entrypoint: {s}\n", .{inspection.canonical_resume_entrypoint});
     try writer.writeAll("  resume_id_printed: false\n");
     try writer.writeAll("  path_printed: false\n");
     try writer.print("  diagnostic: {s}\n", .{inspection.diagnostic});
-    try writer.writeAll("  next: start a new managed session, or select the account whose route-local CODEX_HOME owns that session id\n");
+    try writer.writeAll("  next: use oauth-mux codex resume for canonical session authority, start a new managed session, or select the account whose route-local CODEX_HOME owns that session id\n");
 }
 
 fn writeCodexManagedPlanJson(
@@ -11472,7 +11484,7 @@ fn writeCodexManagedPlanText(
     try writer.writeAll("oauth-mux Codex managed session plan\n\n");
     if (profile) |value| try writer.print("  profile: {s}\n", .{value});
     if (capability) |value| try writer.print("  capability: {s}\n", .{value});
-    try writer.writeAll("  claim: planning-only managed_codex_process launch with route-local CODEX_HOME resume namespace\n");
+    try writer.writeAll("  claim: planning-only managed_codex_process launch with route-local CODEX_HOME diagnostic resume namespace\n");
     try writer.print("  session_start_ready: {s}\n", .{if (selected_index != null) "true" else "false"});
     try writer.print("  selectable_fallback_routes: {d}\n", .{fallback_count});
     try writer.print("  resume_requested: {s}\n", .{if (args.resume_id != null or args.resume_last) "true" else "false"});

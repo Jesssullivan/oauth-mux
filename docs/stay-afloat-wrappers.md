@@ -76,14 +76,15 @@ selectable account when a route that looked selectable at preflight is
 reclassified before the target starts. If no selectable account remains, it
 prints the refreshed mediation text and exits nonzero.
 
-For native Codex, prefer `codex managed` over a bare `stay-afloat launch -- codex`
-when you want the invocation and resume semantics to be explicit. It uses the
-same selected route boundary, injects the selected route-local `CODEX_HOME`,
-and can forward `resume --last --include-non-interactive` for sessions created
-in that store. Explicit `--resume <id>` is preflighted against that selected
-store before native Codex starts; missing ids fail with a redacted diagnostic
-instead of launching the wrong account. It still cannot import or rescue an
-unmanaged already-running Codex session.
+For native Codex route-local diagnostics, `codex managed` is clearer than a bare
+`stay-afloat launch -- codex`. It uses the same selected route boundary,
+injects the selected route-local `CODEX_HOME`, and can forward
+`resume --last --include-non-interactive` for sessions created in that store.
+Explicit `--resume <id>` is preflighted against that selected store before
+native Codex starts; missing ids fail with a redacted diagnostic instead of
+launching the wrong account. This is not canonical Codex resume authority. Use
+`oauth-mux codex resume ...` for the managed-frame path that bridges canonical
+session authority and checks canonical SQLite state.
 
 Use `stay-afloat observe --classify-exit-code <code>
 -- <command>` when oauth-mux should observe the child process boundary. The
