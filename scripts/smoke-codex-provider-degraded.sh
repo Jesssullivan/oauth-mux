@@ -346,6 +346,55 @@ PY
     fi
 }
 
+run_tls_transport_failure_case() {
+    local case_dir="$TMP/tls-transport-failure"
+    local portfile="$case_dir/upstream.port"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_one_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: tls-transport-failure stub pid=$upstream_pid port=$upstream_port scheme=https-to-plain-http"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="https" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in tls-transport-failure case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: tls-transport-failure assertions"
+    assert_grep "TLS setup failure retried locally before route mutation" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"TlsInitializationFailed".*"delivered_to_codex":false' "$ndjson"
+    assert_grep "TLS setup failure recorded upstream failure after bounded retries" '"kind":"proxy_upstream_failed".*"account":"codex:max-1".*"err":"TlsInitializationFailed"' "$ndjson"
+    assert_grep "TLS setup failure delivered provider unavailable" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"delivered_to_codex":true' "$ndjson"
+    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.transport_error == "TlsInitializationFailed" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured TLS setup retry without raw account ids"
+    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured terminal TLS setup failure"
+    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ unrecovered TLS setup failure recorded provider-degraded route evidence"
+}
+
 run_local_transport_retry_case() {
     local case_dir="$TMP/local-transport-retry"
     local portfile="$case_dir/upstream.port"
@@ -1007,6 +1056,7 @@ run_local_client_stall_case() {
 run_fallback_case
 run_no_fallback_case
 run_transport_failure_case
+run_tls_transport_failure_case
 run_local_transport_retry_case
 run_upstream_header_stall_retry_case
 run_upstream_partial_header_stall_retry_case

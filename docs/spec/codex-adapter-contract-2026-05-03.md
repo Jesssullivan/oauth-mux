@@ -327,9 +327,10 @@ For every forwarded request, the proxy:
 
 Pre-response transport failures are handled before route-health mutation.
 For transient failures such as `BrokenPipe`, `ConnectionResetByPeer`,
-`ConnectionRefused`, `NetworkUnreachable`, resolver failures, or early EOF
-before any upstream response bytes have reached Codex, the proxy retries the
-same request on the same elected account with a short bounded backoff. If that
+`ConnectionRefused`, `NetworkUnreachable`, resolver failures, TLS
+setup/alert/failure errors, or early EOF before any upstream response bytes have
+reached Codex, the proxy retries the same request on the same elected account
+with a short bounded backoff. If that
 local retry recovers, it emits `proxy_transport_local_retry` and
 `proxy_transport_local_retry_recovered`, returns the successful response to
 Codex, and does not mark the route provider-degraded. If the local retry window
