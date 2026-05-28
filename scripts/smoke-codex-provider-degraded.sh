@@ -911,6 +911,68 @@ run_buffered_error_body_idle_timeout_case() {
     echo "  ✓ buffered error body timeout recorded provider-degraded route health"
 }
 
+run_partial_buffered_error_body_fallback_case() {
+    local case_dir="$TMP/partial-buffered-error-body-fallback"
+    local portfile="$case_dir/upstream.port"
+    local uplog="$case_dir/upstream.log"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_two_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_LOGFILE="$uplog" \
+      OMUX_STUB_ACCOUNT_STATUS_JSON='{"acc-A-id":503}' \
+      OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":1000}' \
+      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":8}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: partial-buffered-error-body-fallback stub pid=$upstream_pid port=$upstream_port"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=250 \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in partial-buffered-error-body-fallback case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: partial-buffered-error-body-fallback assertions"
+    assert_grep "partial buffered error body retried locally" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":false' "$ndjson"
+    assert_grep "partial buffered error body recorded upstream failure after bounded retries" '"kind":"proxy_upstream_failed".*"account":"codex:max-1".*"err":"ConnectionTimedOut"' "$ndjson"
+    assert_grep "partial buffered error body retried fallback account" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
+    assert_grep "fallback account returned 200 after partial buffered error body" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_no_grep "partial buffered error body did not become quota proof" '"kind":"quota_handoff_failed_no_account_selectable"|"classification":"quota_exhausted"|"kind":"proxy_same_turn_retry"' "$ndjson"
+    assert_no_grep "partial buffered error body did not leak provider-unavailable body" 'oauth_mux_provider_unavailable|oauth_mux_no_account_selectable' "$stub_report"
+    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured partial buffered error body timeout"
+    jq -s -e '[.[] | select(.response_classification == "transport_body_stall" and .account_id == "acc-A-id" and .status_returned == 503 and .bytes_before_stall == 8)] | length >= 1' "$uplog" >/dev/null
+    echo "  ✓ upstream fixture stalled after partial 503 body bytes"
+    jq -s -e '[.[] | select(.account_id == "acc-B-id" and .status_returned == 200)] | length == 1' "$uplog" >/dev/null
+    echo "  ✓ fallback account completed the turn"
+    jq -e '([.turns[] | select(.status == 200 and (.body_head | contains("response.completed")))] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex stayed in one process and saw recovered 200"
+    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ partial buffered error body timeout recorded provider-degraded route health"
+}
+
 run_client_disconnect_case() {
     local case_dir="$TMP/client-disconnect"
     local portfile="$case_dir/upstream.port"
@@ -1067,6 +1129,7 @@ run_upstream_interrupted_case
 run_upstream_body_idle_timeout_case
 run_upstream_body_idle_recovery_case
 run_buffered_error_body_idle_timeout_case
+run_partial_buffered_error_body_fallback_case
 run_client_disconnect_case
 run_buffered_error_client_disconnect_case
 run_local_client_stall_case
