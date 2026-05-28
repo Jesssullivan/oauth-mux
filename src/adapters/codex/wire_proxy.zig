@@ -78,6 +78,8 @@ const PROXY_IO_TIMEOUT_DEFAULT_MS: i32 = 30_000;
 const PROXY_IO_TIMEOUT_MAX_MS: i32 = 10 * 60 * 1000;
 const PROXY_UPSTREAM_RESPONSE_TIMEOUT_DEFAULT_MS: i32 = 30_000;
 const PROXY_UPSTREAM_RESPONSE_TIMEOUT_MAX_MS: i32 = 10 * 60 * 1000;
+const PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_DEFAULT_MS: i32 = 10 * 60 * 1000;
+const PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MAX_MS: i32 = 60 * 60 * 1000;
 
 pub const RouteState = enum {
     available,
@@ -144,6 +146,15 @@ fn configuredProxyUpstreamResponseTimeoutMs(allocator: std.mem.Allocator) i32 {
         "OMUX_PROXY_UPSTREAM_RESPONSE_TIMEOUT_MS",
         PROXY_UPSTREAM_RESPONSE_TIMEOUT_DEFAULT_MS,
         PROXY_UPSTREAM_RESPONSE_TIMEOUT_MAX_MS,
+    );
+}
+
+fn configuredProxyUpstreamBodyIdleTimeoutMs(allocator: std.mem.Allocator) i32 {
+    return configuredPositiveTimeoutMs(
+        allocator,
+        "OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS",
+        PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_DEFAULT_MS,
+        PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MAX_MS,
     );
 }
 
@@ -228,6 +239,49 @@ fn waitForUpstreamResponseHeaders(http_req: *std.http.Client.Request, timeout_ms
         clearUpstreamResponseReadTimeout(http_req);
     }
 }
+
+fn setUpstreamBodyIdleReadTimeoutIfSafe(http_req: *std.http.Client.Request, timeout_ms: i32) bool {
+    const connection = http_req.connection orelse return false;
+    const revents = pollSocket(connection.stream.handle, @intCast(std.posix.POLL.IN), 0) catch |err| switch (err) {
+        error.ConnectionTimedOut => 0,
+        error.ConnectionResetByPeer => return false,
+        else => return false,
+    };
+    if (revents & (std.posix.POLL.ERR | std.posix.POLL.NVAL | std.posix.POLL.HUP) != 0) return false;
+    setSocketReceiveTimeoutMs(connection.stream.handle, timeout_ms) catch return false;
+    return true;
+}
+
+fn timeoutLikelyElapsed(started_ns: i128, timeout_ms: i32) bool {
+    const timeout_ns = @as(i128, timeout_ms) * std.time.ns_per_ms;
+    const slack_ns = 50 * std.time.ns_per_ms;
+    return std.time.nanoTimestamp() - started_ns + slack_ns >= timeout_ns;
+}
+
+const TimedUpstreamBodyReader = struct {
+    request: *std.http.Client.Request,
+    timeout_ms: i32,
+    timeout_active: bool,
+
+    pub const ReadError = std.http.Client.Request.ReadError;
+    pub const Reader = std.io.Reader(*TimedUpstreamBodyReader, ReadError, read);
+
+    pub fn reader(self: *TimedUpstreamBodyReader) Reader {
+        return .{ .context = self };
+    }
+
+    pub fn read(self: *TimedUpstreamBodyReader, buffer: []u8) ReadError!usize {
+        if (buffer.len == 0) return 0;
+        const started_ns = std.time.nanoTimestamp();
+        return self.request.read(buffer) catch |err| {
+            if (err == error.ConnectionTimedOut) return error.ConnectionTimedOut;
+            if (self.timeout_active and err == error.UnexpectedReadFailure and timeoutLikelyElapsed(started_ns, self.timeout_ms)) {
+                return error.ConnectionTimedOut;
+            }
+            return err;
+        };
+    }
+};
 
 const TimedProxyStream = struct {
     stream: std.net.Stream,
@@ -1670,7 +1724,13 @@ fn forwardAndStream(
     }
 
     const classification = classify(a, status_u16, &.{});
-    const stream_outcome = writeStreamedResponse(client_writer, http_req.response, http_req.reader());
+    const body_idle_timeout_ms = configuredProxyUpstreamBodyIdleTimeoutMs(a);
+    var upstream_body_reader = TimedUpstreamBodyReader{
+        .request = &http_req,
+        .timeout_ms = body_idle_timeout_ms,
+        .timeout_active = setUpstreamBodyIdleReadTimeoutIfSafe(&http_req, body_idle_timeout_ms),
+    };
+    const stream_outcome = writeStreamedResponse(client_writer, http_req.response, upstream_body_reader.reader());
     return .{
         .status = status_u16,
         .classification = classification,
