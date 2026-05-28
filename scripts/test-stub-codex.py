@@ -41,6 +41,9 @@ Env (set by the smoke harness):
                             Codex persisting refreshed ChatGPT tokens in the
                             managed overlay.
   OMUX_STUB_CODEX_TURN_DELAY_MS — optional delay between turns (default 50).
+  OMUX_STUB_CODEX_BODY_BYTES — optional approximate JSON request body size for
+                            each POST turn. Used to force proxy->upstream
+                            request writes across multiple socket writes.
   OMUX_STUB_CODEX_DISCONNECT_TURNS — optional comma-separated turn indexes that
                             should send the request then close the proxy socket
                             before reading the streamed response.
@@ -148,6 +151,18 @@ def _endpoint_for_turn(turn: int) -> str:
     if not endpoints:
         return "responses"
     return endpoints[min(turn, len(endpoints) - 1)]
+
+
+def _payload_for_turn(turn: int) -> bytes:
+    target_bytes = int(os.environ.get("OMUX_STUB_CODEX_BODY_BYTES", "0"))
+    if target_bytes <= 0:
+        return json.dumps({"input": f"stub turn {turn}"}).encode("utf-8")
+
+    payload = {"input": f"stub turn {turn}", "padding": ""}
+    base_len = len(json.dumps(payload).encode("utf-8"))
+    if target_bytes > base_len:
+        payload["padding"] = "x" * (target_bytes - base_len)
+    return json.dumps(payload).encode("utf-8")
 
 
 def _path_for_turn(prefix: str, turn: int) -> tuple[str, str]:
@@ -489,13 +504,19 @@ def main() -> int:
     turn_results: list[dict] = []
     disconnect_turns = _disconnect_turns()
     for i in range(turns):
-        payload = json.dumps({"input": f"stub turn {i}"}).encode("utf-8")
+        payload = _payload_for_turn(i)
         endpoint = _endpoint_for_turn(i)
         if i in disconnect_turns:
             status, body = _post_and_disconnect(proxy_url, payload, i)
         else:
             status, body = _post(proxy_url, payload, i)
-        turn_results.append({"turn": i, "endpoint": endpoint, "status": status, "body_head": body[:120]})
+        turn_results.append({
+            "turn": i,
+            "endpoint": endpoint,
+            "status": status,
+            "payload_bytes": len(payload),
+            "body_head": body[:120],
+        })
         print(f"stub-codex: turn {i} -> {status}", file=sys.stderr, flush=True)
         time.sleep(turn_delay_ms / 1000)
 

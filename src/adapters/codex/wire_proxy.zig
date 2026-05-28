@@ -1808,6 +1808,7 @@ fn isRetryablePreResponseTransportError(err: anyerror) bool {
         err == error.TemporaryNameServerFailure or
         err == error.NameServerFailure or
         err == error.UnknownHostName or
+        err == error.UnexpectedWriteFailure or
         err == error.EndOfStream or
         err == error.HttpConnectionClosing or
         err == error.TlsInitializationFailed or
@@ -2538,6 +2539,7 @@ test "pre-response transport retry classifier covers transient network failures"
     try std.testing.expect(isRetryablePreResponseTransportError(error.ConnectionRefused));
     try std.testing.expect(isRetryablePreResponseTransportError(error.NetworkUnreachable));
     try std.testing.expect(isRetryablePreResponseTransportError(error.UnknownHostName));
+    try std.testing.expect(isRetryablePreResponseTransportError(error.UnexpectedWriteFailure));
     try std.testing.expect(isRetryablePreResponseTransportError(error.TlsInitializationFailed));
     try std.testing.expect(isRetryablePreResponseTransportError(error.TlsAlert));
     try std.testing.expect(isRetryablePreResponseTransportError(error.TlsFailure));
