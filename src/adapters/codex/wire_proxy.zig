@@ -1498,7 +1498,12 @@ fn isWebSocketUpgradeRequest(req: *const Request) bool {
 
 fn unsupportedResponsesGetTransport(req: *const Request) ?[]const u8 {
     if (!std.mem.eql(u8, req.method, "GET")) return null;
-    if (!std.mem.eql(u8, pathKind(req.path), "responses")) return null;
+    const kind = pathKind(req.path);
+    if (!std.mem.eql(u8, kind, "responses") and
+        !std.mem.eql(u8, kind, "responses_websocket"))
+    {
+        return null;
+    }
     if (isWebSocketUpgradeRequest(req)) return "websocket";
     return "responses_get";
 }

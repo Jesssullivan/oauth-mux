@@ -377,7 +377,7 @@ def summarize(path: Path) -> dict[str, Any]:
         e
         for e in proxy_turns
         if e.get("method") == "GET"
-        and e.get("path_kind") == "responses"
+        and e.get("path_kind") in {"responses", "responses_websocket"}
         and e.get("status") == 405
         and e.get("classification") == "ok"
     ]
