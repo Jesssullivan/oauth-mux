@@ -5,7 +5,9 @@
 # without emitting the route-repair no-account body, and treat downstream Codex
 # socket closes as local client disconnects rather than provider degradation.
 # Upstream interruptions after partial stream delivery should be recorded as
-# provider-degraded evidence, but must not trigger same-turn retry.
+# provider-degraded evidence, but must not trigger same-turn retry. The
+# transport fallback cases cover the main responses endpoint plus compact and
+# memory endpoints Codex uses around long-running sessions.
 
 set -euo pipefail
 
@@ -575,6 +577,69 @@ run_transport_fallback_case() {
     echo "  ✓ transport reset recorded provider-degraded route evidence"
 }
 
+run_endpoint_transport_fallback_case() {
+    local endpoint=$1
+    local path_kind=$2
+    local suffix=$3
+    local expected_upstream_path="/backend-api/codex/$endpoint"
+    local case_dir="$TMP/transport-fallback-$suffix"
+    local portfile="$case_dir/upstream.port"
+    local uplog="$case_dir/upstream.log"
+    local ndjson="$case_dir/adapter.ndjson"
+    local adapter_stderr="$case_dir/adapter.stderr"
+    local stub_report="$case_dir/stub-codex.report"
+    local trace_file="$case_dir/trace.ndjson"
+    mkdir -p "$case_dir"
+    write_two_account_fixture "$case_dir"
+
+    OMUX_STUB_PORT=0 \
+      OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_OK_BEFORE_429=99 \
+      OMUX_STUB_LOGFILE="$uplog" \
+      OMUX_STUB_ACCOUNT_RESET_JSON='{"acc-A-id":"before_response"}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
+    local upstream_pid=$!
+    UPSTREAM_PIDS+=("$upstream_pid")
+    wait_for_port "$portfile"
+    local upstream_port
+    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
+    echo "smoke-codex-provider-degraded: transport-fallback-$suffix stub pid=$upstream_pid port=$upstream_port max-1=reset max-2=200"
+
+    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$case_dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
+      OMUX_UPSTREAM_SCHEME="http" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      OMUX_TRACE=1 \
+      OMUX_TRACE_FILE="$trace_file" \
+      OMUX_STUB_CODEX_TURNS=1 \
+      OMUX_STUB_CODEX_ENDPOINTS="$endpoint" \
+      OMUX_STUB_CODEX_REPORT="$stub_report" \
+      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
+        echo "adapter exited nonzero in transport-fallback-$suffix case" >&2
+        cat "$ndjson" >&2 || true
+        cat "$adapter_stderr" >&2 || true
+        exit 1
+    }
+
+    echo "smoke-codex-provider-degraded: transport-fallback-$suffix assertions"
+    assert_grep "$path_kind transport reset recorded upstream failure" '"kind":"proxy_upstream_failed".*"account":"codex:max-1"' "$ndjson"
+    assert_grep "$path_kind transport reset retried fallback account" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
+    assert_grep "$path_kind fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"method":"POST".*"path_kind":"'"$path_kind"'".*"status":200.*"classification":"ok"' "$ndjson"
+    assert_no_grep "$path_kind transport fallback did not emit terminal provider unavailable" '"kind":"proxy_provider_retry_unavailable"' "$ndjson"
+    assert_no_grep "$path_kind transport fallback did not leak route-repair body" 'oauth_mux_no_account_selectable' "$stub_report"
+    jq -e --arg path_kind "$path_kind" 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == $path_kind and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
+    echo "  ✓ trace captured $path_kind transport reset without raw account ids"
+    jq -s -e --arg path "$expected_upstream_path" '[.[] | select(.response_classification == "transport_reset" and .account_id == "acc-A-id" and .path == $path)] | length == 3' "$uplog" >/dev/null
+    echo "  ✓ upstream fixture reset max-1 on $expected_upstream_path during the bounded retry window"
+    jq -s -e --arg path "$expected_upstream_path" '[.[] | select(.account_id == "acc-B-id" and .status_returned == 200 and .path == $path)] | length == 1' "$uplog" >/dev/null
+    echo "  ✓ fallback account completed $expected_upstream_path"
+    jq -e --arg endpoint "$endpoint" '([.turns[] | select(.status == 200 and .endpoint == $endpoint)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
+    echo "  ✓ stub-codex stayed in one process and saw $endpoint recover"
+    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
+    echo "  ✓ $path_kind transport reset recorded provider-degraded route evidence"
+}
+
 run_upstream_interrupted_case() {
     local case_dir="$TMP/upstream-interrupted"
     local portfile="$case_dir/upstream.port"
@@ -946,6 +1011,8 @@ run_local_transport_retry_case
 run_upstream_header_stall_retry_case
 run_upstream_partial_header_stall_retry_case
 run_transport_fallback_case
+run_endpoint_transport_fallback_case "responses/compact" "responses_compact" "compact"
+run_endpoint_transport_fallback_case "memories/trace_summarize" "memories_trace_summarize" "memory"
 run_upstream_interrupted_case
 run_upstream_body_idle_timeout_case
 run_upstream_body_idle_recovery_case

@@ -16,6 +16,10 @@ Env (set by the adapter):
 
 Env (set by the smoke harness):
   OMUX_STUB_CODEX_TURNS  — number of POST turns to send (default 5)
+  OMUX_STUB_CODEX_ENDPOINTS — optional comma-separated endpoint suffixes for
+                            each POST turn, relative to the managed base URL
+                            (default "responses"). The last endpoint is reused
+                            when turns exceed entries.
   OMUX_STUB_CODEX_PIDFILE — file to write our PID into (default
                             /tmp/omux-stub-codex.pid)
   OMUX_STUB_CODEX_REPORT  — JSON summary path (default
@@ -138,14 +142,28 @@ def _disconnect_turns() -> set[int]:
     return turns
 
 
+def _endpoint_for_turn(turn: int) -> str:
+    raw = os.environ.get("OMUX_STUB_CODEX_ENDPOINTS", "")
+    endpoints = [part.strip().lstrip("/") for part in raw.split(",") if part.strip()]
+    if not endpoints:
+        return "responses"
+    return endpoints[min(turn, len(endpoints) - 1)]
+
+
+def _path_for_turn(prefix: str, turn: int) -> tuple[str, str]:
+    endpoint = _endpoint_for_turn(turn)
+    return f"{prefix}/{endpoint}", endpoint
+
+
 def _request_parts(proxy_url: str, body: bytes, turn: int) -> tuple[str, bytes]:
     m = re.match(r"http://([^/]+)(/.*)$", proxy_url)
     if not m:
         print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
         sys.exit(2)
     netloc, prefix = m.group(1), m.group(2)
+    path, _ = _path_for_turn(prefix, turn)
     headers = [
-        f"POST {prefix}/responses HTTP/1.1",
+        f"POST {path} HTTP/1.1",
         f"Host: {netloc}",
         "Content-Type: application/json",
         "User-Agent: stub-codex/0",
@@ -173,6 +191,7 @@ def _post(proxy_url: str, body: bytes, turn: int) -> tuple[int, str]:
         print(f"stub-codex: cannot parse base_url={proxy_url}", file=sys.stderr)
         sys.exit(2)
     netloc, prefix = m.group(1), m.group(2)
+    path, _ = _path_for_turn(prefix, turn)
     conn = http.client.HTTPConnection(netloc, timeout=15)
     headers = {
         "Content-Type": "application/json",
@@ -190,7 +209,7 @@ def _post(proxy_url: str, body: bytes, turn: int) -> tuple[int, str]:
     try:
         conn.request(
             "POST",
-            prefix + "/responses",
+            path,
             body=body,
             headers=headers,
         )
@@ -466,11 +485,12 @@ def main() -> int:
     disconnect_turns = _disconnect_turns()
     for i in range(turns):
         payload = json.dumps({"input": f"stub turn {i}"}).encode("utf-8")
+        endpoint = _endpoint_for_turn(i)
         if i in disconnect_turns:
             status, body = _post_and_disconnect(proxy_url, payload, i)
         else:
             status, body = _post(proxy_url, payload, i)
-        turn_results.append({"turn": i, "status": status, "body_head": body[:120]})
+        turn_results.append({"turn": i, "endpoint": endpoint, "status": status, "body_head": body[:120]})
         print(f"stub-codex: turn {i} -> {status}", file=sys.stderr, flush=True)
         time.sleep(turn_delay_ms / 1000)
 
