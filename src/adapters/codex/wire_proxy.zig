@@ -1828,7 +1828,8 @@ fn pathKind(path: []const u8) []const u8 {
     if (std.mem.startsWith(u8, path, "/backend-api/models?")) return "models";
     if (std.mem.eql(u8, path, "/backend-api/codex/models")) return "models";
     if (std.mem.startsWith(u8, path, "/backend-api/codex/models?")) return "models";
-    if (std.mem.indexOf(u8, path, "/backend-api/codex/memories/trace_summarize") != null) return "memories_trace_summarize";
+    if (pathHasEndpointPrefix(path, "/backend-api/codex/memories/trace_summarize")) return "memories_trace_summarize";
+    if (pathHasEndpointPrefix(path, "/backend-api/memories/trace_summarize")) return "memories_trace_summarize";
     if (std.mem.indexOf(u8, path, "responses_websockets") != null) return "responses_websocket";
     if (std.mem.startsWith(u8, path, "/backend-api/codex/")) return "codex_other";
     return "unknown";
@@ -1842,6 +1843,9 @@ fn upstreamPathForRequest(a: std.mem.Allocator, path: []const u8) ![]const u8 {
         return try std.fmt.allocPrint(a, "/backend-api/codex{s}", .{path["/backend-api".len..]});
     }
     if (pathHasEndpointPrefix(path, "/backend-api/models")) {
+        return try std.fmt.allocPrint(a, "/backend-api/codex{s}", .{path["/backend-api".len..]});
+    }
+    if (pathHasEndpointPrefix(path, "/backend-api/memories/trace_summarize")) {
         return try std.fmt.allocPrint(a, "/backend-api/codex{s}", .{path["/backend-api".len..]});
     }
     return try a.dupe(u8, path);
@@ -2259,6 +2263,9 @@ test "pathKind redacts Codex endpoint paths into stable classes" {
     try std.testing.expectEqualStrings("models", pathKind("/backend-api/models?client_version=0.132.0"));
     try std.testing.expectEqualStrings("models", pathKind("/backend-api/codex/models?client_version=0.132.0"));
     try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/codex/memories/trace_summarize"));
+    try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/codex/memories/trace_summarize?after=1"));
+    try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/memories/trace_summarize"));
+    try std.testing.expectEqualStrings("memories_trace_summarize", pathKind("/backend-api/memories/trace_summarize?after=1"));
     try std.testing.expectEqualStrings("codex_other", pathKind("/backend-api/codex/unknown/shape"));
     try std.testing.expectEqualStrings("unknown", pathKind("/not-codex"));
 }
@@ -2275,6 +2282,10 @@ test "upstreamPathForRequest maps built-in openai provider paths to Codex upstre
     const models = try upstreamPathForRequest(std.testing.allocator, "/backend-api/models?client_version=0.132.0");
     defer std.testing.allocator.free(models);
     try std.testing.expectEqualStrings("/backend-api/codex/models?client_version=0.132.0", models);
+
+    const memory = try upstreamPathForRequest(std.testing.allocator, "/backend-api/memories/trace_summarize?after=1");
+    defer std.testing.allocator.free(memory);
+    try std.testing.expectEqualStrings("/backend-api/codex/memories/trace_summarize?after=1", memory);
 
     const already_codex = try upstreamPathForRequest(std.testing.allocator, "/backend-api/codex/responses");
     defer std.testing.allocator.free(already_codex);
