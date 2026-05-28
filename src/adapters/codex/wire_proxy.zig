@@ -442,29 +442,14 @@ pub const Proxy = struct {
         };
 
         if (unsupportedResponsesGetTransport(&req)) |transport| {
-            self.logEvent("proxy_unsupported_transport", .{
-                .transport = transport,
-                .method = req.method,
-                .path_kind = pathKind(req.path),
-                .status = 426,
-                .fallback_signal = "http_426",
-                .upstream_called = false,
-                .delivered_to_codex = true,
-            });
-            trace.append(self.allocator, "codex.proxy.unsupported_transport", .warn, &.{
-                trace.string("provider", "codex"),
-                trace.string("transport", transport),
-                trace.string("method", req.method),
-                trace.string("path_kind", pathKind(req.path)),
-                trace.uint("status", 426),
-                trace.string("fallback_signal", "http_426"),
-                trace.boolean("upstream_called", false),
-                trace.boolean("delivered_to_codex", true),
-                trace.boolean("token_material_printed", false),
-                trace.boolean("raw_account_id_printed", false),
-                trace.boolean("session_ids_printed", false),
-            });
-            try writeUnsupportedWebSocketResponse(writer);
+            var delivered_to_codex = true;
+            var write_error: ?[]const u8 = null;
+            writeUnsupportedWebSocketResponse(writer) catch |err| {
+                if (!isClientDisconnectWriteError(err)) return err;
+                delivered_to_codex = false;
+                write_error = @errorName(err);
+            };
+            self.logUnsupportedTransport(req, transport, delivered_to_codex, write_error);
             return;
         }
 
@@ -833,6 +818,39 @@ pub const Proxy = struct {
             .err = err_name,
             .bytes_streamed = bytes_streamed,
             .retry_attempted = retry_attempted,
+        });
+    }
+
+    fn logUnsupportedTransport(
+        self: *Proxy,
+        req: Request,
+        transport: []const u8,
+        delivered_to_codex: bool,
+        write_error: ?[]const u8,
+    ) void {
+        self.logEvent("proxy_unsupported_transport", .{
+            .transport = transport,
+            .method = req.method,
+            .path_kind = pathKind(req.path),
+            .status = 426,
+            .fallback_signal = "http_426",
+            .upstream_called = false,
+            .delivered_to_codex = delivered_to_codex,
+            .err = write_error,
+        });
+        trace.append(self.allocator, "codex.proxy.unsupported_transport", .warn, &.{
+            trace.string("provider", "codex"),
+            trace.string("transport", transport),
+            trace.string("method", req.method),
+            trace.string("path_kind", pathKind(req.path)),
+            trace.uint("status", 426),
+            trace.string("fallback_signal", "http_426"),
+            trace.boolean("upstream_called", false),
+            trace.boolean("delivered_to_codex", delivered_to_codex),
+            trace.string("write_error", write_error orelse "none"),
+            trace.boolean("token_material_printed", false),
+            trace.boolean("raw_account_id_printed", false),
+            trace.boolean("session_ids_printed", false),
         });
     }
 

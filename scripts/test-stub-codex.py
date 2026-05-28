@@ -45,6 +45,9 @@ Env (set by the smoke harness):
                             the proxy loop is not pinned by a half-open local socket.
   OMUX_STUB_CODEX_WEBSOCKET_PROBE — optional "1" to send a Codex-shaped
                             WebSocket upgrade GET before normal POST turns.
+  OMUX_STUB_CODEX_WEBSOCKET_RST_PROBE — optional "1" to send an additional
+                            WebSocket upgrade GET and reset the socket before
+                            reading the managed proxy's response.
   OMUX_STUB_CODEX_FAIL_MODE — optional startup failure mode. "sqlite_locked"
                             emits Codex's sqlite lock startup error and exits 1.
   The report records argv after the stub binary so CLI forwarding smokes can
@@ -261,6 +264,29 @@ def _websocket_probe(proxy_url: str) -> dict:
         finally:
             conn.close()
 
+    def run_get_and_rst(label: str, headers: dict) -> dict:
+        host, port_s = netloc.rsplit(":", 1)
+        sock = socket.create_connection((host, int(port_s)), timeout=15)
+        try:
+            lines = [
+                f"GET {prefix}/responses HTTP/1.1",
+                f"Host: {netloc}",
+            ]
+            lines.extend(f"{name}: {value}" for name, value in headers.items())
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8"))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        finally:
+            sock.close()
+        time.sleep(0.05)
+        return {
+            "label": label,
+            "status": 0,
+            "body_has_unsupported_transport": False,
+            "client_closed_before_response": True,
+            "path_printed": False,
+            "token_material_printed": False,
+        }
+
     websocket_headers = {
         "Connection": "keep-alive, Upgrade",
         "Upgrade": "websocket",
@@ -291,6 +317,8 @@ def _websocket_probe(proxy_url: str) -> dict:
         run_get("websocket_upgrade", websocket_headers),
         run_get("responses_get_beta_only", beta_only_headers),
     ]
+    if os.environ.get("OMUX_STUB_CODEX_WEBSOCKET_RST_PROBE") == "1":
+        variants.append(run_get_and_rst("websocket_upgrade_rst", websocket_headers))
     primary = variants[0]
     return {
         "checked": True,

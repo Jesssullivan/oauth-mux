@@ -145,6 +145,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_TRACE_FILE="$TRACE_FILE" \
   OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_CODEX_WEBSOCKET_PROBE=1 \
+  OMUX_STUB_CODEX_WEBSOCKET_RST_PROBE=1 \
   OMUX_STUB_CODEX_TURNS=3 \
   OMUX_STUB_CODEX_PIDFILE="$STUB_PIDFILE" \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
@@ -172,6 +173,17 @@ assert_grep() {
     fi
 }
 
+assert_no_grep() {
+    local label=$1 pattern=$2 file=$3
+    if grep -q -E "$pattern" "$file"; then
+        echo "  ✗ $label (unexpected match for: $pattern)" >&2
+        cat "$file" >&2
+        return 1
+    else
+        echo "  ✓ $label"
+    fi
+}
+
 echo "smoke-codex-acceptance: assertions"
 
 assert_grep "session_started"           '"kind":"session_started"'           "$NDJSON"
@@ -189,6 +201,8 @@ assert_grep "runtime identity marks path printed" '"path_printed":true' "$NDJSON
 assert_grep "runtime identity records installed/local mismatch bit" '"installed_local_mismatch_detected":false' "$NDJSON"
 assert_grep "websocket upgrade got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"websocket".*"method":"GET".*"path_kind":"responses".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
 assert_grep "plain responses GET got local HTTP fallback signal" '"kind":"proxy_unsupported_transport".*"transport":"responses_get".*"method":"GET".*"path_kind":"responses".*"status":426.*"fallback_signal":"http_426".*"upstream_called":false.*"delivered_to_codex":true' "$NDJSON"
+assert_grep "websocket client reset is not counted as delivered" '"kind":"proxy_unsupported_transport".*"transport":"websocket".*"status":426.*"delivered_to_codex":false.*"err":"(BrokenPipe|ConnectionResetByPeer|ConnectionTimedOut|EndOfStream)"' "$NDJSON"
+assert_no_grep "websocket client reset did not leak serveOne error" 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)' "$ADAPTER_STDERR"
 if grep -q -E '"kind":"proxy_turn".*"method":"GET".*"path_kind":"responses".*"status":405.*"classification":"ok"' "$NDJSON"; then
     echo "  ✗ websocket upgrade was forwarded as plain GET and misclassified as ok" >&2
     cat "$NDJSON" >&2
@@ -254,8 +268,9 @@ if jq -e '.websocket_probe.checked == true
           and .websocket_probe.body_has_unsupported_transport == true
           and .websocket_probe.path_printed == false
           and .websocket_probe.token_material_printed == false
-          and (.websocket_probe.variants | length) == 2
-          and all(.websocket_probe.variants[]; .status == 426 and .body_has_unsupported_transport == true and .path_printed == false and .token_material_printed == false)' "$STUB_REPORT" >/dev/null; then
+          and ([.websocket_probe.variants[] | select(.label == "websocket_upgrade" and .status == 426 and .body_has_unsupported_transport == true and .path_printed == false and .token_material_printed == false)] | length) == 1
+          and ([.websocket_probe.variants[] | select(.label == "responses_get_beta_only" and .status == 426 and .body_has_unsupported_transport == true and .path_printed == false and .token_material_printed == false)] | length) == 1
+          and ([.websocket_probe.variants[] | select(.label == "websocket_upgrade_rst" and .status == 0 and .client_closed_before_response == true and .path_printed == false and .token_material_printed == false)] | length) == 1' "$STUB_REPORT" >/dev/null; then
     echo "  ✓ child saw typed local WebSocket fallback response"
 else
     echo "  ✗ child WebSocket probe did not see local fallback response" >&2
