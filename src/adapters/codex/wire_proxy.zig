@@ -534,14 +534,26 @@ pub const Proxy = struct {
                         .rejections = rejections.items,
                     });
                     self.traceNoAccountSelectable(req, pending_kind, attempted.items, rejections.items);
-                    try writeNoAccountSelectableResponse(a, writer, self.profile, rejections.items);
+                    _ = try self.writeNoAccountSelectableResponseOrClientDisconnect(
+                        a,
+                        writer,
+                        req,
+                        pending_failure_account orelse "",
+                        rejections.items,
+                    );
                 } else {
                     self.logEvent("proxy_no_account_selectable", .{
                         .attempted = attempted.items,
                         .rejections = rejections.items,
                     });
                     self.traceNoAccountSelectable(req, pending_kind, attempted.items, rejections.items);
-                    try writeNoAccountSelectableResponse(a, writer, self.profile, rejections.items);
+                    _ = try self.writeNoAccountSelectableResponseOrClientDisconnect(
+                        a,
+                        writer,
+                        req,
+                        pending_failure_account orelse "",
+                        rejections.items,
+                    );
                 }
                 return;
             };
@@ -794,6 +806,24 @@ pub const Proxy = struct {
         writeProviderUnavailableResponse(allocator, writer, account_id, err_name, rejections) catch |err| {
             if (isClientDisconnectWriteError(err)) {
                 self.logClientDisconnected(account_id, req, 503, @errorName(err), 0, retry_attempted);
+                return false;
+            }
+            return err;
+        };
+        return true;
+    }
+
+    fn writeNoAccountSelectableResponseOrClientDisconnect(
+        self: *Proxy,
+        allocator: std.mem.Allocator,
+        writer: anytype,
+        req: Request,
+        account_id: []const u8,
+        rejections: []const CandidateRejection,
+    ) !bool {
+        writeNoAccountSelectableResponse(allocator, writer, self.profile, rejections) catch |err| {
+            if (isClientDisconnectWriteError(err)) {
+                self.logClientDisconnected(account_id, req, 503, @errorName(err), 0, true);
                 return false;
             }
             return err;

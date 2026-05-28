@@ -97,6 +97,7 @@ OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_TRACE_ID="cccccccccccccccccccccccccccccccc" \
   OMUX_SPAN_ID="dddddddddddddddd" \
   OMUX_STUB_CODEX_TURNS=5 \
+  OMUX_STUB_CODEX_DISCONNECT_TURNS=2 \
   OMUX_STUB_CODEX_REPORT="$STUB_REPORT" \
   "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$NDJSON" 2>"$ADAPTER_STDERR" || {
     echo "adapter exited nonzero" >&2
@@ -127,6 +128,14 @@ assert_grep "proxy_same_turn_retry fired" '"kind":"proxy_same_turn_retry"' "$NDJ
 assert_grep "fallback quota 429 was not delivered before no-account failure" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":429.*"delivered_to_codex":false' "$NDJSON"
 assert_grep "same-turn retry unavailable after all accounts exhausted" '"kind":"proxy_same_turn_retry_unavailable"' "$NDJSON"
 assert_grep "proxy_no_account_selectable event fired" '"kind":"proxy_no_account_selectable"' "$NDJSON"
+assert_grep "no-account response disconnect classified as client disconnect" '"kind":"proxy_client_disconnected".*"status":503.*"err":"(BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)".*"retry_attempted":true' "$NDJSON"
+if grep -q -E 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)' "$ADAPTER_STDERR"; then
+    echo "  ✗ no-account disconnect leaked benign proxy close" >&2
+    cat "$ADAPTER_STDERR" >&2
+    exit 1
+else
+    echo "  ✓ no-account disconnect did not leak benign proxy close"
+fi
 
 jq -e 'select(.name == "codex.managed.overlay" and .attributes.auth_authority == "mux_owned_overlay" and .attributes.config_paths_printed == false)' "$TRACE_FILE" >/dev/null
 echo "  ✓ trace captured managed overlay without config paths"
@@ -185,5 +194,5 @@ fi
 assert_grep "session_ended final_claim_level broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
 
 echo
-echo "smoke-codex-all-exhausted: all 12 assertions passed."
+echo "smoke-codex-all-exhausted: all assertions passed."
 echo "  full ndjson: $NDJSON"
