@@ -986,6 +986,7 @@ pub fn defaultProbeBudget(transport: ProbeTransport) types.ActionBudget {
 }
 
 pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?types.HttpClassification {
+    var first_error: ?types.HttpClassification = null;
     var lines = std.mem.splitScalar(u8, jsonl, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -999,15 +1000,18 @@ pub fn classifyCodexExecJsonl(allocator: std.mem.Allocator, jsonl: []const u8) ?
 
             if (std.mem.eql(u8, event_type, "error")) {
                 if (resolveJsonString(parsed.value, "message")) |message| {
-                    return classifyCodexErrorMessage(allocator, message);
+                    if (first_error == null) first_error = classifyCodexErrorMessage(allocator, message);
+                    continue;
                 }
             }
         }
 
-        if (classifyCodexErrorValue(parsed.value)) |classification| return classification;
+        if (classifyCodexErrorValue(parsed.value)) |classification| {
+            if (first_error == null) first_error = classification;
+        }
     }
 
-    return null;
+    return first_error;
 }
 
 pub fn classifyCodexAppServerJsonRpc(allocator: std.mem.Allocator, jsonl: []const u8) ?types.HttpClassification {
@@ -1945,6 +1949,25 @@ test "classifyCodexExecJsonl success cassette" {
         \\{"type":"thread.started","thread_id":"redacted"}
         \\{"type":"turn.started"}
         \\{"type":"item.completed","item":{"type":"agent_message","text":"OMUX_CODEX_SPARK_PROBE"}}
+        \\{"type":"turn.completed","usage":{"input_tokens":26656,"cached_input_tokens":3712,"output_tokens":57,"reasoning_output_tokens":43}}
+        \\
+    ;
+    try std.testing.expectEqual(
+        types.HttpClassification.success,
+        classifyCodexExecJsonl(std.testing.allocator, jsonl).?,
+    );
+}
+
+test "classifyCodexExecJsonl treats transient reconnect errors before completion as success" {
+    const jsonl =
+        \\Reading additional input from stdin...
+        \\{"type":"thread.started","thread_id":"redacted"}
+        \\{"type":"turn.started"}
+        \\2026-06-01T19:45:49Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 405 Method Not Allowed
+        \\{"type":"error","message":"Reconnecting... 2/5 (unexpected status 405 Method Not Allowed: {\"detail\":\"Method Not Allowed\"}, url: ws://127.0.0.1:51243/backend-api/responses)"}
+        \\2026-06-01T19:45:50Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 405 Method Not Allowed
+        \\{"type":"error","message":"Reconnecting... 5/5 (unexpected status 405 Method Not Allowed: {\"detail\":\"Method Not Allowed\"}, url: ws://127.0.0.1:51243/backend-api/responses)"}
+        \\{"type":"item.completed","item":{"type":"agent_message","text":"OMUX_CODEX_MINI_PROBE"}}
         \\{"type":"turn.completed","usage":{"input_tokens":26656,"cached_input_tokens":3712,"output_tokens":57,"reasoning_output_tokens":43}}
         \\
     ;
