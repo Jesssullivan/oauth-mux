@@ -277,10 +277,19 @@ the new handle.
 - Returns: `{ "credential_handle": "...", "exp_unix": 1788000123 }`
 - Errors: `refresh_failed` with typed reason (`refresh_token_expired`, `refresh_token_reused`, `refresh_token_invalidated`, `provider_5xx`, `policy_denied`).
 
-Refresh-token rotation per OAuth 2.1 §4.3.1 is enforced here: the broker
+Refresh-token rotation per OAuth 2.1 §4.3.1 is handled here: the broker
 holds a per-account mutex around refresh so two concurrent adapters can't
 race a refresh-token reuse fault (the failure mode tracked in
 `openai/codex#9634`).
+
+> **Status (2026-05-31): designed, NOT yet implemented.** The refresh write
+> path (`src/broker_loader.zig:362-390`) currently holds **no** lock — the
+> per-account mutex above is the *target* contract, not live behavior. The
+> 2026-05-31 `token_revoked` incident is the proof it is not yet enforced.
+> Tracked by GH #336 / TIN-1591; design in
+> `codex-refresh-serialization-contract-2026-05-31.md`. Note also that this
+> mutex alone does **not** deliver Level-3 never-halt — cross-capability
+> degradation is a separate gap (GH #339 / TIN-1811).
 
 ### 2.4 Quota and observability
 

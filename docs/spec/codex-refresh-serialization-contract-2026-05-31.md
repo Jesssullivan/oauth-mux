@@ -1,9 +1,19 @@
 # Codex Refresh Serialization & Adapter-Agnostic Re-Login — Design Contract
 
-Status: Draft (2026-05-31)
+Status: **Draft design (2026-05-31). Implementation pending (TIN-1591); the acceptance tests do not exist yet — they are the gate to land alongside the fix.**
 Owner: oauth-mux
 Incident anchor: `docs/incidents/2026-05-31-codex-refresh-token-race.md` (host `neo`, 10+ parallel Codex sessions → `token_revoked` / "refresh token already used")
 Upstream class: `openai/codex#10332` (incident signature); `openai/codex#9634` (cited by `docs/spec/broker-mcp-contract-2026-05-03.md:283`, `docs/spec/codex-adapter-contract-2026-05-03.md:501`)
+
+> **Scope boundary (never-halt):** refresh serialization fixes the token-rotation
+> *race*. It does **not** by itself deliver Level-3 `next_turn_seamless`
+> ("account A exhausts and account B continues"). The 2026-05-31 brick proved a
+> second, independent gap: the route selector is capability-scoped and will not
+> degrade `codex-max → codex-mini` (or wait out quota) when a capability
+> saturates — it halts with `NoAccountSelectable` even when a live route exists.
+> That cross-capability degradation is tracked separately as **GH #339 / TIN-1811**
+> (omux Foundations · resilience-never-halt). A dead/exhausted account must never
+> halt work; one live route is enough.
 
 ---
 

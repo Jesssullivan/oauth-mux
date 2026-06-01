@@ -504,6 +504,11 @@ serializes per-account; if a second adapter requests refresh while one is
 in flight, the broker returns the result of the in-flight call (not a
 fresh attempt). Adapters must accept that policy without retry.
 
+> **Status (2026-05-31): this serialization is DESIGNED, not yet implemented.**
+> `src/broker_loader.zig:362-390` refreshes with no lock today; the
+> 2026-05-31 incident is the proof. Tracked by GH #336 / TIN-1591
+> (`codex-refresh-serialization-contract-2026-05-31.md`).
+
 ## 8. Adapter CLI Surface
 
 ```
