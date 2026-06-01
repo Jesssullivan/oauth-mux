@@ -299,6 +299,52 @@ pub const HealthStore = struct {
         health.last_probe_decision = decision;
     }
 
+    pub fn recordAuthRefresh(self: *HealthStore, provider_name: []const u8, account_name: []const u8) void {
+        const base_key = accountKey(provider_name, account_name);
+        if (self.accounts.getPtr(base_key.slice())) |health| {
+            if (livenessIsDead(health.liveness)) resetAfterAuthRefresh(self, health, base_key.slice());
+        } else {
+            const health = self.getOrCreate(base_key.slice()) catch return;
+            resetAfterAuthRefresh(self, health, base_key.slice());
+        }
+
+        var prefix = base_key;
+        prefix.appendByte('#');
+        var it = self.accounts.iterator();
+        while (it.next()) |entry| {
+            if (!std.mem.startsWith(u8, entry.key_ptr.*, prefix.slice())) continue;
+            if (!livenessIsDead(entry.value_ptr.liveness)) continue;
+            resetAfterAuthRefresh(self, entry.value_ptr, entry.key_ptr.*);
+        }
+    }
+
+    fn resetAfterAuthRefresh(self: *HealthStore, health: *AccountHealth, key: []const u8) void {
+        const now = std.time.timestamp();
+        health.score.score += self.config.success_bonus;
+        health.score.successes += 1;
+        health.score.clamp();
+        health.score.last_updated = now;
+        health.circuit = .closed;
+        health.consecutive_failures = 0;
+        health.rate_limited_until = null;
+        health.quota_exhausted_until = null;
+        health.last_http_status = null;
+        health.liveness = .{ .live = .{ .availability = .available } };
+        health.last_probe_source = .credential_validation;
+        health.last_probe_observed_at = now;
+        health.last_probe_retry_after_s = null;
+        health.last_probe_hint_class = .none;
+        health.last_probe_decision = .use_this;
+        log.info("health: {s} auth refreshed, clearing auth-dead route health", .{key});
+    }
+
+    fn livenessIsDead(liveness: types.CredentialLiveness) bool {
+        return switch (liveness) {
+            .dead => true,
+            .live, .degraded => false,
+        };
+    }
+
     pub fn recordFailure(self: *HealthStore, key: []const u8, kind: FailureKind) void {
         const health = self.getOrCreate(key) catch return;
         const now = std.time.timestamp();
@@ -1056,6 +1102,39 @@ test "HealthStore account decisions dominate capability route decisions" {
         types.MuxDecision.try_next_account,
         store.muxDecisionFor("codex", "max-1", "codex-max"),
     );
+}
+
+test "HealthStore auth refresh clears auth-dead account without erasing quota routes" {
+    var store = HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    store.recordHttpStatus("codex:max-1", 401, null);
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
+    store.recordHttpStatus("codex:max-1#codex-mini", 401, null);
+
+    store.recordAuthRefresh("codex", "max-1");
+
+    try std.testing.expectEqual(
+        types.MuxDecision.try_next_account,
+        store.muxDecisionFor("codex", "max-1", "codex-max"),
+    );
+    try std.testing.expectEqual(
+        types.MuxDecision.use_this,
+        store.muxDecisionFor("codex", "max-1", "codex-mini"),
+    );
+
+    const base = store.accounts.get("codex:max-1").?;
+    try std.testing.expectEqual(ProbeEvidenceSource.credential_validation, base.last_probe_source.?);
+    try std.testing.expectEqual(types.MuxDecision.use_this, base.last_probe_decision.?);
+
+    const quota_route = store.accounts.get("codex:max-1#codex-max").?;
+    switch (quota_route.liveness) {
+        .live => |live| switch (live.availability) {
+            .quota_exhausted => {},
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "effectiveHealthForRouteSelection recovers only expired transient degradation" {

@@ -486,6 +486,12 @@ oauth-mux codex login-device max-1
 oauth-mux stay-afloat refresh --profile codex-max --capability codex-max --json
 ```
 
+For Codex OAuth handoffs, use a fresh incognito Chrome window per account when
+entering the device code. Do not reuse an already-signed-in browser profile:
+many operators have personal, work, startup, and family Google/OpenAI sessions
+active at once, and the wrong profile can silently enroll a duplicate or
+unexpected account.
+
 `stay-afloat refresh` is a named one-shot execute tick. It refreshes route
 evidence after user-mediated login and clears the pending prompt when the route
 becomes selectable. Use `stay-afloat handoff clear ... --json` only to dismiss a
@@ -717,7 +723,9 @@ login, plan token, file key, or consent gate without guessing.
 6. Run `oauth-mux enroll plan <provider> --json` before adding an N+1 account.
 7. For Codex N+1, run
    `oauth-mux enroll codex --account <name> --confirm-enroll --json`, then the
-   returned `oauth-mux codex login-device <name>` handoff.
+   returned `oauth-mux codex login-device <name>` handoff. Enter the device code
+   in a new incognito Chrome window and choose the intended OpenAI account
+   explicitly.
 8. For Claude N+1, run
    `oauth-mux enroll claude --account <name> --confirm-enroll --json`, then the
    returned `env CLAUDE_CONFIG_DIR=... claude auth login` handoff.
