@@ -4866,6 +4866,49 @@ fn selectedRoute(evaluations: []const RouteEvaluation, selected_index: ?usize) ?
     return null;
 }
 
+fn sameFallbackAccount(a: RepairPlanRoute, b: RepairPlanRoute) bool {
+    return std.mem.eql(u8, a.provider, b.provider) and std.mem.eql(u8, a.account, b.account);
+}
+
+fn routeMatchesOptionalCapability(route: RepairPlanRoute, capability: ?[]const u8) bool {
+    const expected = capability orelse return true;
+    const actual = route.capability orelse return false;
+    return std.mem.eql(u8, actual, expected);
+}
+
+fn selectedRouteIsSameAccount(evaluations: []const RouteEvaluation, selected_index: ?usize, route: RepairPlanRoute) bool {
+    const selected = selectedRoute(evaluations, selected_index) orelse return false;
+    return sameFallbackAccount(selected, route);
+}
+
+fn fallbackAccountSeenBefore(
+    evaluations: []const RouteEvaluation,
+    candidate_index: usize,
+    selected_index: ?usize,
+    capability: ?[]const u8,
+    comptime include_recoverable_quota: bool,
+) bool {
+    const candidate = evaluations[candidate_index];
+    for (evaluations[0..candidate_index], 0..) |previous, previous_idx| {
+        if (selected_index) |selected| {
+            if (previous_idx == selected) continue;
+        }
+        if (!sameFallbackAccount(previous.route, candidate.route)) continue;
+        if (!routeMatchesOptionalCapability(previous.route, capability)) continue;
+        const previous_counts = previous.selectable or (include_recoverable_quota and routeIsRecoverableQuota(previous));
+        if (previous_counts) return true;
+    }
+    return false;
+}
+
+fn routeIsDistinctFallbackAccount(evaluations: []const RouteEvaluation, selected_index: ?usize, candidate_index: usize) bool {
+    if (candidate_index >= evaluations.len) return false;
+    if (selected_index) |selected| {
+        if (candidate_index == selected) return false;
+    }
+    return !selectedRouteIsSameAccount(evaluations, selected_index, evaluations[candidate_index].route);
+}
+
 fn selectableFallbackRouteCount(evaluations: []const RouteEvaluation, selected_index: ?usize) usize {
     var count: usize = 0;
     for (evaluations, 0..) |evaluation, idx| {
@@ -4873,6 +4916,8 @@ fn selectableFallbackRouteCount(evaluations: []const RouteEvaluation, selected_i
         if (selected_index) |selected| {
             if (idx == selected) continue;
         }
+        if (selectedRouteIsSameAccount(evaluations, selected_index, evaluation.route)) continue;
+        if (fallbackAccountSeenBefore(evaluations, idx, selected_index, null, false)) continue;
         count += 1;
     }
     return count;
@@ -4917,6 +4962,8 @@ fn recoverableFallbackRouteCount(
             const route_capability = evaluation.route.capability orelse continue;
             if (!std.mem.eql(u8, route_capability, cap)) continue;
         }
+        if (selectedRouteIsSameAccount(evaluations, selected_index, evaluation.route)) continue;
+        if (fallbackAccountSeenBefore(evaluations, idx, selected_index, degraded_capability, true)) continue;
         count += 1;
     }
     return count;
@@ -5712,6 +5759,8 @@ fn selectableFallbackRouteCountForSelection(
         }
         const route_capability = evaluation.route.capability orelse continue;
         if (!std.mem.eql(u8, route_capability, cap)) continue;
+        if (selectedRouteIsSameAccount(evaluations, selected_index, evaluation.route)) continue;
+        if (fallbackAccountSeenBefore(evaluations, idx, selected_index, cap, false)) continue;
         count += 1;
     }
     return count;
@@ -10489,7 +10538,7 @@ fn writeCodexPreflightBlockedRoutesJson(
         try writer.writeAll(",\"broker_ready\":");
         try writer.writeAll(if (plan.can_supply) "true" else "false");
         try writer.writeAll(",\"route_role\":");
-        try std.json.stringify(codexBrokerSessionRouteRole(evaluation, selected, plan), .{}, writer);
+        try std.json.stringify(codexBrokerSessionRouteRole(evaluation, selected, plan, false), .{}, writer);
         try writer.writeAll(",\"blocked_reason\":");
         try std.json.stringify(codexPreflightRouteBlockedReason(evaluation, selected, plan), .{}, writer);
         try writer.writeAll(",\"skip_reason\":");
@@ -10579,7 +10628,7 @@ fn writeCodexPreflightBlockedRoutesText(
         if (codexPreflightRouteSessionReady(evaluation, plan)) continue;
         if (blocked_count == 0) try writer.writeAll("  blocked routes:\n");
         blocked_count += 1;
-        const role = codexBrokerSessionRouteRole(evaluation, selected, plan);
+        const role = codexBrokerSessionRouteRole(evaluation, selected, plan, false);
         const reason = codexPreflightRouteBlockedReason(evaluation, selected, plan);
         try writer.print("    - {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
         if (evaluation.route.capability) |value| try writer.print("#{s}", .{value});
@@ -12436,7 +12485,7 @@ fn writeCodexBrokerFallbackDrillJson(
         if (idx > 0) try writer.writeByte(',');
         const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
         const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
-        try writeCodexBrokerSessionRouteJson(writer, allocator, cfg, evaluation, selected, plan);
+        try writeCodexBrokerSessionRouteJson(writer, allocator, cfg, after, selected_index, idx, evaluation, selected, plan);
     }
     try writer.writeAll("],\"redaction\":{\"tokens_printed\":false,\"account_id_printed\":false,\"raw_protocol_printed\":false}");
     try writer.writeAll("}\n");
@@ -12515,7 +12564,11 @@ fn summarizeCodexBrokerSessionPlan(
             summary.broker_ready_routes += 1;
             if (evaluation.selectable) {
                 summary.selectable_broker_routes += 1;
-                if (selected_index == null or idx != selected_index.?) summary.selectable_fallback_routes += 1;
+                if (routeIsDistinctFallbackAccount(evaluations, selected_index, idx) and
+                    !fallbackAccountSeenBefore(evaluations, idx, selected_index, null, false))
+                {
+                    summary.selectable_fallback_routes += 1;
+                }
             } else {
                 summary.blocked_broker_routes += 1;
             }
@@ -12598,7 +12651,7 @@ fn writeCodexBrokerSessionPlanJson(
         if (idx > 0) try writer.writeByte(',');
         const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
         const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
-        try writeCodexBrokerSessionRouteJson(writer, allocator, cfg, evaluation, selected, plan);
+        try writeCodexBrokerSessionRouteJson(writer, allocator, cfg, evaluations, selected_index, idx, evaluation, selected, plan);
     }
     try writer.writeAll("]}\n");
 }
@@ -12644,7 +12697,10 @@ fn writeCodexBrokerSessionPlanText(
     for (evaluations, 0..) |evaluation, idx| {
         const selected = if (selected_index) |selected_idx| idx == selected_idx else false;
         const plan = try inspectCodexBrokerRoute(allocator, cfg, evaluation.route);
-        const role = codexBrokerSessionRouteRole(evaluation, selected, plan);
+        const fallback_candidate = plan.can_supply and evaluation.selectable and
+            routeIsDistinctFallbackAccount(evaluations, selected_index, idx) and
+            !fallbackAccountSeenBefore(evaluations, idx, selected_index, null, false);
+        const role = codexBrokerSessionRouteRole(evaluation, selected, plan, fallback_candidate);
         try writer.print("    {s}:{s}", .{ evaluation.route.provider, evaluation.route.account });
         if (evaluation.route.capability) |value| try writer.print("#{s}", .{value});
         try writer.print(" role={s} selectable={s} broker_ready={s} reason={s} broker_reason={s}\n", .{
@@ -12661,11 +12717,16 @@ fn writeCodexBrokerSessionRouteJson(
     writer: anytype,
     allocator: std.mem.Allocator,
     cfg: config.Config,
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    evaluation_index: usize,
     evaluation: RouteEvaluation,
     selected: bool,
     plan: CodexBrokerTokenPlan,
 ) !void {
-    const fallback_candidate = plan.can_supply and evaluation.selectable and !selected;
+    const fallback_candidate = plan.can_supply and evaluation.selectable and
+        routeIsDistinctFallbackAccount(evaluations, selected_index, evaluation_index) and
+        !fallbackAccountSeenBefore(evaluations, evaluation_index, selected_index, null, false);
     try writer.writeByte('{');
     try writer.writeAll("\"provider\":");
     try std.json.stringify(evaluation.route.provider, .{}, writer);
@@ -12684,7 +12745,7 @@ fn writeCodexBrokerSessionRouteJson(
     try writer.writeAll(",\"fallback_candidate\":");
     try writer.writeAll(if (fallback_candidate) "true" else "false");
     try writer.writeAll(",\"route_role\":");
-    try std.json.stringify(codexBrokerSessionRouteRole(evaluation, selected, plan), .{}, writer);
+    try std.json.stringify(codexBrokerSessionRouteRole(evaluation, selected, plan, fallback_candidate), .{}, writer);
     try writer.writeAll(",\"skip_reason\":");
     try std.json.stringify(evaluation.skip_reason, .{}, writer);
     try writer.writeAll(",\"runtime\":");
@@ -12700,10 +12761,11 @@ fn writeCodexBrokerSessionRouteJson(
     try writer.writeByte('}');
 }
 
-fn codexBrokerSessionRouteRole(evaluation: RouteEvaluation, selected: bool, plan: CodexBrokerTokenPlan) []const u8 {
+fn codexBrokerSessionRouteRole(evaluation: RouteEvaluation, selected: bool, plan: CodexBrokerTokenPlan, fallback_candidate: bool) []const u8 {
     if (!plan.can_supply) return "auth_broker_unready";
     if (selected) return "selected";
-    if (evaluation.selectable) return "selectable_fallback";
+    if (evaluation.selectable and fallback_candidate) return "selectable_fallback";
+    if (evaluation.selectable) return "selectable_duplicate";
     if (std.mem.eql(u8, evaluation.skip_reason, "quota_exhausted")) return "quota_blocked";
     if (std.mem.eql(u8, evaluation.skip_reason, "revalidation_needed")) return "revalidation_needed";
     if (std.mem.eql(u8, evaluation.skip_reason, "rate_limited")) return "rate_limited";
@@ -18945,6 +19007,213 @@ test "quota-only codex-max pool is afloat-pending-recovery, not a false not_aflo
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"recoverable_fallback_routes\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selectable_fallback_routes\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"recovery_window_resets_at\":null") == null);
+}
+
+test "fallback readiness counts distinct accounts, not duplicate route rows" {
+    const selected_route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const selected_account_duplicate = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-mini" };
+    const fallback_route = RepairPlanRoute{ .provider = "codex", .account = "max-2", .capability = "codex-mini" };
+    const fallback_duplicate = RepairPlanRoute{ .provider = "codex", .account = "max-2", .capability = "codex-mini" };
+
+    const available_health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .available } } };
+    const no_action = RepairAction{ .kind = .none, .severity = "ok", .message = "route is selectable" };
+    const evaluations = [_]RouteEvaluation{
+        .{
+            .route = selected_route,
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+        .{
+            .route = selected_account_duplicate,
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+        .{
+            .route = fallback_route,
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+        .{
+            .route = fallback_duplicate,
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+    };
+
+    try std.testing.expect(!routeIsDistinctFallbackAccount(&evaluations, 0, 1));
+    try std.testing.expect(routeIsDistinctFallbackAccount(&evaluations, 0, 2));
+    try std.testing.expectEqual(@as(usize, 1), selectableFallbackRouteCount(&evaluations, 0));
+    try std.testing.expectEqual(@as(usize, 1), selectableFallbackRouteCountForSelection(&evaluations, 0, "codex-mini"));
+}
+
+test "Codex broker summary does not claim same-account duplicate as spare fallback" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const auth_json =
+        \\{
+        \\  "auth_mode": "chatgpt",
+        \\  "tokens": {
+        \\    "id_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "access_token": "hdr.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC10ZXN0IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8ifX0.sig",
+        \\    "refresh_token": "redacted-in-test"
+        \\  }
+        \\}
+    ;
+    {
+        const file = try tmp.dir.createFile("max-1-auth.json", .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(auth_json);
+    }
+    const max_1_auth_path = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1-auth.json");
+    defer std.testing.allocator.free(max_1_auth_path);
+
+    const cfg_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "codex-max": {{
+        \\      "providers": [
+        \\        "codex:max-1#codex-max",
+        \\        "codex:max-1#codex-mini"
+        \\      ],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }}
+        \\  }},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{max_1_auth_path},
+    );
+    defer std.testing.allocator.free(cfg_json);
+    const parsed = try config.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+    try std.testing.expectEqual(@as(usize, 2), routes.items.len);
+    try std.testing.expect(sameFallbackAccount(routes.items[0], routes.items[1]));
+
+    const available_health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .available } } };
+    const no_action = RepairAction{ .kind = .none, .severity = "ok", .message = "route is selectable" };
+    const evaluations = [_]RouteEvaluation{
+        .{
+            .route = routes.items[0],
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+        .{
+            .route = routes.items[1],
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+    };
+    const selected = firstSelectableRoute(&evaluations).?;
+
+    const summary = try summarizeCodexBrokerSessionPlan(std.testing.allocator, parsed.value, &evaluations, selected);
+    try std.testing.expectEqual(@as(usize, 2), summary.selectable_broker_routes);
+    try std.testing.expectEqual(@as(usize, 0), summary.selectable_fallback_routes);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeCodexBrokerSessionPlanJson(buf.writer(), std.testing.allocator, parsed.value, &evaluations, selected, "codex-max", "codex-max");
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selectable_fallback_routes\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"spare_fallback_ready\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"single_route_at_risk\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"fallback_candidate\":true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"route_role\":\"selectable_duplicate\"") != null);
+}
+
+test "recoverable fallback readiness deduplicates quota rows by account" {
+    const selected_route = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-max" };
+    const selected_account_quota = RepairPlanRoute{ .provider = "codex", .account = "max-1", .capability = "codex-mini" };
+    const fallback_quota = RepairPlanRoute{ .provider = "codex", .account = "max-2", .capability = "codex-mini" };
+    const fallback_quota_duplicate = RepairPlanRoute{ .provider = "codex", .account = "max-2", .capability = "codex-mini" };
+
+    const available_health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .available } } };
+    const quota_health = health_mod.AccountHealth{ .liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .window_resets_at = std.time.timestamp() + 7200,
+        .exhausted_at = std.time.timestamp(),
+    } } } } };
+    const no_action = RepairAction{ .kind = .none, .severity = "ok", .message = "route is selectable" };
+    const quota_action = RepairAction{ .kind = .wait_for_quota, .severity = "warning", .message = "quota exhausted", .mediation = .wait };
+    const evaluations = [_]RouteEvaluation{
+        .{
+            .route = selected_route,
+            .runtime = .ready,
+            .health = available_health,
+            .budget = .spend_provider,
+            .action = no_action,
+            .selectable = true,
+            .skip_reason = "available",
+        },
+        .{
+            .route = selected_account_quota,
+            .runtime = .ready,
+            .health = quota_health,
+            .budget = .free_local,
+            .action = quota_action,
+            .selectable = false,
+            .skip_reason = "quota_exhausted",
+        },
+        .{
+            .route = fallback_quota,
+            .runtime = .ready,
+            .health = quota_health,
+            .budget = .free_local,
+            .action = quota_action,
+            .selectable = false,
+            .skip_reason = "quota_exhausted",
+        },
+        .{
+            .route = fallback_quota_duplicate,
+            .runtime = .ready,
+            .health = quota_health,
+            .budget = .free_local,
+            .action = quota_action,
+            .selectable = false,
+            .skip_reason = "quota_exhausted",
+        },
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), recoverableFallbackRouteCount(&evaluations, 0, "codex-mini"));
 }
 
 test "expired quota window is not counted as recoverable (TIN-1812 boundary)" {
