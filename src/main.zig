@@ -3174,7 +3174,9 @@ fn executeCodexLoginDeviceRepair(
     const config_dir = account.config_dir orelse return false;
     const expanded = try paths.expandTilde(allocator, config_dir);
     defer allocator.free(expanded);
-    return try runCodexCli(allocator, expanded, &.{ "login", "--device-auth" });
+    const ok = try runCodexCli(allocator, expanded, &.{ "login", "--device-auth" });
+    if (ok) recordCodexLoginSuccess(allocator, route.account);
+    return ok;
 }
 
 fn collectRepairPlanRoutes(
@@ -8972,6 +8974,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             if (!try runCodexCli(allocator, dir, &.{"login"})) return error.CodexCommandFailed;
+            recordCodexLoginSuccess(allocator, account);
         },
         .login_device => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
@@ -8979,6 +8982,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             if (!try runCodexCli(allocator, dir, &.{ "login", "--device-auth" })) return error.CodexCommandFailed;
+            recordCodexLoginSuccess(allocator, account);
         },
         .login_status => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
@@ -9006,6 +9010,13 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
         .broker_401_smoke => try runCodexBroker401Smoke(allocator, writer, args),
         .broker_quota_smoke => try runCodexBrokerQuotaSmoke(allocator, writer, args),
     }
+}
+
+fn recordCodexLoginSuccess(allocator: std.mem.Allocator, account: []const u8) void {
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+    store.recordAuthRefresh("codex", account);
+    store.persist();
 }
 
 fn runCodexOnboard(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {

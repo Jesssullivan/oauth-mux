@@ -100,6 +100,15 @@ The command is displayable. It is not agent-executable by default. A future
 permission broker may approve execution, but that approval must be explicit and
 auditable.
 
+Browser/device OAuth handoffs should use a fresh browser context for every
+account. The preferred operator flow is `login-device` plus a new incognito
+Chrome window for the device URL, with the one-time code copied locally rather
+than printed into chat. That avoids ambient Google/OpenAI profile cookies,
+personal/work/startup/family account bleed-through, and accidental clone-account
+enrollment. oauth-mux still treats the browser approval as user-mediated; agents
+may open the fresh browser context only when explicitly asked by the user or a
+permission broker.
+
 Some upstream-owned providers do not have an oauth-mux executable repair
 command yet. In those cases `command` remains `null` and
 `handoff_plan_command` points to a no-spend planning command the agent can show
@@ -144,6 +153,11 @@ spend-confirmed actions:
 Agents must not collapse those arrays. A login-device action repairs upstream
 auth state; it is not a provider-spend revalidation and it is not a daemon
 hot-swap.
+
+For Codex, prefer `login-device` over ordinary browser login when multiple
+Chrome profiles or Google Workspace identities are present. Open
+`https://auth.openai.com/codex/device` in a new incognito Chrome window for each
+route-specific account handoff and choose the intended account explicitly.
 
 ### Claude
 
