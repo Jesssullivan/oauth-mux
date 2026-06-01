@@ -464,6 +464,7 @@ pub const Proxy = struct {
 
         while (true) {
             // ── 2. Elect an account ─────────────────────────────
+            self.pool.refreshTimeBased(std.time.timestamp());
             const elected = self.pool.elect(self.profile, null, attempted.items) catch |err| {
                 appendPoolRejections(a, self.pool, &attempted, &rejections) catch {};
                 const pending_kind = pending_failure_kind;

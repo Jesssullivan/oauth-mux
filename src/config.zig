@@ -16,6 +16,8 @@ pub const Config = struct {
 pub const Defaults = struct {
     provider: ?[]const u8 = null,
     strategy: ?[]const u8 = null,
+    profile: ?[]const u8 = null,
+    capability: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     daemon: bool = false,
 };
@@ -133,6 +135,16 @@ pub fn validate(cfg: Config, writer: anytype) !void {
             ok = false;
         }
     }
+
+    if (cfg.defaults.profile) |profile_name| {
+        if (cfg.profiles.map.get(profile_name) == null) {
+            try writer.print("config error: defaults.profile references unknown profile '{s}'\n", .{profile_name});
+            ok = false;
+        }
+    }
+
+    // defaults.capability is validated implicitly during codex capability resolution
+    _ = cfg.defaults.capability;
 
     var def_it = cfg.provider_definitions.map.iterator();
     while (def_it.next()) |entry| {

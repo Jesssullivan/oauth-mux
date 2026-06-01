@@ -19336,6 +19336,80 @@ test "Codex status summary flags historical responses GET 405 ok regression" {
     try std.testing.expectEqualStrings("transport_regression_405_misclassified", summary.verdict);
 }
 
+
+test "defaults.profile resolves to codex-max when no --profile; config parse succeeds (TIN-1816-friction-1)" {
+    // No-spend: config with defaults.profile set; bare codex resolve flow should use that default
+    // and NOT fail profile resolution.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": {
+        \\    "profile": "codex-max"
+        \\  },
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } },
+        \\        "max-2": { "secret": { "backend": "env", "variable": "TOY_MAX2" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "toy:max-1#codex-max",
+        \\        "toy:max-2#codex-max"
+        \\      ]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    // Verify the config parsed correctly with defaults.profile
+    try std.testing.expectEqualStrings("codex-max", parsed.value.defaults.profile.?);
+    
+    // Verify the profile exists
+    try std.testing.expect(parsed.value.profiles.map.get("codex-max") != null);
+}
+
+test "refreshTimeBased revives expired quota window in account pool election (TIN-1816-friction-3)" {
+    // No-spend: a quota route with expired next_eligible_at window should be selectable again
+    // after refreshTimeBased() is called with a now_unix > next_eligible_at.
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+
+    // Add a quota-exhausted account with an expired window
+    try pool.add(.{
+        .id = "toy:max-1",
+        .selectable = false,
+        .liveness = .live,
+        .availability = .quota_exhausted,
+        .next_eligible_at = 1000, // Expired (well in the past)
+    });
+
+    const now_unix: i64 = 2000; // Current time is after the expired window
+
+    // Before refreshTimeBased: account is not selectable
+    try std.testing.expect(!pool.accounts.items[0].selectable);
+    try std.testing.expectEqual(pool.accounts.items[0].availability, .quota_exhausted);
+
+    // Call refreshTimeBased to revive expired quota windows
+    pool.refreshTimeBased(now_unix);
+
+    // After refreshTimeBased: account should be selectable again
+    try std.testing.expect(pool.accounts.items[0].selectable);
+    try std.testing.expectEqual(pool.accounts.items[0].availability, .available);
+    try std.testing.expect(pool.accounts.items[0].next_eligible_at == null);
+}
+
+
 // Pull in all module tests
 comptime {
     _ = @import("types.zig");

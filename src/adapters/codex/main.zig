@@ -1149,7 +1149,10 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     };
     defer parsed.deinit();
 
-    const route_capability = switch (managedRouteCapability(parsed.value, opts.capability, opts.profile)) {
+    // Resolve effective profile and capability from CLI args, config defaults, and built-in defaults.
+    const effective_profile = opts.profile orelse parsed.value.defaults.profile orelse "codex-max";
+    const effective_capability = opts.capability orelse parsed.value.defaults.capability;
+    const route_capability = switch (managedRouteCapability(parsed.value, effective_capability, effective_profile)) {
         .capability => |capability| capability,
         .none => null,
         .ambiguous => {
@@ -1163,7 +1166,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer server.deinit();
     var route_health = health_mod.HealthStore.load(allocator, .{});
     defer route_health.deinit();
-    broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
+    broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, effective_profile, route_capability, &route_health) catch {
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "config_health_load", "PoolPopulateFailed", session_started_emitted);
         return RunError.PoolPopulateFailed;
     };
@@ -1177,7 +1180,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             allocator,
             parsed.value,
             &route_health,
-            opts.profile,
+            effective_profile,
             route_capability,
             opts.account,
             initial_selectable_routes,
@@ -1188,7 +1191,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         if (revalidation.changedRouteHealth()) {
             server.pool.deinit();
             server.pool = broker.AccountPool.init(allocator);
-            broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
+            broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, effective_profile, route_capability, &route_health) catch {
                 try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "codex_auto_revalidation", "PoolPopulateFailed", session_started_emitted);
                 return RunError.PoolPopulateFailed;
             };
