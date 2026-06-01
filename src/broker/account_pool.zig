@@ -15,6 +15,7 @@ pub const Availability = enum { available, rate_limited, quota_exhausted, cooldo
 
 pub const AccountSummary = struct {
     id: []const u8, // owned by pool
+    capability: ?[]const u8 = null, // owned by pool when present
     selectable: bool,
     liveness: Liveness,
     availability: Availability,
@@ -33,15 +34,24 @@ pub const AccountPool = struct {
     }
 
     pub fn deinit(self: *AccountPool) void {
-        for (self.accounts.items) |a| self.allocator.free(a.id);
+        for (self.accounts.items) |a| {
+            self.allocator.free(a.id);
+            if (a.capability) |capability| self.allocator.free(capability);
+        }
         self.accounts.deinit(self.allocator);
     }
 
     pub fn add(self: *AccountPool, summary: AccountSummary) !void {
         const owned_id = try self.allocator.dupe(u8, summary.id);
         errdefer self.allocator.free(owned_id);
+        const owned_capability = if (summary.capability) |capability|
+            try self.allocator.dupe(u8, capability)
+        else
+            null;
+        errdefer if (owned_capability) |capability| self.allocator.free(capability);
         var owned = summary;
         owned.id = owned_id;
+        owned.capability = owned_capability;
         try self.accounts.append(self.allocator, owned);
     }
 

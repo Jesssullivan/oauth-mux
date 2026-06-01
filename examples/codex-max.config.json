@@ -46,9 +46,13 @@
     "codex-max": {
       "providers": [
         "codex:max-1#codex-max",
+        "codex:max-1#codex-mini",
         "codex:max-2#codex-max",
-        "codex:max-3#codex-max"
+        "codex:max-2#codex-mini",
+        "codex:max-3#codex-max",
+        "codex:max-3#codex-mini"
       ],
+      "capability_degradation_chain": ["codex-mini"],
       "strategy": "health-weighted",
       "affinity_ttl_minutes": 20
     },

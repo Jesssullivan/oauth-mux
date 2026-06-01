@@ -583,7 +583,7 @@ pub const Proxy = struct {
                 appendRejection(a, &rejections, elected.id, .credential_unavailable, @errorName(err)) catch {};
                 self.logEvent("proxy_materialize_failed", .{ .account = elected.id, .err = @errorName(err) });
                 self.pool.markUnauthorized(elected.id) catch {};
-                self.recordDurableRouteState(elected.id, .credential_unavailable, 0, null);
+                self.recordDurableRouteState(elected.id, elected.capability, .credential_unavailable, 0, null);
                 pending_failure_kind = null;
                 pending_failure_account = elected.id;
                 pending_transport_error = null;
@@ -639,7 +639,7 @@ pub const Proxy = struct {
                 appendRejection(a, &rejections, elected.id, .provider_degraded, @errorName(err)) catch {};
                 self.logEvent("proxy_upstream_failed", .{ .account = elected.id, .err = @errorName(err) });
                 self.traceUpstreamFailure(req, elected.id, @errorName(err));
-                self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
+                self.recordDurableRouteState(elected.id, elected.capability, .provider_degraded, 503, 60);
                 self.pool.markProviderDegraded(elected.id, std.time.timestamp() + 60) catch {};
                 pending_failure_kind = .provider_5xx;
                 pending_failure_account = elected.id;
@@ -676,14 +676,14 @@ pub const Proxy = struct {
                     .retry_attempted = false,
                 });
                 self.traceUpstreamFailure(req, elected.id, err_name);
-                self.recordDurableRouteState(elected.id, .provider_degraded, 503, 60);
+                self.recordDurableRouteState(elected.id, elected.capability, .provider_degraded, 503, 60);
                 self.pool.markProviderDegraded(elected.id, std.time.timestamp() + 60) catch {};
                 final_account = elected.id;
                 break;
             }
 
             // ── 5. Apply classification + log ──────────────────────
-            self.applyClassification(elected.id, status_and_class.classification) catch |err| {
+            self.applyClassification(elected.id, elected.capability, status_and_class.classification) catch |err| {
                 self.logEvent("proxy_apply_classification_failed", .{ .account = elected.id, .err = @errorName(err) });
             };
 
@@ -939,25 +939,27 @@ pub const Proxy = struct {
     fn applyClassification(
         self: *Proxy,
         account_id: []const u8,
+        capability: ?[]const u8,
         c: Classification,
     ) !void {
         const now_unix = std.time.timestamp();
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
-        try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix, self.capability);
+        try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix, capability orelse self.capability);
         store.persist();
     }
 
     fn recordDurableRouteState(
         self: *Proxy,
         account_id: []const u8,
+        capability: ?[]const u8,
         state: RouteState,
         status: u16,
         retry_after_s: ?u32,
     ) void {
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
-        recordDurableRouteStateInStore(&store, account_id, self.capability, state, status, retry_after_s);
+        recordDurableRouteStateInStore(&store, account_id, capability orelse self.capability, state, status, retry_after_s);
         store.persist();
     }
 
@@ -2794,6 +2796,35 @@ test "successful managed proxy turn records capability route health" {
         .live => |live| try std.testing.expectEqual(core_types.Availability.available, live.availability),
         else => return error.ExpectedLiveHealth,
     }
+}
+
+test "managed proxy records fallback capability health under elected capability" {
+    var pool = account_pool_mod.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{
+        .id = "codex:max-1",
+        .capability = "codex-mini",
+        .selectable = true,
+        .liveness = .live,
+        .availability = .available,
+    });
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    const elected = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex-mini", elected.capability.?);
+    try applyClassificationWithStore(&pool, &store, elected.id, .{
+        .kind = .provider_5xx,
+    }, 1_788_000_000, elected.capability);
+
+    try std.testing.expect(store.accounts.get("codex:max-1#codex-max") == null);
+    const recorded = store.accounts.get("codex:max-1#codex-mini") orelse {
+        return error.ExpectedFallbackCapabilityEvidence;
+    };
+    try std.testing.expectEqual(@as(?u16, 500), recorded.last_http_status);
+    try std.testing.expectEqual(health_mod.ProbeHintClass.provider_degraded, recorded.last_probe_hint_class.?);
+    try std.testing.expectEqual(core_types.MuxDecision.try_next_provider, recorded.last_probe_decision.?);
 }
 
 test "parseRequest reads start line + headers + content-length body" {

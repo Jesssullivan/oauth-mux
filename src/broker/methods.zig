@@ -186,6 +186,10 @@ fn accountList(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     for (list_buf.items) |a| {
         var entry = std.json.ObjectMap.init(ctx.allocator);
         entry.put("id", .{ .string = a.id }) catch return oom();
+        entry.put(
+            "capability",
+            if (a.capability) |cap| std.json.Value{ .string = cap } else std.json.Value{ .null = {} },
+        ) catch return oom();
         entry.put("selectable", .{ .bool = a.selectable }) catch return oom();
         entry.put("liveness", .{ .string = @tagName(a.liveness) }) catch return oom();
         entry.put("availability", .{ .string = @tagName(a.availability) }) catch return oom();
@@ -233,6 +237,10 @@ fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 
     var out = std.json.ObjectMap.init(ctx.allocator);
     out.put("account", .{ .string = elected.id }) catch return oom();
+    out.put(
+        "capability",
+        if (elected.capability) |cap| std.json.Value{ .string = cap } else std.json.Value{ .null = {} },
+    ) catch return oom();
 
     // Phase 1 returns a placeholder credential_handle. Real materialization
     // happens in task #18 (credential/materialize).
@@ -339,6 +347,10 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     // Build response.
     var out = std.json.ObjectMap.init(ctx.allocator);
     out.put("account", .{ .string = elected.id }) catch return oom();
+    out.put(
+        "capability",
+        if (elected.capability) |cap| std.json.Value{ .string = cap } else std.json.Value{ .null = {} },
+    ) catch return oom();
     const handle = std.fmt.allocPrint(
         ctx.allocator,
         "ch:{s}:{x}",
@@ -460,6 +472,10 @@ fn quotaStatus(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     for (ctx.pool.accounts.items) |a| {
         var entry = std.json.ObjectMap.init(ctx.allocator);
         entry.put("id", .{ .string = a.id }) catch return oom();
+        entry.put(
+            "capability",
+            if (a.capability) |cap| std.json.Value{ .string = cap } else std.json.Value{ .null = {} },
+        ) catch return oom();
         entry.put("availability", .{ .string = @tagName(a.availability) }) catch return oom();
         if (a.next_eligible_at) |t| {
             entry.put("next_eligible_at", .{ .integer = t }) catch return oom();
