@@ -65,6 +65,49 @@ Still research or open:
 - Unmanaged bare-`codex` daemon hot-swap.
 - Non-Codex provider stay-afloat proof.
 - Long-window soak and negative permutation cassette coverage.
+- Cross-process serialization of single-use OAuth refresh-token rotation (see
+  "Known failure" below).
+
+## Known failure: concurrent Codex sessions & rotating OAuth refresh tokens
+
+If you run many parallel Codex sessions against the same ChatGPT/Codex account and
+see any of:
+
+```
+Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+token_revoked
+HTTP 401  https://chatgpt.com/backend-api/codex/responses
+https://chatgpt.com/backend-api/codex/responses/compact
+already used. Please log out and sign in again.
+```
+
+you are hitting single-use **rotating** OAuth refresh tokens under concurrency.
+Each successful refresh invalidates the token it consumed; upstream Codex guards
+refresh only in-process plus an unlocked file backend, so independent processes
+race the refresh — the first rotates, every other refresher gets `token_revoked`
+(upstream class `openai/codex#10332`; oauth-mux specs track it as
+`openai/codex#9634`). `oauth-mux` today runs **per-session in-process proxies with
+no shared daemon** (see "There is no hidden daemon dependency for the current Codex
+path." above), and the broker's read → refresh → write path holds no cross-process
+lock, so even brokered multi-session launches can still double-spend one rotating
+token. The error URL is `chatgpt.com` because the broker proxies upstream to
+ChatGPT — it does **not** prove direct/native mode; the *refresh* POST that rotates
+the token actually targets `auth.openai.com/oauth/token`.
+
+This is an `oauth-mux`-owned serialization defect, not just a Codex bug: it hampers
+any agent-laced harness workflow, including a single harness fanning out sessions.
+The remediation is (1) a cross-process, per-`provider:account` refresh lock so N
+concurrent refreshers collapse to one rotation plus N-1 no-op re-reads, and (2) an
+adapter-agnostic serial re-enrollment / re-login surface so a revoked account is
+re-authed exactly once across sessions. Full root cause + repro:
+`docs/incidents/2026-05-31-codex-refresh-token-race.md`; design + acceptance plan:
+`docs/spec/codex-refresh-serialization-contract-2026-05-31.md`.
+
+The proposed acceptance gate (to be implemented with the fix) is a deterministic,
+no-spend, failing-then-passing proof: a unit test (`zig build test`) that spawns N
+concurrent refreshers against a stubbed OAuth **token endpoint** and asserts one
+POST / zero `token_revoked` once serialized, plus a cross-process smoke
+(`just smoke-codex-refresh-race`) pointing two sessions at one shared account.
 
 ## Lifecycle
 
