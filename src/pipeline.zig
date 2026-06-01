@@ -30,6 +30,7 @@ pub const Context = struct {
     target_argv: []const []const u8 = &.{},
     shell: types.ShellKind = .posix,
     probe_only: bool = false,
+    probe_recheck_blocked: bool = false,
     last_probe_executed: bool = false,
     last_probe_status: ?u16 = null,
     last_probe_decision: ?types.MuxDecision = null,
@@ -106,30 +107,33 @@ fn selectWithFallback(ctx: *Context) PipelineError!void {
 
         const key = health_mod.accountKey(candidate.provider, candidate.account);
         const decision = ctx.health.muxDecisionFor(candidate.provider, candidate.account, candidate.capability);
+        const bypass_health_gate = ctx.probe_only and ctx.probe_recheck_blocked;
 
-        switch (decision) {
-            .try_next_account => {
-                log.debug("pipeline: skip {s}:{s} (health: try_next)", .{ candidate.provider, candidate.account });
-                continue;
-            },
-            .try_next_provider => {
-                if (skipped_provider_count < skipped_providers.len) {
-                    skipped_providers[skipped_provider_count] = candidate.provider;
-                    skipped_provider_count += 1;
-                }
-                log.debug("pipeline: skip {s}:{s} (health: try_next_provider)", .{ candidate.provider, candidate.account });
-                continue;
-            },
-            .give_up => {
-                log.debug("pipeline: skip {s}:{s} (health: give_up)", .{ candidate.provider, candidate.account });
-                continue;
-            },
-            .wait_and_retry => {
-                // Could wait, but for now try next account
-                log.debug("pipeline: skip {s}:{s} (health: rate limited)", .{ candidate.provider, candidate.account });
-                continue;
-            },
-            .use_this => {},
+        if (!bypass_health_gate) {
+            switch (decision) {
+                .try_next_account => {
+                    log.debug("pipeline: skip {s}:{s} (health: try_next)", .{ candidate.provider, candidate.account });
+                    continue;
+                },
+                .try_next_provider => {
+                    if (skipped_provider_count < skipped_providers.len) {
+                        skipped_providers[skipped_provider_count] = candidate.provider;
+                        skipped_provider_count += 1;
+                    }
+                    log.debug("pipeline: skip {s}:{s} (health: try_next_provider)", .{ candidate.provider, candidate.account });
+                    continue;
+                },
+                .give_up => {
+                    log.debug("pipeline: skip {s}:{s} (health: give_up)", .{ candidate.provider, candidate.account });
+                    continue;
+                },
+                .wait_and_retry => {
+                    // Could wait, but for now try next account
+                    log.debug("pipeline: skip {s}:{s} (health: rate limited)", .{ candidate.provider, candidate.account });
+                    continue;
+                },
+                .use_this => {},
+            }
         }
 
         // Set context for this attempt
@@ -1309,6 +1313,68 @@ test "runProbe executes auth none command probe without reading missing secret" 
     try std.testing.expectEqual(@as(?u16, 200), ctx.last_probe_status);
     try std.testing.expectEqual(types.MuxDecision.use_this, ctx.last_probe_decision.?);
     try std.testing.expect(store.accounts.get("toy:default#status") != null);
+}
+
+test "runProbe with explicit account rechecks previously degraded command route" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": { "provider": "toy" },
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "credential": { "access_token_path": "access" },
+        \\      "capabilities": [
+        \\        {
+        \\          "name": "status",
+        \\          "probe": {
+        \\            "transport": "command",
+        \\            "auth": "none",
+        \\            "command": ["sh", "-c", "printf '{\"type\":\"turn.completed\"}'"],
+        \\            "budget": "free_command"
+        \\          }
+        \\        }
+        \\      ]
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "OMUX_TEST_SECRET_THAT_IS_NOT_SET" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    store.recordHttpClassification("toy:default#status", 400, .{ .degraded = .unknown_4xx });
+
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "default";
+    ctx.capability_name = "status";
+    ctx.probe_recheck_blocked = true;
+
+    try runProbe(&ctx);
+
+    try std.testing.expect(ctx.last_probe_executed);
+    try std.testing.expectEqual(@as(?u16, 200), ctx.last_probe_status);
+    try std.testing.expectEqual(types.MuxDecision.use_this, ctx.last_probe_decision.?);
+    const health = store.accounts.get("toy:default#status").?;
+    switch (health.liveness) {
+        .live => |live| try std.testing.expect(live.availability == .available),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "runProbe does not poison liveness when command probe binary is missing" {

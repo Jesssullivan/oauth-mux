@@ -8315,6 +8315,7 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     ctx.provider_name = args.provider;
     ctx.account_name = args.account;
     ctx.capability_name = args.capability;
+    ctx.probe_recheck_blocked = args.account != null;
 
     const result = pipeline.runProbe(&ctx);
     store.persist();
