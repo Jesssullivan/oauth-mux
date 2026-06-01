@@ -112,7 +112,7 @@ databases from `CODEX_SQLITE_HOME` when set. In canonical bridge mode,
 oauth-mux keeps `CODEX_HOME` as the mux-owned auth/config overlay but sets
 child `CODEX_SQLITE_HOME` to the canonical session authority home. The overlay
 also symlinks `state_5.sqlite*` and `logs_2.sqlite*` when canonical Codex has
-them, so drift is visible in no-spend smoke tests. Older Codex homes still fall
+them, so drift is visible in diagnostic smoke tests. Older Codex homes still fall
 back to the legacy `sessions/`, `shell_snapshots/`, `history.jsonl`, and
 `session_index.jsonl` authority set. Redacted status reports
 `sqlite_authority`, `resume_authority_state_db_bridged`,

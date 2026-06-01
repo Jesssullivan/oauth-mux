@@ -41,7 +41,7 @@ into a seamless fallback path.
 
 The current paid Codex Max route matrix is also newer than the original
 2026-04-30 example, and it changes with real auth/quota state. The 2026-05-17
-installed `0.1.7` no-spend refresh has `max-1#codex-max` selected,
+installed `0.1.7` diagnostic snapshot has `max-1#codex-max` selected,
 `max-3#codex-max` and `max-4#codex-max` selectable as spare fallbacks, and
 `max-2#codex-max` blocked as `token_revoked` until the labeled upstream login
 handoff runs. Dashboard credit or mini/Spark availability must not be treated
@@ -126,10 +126,10 @@ session can move this beyond prepared fallback.
 ## Allowed Now
 
 - `oauth-mux daemon run` as the foreground primitive for any future wrapper.
-- `oauth-mux doctor runtime` for no-spend local runtime/session diagnostics,
+- `oauth-mux doctor runtime` for local runtime/session diagnostics,
   including profile-scoped route readiness checks.
-- `oauth-mux route explain` for no-spend route-state explanation.
-- `oauth-mux route select` for no-spend route choice from recorded evidence.
+- `oauth-mux route explain` for diagnostic route-state explanation.
+- `oauth-mux route select` for diagnostic route choice from recorded evidence.
 - `oauth-mux repair-plan` for non-mutating stay-afloat action planning.
 - `oauth-mux repair run` for one explicit, confirmed repair command.
 - `oauth-mux daemon repair-plan` as a compatibility alias for the same

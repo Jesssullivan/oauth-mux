@@ -169,7 +169,7 @@ If a shell refresh changes the result, start a fresh shell or use the shell's
 native reload path. For example, fish cannot safely `source ~/.bashrc`; bash
 syntax can fail partway through and leave a misleading mixed environment.
 Its JSON separates `agent_safe_next_actions` from
-`spend_confirmed_next_actions`; text output uses matching no-spend diagnostics
+`spend_confirmed_next_actions`; text output uses matching diagnostics
 and spend-confirmed repair sections. The same JSON includes `repair_summary`,
 a compact blocked-route rollup for agents that need to distinguish expired
 quota-window revalidation, auth handoff, runtime repair, and wait-only states
@@ -279,7 +279,7 @@ AX:
 - Trace events are opt-in and must not print token bytes, raw provider account
   ids, raw Codex session ids, or local auth/config file paths.
 - Agents do not need token files or raw provider stores to choose a next action.
-- Provider-spend behavior is policy-labeled; no-spend inspection surfaces stay
+- Provider-spend behavior is policy-labeled; diagnostic inspection surfaces stay
   separate from managed Codex auto-revalidation and live probes.
 - Diagnostic output should include exact next-action commands.
 
@@ -293,7 +293,7 @@ Keep the claim ladder tied to evidence:
   adapter strategy, daemon beta boundary, release posture, and tracker map.
 - `docs/release-install-lanes.md`: public package lanes versus local dogfood
   lanes.
-- `docs/dogfood-process-fanout.md`: no-spend agent process topology snapshots
+- `docs/dogfood-process-fanout.md`: diagnostic agent process topology snapshots
   and cleanup rules for suspected helper fanout or RSS growth.
 - `docs/lifecycle.md`: application lifecycle, managed Codex flow, agent-safe
   control plane, and claim levels.

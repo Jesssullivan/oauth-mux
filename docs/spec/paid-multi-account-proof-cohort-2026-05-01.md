@@ -101,7 +101,7 @@ Current dogfood truth after the 2026-05-09 engineered managed handoff:
   the fallback route returned `status:200`.
 - The strongest preserved proof bundle is
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- Current no-spend route truth for `codex-max` is intentionally not described
+- Current diagnostic route truth for `codex-max` is intentionally not described
   as afloat: `max-1`, `max-2`, and `max-4` are quota-exhausted; `max-3` is
   runtime-ready but recorded `auth_permanently_failed`; there are currently no
   selectable fallback routes until labeled reauth, reset repair, revalidation,
@@ -287,7 +287,7 @@ Not allowed yet:
 
 1. Land the proof-requirements JSON surface so agents can discover the missing
    values without reading this spec.
-2. Enroll the lower-tier Codex account and run no-spend inventory/runtime
+2. Enroll the lower-tier Codex account and run diagnostic inventory/runtime
    checks before live probes.
 3. Decide the Claude third shape: Team seat, Enterprise/self-serve path, or
    API-billed Console auth.

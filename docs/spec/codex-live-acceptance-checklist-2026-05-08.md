@@ -83,7 +83,7 @@ Do not close the engineered in-session gate from:
 | Installed exhausted-login handoff | Sign into native Codex as a known exhausted ChatGPT account, then enter through installed `oauth-mux codex resume <id>` with one credited fallback | A returns `usage_limit_reached`; B returns `200`; no visible 429 | Managed load/resume proof. Already observed on 2026-05-08 |
 | Engineered in-session exhaustion | Start A credited; run a long managed session until A reaches provider quota; keep B credited | Same process swaps A -> B and continues | Managed quota handoff proof. Observed on 2026-05-09 |
 | Exhausted ChatGPT quota plus API credits | A has exhausted ChatGPT/Codex subscription quota but separate API credits remain | Codex subscription route still follows ChatGPT quota truth; API credits do not make A selectable for subscription-backed Codex | Prevents credit-dashboard false positives |
-| Reset-window repair | A was quota-exhausted; reset window expires or plan changes | No-spend plan marks revalidation needed; spend-gated revalidation repairs A only after provider evidence | Durable health repair proof |
+| Reset-window repair | A was quota-exhausted; reset window expires or plan changes | Diagnostic plan marks revalidation needed; spend-gated revalidation repairs A only after provider evidence | Durable health repair proof |
 | Tier before fallback | A exhausted; B returns `usage_not_included`; C credited | B is marked `tier_insufficient`, then C handles the request | Typed rejection sequencing |
 | All fallbacks exhausted | Every candidate is quota/rate/tier/auth blocked | Typed `quota_handoff_failed_no_account_selectable` with complete redacted rejection vector | Honest failure UX |
 | Expired but refreshable fallback | B access token expired; B refresh token valid | Preflight/materialization refresh repairs B before selection or retry | Prevents false `NoAccountSelectable` |
@@ -123,7 +123,7 @@ python3 scripts/summarize-codex-status.py <status.ndjson> \
 The installed-binary command is the operator path. The Python command is the
 repo regression oracle.
 
-Check no-spend route state after a quota observation:
+Check diagnostic route state after a quota observation:
 
 ```bash
 oauth-mux codex broker-session-plan \

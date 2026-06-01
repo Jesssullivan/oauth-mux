@@ -36,7 +36,7 @@ prepared fallback remain diagnostic infrastructure, not the success claim.
 - Current install truth: `/Users/jess/.local/bin/oauth-mux` is PATH-first and
   reports `0.1.12` with build id `v0.1.12`; `/opt/homebrew/bin/oauth-mux` also
   reports `0.1.12`. Native Codex resolves outside oauth-mux.
-- Current no-spend route truth: `oauth-mux codex preflight --profile codex-max
+- Current diagnostic route truth: `oauth-mux codex preflight --profile codex-max
   --capability codex-max --json` reports `ok:true`, `session_start_ready:true`,
   `fallback_ready:true`, `selectable_fallback_routes:2`,
   `single_route_at_risk:false`, `spends_provider_calls:false`, and
@@ -83,7 +83,7 @@ Todo:
 
 - [x] Split streamed proxy outcome into client-disconnect versus upstream
   interruption paths.
-- [x] Add no-spend stub coverage for downstream disconnects and provider
+- [x] Add diagnostic stub coverage for downstream disconnects and provider
   degraded upstream interruption.
 - [x] Add a CI-safe smoke for partial upstream `200` interruption that proves
   no same-turn retry after partial delivery and records provider-degraded route
@@ -97,7 +97,7 @@ Todo:
   Release, user-local, and Homebrew as `0.1.11`; the fix remains included in
   current release `0.1.12`.
 
-## Workstream 2 - No-Spend Route And Process Truth Refresh
+## Workstream 2 - Diagnostic Route And Process Truth Refresh
 
 Priority: P0 before any live Codex spend, cassette capture, or tracker claim.
 
@@ -111,7 +111,7 @@ Completion metric:
 - Any process-fanout concern is backed by fresh redacted snapshot output, not
   by stale memory/process impressions.
 
-No-spend command set:
+Diagnostic command set:
 
 ```bash
 which -a oauth-mux
@@ -129,17 +129,17 @@ python3 scripts/dogfood-process-snapshot.py
 
 Todo:
 
-- [x] Run the no-spend command set immediately after Workstream 1 is landed or
+- [x] Run the diagnostic command set immediately after Workstream 1 is landed or
   intentionally before any live run.
 - [x] Preserve a redacted summary under `docs/evidence/` only if it adds new
   proof value; otherwise keep it as operator scratch.
 - [x] Block cassette/live work while the 2026-05-20 17:01 UTC snapshot showed
   `single_route_at_risk:true`.
-- [x] Re-run no-spend route truth after spend-confirmed route-health repair.
+- [x] Re-run diagnostic route truth after spend-confirmed route-health repair.
 - [ ] Re-run route truth immediately before cassette capture and verify
   `single_route_at_risk:false` still holds.
 
-2026-05-20 17:01 UTC no-spend refresh:
+2026-05-20 17:01 UTC diagnostic snapshot:
 
 - Active installed binary is public Homebrew `oauth-mux 0.1.9`; native Codex
   resolves outside oauth-mux and is not an oauth-mux shim.
@@ -162,7 +162,7 @@ Historical gate from this snapshot: do not start real cassette or
 spend-confirmed live work until spare fallback capacity is restored or the
 operator intentionally accepts a single-route-at-risk run.
 
-2026-05-21 02:57 UTC post-repair no-spend refresh:
+2026-05-21 02:57 UTC post-repair diagnostic snapshot:
 
 - Active binary is user-local `oauth-mux 0.1.9` at
   `/Users/jess/.local/bin/oauth-mux`; Homebrew `0.1.9` remains installed as a
@@ -187,7 +187,7 @@ operator intentionally accepts a single-route-at-risk run.
   `contract:"experimental_socket_stub"`, `hosts_stay_afloat:false`; its fresh
   foreground tick snapshot shows `afloat_with_spare_fallback` but remains
   observational and is not daemon-hosted continuity proof.
-- Current gate: cassette capture may proceed only after a just-in-time no-spend
+- Current gate: cassette capture may proceed only after a just-in-time diagnostic
   route refresh reconfirms the spare fallback and the operator explicitly
   approves any live provider-spend capture.
 
@@ -230,14 +230,14 @@ Todo:
 
 - [ ] Prepare the tracker reconciliation note for `TIN-950` versus `#176`;
   do not post it without explicit operator approval.
-- [x] Add a no-spend capture preflight command that records installed
+- [x] Add a diagnostic capture preflight command that records installed
   `oauth-mux` provenance, native Codex version, mitmproxy availability,
   mitmproxy CA readiness, fallback readiness, latest status verdict, and
   stale-process hints before starting the intercepting proxy.
 - [x] Add explicit capture review promotion gates for preflight success,
   required endpoint path kinds, required HTTP statuses, and required quota
   `error.type` values.
-- [x] Re-run no-spend route truth immediately before capture and keep the
+- [x] Re-run diagnostic route truth immediately before capture and keep the
   generated preflight summary with the capture scratch directory.
 - [x] Capture one successful live turn with the Codex 0.132
   `/backend-api/codex/responses` WebSocket `101` raw upstream path observed
@@ -293,7 +293,7 @@ Todo:
   `brew fetch --force jesssullivan/omux/oauth-mux` passes against the public
   tap.
 - [x] When running the stale-version search, confirm remaining older-version
-  hits are explicitly historical, such as the 2026-05-17 no-spend snapshot or
+  hits are explicitly historical, such as the 2026-05-17 diagnostic snapshot or
   the `0.1.1` npm deprecation cleanup workflow.
 
 ## Workstream 5 - Tracker Hygiene
@@ -327,7 +327,7 @@ Priority: later this week after Workstreams 1-3 are stable.
 
 Completion metric:
 
-- A no-spend sidecar smoke proves loopback transport, remote auth token
+- A diagnostic sidecar smoke proves loopback transport, remote auth token
   handling, connection ordering, and TUI attachment without live provider
   calls.
 - The prototype records whether `thread/start`, `thread/list`,
@@ -338,7 +338,7 @@ Completion metric:
 
 Todo:
 
-- [ ] Keep `TIN-938` / GitHub `#163` scoped to no-spend connection smoke first.
+- [ ] Keep `TIN-938` / GitHub `#163` scoped to diagnostic connection smoke first.
 - [ ] Do not claim managed interactive UX or live sidecar spend proof until a
   separate explicit acceptance run exists.
 
@@ -351,7 +351,7 @@ Completion metric:
 
 - One non-Codex provider has fixture-backed positive and negative proof through
   the provider-authoring checklist.
-- The provider support matrix distinguishes schema-modeled, no-spend proven,
+- The provider support matrix distinguishes schema-modeled, diagnostic proven,
   fixture-backed, and live-proven states.
 - No non-Codex stay-afloat, background daemon, or universal provider claim is
   made before live adapter proof.
@@ -359,7 +359,7 @@ Completion metric:
 Todo:
 
 - [ ] Keep `TIN-736` / GitHub `#68` open and secondary.
-- [ ] Pick the next provider by narrowest no-spend truth surface; likely Claude
+- [ ] Pick the next provider by narrowest diagnostic truth surface; likely Claude
   auth-status first, then MCP/Figma/Linear only when official auth/failure
   boundaries are pinned.
 - [ ] Add fixtures and docs before any public support copy is upgraded.
@@ -379,17 +379,17 @@ Recommended landing slices:
   Completion metric is stale-version search showing only historical older
   versions plus `git diff --check`.
 - Slice C, real cassette PR: starts only after Slice A lands and a just-in-time
-  no-spend route refresh confirms spare fallback. Requires explicit operator
+  diagnostic route refresh confirms spare fallback. Requires explicit operator
   approval for any provider-spend capture.
 - Slice D, later sidecar/provider work: Workstreams 6 and 7 remain secondary
   until the Codex reference adapter has the BrokenPipe and cassette evidence
   stabilized.
 
 1. Land Workstream 1 as a focused BrokenPipe reliability PR.
-2. Refresh Workstream 2 no-spend route/process truth.
+2. Refresh Workstream 2 diagnostic route/process truth.
 3. Run Workstream 3 real cassette capture and replay hardening.
 4. Keep Workstream 4 hygiene moving in small docs/workflow patches.
 5. Reconcile tracker state after the facts are refreshed.
-6. Start Workstream 6 sidecar no-spend prototype later this week.
+6. Start Workstream 6 sidecar diagnostic prototype later this week.
 7. Start Workstream 7 non-Codex provider proof only after Codex evidence is
    stable enough to be the reference path.

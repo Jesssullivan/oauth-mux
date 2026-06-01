@@ -57,7 +57,7 @@ capability, such as `codex:max-3#codex-max`.
 | All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic and managed cassette harness covered; publishable provider cassette/live target |
 | Tier selected-route classification | selected route returns `usage_not_included` | route marked `tier_insufficient`; no quota classification or same-turn quota retry | synthetic covered; live/cassette target |
 | Tier before fallback election | already-tier-blocked B precedes credited C in route pool | B is not elected; C selected | unit matrix covered; live/cassette target |
-| Reset-window repair | quota window expires | no-spend state becomes stale; confirmed revalidation repairs only with provider evidence | live target |
+| Reset-window repair | quota window expires | diagnostic state becomes stale; confirmed revalidation repairs only with provider evidence | live target |
 | API-credit false positive | subscription quota exhausted but API credits exist | Codex subscription route stays quota-blocked | live target |
 | Child signal | Codex child killed/stopped | `session_aborted` with `term_kind`, `term_code`, `signal_name` | status regression added |
 
@@ -68,7 +68,7 @@ capability, such as `codex:max-3#codex-max`.
 | Zig unit tests | none | parser/state invariants and status summarization | quota summary lifetime, child signal terminal fields |
 | Shell smokes | none | CLI UX and local proxy behavior | chooser parity, config passthrough, 401, quota, tier, all-exhausted |
 | Cassette replay | none after capture | real wire-shape regression without provider calls | scrubbed `usage_limit_reached`, 401, tier/rate captures |
-| Live no-spend | no provider spend | installed binary route truth and runtime state | `route explain`, `doctor runtime`, `status-latest` |
+| Live diagnostic | no provider spend | installed binary route truth and runtime state | `route explain`, `doctor runtime`, `status-latest` |
 | Live spend-confirmed | yes | provider-originated quota/auth/tier truth | `probe-all`, `revalidate-exhausted`, managed Codex dogfood |
 
 ## Coverage Reality
@@ -100,15 +100,15 @@ publishable evidence for those same negative shapes.
   `oauth-mux codex resume`.
 - The strongest preserved proof is
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- Current no-spend route truth is volatile and must be refreshed before each
+- Current diagnostic route truth is volatile and must be refreshed before each
   live session. The 2026-05-17 22:24 EDT installed Homebrew `0.1.7` snapshot is
   historical evidence, not current route truth; it was `not_afloat` for
   `codex-max` with all four named routes runtime-ready and broker-ready but
   route liveness `unrecorded`.
-- The 2026-05-20 17:01 UTC no-spend refresh improved that to one selectable
+- The 2026-05-20 17:01 UTC diagnostic snapshot improved that to one selectable
   route (`max-3`) but still had no spare fallback; treat it as historical
   single-route-risk evidence.
-- The 2026-05-21 02:57 UTC post-repair no-spend refresh used user-local
+- The 2026-05-21 02:57 UTC post-repair diagnostic snapshot used user-local
   `oauth-mux 0.1.9`: `codex:max-3#codex-max` is selected, `max-4` is a live
   selectable fallback, and `max-1` / `max-2` remain runtime/broker ready but
   blocked as `unrecorded`.
@@ -132,7 +132,7 @@ the 2026-05-20 release-hygiene refresh, public package lanes resolve to
 `0.1.9`; use `oauth-mux version --json` to distinguish that package binary from
 `~/.local/bin/oauth-mux` or `./zig-out/bin/oauth-mux` worktree dogfood hashes.
 
-No-spend opening sequence:
+Diagnostic opening sequence:
 
 ```bash
 oauth-mux version --json
@@ -154,7 +154,7 @@ Current matrix entry:
 | `codex:max-4#codex-max` | selectable, live | current spare fallback |
 
 Do not start provider-spend cassette or negative-matrix work from memory. Rerun
-the no-spend opener first and verify `session_start_ready:true`,
+the diagnostic opener first and verify `session_start_ready:true`,
 `fallback_ready:true`, and `single_route_at_risk:false`; then proceed only with
 explicit operator approval for the provider-spend capture. If the just-in-time
 refresh falls back to single-route risk, pause and repair/probe before treating
@@ -165,12 +165,12 @@ Spend-confirmed activation sequence:
 1. Refresh private quota UI for the four route labels and confirm the current
    `max-3` / `max-4` primary-fallback pair is still the least risky pair.
 2. With explicit operator consent, run only the smallest targeted provider
-   probe(s) needed to restore spare fallback if the no-spend opener regresses;
+   probe(s) needed to restore spare fallback if the diagnostic opener regresses;
    optionally probe `max-1` / `max-2` only when additional redundancy is worth
    the provider spend.
 3. If a targeted probe reports auth failure, run only the labeled
    `oauth-mux codex login-device max-N` handoff for that route, then rerun the
-   no-spend opener and a spend-confirmed probe only if still needed.
+   diagnostic opener and a spend-confirmed probe only if still needed.
 4. Once `session_start_ready:true` and `fallback_ready:true` are reconfirmed,
    run the chosen negative/live permutation through the intended installed
    `oauth-mux` binary and record provenance.

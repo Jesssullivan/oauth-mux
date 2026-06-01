@@ -8,7 +8,7 @@ Supersession note, 2026-05-03: this timeline records the original public
 release arc. Current Codex dogfood has moved from the initial starter path to a
 four-route paid `codex-max` cohort with broker-owned session planning, live
 broker-run, exhausted-route revalidation, controlled fallback drills, and a
-no-spend soak snapshot helper. Same-thread quota recovery and unmanaged TUI
+diagnostic soak snapshot helper. Same-thread quota recovery and unmanaged TUI
 hot-swap remain unclaimed.
 
 ## Current Stage
@@ -106,7 +106,7 @@ degradation or auth death.
   SOPS at runtime; token material is never committed or printed.
 
 - Codex canary and secret-scoped live QA
-  `oauth-mux codex canary` captures no-spend config/discovery/status/health and
+  `oauth-mux codex canary` captures diagnostic config/discovery/status/health and
   per-account `codex login status` evidence, then delegates to live probes only
   when `--live` is explicitly supplied.
 

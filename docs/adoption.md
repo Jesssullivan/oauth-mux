@@ -17,7 +17,7 @@ deep evidence or architecture:
    Same-thread provider semantics, mid-turn streaming recovery, unmanaged
    daemon hot-swap, and non-Codex harness stay-afloat.
 3. How do I try it safely?
-   Install, run no-spend diagnostics, follow labeled auth handoffs, then start
+   Install, run diagnostics, follow labeled auth handoffs, then start
    `oauth-mux codex resume`.
 4. How can an agent inspect state?
    Use JSON commands that do not read token values or spend provider calls.
@@ -193,7 +193,7 @@ mutated.
 
 `doctor runtime`, `route explain`, `route select`, `codex preflight`,
 `stay-afloat next`, `stay-afloat --once`, and bounded `stay-afloat --loop` are
-no-spend surfaces when run without `--execute`. They only use local runtime
+diagnostic surfaces when run without `--execute`. They only use local runtime
 checks plus recorded liveness, so they are safe for agents to run before
 deciding whether a live probe or user-driven reauth is warranted. `codex
 preflight` also classifies the visible `codex` PATH entries so operators can
@@ -239,7 +239,7 @@ quota handoff is proven, but must not turn that into a same-thread continuity,
 mid-turn streaming recovery, unmanaged daemon, or non-Codex provider claim.
 
 `oauth-mux codex broker-plan --profile codex-max --capability codex-max --json`
-is the no-spend broker readiness check. It reads configured Codex auth stores
+is the diagnostic broker readiness check. It reads configured Codex auth stores
 locally and reports whether each route can supply `accessToken`,
 `chatgptAccountId`, and `chatgptPlanType` for a future app-server broker. Its
 output is redacted and planning-only; it does not run Codex, contact OpenAI,
@@ -264,7 +264,7 @@ mediated sessions. It is still not an unmanaged current TUI hot-swap,
 per-request mux, or quota-recovery claim.
 
 `oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max
---confirm-broker --json` proves the controlled no-spend 401 retry loop for a
+--confirm-broker --json` proves the controlled diagnostic 401 retry loop for a
 broker-owned Codex app-server session. oauth-mux points Responses and ChatGPT
 backend traffic at a local mock, returns 401 to the first turn Responses
 request, answers app-server refresh with the next ready route, and verifies the
@@ -272,14 +272,14 @@ retry uses the fallback token. This is the current strongest mediated Codex
 proof; it still does not claim unmanaged TUI hot-swap.
 
 `oauth-mux codex broker-quota-smoke --profile codex-max --capability codex-max
---confirm-broker --json` proves the no-spend quota boundary. It returns a local
+--confirm-broker --json` proves the diagnostic quota boundary. It returns a local
 usage-limit 429 to the first turn, observes that Codex does not issue the 401
 auth-refresh hook, applies a fallback app-server login, and verifies a new
 brokered thread uses fallback Authorization. Same-thread quota recovery remains
 explicitly unproven.
 
 `oauth-mux codex broker-session-plan --profile codex-max --capability codex-max
---json` is the no-spend UX planning surface for broker-owned Codex sessions. It
+--json` is the diagnostic UX planning surface for broker-owned Codex sessions. It
 combines recorded route liveness with app-server auth-broker readiness, then
 reports the selected route, immediate selectable fallbacks, quota-blocked broker
 routes, and the same explicit no-hot-swap/no-same-thread quota boundary. Its
@@ -292,7 +292,7 @@ account, or wait for quota reset. JSON clients read `resilience_actions`; text
 output prints the matching `next:` hint.
 
 `oauth-mux codex broker-session-smoke --profile codex-max --capability codex-max
---confirm-broker --json` is the matching no-spend multi-turn UX smoke. It uses
+--confirm-broker --json` is the matching diagnostic multi-turn UX smoke. It uses
 the session plan's selected and fallback routes, starts a broker-owned
 app-server against local mocked backend endpoints, simulates quota exhaustion on
 turn one, and verifies a new brokered thread uses the fallback route.

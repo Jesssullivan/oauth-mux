@@ -4,7 +4,7 @@ Start here when you need the right document without reading every spec.
 
 ## New Users
 
-- `../README.md`: install commands, current supported path, and no-spend
+- `../README.md`: install commands, current supported path, and diagnostic
   diagnostics.
 - `lifecycle.md`: application lifecycle, managed Codex flow, agent-safe control
   plane, route states, and claim ladder diagrams.

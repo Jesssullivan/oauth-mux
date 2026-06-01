@@ -18,7 +18,7 @@ Every adapter needs:
 2. named account labels that operators can map privately;
 3. runtime doctor that distinguishes missing CLI, missing login, bad auth,
    quota/rate/tier failure, and local store errors;
-4. no-spend fixture tests for every typed state the adapter emits;
+4. diagnostic fixture tests for every typed state the adapter emits;
 5. one positive live proof and one negative live or cassette proof before
    claiming capability support;
 6. a documented current-process boundary: managed proxy, app-server protocol,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# No-spend UX smoke for first-class `oauth-mux codex ...` adapter entrypoints.
+# Diagnostic UX smoke for first-class `oauth-mux codex ...` adapter entrypoints.
 #
 # Covers the daily-use resume shapes that should not require raw
 # `codex run -- ...` coercion:

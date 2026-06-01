@@ -19,7 +19,7 @@ Describe the command, expected behavior, and actual behavior.
 
 ## Redacted diagnostics
 
-Please include relevant output from no-spend commands:
+Please include relevant output from diagnostic commands:
 
 ```bash
 oauth-mux doctor --json

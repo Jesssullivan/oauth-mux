@@ -49,7 +49,7 @@ Core open or active:
 - `TIN-1591` In Progress - process/fd hygiene. Contained, not resolved.
 - `TIN-738` In Progress - broker daemon and adapter contract umbrella.
 - `TIN-937` In Progress - usage-limit diagnostics without restart.
-- `TIN-938` Todo - remote app-server sidecar; keep no-spend loopback only.
+- `TIN-938` Todo - remote app-server sidecar; keep diagnostic loopback only.
 - `TIN-1079` Backlog - engineered quota reset/exhaustion plan; maps to `#212`.
 - `TIN-736` In Progress - provider proof beyond Codex; maps to `#68`.
 - `TIN-893` In Progress - paid Codex cohort.
@@ -118,7 +118,7 @@ Closed but relevant:
    as a WebSocket `101`, but quota/error shapes are still missing.
 3. Move `#212` / `TIN-1079` out of backlog only when fallback capacity and
    operator-approved provider spend are ready for engineered exhaustion.
-4. Keep `#163` / `TIN-938` to a no-spend loopback sidecar smoke until cassette
+4. Keep `#163` / `TIN-938` to a diagnostic loopback sidecar smoke until cassette
    evidence is stronger.
 5. Keep `#68` / `TIN-736` secondary to the Codex reference adapter; admit the
    next provider only through fixture-backed proof.

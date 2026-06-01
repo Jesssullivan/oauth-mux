@@ -80,9 +80,9 @@ oauth-mux does not currently claim:
   store;
 - one account-local Codex home per OAuth route as a complete native Codex home.
 
-## No-Spend Proof
+## Diagnostic Proof
 
-Current no-spend regression coverage:
+Current diagnostic regression coverage:
 
 - `scripts/smoke-codex-cli-ux.sh`
   - proves first-class managed `resume`, `resume --last`, and `resume <id>`
@@ -100,7 +100,7 @@ Current no-spend regression coverage:
   - proves concurrent managed overlays keep distinct proxy/auth/config state
     while sharing canonical session authority safely.
 
-These smokes are local and no-spend. They prove filesystem/session-authority
+These smokes are local and diagnostic. They prove filesystem/session-authority
 behavior, not provider acceptance of cross-account thread continuation.
 
 ## Future Import Gate

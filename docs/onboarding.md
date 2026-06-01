@@ -69,7 +69,7 @@ oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair run --profile codex-max --capability codex-max --json
 ```
 
-`oauth-mux doctor` is the no-spend readiness report. It checks whether config is
+`oauth-mux doctor` is the diagnostic readiness report. It checks whether config is
 present and valid, counts configured providers/accounts/profiles, reports
 whether health state exists, and prints the next safe commands for the current
 state.
@@ -87,7 +87,7 @@ The trace format is documented in `docs/tracing.md`. It is designed for
 operator and agent debugging without printing token bytes, raw provider account
 ids, raw Codex session ids, or local auth/config file paths.
 
-`oauth-mux doctor runtime --json` is the no-spend runtime report. It checks
+`oauth-mux doctor runtime --json` is the diagnostic runtime report. It checks
 upstream binary availability, configured account store directories, local write
 access via a temporary marker file, and expected session-file presence. It does
 not read token values, run live probes, open auth flows, or create missing
@@ -103,7 +103,7 @@ prove oauth-mux route liveness. Use `oauth-mux codex preflight --profile
 <profile> --capability <capability> --json` for managed Codex route
 selectability and provider-accepted auth evidence.
 
-`oauth-mux accounts list --json` is the no-spend account inventory. It is the
+`oauth-mux accounts list --json` is the diagnostic account inventory. It is the
 first provider-neutral surface for N-account enrollment and stay-afloat
 planning: it reports each configured provider/account, secret backend name,
 runtime readiness, writeback admission, capability proof status, recorded
@@ -153,7 +153,7 @@ For status-only inspection:
 oauth-mux setup codex --status-only
 ```
 
-For a no-spend canary after onboarding:
+For a diagnostic canary after onboarding:
 
 ```bash
 oauth-mux codex canary
@@ -199,7 +199,7 @@ oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-mini --capability codex-mini --json
 ```
 
-`route explain` and `route select` are no-spend commands. They read runtime
+`route explain` and `route select` are diagnostic commands. They read runtime
 readiness plus recorded route liveness and do not probe providers or mutate auth
 state. Unrecorded routes are reported as `probe_needed`, and `route select`
 exits nonzero when no route has enough evidence to be selected.
@@ -262,7 +262,7 @@ child config: `terminal_resize_reflow`, `memories`, `external_migration`,
 explicit `false`, win, and oauth-mux does not rewrite the canonical
 `config.toml`.
 
-For a no-spend managed Codex readiness snapshot, use:
+For a diagnostic managed Codex readiness snapshot, use:
 
 ```bash
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
@@ -277,18 +277,18 @@ not call the provider or mutate route health. For Codex blocked routes,
 older than the recorded failure, so a native `login status` success is not enough
 to clear `token_revoked`; a user-mediated login, admitted refresh, or live
 revalidation must write newer evidence. JSON
-clients should prefer `agent_safe_next_actions` for no-spend automation and
+clients should prefer `agent_safe_next_actions` for diagnostic automation and
 treat `spend_confirmed_next_actions` as user-approved route-health repair only.
 Interactive login or reauth commands appear in `user_mediated_next_actions`;
 wrappers may display those commands, but must not run them without the user
-owning the upstream CLI login boundary. Text output uses the same no-spend,
+owning the upstream CLI login boundary. Text output uses the same diagnostic,
 spend-confirmed, and user-mediated repair labels.
 
 When a managed Codex session exhausts every selectable fallback, the wire proxy
 returns typed `oauth_mux_no_account_selectable` JSON instead of a bare provider
 error. That 503 body includes `preflight_command`, `rejection_summary`,
 `agent_safe_next_actions`, and `spend_confirmed_next_actions` so wrappers can
-surface no-spend inspection first and reserve route-health repair for explicit
+surface diagnostic inspection first and reserve route-health repair for explicit
 user approval.
 
 Managed Codex live quota handoff is proven for installed
@@ -329,14 +329,14 @@ for the live 401 repair primitive; it does not yet prove automatic repair of an
 already-running unmanaged Codex process.
 Use
 `oauth-mux codex broker-401-smoke --profile codex-max --capability codex-max
---confirm-broker --json` to prove the no-spend mediated 401 retry loop. It
+--confirm-broker --json` to prove the diagnostic mediated 401 retry loop. It
 starts a disposable app-server with local mocked Responses and ChatGPT backend
 URLs, forces the first turn Responses request to 401, answers app-server
 refresh with the next ready route, and verifies the retried request used that
 fallback token.
 Use
 `oauth-mux codex broker-quota-smoke --profile codex-max --capability codex-max
---confirm-broker --json` to prove the no-spend quota fallback boundary. It
+--confirm-broker --json` to prove the diagnostic quota fallback boundary. It
 simulates usage-limit 429, confirms that this is not the same hook as 401
 auth-refresh, then verifies fallback Authorization on a new brokered thread.
 That is useful stay-afloat evidence, but not same-thread quota recovery.
@@ -388,7 +388,7 @@ Use
 codex-max --from-account max-3 --confirm-drill --json` when you need to observe
 fallback deliberately. It records the named route as quota-exhausted in local
 route health, then verifies broker-owned selection moves to a distinct fallback
-route. This is no-spend and useful for operator drills, but it is controlled
+route. This is diagnostic and useful for operator drills, but it is controlled
 route-state evidence, not provider-originated quota exhaustion.
 
 `stay-afloat launch -- <command>` is the user/wrapper startup boundary. It runs
@@ -612,7 +612,7 @@ just first-run-e2e
 That harness runs with a temporary `HOME`, XDG config/state/data/runtime roots,
 and no inherited `OMUX_*` overrides. It proves `init --codex-max`, JSON
 diagnostics, redacted support output, repair-plan route explanation,
-runtime diagnostics, no-spend route explanation and route-select refusal without
+runtime diagnostics, diagnostic route explanation and route-select refusal without
 health evidence,
 non-clobbering config-candidate generation, config-merge backup behavior, and
 non-mutating Codex help plus the unconfirmed live-QA spend gate without touching
@@ -733,7 +733,7 @@ login, plan token, file key, or consent gate without guessing.
    `oauth-mux enroll figma --account <name> --mode <oauth|pat|plan>
    --confirm-enroll --json`, then set the returned secret env var before any
    proof probe.
-10. Run no-spend checks first: `status`, `health`, and credential parse probes.
+10. Run diagnostic checks first: `status`, `health`, and credential parse probes.
 11. Run live probes only through `scripts/live-provider-qa.sh` or the manual
    Live Provider QA workflow.
 

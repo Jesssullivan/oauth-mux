@@ -331,7 +331,7 @@ These need review before public promotion:
   `usage_not_included` or 401, and all-accounts-exhausted reports
   `proxy_same_turn_retry_unavailable` plus a clean no-account-selectable path.
 - Full `just check-local` passed after the proxy and smoke updates.
-- No-spend live route readiness, run with normal local filesystem access:
+- Diagnostic live route readiness, run with normal local filesystem access:
   selected `codex:max-1`; selectable fallbacks `max-2`, `max-3`, and `max-4`;
   `selectable_broker_routes:4`, `selectable_fallback_routes:3`,
   `spare_fallback_ready:true`, `single_route_at_risk:false`.

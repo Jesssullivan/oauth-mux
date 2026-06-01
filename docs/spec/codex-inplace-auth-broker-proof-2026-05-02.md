@@ -281,10 +281,10 @@ For quota-driven account changes, use a different action name, such as
    next-turn account selection, but do not claim same-turn quota recovery until
    Codex exposes or proves that hook. `oauth-mux codex broker-quota-smoke
    --profile codex-max --capability codex-max --confirm-broker --json` now
-   proves the first no-spend version: local usage-limit 429 does not produce
+   proves the first diagnostic version: local usage-limit 429 does not produce
    the 401 refresh hook, fallback app-server login is accepted, and a new
    brokered thread uses fallback Authorization.
-10. Add a no-spend session planning surface:
+10. Add a diagnostic session planning surface:
    `oauth-mux codex broker-session-plan --profile codex-max --capability
    codex-max --json` joins recorded route liveness with broker auth readiness
    and reports selected, fallback, quota-blocked, and auth-unready routes for
@@ -295,7 +295,7 @@ For quota-driven account changes, use a different action name, such as
    revalidate exhausted routes, enroll another account, or wait for quota reset.
    JSON clients read `resilience_actions`; text output prints the matching
    `next:` hint.
-11. Add a no-spend broker-owned session smoke:
+11. Add a diagnostic broker-owned session smoke:
    `oauth-mux codex broker-session-smoke --profile codex-max --capability
    codex-max --confirm-broker --json` uses the session plan's selected and
    fallback routes, starts a local app-server session against mocked backend
@@ -319,7 +319,7 @@ For quota-driven account changes, use a different action name, such as
    `oauth-mux codex broker-fallback-drill --profile codex-max --capability
    codex-max --from-account max-3 --confirm-drill --json` records the named
    route as quota-exhausted in local route health and verifies the next
-   broker-owned route selection picks a distinct fallback. This is no-spend
+   broker-owned route selection picks a distinct fallback. This is diagnostic
    route-state evidence, not provider-originated quota evidence.
 15. Only after topology A is green, attempt topology B with a remote TUI and
    sidecar broker.
@@ -338,10 +338,10 @@ For quota-driven account changes, use a different action name, such as
 - The controlled quota smoke proves new-thread fallback after local
   usage-limit classification. It also records the negative evidence:
   same-turn and same-thread quota recovery are not proven.
-- The broker session plan is no-spend and planning-only. It can report a
+- The broker session plan is diagnostic and planning-only. It can report a
   broker-owned session start route plus immediate selectable fallbacks, but it
   does not start Codex, spend provider calls, or claim unmanaged TUI hot-swap.
-- The broker session smoke is no-spend and local. It can prove a multi-turn
+- The broker session smoke is diagnostic and local. It can prove a multi-turn
   broker-owned app-server handoff using session-plan route selection, but it
   still does not prove same-thread quota recovery or unmanaged TUI hot-swap.
 - The broker live run is spend-gated. Its `--prompt` form proves one live turn;
@@ -377,7 +377,7 @@ For quota-driven account changes, use a different action name, such as
   re-probe the provider, and persist the fresh capability evidence. It removes
   the manual health-reset step, but it does not imply dashboard credits make a
   route available for every Codex capability.
-- The broker fallback drill is no-spend but mutates local route health. It can
+- The broker fallback drill is diagnostic but mutates local route health. It can
   observe next-route fallback after a controlled quota-exhausted mark, while
   explicitly not claiming provider-originated quota exhaustion.
 - Cross-account switching is blocked when forced workspace or profile policy

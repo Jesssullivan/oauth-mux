@@ -22,12 +22,12 @@ flowchart LR
     artifact --> repair["Repair / revalidate loop"]
     repair --> diagnostics
 
-    diagnostics --> noSpend["No-spend JSON surfaces"]
+    diagnostics --> noSpend["Diagnostic JSON surfaces"]
     repair --> userHandoff["User-mediated login / reauth"]
     repair --> liveProbe["Spend-confirmed live probe"]
 ```
 
-The lifecycle separates no-spend inspection from provider-spend operations.
+The lifecycle separates diagnostic inspection from provider-spend operations.
 Agents can inspect route and runtime state without reading token files or
 triggering provider calls. Login, reauth, and live probes remain explicit human
 or operator actions.
@@ -74,7 +74,7 @@ fallback account, and fallback `200` before Codex sees the 429.
 
 ```mermaid
 flowchart TB
-    human["Human or agent"] --> inspect["No-spend JSON command"]
+    human["Human or agent"] --> inspect["Diagnostic JSON command"]
     inspect --> broker["Broker reports route states"]
     broker --> action["Exact safe next action"]
 
@@ -89,7 +89,7 @@ flowchart TB
     confirm --> broker
 ```
 
-No-spend commands:
+Diagnostic commands:
 
 ```bash
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json

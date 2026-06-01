@@ -228,7 +228,7 @@ First-run surfaces:
 
 Initial implementation status:
 
-- `oauth-mux doctor [--json]` now provides a no-spend readiness report covering
+- `oauth-mux doctor [--json]` now provides a diagnostic readiness report covering
   config path, state path, config validation, provider/account/profile counts,
   health state presence, and safe next commands.
 - `oauth-mux setup codex` and `oauth-mux codex setup` both route to the Codex

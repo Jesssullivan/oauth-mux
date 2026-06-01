@@ -46,7 +46,7 @@ summary="$out_dir/summary.txt"
 failures=0
 
 {
-  printf 'oauth-mux paid cohort no-spend soak snapshot\n\n'
+  printf 'oauth-mux paid cohort diagnostic soak snapshot\n\n'
   printf 'provider:        %s\n' "$provider"
   printf 'profile:         %s\n' "$profile"
   printf 'capability:      %s\n' "$capability"
