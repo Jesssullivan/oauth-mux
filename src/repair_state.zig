@@ -364,6 +364,23 @@ pub fn acquireRepairLock(
     provider: []const u8,
     account: []const u8,
 ) !RepairLock {
+    return acquireRepairLockWithMode(allocator, provider, account, true);
+}
+
+pub fn acquireRepairLockBlocking(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+) !RepairLock {
+    return acquireRepairLockWithMode(allocator, provider, account, false);
+}
+
+fn acquireRepairLockWithMode(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+    nonblocking: bool,
+) !RepairLock {
     const path = try lockPath(allocator, provider, account);
     errdefer allocator.free(path);
     try ensureParentDir(path);
@@ -372,9 +389,9 @@ pub fn acquireRepairLock(
         .truncate = false,
         .mode = 0o600,
         .lock = .exclusive,
-        .lock_nonblocking = true,
+        .lock_nonblocking = nonblocking,
     }) catch |e| switch (e) {
-        error.WouldBlock => return error.RepairInProgress,
+        error.WouldBlock => if (nonblocking) return error.RepairInProgress else return e,
         else => return e,
     };
     errdefer file.close();
@@ -496,7 +513,7 @@ fn parseStartedAt(bytes: []const u8) ?i64 {
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
+        std.fs.cwd().makePath(dir) catch |e| switch (e) {
             error.PathAlreadyExists => {},
             else => return e,
         };

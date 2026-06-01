@@ -13,6 +13,7 @@ const broker_types = @import("broker/types.zig");
 const health_mod = @import("health.zig");
 const oauth = @import("oauth.zig");
 const paths = @import("paths.zig");
+const repair_state = @import("repair_state.zig");
 const trace = @import("trace.zig");
 const types = @import("types.zig");
 
@@ -440,8 +441,17 @@ fn refreshCodexAccountAuthFile(
     const path = try accountAuthMaterialPath(allocator, acct_cfg);
     defer allocator.free(path);
 
+    var lock = try repair_state.acquireRepairLockBlocking(allocator, provider, account);
+    defer lock.release();
+
     const bytes = try readFileAlloc(allocator, path);
     defer allocator.free(bytes);
+
+    switch (refreshCodexAuthState(allocator, bytes)) {
+        .not_needed => return,
+        .unavailable => return error.NoRefreshToken,
+        .needed => {},
+    }
 
     var material = try parseCodexAuthRefreshMaterial(allocator, bytes);
     defer material.deinit(allocator);
@@ -456,8 +466,6 @@ fn refreshCodexAccountAuthFile(
     const refreshed = try buildRefreshedCodexAuthJson(allocator, material, result);
     defer allocator.free(refreshed);
     try writeFileReplace(path, refreshed, allocator);
-
-    _ = account;
 }
 
 const CodexAuthRefreshState = enum {
@@ -955,6 +963,94 @@ test "codex auth refresh detection uses access token exp" {
     , .{encoded});
     defer std.testing.allocator.free(fresh_auth);
     try std.testing.expect(!codexAuthShouldRefresh(std.testing.allocator, fresh_auth));
+}
+
+fn testCodexAccessTokenWithExp(allocator: std.mem.Allocator, exp: i64) ![]const u8 {
+    var payload_buf: [96]u8 = undefined;
+    const payload = try std.fmt.bufPrint(&payload_buf, "{{\"exp\":{d}}}", .{exp});
+    var encoded_buf: [160]u8 = undefined;
+    const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buf, payload);
+    return try std.fmt.allocPrint(allocator, "h.{s}.s", .{encoded});
+}
+
+fn testCodexAuthJsonWithExp(
+    allocator: std.mem.Allocator,
+    exp: i64,
+    refresh_token: []const u8,
+    account_id: []const u8,
+) ![]const u8 {
+    const access_token = try testCodexAccessTokenWithExp(allocator, exp);
+    defer allocator.free(access_token);
+    return try std.fmt.allocPrint(
+        allocator,
+        \\{{"tokens":{{"access_token":"{s}","refresh_token":"{s}","account_id":"{s}"}}}}
+    ,
+        .{ access_token, refresh_token, account_id },
+    );
+}
+
+test "codex refresh rechecks auth file before spending refresh token" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const fresh_auth = try testCodexAuthJsonWithExp(
+        std.testing.allocator,
+        std.time.timestamp() + 3600,
+        "rt-peer-refreshed",
+        "acc",
+    );
+    defer std.testing.allocator.free(fresh_auth);
+
+    const auth_file = try tmp.dir.createFile("auth.json", .{ .mode = 0o600 });
+    try auth_file.writeAll(fresh_auth);
+    auth_file.close();
+
+    const auth_path = try tmp.dir.realpathAlloc(std.testing.allocator, "auth.json");
+    defer std.testing.allocator.free(auth_path);
+    const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(config_dir);
+
+    const cfg_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex-test": {{
+        \\      "name": "codex-test",
+        \\      "auth": {{
+        \\        "token_endpoint": "://invalid",
+        \\        "client_id": "client"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex-test",
+        \\      "accounts": {{
+        \\        "refresh-skip": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "file", "path": "{s}" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ config_dir, auth_path },
+    );
+    defer std.testing.allocator.free(cfg_json);
+
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const acct_cfg = parsed.value.providers.map.get("codex").?.accounts.map.get("refresh-skip").?;
+    try refreshCodexAccountAuthFile(std.testing.allocator, parsed.value, "codex", "refresh-skip", acct_cfg);
+
+    const bytes = try readFileAlloc(std.testing.allocator, auth_path);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expect(!codexAuthShouldRefresh(std.testing.allocator, bytes));
 }
 
 test "materializeChatgpt refuses expired codex token when refresh is unavailable" {

@@ -282,6 +282,12 @@ holds a per-account mutex around refresh so two concurrent adapters can't
 race a refresh-token reuse fault (the failure mode tracked in
 `openai/codex#9634`).
 
+> **Status (2026-06-01): partially implemented for Codex file-backed auth.**
+> `broker_loader.zig` now serializes route-local Codex `auth.json` refresh by
+> provider/account and re-reads the file under the lock before spending a
+> refresh token. The broader JSON-RPC `credential/refresh` result-sharing
+> contract above remains a target contract for future adapter work.
+
 ### 2.4 Quota and observability
 
 #### `quota/observe`
