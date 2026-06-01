@@ -16,6 +16,8 @@ pub const Config = struct {
 pub const Defaults = struct {
     provider: ?[]const u8 = null,
     strategy: ?[]const u8 = null,
+    profile: ?[]const u8 = null,
+    capability: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     daemon: bool = false,
 };
@@ -130,6 +132,13 @@ pub fn validate(cfg: Config, writer: anytype) !void {
     if (cfg.defaults.strategy) |strategy_name| {
         if (cfg.strategies.map.get(strategy_name) == null) {
             try writer.print("config error: defaults.strategy references unknown strategy '{s}'\n", .{strategy_name});
+            ok = false;
+        }
+    }
+
+    if (cfg.defaults.profile) |profile_name| {
+        if (cfg.profiles.map.get(profile_name) == null) {
+            try writer.print("config error: defaults.profile references unknown profile '{s}'\n", .{profile_name});
             ok = false;
         }
     }
@@ -709,6 +718,44 @@ test "loadFromBytes minimal config" {
     try std.testing.expectEqualStrings("CLAUDE_TOKEN", work.secret.variable.?);
 }
 
+test "loadFromBytes accepts managed launch defaults" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": {
+        \\    "provider": "codex",
+        \\    "profile": "codex-max",
+        \\    "capability": "codex-max"
+        \\  },
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("codex", parsed.value.defaults.provider.?);
+    try std.testing.expectEqualStrings("codex-max", parsed.value.defaults.profile.?);
+    try std.testing.expectEqualStrings("codex-max", parsed.value.defaults.capability.?);
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try validate(parsed.value, out.writer());
+    try std.testing.expectEqual(@as(usize, 0), out.items.len);
+}
+
 test "loadFromBytes provider definition override" {
     const json =
         \\{
@@ -907,6 +954,38 @@ test "validate rejects unknown profile account" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "unknown account 'codex:max-2'") != null);
+}
+
+test "validate rejects unknown default profile" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": {
+        \\    "profile": "missing"
+        \\  },
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "env", "variable": "CODEX_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "defaults.profile references unknown profile 'missing'") != null);
 }
 
 test "validate accepts capability profile route" {

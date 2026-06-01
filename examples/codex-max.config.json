@@ -3,6 +3,8 @@
   "defaults": {
     "provider": "codex",
     "strategy": "health-weighted",
+    "profile": "codex-max",
+    "capability": "codex-max",
     "shell": "fish"
   },
   "providers": {
