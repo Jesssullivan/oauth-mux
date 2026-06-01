@@ -214,6 +214,11 @@ oauth-mux route explain --profile codex-max --capability codex-max
 oauth-mux codex resume
 ```
 
+Managed `oauth-mux codex` launch/resume reads `defaults.profile` and
+`defaults.capability` when they are configured. Existing Codex Max configs also
+fall back to the conventional `codex-max` profile, so explicit profile flags are
+needed only for diagnostics, alternate profiles, or scripted proof.
+
 If a route needs upstream auth, run the labeled handoff reported by
 `route explain`, for example:
 

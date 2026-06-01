@@ -8874,6 +8874,8 @@ fn writeCodexMaxStarterConfig(allocator: std.mem.Allocator, writer: anytype, sto
         \\  "defaults": {
         \\    "provider": "codex",
         \\    "strategy": "health-weighted",
+        \\    "profile": "codex-max",
+        \\    "capability": "codex-max",
         \\    "shell": "fish"
         \\  },
         \\  "providers": {

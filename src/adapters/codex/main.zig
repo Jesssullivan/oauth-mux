@@ -561,6 +561,37 @@ const ManagedCapabilityResolution = union(enum) {
     ambiguous,
 };
 
+const ManagedLaunchDefaults = struct {
+    profile: ?[]const u8 = null,
+    capability: ?[]const u8 = null,
+};
+
+fn resolveManagedLaunchDefaults(
+    cfg: config_mod.Config,
+    explicit_profile: ?[]const u8,
+    explicit_capability: ?[]const u8,
+) ManagedLaunchDefaults {
+    const config_profile = cfg.defaults.profile;
+    var profile: ?[]const u8 = explicit_profile orelse config_profile;
+    if (profile == null and cfg.profiles.map.get("codex-max") != null) profile = "codex-max";
+
+    var capability: ?[]const u8 = explicit_capability;
+    if (capability == null) {
+        if (explicit_profile == null) {
+            capability = cfg.defaults.capability;
+        } else if (config_profile) |default_profile| {
+            if (std.mem.eql(u8, explicit_profile.?, default_profile)) {
+                capability = cfg.defaults.capability;
+            }
+        }
+    }
+
+    return .{
+        .profile = profile,
+        .capability = capability,
+    };
+}
+
 fn managedRouteCapability(
     cfg: config_mod.Config,
     explicit_capability: ?[]const u8,
@@ -1149,7 +1180,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     };
     defer parsed.deinit();
 
-    const route_capability = switch (managedRouteCapability(parsed.value, opts.capability, opts.profile)) {
+    const launch_defaults = resolveManagedLaunchDefaults(parsed.value, opts.profile, opts.capability);
+    const route_capability = switch (managedRouteCapability(parsed.value, launch_defaults.capability, launch_defaults.profile)) {
         .capability => |capability| capability,
         .none => null,
         .ambiguous => {
@@ -1163,7 +1195,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer server.deinit();
     var route_health = health_mod.HealthStore.load(allocator, .{});
     defer route_health.deinit();
-    broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
+    broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, launch_defaults.profile, route_capability, &route_health) catch {
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "config_health_load", "PoolPopulateFailed", session_started_emitted);
         return RunError.PoolPopulateFailed;
     };
@@ -1177,7 +1209,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             allocator,
             parsed.value,
             &route_health,
-            opts.profile,
+            launch_defaults.profile,
             route_capability,
             opts.account,
             initial_selectable_routes,
@@ -1188,7 +1220,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         if (revalidation.changedRouteHealth()) {
             server.pool.deinit();
             server.pool = broker.AccountPool.init(allocator);
-            broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, opts.profile, route_capability, &route_health) catch {
+            broker_loader.populatePoolFromRouteHealthScoped(&server.pool, parsed.value, launch_defaults.profile, route_capability, &route_health) catch {
                 try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "pool_populate_failed", "codex_auto_revalidation", "PoolPopulateFailed", session_started_emitted);
                 return RunError.PoolPopulateFailed;
             };
@@ -1217,7 +1249,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         try stderr.print("oauth-mux codex: --account {s} not in profile\n", .{pin});
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
         return RunError.NoAccountSelectable;
-    } else server.pool.elect(opts.profile, route_capability, &.{}) catch |e| switch (e) {
+    } else server.pool.elect(launch_defaults.profile, route_capability, &.{}) catch |e| switch (e) {
         broker_types.BrokerError.NoAccountSelectable => {
             try stderr.writeAll("oauth-mux codex: no selectable account in profile\n");
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "no_account_selectable", "route_election", "NoAccountSelectable", session_started_emitted);
@@ -1256,7 +1288,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         return e;
     };
     defer proxy.deinit();
-    proxy.profile = opts.profile;
+    proxy.profile = launch_defaults.profile;
     proxy.capability = route_capability;
     const proxy_port = proxy.port();
     try launch_timer.mark(status_writer, emit_status, "proxy_bind");
@@ -1277,7 +1309,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         opts.isolated_session_store,
     );
     defer codex_home.deinit(allocator);
-    traceManagedOverlay(allocator, elected.id, opts.profile, proxy_port, &codex_home);
+    traceManagedOverlay(allocator, elected.id, launch_defaults.profile, proxy_port, &codex_home);
     try launch_timer.mark(status_writer, emit_status, "overlay_creation");
 
     const resume_request = detectResumeRequest(opts.forward_argv);
@@ -1406,10 +1438,10 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     if (status_file_path) |path| try env_map.put("OMUX_STATUS_FILE", path);
     const account_only = elected.id[std.mem.indexOfScalar(u8, elected.id, ':').? + 1 ..];
     try env_map.put("OMUX_ACTIVE_ACCOUNT", account_only);
-    if (opts.profile) |p| try env_map.put("OMUX_ACTIVE_PROFILE", p);
+    if (launch_defaults.profile) |p| try env_map.put("OMUX_ACTIVE_PROFILE", p);
     try launch_timer.mark(status_writer, emit_status, "env_build");
 
-    traceManagedSessionStart(allocator, elected.id, opts.profile, opts.forward_argv.len, resume_request.mode, &codex_home);
+    traceManagedSessionStart(allocator, elected.id, launch_defaults.profile, opts.forward_argv.len, resume_request.mode, &codex_home);
 
     // 8. Spawn codex as child with inherited stdio (so the user gets
     // the real codex TUI). The adapter stays alive in parent.
@@ -3051,6 +3083,96 @@ test "RunOptions defaults" {
     try std.testing.expect(!opts.json_status);
     try std.testing.expect(opts.json_status_file == null);
     try std.testing.expectEqual(@as(usize, 0), opts.forward_argv.len);
+}
+
+test "resolveManagedLaunchDefaults prefers explicit args, config defaults, then codex-max profile" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "defaults": {
+        \\    "profile": "codex-mini",
+        \\    "capability": "codex-mini"
+        \\  },
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 20, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] },
+        \\    "codex-mini": { "providers": ["codex:max-1#codex-mini"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const from_config = resolveManagedLaunchDefaults(parsed.value, null, null);
+    try std.testing.expectEqualStrings("codex-mini", from_config.profile.?);
+    try std.testing.expectEqualStrings("codex-mini", from_config.capability.?);
+
+    const explicit = resolveManagedLaunchDefaults(parsed.value, "codex-max", "codex-max");
+    try std.testing.expectEqualStrings("codex-max", explicit.profile.?);
+    try std.testing.expectEqualStrings("codex-max", explicit.capability.?);
+
+    const default_profile_explicit = resolveManagedLaunchDefaults(parsed.value, "codex-mini", null);
+    try std.testing.expectEqualStrings("codex-mini", default_profile_explicit.profile.?);
+    try std.testing.expectEqualStrings("codex-mini", default_profile_explicit.capability.?);
+
+    const switched_profile = resolveManagedLaunchDefaults(parsed.value, "codex-max", null);
+    try std.testing.expectEqualStrings("codex-max", switched_profile.profile.?);
+    try std.testing.expect(switched_profile.capability == null);
+}
+
+test "resolveManagedLaunchDefaults preserves bare codex behavior for existing configs" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 20, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": { "providers": ["codex:max-1#codex-max"] }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const defaults = resolveManagedLaunchDefaults(parsed.value, null, null);
+    try std.testing.expectEqualStrings("codex-max", defaults.profile.?);
+    try std.testing.expect(defaults.capability == null);
+
+    const non_codex_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 20, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "custom": { "providers": ["codex:max-1#codex-custom"] }
+        \\  }
+        \\}
+    ;
+    var non_codex = try config_mod.loadFromBytes(std.testing.allocator, non_codex_json);
+    defer non_codex.deinit();
+
+    const empty = resolveManagedLaunchDefaults(non_codex.value, null, null);
+    try std.testing.expect(empty.profile == null);
+    try std.testing.expect(empty.capability == null);
 }
 
 test "managedRouteCapability infers unique profile capability and rejects ambiguous profiles" {
