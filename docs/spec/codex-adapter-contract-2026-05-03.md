@@ -504,6 +504,12 @@ serializes per-account; if a second adapter requests refresh while one is
 in flight, the broker returns the result of the in-flight call (not a
 fresh attempt). Adapters must accept that policy without retry.
 
+> **Status (2026-06-01): partially implemented for route-local Codex
+> `auth.json`.** oauth-mux serializes file-backed Codex refresh by
+> provider/account and re-reads the auth file under the lock before using a
+> refresh token. The adapter-facing JSON-RPC result-sharing behavior is still a
+> target contract, not a general MCP surface.
+
 ## 8. Adapter CLI Surface
 
 ```
