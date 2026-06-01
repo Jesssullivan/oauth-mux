@@ -378,6 +378,7 @@ const SqliteAuthorityLockObservation = struct {
     db_basename: []const u8 = "state_5.sqlite",
     sqlite_error_class: ?[]const u8 = null,
     sqlite_error_code: ?u8 = null,
+    lock_owner_pid: ?i64 = null,
     next_action: []const u8 = "none",
 
     fn locked(self: SqliteAuthorityLockObservation) bool {
@@ -1341,7 +1342,11 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     }
     try launch_timer.mark(status_writer, emit_status, "sqlite_authority_check");
     if (sqlite_lock_check.locked()) {
-        try stderr.writeAll("oauth-mux codex: canonical Codex sqlite state is locked by another Codex process; close or wait for that process, then retry\n");
+        if (sqlite_lock_check.lock_owner_pid) |pid| {
+            try stderr.print("oauth-mux codex: canonical Codex sqlite state is locked by another Codex process (pid {d}); close or wait for that process, then retry\n", .{pid});
+        } else {
+            try stderr.writeAll("oauth-mux codex: canonical Codex sqlite state is locked by another Codex process; close or wait for that process, then retry\n");
+        }
         try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "session_authority_locked", "sqlite_authority_check", "SqliteStateLocked", session_started_emitted);
         return RunError.SessionAuthorityLocked;
     }
@@ -1589,6 +1594,7 @@ fn checkResumeSqliteAuthorityLock(
             observation.diagnostic = "database_locked";
             observation.sqlite_error_class = "database_locked";
             observation.sqlite_error_code = 5;
+            observation.lock_owner_pid = try querySqliteLockOwnerPid(file);
             observation.next_action = "close_or_wait_for_other_codex_process_then_retry";
         },
         .unsupported => {
@@ -1605,6 +1611,25 @@ const SqliteLockProbeResult = enum {
     locked,
     unsupported,
 };
+
+fn querySqliteLockOwnerPid(file: std.fs.File) !?i64 {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return null;
+    }
+
+    const sqlite_pending_byte: u64 = 0x40000000;
+    const sqlite_lock_span: u64 = 512;
+    var lock = std.mem.zeroes(std.c.Flock);
+    lock.type = @intCast(std.c.F.WRLCK);
+    lock.whence = @intCast(std.c.SEEK.SET);
+    lock.start = @intCast(sqlite_pending_byte);
+    lock.len = @intCast(sqlite_lock_span);
+
+    _ = std.posix.fcntl(file.handle, std.c.F.GETLK, @intFromPtr(&lock)) catch return null;
+    if (lock.type == @as(@TypeOf(lock.type), @intCast(std.c.F.UNLCK))) return null;
+    if (lock.pid <= 0) return null;
+    return @intCast(lock.pid);
+}
 
 fn probeSqliteLockBytes(file: std.fs.File) !SqliteLockProbeResult {
     if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
@@ -1650,6 +1675,14 @@ fn writeSqliteAuthorityCheckStatus(writer: anytype, check: SqliteAuthorityLockOb
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"lock_owner_pid\":");
+    if (check.lock_owner_pid) |pid| {
+        try writer.print("{d}", .{pid});
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"lock_owner_pid_printed\":");
+    try writer.writeAll(if (check.lock_owner_pid != null) "true" else "false");
     try writer.writeAll(",\"path_printed\":false,\"token_material_printed\":false,\"session_id_printed\":false}\n");
 }
 
