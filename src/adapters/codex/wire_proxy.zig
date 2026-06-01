@@ -183,7 +183,9 @@ fn waitForUpstreamResponseStart(http_req: *std.http.Client.Request, timeout_ms: 
     return try pollSocket(connection.stream.handle, @intCast(std.posix.POLL.IN), timeout_ms);
 }
 
-fn setSocketReceiveTimeoutMs(handle: std.posix.socket_t, timeout_ms: i32) std.posix.SetSockOptError!void {
+const SocketReceiveTimeoutError = std.posix.SetSockOptError || error{InvalidSocketState};
+
+fn setSocketReceiveTimeoutMs(handle: std.posix.socket_t, timeout_ms: i32) SocketReceiveTimeoutError!void {
     if (builtin.os.tag == .windows) {
         var timeout: u32 = @intCast(@max(timeout_ms, 0));
         try std.posix.setsockopt(
@@ -195,19 +197,33 @@ fn setSocketReceiveTimeoutMs(handle: std.posix.socket_t, timeout_ms: i32) std.po
         return;
     }
 
-    var timeout = std.posix.timeval{
+    const timeout = std.posix.timeval{
         .sec = @intCast(@divTrunc(timeout_ms, 1000)),
         .usec = @intCast(@rem(timeout_ms, 1000) * 1000),
     };
-    try std.posix.setsockopt(
+    switch (std.posix.errno(std.posix.system.setsockopt(
         handle,
         std.posix.SOL.SOCKET,
         std.posix.SO.RCVTIMEO,
-        std.mem.asBytes(&timeout),
-    );
+        std.mem.asBytes(&timeout).ptr,
+        @intCast(std.mem.asBytes(&timeout).len),
+    ))) {
+        .SUCCESS => {},
+        .BADF, .FAULT, .INVAL => return error.InvalidSocketState,
+        .NOTSOCK => return error.FileDescriptorNotASocket,
+        .DOM => return error.TimeoutTooBig,
+        .ISCONN => return error.AlreadyConnected,
+        .NOPROTOOPT => return error.InvalidProtocolOption,
+        .NOMEM => return error.SystemResources,
+        .NOBUFS => return error.SystemResources,
+        .PERM => return error.PermissionDenied,
+        .NODEV => return error.NoDevice,
+        .OPNOTSUPP => return error.OperationNotSupported,
+        else => |err| return std.posix.unexpectedErrno(err),
+    }
 }
 
-fn setUpstreamResponseReadTimeout(http_req: *std.http.Client.Request, timeout_ms: i32) std.posix.SetSockOptError!void {
+fn setUpstreamResponseReadTimeout(http_req: *std.http.Client.Request, timeout_ms: i32) SocketReceiveTimeoutError!void {
     const connection = http_req.connection orelse return;
     try setSocketReceiveTimeoutMs(connection.stream.handle, timeout_ms);
 }
@@ -464,7 +480,7 @@ pub const Proxy = struct {
 
         while (true) {
             // ── 2. Elect an account ─────────────────────────────
-            const elected = self.pool.elect(self.profile, null, attempted.items) catch |err| {
+            const elected = electProxyRouteAfterTimeRefresh(self.pool, self.profile, attempted.items, std.time.timestamp()) catch |err| {
                 appendPoolRejections(a, self.pool, &attempted, &rejections) catch {};
                 const pending_kind = pending_failure_kind;
                 if (pending_kind != null and pending_kind.? == .auth_unauthorized and pending_buffered != null) {
@@ -1095,6 +1111,16 @@ pub const Proxy = struct {
         self.log_writer.writeAll(buf.items) catch {};
     }
 };
+
+fn electProxyRouteAfterTimeRefresh(
+    pool: *account_pool_mod.AccountPool,
+    profile: ?[]const u8,
+    attempted: []const []const u8,
+    now_unix: i64,
+) broker_types.BrokerError!account_pool_mod.AccountSummary {
+    pool.refreshTimeBased(now_unix);
+    return pool.elect(profile, null, attempted);
+}
 
 fn shouldRetrySameTurn(kind: broker_types.QuotaKind) bool {
     return switch (kind) {
@@ -2719,6 +2745,30 @@ test "provider 5xx evidence blocks in-session route until retry window" {
     pool.refreshTimeBased(now + 60);
     const recovered = try pool.elect(null, null, &.{});
     try std.testing.expectEqualStrings("codex:max-1", recovered.id);
+}
+
+test "proxy election revives expired quota window before fallback selection" {
+    var pool = account_pool_mod.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{
+        .id = "codex:max-1",
+        .selectable = false,
+        .liveness = .live,
+        .availability = .quota_exhausted,
+        .next_eligible_at = 1_788_000_000,
+    });
+    try pool.add(.{
+        .id = "codex:max-2",
+        .selectable = false,
+        .liveness = .dead,
+        .availability = .unknown,
+    });
+
+    const elected = try electProxyRouteAfterTimeRefresh(&pool, "codex-max", &.{}, 1_788_000_060);
+    try std.testing.expectEqualStrings("codex:max-1", elected.id);
+    try std.testing.expect(pool.accounts.items[0].selectable);
+    try std.testing.expectEqual(account_pool_mod.Availability.available, pool.accounts.items[0].availability);
+    try std.testing.expect(pool.accounts.items[0].next_eligible_at == null);
 }
 
 test "successful managed proxy turn records capability route health" {
