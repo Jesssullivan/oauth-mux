@@ -3950,12 +3950,24 @@ fn runRoute(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Rou
     defer evaluations.deinit();
     try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
-    const selected_index = firstSelectableRoute(evaluations.items);
+    // TIN-1811 Phase 2: never-halt cross-capability degradation, same as
+    // runStayAfloatNext. selectDegradedRoute appends the chosen fallback onto
+    // `evaluations`, so the index-based writers transparently surface it.
+    const degraded = try selectDegradedRoute(
+        allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        args.profile,
+        args.capability,
+        args.account,
+    );
+    const selected_index = degraded.index;
 
     if (args.json) {
-        try writeRouteJson(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+        try writeRouteJson(writer, allocator, parsed.value, evaluations.items, selected_index, args, degraded.capability);
     } else {
-        try writeRouteText(writer, allocator, parsed.value, evaluations.items, selected_index, args);
+        try writeRouteText(writer, allocator, parsed.value, evaluations.items, selected_index, args, degraded.capability);
     }
 
     if (args.action == .select and selected_index == null) return error.AllAccountsExhausted;
@@ -4041,7 +4053,13 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     defer attempted_routes.deinit();
 
     var last_exec_error: ?anyerror = null;
-    while (attempted_routes.items.len < routes.items.len) {
+    // TIN-1811 Phase 2: never-halt launch. Each iteration re-evaluates the
+    // requested capability and, only when no UN-ATTEMPTED selectable route
+    // remains there, degrades across the profile's chain to an immediately-live
+    // route. selectDegradedRouteNotAttempted only ever returns a selectable
+    // (immediately-live) route, never a dead/quota one, so launch never targets a
+    // throttled route. The loop terminates when it returns null (chain exhausted).
+    while (true) {
         var store = health_mod.HealthStore.load(allocator, .{});
         defer store.deinit();
 
@@ -4049,10 +4067,21 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
         defer evaluations.deinit();
         try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
-        const selected_index = firstSelectableRouteNotAttempted(evaluations.items, attempted_routes.items);
+        const degraded = try selectDegradedRouteNotAttempted(
+            allocator,
+            parsed.value,
+            &store,
+            &evaluations,
+            selector.profile,
+            selector.capability,
+            selector.account,
+            attempted_routes.items,
+        );
+        const selected_index = degraded.index;
         if (selected_index == null) {
             const candidate_index = firstActionableRoute(evaluations.items);
             try writeStayAfloatMediationText(writer, allocator, parsed.value, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
+            if (degraded.capability) |cap| try writer.print("  degraded_capability: {s}\n", .{cap});
             if (last_exec_error) |err| return err;
             return error.AllAccountsExhausted;
         }
@@ -4160,7 +4189,21 @@ fn runStayAfloatObserve(
         defer evaluations.deinit();
         try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
-        const selected_index = firstSelectableRouteNotAttempted(evaluations.items, attempted_routes.items);
+        // TIN-1811 Phase 2: degrade across the profile's chain only when no
+        // un-attempted selectable route remains in the requested capability. Only
+        // immediately-live routes are returned; quota/dead routes are never
+        // observed against.
+        const degraded = try selectDegradedRouteNotAttempted(
+            allocator,
+            parsed.value,
+            &store,
+            &evaluations,
+            selector.profile,
+            selector.capability,
+            selector.account,
+            attempted_routes.items,
+        );
+        const selected_index = degraded.index;
         if (selected_index == null) {
             reason = if (attempts.items.len == 0) "no_selectable_route" else "no_fallback_route";
             break;
@@ -4623,7 +4666,18 @@ fn writeStayAfloatLaunchMediationFromCurrentState(
     defer evaluations.deinit();
     try collectRouteEvaluations(allocator, cfg, &store, routes, &evaluations);
 
-    const selected_index = firstSelectableRoute(evaluations.items);
+    // TIN-1811 Phase 2: surface the never-halt cross-capability fallback in the
+    // post-launch mediation snapshot, consistent with runStayAfloatNext.
+    const degraded = try selectDegradedRoute(
+        allocator,
+        cfg,
+        &store,
+        &evaluations,
+        selector.profile,
+        selector.capability,
+        selector.account,
+    );
+    const selected_index = degraded.index;
     const candidate_index = if (selected_index == null) firstActionableRoute(evaluations.items) else null;
     try writeStayAfloatMediationText(
         writer,
@@ -4635,6 +4689,7 @@ fn writeStayAfloatLaunchMediationFromCurrentState(
         selector,
         "oauth-mux stay-afloat launch",
     );
+    if (degraded.capability) |cap| try writer.print("  degraded_capability: {s}\n", .{cap});
 }
 
 fn runDaemonTick(
@@ -4677,7 +4732,13 @@ fn runDaemonTick(
         defer evaluations.deinit();
         try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
-        var selected_index = firstSelectableRoute(evaluations.items);
+        // TIN-1811 Phase 2: never-halt degradation for daemon planning, so a tick
+        // reports an immediately-live cross-capability route rather than a halt
+        // when the requested capability is exhausted. Quota routes stay
+        // unselectable here (launch-time); their recovery is reflected only in
+        // the resilience accounting.
+        var degraded = try selectDegradedRoute(allocator, parsed.value, &store, &evaluations, args.profile, args.capability, args.account);
+        var selected_index = degraded.index;
         const observed_at = std.time.timestamp();
         var executions = std.ArrayList(DaemonTickExecution).init(allocator);
         defer executions.deinit();
@@ -4691,7 +4752,8 @@ fn runDaemonTick(
             store = health_mod.HealthStore.load(allocator, .{});
             evaluations.clearRetainingCapacity();
             try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
-            selected_index = firstSelectableRoute(evaluations.items);
+            degraded = try selectDegradedRoute(allocator, parsed.value, &store, &evaluations, args.profile, args.capability, args.account);
+            selected_index = degraded.index;
         }
 
         writeDaemonTickSnapshot(allocator, parsed.value, evaluations.items, selected_index, executions.items, args, observed_at) catch {};
@@ -4814,34 +4876,129 @@ fn selectableFallbackRouteCount(evaluations: []const RouteEvaluation, selected_i
     return count;
 }
 
+// TIN-1812: a quota-exhausted route is LIVE-but-throttled, not dead. When it
+// still carries a reset window in the future, it is a recoverable fallback: the
+// pool is not actually halted, it just has to wait for the window. Returns true
+// only for a quota_exhausted route whose window is set and has not yet passed
+// (an expired window means the route needs revalidation, not a guaranteed wait).
+fn routeIsRecoverableQuota(evaluation: RouteEvaluation) bool {
+    const health = evaluation.health orelse return false;
+    return switch (health.liveness) {
+        .live => |live| switch (live.availability) {
+            .quota_exhausted => |quota| quota.window_resets_at != null and
+                !quotaWindowRevalidationNeeded(quota),
+            else => false,
+        },
+        else => false,
+    };
+}
+
+// TIN-1812: resilience-accounting count of routes that keep the pool afloat --
+// immediately-selectable routes plus quota-exhausted routes that will recover at
+// a known reset window. Used ONLY for reporting/state (so a quota-only pool is
+// not a false "not_afloat"); it never makes a quota route selectable for
+// immediate launch. With no quota routes this equals selectableFallbackRouteCount
+// (scoped to `degraded_capability` when a cross-capability degrade occurred).
+fn recoverableFallbackRouteCount(
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    degraded_capability: ?[]const u8,
+) usize {
+    var count: usize = 0;
+    for (evaluations, 0..) |evaluation, idx| {
+        if (selected_index) |selected| {
+            if (idx == selected) continue;
+        }
+        const counts = evaluation.selectable or routeIsRecoverableQuota(evaluation);
+        if (!counts) continue;
+        if (degraded_capability) |cap| {
+            const route_capability = evaluation.route.capability orelse continue;
+            if (!std.mem.eql(u8, route_capability, cap)) continue;
+        }
+        count += 1;
+    }
+    return count;
+}
+
+// TIN-1812: the soonest future quota reset window across all evaluations, so the
+// resilience body can surface when the pool will recover. Null when no
+// quota-exhausted route has a reachable (future) window.
+fn soonestQuotaWindowReset(evaluations: []const RouteEvaluation) ?i64 {
+    var soonest: ?i64 = null;
+    for (evaluations) |evaluation| {
+        if (!routeIsRecoverableQuota(evaluation)) continue;
+        const health = evaluation.health orelse continue;
+        const reset = switch (health.liveness) {
+            .live => |live| switch (live.availability) {
+                .quota_exhausted => |quota| quota.window_resets_at orelse continue,
+                else => continue,
+            },
+            else => continue,
+        };
+        if (soonest == null or reset < soonest.?) soonest = reset;
+    }
+    return soonest;
+}
+
 fn writeRouteResilienceJson(
     writer: anytype,
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
 ) !void {
     const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
-    try writeRouteResilienceJsonWithCount(writer, selected_index, fallback_count);
+    // TIN-1812: count quota-recoverable spares too so a quota-only pool is not a
+    // false "not_afloat", and surface the soonest reset window.
+    const recoverable_count = recoverableFallbackRouteCount(evaluations, selected_index, null);
+    const soonest_reset = soonestQuotaWindowReset(evaluations);
+    try writeRouteResilienceJsonWithCount(writer, selected_index, fallback_count, recoverable_count, soonest_reset);
 }
 
 // TIN-1811: resilience body parameterized by an externally computed spare-route
 // count so cross-capability degradation can scope the count to the degraded
 // capability while the existing single-capability callers keep their behavior.
+//
+// TIN-1812: `recoverable_fallback_count` additionally counts quota-exhausted
+// routes that will recover at a known window. `selectable_fallback_routes`
+// (immediately-live spares) is unchanged, but `state` is only "not_afloat" when
+// there is neither a selected route NOR a recoverable fallback -- a quota route
+// that will reset keeps the pool afloat (and surfaces recovery_window_resets_at).
 fn writeRouteResilienceJsonWithCount(
     writer: anytype,
     selected_index: ?usize,
     fallback_count: usize,
+    recoverable_fallback_count: usize,
+    soonest_recovery_window_resets_at: ?i64,
 ) !void {
     const selected = selected_index != null;
+    // A pool with no immediately-live route but a quota route that will recover
+    // is "afloat" in the wait-and-continue sense (TIN-1812), not halted.
+    const afloat = selected or recoverable_fallback_count > 0;
     try writer.writeByte('{');
     try writer.writeAll("\"selected_route_ready\":");
     try writer.writeAll(if (selected) "true" else "false");
     try writer.print(",\"selectable_fallback_routes\":{d}", .{fallback_count});
+    try writer.print(",\"recoverable_fallback_routes\":{d}", .{recoverable_fallback_count});
     try writer.writeAll(",\"spare_fallback_ready\":");
     try writer.writeAll(if (selected and fallback_count > 0) "true" else "false");
     try writer.writeAll(",\"single_route_at_risk\":");
     try writer.writeAll(if (selected and fallback_count == 0) "true" else "false");
+    try writer.writeAll(",\"recovery_window_resets_at\":");
+    if (soonest_recovery_window_resets_at) |reset| {
+        try writer.print("{d}", .{reset});
+    } else {
+        try writer.writeAll("null");
+    }
     try writer.writeAll(",\"state\":");
-    try std.json.stringify(if (!selected) "not_afloat" else if (fallback_count > 0) "afloat_with_spare_fallback" else "afloat_without_spare_fallback", .{}, writer);
+    try std.json.stringify(if (!afloat)
+        "not_afloat"
+    else if (selected and fallback_count > 0)
+        "afloat_with_spare_fallback"
+    else if (selected)
+        "afloat_without_spare_fallback"
+    else
+        // No immediately-live route, but a quota route will recover: the pool is
+        // not halted, it is waiting for a reset window (TIN-1812).
+        "afloat_pending_quota_recovery", .{}, writer);
     try writer.writeByte('}');
 }
 
@@ -5406,17 +5563,18 @@ fn collectProfileRoutesForCapability(
     return routes;
 }
 
-// TIN-1811: the never-halt fallback. When `original_evaluations` (the requested
-// capability's routes) has no selectable route, walk the profile's
-// capability_degradation_chain in order, re-evaluate the routes for each fallback
-// capability, and append the first selectable degraded route onto `evaluations`.
-// Returns the index of that appended evaluation plus the degraded capability so
-// callers can surface it. A null chain (today's default) returns no selection,
-// preserving the strictly capability-scoped behavior.
+// TIN-1811: the never-halt fallback. When the requested capability's routes have
+// no selectable route, walk the profile's capability_degradation_chain in order,
+// re-evaluate the routes for each fallback capability, and append the first
+// selectable degraded route onto `evaluations`. Returns the index of that
+// appended evaluation plus the degraded capability so callers can surface it.
+// A null chain (today's default) returns no selection, preserving the strictly
+// capability-scoped behavior.
 //
-// TODO(TIN-1811 Phase 2): factor a shared selection helper and wire the other
-// firstSelectableRoute call sites (runRoute, writeStayAfloatMediationWriter,
-// daemonTick, runStayAfloatLaunch via firstSelectableRouteNotAttempted) onto it.
+// CRITICAL: degradation only ever selects an IMMEDIATELY-LIVE route (one that
+// `firstSelectableRoute` accepts). It never selects a dead/quota route to launch
+// on; quota's "will recover" signal lives only in the resilience accounting
+// (TIN-1812), not here.
 fn selectDegradedRoute(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -5426,7 +5584,62 @@ fn selectDegradedRoute(
     requested_capability: ?[]const u8,
     account_filter: ?[]const u8,
 ) !DegradedSelection {
-    if (firstSelectableRoute(evaluations.items)) |idx| {
+    return selectDegradedRouteCore(
+        allocator,
+        cfg,
+        store,
+        evaluations,
+        profile_name,
+        requested_capability,
+        account_filter,
+        null,
+    );
+}
+
+// TIN-1811 Phase 2: launch/retry variant of selectDegradedRoute. The launch loops
+// (runStayAfloatLaunch, runStayAfloatObserve) track `attempted_routes` and must
+// skip a route once it has been launched on. As with the base selector, the
+// requested capability is consulted first: degradation walks the chain only when
+// no UN-ATTEMPTED selectable route exists in the requested capability. Degraded
+// routes already attempted are likewise skipped, so a failed cross-capability
+// launch is not retried in a loop.
+fn selectDegradedRouteNotAttempted(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    evaluations: *std.ArrayList(RouteEvaluation),
+    profile_name: ?[]const u8,
+    requested_capability: ?[]const u8,
+    account_filter: ?[]const u8,
+    attempted_routes: []const RepairPlanRoute,
+) !DegradedSelection {
+    return selectDegradedRouteCore(
+        allocator,
+        cfg,
+        store,
+        evaluations,
+        profile_name,
+        requested_capability,
+        account_filter,
+        attempted_routes,
+    );
+}
+
+// Shared core for selectDegradedRoute / selectDegradedRouteNotAttempted. When
+// `attempted_routes` is null, selects the first selectable route; when non-null,
+// selects the first selectable route not already in that attempted set (both in
+// the requested capability and in any fallback capability).
+fn selectDegradedRouteCore(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    evaluations: *std.ArrayList(RouteEvaluation),
+    profile_name: ?[]const u8,
+    requested_capability: ?[]const u8,
+    account_filter: ?[]const u8,
+    attempted_routes: ?[]const RepairPlanRoute,
+) !DegradedSelection {
+    if (firstSelectableRouteMaybeAttempted(evaluations.items, attempted_routes)) |idx| {
         return .{ .index = idx, .capability = null };
     }
 
@@ -5455,7 +5668,7 @@ fn selectDegradedRoute(
         defer fallback_evaluations.deinit();
         try collectRouteEvaluations(allocator, cfg, store, fallback_routes.items, &fallback_evaluations);
 
-        if (firstSelectableRoute(fallback_evaluations.items)) |fallback_idx| {
+        if (firstSelectableRouteMaybeAttempted(fallback_evaluations.items, attempted_routes)) |fallback_idx| {
             // Append the whole fallback capability's evaluations so live spares
             // are visible to the resilience/state accounting (a degraded route is
             // only truly afloat-with-spare if another live route exists too), and
@@ -5467,6 +5680,17 @@ fn selectDegradedRoute(
     }
 
     return .{};
+}
+
+// Selects the first selectable route, optionally skipping routes already attempted.
+// `attempted_routes == null` matches firstSelectableRoute; non-null matches
+// firstSelectableRouteNotAttempted.
+fn firstSelectableRouteMaybeAttempted(
+    evaluations: []const RouteEvaluation,
+    attempted_routes: ?[]const RepairPlanRoute,
+) ?usize {
+    const attempted = attempted_routes orelse return firstSelectableRoute(evaluations);
+    return firstSelectableRouteNotAttempted(evaluations, attempted);
 }
 
 // TIN-1811: count live spare routes, scoped to the degraded capability when a
@@ -5529,10 +5753,13 @@ fn writeRouteText(
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     args: cli.Command.RouteArgs,
+    degraded_capability: ?[]const u8,
 ) !void {
     try writer.print("oauth-mux route {s}\n\n", .{@tagName(args.action)});
     if (args.profile) |profile_name| try writer.print("  profile: {s}\n", .{profile_name});
     if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
+    // TIN-1811 Phase 2: surface a cross-capability degrade when one occurred.
+    if (degraded_capability) |cap| try writer.print("  degraded_capability: {s}\n", .{cap});
     if (selected_index) |idx| {
         const selected = evaluations[idx].route;
         try writer.print("  selected: {s}:{s}", .{ selected.provider, selected.account });
@@ -5658,6 +5885,7 @@ fn writeRouteJson(
     evaluations: []const RouteEvaluation,
     selected_index: ?usize,
     args: cli.Command.RouteArgs,
+    degraded_capability: ?[]const u8,
 ) !void {
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
@@ -5677,6 +5905,8 @@ fn writeRouteJson(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"degraded_capability\":");
+    if (degraded_capability) |cap| try std.json.stringify(cap, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"resilience\":");
     try writeRouteResilienceJson(writer, evaluations, selected_index);
     try writer.writeAll(",\"resilience_actions\":");
@@ -5704,6 +5934,10 @@ fn writeStayAfloatNextJson(
     // cross-capability fallback occurred, so resilience/state reflect the live
     // capability that was actually selected instead of the exhausted request.
     const fallback_count = selectableFallbackRouteCountForSelection(evaluations, selected_index, degraded_capability);
+    // TIN-1812: quota-recoverable spares (scoped to the same degraded capability)
+    // and the soonest reset window keep a quota-only pool out of "not_afloat".
+    const recoverable_count = recoverableFallbackRouteCount(evaluations, selected_index, degraded_capability);
+    const soonest_reset = soonestQuotaWindowReset(evaluations);
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"action\":\"next\"");
@@ -5730,7 +5964,7 @@ fn writeStayAfloatNextJson(
     try writer.writeAll(",\"degraded_capability\":");
     if (degraded_capability) |cap| try std.json.stringify(cap, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"resilience\":");
-    try writeRouteResilienceJsonWithCount(writer, selected_index, fallback_count);
+    try writeRouteResilienceJsonWithCount(writer, selected_index, fallback_count, recoverable_count, soonest_reset);
     try writer.writeAll(",\"resilience_actions\":");
     try writeRouteResilienceActionsJson(writer, allocator, cfg, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"claim\":");
@@ -10611,6 +10845,13 @@ fn runCodexManagedPlan(allocator: std.mem.Allocator, writer: anytype, args: cli.
     defer evaluations.deinit();
     try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
+    // TODO(TIN-1811 Phase 2 follow-up): cross-capability degradation is
+    // deliberately NOT wired here. This plan feeds the managed-Codex resume
+    // boundary (TIN-1631); degrading codex-max->codex-mini mid-plan would change
+    // which capability a managed/resumed session binds to. Wiring it requires
+    // threading degraded_capability through the managed-plan writers and the
+    // resume-eligibility check together, so it is left capability-scoped until
+    // that boundary change is scoped explicitly.
     const selected_index = firstSelectableRoute(evaluations.items);
 
     if (args.json) {
@@ -11341,6 +11582,11 @@ fn inspectCodexManagedResumeForArgs(allocator: std.mem.Allocator, args: cli.Comm
     defer evaluations.deinit();
     try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
+    // TODO(TIN-1811 Phase 2 follow-up): kept capability-scoped on purpose. A
+    // resume binds to a specific session/capability; cross-capability degrade
+    // here would silently rebind a resumed managed Codex session to a different
+    // capability, which intersects the TIN-1631 resume boundary. Wire only with
+    // an explicit session-continuity decision.
     const selected_index = firstSelectableRoute(evaluations.items);
     const selected_route = if (selected_index) |idx| evaluations.items[idx].route else null;
     return try inspectCodexManagedResume(allocator, parsed.value, selected_route, args);
@@ -18202,11 +18448,14 @@ test "route select picks first ready live route and explains skipped quota route
     try writeRouteJson(buf.writer(), std.testing.allocator, parsed.value, evaluations.items, selected, .{
         .action = .select,
         .profile = "work",
-    });
+    }, null);
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ok\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selected\":{\"provider\":\"toy\",\"account\":\"a2\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":true") != null);
+    // TIN-1812: the a1 route is quota_exhausted with a future reset window, so it
+    // counts as a recoverable fallback (not an immediately-live spare). The pool
+    // is afloat (selected route ready); the quota route is "will recover".
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"recoverable_fallback_routes\":1,\"spare_fallback_ready\":false,\"single_route_at_risk\":true,\"recovery_window_resets_at\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience_actions\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"quota_exhausted\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"skip_reason\":\"available\"") != null);
@@ -18262,7 +18511,10 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"action\":\"next\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":true") != null);
+    // TIN-1812: the a1 route is quota_exhausted with a future reset window, so it
+    // counts as a recoverable fallback (not an immediately-live spare). The pool
+    // is afloat (selected route ready); the quota route is "will recover".
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":true,\"selectable_fallback_routes\":0,\"recoverable_fallback_routes\":1,\"spare_fallback_ready\":false,\"single_route_at_risk\":true,\"recovery_window_resets_at\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience_actions\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"prepared_fallback\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"spare_fallback_ready\":false") != null);
@@ -18472,6 +18724,275 @@ test "config rejects capability_degradation_chain with a capability that has no 
     try std.testing.expect(std.mem.indexOf(u8, validation_messages.items, "codex-typo") != null);
 }
 
+test "stay-afloat launch path degrades across capability via selectDegradedRouteNotAttempted (TIN-1811 Phase 2)" {
+    // No-spend: only reads config + the in-memory health store (no exec). The
+    // launch/observe loops select via selectDegradedRouteNotAttempted; this
+    // verifies it crosses to a live codex-mini route when every codex-max route
+    // is unselectable, returns ONLY immediately-live routes, and respects the
+    // attempted-routes retry set.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } },
+        \\        "mini-1": { "secret": { "backend": "env", "variable": "TOY_MINI1" } },
+        \\        "mini-2": { "secret": { "backend": "env", "variable": "TOY_MINI2" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "toy:max-1#codex-max",
+        \\        "toy:mini-1#codex-mini",
+        \\        "toy:mini-2#codex-mini"
+        \\      ],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // codex-max exhausted (quota, future window) -> unselectable for launch.
+    store.recordCapabilityHttpStatus("toy", "max-1", "codex-max", 429, 7200);
+    // Two live codex-mini routes.
+    _ = try store.getOrCreate("toy:mini-1#codex-mini");
+    _ = try store.getOrCreate("toy:mini-2#codex-mini");
+
+    // Launch evaluates only the requested capability, exactly like the loops.
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    var attempted = std.ArrayList(RepairPlanRoute).init(std.testing.allocator);
+    defer attempted.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(std.testing.allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+
+    // Requested capability has nothing selectable; not-attempted base selector agrees.
+    try std.testing.expect(firstSelectableRouteNotAttempted(evaluations.items, attempted.items) == null);
+
+    // Degrade to the chain and pick the first live codex-mini route.
+    const first = try selectDegradedRouteNotAttempted(
+        std.testing.allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        "codex-max",
+        "codex-max",
+        null,
+        attempted.items,
+    );
+    try std.testing.expect(first.index != null);
+    try std.testing.expectEqualStrings("codex-mini", first.capability.?);
+    const first_route = evaluations.items[first.index.?];
+    // CRITICAL: launch-time selection must be IMMEDIATELY-LIVE, never quota/dead.
+    try std.testing.expect(first_route.selectable);
+    try std.testing.expectEqualStrings("codex-mini", first_route.route.capability.?);
+    try std.testing.expectEqualStrings("mini-1", first_route.route.account);
+
+    // Simulate a failed launch on mini-1: it is now attempted; the retry must move
+    // to the second live codex-mini route, still cross-capability, still live.
+    try attempted.append(first_route.route);
+    evaluations.clearRetainingCapacity();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+    const second = try selectDegradedRouteNotAttempted(
+        std.testing.allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        "codex-max",
+        "codex-max",
+        null,
+        attempted.items,
+    );
+    try std.testing.expect(second.index != null);
+    const second_route = evaluations.items[second.index.?];
+    try std.testing.expect(second_route.selectable);
+    try std.testing.expectEqualStrings("mini-2", second_route.route.account);
+
+    // Both codex-mini routes attempted: no un-attempted live route remains, so the
+    // launch loop terminates (no halt-causing quota route is ever launched on).
+    try attempted.append(second_route.route);
+    evaluations.clearRetainingCapacity();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+    const third = try selectDegradedRouteNotAttempted(
+        std.testing.allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        "codex-max",
+        "codex-max",
+        null,
+        attempted.items,
+    );
+    try std.testing.expect(third.index == null);
+    try std.testing.expect(third.capability == null);
+}
+
+test "quota-only codex-max pool is afloat-pending-recovery, not a false not_afloat, and is not launchable (TIN-1812)" {
+    // No-spend: config + in-memory health store only. Every codex-max route is
+    // quota_exhausted with a future reset window; none are dead; there is NO
+    // degradation chain. The pool must report a recoverable fallback (so state is
+    // not "not_afloat") and surface the soonest reset window, while remaining
+    // NON-selectable for immediate launch (quota routes would fail upstream).
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } },
+        \\        "max-2": { "secret": { "backend": "env", "variable": "TOY_MAX2" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "toy:max-1#codex-max",
+        \\        "toy:max-2#codex-max"
+        \\      ]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Both routes quota_exhausted with future windows (7200s and 3700s).
+    store.recordCapabilityHttpStatus("toy", "max-1", "codex-max", 429, 7200);
+    store.recordCapabilityHttpStatus("toy", "max-2", "codex-max", 429, 3700);
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(std.testing.allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+
+    // Both quota routes are unselectable for immediate launch.
+    try std.testing.expect(!evaluations.items[0].selectable);
+    try std.testing.expect(!evaluations.items[1].selectable);
+    try std.testing.expectEqualStrings("quota_exhausted", evaluations.items[0].skip_reason);
+
+    // Launch selection (no chain) finds NOTHING selectable: quota is never
+    // launched on (it would fail upstream).
+    const degraded = try selectDegradedRoute(
+        std.testing.allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        "codex-max",
+        "codex-max",
+        null,
+    );
+    try std.testing.expect(degraded.index == null);
+
+    // But the resilience ACCOUNTING counts the quota routes as recoverable.
+    const recoverable = recoverableFallbackRouteCount(evaluations.items, null, null);
+    try std.testing.expectEqual(@as(usize, 2), recoverable);
+    try std.testing.expectEqual(@as(usize, 0), selectableFallbackRouteCount(evaluations.items, null));
+    // Soonest window is the 3700s route, which is < the 7200s route.
+    const soonest = soonestQuotaWindowReset(evaluations.items);
+    try std.testing.expect(soonest != null);
+
+    // The resilience JSON: not_afloat must NOT appear; state must be the
+    // pending-recovery state; recoverable count > 0; window surfaced.
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRouteResilienceJson(buf.writer(), evaluations.items, null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"not_afloat\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"afloat_pending_quota_recovery\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"recoverable_fallback_routes\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selectable_fallback_routes\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"recovery_window_resets_at\":null") == null);
+}
+
+test "expired quota window is not counted as recoverable (TIN-1812 boundary)" {
+    // No-spend: a quota route whose window has already passed needs revalidation,
+    // not a guaranteed wait, so it must NOT count as a recoverable fallback and
+    // the pool stays "not_afloat" (no false afloat signal).
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": ["toy:max-1#codex-max"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Quota with a window that already elapsed: getOrCreate then force an expired
+    // window via the public health record, then hand-roll the past reset.
+    const health = try store.getOrCreate("toy:max-1#codex-max");
+    const now = std.time.timestamp();
+    health.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .exhausted_at = now - 10_000,
+        .window_resets_at = now - 1,
+    } } } };
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(std.testing.allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+
+    try std.testing.expectEqual(@as(usize, 0), recoverableFallbackRouteCount(evaluations.items, null, null));
+    try std.testing.expect(soonestQuotaWindowReset(evaluations.items) == null);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRouteResilienceJson(buf.writer(), evaluations.items, null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"not_afloat\"") != null);
+}
+
 test "stay-afloat next emits mediated repair action when no route is selectable" {
     const json =
         \\{
@@ -18518,7 +19039,7 @@ test "stay-afloat next emits mediated repair action when no route is selectable"
     }, null);
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":false,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":false,\"state\":\"not_afloat\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":false,\"selectable_fallback_routes\":0,\"recoverable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":false,\"recovery_window_resets_at\":null,\"state\":\"not_afloat\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"claim\":{\"claim_version\":1,\"level\":\"mediation_required\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"prepared_fallback\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"launch_argv\":[\"oauth-mux\",\"stay-afloat\",\"launch\",\"--profile\",\"needs-reauth\",\"--capability\",\"codex-max\",\"--\",\"<command>\"]") != null);
