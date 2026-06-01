@@ -72,6 +72,11 @@ pub const ProfileConfig = struct {
     providers: []const []const u8,
     strategy: ?[]const u8 = null,
     affinity_ttl_minutes: u32 = 20,
+    // TIN-1811: ordered cross-capability degradation chain. When the requested
+    // capability has no selectable route, the selector re-evaluates routes for
+    // each capability listed here, in order, and selects the first live one.
+    // null (default) preserves today's strictly capability-scoped behavior.
+    capability_degradation_chain: ?[]const []const u8 = null,
 };
 
 pub const StrategyConfig = struct {
@@ -169,6 +174,27 @@ pub fn validate(cfg: Config, writer: anytype) !void {
             if (prov.accounts.map.get(ref.account) == null) {
                 try writer.print("config error: profiles.{s}.providers references unknown account '{s}:{s}'\n", .{ profile_name, ref.provider, ref.account });
                 ok = false;
+            }
+        }
+
+        // TIN-1811: every capability named in the degradation chain must have at
+        // least one provider route declaring that capability in this profile, so
+        // a typo errors clearly at load instead of silently no-op'ing.
+        if (profile.capability_degradation_chain) |chain| {
+            for (chain, 0..) |capability_name, chain_idx| {
+                var found = false;
+                for (profile.providers) |spec| {
+                    const ref = splitProviderAccount(spec) orelse continue;
+                    const route_capability = ref.capability orelse continue;
+                    if (std.mem.eql(u8, route_capability, capability_name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try writer.print("config error: profiles.{s}.capability_degradation_chain[{d}] references capability '{s}' with no provider routes in this profile\n", .{ profile_name, chain_idx, capability_name });
+                    ok = false;
+                }
             }
         }
     }

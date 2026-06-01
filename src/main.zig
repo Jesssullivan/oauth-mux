@@ -3985,13 +3985,27 @@ fn runStayAfloatNext(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
     defer evaluations.deinit();
     try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
 
-    const selected_index = firstSelectableRoute(evaluations.items);
+    // TIN-1811 never-halt: if the requested capability has no live route, fall
+    // through the profile's degradation chain to a live route one capability
+    // away. selectDegradedRoute appends the chosen fallback evaluation onto
+    // `evaluations`, so the index-based writers below transparently surface it.
+    const degraded = try selectDegradedRoute(
+        allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        args.profile,
+        args.capability,
+        args.account,
+    );
+    const selected_index = degraded.index;
+    const degraded_capability = degraded.capability;
     const candidate_index = if (selected_index == null) firstActionableRoute(evaluations.items) else null;
 
     if (args.json) {
-        try writeStayAfloatNextJson(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args);
+        try writeStayAfloatNextJson(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args, degraded_capability);
     } else {
-        try writeStayAfloatNextText(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args);
+        try writeStayAfloatNextText(writer, allocator, parsed.value, evaluations.items, selected_index, candidate_index, args, degraded_capability);
     }
 }
 
@@ -4806,6 +4820,17 @@ fn writeRouteResilienceJson(
     selected_index: ?usize,
 ) !void {
     const fallback_count = selectableFallbackRouteCount(evaluations, selected_index);
+    try writeRouteResilienceJsonWithCount(writer, selected_index, fallback_count);
+}
+
+// TIN-1811: resilience body parameterized by an externally computed spare-route
+// count so cross-capability degradation can scope the count to the degraded
+// capability while the existing single-capability callers keep their behavior.
+fn writeRouteResilienceJsonWithCount(
+    writer: anytype,
+    selected_index: ?usize,
+    fallback_count: usize,
+) !void {
     const selected = selected_index != null;
     try writer.writeByte('{');
     try writer.writeAll("\"selected_route_ready\":");
@@ -5342,6 +5367,130 @@ fn firstSelectableRoute(evaluations: []const RouteEvaluation) ?usize {
     return null;
 }
 
+// TIN-1811: result of cross-capability degradation. When a live route was found
+// one or more capabilities away from the requested one, `index` points into the
+// (now extended) evaluations list and `capability` names the capability that was
+// actually selected. `capability == null` means no degradation occurred.
+const DegradedSelection = struct {
+    index: ?usize = null,
+    capability: ?[]const u8 = null,
+};
+
+// TIN-1811: collect a profile's routes for a single target capability, preserving
+// each route's *declared* capability. collectRepairPlanRoutes relabels every
+// route to `args.capability`, which would mislabel (e.g.) codex-max routes as
+// codex-mini during fallback evaluation; this keeps only the routes that actually
+// declare the target capability so the fallback set is correct.
+fn collectProfileRoutesForCapability(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    profile_name: []const u8,
+    target_capability: []const u8,
+    account_filter: ?[]const u8,
+) !std.ArrayList(RepairPlanRoute) {
+    var routes = std.ArrayList(RepairPlanRoute).init(allocator);
+    errdefer routes.deinit();
+
+    const profile = cfg.profiles.map.get(profile_name) orelse return error.ConfigValidationError;
+    for (profile.providers) |provider_ref| {
+        const parsed = parseRepairRouteSpec(provider_ref) orelse return error.ConfigValidationError;
+        if (!repairRouteMatchesAccountFilter(parsed, account_filter)) continue;
+        const declared = parsed.capability orelse continue;
+        if (!std.mem.eql(u8, declared, target_capability)) continue;
+        try routes.append(.{
+            .provider = parsed.provider,
+            .account = parsed.account,
+            .capability = parsed.capability,
+        });
+    }
+    return routes;
+}
+
+// TIN-1811: the never-halt fallback. When `original_evaluations` (the requested
+// capability's routes) has no selectable route, walk the profile's
+// capability_degradation_chain in order, re-evaluate the routes for each fallback
+// capability, and append the first selectable degraded route onto `evaluations`.
+// Returns the index of that appended evaluation plus the degraded capability so
+// callers can surface it. A null chain (today's default) returns no selection,
+// preserving the strictly capability-scoped behavior.
+//
+// TODO(TIN-1811 Phase 2): factor a shared selection helper and wire the other
+// firstSelectableRoute call sites (runRoute, writeStayAfloatMediationWriter,
+// daemonTick, runStayAfloatLaunch via firstSelectableRouteNotAttempted) onto it.
+fn selectDegradedRoute(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    store: *health_mod.HealthStore,
+    evaluations: *std.ArrayList(RouteEvaluation),
+    profile_name: ?[]const u8,
+    requested_capability: ?[]const u8,
+    account_filter: ?[]const u8,
+) !DegradedSelection {
+    if (firstSelectableRoute(evaluations.items)) |idx| {
+        return .{ .index = idx, .capability = null };
+    }
+
+    const name = profile_name orelse return .{};
+    const profile = cfg.profiles.map.get(name) orelse return .{};
+    const chain = profile.capability_degradation_chain orelse return .{};
+
+    for (chain) |fallback_capability| {
+        // Never re-evaluate the requested capability (it already produced no
+        // selectable route); avoids redundant work and self-degradation noise.
+        if (requested_capability) |req| {
+            if (std.mem.eql(u8, req, fallback_capability)) continue;
+        }
+
+        var fallback_routes = try collectProfileRoutesForCapability(
+            allocator,
+            cfg,
+            name,
+            fallback_capability,
+            account_filter,
+        );
+        defer fallback_routes.deinit();
+        if (fallback_routes.items.len == 0) continue;
+
+        var fallback_evaluations = std.ArrayList(RouteEvaluation).init(allocator);
+        defer fallback_evaluations.deinit();
+        try collectRouteEvaluations(allocator, cfg, store, fallback_routes.items, &fallback_evaluations);
+
+        if (firstSelectableRoute(fallback_evaluations.items)) |fallback_idx| {
+            // Append the whole fallback capability's evaluations so live spares
+            // are visible to the resilience/state accounting (a degraded route is
+            // only truly afloat-with-spare if another live route exists too), and
+            // select the first selectable one among the newly appended block.
+            const base = evaluations.items.len;
+            try evaluations.appendSlice(fallback_evaluations.items);
+            return .{ .index = base + fallback_idx, .capability = fallback_capability };
+        }
+    }
+
+    return .{};
+}
+
+// TIN-1811: count live spare routes, scoped to the degraded capability when a
+// degradation occurred so `selectable_fallback_routes`/`state` reflect the
+// capability that was actually selected rather than the exhausted requested one.
+fn selectableFallbackRouteCountForSelection(
+    evaluations: []const RouteEvaluation,
+    selected_index: ?usize,
+    degraded_capability: ?[]const u8,
+) usize {
+    const cap = degraded_capability orelse return selectableFallbackRouteCount(evaluations, selected_index);
+    var count: usize = 0;
+    for (evaluations, 0..) |evaluation, idx| {
+        if (!evaluation.selectable) continue;
+        if (selected_index) |selected| {
+            if (idx == selected) continue;
+        }
+        const route_capability = evaluation.route.capability orelse continue;
+        if (!std.mem.eql(u8, route_capability, cap)) continue;
+        count += 1;
+    }
+    return count;
+}
+
 fn firstActionableRoute(evaluations: []const RouteEvaluation) ?usize {
     for (evaluations, 0..) |evaluation, idx| {
         if (evaluation.action.kind != .none) return idx;
@@ -5442,8 +5591,14 @@ fn writeStayAfloatNextText(
     selected_index: ?usize,
     candidate_index: ?usize,
     args: cli.Command.RouteArgs,
+    degraded_capability: ?[]const u8,
 ) !void {
     try writeStayAfloatMediationText(writer, allocator, cfg, evaluations, selected_index, candidate_index, args, "oauth-mux stay-afloat next");
+    // TIN-1811: surface a cross-capability degradation so the operator/agent sees
+    // the never-halt fallback was used. Only emitted when a real degrade occurred.
+    if (degraded_capability) |cap| {
+        try writer.print("  degraded_capability: {s}\n", .{cap});
+    }
 }
 
 fn writeStayAfloatMediationText(
@@ -5543,7 +5698,12 @@ fn writeStayAfloatNextJson(
     selected_index: ?usize,
     candidate_index: ?usize,
     args: cli.Command.RouteArgs,
+    degraded_capability: ?[]const u8,
 ) !void {
+    // TIN-1811: scope spare-route counting to the degraded capability when a
+    // cross-capability fallback occurred, so resilience/state reflect the live
+    // capability that was actually selected instead of the exhausted request.
+    const fallback_count = selectableFallbackRouteCountForSelection(evaluations, selected_index, degraded_capability);
     try writer.writeAll("{\"version\":");
     try std.json.stringify(cli.version, .{}, writer);
     try writer.writeAll(",\"action\":\"next\"");
@@ -5567,12 +5727,14 @@ fn writeStayAfloatNextJson(
     } else {
         try writer.writeAll("null");
     }
+    try writer.writeAll(",\"degraded_capability\":");
+    if (degraded_capability) |cap| try std.json.stringify(cap, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"resilience\":");
-    try writeRouteResilienceJson(writer, evaluations, selected_index);
+    try writeRouteResilienceJsonWithCount(writer, selected_index, fallback_count);
     try writer.writeAll(",\"resilience_actions\":");
     try writeRouteResilienceActionsJson(writer, allocator, cfg, evaluations, selected_index, args.profile, args.capability);
     try writer.writeAll(",\"claim\":");
-    try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index), selectableFallbackRouteCount(evaluations, selected_index));
+    try writeStayAfloatClaimJson(writer, selectorFromRouteArgs(args), selectedRoute(evaluations, selected_index), fallback_count);
     try writer.writeAll(",\"next_action\":");
     try writeStayAfloatNextActionJson(writer, allocator, evaluations, selected_index, candidate_index);
     try writer.writeAll(",\"routes\":[");
@@ -18096,7 +18258,7 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
         .profile = "work",
         .capability = "chat",
         .json = true,
-    });
+    }, null);
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"action\":\"next\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
@@ -18108,6 +18270,206 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"launch_argv\":[\"oauth-mux\",\"stay-afloat\",\"launch\",\"--profile\",\"work\",\"--capability\",\"chat\",\"--\",\"<command>\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"next_action\":{\"kind\":\"exec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"exec_argv\":[\"oauth-mux\",\"exec\",\"--provider\",\"toy\",\"--account\",\"a2\",\"--capability\",\"chat\",\"--\",\"<command>\"]") != null);
+}
+
+test "stay-afloat next degrades to fallback capability when requested capability exhausted (TIN-1811)" {
+    // No-spend: route selection only reads config + the in-memory health store.
+    // codex-max routes are all rate-limited (unselectable); codex-mini routes are
+    // live. The codex-max profile declares capability_degradation_chain=["codex-mini"]
+    // so the never-halt selector must cross to a live codex-mini route.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } },
+        \\        "max-2": { "secret": { "backend": "env", "variable": "TOY_MAX2" } },
+        \\        "mini-1": { "secret": { "backend": "env", "variable": "TOY_MINI1" } },
+        \\        "mini-2": { "secret": { "backend": "env", "variable": "TOY_MINI2" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "toy:max-1#codex-max",
+        \\        "toy:max-2#codex-max",
+        \\        "toy:mini-1#codex-mini",
+        \\        "toy:mini-2#codex-mini"
+        \\      ],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    // Config with a degradation chain referencing a capability that has routes
+    // must validate cleanly (null/valid chain = no error).
+    var validation_messages = std.ArrayList(u8).init(std.testing.allocator);
+    defer validation_messages.deinit();
+    try config.validate(parsed.value, validation_messages.writer());
+    try std.testing.expectEqual(@as(usize, 0), validation_messages.items.len);
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Both codex-max routes exhausted (rate-limited) -> unselectable.
+    store.recordCapabilityHttpStatus("toy", "max-1", "codex-max", 429, 7200);
+    store.recordCapabilityHttpStatus("toy", "max-2", "codex-max", 429, 7200);
+    // Two live codex-mini routes -> selectable, with a spare beyond the selection.
+    _ = try store.getOrCreate("toy:mini-1#codex-mini");
+    _ = try store.getOrCreate("toy:mini-2#codex-mini");
+
+    // Evaluate only the requested capability (codex-max), exactly as runStayAfloatNext.
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(std.testing.allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+
+    // Strictly capability-scoped selection finds nothing (today's hard block).
+    try std.testing.expect(firstSelectableRoute(evaluations.items) == null);
+
+    // Never-halt: cross to the degradation chain.
+    const degraded = try selectDegradedRoute(
+        std.testing.allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        "codex-max",
+        "codex-max",
+        null,
+    );
+    try std.testing.expect(degraded.index != null);
+    try std.testing.expect(degraded.capability != null);
+    try std.testing.expectEqualStrings("codex-mini", degraded.capability.?);
+
+    // The selected route is a live codex-mini route appended onto evaluations.
+    const selected = evaluations.items[degraded.index.?];
+    try std.testing.expect(selected.selectable);
+    try std.testing.expectEqualStrings("codex-mini", selected.route.capability.?);
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeStayAfloatNextJson(buf.writer(), std.testing.allocator, parsed.value, evaluations.items, degraded.index, null, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+        .json = true,
+    }, degraded.capability);
+
+    // Surfaced degrade + a live spare keeps us afloat (not "not_afloat").
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"degraded_capability\":\"codex-mini\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selected\":{\"provider\":\"toy\",\"account\":\"mini-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selectable_fallback_routes\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"afloat_with_spare_fallback\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"not_afloat\"") == null);
+}
+
+test "stay-afloat next leaves degradation off when no chain is configured (TIN-1811 non-regression)" {
+    // Same exhausted codex-max routes and live codex-mini routes, but no
+    // capability_degradation_chain -> selector must stay strictly capability
+    // scoped (no degrade), proving null chain = today's behavior.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } },
+        \\        "mini-1": { "secret": { "backend": "env", "variable": "TOY_MINI1" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "toy:max-1#codex-max",
+        \\        "toy:mini-1#codex-mini"
+        \\      ]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    store.recordCapabilityHttpStatus("toy", "max-1", "codex-max", 429, 7200);
+    _ = try store.getOrCreate("toy:mini-1#codex-mini");
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    var evaluations = std.ArrayList(RouteEvaluation).init(std.testing.allocator);
+    defer evaluations.deinit();
+    try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
+
+    const degraded = try selectDegradedRoute(
+        std.testing.allocator,
+        parsed.value,
+        &store,
+        &evaluations,
+        "codex-max",
+        "codex-max",
+        null,
+    );
+    try std.testing.expect(degraded.index == null);
+    try std.testing.expect(degraded.capability == null);
+}
+
+test "config rejects capability_degradation_chain with a capability that has no routes (TIN-1811)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": { "name": "toy", "display_name": "Toy Provider" }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "max-1": { "secret": { "backend": "env", "variable": "TOY_MAX1" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": ["toy:max-1#codex-max"],
+        \\      "capability_degradation_chain": ["codex-typo"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(std.testing.allocator);
+    defer validation_messages.deinit();
+    try std.testing.expectError(error.ConfigValidationError, config.validate(parsed.value, validation_messages.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, validation_messages.items, "capability_degradation_chain") != null);
+    try std.testing.expect(std.mem.indexOf(u8, validation_messages.items, "codex-typo") != null);
 }
 
 test "stay-afloat next emits mediated repair action when no route is selectable" {
@@ -18153,7 +18515,7 @@ test "stay-afloat next emits mediated repair action when no route is selectable"
         .profile = "needs-reauth",
         .capability = "codex-max",
         .json = true,
-    });
+    }, null);
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"ready_for_exec\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resilience\":{\"selected_route_ready\":false,\"selectable_fallback_routes\":0,\"spare_fallback_ready\":false,\"single_route_at_risk\":false,\"state\":\"not_afloat\"}") != null);
