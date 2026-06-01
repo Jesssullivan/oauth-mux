@@ -164,9 +164,9 @@ jq -e '
   and .ok == false
   and .scope.profile == "codex-max"
   and .scope.capability == "codex-max"
-  and .accounts == 3
-  and .action_needed_accounts == 3
-  and (.route_reports | length) == 3
+  and .accounts == 6
+  and .action_needed_accounts == 6
+  and (.route_reports | length) == 6
   and all(.route_reports[]; .provider == "codex" and .capability == "codex-max" and .ready == false)
 ' "$runtime_doctor_scoped" >/dev/null
 expect_not_contains "$(cat "$runtime_doctor_scoped")" "$store_root/max-1" "scoped runtime doctor does not print concrete Codex store paths"
@@ -248,7 +248,7 @@ repair_plan_json="$tmp/repair-plan-codex-max.json"
 run_json "$repair_plan_json" repair-plan --profile codex-max --capability codex-max --json
 jq -e '
   .profile == "codex-max"
-  and (.routes | length) == 3
+  and (.routes | length) == 6
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
   and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed" or .action.kind == "revalidation_needed" or .action.kind == "none" or .action.kind == "wait_and_retry" or .action.kind == "wait_for_quota" or .action.kind == "wait_for_cooldown")
   and all(.routes[]; if .action.kind == "fix_runtime" then
@@ -267,7 +267,7 @@ jq -e '
   and .capability == "codex-max"
   and .ok == false
   and .selected == null
-  and (.routes | length) == 3
+  and (.routes | length) == 6
   and all(.routes[]; .provider == "codex" and .capability == "codex-max" and .action.mutating == false)
   and all(.routes[]; .action.kind == "fix_runtime" or .action.kind == "probe_needed")
   and all(.routes[]; if .action.kind == "fix_runtime" then
@@ -302,19 +302,19 @@ jq -e '
   and (.environment.omux_codex_config_home_present | type) == "boolean"
   and .environment.path_printed == false
   and .ok == false
-  and .route_summary.routes_total == 3
+  and .route_summary.routes_total == 6
   and .route_summary.selectable_routes == 0
   and (.blocked_route_reasons | length) == 1
-  and (.blocked_route_reasons[] | select(.reason == "auth_broker_unready" and .count == 3))
+  and (.blocked_route_reasons[] | select(.reason == "auth_broker_unready" and .count == 6))
   and .repair_summary.route_repair_required == true
   and .repair_summary.agent_safe_inspection_available == true
-  and .repair_summary.blocked_routes == 3
+  and .repair_summary.blocked_routes == 6
   and .repair_summary.dominant_blocker == "auth_broker_unready"
-  and .repair_summary.dominant_blocker_count == 3
-  and .repair_summary.auth_broker_unready_routes == 3
+  and .repair_summary.dominant_blocker_count == 6
+  and .repair_summary.auth_broker_unready_routes == 6
   and .repair_summary.revalidation_needed_routes == 0
   and .repair_summary.user_handoff_required == false
-  and (.blocked_routes | length) == 3
+  and (.blocked_routes | length) == 6
   and all(.blocked_routes[]; .provider == "codex" and .capability == "codex-max" and .selectable == false and .broker_ready == false and .blocked_reason == "auth_broker_unready" and .action.mutating == false)
   and (.next_actions | length) == 1
   and (.next_actions | index("oauth-mux codex broker-session-plan --profile codex-max --capability codex-max --json") != null)
@@ -355,7 +355,7 @@ jq -e '
   and .executed == false
   and .afloat == false
   and .selected == null
-  and (.routes | length) == 3
+  and (.routes | length) == 6
   and all(.routes[]; .route.provider == "codex" and .route.capability == "codex-max")
   and all(.routes[]; if .route.action.kind == "fix_runtime" then
     .route.action.command == null
@@ -380,7 +380,7 @@ jq -e '
   .action == "select"
   and .ok == false
   and .selected == null
-  and (.routes | length) == 3
+  and (.routes | length) == 6
 ' "$route_select_json" >/dev/null
 
 printf 'first-run e2e: repair run refuses to mutate without admitted repair\n'
@@ -495,7 +495,7 @@ jq -e '
   and (.providers.codex.accounts["max-1"].secret.backend == "file")
   and (.providers.codex.accounts["max-2"].secret.backend == "file")
   and (.providers.codex.accounts["max-3"].secret.backend == "file")
-  and (.profiles["codex-max"].providers | length) == 3
+  and (.profiles["codex-max"].providers | length) == 6
   and (.profiles.default.providers | index("claude:personal") != null)
 ' "$drift_config" >/dev/null
 jq -e '

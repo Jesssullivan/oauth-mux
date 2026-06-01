@@ -200,7 +200,17 @@ pub fn recoverExpiredTransientHealth(health: *AccountHealth, now: i64) void {
                 health.last_probe_decision = .use_this;
                 health.consecutive_failures = 0;
             },
-            .available, .quota_exhausted => {},
+            .quota_exhausted => |quota| {
+                const retry_at = health.quota_exhausted_until orelse quota.window_resets_at orelse return;
+                if (now < retry_at) return;
+                health.liveness = .{ .live = .{ .availability = .available } };
+                health.quota_exhausted_until = null;
+                health.last_probe_retry_after_s = null;
+                health.last_probe_hint_class = .none;
+                health.last_probe_decision = .use_this;
+                health.consecutive_failures = 0;
+            },
+            .available => {},
         },
         .degraded => |d| {
             const retry_at = d.retry_at orelse return;
@@ -1198,6 +1208,29 @@ test "effectiveHealthForRouteSelection recovers expired live retry windows" {
     try std.testing.expectEqual(ProbeHintClass.none, recovered_rate_limit.last_probe_hint_class.?);
     try std.testing.expectEqual(types.MuxDecision.use_this, recovered_rate_limit.last_probe_decision.?);
     try std.testing.expectEqual(@as(u32, 0), recovered_rate_limit.consecutive_failures);
+
+    const recovered_quota = effectiveHealthForRouteSelection(.{
+        .liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+            .exhausted_at = now - 3600,
+            .window_resets_at = now - 1,
+        } } } },
+        .quota_exhausted_until = now - 1,
+        .last_probe_retry_after_s = 3600,
+        .last_probe_hint_class = .quota_exhausted,
+        .last_probe_decision = .try_next_account,
+        .consecutive_failures = 2,
+    }, now);
+    switch (recovered_quota.liveness) {
+        .live => |live| switch (live.availability) {
+            .available => {},
+            else => return error.TestUnexpectedResult,
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(recovered_quota.quota_exhausted_until == null);
+    try std.testing.expectEqual(ProbeHintClass.none, recovered_quota.last_probe_hint_class.?);
+    try std.testing.expectEqual(types.MuxDecision.use_this, recovered_quota.last_probe_decision.?);
+    try std.testing.expectEqual(@as(u32, 0), recovered_quota.consecutive_failures);
 
     const blocked_rate_limit = effectiveHealthForRouteSelection(.{
         .liveness = .{ .live = .{ .availability = .{ .rate_limited = .{

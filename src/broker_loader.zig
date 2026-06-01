@@ -93,6 +93,11 @@ pub fn populatePoolFromRouteHealthScoped(
     applyRouteHealth(pool, cfg, profile_name, capability_name, store);
 }
 
+const RouteHealthMatch = struct {
+    health: health_mod.AccountHealth,
+    capability: ?[]const u8 = null,
+};
+
 pub const CodexAuthRepairSummary = struct {
     attempted: usize = 0,
     refreshed: usize = 0,
@@ -161,9 +166,16 @@ fn applyRouteHealth(
             entry.selectable = false;
             entry.liveness = .unknown;
             entry.availability = .unknown;
+            setPoolEntryCapability(pool, entry, null) catch {};
             continue;
         };
-        applyHealthToPoolEntry(entry, route_health);
+        setPoolEntryCapability(pool, entry, route_health.capability) catch {
+            entry.selectable = false;
+            entry.liveness = .unknown;
+            entry.availability = .unknown;
+            continue;
+        };
+        applyHealthToPoolEntry(entry, route_health.health);
     }
 }
 
@@ -174,7 +186,7 @@ fn routeHealthForPoolAccount(
     requested_capability: ?[]const u8,
     account_id: []const u8,
     store: *health_mod.HealthStore,
-) ?health_mod.AccountHealth {
+) ?RouteHealthMatch {
     const now = std.time.timestamp();
     const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return null;
     const provider = account_id[0..colon];
@@ -184,55 +196,114 @@ fn routeHealthForPoolAccount(
         const effective = health_mod.effectiveHealthForRouteSelection(account_health, now);
         tracePoolHealthNormalization(allocator, provider, account, null, "account", account_health.liveness, effective.liveness);
         if (accountLivenessBlocksRoute(effective.liveness)) {
-            if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return repaired;
-            return effective;
+            if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return .{ .health = repaired };
+            return .{ .health = effective };
         }
     }
 
     if (profile_name) |name| {
         if (cfg.profiles.map.get(name)) |profile| {
+            if (requested_capability) |want| {
+                if (profileHasAccountCapability(profile, account_id, want)) {
+                    if (capabilityHealthForPoolAccount(allocator, cfg, provider, account, want, store, now)) |requested| {
+                        if (!accountLivenessBlocksRoute(requested.health.liveness)) return requested;
+                        if (fallbackCapabilityHealthForPoolAccount(allocator, cfg, profile, account_id, provider, account, want, store, now)) |fallback| return fallback;
+                        return requested;
+                    }
+                    if (fallbackCapabilityHealthForPoolAccount(allocator, cfg, profile, account_id, provider, account, want, store, now)) |fallback| return fallback;
+                    return null;
+                }
+                if (fallbackCapabilityHealthForPoolAccount(allocator, cfg, profile, account_id, provider, account, want, store, now)) |fallback| return fallback;
+            }
+
             for (profile.providers) |profile_entry| {
                 const hash = std.mem.indexOfScalar(u8, profile_entry, '#') orelse continue;
                 const head = profile_entry[0..hash];
                 if (!std.mem.eql(u8, head, account_id)) continue;
                 const capability = profile_entry[hash + 1 ..];
-                if (requested_capability) |want| {
-                    if (!std.mem.eql(u8, capability, want)) continue;
-                }
-                const capability_key = health_mod.capabilityKey(provider, account, capability);
-                if (store.accounts.get(capability_key.slice())) |capability_health| {
-                    const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
-                    tracePoolHealthNormalization(allocator, provider, account, capability, "capability", capability_health.liveness, effective.liveness);
-                    if (accountLivenessBlocksRoute(effective.liveness)) {
-                        if (authMaterialRepairHealth(allocator, cfg, provider, account, capability_health)) |repaired| return repaired;
-                    }
-                    return effective;
-                }
+                if (capabilityHealthForPoolAccount(allocator, cfg, provider, account, capability, store, now)) |match| return match;
             }
         }
     }
 
     if (requested_capability) |capability| {
-        const capability_key = health_mod.capabilityKey(provider, account, capability);
-        if (store.accounts.get(capability_key.slice())) |capability_health| {
-            const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
-            tracePoolHealthNormalization(allocator, provider, account, capability, "capability", capability_health.liveness, effective.liveness);
-            if (accountLivenessBlocksRoute(effective.liveness)) {
-                if (authMaterialRepairHealth(allocator, cfg, provider, account, capability_health)) |repaired| return repaired;
-            }
-            return effective;
-        }
+        if (capabilityHealthForPoolAccount(allocator, cfg, provider, account, capability, store, now)) |match| return match;
     }
 
     if (store.accounts.get(account_key.slice())) |account_health| {
         const effective = health_mod.effectiveHealthForRouteSelection(account_health, now);
         tracePoolHealthNormalization(allocator, provider, account, null, "account", account_health.liveness, effective.liveness);
         if (accountLivenessBlocksRoute(effective.liveness)) {
-            if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return repaired;
+            if (authMaterialRepairHealth(allocator, cfg, provider, account, account_health)) |repaired| return .{ .health = repaired };
         }
-        return effective;
+        return .{ .health = effective };
     }
     return null;
+}
+
+fn profileHasAccountCapability(profile: config_mod.ProfileConfig, account_id: []const u8, capability: []const u8) bool {
+    for (profile.providers) |profile_entry| {
+        const hash = std.mem.indexOfScalar(u8, profile_entry, '#') orelse continue;
+        if (!std.mem.eql(u8, profile_entry[0..hash], account_id)) continue;
+        if (std.mem.eql(u8, profile_entry[hash + 1 ..], capability)) return true;
+    }
+    return false;
+}
+
+fn capabilityHealthForPoolAccount(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    provider: []const u8,
+    account: []const u8,
+    capability: []const u8,
+    store: *health_mod.HealthStore,
+    now: i64,
+) ?RouteHealthMatch {
+    const capability_key = health_mod.capabilityKey(provider, account, capability);
+    const capability_health = store.accounts.get(capability_key.slice()) orelse return null;
+    const effective = health_mod.effectiveHealthForRouteSelection(capability_health, now);
+    tracePoolHealthNormalization(allocator, provider, account, capability, "capability", capability_health.liveness, effective.liveness);
+    if (accountLivenessBlocksRoute(effective.liveness)) {
+        if (authMaterialRepairHealth(allocator, cfg, provider, account, capability_health)) |repaired| {
+            return .{ .health = repaired, .capability = capability };
+        }
+    }
+    return .{ .health = effective, .capability = capability };
+}
+
+fn fallbackCapabilityHealthForPoolAccount(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    profile: config_mod.ProfileConfig,
+    account_id: []const u8,
+    provider: []const u8,
+    account: []const u8,
+    requested_capability: []const u8,
+    store: *health_mod.HealthStore,
+    now: i64,
+) ?RouteHealthMatch {
+    const chain = profile.capability_degradation_chain orelse return null;
+    for (chain) |fallback_capability| {
+        if (std.mem.eql(u8, requested_capability, fallback_capability)) continue;
+        if (!profileHasAccountCapability(profile, account_id, fallback_capability)) continue;
+        const fallback = capabilityHealthForPoolAccount(allocator, cfg, provider, account, fallback_capability, store, now) orelse continue;
+        if (!accountLivenessBlocksRoute(fallback.health.liveness)) return fallback;
+    }
+    return null;
+}
+
+fn setPoolEntryCapability(
+    pool: *broker.AccountPool,
+    entry: *broker.account_pool_mod.AccountSummary,
+    capability: ?[]const u8,
+) !void {
+    if (entry.capability) |old| {
+        pool.allocator.free(old);
+        entry.capability = null;
+    }
+    if (capability) |cap| {
+        entry.capability = try pool.allocator.dupe(u8, cap);
+    }
 }
 
 fn tracePoolHealthNormalization(
@@ -1189,6 +1260,94 @@ test "populatePoolFromRouteHealthScoped keeps mixed-profile capabilities isolate
             try std.testing.expectEqual(broker.account_pool_mod.Availability.quota_exhausted, entry.availability);
         }
     }
+}
+
+test "populatePoolFromRouteHealthScoped degrades to fallback capability when requested route is blocked" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": ["codex:max-1#codex-max", "codex:max-1#codex-mini"],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    store.recordCapabilityHttpStatus("codex", "max-1", "codex-max", 429, 7200);
+    const mini = try store.getOrCreate("codex:max-1#codex-mini");
+    mini.liveness = .{ .live = .{ .availability = .available } };
+    mini.last_probe_hint_class = .none;
+    mini.last_probe_decision = .use_this;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    const elected = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-1", elected.id);
+    try std.testing.expectEqualStrings("codex-mini", elected.capability.?);
+    try std.testing.expect(elected.selectable);
+    try std.testing.expectEqual(broker.account_pool_mod.Availability.available, elected.availability);
+}
+
+test "populatePoolFromRouteHealthScoped does not degrade around account-dead auth health" {
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "/tmp/a" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": ["codex:max-1#codex-max", "codex:max-1#codex-mini"],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }
+        \\  }
+        \\}
+    ;
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const account_health = try store.getOrCreate("codex:max-1");
+    account_health.liveness = .{ .dead = .{
+        .reason = .token_revoked,
+        .since = std.time.timestamp() - 120,
+    } };
+    account_health.last_probe_hint_class = .auth_dead;
+    account_health.last_probe_decision = .try_next_account;
+    const mini = try store.getOrCreate("codex:max-1#codex-mini");
+    mini.liveness = .{ .live = .{ .availability = .available } };
+    mini.last_probe_hint_class = .none;
+    mini.last_probe_decision = .use_this;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    try std.testing.expectError(broker_types.BrokerError.NoAccountSelectable, pool.elect("codex-max", "codex-max", &.{}));
+    try std.testing.expectEqual(broker.account_pool_mod.Liveness.dead, pool.accounts.items[0].liveness);
+    try std.testing.expect(pool.accounts.items[0].capability == null);
 }
 
 test "populatePoolFromRouteHealth lets expired provider degradation yield to capability health" {

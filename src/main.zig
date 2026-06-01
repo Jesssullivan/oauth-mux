@@ -8949,9 +8949,13 @@ fn writeCodexMaxStarterConfig(allocator: std.mem.Allocator, writer: anytype, sto
         \\    "codex-max": {
         \\      "providers": [
         \\        "codex:max-1#codex-max",
+        \\        "codex:max-1#codex-mini",
         \\        "codex:max-2#codex-max",
-        \\        "codex:max-3#codex-max"
+        \\        "codex:max-2#codex-mini",
+        \\        "codex:max-3#codex-max",
+        \\        "codex:max-3#codex-mini"
         \\      ],
+        \\      "capability_degradation_chain": ["codex-mini"],
         \\      "strategy": "health-weighted",
         \\      "affinity_ttl_minutes": 20
         \\    },
@@ -19216,10 +19220,10 @@ test "recoverable fallback readiness deduplicates quota rows by account" {
     try std.testing.expectEqual(@as(usize, 1), recoverableFallbackRouteCount(&evaluations, 0, "codex-mini"));
 }
 
-test "expired quota window is not counted as recoverable (TIN-1812 boundary)" {
-    // No-spend: a quota route whose window has already passed needs revalidation,
-    // not a guaranteed wait, so it must NOT count as a recoverable fallback and
-    // the pool stays "not_afloat" (no false afloat signal).
+test "expired quota window recovers during route evaluation" {
+    // A quota route whose window has already passed should become selectable
+    // during route-health normalization. Future quota windows remain pending
+    // recovery; expired windows must not keep the pool falsely halted.
     const json =
         \\{
         \\  "version": 1,
@@ -19266,13 +19270,15 @@ test "expired quota window is not counted as recoverable (TIN-1812 boundary)" {
     defer evaluations.deinit();
     try collectRouteEvaluations(std.testing.allocator, parsed.value, &store, routes.items, &evaluations);
 
-    try std.testing.expectEqual(@as(usize, 0), recoverableFallbackRouteCount(evaluations.items, null, null));
+    const selected = firstSelectableRoute(evaluations.items);
+    try std.testing.expect(selected != null);
+    try std.testing.expectEqual(@as(usize, 0), recoverableFallbackRouteCount(evaluations.items, selected, null));
     try std.testing.expect(soonestQuotaWindowReset(evaluations.items) == null);
 
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
-    try writeRouteResilienceJson(buf.writer(), evaluations.items, null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"not_afloat\"") != null);
+    try writeRouteResilienceJson(buf.writer(), evaluations.items, selected);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"state\":\"afloat_without_spare_fallback\"") != null);
 }
 
 test "stay-afloat next emits mediated repair action when no route is selectable" {
