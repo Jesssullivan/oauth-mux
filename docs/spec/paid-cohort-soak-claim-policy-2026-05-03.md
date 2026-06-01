@@ -25,7 +25,7 @@ Current Codex truth as of this spec:
 Run the soak as an explicit foreground lane for seven calendar days. Do not
 schedule live provider spend by default.
 
-Recommended daily no-spend snapshot for each paid cohort profile:
+Recommended daily diagnostic snapshot for each paid cohort profile:
 
 ```bash
 just paid-cohort-soak-snapshot
@@ -77,7 +77,7 @@ Do not run spend-gated commands from unattended loops. If a route has no spare
 fallback, record the `resilience_actions` and decide manually whether to
 revalidate, enroll another account, or wait for reset.
 
-The daily no-spend snapshot may also include confirmation-gate artifacts such
+The daily diagnostic snapshot may also include confirmation-gate artifacts such
 as `revalidate-exhausted.confirmation.json` or
 `broker-run.confirmation.json`. Those files are expected to report
 `confirmation_required:true`; they prove the operator gate is still closed and

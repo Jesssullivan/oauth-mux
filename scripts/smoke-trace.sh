@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# No-spend trace smoke: global tracing emits redacted, OTEL-friendly JSONL for
+# Diagnostic trace smoke: global tracing emits redacted, OTEL-friendly JSONL for
 # route decisions and transient health normalization.
 
 set -euo pipefail

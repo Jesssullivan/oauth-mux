@@ -150,7 +150,7 @@ in the background just because a route exists.
 Required work:
 
 - per-provider and per-capability budgets;
-- no-spend probes by default;
+- diagnostic probes by default;
 - live probes only with explicit policy;
 - jittered schedules and cooldown windows;
 - account lock files so two daemon/processes do not refresh or reauth the same
@@ -183,7 +183,7 @@ Suggested responsibilities:
 
 1. Load config and health.
 2. Maintain redacted account and route state.
-3. Run no-spend runtime checks on a budget.
+3. Run diagnostic runtime checks on a budget.
 4. Refresh only providers/backends admitted for automatic writeback.
 5. Queue user-visible reauth plans when automation is not admitted.
 6. Expose local status over the existing socket.
@@ -259,7 +259,7 @@ auth:
   token endpoint, refresh ownership, reauth methods, user-interaction mode
 
 probes:
-  no-spend checks, live checks, timeout, budget class, output parser
+  diagnostic checks, live checks, timeout, budget class, output parser
 
 classification:
   status/body/header/exit-code rules into liveness and runtime states
@@ -311,7 +311,7 @@ Every probe or repair action needs a budget class:
 ```text
 free_local          local file/stat/JSON parse
 free_command        upstream CLI status that should not call the provider
-cheap_provider      identity/status endpoint or documented no-spend probe
+cheap_provider      identity/status endpoint or documented diagnostic probe
 spend_provider      model/tool call or any route that may consume quota
 interactive         opens browser, device auth, TTY prompt, or upstream login
 mutating            writes credentials, revokes tokens, creates API keys
@@ -321,7 +321,7 @@ Defaults:
 
 - daemon may run `free_local` and admitted `free_command` checks;
 - daemon may run `cheap_provider` only when the provider descriptor marks the
-  route no-spend and a user policy enables it;
+  route diagnostic and a user policy enables it;
 - daemon never runs `spend_provider`, `interactive`, or `mutating` without an
   explicit operator policy and redacted event log entry.
 
@@ -417,7 +417,7 @@ obvious and copy-pastable for humans and agents.
   - `max-2#codex-max` selected as fallback.
 
 Implementation note, 2026-04-30: `route select` and `route explain` now exist
-as one-shot, no-spend commands over recorded liveness. They do not probe live
+as one-shot, diagnostic commands over recorded liveness. They do not probe live
 providers, open browsers, run repair commands, or mutate secret stores.
 Unrecorded routes surface as `probe_needed`; `route select` exits nonzero when
 there is no `live.available` route with ready runtime state.

@@ -183,7 +183,7 @@ Recommended command grammar:
 - If needed, split a new implementation ticket for "managed Codex UX
   command grammar and status artifact hardening".
 
-### Phase 1: No-Spend UX Hardening
+### Phase 1: Diagnostic UX Hardening
 
 Implementation targets:
 
@@ -339,7 +339,7 @@ Add or extend shell smokes:
   - shared session authority remains safe.
 
 - Keep `scripts/smoke-codex-acceptance.sh`
-  - no-spend A -> 429 -> B synthetic swap in one stable child PID.
+  - diagnostic A -> 429 -> B synthetic swap in one stable child PID.
 
 ### 5.4 Cassette Coverage
 

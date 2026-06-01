@@ -47,7 +47,7 @@ The traced decisions are:
 
 - `health.normalize`: persisted transient provider degradation recovered for
   route selection after its retry window expires.
-- `route.evaluate`: no-spend route runtime, liveness, action, and selectability.
+- `route.evaluate`: diagnostic route runtime, liveness, action, and selectability.
 - `codex.native_binary.resolve`: native Codex binary resolution without printing
   absolute paths. Managed Codex launches include `adapter:"managed_codex"` so a
   support trace can distinguish mux-owned launch resolution from explicit

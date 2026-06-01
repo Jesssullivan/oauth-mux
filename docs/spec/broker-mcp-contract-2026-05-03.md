@@ -156,7 +156,7 @@ labelling, not a product limitation we hide.
 Until a non-Codex adapter exists, use the provider-proof and enrollment surfaces
 for those providers. For Claude, that means `oauth-mux enroll claude ...`,
 `CLAUDE_CONFIG_DIR` user-mediated login, `doctor runtime`, `probe
---capability auth-status`, and `stay-afloat --once` as a no-spend route-state
+--capability auth-status`, and `stay-afloat --once` as a diagnostic route-state
 check. It does not mean `oauth-mux claude` seamless handoff exists.
 
 ## 2. Broker MCP Method Surface

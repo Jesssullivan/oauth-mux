@@ -33,7 +33,7 @@ Treat work as core only when it directly improves one of these surfaces:
 - Managed in-session quota/rate/auth/tier handoff.
 - Native-feeling UX for install, preflight, login/pass-through, resume, status,
   and repair.
-- Redacted no-spend AX so agents can inspect state and request safe next actions
+- Redacted diagnostic AX so agents can inspect state and request safe next actions
   without reading tokens or spending provider calls.
 - A reusable harness adapter contract for future Claude, OpenCode, and other
   harness integrations.

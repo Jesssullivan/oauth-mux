@@ -122,7 +122,7 @@ Hosted evidence from run `25029923810`:
 
 Current post-handoff Codex Max route truth moves with operator auth and reset
 windows. Use `docs/qa-handoff-matrix.md` as the canonical current-state matrix
-and refresh no-spend truth with:
+and refresh diagnostic truth with:
 
 ```bash
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -133,7 +133,7 @@ After the 2026-05-09 engineered handoff burn, the important durable claim is
 not any one account's later availability state; it is that managed Codex quota
 handoff from `codex:max-2` to `codex:max-3` is preserved in
 `docs/evidence/codex-engineered-quota-handoff-20260509/`. Do not describe the
-pool as afloat unless current no-spend route truth shows a selectable primary
+pool as afloat unless current diagnostic route truth shows a selectable primary
 and fallback.
 
 Hosted evidence from PR-branch run `25134175687` on 2026-04-29:

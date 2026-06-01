@@ -37,7 +37,7 @@ The action now has three distinct identity fields:
 - `mediation` is how an agent, wrapper, or user should handle the action.
 - `repair_owner` identifies who owns credential repair when there is one.
 - `command` is the executable oauth-mux repair handoff when oauth-mux has one.
-- `handoff_plan_command` is a no-spend planning command for upstream-owned
+- `handoff_plan_command` is a diagnostic planning command for upstream-owned
   handoffs that do not yet have an oauth-mux executable repair command.
 
 `stay-afloat next --json` wraps the same action contract in a single

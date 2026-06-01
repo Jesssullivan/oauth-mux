@@ -241,7 +241,7 @@ Current schedule reasons:
 | Reason | Meaning |
 | --- | --- |
 | `route_selectable` | A route is already afloat; no wake-up is required. |
-| `probe_due` | A no-spend or admitted probe is useful immediately. |
+| `probe_due` | A diagnostic or admitted probe is useful immediately. |
 | `retry_after` | Provider rate-limit evidence supplied a retry-after window. |
 | `wait_until` | Quota or cooldown evidence supplied an absolute reset time. |
 | `quota_poll` | Quota is exhausted without a known reset; re-check on the conservative quota cadence. |
@@ -285,7 +285,7 @@ Default daemon policy:
 ```
 
 This means a default tick may inspect local files, parse health, check runtime
-readiness, and run admitted no-spend commands. It may not spend subscription
+readiness, and run admitted diagnostic commands. It may not spend subscription
 quota, open auth flows, or mutate credential stores.
 
 Future policy changes must preserve explicitness:

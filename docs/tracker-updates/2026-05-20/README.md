@@ -14,7 +14,7 @@ operator approval.
   `python3 -m py_compile` for Codex stubs, `bash -n` for the provider-degraded
   smoke, `just smoke-codex-provider-degraded-local`, `just test`,
   `just check-local`, and `git diff --check`.
-- Current installed no-spend route truth from the 2026-05-21 02:57 UTC
+- Current installed diagnostic route truth from the 2026-05-21 02:57 UTC
   post-repair refresh: active binary is user-local `oauth-mux 0.1.9`; native
   Codex resolves outside oauth-mux; four `codex-max` route stores are
   runtime/broker ready; `codex:max-3` is selected; `max-4` is a live selectable
@@ -22,7 +22,7 @@ operator approval.
 - Current resilience is `session_start_ready:true`, `fallback_ready:true`,
   `single_route_at_risk:false`.
 - Current cassette/live gate: a real cassette capture can proceed only after a
-  just-in-time no-spend refresh reconfirms spare fallback capacity and the
+  just-in-time diagnostic snapshot reconfirms spare fallback capacity and the
   operator explicitly approves any live provider-spend capture.
 - Daemon remains non-production: `status:"not_running"`,
   `contract:"experimental_socket_stub"`, `hosts_stay_afloat:false`; foreground
@@ -44,12 +44,12 @@ Draft:
 > `just smoke-codex-provider-degraded-local`, `just test`, and
 > `just check-local`.
 >
-> Real cassette capture is still open. The 2026-05-21 post-repair no-spend
+> Real cassette capture is still open. The 2026-05-21 post-repair diagnostic
 > refresh shows user-local `oauth-mux 0.1.9`, `codex:max-3` selected, and
 > `max-4` available as a live selectable fallback. `max-1` and `max-2` remain
 > `unrecorded`. Current resilience is `fallback_ready:true` and
 > `single_route_at_risk:false`, but the next cassette attempt should still do a
-> just-in-time no-spend refresh and get explicit operator approval for any live
+> just-in-time diagnostic snapshot and get explicit operator approval for any live
 > provider-spend capture.
 >
 > Tracker hygiene note: Linear `TIN-950` is marked Done, but this GitHub issue
@@ -69,7 +69,7 @@ Completion metric before closing:
 
 Draft:
 
-> 2026-05-21 post-repair no-spend refresh: `codex:max-3#codex-max` is selected
+> 2026-05-21 post-repair diagnostic snapshot: `codex:max-3#codex-max` is selected
 > and `max-4` is a live selectable fallback. `max-1` and `max-2` are
 > runtime/broker ready but still blocked as `unrecorded`, so the profile is
 > afloat with one spare fallback:
@@ -77,7 +77,7 @@ Draft:
 > `single_route_at_risk:false`.
 >
 > This means the negative permutation matrix can move out of the single-route
-> risk block, but release-grade evidence still requires a just-in-time no-spend
+> risk block, but release-grade evidence still requires a just-in-time diagnostic
 > refresh and explicit approval for provider-spend cases. API-credit
 > false-positive, all-fallbacks-exhausted, tier-insufficient, and reset-window
 > repair remain the priority negative permutations.
@@ -100,7 +100,7 @@ Draft:
 Draft:
 
 > Keep this queued behind the BrokenPipe/cassette path. The first acceptable
-> next step is still a no-spend sidecar smoke proving loopback transport,
+> next step is still a diagnostic sidecar smoke proving loopback transport,
 > remote auth token handling, connection ordering, and TUI attachment. No live
 > sidecar spend proof or managed interactive UX claim should be made until a
 > separate acceptance run exists.

@@ -22,9 +22,9 @@ The lane contract and current operator rules live in
 | Homebrew formula | 0.1.7 | macOS arm64 | public `jesssullivan/omux` tap | Pass | Public tap PR `Jesssullivan/homebrew-omux#1` updated the formula from the GitHub Release asset; clean QA installed `oauth-mux 0.1.7` and `brew info --json=v2` reports stable `0.1.7`. |
 | deb package | 0.1.7 | hosted Linux amd64 container | public GitHub Release `.deb` asset | Pass | System Package Install QA run `25980333371` installed package and ran `/usr/bin/oauth-mux version`. |
 | rpm package | 0.1.7 | hosted Linux x86_64 container | public GitHub Release `.rpm` asset | Pass | System Package Install QA run `25980333371` installed package and ran `/usr/bin/oauth-mux version`. |
-| Codex route dogfood | 0.1.7 | macOS arm64 | installed binary | Pass with spare fallback | Current 2026-05-17 no-spend truth: `codex-max` selects `max-1`, has `max-3` and `max-4` as selectable fallbacks, and blocks `max-2` as `token_revoked`; `session_start_ready:true`, `fallback_ready:true`, and `single_route_at_risk:false`. |
+| Codex route dogfood | 0.1.7 | macOS arm64 | installed binary | Pass with spare fallback | Current 2026-05-17 diagnostic truth: `codex-max` selects `max-1`, has `max-3` and `max-4` as selectable fallbacks, and blocks `max-2` as `token_revoked`; `session_start_ready:true`, `fallback_ready:true`, and `single_route_at_risk:false`. |
 | lab dogfood | 0.1.7 | macOS arm64 | public npm one-shot | Pass | Public `npx` run reports `oauth-mux 0.1.7` and `doctor --json` reports `ok:true` against local config/state. |
-| first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, runtime diagnostics, redacted report, no-spend route explanation/select refusal, and non-mutating Codex help. |
+| first-run source e2e | main | macOS arm64 | source checkout | Pass | `just first-run-e2e` runs with temporary HOME/XDG roots and proves no-config `init --codex-max`, JSON diagnostics, runtime diagnostics, redacted report, diagnostic route explanation/select refusal, and non-mutating Codex help. |
 
 ## Evidence Commands
 

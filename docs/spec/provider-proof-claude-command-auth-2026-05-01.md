@@ -51,7 +51,7 @@ require a parsed token before `probe.execute` runs.
 
 ## Local Proof
 
-No-spend Claude proof with isolated oauth-mux state:
+Diagnostic Claude proof with isolated oauth-mux state:
 
 ```bash
 tmp="$(mktemp -d)"

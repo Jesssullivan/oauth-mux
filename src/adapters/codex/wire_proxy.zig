@@ -2014,7 +2014,7 @@ fn writeNoAccountSelectableResponse(
     try w.writeAll(",\"agent_safe_next_actions\":[");
     try writeNoAccountNextActionJson(w, .{
         .kind = "codex_preflight",
-        .label = "no-spend Codex preflight",
+        .label = "diagnostic Codex preflight",
         .command = preflight_command,
         .budget = "free_local",
         .agent_safe = true,

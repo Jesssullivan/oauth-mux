@@ -21,7 +21,7 @@ probes, credential rewrites, or session-store repairs.
 
 The supported in-agent behavior is mediation, not credential control:
 
-1. Read no-spend JSON surfaces.
+1. Read diagnostic JSON surfaces.
 2. Show the exact redacted next action to the user.
 3. Wait for user-mediated completion when the action is interactive.
 4. Refresh route evidence with an admitted oauth-mux command.
@@ -46,9 +46,9 @@ Every JSON action exposed to an agent must keep these consent fields explicit:
 - `mediation`
 - `repair_owner`
 
-## 2. No-Spend Surfaces
+## 2. Diagnostic Surfaces
 
-Agents should start with these no-spend commands or their future MCP tool
+Agents should start with these diagnostic commands or their future MCP tool
 equivalents:
 
 ```bash
@@ -111,7 +111,7 @@ permission broker.
 
 Some upstream-owned providers do not have an oauth-mux executable repair
 command yet. In those cases `command` remains `null` and
-`handoff_plan_command` points to a no-spend planning command the agent can show
+`handoff_plan_command` points to a diagnostic planning command the agent can show
 to the user.
 
 After a user completes the upstream login, the agent should ask for an evidence

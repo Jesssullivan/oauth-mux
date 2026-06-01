@@ -18,7 +18,7 @@ risks are no longer general release mechanics. They are specific product
 boundaries that need separate tracking.
 
 Supersession note, 2026-05-08: the Codex proof ladder now includes
-broker-owned session planning, no-spend local broker smokes, spend-gated
+broker-owned session planning, diagnostic local broker smokes, spend-gated
 broker-run live turns, bounded broker-run session loops, exhausted-route
 revalidation, controlled fallback drills, managed resume, and dogfood-9 live
 auth-continuity plus failed-quota evidence. On 2026-05-08, installed
@@ -229,7 +229,7 @@ Current truth:
 Next split:
 
 - `TIN-861`: prove Claude Code through command-owned auth/session behavior.
-  The first no-spend local proof is captured in
+  The first diagnostic local proof is captured in
   `docs/spec/provider-proof-claude-command-auth-2026-05-01.md`: `auth-status`
   can now run through `claude auth status --json` without first reading or
   mutating Claude's credential store. Its capability proof status is
@@ -318,7 +318,7 @@ these precise provider-proof children.
    app-server stdio external-auth login. `oauth-mux codex broker-401-smoke
    --confirm-broker` proves the local mediated 401 retry path with a fallback
    route. `oauth-mux codex broker-quota-smoke --confirm-broker` proves the
-   local no-spend quota boundary: new brokered thread fallback works after
+   local diagnostic quota boundary: new brokered thread fallback works after
    fallback login, while same-turn and same-thread quota recovery remain
    unclaimed. `oauth-mux codex broker-session-plan` is the next UX slice: it
    combines route liveness with broker readiness to plan a broker-owned Codex

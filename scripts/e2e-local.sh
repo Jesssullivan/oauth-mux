@@ -1104,7 +1104,7 @@ printf 'e2e: codex broker-fallback-drill marks selected route exhausted and sele
 broker_fallback_drill="$(PATH="$broker_session_bin:$PATH" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex broker-fallback-drill --profile codex-max --capability codex-max --from-account max-2 --confirm-drill --json)"
 expect_contains "$broker_fallback_drill" '"mode":"codex_broker_fallback_drill"' "broker-fallback-drill reports drill mode after confirmation"
 expect_contains "$broker_fallback_drill" '"ok":true' "broker-fallback-drill succeeds when distinct fallback exists"
-expect_contains "$broker_fallback_drill" '"spends_provider_calls":false' "broker-fallback-drill remains no-spend"
+expect_contains "$broker_fallback_drill" '"spends_provider_calls":false' "broker-fallback-drill remains diagnostic"
 expect_contains "$broker_fallback_drill" '"mutates_route_health":true' "broker-fallback-drill reports route-health mutation"
 expect_contains "$broker_fallback_drill" '"proof_status":"controlled_route_state_fallback_drill"' "broker-fallback-drill scopes proof status"
 expect_contains "$broker_fallback_drill" '"provider_originated_quota":false' "broker-fallback-drill does not claim provider-originated quota"

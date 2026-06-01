@@ -18604,7 +18604,7 @@ test "stay-afloat next emits exact exec argv for selected fallback" {
 }
 
 test "stay-afloat next degrades to fallback capability when requested capability exhausted (TIN-1811)" {
-    // No-spend: route selection only reads config + the in-memory health store.
+    // Diagnostic: route selection only reads config + the in-memory health store.
     // codex-max routes are all rate-limited (unselectable); codex-mini routes are
     // live. The codex-max profile declares capability_degradation_chain=["codex-mini"]
     // so the never-halt selector must cross to a live codex-mini route.
@@ -18804,7 +18804,7 @@ test "config rejects capability_degradation_chain with a capability that has no 
 }
 
 test "stay-afloat launch path degrades across capability via selectDegradedRouteNotAttempted (TIN-1811 Phase 2)" {
-    // No-spend: only reads config + the in-memory health store (no exec). The
+    // Diagnostic: only reads config + the in-memory health store (no exec). The
     // launch/observe loops select via selectDegradedRouteNotAttempted; this
     // verifies it crosses to a live codex-mini route when every codex-max route
     // is unselectable, returns ONLY immediately-live routes, and respects the
@@ -18925,7 +18925,7 @@ test "stay-afloat launch path degrades across capability via selectDegradedRoute
 }
 
 test "quota-only codex-max pool is afloat-pending-recovery, not a false not_afloat, and is not launchable (TIN-1812)" {
-    // No-spend: config + in-memory health store only. Every codex-max route is
+    // Diagnostic: config + in-memory health store only. Every codex-max route is
     // quota_exhausted with a future reset window; none are dead; there is NO
     // degradation chain. The pool must report a recoverable fallback (so state is
     // not "not_afloat") and surface the soonest reset window, while remaining
