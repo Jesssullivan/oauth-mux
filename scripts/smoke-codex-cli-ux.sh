@@ -524,8 +524,10 @@ touch "$SQLITE_LOCK_RELEASE"
 wait "$SQLITE_LOCK_PID"
 SQLITE_LOCK_PID=""
 assert_grep "sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock owner pid printed" '"kind":"sqlite_authority_check".*"lock_owner_pid_printed":true' "$SQLITE_AUTH_LOCK_NDJSON"
 assert_grep "sqlite authority lock terminal status" '"kind":"session_aborted".*"reason":"session_authority_locked".*"phase":"sqlite_authority_check".*"pre_spawn":true.*"child_spawned":false' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock stderr" 'canonical Codex sqlite state is locked' "$SQLITE_AUTH_LOCK_STDERR"
+assert_grep "sqlite authority lock stderr" 'canonical Codex sqlite state is locked by another Codex process \(pid [0-9]+\)' "$SQLITE_AUTH_LOCK_STDERR"
 if [[ -e "$SQLITE_AUTH_LOCK_REPORT" ]]; then
     echo "  ✗ locked sqlite authority launched stub unexpectedly" >&2
     cat "$SQLITE_AUTH_LOCK_REPORT" >&2
