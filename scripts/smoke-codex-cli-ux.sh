@@ -153,6 +153,33 @@ assert_grep() {
     fi
 }
 
+assert_durable_bridge_homes_scrubbed() {
+    local label=$1
+    local root="$CANONICAL_SESSION_HOME/.oauth-mux/managed-codex-homes"
+    if [[ ! -d "$root" ]]; then
+        echo "  ✗ $label durable managed home root missing" >&2
+        exit 1
+    fi
+
+    local leaked
+    leaked="$(find "$root" -mindepth 2 -maxdepth 2 \( -name auth.json -o -name installation_id -o -name config.toml \) -print -quit)"
+    if [[ -n "$leaked" ]]; then
+        echo "  ✗ $label left token/config material in durable managed home" >&2
+        find "$root" -mindepth 2 -maxdepth 2 \( -name auth.json -o -name installation_id -o -name config.toml \) -print >&2
+        exit 1
+    fi
+
+    local bridge_count
+    bridge_count="$(find "$root" -mindepth 2 -maxdepth 2 -type l -name sessions -print | wc -l | tr -d ' ')"
+    if [[ "$bridge_count" -eq 0 ]]; then
+        echo "  ✗ $label preserved no durable session bridge" >&2
+        find "$root" -maxdepth 2 -print >&2
+        exit 1
+    fi
+
+    echo "  ✓ $label scrubbed durable auth/config material while preserving bridge homes"
+}
+
 run_case() {
     local mode=$1 label=$2 expected_argv=$3
     shift 3
@@ -624,6 +651,7 @@ if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_LOCK_NDJ
     cat "$SQLITE_LOCK_NDJSON" >&2
     exit 1
 fi
+assert_durable_bridge_homes_scrubbed "sqlite lock nonzero child cleanup"
 echo "  ✓ sqlite lock shaped startup failure records abort without route-health mutation"
 
 echo "smoke-codex-cli-ux: forwarded config provider override fails before spawn"
