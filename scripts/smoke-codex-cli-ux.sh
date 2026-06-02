@@ -195,6 +195,7 @@ run_case() {
     assert_grep "$label session_started" '"kind":"session_started"' "$ndjson"
     assert_grep "$label canonical session bridge" '"session_authority":"canonical_bridge"' "$ndjson"
     assert_grep "$label canonical sqlite authority" '"sqlite_authority":"canonical_env"' "$ndjson"
+    assert_grep "$label durable bridge cleanup" '"session_home_cleanup":"scrub_durable_bridge"' "$ndjson"
     assert_grep "$label config passthrough status" '"config_passthrough":true,"user_config_present":true' "$ndjson"
     assert_grep "$label config layout" '"config_layout":"root_partitioned"' "$ndjson"
     assert_grep "$label experimental defaults injected" '"experimental_feature_defaults_injected":4' "$ndjson"
@@ -317,6 +318,7 @@ env \
   "$BIN" codex --profile codex-max --isolated-session-store --json-status-file "$ISOLATED_NDJSON" resume --last 2>"$ISOLATED_STDERR"
 assert_grep "isolated session authority" '"kind":"session_started".*"session_authority":"isolated"' "$ISOLATED_NDJSON"
 assert_grep "isolated sqlite authority" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$ISOLATED_NDJSON"
+assert_grep "isolated cleanup deletes overlay" '"kind":"session_started".*"session_home_cleanup":"delete_tree"' "$ISOLATED_NDJSON"
 if [[ "$(jq -r .sqlite_env.codex_sqlite_home_env_set "$ISOLATED_REPORT")" == "false" \
       && "$(jq -r .sqlite_env.path_printed "$ISOLATED_REPORT")" == "false" ]]; then
     echo "  ✓ isolated run scrubbed inherited CODEX_SQLITE_HOME"
@@ -465,14 +467,17 @@ if grep -q -E 'managed-good-session|'"$BAD_AUTHORITY_HOME" "$BAD_AUTHORITY_NDJSO
     exit 1
 fi
 
-echo "smoke-codex-cli-ux: locked canonical sqlite authority fails before spawn"
+echo "smoke-codex-cli-ux: locked canonical sqlite authority is diagnostic by default"
 SQLITE_AUTH_LOCK_NDJSON="$TMP/sqlite-authority-lock/status.ndjson"
 SQLITE_AUTH_LOCK_STDERR="$TMP/sqlite-authority-lock.stderr"
 SQLITE_AUTH_LOCK_REPORT="$TMP/sqlite-authority-lock.report"
 SQLITE_AUTH_LOCK_HEALTH_BEFORE="$TMP/sqlite-authority-lock.health.before"
+SQLITE_AUTH_LOCK_STRICT_NDJSON="$TMP/sqlite-authority-lock-strict/status.ndjson"
+SQLITE_AUTH_LOCK_STRICT_STDERR="$TMP/sqlite-authority-lock-strict.stderr"
+SQLITE_AUTH_LOCK_STRICT_REPORT="$TMP/sqlite-authority-lock-strict.report"
 SQLITE_LOCK_READY="$TMP/sqlite-authority-lock.ready"
 SQLITE_LOCK_RELEASE="$TMP/sqlite-authority-lock.release"
-mkdir -p "$(dirname "$SQLITE_AUTH_LOCK_NDJSON")"
+mkdir -p "$(dirname "$SQLITE_AUTH_LOCK_NDJSON")" "$(dirname "$SQLITE_AUTH_LOCK_STRICT_NDJSON")"
 cp "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"
 python3 - "$CANONICAL_SESSION_HOME/state_5.sqlite" "$SQLITE_LOCK_READY" "$SQLITE_LOCK_RELEASE" <<'PY' &
 import fcntl
@@ -509,42 +514,73 @@ if [[ ! -e "$SQLITE_LOCK_READY" ]]; then
     echo "  ✗ sqlite lock helper did not become ready" >&2
     exit 1
 fi
-if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+
+OMUX_CONFIG="$TMP/oauth-mux.config.json" \
      OMUX_STATE_DIR="$STATE_DIR" \
      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
      CODEX_HOME="$CANONICAL_SESSION_HOME" \
      OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
      OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_TURNS=0 \
      OMUX_STUB_CODEX_REPORT="$SQLITE_AUTH_LOCK_REPORT" \
-     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STDERR"; then
-    echo "  ✗ locked sqlite authority unexpectedly launched" >&2
+     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STDERR"
+assert_grep "sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock non-strict" '"kind":"sqlite_authority_check".*"strict_guard":false.*"fatal":false' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock still launches" '"kind":"session_started".*"sqlite_authority":"canonical_env"' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock session ends" '"kind":"session_ended".*"exit_code":0' "$SQLITE_AUTH_LOCK_NDJSON"
+if [[ ! -s "$SQLITE_AUTH_LOCK_REPORT" ]]; then
+    echo "  ✗ diagnostic sqlite lock did not launch stub" >&2
+    cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
+    cat "$SQLITE_AUTH_LOCK_STDERR" >&2
+    exit 1
+fi
+if grep -q '"kind":"session_aborted"' "$SQLITE_AUTH_LOCK_NDJSON"; then
+    echo "  ✗ diagnostic sqlite lock aborted before child spawn" >&2
+    cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
+    exit 1
+fi
+if OMUX_CODEX_STRICT_SQLITE_LOCK_GUARD=1 \
+     OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+     OMUX_STATE_DIR="$STATE_DIR" \
+     OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+     CODEX_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_TURNS=0 \
+     OMUX_STUB_CODEX_REPORT="$SQLITE_AUTH_LOCK_STRICT_REPORT" \
+     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_STRICT_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STRICT_STDERR"; then
+    echo "  ✗ strict locked sqlite authority unexpectedly launched" >&2
     exit 1
 fi
 touch "$SQLITE_LOCK_RELEASE"
 wait "$SQLITE_LOCK_PID"
 SQLITE_LOCK_PID=""
-assert_grep "sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock owner pid printed" '"kind":"sqlite_authority_check".*"lock_owner_pid_printed":true' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock terminal status" '"kind":"session_aborted".*"reason":"session_authority_locked".*"phase":"sqlite_authority_check".*"pre_spawn":true.*"child_spawned":false' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock stderr" 'canonical Codex sqlite state is locked by another Codex process \(pid [0-9]+\)' "$SQLITE_AUTH_LOCK_STDERR"
-if [[ -e "$SQLITE_AUTH_LOCK_REPORT" ]]; then
-    echo "  ✗ locked sqlite authority launched stub unexpectedly" >&2
-    cat "$SQLITE_AUTH_LOCK_REPORT" >&2
+assert_grep "strict sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock owner pid printed" '"kind":"sqlite_authority_check".*"lock_owner_pid_printed":true' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock fatal" '"kind":"sqlite_authority_check".*"strict_guard":true.*"fatal":true' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock terminal status" '"kind":"session_aborted".*"reason":"session_authority_locked".*"phase":"sqlite_authority_check".*"pre_spawn":true.*"child_spawned":false' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock stderr" 'canonical Codex sqlite state is locked by another Codex process \(pid [0-9]+\)' "$SQLITE_AUTH_LOCK_STRICT_STDERR"
+if [[ -e "$SQLITE_AUTH_LOCK_STRICT_REPORT" ]]; then
+    echo "  ✗ strict locked sqlite authority launched stub unexpectedly" >&2
+    cat "$SQLITE_AUTH_LOCK_STRICT_REPORT" >&2
     exit 1
 fi
 if ! cmp -s "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"; then
-    echo "  ✗ locked sqlite authority mutated route health" >&2
+    echo "  ✗ sqlite authority lock check mutated route health" >&2
     diff -u "$SQLITE_AUTH_LOCK_HEALTH_BEFORE" "$STATE_DIR/health.json" >&2 || true
     exit 1
 fi
-if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR"; then
+if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR" "$SQLITE_AUTH_LOCK_STRICT_NDJSON" "$SQLITE_AUTH_LOCK_STRICT_STDERR"; then
     echo "  ✗ locked sqlite authority leaked path or session id" >&2
     cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
     cat "$SQLITE_AUTH_LOCK_STDERR" >&2
+    cat "$SQLITE_AUTH_LOCK_STRICT_NDJSON" >&2
+    cat "$SQLITE_AUTH_LOCK_STRICT_STDERR" >&2
     exit 1
 fi
-echo "  ✓ locked canonical sqlite authority fails before child spawn"
+echo "  ✓ locked canonical sqlite authority is diagnostic unless strict guard is set"
 
 echo "smoke-codex-cli-ux: sqlite lock shaped child startup failure records abort"
 SQLITE_LOCK_NDJSON="$TMP/sqlite-lock/status.ndjson"

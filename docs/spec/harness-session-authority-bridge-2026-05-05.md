@@ -29,13 +29,19 @@ spawning Codex. Installed-runtime dogfood has also proven managed resume/load
 through the proxy, including live quota handoff evidence tracked in
 `docs/spec/codex-live-quota-handoff-evidence-2026-05-08.md`.
 
-Implementation update, 2026-05-26: Codex 0.132 reads native SQLite resume
-state from `CODEX_SQLITE_HOME` when set, and the chooser can depend on
-`logs_2.sqlite*` as well as `state_5.sqlite*`. Canonical bridge mode keeps the
-managed `CODEX_HOME` as mux-owned auth/config, sets child `CODEX_SQLITE_HOME`
-to the canonical session authority home, and bridges both SQLite families by
-reference when present. Isolated mode leaves SQLite state in the overlay and
-removes inherited `CODEX_SQLITE_HOME`.
+Implementation update, 2026-05-26 / 2026-06-02: Codex 0.132+ reads native
+SQLite resume state from `CODEX_SQLITE_HOME` when set, and the chooser can
+depend on `logs_2.sqlite*` as well as `state_5.sqlite*`. Canonical bridge mode
+keeps the managed `CODEX_HOME` as mux-owned auth/config, sets child
+`CODEX_SQLITE_HOME` to the canonical session authority home, and bridges both
+SQLite families by reference when present. As of 2026-06-02, that managed
+`CODEX_HOME` is durable under
+`<authority>/.oauth-mux/managed-codex-homes/omux-managed-codex-*`; oauth-mux
+scrubs mux-owned `auth.json`, `installation_id`, and generated `config.toml` on
+exit but leaves the bridge in place so native Codex rollout paths recorded into
+canonical SQLite do not point at deleted temp homes. Isolated mode leaves SQLite
+state in the overlay, removes inherited `CODEX_SQLITE_HOME`, and deletes the
+overlay on exit.
 
 The 2026-05-06 dogfood-6 auth failure exposed the auth-side counterpart:
 Codex can refresh tokens inside the managed overlay, and the adapter must
@@ -165,10 +171,12 @@ requires them for chooser/resume parity.
 
 For canonical Codex SQLite authority, managed resume may probe SQLite's
 standard lock byte range on `state_5.sqlite` before child spawn. A held lock is
-reported as redacted `session_authority_locked` / `database_locked` status with
-the database basename only. oauth-mux must not kill the lock holder, rewrite the
-canonical database, or create an overlay-local SQLite authority to bypass the
-lock.
+reported as redacted `database_locked` status with the database basename only.
+Because native Codex 0.135 can run concurrent canonical sessions, this probe is
+diagnostic by default. `OMUX_CODEX_STRICT_SQLITE_LOCK_GUARD=1` restores the
+older `session_authority_locked` pre-spawn abort for targeted debugging.
+oauth-mux must not kill the lock holder, rewrite the canonical database, or
+create an overlay-local SQLite authority to bypass the lock.
 
 ### 2.4 Cache, Log, and Runtime State
 
@@ -237,14 +245,15 @@ boundary explicit in Codex itself. It requires upstream Codex support.
 
 ### Option B: Local Session Bridge by Reference
 
-Near-term shape: the temporary `CODEX_HOME` contains mux-owned `auth.json` and
+Near-term shape: the managed `CODEX_HOME` contains mux-owned `auth.json` and
 `config.toml`, while session-authority paths are symlinks, directory links, or
-adapter-managed references to the canonical Codex store.
+adapter-managed references to the canonical Codex store. In canonical bridge
+mode this home is durable and scrubbed on exit rather than deleted.
 
 For Codex on Unix-like systems, a candidate overlay is:
 
 ```text
-<tmp>/oauth-mux-codex-XXXX/
+~/.codex/.oauth-mux/managed-codex-homes/omux-managed-codex-XXXX/
   auth.json                 # copied from selected account auth source
   installation_id           # copied if auth-relevant
   config.toml               # generated proxy config
@@ -263,6 +272,10 @@ For Codex on Unix-like systems, a candidate overlay is:
 This keeps `resume <id>` and `resume --last` pointed at the canonical session
 authority without mutating canonical auth/config. For Codex 0.132+,
 `CODEX_SQLITE_HOME` is also set to the canonical authority home in this mode.
+The durable root is required because Codex can persist rollout paths derived
+from `CODEX_HOME` into canonical SQLite. Deleted temp homes make those rows
+unresumable; scrubbed durable bridge homes keep them resolvable without keeping
+selected-account auth material on disk.
 
 Risks to resolve:
 

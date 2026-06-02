@@ -137,15 +137,30 @@ session ids, SQL rows, token material, or provider response bodies, and it
 does not mutate SQLite. Any cleanup of canonical Codex SQLite state remains an
 explicit operator action that must be backed up and reversible.
 
-Implementation update, 2026-05-27: managed resume checks canonical SQLite lock
-contention before spawning Codex. In canonical bridge mode, `oauth-mux codex
-resume...` probes the SQLite lock byte range on `state_5.sqlite` when present.
-If another process holds the lock, oauth-mux emits a redacted
-`sqlite_authority_check` with `db_basename:"state_5.sqlite"`,
-`sqlite_error_class:"database_locked"`, `sqlite_error_code:5`, then aborts
-pre-spawn with `reason:"session_authority_locked"`. The adapter does not kill
-other Codex processes, rewrite session state, or fall back to an overlay-local
-SQLite database.
+Implementation update, 2026-05-27 / 2026-06-02: managed resume checks canonical
+SQLite lock contention before spawning Codex. In canonical bridge mode,
+`oauth-mux codex resume...` probes the SQLite lock byte range on
+`state_5.sqlite` when present and emits a redacted `sqlite_authority_check` with
+`db_basename:"state_5.sqlite"`, `sqlite_error_class:"database_locked"`, and
+`sqlite_error_code:5` when another process holds the byte range. As of
+2026-06-02 this check is diagnostic by default because native Codex 0.135 can run
+multiple concurrent canonical sessions. Setting
+`OMUX_CODEX_STRICT_SQLITE_LOCK_GUARD=1` restores the older pre-spawn abort with
+`reason:"session_authority_locked"` for targeted debugging. The adapter does
+not kill other Codex processes, rewrite session state, or fall back to an
+overlay-local SQLite database.
+
+Implementation update, 2026-06-02: canonical bridge mode no longer uses a
+disposable `$TMPDIR/oauth-mux-codex-*` home. Codex does not expose a supported
+`CODEX_AUTH_FILE` override, so `CODEX_HOME` still has to carry the selected
+account's copied auth material and generated proxy config. To avoid poisoning
+canonical SQLite rows with paths to deleted temp homes, oauth-mux now creates
+canonical bridge homes under the session authority as
+`<authority>/.oauth-mux/managed-codex-homes/omux-managed-codex-*`. On exit it
+scrubs `auth.json`, `installation_id`, and generated `config.toml`, but leaves
+the bridge directory and symlinks in place so any native Codex rollout paths
+recorded through that `CODEX_HOME` remain resolvable. Isolated session-store
+mode still uses a disposable overlay and removes it on exit.
 
 Implementation update, 2026-05-10: managed launch no longer runs broad
 `repairRefreshableCodexAuthFailures()` before child spawn. Network refresh is
@@ -226,8 +241,8 @@ both layers, Level 3 is the default and Level 4 is reachable.
 2. Selects the initial route via broker `account/select` (or local
    selection if the user passed `--account <name>`).
 3. Materializes that account's `auth.json`-equivalent tuple.
-4. Writes a temporary, adapter-owned `CODEX_HOME` directory containing the
-   selected account's `auth.json` and a generated `config.toml` whose
+4. Writes an adapter-owned `CODEX_HOME` directory containing the selected
+   account's `auth.json` and a generated `config.toml` whose
    built-in provider namespace (`model_provider = "openai"`) points at the
    wire-layer proxy via `openai_base_url`. The generated config preserves
    canonical user behavior settings and strips only mux-owned routing
@@ -235,9 +250,11 @@ both layers, Level 3 is the default and Level 4 is reachable.
    fail before child spawn with redacted status. Session-authority paths are
    bridged per
    `docs/spec/harness-session-authority-bridge-2026-05-05.md`, not copied
-   wholesale into this overlay. Operators may pass `--isolated-session-store`
-   for a test/private namespace or `--session-home <path>` for an explicit
-   canonical session authority.
+   wholesale into this overlay. In canonical bridge mode the directory lives
+   under `<authority>/.oauth-mux/managed-codex-homes/` and is scrubbed, not
+   deleted, on exit so native Codex rollout paths remain resolvable. Operators
+   may pass `--isolated-session-store` for a disposable test/private namespace
+   or `--session-home <path>` for an explicit canonical session authority.
 5. Binds the wire-layer proxy on `127.0.0.1:<dynamic-port>`, with the
    proxy holding the account pool reference and the broker session id.
 6. Spawns `codex app-server --listen stdio://` as a child, with
@@ -251,8 +268,9 @@ both layers, Level 3 is the default and Level 4 is reachable.
    traffic.
 10. Renders the user-facing terminal session per §5 (TUI strategy).
 
-On normal exit, removes the temporary `CODEX_HOME` directory and notifies
-broker via `surface/teardown`.
+On normal exit, scrubs mux-owned auth/config material from a durable canonical
+bridge home or removes a disposable isolated `CODEX_HOME`, then notifies broker
+via `surface/teardown`.
 
 ### 2.2 Daemon-attached mode (later)
 
@@ -580,8 +598,11 @@ oauth-mux evidence. Frame shapes are stable under broker `surface_version:
 { "kind": "session_aborted", "adapter": "codex", "reason": "child_wait_error", "exit_code": -1, "final_claim_level": "broker_owned", "synthetic_swap_observed": false, "wait_error": "..." }
 { "kind": "session_aborted", "adapter": "codex", "reason": "child_signal", "exit_code": -1, "term_kind": "signal", "term_code": 9, "signal_name": "SIGKILL", "final_claim_level": "broker_owned", "synthetic_swap_observed": false }
 
-// canonical SQLite authority lock contention before child spawn
-{ "kind": "sqlite_authority_check", "mode": "resume", "sqlite_authority": "canonical_env", "ok": false, "diagnostic": "database_locked", "db_basename": "state_5.sqlite", "next_action": "close_or_wait_for_other_codex_process_then_retry", "sqlite_error_class": "database_locked", "sqlite_error_code": 5, "path_printed": false, "token_material_printed": false, "session_id_printed": false }
+// canonical SQLite authority lock contention is diagnostic by default
+{ "kind": "sqlite_authority_check", "mode": "resume", "sqlite_authority": "canonical_env", "ok": false, "diagnostic": "database_locked", "db_basename": "state_5.sqlite", "next_action": "close_or_wait_for_other_codex_process_then_retry", "sqlite_error_class": "database_locked", "sqlite_error_code": 5, "strict_guard": false, "fatal": false, "path_printed": false, "token_material_printed": false, "session_id_printed": false }
+
+// strict lock guard is opt-in for targeted debugging
+{ "kind": "sqlite_authority_check", "mode": "resume", "sqlite_authority": "canonical_env", "ok": false, "diagnostic": "database_locked", "db_basename": "state_5.sqlite", "next_action": "close_or_wait_for_other_codex_process_then_retry", "sqlite_error_class": "database_locked", "sqlite_error_code": 5, "strict_guard": true, "fatal": true, "path_printed": false, "token_material_printed": false, "session_id_printed": false }
 { "kind": "session_aborted", "adapter": "codex", "reason": "session_authority_locked", "phase": "sqlite_authority_check", "error": "SqliteStateLocked", "exit_code": -1, "term_kind": null, "term_code": null, "signal_name": null, "final_claim_level": "none", "synthetic_swap_observed": false, "pre_spawn": true, "child_spawned": false, "path_printed": false, "token_material_printed": false, "session_id_printed": false }
 ```
 
