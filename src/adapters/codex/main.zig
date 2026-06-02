@@ -37,6 +37,7 @@ const health_mod = @import("../../health.zig");
 const identity_hash = @import("../../identity_hash.zig");
 const paths = @import("../../paths.zig");
 const pipeline = @import("../../pipeline.zig");
+const repair_state = @import("../../repair_state.zig");
 const runtime_mod = @import("../../runtime.zig");
 const shell = @import("../../shell.zig");
 const trace = @import("../../trace.zig");
@@ -1352,6 +1353,47 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     };
     defer allocator.free(source_auth_path);
     try launch_timer.mark(status_writer, emit_status, "auth_refresh_preflight");
+
+    // TIN-1851: serialize this muxxed session against (a) a concurrent refresh of
+    // the SAME account — the warm-scheduler/proxy-materializer take the same
+    // per-account repair lock, and (b) another live session of the SAME UPSTREAM
+    // IDENTITY — two oauth-mux slots backed by one account share one rotating
+    // refresh chain, so running both would self-revoke it. Lock order: per-account
+    // repair lock first (it also guards the first-launch home/auth migration),
+    // then the identity lock keyed on sha256_12hex(tokens.account_id). The
+    // per-account lock is re-entrant within this process (the in-process proxy
+    // refresh re-acquires it) via the repair-lock re-entrancy guard. Both held
+    // across spawn → wait → finalize and released by defer.
+    const session_account_only = elected.id[std.mem.indexOfScalar(u8, elected.id, ':').? + 1 ..];
+    var session_repair_lock = repair_state.acquireRepairLockBlocking(allocator, "codex", session_account_only) catch |e| {
+        try stderr.print("oauth-mux codex: could not acquire account lock for {s}: {s}\n", .{ session_account_only, @errorName(e) });
+        try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "session_authority_locked", "account_lock", @errorName(e), session_started_emitted);
+        return RunError.SessionAuthorityLocked;
+    };
+    defer session_repair_lock.release();
+
+    const session_identity_hash = try codexIdentityHashForAuthFile(allocator, source_auth_path);
+    defer if (session_identity_hash) |h| allocator.free(h);
+    var session_identity_lock: ?repair_state.RepairLock = null;
+    defer if (session_identity_lock) |*l| l.release();
+    if (session_identity_hash) |h| {
+        session_identity_lock = repair_state.acquireRepairLock(allocator, "codex-identity", h) catch |e| switch (e) {
+            error.RepairInProgress => {
+                try stderr.print(
+                    "oauth-mux codex: account {s} shares its upstream identity with another live muxxed session; refusing to run concurrently (would self-revoke the shared refresh chain)\n",
+                    .{session_account_only},
+                );
+                try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "duplicate_upstream_identity", "identity_lock", "DuplicateUpstreamIdentity", session_started_emitted);
+                return RunError.SessionAuthorityLocked;
+            },
+            else => {
+                try stderr.print("oauth-mux codex: identity lock error: {s}\n", .{@errorName(e)});
+                try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "session_authority_locked", "identity_lock", @errorName(e), session_started_emitted);
+                return RunError.SessionAuthorityLocked;
+            },
+        };
+    }
+    try launch_timer.mark(status_writer, emit_status, "session_locks");
 
     // 4. Bind the wire-layer reverse proxy. The adapter stays alive
     // as the broker/proxy owner while the codex child runs with
