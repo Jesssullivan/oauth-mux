@@ -1330,7 +1330,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         opts.session_home,
         opts.isolated_session_store,
     );
-    defer codex_home.deinit(allocator);
+    var codex_home_deinit_needed = true;
+    defer if (codex_home_deinit_needed) codex_home.deinit(allocator);
     traceManagedOverlay(allocator, elected.id, launch_defaults.profile, proxy_port, &codex_home);
     try launch_timer.mark(status_writer, emit_status, "overlay_creation");
 
@@ -1549,8 +1550,16 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
 
     // Propagate exit code.
     switch (term) {
-        .Exited => |c| if (c != 0) std.process.exit(c),
-        else => std.process.exit(1),
+        .Exited => |c| if (c != 0) {
+            codex_home.deinit(allocator);
+            codex_home_deinit_needed = false;
+            std.process.exit(c);
+        },
+        else => {
+            codex_home.deinit(allocator);
+            codex_home_deinit_needed = false;
+            std.process.exit(1);
+        },
     }
 }
 
