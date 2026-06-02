@@ -62,6 +62,12 @@ Supersession note, 2026-05-03: current `codex-max` dogfood is tracked in
 has four broker-ready routes, with `max-1` selected, `max-4` spare fallback,
 and `max-2`/`max-3` quota-exhausted for `codex-max`.
 
+Supersession note, 2026-06-02: installed Codex CLI 0.135.0 live managed
+dogfood observed the child model as `gpt-5.5`. The oauth-mux `codex-mini`
+profile/route label is route-health evidence, not an account subscription tier
+or child model assertion. A Max-tagged account can legitimately have a live
+fallback route-health lane while the child still runs `gpt-5.5`.
+
 Only login status, auth store paths, and mux probe classifications were
 inspected. Token contents were not read or printed.
 
@@ -232,7 +238,7 @@ The built-in Codex provider now has command-transport probes for the semantic
 route labels:
 
 ```text
-codex-max  -> codex exec --json --ephemeral --ignore-rules -m gpt-5.3-codex
+codex-max  -> codex exec --json --ephemeral --ignore-rules -m gpt-5.5
 codex-mini -> codex exec --json --ephemeral --ignore-rules -m gpt-5.3-codex-spark
 ```
 

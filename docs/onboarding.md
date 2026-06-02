@@ -188,6 +188,11 @@ To probe one route class across every expected Codex account:
 oauth-mux codex probe-all --capability codex-mini --json
 ```
 
+For Codex, `codex-max` and `codex-mini` are oauth-mux route-health labels.
+They are not redacted account-tier assertions and are not necessarily the model
+the child process will print. Live managed evidence should report both the
+selected route health key and the observed child model when available.
+
 To inspect the stay-afloat decision loop without running a canary:
 
 ```bash

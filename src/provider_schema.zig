@@ -621,7 +621,7 @@ const flakehub_capabilities = [_]CapabilityDefinition{
 const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-max",
-        .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
+        .aliases = &.{ "max", "gpt-5.5", "gpt-5.3-codex", "gpt-5.1-codex-max" },
         .proof_status = proof_live,
         .proof_requirements = &.{
             "codex CLI installed",
@@ -640,7 +640,7 @@ const codex_capabilities = [_]CapabilityDefinition{
                 "--ephemeral",
                 "--ignore-rules",
                 "-m",
-                "gpt-5.3-codex",
+                "gpt-5.5",
                 "Reply exactly: OMUX_CODEX_MAX_PROBE",
             },
             .budget = .spend_provider,
@@ -1711,11 +1711,11 @@ test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqualStrings("codex", codex_def.runtime.required_binaries[0]);
 
     try std.testing.expectEqualStrings("codex-max", codex_def.capabilities[0].name);
-    const max_plan = probePlanForCapability(codex_def, "gpt-5.3-codex").?;
+    const max_plan = probePlanForCapability(codex_def, "gpt-5.5").?;
     try std.testing.expectEqual(ProbeTransport.command, max_plan.transport);
     try std.testing.expectEqualStrings("codex-max", max_plan.capability);
     try std.testing.expectEqualStrings("codex", max_plan.command.?[0]);
-    try std.testing.expectEqualStrings("gpt-5.3-codex", max_plan.command.?[6]);
+    try std.testing.expectEqualStrings("gpt-5.5", max_plan.command.?[6]);
     try std.testing.expectEqual(@as(u32, 120_000), max_plan.timeout_ms);
     try std.testing.expectEqual(types.ActionBudget.spend_provider, max_plan.budget);
     try std.testing.expectEqualStrings("codex-max", probePlanForCapability(codex_def, "max").?.capability);

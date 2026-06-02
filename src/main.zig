@@ -3192,10 +3192,15 @@ fn collectRepairPlanRoutes(
         for (profile.providers) |provider_ref| {
             const parsed = parseRepairRouteSpec(provider_ref) orelse return error.ConfigValidationError;
             if (!repairRouteMatchesAccountFilter(parsed, args.account)) continue;
+            if (args.capability) |requested_capability| {
+                if (parsed.capability) |declared_capability| {
+                    if (!std.mem.eql(u8, declared_capability, requested_capability)) continue;
+                }
+            }
             try routes.append(.{
                 .provider = parsed.provider,
                 .account = parsed.account,
-                .capability = args.capability orelse parsed.capability,
+                .capability = parsed.capability orelse args.capability,
             });
         }
         return routes;
@@ -5583,10 +5588,9 @@ const DegradedSelection = struct {
 };
 
 // TIN-1811: collect a profile's routes for a single target capability, preserving
-// each route's *declared* capability. collectRepairPlanRoutes relabels every
-// route to `args.capability`, which would mislabel (e.g.) codex-max routes as
-// codex-mini during fallback evaluation; this keeps only the routes that actually
-// declare the target capability so the fallback set is correct.
+// each route's *declared* capability. This is used by degradation so the
+// fallback set is explicit and does not inherit the originally requested
+// capability label.
 fn collectProfileRoutesForCapability(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -17606,7 +17610,10 @@ test "collectRepairPlanRoutes expands profile capability routes" {
     const parsed = try config.loadFromBytes(std.testing.allocator, json);
     defer parsed.deinit();
 
-    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "codex-max" });
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
     defer routes.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), routes.items.len);
@@ -17614,6 +17621,53 @@ test "collectRepairPlanRoutes expands profile capability routes" {
     try std.testing.expectEqualStrings("max-1", routes.items[0].account);
     try std.testing.expectEqualStrings("codex-max", routes.items[0].capability.?);
     try std.testing.expectEqualStrings("max-2", routes.items[1].account);
+}
+
+test "collectRepairPlanRoutes preserves declared profile route capabilities when scoped" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "file", "path": "/tmp/omux/max-1/auth.json" }
+        \\        },
+        \\        "max-2": {
+        \\          "secret": { "backend": "file", "path": "/tmp/omux/max-2/auth.json" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "codex:max-1#codex-max",
+        \\        "codex:max-1#codex-mini",
+        \\        "codex:max-2#codex-max",
+        \\        "codex:max-2#codex-mini"
+        \\      ],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), routes.items.len);
+    try std.testing.expectEqualStrings("max-1", routes.items[0].account);
+    try std.testing.expectEqualStrings("codex-max", routes.items[0].capability.?);
+    try std.testing.expectEqualStrings("max-2", routes.items[1].account);
+    try std.testing.expectEqualStrings("codex-max", routes.items[1].capability.?);
 }
 
 test "runtime doctor route scope reports only requested profile routes" {
@@ -19119,10 +19173,7 @@ test "Codex broker summary does not claim same-account duplicate as spare fallba
     const parsed = try config.loadFromBytes(std.testing.allocator, cfg_json);
     defer parsed.deinit();
 
-    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
-        .profile = "codex-max",
-        .capability = "codex-max",
-    });
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "codex-max" });
     defer routes.deinit();
     try std.testing.expectEqual(@as(usize, 2), routes.items.len);
     try std.testing.expect(sameFallbackAccount(routes.items[0], routes.items[1]));

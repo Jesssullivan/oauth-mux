@@ -149,6 +149,37 @@ if [[ -s "$NDJSON" ]]; then
     "$ROOT/scripts/summarize-codex-status.py" "$NDJSON" >"$SUMMARY_FILE" || true
 fi
 
+if [[ -s "$SUMMARY_FILE" && -s "$STDERR_FILE" ]]; then
+    python3 - "$SUMMARY_FILE" "$STDERR_FILE" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+summary_path = Path(sys.argv[1])
+stderr_path = Path(sys.argv[2])
+
+try:
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+observed_model = None
+for line in stderr_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    match = re.match(r"\s*model:\s*([^\s]+)\s*$", line)
+    if match:
+        observed_model = match.group(1)
+        break
+
+if observed_model:
+    summary["observed_child_model"] = observed_model
+    summary["observed_child_model_source"] = "codex_stderr"
+    summary["route_capability_is_child_model"] = False
+
+summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+fi
+
 echo "live-codex-mux-e2e: evidence_dir=$EVIDENCE_DIR"
 echo "live-codex-mux-e2e: exit_code=$EXIT_CODE"
 
