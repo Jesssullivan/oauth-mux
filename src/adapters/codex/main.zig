@@ -97,6 +97,18 @@ const CodexSqliteAuthorityMode = enum {
     }
 };
 
+const CodexHomeCleanupMode = enum {
+    delete_tree,
+    scrub_durable_bridge,
+
+    fn toString(self: CodexHomeCleanupMode) []const u8 {
+        return switch (self) {
+            .delete_tree => "delete_tree",
+            .scrub_durable_bridge => "scrub_durable_bridge",
+        };
+    }
+};
+
 const SessionCodexHome = struct {
     path: []u8,
     session_authority: SessionAuthorityMode,
@@ -104,6 +116,7 @@ const SessionCodexHome = struct {
     authority_home: ?[]u8 = null,
     config_authority_home: ?[]u8 = null,
     auth_initial_hash: [32]u8,
+    cleanup_mode: CodexHomeCleanupMode = .delete_tree,
     config_source_present: bool = false,
     config_passthrough: bool = false,
     config_overridden_keys: usize = 0,
@@ -112,7 +125,10 @@ const SessionCodexHome = struct {
     config_layout: []const u8 = "root_partitioned",
 
     fn deinit(self: SessionCodexHome, allocator: std.mem.Allocator) void {
-        std.fs.cwd().deleteTree(self.path) catch {};
+        switch (self.cleanup_mode) {
+            .delete_tree => std.fs.cwd().deleteTree(self.path) catch {},
+            .scrub_durable_bridge => scrubDurableCodexHome(allocator, self.path),
+        }
         allocator.free(self.path);
         if (self.authority_home) |home| allocator.free(home);
         if (self.config_authority_home) |home| allocator.free(home);
@@ -380,6 +396,8 @@ const SqliteAuthorityLockObservation = struct {
     sqlite_error_code: ?u8 = null,
     lock_owner_pid: ?i64 = null,
     next_action: []const u8 = "none",
+    strict_guard: bool = false,
+    fatal: bool = false,
 
     fn locked(self: SqliteAuthorityLockObservation) bool {
         return self.checked and !self.ok;
@@ -639,6 +657,7 @@ fn traceManagedOverlay(
         trace.string("config_layout", codex_home.config_layout),
         trace.string("session_authority", codex_home.session_authority.toString()),
         trace.string("sqlite_authority", codex_home.sqlite_authority.toString()),
+        trace.string("session_home_cleanup", codex_home.cleanup_mode.toString()),
         trace.boolean("config_passthrough", codex_home.config_passthrough),
         trace.boolean("user_config_present", codex_home.config_source_present),
         trace.uint("config_overridden_keys", @intCast(codex_home.config_overridden_keys)),
@@ -668,6 +687,7 @@ fn traceManagedSessionStart(
         trace.string("resume_mode", resume_mode.toString()),
         trace.string("session_authority", codex_home.session_authority.toString()),
         trace.string("sqlite_authority", codex_home.sqlite_authority.toString()),
+        trace.string("session_home_cleanup", codex_home.cleanup_mode.toString()),
         trace.uint("forwarded_arg_count", @intCast(forwarded_arg_count)),
         trace.boolean("child_stdio_inherited", true),
         trace.boolean("codex_home_path_printed", false),
@@ -695,6 +715,7 @@ fn traceManagedSessionEnd(
         trace.string("final_claim_level", proxy.peakClaimLevel().toString()),
         trace.string("session_authority", codex_home.session_authority.toString()),
         trace.string("sqlite_authority", codex_home.sqlite_authority.toString()),
+        trace.string("session_home_cleanup", codex_home.cleanup_mode.toString()),
         trace.boolean("synthetic_swap_observed", proxy.syntheticSwapSeen()),
         trace.boolean("codex_home_path_printed", false),
         trace.boolean("token_material_printed", false),
@@ -1336,12 +1357,14 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         return RunError.ConfigOverrideUnavailable;
     }
 
-    const sqlite_lock_check = try checkResumeSqliteAuthorityLock(allocator, &codex_home, resume_request);
+    var sqlite_lock_check = try checkResumeSqliteAuthorityLock(allocator, &codex_home, resume_request);
+    sqlite_lock_check.strict_guard = envFlag("OMUX_CODEX_STRICT_SQLITE_LOCK_GUARD");
+    sqlite_lock_check.fatal = sqlite_lock_check.locked() and sqlite_lock_check.strict_guard;
     if (emit_status and sqlite_lock_check.checked) {
         try writeSqliteAuthorityCheckStatus(status_writer, sqlite_lock_check);
     }
     try launch_timer.mark(status_writer, emit_status, "sqlite_authority_check");
-    if (sqlite_lock_check.locked()) {
+    if (sqlite_lock_check.fatal) {
         if (sqlite_lock_check.lock_owner_pid) |pid| {
             try stderr.print("oauth-mux codex: canonical Codex sqlite state is locked by another Codex process (pid {d}); close or wait for that process, then retry\n", .{pid});
         } else {
@@ -1369,8 +1392,8 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
         const installed_local_mismatch = envFlag("OMUX_INSTALLED_LOCAL_MISMATCH");
 
         try status_writer.print(
-            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"sqlite_authority\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{",
-            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.mcp_stdio_unsupported_fields_removed, codex_home.session_authority.toString(), codex_home.sqlite_authority.toString(), status_file_path != null },
+            "{{\"kind\":\"session_started\",\"adapter\":\"codex\",\"adapter_version\":\"{s}\",\"managed_frame_id\":\"{s}\",\"selected_account\":\"{s}\",\"codex_home_path_printed\":false,\"proxy_port\":{d},\"claim_level\":\"broker_owned\",\"auth_authority\":\"mux_owned_overlay\",\"managed_config\":\"mux_owned_overlay\",\"config_layout\":\"{s}\",\"config_passthrough\":{any},\"user_config_present\":{any},\"config_overridden_keys\":{d},\"experimental_feature_defaults_injected\":{d},\"mcp_stdio_unsupported_fields_removed\":{d},\"config_paths_printed\":false,\"session_authority\":\"{s}\",\"sqlite_authority\":\"{s}\",\"session_home_cleanup\":\"{s}\",\"session_paths_printed\":false,\"pre_spawn_network_refresh\":false,\"status_file_present\":{any},\"runtime_identity\":{{",
+            .{ cli.version, managed_frame_id, elected.id, proxy_port, codex_home.config_layout, codex_home.config_passthrough, codex_home.config_source_present, codex_home.config_overridden_keys, codex_home.experimental_feature_defaults_injected, codex_home.mcp_stdio_unsupported_fields_removed, codex_home.session_authority.toString(), codex_home.sqlite_authority.toString(), codex_home.cleanup_mode.toString(), status_file_path != null },
         );
         try runtime_identity.writeJsonFields(status_writer);
         try status_writer.writeAll(",\"command_spelling\":");
@@ -1683,7 +1706,10 @@ fn writeSqliteAuthorityCheckStatus(writer: anytype, check: SqliteAuthorityLockOb
     }
     try writer.writeAll(",\"lock_owner_pid_printed\":");
     try writer.writeAll(if (check.lock_owner_pid != null) "true" else "false");
-    try writer.writeAll(",\"path_printed\":false,\"token_material_printed\":false,\"session_id_printed\":false}\n");
+    try writer.print(
+        ",\"strict_guard\":{any},\"fatal\":{any},\"path_printed\":false,\"token_material_printed\":false,\"session_id_printed\":false}}\n",
+        .{ check.strict_guard, check.fatal },
+    );
 }
 
 fn writeManagedPreSpawnAbortStatus(
@@ -1870,31 +1896,50 @@ fn makeSessionCodexHome(
     session_home_override: ?[]const u8,
     isolated_session_store: bool,
 ) !SessionCodexHome {
-    const tmp_root = std.process.getEnvVarOwned(allocator, "TMPDIR") catch
-        try allocator.dupe(u8, "/tmp");
-    defer allocator.free(tmp_root);
     const session_authority_home = try resolveCodexSessionAuthorityHome(allocator, session_home_override, isolated_session_store);
     defer if (session_authority_home) |path| allocator.free(path);
     const config_authority_home = try resolveCodexConfigAuthorityHome(allocator);
     defer if (config_authority_home) |path| allocator.free(path);
-    return try createSessionCodexHomeUnder(allocator, tmp_root, source_auth_path, proxy_port, session_authority_home, config_authority_home);
+
+    const root = if (session_authority_home) |home|
+        try durableManagedCodexHomeRoot(allocator, home)
+    else
+        std.process.getEnvVarOwned(allocator, "TMPDIR") catch try allocator.dupe(u8, "/tmp");
+    defer allocator.free(root);
+
+    const cleanup_mode: CodexHomeCleanupMode = if (session_authority_home != null)
+        .scrub_durable_bridge
+    else
+        .delete_tree;
+
+    return try createSessionCodexHomeUnder(
+        allocator,
+        root,
+        source_auth_path,
+        proxy_port,
+        session_authority_home,
+        config_authority_home,
+        cleanup_mode,
+    );
 }
 
 fn createSessionCodexHomeUnder(
     allocator: std.mem.Allocator,
-    tmp_root: []const u8,
+    root: []const u8,
     source_auth_path: []const u8,
     proxy_port: u16,
     session_authority_home: ?[]const u8,
     config_authority_home: ?[]const u8,
+    cleanup_mode: CodexHomeCleanupMode,
 ) !SessionCodexHome {
     var nonce: [8]u8 = undefined;
     std.crypto.random.bytes(&nonce);
     const hex = std.fmt.bytesToHex(nonce, .lower);
-    const name = try std.fmt.allocPrint(allocator, "oauth-mux-codex-{s}", .{hex[0..]});
+    const name = try std.fmt.allocPrint(allocator, "omux-managed-codex-{s}", .{hex[0..]});
     defer allocator.free(name);
 
-    const session_home = try std.fs.path.join(allocator, &.{ tmp_root, name });
+    try std.fs.cwd().makePath(root);
+    const session_home = try std.fs.path.join(allocator, &.{ root, name });
     errdefer allocator.free(session_home);
     try std.fs.cwd().makePath(session_home);
     errdefer std.fs.cwd().deleteTree(session_home) catch {};
@@ -1928,6 +1973,7 @@ fn createSessionCodexHomeUnder(
         .authority_home = if (session_authority_home) |home| try allocator.dupe(u8, home) else null,
         .config_authority_home = if (config_authority_home) |home| try allocator.dupe(u8, home) else null,
         .auth_initial_hash = auth_initial_hash,
+        .cleanup_mode = cleanup_mode,
         .config_source_present = config_observation.source_present,
         .config_passthrough = config_observation.passthrough,
         .config_overridden_keys = config_observation.overridden_keys,
@@ -1935,6 +1981,10 @@ fn createSessionCodexHomeUnder(
         .mcp_stdio_unsupported_fields_removed = config_observation.mcp_stdio_unsupported_fields_removed,
         .config_layout = config_observation.layout,
     };
+}
+
+fn durableManagedCodexHomeRoot(allocator: std.mem.Allocator, authority_home: []const u8) ![]u8 {
+    return try std.fs.path.join(allocator, &.{ authority_home, ".oauth-mux", "managed-codex-homes" });
 }
 
 fn resolveCodexSessionAuthorityHome(
@@ -1983,6 +2033,7 @@ fn defaultCodexHome(allocator: std.mem.Allocator) !?[]u8 {
 fn isManagedCodexOverlayHome(allocator: std.mem.Allocator, path: []const u8) !bool {
     const base = std.fs.path.basename(path);
     if (std.mem.startsWith(u8, base, "oauth-mux-codex-")) return true;
+    if (std.mem.startsWith(u8, base, "omux-managed-codex-")) return true;
 
     const config_path = try std.fs.path.join(allocator, &.{ path, "config.toml" });
     defer allocator.free(config_path);
@@ -2649,6 +2700,27 @@ fn copyFileContents(
     const f = try std.fs.cwd().createFile(dest_path, .{ .mode = 0o600, .truncate = true });
     defer f.close();
     try f.writeAll(bytes);
+}
+
+fn deleteFileIfPresent(path: []const u8) void {
+    if (std.fs.path.isAbsolute(path)) {
+        std.fs.deleteFileAbsolute(path) catch {};
+    } else {
+        std.fs.cwd().deleteFile(path) catch {};
+    }
+}
+
+fn scrubDurableCodexHome(allocator: std.mem.Allocator, session_home: []const u8) void {
+    const scrub_files = [_][]const u8{
+        "auth.json",
+        "installation_id",
+        "config.toml",
+    };
+    for (scrub_files) |name| {
+        const path = std.fs.path.join(allocator, &.{ session_home, name }) catch continue;
+        defer allocator.free(path);
+        deleteFileIfPresent(path);
+    }
 }
 
 fn observeAuthWriteback(
@@ -3460,7 +3532,7 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
     defer std.testing.allocator.free(auth_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null, .delete_tree);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.isolated, codex_home.session_authority);
     try std.testing.expectEqual(CodexSqliteAuthorityMode.isolated_overlay, codex_home.sqlite_authority);
@@ -3556,7 +3628,7 @@ test "createSessionCodexHomeUnder preserves canonical config behavior settings" 
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expect(codex_home.config_source_present);
     try std.testing.expect(codex_home.config_passthrough);
@@ -3633,7 +3705,7 @@ test "config passthrough preserves explicit experimental feature choices" {
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, canonical_path, .delete_tree);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 3), codex_home.experimental_feature_defaults_injected);
 
@@ -3679,7 +3751,7 @@ test "config passthrough partitions root model provider before trailing table" {
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, canonical_path, .delete_tree);
     defer codex_home.deinit(std.testing.allocator);
 
     const overlay_config = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "config.toml" });
@@ -3796,7 +3868,7 @@ test "config passthrough is independent from session authority" {
     const session_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "session-home" });
     defer std.testing.allocator.free(session_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, session_path, config_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, session_path, config_path, .scrub_durable_bridge);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
     try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, codex_home.sqlite_authority);
@@ -3814,11 +3886,99 @@ test "config passthrough is independent from session authority" {
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "SHOULD_NOT_SURVIVE") == null);
 }
 
+test "canonical bridge uses durable scrubbed managed home root" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+    const durable_root = try durableManagedCodexHomeRoot(std.testing.allocator, canonical_path);
+    defer std.testing.allocator.free(durable_root);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, durable_root, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
+    defer codex_home.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
+    try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, codex_home.sqlite_authority);
+    try std.testing.expectEqual(CodexHomeCleanupMode.scrub_durable_bridge, codex_home.cleanup_mode);
+    try std.testing.expect(std.mem.startsWith(u8, codex_home.path, durable_root));
+    try std.testing.expect(std.mem.startsWith(u8, std.fs.path.basename(codex_home.path), "omux-managed-codex-"));
+}
+
+test "durable managed home cleanup scrubs secrets but preserves bridge" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    try tmp.dir.makePath("canonical/sessions");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+    {
+        const install = try tmp.dir.createFile("account/installation_id", .{ .mode = 0o600 });
+        defer install.close();
+        try install.writeAll("install-fixture\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
+    defer std.testing.allocator.free(canonical_path);
+    const durable_root = try durableManagedCodexHomeRoot(std.testing.allocator, canonical_path);
+    defer std.testing.allocator.free(durable_root);
+
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, durable_root, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
+    const home_path = try std.testing.allocator.dupe(u8, codex_home.path);
+    defer std.testing.allocator.free(home_path);
+
+    const auth_dst = try std.fs.path.join(std.testing.allocator, &.{ home_path, "auth.json" });
+    defer std.testing.allocator.free(auth_dst);
+    const install_dst = try std.fs.path.join(std.testing.allocator, &.{ home_path, "installation_id" });
+    defer std.testing.allocator.free(install_dst);
+    const config_dst = try std.fs.path.join(std.testing.allocator, &.{ home_path, "config.toml" });
+    defer std.testing.allocator.free(config_dst);
+    const sessions_link = try std.fs.path.join(std.testing.allocator, &.{ home_path, "sessions" });
+    defer std.testing.allocator.free(sessions_link);
+
+    try std.fs.cwd().access(auth_dst, .{});
+    try std.fs.cwd().access(install_dst, .{});
+    try std.fs.cwd().access(config_dst, .{});
+
+    codex_home.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(auth_dst, .{}));
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(install_dst, .{}));
+    try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(config_dst, .{}));
+
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const sessions_target = try std.fs.readLinkAbsolute(sessions_link, &link_buf);
+    const expected_sessions_target = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions" });
+    defer std.testing.allocator.free(expected_sessions_target);
+    try std.testing.expectEqualStrings(expected_sessions_target, sessions_target);
+}
+
 test "managed Codex overlay homes are not reusable authority homes" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.makePath("oauth-mux-codex-fixture");
+    try tmp.dir.makePath("omux-managed-codex-fixture");
     try tmp.dir.makePath("canonical");
     {
         const cfg = try tmp.dir.createFile("oauth-mux-codex-fixture/config.toml", .{ .mode = 0o600 });
@@ -3846,12 +4006,15 @@ test "managed Codex overlay homes are not reusable authority homes" {
 
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root_path);
-    const overlay_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "oauth-mux-codex-fixture" });
-    defer std.testing.allocator.free(overlay_path);
+    const legacy_overlay_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "oauth-mux-codex-fixture" });
+    defer std.testing.allocator.free(legacy_overlay_path);
+    const durable_overlay_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "omux-managed-codex-fixture" });
+    defer std.testing.allocator.free(durable_overlay_path);
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    try std.testing.expect(try isManagedCodexOverlayHome(std.testing.allocator, overlay_path));
+    try std.testing.expect(try isManagedCodexOverlayHome(std.testing.allocator, legacy_overlay_path));
+    try std.testing.expect(try isManagedCodexOverlayHome(std.testing.allocator, durable_overlay_path));
     try std.testing.expect(!try isManagedCodexOverlayHome(std.testing.allocator, canonical_path));
 }
 
@@ -3871,7 +4034,7 @@ test "observeAuthWriteback imports changed overlay auth into mux source" {
     const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
     defer std.testing.allocator.free(auth_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null, .delete_tree);
     defer codex_home.deinit(std.testing.allocator);
 
     const overlay_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
@@ -3912,7 +4075,7 @@ test "observeAuthWriteback leaves unchanged overlay auth alone" {
     const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
     defer std.testing.allocator.free(auth_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null, .delete_tree);
     defer codex_home.deinit(std.testing.allocator);
 
     const observation = try observeAuthWriteback(std.testing.allocator, codex_home.path, auth_path, codex_home.auth_initial_hash);
@@ -3941,7 +4104,7 @@ test "observeAuthWriteback refuses to overwrite independently changed mux source
     const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
     defer std.testing.allocator.free(auth_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null, .delete_tree);
     defer codex_home.deinit(std.testing.allocator);
 
     const overlay_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
@@ -4015,7 +4178,7 @@ test "createSessionCodexHomeUnder bridges canonical session authority without co
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.canonical_bridge, codex_home.session_authority);
     try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, codex_home.sqlite_authority);
@@ -4109,7 +4272,7 @@ test "resume authority accepts bridged state db as chooser authority" {
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
     defer codex_home.deinit(std.testing.allocator);
 
     const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
@@ -4143,7 +4306,7 @@ test "resume authority accepts bridged logs db as chooser authority" {
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
     defer codex_home.deinit(std.testing.allocator);
 
     const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
@@ -4183,7 +4346,7 @@ test "resume authority reports legacy provider namespace residue without failing
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
 
-    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path);
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, canonical_path, canonical_path, .scrub_durable_bridge);
     defer codex_home.deinit(std.testing.allocator);
 
     const check = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });

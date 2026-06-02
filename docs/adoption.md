@@ -150,11 +150,14 @@ oauth-mux codex resume <session-id>
 ```
 
 These commands launch the real Codex CLI inside an oauth-mux managed frame.
-Auth and the proxy base URL are mux-owned in a temporary overlay, while Codex
+Auth and the proxy base URL are mux-owned in a managed `CODEX_HOME`, while Codex
 session authority is bridged by reference to the canonical Codex home unless
-`--isolated-session-store` is set. `oauth-mux codex resume` with no id keeps
-native Codex chooser ownership; oauth-mux only checks before spawn that the
-managed overlay exposes the same required session-authority entries so the
+`--isolated-session-store` is set. In canonical bridge mode the managed home is
+durable under the authority home and scrubbed on exit; oauth-mux removes copied
+auth/config material but keeps the bridge so native Codex rollout paths recorded
+through the managed frame remain resumable. `oauth-mux codex resume` with no id
+keeps native Codex chooser ownership; oauth-mux only checks before spawn that
+the managed overlay exposes the same required session-authority entries so the
 chooser does not open empty. When canonical Codex has `state_5.sqlite*` or
 `logs_2.sqlite*`, those files are bridged by reference; in canonical bridge
 mode `CODEX_SQLITE_HOME` points at the canonical authority home so Codex 0.132+
