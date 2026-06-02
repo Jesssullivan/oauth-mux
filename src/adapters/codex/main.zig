@@ -34,6 +34,7 @@ const broker_loader = @import("../../broker_loader.zig");
 const cli = @import("../../cli.zig");
 const config_mod = @import("../../config.zig");
 const health_mod = @import("../../health.zig");
+const identity_hash = @import("../../identity_hash.zig");
 const paths = @import("../../paths.zig");
 const pipeline = @import("../../pipeline.zig");
 const runtime_mod = @import("../../runtime.zig");
@@ -551,6 +552,64 @@ fn expandTilde(allocator: std.mem.Allocator, p: []const u8) ![]u8 {
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
     return try std.fmt.allocPrint(allocator, "{s}{s}", .{ home, p[1..] });
+}
+
+/// Extract the upstream Codex account id (`tokens.account_id`) from an auth.json's
+/// bytes — the same source the account inventory hashes — so the muxxing identity
+/// guard (TIN-1851) keys on the SAME identity. Returns null when absent/malformed
+/// (e.g. an api-key auth.json with no account_id). Caller owns the result.
+fn codexAccountIdFromAuthBytes(allocator: std.mem.Allocator, bytes: []const u8) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const tokens = parsed.value.object.get("tokens") orelse return null;
+    if (tokens != .object) return null;
+    const acct = tokens.object.get("account_id") orelse return null;
+    if (acct != .string or acct.string.len == 0) return null;
+    return try allocator.dupe(u8, acct.string);
+}
+
+/// Resolve the upstream-identity hash (sha256_12hex of `tokens.account_id`) for an
+/// account's auth.json file. Returns null when the file is absent/unparseable or
+/// carries no account_id — the caller must then refuse the muxxed launch with a
+/// diagnostic rather than key the duplicate-identity guard on a missing id.
+fn codexIdentityHashForAuthFile(allocator: std.mem.Allocator, auth_path: []const u8) !?[]u8 {
+    const bytes = readFileAbsoluteOrCwd(allocator, auth_path, 1 << 20) catch |e| switch (e) {
+        error.FileNotFound => return null,
+        else => return e,
+    };
+    defer allocator.free(bytes);
+    const account_id = (try codexAccountIdFromAuthBytes(allocator, bytes)) orelse return null;
+    defer allocator.free(account_id);
+    return try identity_hash.sha256_12hex(allocator, account_id);
+}
+
+fn readFileAbsoluteOrCwd(allocator: std.mem.Allocator, path: []const u8, max: usize) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) {
+        const file = try std.fs.openFileAbsolute(path, .{});
+        defer file.close();
+        return try file.readToEndAlloc(allocator, max);
+    }
+    return std.fs.cwd().readFileAlloc(allocator, path, max);
+}
+
+test "codexAccountIdFromAuthBytes extracts tokens.account_id and hashes to the inventory key" {
+    const a = std.testing.allocator;
+    const id = (try codexAccountIdFromAuthBytes(a,
+        "{\"tokens\":{\"account_id\":\"acct-test\",\"access_token\":\"x\"}}")).?;
+    defer a.free(id);
+    try std.testing.expectEqualStrings("acct-test", id);
+    const h = try identity_hash.sha256_12hex(a, id);
+    defer a.free(h);
+    try std.testing.expectEqualStrings("660d25a9d7ee", h); // same key the inventory shows
+}
+
+test "codexAccountIdFromAuthBytes returns null on absent/empty/malformed account_id" {
+    const a = std.testing.allocator;
+    try std.testing.expect((try codexAccountIdFromAuthBytes(a, "{\"tokens\":{\"access_token\":\"x\"}}")) == null);
+    try std.testing.expect((try codexAccountIdFromAuthBytes(a, "{}")) == null);
+    try std.testing.expect((try codexAccountIdFromAuthBytes(a, "not json")) == null);
+    try std.testing.expect((try codexAccountIdFromAuthBytes(a, "{\"tokens\":{\"account_id\":\"\"}}")) == null);
 }
 
 fn getEnvOwnedOrDefault(
