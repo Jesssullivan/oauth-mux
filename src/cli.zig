@@ -48,12 +48,17 @@ pub const Command = union(enum) {
         capability: ?[]const u8 = null,
     };
 
+    /// TIN-1851 mux storage model, parsed from --mux-mode. null = not set on the
+    /// CLI (the adapter then resolves TINYLAND_CODEX_MUX_MODE, else the default).
+    pub const CodexMuxMode = enum { isolated_persistent, shared_canonical };
+
     pub const CodexAdapterArgs = struct {
         profile: ?[]const u8 = null,
         capability: ?[]const u8 = null,
         account: ?[]const u8 = null,
         session_home: ?[]const u8 = null,
         isolated_session_store: bool = false,
+        mux_mode: ?CodexMuxMode = null,
         json_status: bool = false,
         json_status_file: ?[]const u8 = null,
         invalid_option: ?[]const u8 = null,
@@ -411,6 +416,17 @@ fn parseCodexAdapter(args: []const []const u8, strict_run: bool) Command {
             result.session_home = args[i];
         } else if (eql(args[i], "--isolated-session-store")) {
             result.isolated_session_store = true;
+        } else if (eql(args[i], "--mux-mode") and i + 1 < args.len) {
+            i += 1;
+            if (eql(args[i], "isolated_persistent")) {
+                result.mux_mode = .isolated_persistent;
+            } else if (eql(args[i], "shared_canonical")) {
+                result.mux_mode = .shared_canonical;
+            } else {
+                result.invalid_option = args[i];
+                result.forward_argv = &.{};
+                break;
+            }
         } else if (eql(args[i], "--json-status")) {
             result.json_status = true;
         } else if (eql(args[i], "--json-status-file") and i + 1 < args.len) {

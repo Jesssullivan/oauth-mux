@@ -70,6 +70,10 @@ pub fn main() !void {
                 .account = adapter_args.account,
                 .session_home = adapter_args.session_home,
                 .isolated_session_store = adapter_args.isolated_session_store,
+                .mux_mode = if (adapter_args.mux_mode) |m| switch (m) {
+                    .isolated_persistent => codex_adapter.MuxMode.isolated_persistent,
+                    .shared_canonical => codex_adapter.MuxMode.shared_canonical,
+                } else null,
                 .json_status = adapter_args.json_status,
                 .json_status_file = adapter_args.json_status_file,
                 .forward_argv = adapter_args.forward_argv,
