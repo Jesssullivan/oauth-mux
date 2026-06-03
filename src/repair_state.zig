@@ -40,6 +40,16 @@ pub const RepairLock = struct {
     }
 };
 
+// The append-only repair-events log is read back whole by every reader
+// (hasPendingHandoff / writeEvents / writePendingHandoffView), each of which caps
+// the read at 1 MiB and FAILS with FileTooBig past that. Bound the file so reads
+// stay correct and O(tail): rotate to the most recent ~512 KiB once it grows past
+// 768 KiB (kept well under the 1 MiB read cap so a single post-rotation append can
+// never exceed it). Repair handoffs resolve within a handful of events, so the
+// retained tail covers every realistically-live pending handoff.
+const events_soft_cap_bytes: u64 = 768 * 1024;
+const events_retain_tail_bytes: usize = 512 * 1024;
+
 pub fn appendEvent(allocator: std.mem.Allocator, event: RepairEvent) !void {
     const path = try eventsPath(allocator);
     defer allocator.free(path);
@@ -55,6 +65,71 @@ pub fn appendEvent(allocator: std.mem.Allocator, event: RepairEvent) !void {
     try file.seekFromEnd(0);
     try writeEventJson(file.writer(), event);
     try file.writeAll("\n");
+
+    // Best-effort: a rotation hiccup must not drop the event we just recorded.
+    rotateEventsTailInPlace(allocator, file, events_soft_cap_bytes, events_retain_tail_bytes) catch {};
+}
+
+/// If `file` exceeds `soft_cap`, rewrite it in place keeping only the last
+/// ~`retain_tail` bytes, trimmed forward to the next line boundary so no JSONL
+/// record is split. Operates on the already-exclusively-locked handle. Pure of
+/// global state so it is unit-testable with small caps.
+fn rotateEventsTailInPlace(
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    soft_cap: u64,
+    retain_tail: usize,
+) !void {
+    const size = try file.getEndPos();
+    if (size <= soft_cap) return;
+
+    try file.seekTo(0);
+    const all = try file.readToEndAlloc(allocator, size + 1);
+    defer allocator.free(all);
+
+    var start: usize = if (all.len > retain_tail) all.len - retain_tail else 0;
+    if (start > 0) {
+        // Advance to just after the next newline so the kept tail starts on a
+        // record boundary; if none remains, keep nothing rather than a torn line.
+        start = if (std.mem.indexOfScalarPos(u8, all, start, '\n')) |nl| nl + 1 else all.len;
+    }
+
+    try file.seekTo(0);
+    try file.setEndPos(0);
+    try file.writeAll(all[start..]);
+}
+
+test "rotateEventsTailInPlace bounds the file to the recent tail on a record boundary" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("ev.jsonl", .{ .read = true, .truncate = true });
+    defer f.close();
+    var i: usize = 0;
+    while (i < 100) : (i += 1) try f.writer().print("rec{d:0>4}\n", .{i}); // 800 bytes total
+
+    try rotateEventsTailInPlace(std.testing.allocator, f, 200, 100);
+
+    try f.seekTo(0);
+    const out = try f.readToEndAlloc(std.testing.allocator, 1 << 20);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(out.len <= 100); // bounded to the retain tail
+    try std.testing.expect(out.len > 0 and out[0] == 'r'); // starts on a record boundary
+    try std.testing.expect(out[out.len - 1] == '\n'); // ends clean, no torn line
+    try std.testing.expect(std.mem.indexOf(u8, out, "rec0099") != null); // most recent kept
+    try std.testing.expect(std.mem.indexOf(u8, out, "rec0000") == null); // oldest dropped
+}
+
+test "rotateEventsTailInPlace is a no-op below the cap" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("ev2.jsonl", .{ .read = true, .truncate = true });
+    defer f.close();
+    try f.writeAll("a\nb\nc\n");
+    try rotateEventsTailInPlace(std.testing.allocator, f, 1024, 512);
+    try f.seekTo(0);
+    const out = try f.readToEndAlloc(std.testing.allocator, 1024);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("a\nb\nc\n", out);
 }
 
 pub fn writeEvents(allocator: std.mem.Allocator, writer: anytype, json: bool, limit: usize) !void {
