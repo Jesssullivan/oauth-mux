@@ -215,6 +215,26 @@ first-run-e2e-local:
 live-qa:
     nix develop --command ./scripts/live-provider-qa.sh
 
+# ── Remote validation (GloriousFlywheel runner dispatch) ──
+
+remote-validate TARGET="check" REF="":
+    ./scripts/remote-validate.sh {{TARGET}} {{REF}}
+
+remote-check REF="":
+    ./scripts/remote-validate.sh check {{REF}}
+
+remote-test REF="":
+    ./scripts/remote-validate.sh test {{REF}}
+
+remote-build REF="":
+    ./scripts/remote-validate.sh build {{REF}}
+
+remote-e2e REF="":
+    ./scripts/remote-validate.sh e2e {{REF}}
+
+remote-release-proof REF="" VERSION=release_version:
+    OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
+
 # ── Broker MCP smoke (provider-neutral regression catch-net) ──
 
 smoke-broker:

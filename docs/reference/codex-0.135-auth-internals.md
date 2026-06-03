@@ -11,17 +11,26 @@
 
 ## Overview
 
-Codex 0.135 is a subscription-aware CLI for Claude and other AI models. It stores authentication state in `$CODEX_HOME/auth.json`, runs a managed session authority in SQLite databases, and implements a provider-independent `AuthManager` that handles credential refresh, account switching, and quota observation. oauth-mux mediates Codex sessions via a wire-layer proxy and account pool to enable seamless quota-driven account rotation.
+Codex 0.135 is a subscription-aware OpenAI Codex CLI. It stores authentication
+state in `$CODEX_HOME/auth.json`, runs a managed session authority in SQLite
+databases, and implements an `AuthManager` that handles credential refresh,
+account switching, and quota observation. oauth-mux mediates Codex sessions via
+a wire-layer proxy and account pool to enable seamless quota-driven account
+rotation.
 
 ## 1. Authentication Model: auth.json
 
 ### 1.1 File Location and Discovery
 
 - **Primary**: `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`)
-- **Override**: `CODEX_AUTH_FILE` environment variable (exported by shim at runtime)
-- **Discovery order**: CODEX_AUTH_FILE → CODEX_HOME/auth.json → ~/.codex/auth.json
+- **Native override**: no supported `CODEX_AUTH_FILE` override has been proven
+  in the raw Codex 0.135 binary.
+- **Observed discovery order**: CODEX_HOME/auth.json → ~/.codex/auth.json
 
-The shim (`codex-shim.sh`) wraps the native Codex binary. When invoked as `codex` or through `oauth-mux codex`, it sets `CODEX_AUTH_FILE` to the managed overlay's auth.json and passes control to native Codex.
+The local Home Manager wrapper observed on `neo` exports `CODEX_AUTH_FILE`, but
+that is wrapper behavior, not native Codex evidence. Do not design oauth-mux
+around `CODEX_AUTH_FILE` until a raw-binary live proof shows Codex honoring it.
+As of this audit, managed auth still has to flow through `CODEX_HOME/auth.json`.
 
 ### 1.2 File Schema
 
@@ -573,7 +582,7 @@ Keeping this header when switching accounts risks upstream server-side session s
 |-----|---------|--------|---------|
 | CODEX_HOME | Auth/config home | User or shim | ~/.codex |
 | CODEX_SQLITE_HOME | Session DB home | oauth-mux (managed) | ~/.codex |
-| CODEX_AUTH_FILE | Explicit auth.json path | Shim | ~/.codex/auth.json |
+| CODEX_AUTH_FILE | Wrapper-local variable observed on neo; native Codex support unproven | Home Manager wrapper | ~/.codex/auth.json |
 | CODEX_SESSION_HOME | Session files home | Managed flag | ~/.codex or <custom> |
 
 ### 8.2 oauth-mux Managed Codex Variables
@@ -667,9 +676,9 @@ Never print token material, file paths, or full account IDs in status output.
 
 1. **auth.json is single-source of truth** for Codex: read/write by Codex process, imported post-exit by oauth-mux. Keys: access_token (wire auth), id_token (claims), refresh_token (renewal).
 
-2. **refresh_token is single-use**: Each successful refresh consumes it. oauth-mux broker serializes refresh calls per account to prevent reuse races (OAuth 2.1 §4.3.1).
+2. **refresh_token is single-use**: Each successful refresh consumes it. oauth-mux broker serialization is the intended mitigation against reuse races (OAuth 2.1 §4.3.1); verify the live code path before relying on this draft as canonical.
 
-3. **Session state is canonical**: state_5.sqlite and logs_2.sqlite live in canonical ~/.codex; managed overlays symlink them. Multiple managed sessions can safely share session authority because Codex reads/writes SQLite atomically.
+3. **Session state authority is the product boundary**: canonical-bridge mode stores state_5.sqlite and logs_2.sqlite in canonical ~/.codex through managed homes. The 2026-06-02 TIN-1851 investigation found that this model is fragile unless the managed home is durable and path-stable. The safer candidate default is home-is-store / isolated persistent account homes, where muxed Codex sessions never write canonical ~/.codex.
 
 4. **Quota is per-account, per-period**: 429 usage_limit_reached includes plan_type (SKU) and resets_at (reset time). oauth-mux swaps accounts if fallback available; otherwise returns error to Codex.
 
@@ -679,4 +688,4 @@ Never print token material, file paths, or full account IDs in status output.
 
 7. **Sticky routing token (x-codex-turn-state) must be dropped on swap**: Keeping it when switching accounts risks session state pinning to the wrong account upstream.
 
-8. **Managed homes are temporary but session-aware**: As of 2026-06-02, overlays created under ~/.oauth-mux/managed-codex-homes/, symlink canonical SQLite, scrub on exit but keep symlinks for path resolvability.
+8. **Managed homes must be durable when they can appear in Codex state**: overlays created under ~/.oauth-mux/managed-codex-homes/ improve on disposable `$TMPDIR` homes because recorded rollout paths remain resolvable after scrub. The stronger TIN-1851 home-is-store branch removes canonical sqlite bridging for muxed sessions entirely and should be treated as the trustable architecture candidate until live e2e proves otherwise.

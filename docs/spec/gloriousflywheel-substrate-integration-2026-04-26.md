@@ -55,6 +55,38 @@ diagnostics can run.
 The existing GitHub-hosted lane remains as a portability check. It still builds
 and tests with Zig directly, and now validates all example configs too.
 
+## Remote-First Operator Dispatch
+
+Update, 2026-06-03: low-power developer machines should not have to prove the
+full repo locally. The repo now exposes an explicit remote validation lane:
+
+- `.github/workflows/remote-validate.yml`
+- `scripts/remote-validate.sh`
+- `just remote-check`
+- `just remote-test`
+- `just remote-build`
+- `just remote-e2e`
+- `just remote-release-proof`
+
+These commands dispatch a `workflow_dispatch` run on `tinyland-nix` and, by
+default, watch the resulting GitHub Actions run. The workflow uses the same
+private GloriousFlywheel `nix-job` composite action as the cache-first CI lane,
+requires `GF_ACTIONS_TOKEN`, requires the Nix/Attic environment variables, and
+then runs the existing Just/Zig validation bodies inside `nix develop`.
+Because GitHub exposes manual dispatch workflows from the default branch, the
+remote validation workflow must land on `main` before branch/SHA validation can
+be requested through `just remote-*`.
+
+This is intentionally additive. `just check-local`, `just e2e-local`, and the
+direct Zig recipes remain available for tight local iteration and for debugging
+runner-specific failures. Remote validation is the preferred proof path when a
+developer only needs a trustworthy build/test/e2e answer and not local compiler
+feedback.
+
+The remote workflow fails rather than silently falling back when the
+GloriousFlywheel action token is absent. A skipped or fallback local run is not
+remote validation.
+
 ## What This Proves
 
 When `GF_ACTIONS_TOKEN` and the Attic settings are present, this proves that
@@ -72,6 +104,7 @@ It does not yet prove:
 - cache-first CI execution when the private action checkout token is absent;
 - full remote execution for every local developer action;
 - Bazel remote-cache behavior, because this repo has no Bazel targets;
+- Bazel remote execution, because `oauth-mux` still has no Bazel target graph;
 - package publication to npm, Homebrew, deb, rpm, or GitHub Releases;
 - live OAuth provider route health, except when explicit operator probe jobs
   are run with real credentials.
@@ -130,7 +163,9 @@ available for focused iteration.
    pre-publication self-hosted gate once `tinyland-nix` capacity is stable
    enough to block releases on it.
 3. Keep Bazel out until there is a real target graph or downstream adoption
-   reason; if added later, copy the GloriousFlywheel shape:
-   `cache-contract-strict` before any cache-backed Bazel command.
+   reason. Remote-first validation should ride the existing Just/Nix contract
+   first. If Bazel is added later, copy the GloriousFlywheel shape:
+   `cache-contract-strict` before any cache-backed Bazel command, and require
+   explicit executor-backed evidence before claiming remote execution.
 4. Add a scheduled or manual live-provider QA workflow only after secret
    scoping is explicit; route probes spend real subscription calls.
