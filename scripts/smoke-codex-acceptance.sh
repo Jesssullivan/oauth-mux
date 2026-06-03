@@ -135,7 +135,10 @@ echo "smoke-codex-acceptance: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_POR
 
 # 3. Run oauth-mux codex run
 echo "smoke-codex-acceptance: running adapter..."
-OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+# This smoke exercises legacy canonical-bridge proxy/quota wiring. TIN-1851's
+# default home-is-store mode is covered by smoke-codex-cli-ux.
+TINYLAND_CODEX_MUX_MODE=shared_canonical \
+  OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   OMUX_UPSTREAM_HOST="127.0.0.1:$UPSTREAM_PORT" \
   OMUX_UPSTREAM_SCHEME="http" \

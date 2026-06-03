@@ -180,6 +180,47 @@ assert_durable_bridge_homes_scrubbed() {
     echo "  ✓ $label scrubbed durable auth/config material while preserving bridge homes"
 }
 
+echo "smoke-codex-cli-ux: default mux mode is home-is-store"
+DEFAULT_HOME_NDJSON="$TMP/default-home/status.ndjson"
+DEFAULT_HOME_STDERR="$TMP/default-home.stderr"
+DEFAULT_HOME_REPORT="$TMP/default-home.report"
+mkdir -p "$(dirname "$DEFAULT_HOME_NDJSON")"
+env -u TINYLAND_CODEX_MUX_MODE \
+  OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
+  OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  CODEX_HOME="$CANONICAL_SESSION_HOME" \
+  CODEX_SQLITE_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_STUB_CODEX_TURNS=0 \
+  OMUX_STUB_CODEX_REPORT="$DEFAULT_HOME_REPORT" \
+  "$BIN" codex --profile codex-max --json-status-file "$DEFAULT_HOME_NDJSON" -- exec --skip-git-repo-check "default-home-is-store" 2>"$DEFAULT_HOME_STDERR"
+assert_grep "default home-is-store session authority" '"kind":"session_started".*"session_authority":"isolated"' "$DEFAULT_HOME_NDJSON"
+assert_grep "default home-is-store sqlite authority" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$DEFAULT_HOME_NDJSON"
+assert_grep "default home-is-store cleanup" '"kind":"session_started".*"session_home_cleanup":"persist_scrub_config"' "$DEFAULT_HOME_NDJSON"
+assert_grep "default home-is-store session ends" '"kind":"session_ended".*"exit_code":0' "$DEFAULT_HOME_NDJSON"
+if [[ "$(jq -r .sqlite_env.codex_sqlite_home_env_set "$DEFAULT_HOME_REPORT")" == "false" \
+      && "$(jq -r .sqlite_env.path_printed "$DEFAULT_HOME_REPORT")" == "false" ]]; then
+    echo "  ✓ default home-is-store scrubbed inherited CODEX_SQLITE_HOME"
+else
+    echo "  ✗ default home-is-store leaked CODEX_SQLITE_HOME" >&2
+    cat "$DEFAULT_HOME_REPORT" >&2
+    exit 1
+fi
+if [[ -d "$CANONICAL_SESSION_HOME/.oauth-mux/managed-codex-homes" ]]; then
+    echo "  ✗ default home-is-store wrote a canonical managed bridge" >&2
+    find "$CANONICAL_SESSION_HOME/.oauth-mux" -maxdepth 3 -print >&2
+    exit 1
+else
+    echo "  ✓ default home-is-store did not create a canonical managed bridge"
+fi
+
+# The resume/chooser assertions below intentionally exercise the legacy
+# canonical bridge. TIN-1851 makes home-is-store the default, so this block must
+# opt into the bridge instead of relying on ambient defaults.
+export TINYLAND_CODEX_MUX_MODE=shared_canonical
+
 run_case() {
     local mode=$1 label=$2 expected_argv=$3
     shift 3

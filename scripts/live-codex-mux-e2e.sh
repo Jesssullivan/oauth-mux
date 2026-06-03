@@ -15,6 +15,10 @@ CAPABILITY="${OMUX_LIVE_E2E_CAPABILITY:-codex-max}"
 CONFIRM="${OMUX_LIVE_CODEX_E2E_CONFIRM:-}"
 TOKEN="${OMUX_LIVE_E2E_TOKEN:-OMUX_TIN1852_EXEC_OK}"
 PROMPT="${OMUX_LIVE_E2E_PROMPT:-Reply with exactly this token and nothing else: $TOKEN}"
+# TIN-1851: the default mux mode is home-is-store, whose session authority is
+# "isolated". A shared_canonical opt-in run emits "canonical_bridge"; override
+# this to match when exercising that legacy mode.
+EXPECT_AUTHORITY="${OMUX_LIVE_E2E_EXPECT_AUTHORITY:-isolated}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 EVIDENCE_DIR="${OMUX_LIVE_E2E_DIR:-$ROOT/dist/live-qa/tin1852-$STAMP}"
 NDJSON="$EVIDENCE_DIR/status.ndjson"
@@ -215,7 +219,7 @@ fi
 
 if [[ -s "$NDJSON" ]]; then
     jq -e 'select(.kind == "session_started") | .runtime_identity.binary_sha256' "$NDJSON" >/dev/null
-    jq -e 'select(.kind == "session_started") | select(.session_authority == "canonical_bridge")' "$NDJSON" >/dev/null
+    jq -e --arg a "$EXPECT_AUTHORITY" 'select(.kind == "session_started") | select(.session_authority == $a)' "$NDJSON" >/dev/null
     jq -e 'select(.kind == "session_ended") | select(.exit_code == 0)' "$NDJSON" >/dev/null
 fi
 
