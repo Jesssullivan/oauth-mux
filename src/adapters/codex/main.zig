@@ -649,8 +649,7 @@ fn readFileAbsoluteOrCwd(allocator: std.mem.Allocator, path: []const u8, max: us
 
 test "codexAccountIdFromAuthBytes extracts tokens.account_id and hashes to the inventory key" {
     const a = std.testing.allocator;
-    const id = (try codexAccountIdFromAuthBytes(a,
-        "{\"tokens\":{\"account_id\":\"acct-test\",\"access_token\":\"x\"}}")).?;
+    const id = (try codexAccountIdFromAuthBytes(a, "{\"tokens\":{\"account_id\":\"acct-test\",\"access_token\":\"x\"}}")).?;
     defer a.free(id);
     try std.testing.expectEqualStrings("acct-test", id);
     const h = try identity_hash.sha256_12hex(a, id);
@@ -3365,9 +3364,10 @@ fn writeManagedConfigToml(
     }
 
     if (!managed_root_written) {
-        observation.experimental_feature_defaults_injected += try feature_defaults.writeMissingAsRootDotted(w);
-        if (observation.experimental_feature_defaults_injected != 0) try w.writeAll("\n");
         try writeManagedConfigRoot(w, proxy_port);
+        try w.writeAll("[features]\n");
+        observation.experimental_feature_defaults_injected += try feature_defaults.writeMissingAsTableEntries(w);
+        if (observation.experimental_feature_defaults_injected != 0) try w.writeAll("\n");
     }
     observation.overridden_keys += 2;
 
@@ -3396,6 +3396,10 @@ fn writeConfigPassthrough(
     var overridden: usize = 0;
     var root = std.ArrayListUnmanaged(u8){};
     defer root.deinit(allocator);
+    var root_feature_dotted = std.ArrayListUnmanaged(u8){};
+    defer root_feature_dotted.deinit(allocator);
+    var root_feature_table_entries = std.ArrayListUnmanaged(u8){};
+    defer root_feature_table_entries.deinit(allocator);
     var tables = std.ArrayListUnmanaged(u8){};
     defer tables.deinit(allocator);
     var current_table = TomlBufferedTable{};
@@ -3415,6 +3419,7 @@ fn writeConfigPassthrough(
                 allocator,
                 &tables,
                 &current_table,
+                &root_feature_table_entries,
                 feature_defaults,
                 experimental_feature_defaults_injected,
                 mcp_stdio_unsupported_fields_removed,
@@ -3432,6 +3437,11 @@ fn writeConfigPassthrough(
 
         if (in_root) {
             markExperimentalFeatureAssignment(feature_defaults, trimmed_left, true, false);
+            if (try writeRootFeatureAssignmentAsTableEntry(root_feature_table_entries.writer(allocator), trimmed_left)) {
+                try root_feature_dotted.writer(allocator).writeAll(line);
+                try root_feature_dotted.writer(allocator).writeAll("\n");
+                continue;
+            }
             if (configAssignmentOverridesMuxProvider(trimmed_left)) |classification| {
                 switch (classification) {
                     .model_provider, .managed_provider => {
@@ -3478,11 +3488,16 @@ fn writeConfigPassthrough(
         allocator,
         &tables,
         &current_table,
+        &root_feature_table_entries,
         feature_defaults,
         experimental_feature_defaults_injected,
         mcp_stdio_unsupported_fields_removed,
     );
     if (!features_table_seen) {
+        if (root_feature_dotted.items.len != 0) {
+            try root.writer(allocator).writeAll(root_feature_dotted.items);
+            if (root.items.len != 0 and root.items[root.items.len - 1] != '\n') try root.writer(allocator).writeAll("\n");
+        }
         experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsRootDotted(root.writer(allocator));
     }
 
@@ -3502,6 +3517,7 @@ fn flushConfigPassthroughTable(
     allocator: std.mem.Allocator,
     tables: *std.ArrayListUnmanaged(u8),
     table: *TomlBufferedTable,
+    root_feature_table_entries: ?*std.ArrayListUnmanaged(u8),
     feature_defaults: *CodexExperimentalFeatureDefaults,
     experimental_feature_defaults_injected: *usize,
     mcp_stdio_unsupported_fields_removed: *usize,
@@ -3510,6 +3526,12 @@ fn flushConfigPassthroughTable(
     defer table.reset();
     if (table.skip) return;
     if (table.features) {
+        if (root_feature_table_entries) |entries| {
+            if (entries.items.len != 0) {
+                try table.lines.writer(allocator).writeAll(entries.items);
+                entries.clearRetainingCapacity();
+            }
+        }
         experimental_feature_defaults_injected.* += try feature_defaults.writeMissingAsTableEntries(table.lines.writer(allocator));
     }
     const sanitize_stdio_mcp = table.mcp_server and table.mcp_has_command and table.mcp_unsupported_stdio_fields != 0;
@@ -3531,6 +3553,19 @@ fn flushConfigPassthroughTable(
         }
         start = if (had_newline) next + 1 else next;
     }
+}
+
+fn writeRootFeatureAssignmentAsTableEntry(writer: anytype, trimmed_left: []const u8) !bool {
+    const key = tomlAssignmentKey(trimmed_left) orelse return false;
+    const prefix = "features.";
+    if (!std.mem.startsWith(u8, key, prefix) or key.len == prefix.len) return false;
+    const equals_idx = std.mem.indexOfScalar(u8, trimmed_left, '=') orelse return false;
+    const value = std.mem.trimLeft(u8, trimmed_left[equals_idx + 1 ..], " \t");
+    try writer.writeAll(key[prefix.len..]);
+    try writer.writeAll(" = ");
+    try writer.writeAll(value);
+    try writer.writeAll("\n");
+    return true;
 }
 
 fn isTomlTableHeader(trimmed_line: []const u8) bool {
@@ -4054,12 +4089,17 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "openai_base_url = \"http://127.0.0.1:45678/backend-api\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.oauth_mux_openai]") == null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "[model_providers.openai]") == null);
+    const managed_provider_idx = std.mem.indexOf(u8, generated_config, "model_provider = \"openai\"").?;
+    const fresh_features_idx = std.mem.indexOf(u8, generated_config, "[features]").?;
+    try std.testing.expect(managed_provider_idx < fresh_features_idx);
     try std.testing.expectEqual(@as(usize, 5), codex_home.experimental_feature_defaults_injected);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.terminal_resize_reflow = true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.memories = true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.external_migration = true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.goals = true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.prevent_idle_sleep = true") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, generated_config, "[features]"));
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "features.terminal_resize_reflow = true") == null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "terminal_resize_reflow = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "memories = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "external_migration = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "goals = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, generated_config, "prevent_idle_sleep = true") != null);
 
     const source_config = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "config.toml" });
     defer std.testing.allocator.free(source_config);
@@ -4215,6 +4255,34 @@ test "config passthrough preserves explicit experimental feature choices" {
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "terminal_resize_reflow = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "external_migration = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, generated_config, "prevent_idle_sleep = true") != null);
+}
+
+test "config passthrough moves root dotted features into existing features table" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(std.testing.allocator);
+    var feature_defaults = CodexExperimentalFeatureDefaults{};
+    var experimental_feature_defaults_injected: usize = 0;
+    var mcp_stdio_unsupported_fields_removed: usize = 0;
+    const source =
+        \\features.goals = false
+        \\model = "gpt-5.5"
+        \\
+        \\[features]
+        \\memories = true
+        \\
+    ;
+    const overridden = try writeConfigPassthrough(std.testing.allocator, buf.writer(std.testing.allocator), source, &feature_defaults, &experimental_feature_defaults_injected, &mcp_stdio_unsupported_fields_removed, 45678);
+
+    try std.testing.expectEqual(@as(usize, 0), overridden);
+    try std.testing.expectEqual(@as(usize, 3), experimental_feature_defaults_injected);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf.items, "[features]"));
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "features.goals = false") == null);
+    const features_idx = std.mem.indexOf(u8, buf.items, "[features]").?;
+    const features = buf.items[features_idx..];
+    try std.testing.expect(std.mem.indexOf(u8, features, "goals = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, features, "memories = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, features, "terminal_resize_reflow = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, features, "prevent_idle_sleep = true") != null);
 }
 
 test "config passthrough partitions root model provider before trailing table" {
