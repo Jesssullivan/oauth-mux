@@ -1,0 +1,129 @@
+name: Remote Validate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Validation target to run on the GloriousFlywheel runner"
+        required: true
+        default: "check"
+        type: choice
+        options:
+          - check
+          - test
+          - build
+          - e2e
+          - release-proof
+      version:
+        description: "Release version for release-proof"
+        required: false
+        default: "0.1.12"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  remote-validate:
+    name: ${{ inputs.target }} on GloriousFlywheel
+    runs-on: tinyland-nix
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
+        run: |
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require remote runner substrate
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GF_ACTIONS_TOKEN is required for remote validation." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow is a remote-first validation lane, not a silent local fallback." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Checkout GloriousFlywheel action
+        uses: actions/checkout@v4
+        with:
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
+
+      - name: Run selected target
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+          OMUX_REMOTE_TARGET: ${{ inputs.target }}
+          OMUX_REMOTE_RELEASE_VERSION: ${{ inputs.version }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: "false"
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+
+            run_with_timeout() {
+              local label="$1"
+              local duration="$2"
+              shift 2
+
+              if ! command -v timeout >/dev/null 2>&1; then
+                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+                "$@"
+                return
+              fi
+
+              set +e
+              timeout --foreground "${duration}" "$@"
+              local status=$?
+              set -e
+
+              if [ "${status}" -eq 124 ]; then
+                echo "::error::${label} timed out after ${duration}"
+              fi
+
+              return "${status}"
+            }
+
+            case "${OMUX_REMOTE_TARGET}" in
+              check)
+                run_with_timeout "remote check" "${OMUX_REMOTE_CHECK_TIMEOUT:-30m}" \
+                  nix develop --command just check-local
+                ;;
+              test)
+                run_with_timeout "remote test" "${OMUX_REMOTE_TEST_TIMEOUT:-20m}" \
+                  nix develop --command zig build test
+                ;;
+              build)
+                run_with_timeout "remote build" "${OMUX_REMOTE_BUILD_TIMEOUT:-20m}" \
+                  nix develop --command zig build
+                ;;
+              e2e)
+                run_with_timeout "remote e2e" "${OMUX_REMOTE_E2E_TIMEOUT:-20m}" \
+                  nix develop --command just e2e-local
+                ;;
+              release-proof)
+                run_with_timeout "remote release proof" "${OMUX_REMOTE_RELEASE_PROOF_TIMEOUT:-40m}" \
+                  nix develop --command just release-proof-local "${OMUX_REMOTE_RELEASE_VERSION}"
+                ;;
+              *)
+                echo "::error::unsupported remote validation target: ${OMUX_REMOTE_TARGET}"
+                exit 2
+                ;;
+            esac

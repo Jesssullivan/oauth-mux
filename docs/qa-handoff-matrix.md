@@ -53,7 +53,7 @@ capability, such as `codex:max-3#codex-max`.
 | Managed last resume | `oauth-mux codex resume --last` | canonical session bridge, writeback check | covered by CLI smoke |
 | Labeled reauth | `oauth-mux codex login-device <account>` | action says `user_handoff`, route label named, no raw identity | live operator flow |
 | Auth fallback | selected route 401, fallback 200 | `proxy_auth_same_turn_retry`, `auth_health_observed quota_claim:false` | live and smoke evidence |
-| Quota handoff | selected route `usage_limit_reached`, fallback 200 | `proxy_turn 429`, durable quota evidence, `proxy_same_turn_retry`, fallback `200` | live-proven for managed Codex |
+| Quota handoff | selected route `usage_limit_reached`, fallback 200 | `proxy_turn 429`, durable quota evidence, `proxy_same_turn_retry`, fallback `200` | captured evidence in `docs/evidence/codex-engineered-quota-handoff-20260509/` — route truth volatile |
 | All fallbacks unavailable | every candidate rejected | `quota_handoff_failed_no_account_selectable` with redacted vector | synthetic and managed cassette harness covered; publishable provider cassette/live target |
 | Tier selected-route classification | selected route returns `usage_not_included` | route marked `tier_insufficient`; no quota classification or same-turn quota retry | synthetic covered; live/cassette target |
 | Tier before fallback election | already-tier-blocked B precedes credited C in route pool | B is not elected; C selected | unit matrix covered; live/cassette target |
