@@ -1497,6 +1497,16 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "unauthenticated_codex_home", "codex_home_setup", "UnauthenticatedCodexHome", session_started_emitted);
             return RunError.NoCodexHome;
         },
+        error.CanonicalCodexHomeGuardUncheckable => {
+            try stderr.writeAll("oauth-mux codex: cannot verify CODEX_HOME does not overlap ~/.codex (HOME unset); refusing rather than risk poisoning the canonical store\n");
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "canonical_guard_uncheckable", "codex_home_setup", "CanonicalCodexHomeGuardUncheckable", session_started_emitted);
+            return RunError.NoCodexHome;
+        },
+        error.UnsafePersistentAuthPath => {
+            try stderr.writeAll("oauth-mux codex: account secret.path is not a safe absolute .../auth.json; refusing to mux (fix the account's config_dir/secret.path)\n");
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "unsafe_persistent_auth_path", "codex_home_setup", "UnsafePersistentAuthPath", session_started_emitted);
+            return RunError.NoCodexHome;
+        },
         else => return e,
     };
     var codex_home_deinit_needed = true;
@@ -2109,7 +2119,9 @@ fn realpathLongestExisting(allocator: std.mem.Allocator, path: []const u8) !?[]u
 /// config_dir under ~/.codex) would write the managed proxy config + session state
 /// INTO the canonical store — the exact poisoning class this fix removes.
 fn ensureNotCanonicalCodexHome(allocator: std.mem.Allocator, home: []const u8) !void {
-    const canonical = (try defaultCodexHome(allocator)) orelse return;
+    // If we cannot determine the canonical home (HOME unset), we cannot prove the
+    // muxxed home does NOT overlap it — refuse rather than silently pass the guard.
+    const canonical = (try defaultCodexHome(allocator)) orelse return error.CanonicalCodexHomeGuardUncheckable;
     defer allocator.free(canonical);
 
     // Lexical guard (paths need not exist yet).
@@ -2152,6 +2164,18 @@ fn ensurePersistentAuthUsable(allocator: std.mem.Allocator, auth_path: []const u
     return error.UnauthenticatedCodexHome;
 }
 
+/// Reject a persistent home that is not a safe absolute directory. A relative path
+/// (e.g. a misconfigured secret.path of "auth.json") or the filesystem root ("/")
+/// must never become a managed CODEX_HOME: both escape the canonical-overlap guard
+/// (which only reasons about real absolute paths — "/" trims to empty and matches
+/// nothing) and could write managed state into an unintended location.
+fn validatePersistentCodexHome(home: []const u8) !void {
+    if (!std.fs.path.isAbsolute(home)) return error.UnsafePersistentAuthPath;
+    const trimmed = std.mem.trimRight(u8, home, "/");
+    // "/" (and "" after trim) leave no account-specific component — refuse.
+    if (trimmed.len == 0) return error.UnsafePersistentAuthPath;
+}
+
 /// TIN-1851 home-is-store: use the account's own dedicated persistent home as
 /// CODEX_HOME. No auth copy, no canonical bridge, isolated sqlite. The home is a
 /// durable store (persist_scrub_config cleanup keeps auth/sessions/sqlite and only
@@ -2161,6 +2185,7 @@ fn createPersistentCodexHome(
     home: []const u8,
     proxy_port: u16,
 ) !SessionCodexHome {
+    try validatePersistentCodexHome(home);
     try ensureNotCanonicalCodexHome(allocator, home);
     try std.fs.cwd().makePath(home);
 
@@ -2297,6 +2322,22 @@ test "makeSessionCodexHome isolated_persistent dispatches to home-is-store at di
     try std.testing.expectEqualStrings(home, session.path);
 }
 
+test "validatePersistentCodexHome rejects relative paths and the filesystem root" {
+    try std.testing.expectError(error.UnsafePersistentAuthPath, validatePersistentCodexHome("relative/home"));
+    try std.testing.expectError(error.UnsafePersistentAuthPath, validatePersistentCodexHome("/"));
+    try std.testing.expectError(error.UnsafePersistentAuthPath, validatePersistentCodexHome("///"));
+    try validatePersistentCodexHome("/Users/x/.local/share/oauth-mux/codex/acct");
+}
+
+test "makeSessionCodexHome refuses an unsafe (relative or root) auth path instead of bridging" {
+    const a = std.testing.allocator;
+    // Relative secret.path -> refuse at the dispatch; never silently bridge to canonical.
+    try std.testing.expectError(error.UnsafePersistentAuthPath, makeSessionCodexHome(a, "auth.json", 5000, null, false, .isolated_persistent));
+    // Root-level "/auth.json" -> dispatch passes (absolute + auth.json), then
+    // createPersistentCodexHome's validate rejects the "/" home before any fs write.
+    try std.testing.expectError(error.UnsafePersistentAuthPath, makeSessionCodexHome(a, "/auth.json", 5000, null, false, .isolated_persistent));
+}
+
 fn makeSessionCodexHome(
     allocator: std.mem.Allocator,
     source_auth_path: []const u8,
@@ -2315,11 +2356,17 @@ fn makeSessionCodexHome(
     // forced (--isolated-session-store), or when the secret is not a $HOME/auth.json
     // (codex only ever reads $CODEX_HOME/auth.json).
     if (mux_mode == .isolated_persistent and !isolated_session_store and session_home_override == null) {
-        if (std.fs.path.dirname(source_auth_path)) |home| {
-            if (std.mem.eql(u8, std.fs.path.basename(source_auth_path), "auth.json")) {
-                return try createPersistentCodexHome(allocator, home, proxy_port);
-            }
+        // Home-is-store requires a well-formed ABSOLUTE .../auth.json source so that
+        // home/auth.json == the exact file the refresh/identity locks key on. A
+        // relative or non-auth.json secret is a misconfiguration: refuse, rather
+        // than silently falling through to the canonical-bridge poisoning path.
+        if (!std.fs.path.isAbsolute(source_auth_path) or
+            !std.mem.eql(u8, std.fs.path.basename(source_auth_path), "auth.json"))
+        {
+            return error.UnsafePersistentAuthPath;
         }
+        const home = std.fs.path.dirname(source_auth_path).?; // absolute + has basename ⇒ has dirname
+        return try createPersistentCodexHome(allocator, home, proxy_port);
     }
 
     const session_authority_home = try resolveCodexSessionAuthorityHome(allocator, session_home_override, isolated_session_store);
