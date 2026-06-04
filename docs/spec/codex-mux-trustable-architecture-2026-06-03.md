@@ -1,6 +1,6 @@
 # Codex Mux Trustable Architecture Gate
 
-Status: planning gate, 2026-06-03.
+Status: planning gate, updated 2026-06-04.
 
 ## Product Bar
 
@@ -13,12 +13,12 @@ unit tests, or a provider answer that leaves the child process hung.
 
 ## Current Reality
 
-Main contains the durable canonical bridge lineage through #365. That lineage is
-better than the older disposable `$TMPDIR` bridge, but it still treats canonical
-Codex session authority as part of the muxed session path.
+Main contains the TIN-1851 home-is-store architecture through #367, plus the
+managed Codex feature-config fix in #370. The older durable canonical bridge
+lineage through #365 is superseded for managed Codex sessions; it is useful
+history, not the current dogfood model.
 
-The stronger TIN-1851 branch at `/private/tmp/omux-tin1851` implements the
-home-is-store candidate architecture:
+The landed home-is-store architecture:
 
 - selected account home is used directly as `CODEX_HOME`;
 - no auth copy is buffered through an overlay;
@@ -27,18 +27,16 @@ home-is-store candidate architecture:
 - same-account and duplicate-upstream-identity session locks serialize refresh
   token rotation.
 
-That branch is unmerged. Linear marking TIN-1851 Done must not be interpreted as
-mainline production readiness until the branch, or an equivalent design, lands
-and passes live e2e.
-
-Open GitHub #366 remains a release blocker for dogfooding because the live mux
-e2e can receive a successful provider answer and still hang during child
-shutdown/finalization. Provider success is not session lifecycle success.
+#367 passed CI and was installed locally on `neo`; #370 then fixed the generated
+managed Codex feature config and the installed-binary live e2e completed a real
+brokered Codex session without canonical sqlite poisoning. GitHub #366 remains a
+regression sentinel for "provider answered but child shutdown hung"; it should
+block release only if reproduced against the #367/#370 lineage.
 
 ## Dogfood Gate
 
-Managed oauth-mux Codex dogfooding can resume only after a live e2e artifact
-proves all of:
+Managed oauth-mux Codex dogfooding can remain enabled only when live e2e
+artifacts continue to prove all of:
 
 1. `oauth-mux codex` completes a real Codex transaction.
 2. `oauth-mux codex resume` completes against a previously created muxed
@@ -51,16 +49,18 @@ proves all of:
 6. Canonical sqlite lock holders are gone after the harness exits.
 7. Status output identifies the session authority model honestly.
 
-Until then, native Codex is the safe default for day-to-day engineering work and
-muxed Codex remains a gated test path.
+Native Codex remains the safe fallback for day-to-day engineering work. Muxed
+Codex is a dogfood path only when the installed binary matches the proven
+lineage and the account pool has enough live route depth for fallback.
 
 ## Worktree Hygiene
 
-Keep these worktrees until their changes are explicitly reconciled:
+Keep or remove worktrees based on current branch state, not old planning notes:
 
-- `/private/tmp/omux-tin1851`: home-is-store muxing architecture candidate.
-- `.claude/worktrees/wf_40577f82-730-4`: UX/default profile and in-session
-  fallback refresh work.
+- `/private/tmp/omux-tin1851`: may be removable after confirming it contains no
+  unmerged local changes beyond #367.
+- `.claude/worktrees/wf_40577f82-730-4`: inspect before removal; it was used for
+  UX/default profile and in-session fallback refresh work.
 
 Park stale greenfield reauth, identity, keepalive, web UI, and Claude adapter
 PRs until the Codex state model is safe. They may be valuable, but they do not
