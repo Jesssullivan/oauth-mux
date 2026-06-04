@@ -73,7 +73,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | --- | --- | --- |
 | Managed Codex launch/resume | Live-proven | Reference adapter path for `oauth-mux codex` and `oauth-mux codex resume`. |
 | Codex quota handoff | Live-proven for managed Codex | Strongest preserved proof lives in `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` and `logs_2.sqlite*` when present, with canonical `CODEX_SQLITE_HOME` for Codex 0.132+. |
+| Session authority bridge | Codex-implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` and `logs_2.sqlite*` when present, with canonical `CODEX_SQLITE_HOME` for Codex 0.132+. |
 | Resume picker namespace parity | Published | PR #295 keeps managed Codex on the built-in `openai` provider namespace while routing through mux via `openai_base_url`, so native and managed `codex resume` enumerate the same provider-filtered session rows. Published in `0.1.12`. |
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
@@ -82,8 +82,8 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. Source after PR #279 also separates downstream client disconnects from upstream/provider failures so client `BrokenPipe` does not poison route health. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
 | Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields and safe handoff-plan commands for upstream-owned login surfaces; future MCP tools must mirror CLI semantics. |
-| Beta daemon | Experimental | Foreground tick engine and daemon-hosted beta may mediate status/handoffs; not a hidden dependency and not unmanaged hot-swap. |
-| Claude adapter | Provider-proof only | `auth-status` and account-store isolation are the first proof lane; no Claude stay-afloat claim. |
+| Beta daemon | Socket stub (non-functional) | Foreground tick engine and daemon-hosted beta may mediate status/handoffs; not a hidden dependency and not unmanaged hot-swap. |
+| Claude adapter | Synthetic smoke only | `auth-status` and account-store isolation are the first proof lane; no Claude stay-afloat claim. |
 | OMO, Pi, OpenCode, Kimi | Adapter-candidate only | Adjacent agent-control-plane proof does not equal oauth-mux keepalive support. |
 
 ## UX, DX, AX Stance
@@ -181,11 +181,11 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Codex next-turn broker switch | TIN-916 | #131 | Closed for the proven managed Codex live handoff. Remaining negative/permutation work lives in #212/#176; same-thread, mid-turn, and unmanaged daemon behavior remain separate non-claims. |
 | Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Wire cassette coverage | TIN-950 | #176 | PR #299 promoted a scrubbed current-release auth-failure fixture and replay smoke. Quota/rate-limit and all-fallbacks-exhausted cassette evidence is still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile only after real cassette acceptance or an explicit tracker correction. |
+| Wire cassette coverage | TIN-950 | #176 | PR #299 promoted a scrubbed current-release auth-failure fixture and replay smoke. Quota/rate-limit and all-fallbacks-exhausted cassette evidence is still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile this tracker inconsistency immediately — real cassette acceptance is a separate release-readiness gate, not a precondition for the tracker correction. |
 | Harness session authority bridge | TIN-979 / TIN-1624 | #191 / #288 | Closed for the original Codex bridge, with TIN-1624/#288 covering the Codex 0.132 `logs_2.sqlite*` / `CODEX_SQLITE_HOME` parity regression. Managed auth/config overlays bridge canonical session authority and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
-| Package parity and install lanes | TIN-1255 | #252 | `0.1.12` is published and verified across GitHub Release, Homebrew, curl installer assets, deb/rpm release assets, user-local dogfood, and lab Home Manager source pin; npm remains stale at `0.1.9`. |
+| Package parity and install lanes | TIN-1255 | #252 | `0.1.12` is published and verified across GitHub Release, Homebrew, curl installer assets, deb/rpm release assets, user-local dogfood, and lab Home Manager source pin; npm as of 2026-05-26 remains at `0.1.9` — verify before recommending. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |

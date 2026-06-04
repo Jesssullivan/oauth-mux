@@ -28,15 +28,48 @@ pub const HandoffKey = struct {
     capability: ?[]const u8 = null,
 };
 
+// ── Process-local re-entrancy guard (TIN-1851) ───────────────────────────────
+// The repair lock is an OS flock (createFileAbsolute .lock=.exclusive), which is
+// per-open-file-description. A SECOND acquire of the same (provider,account) key
+// from the SAME process — e.g. the in-process proxy materializer thread refreshing
+// while the session main thread already holds the account's repair lock — opens a
+// new fd and flock() would block on itself: a self-deadlock. We therefore hold
+// exactly ONE real flock per key per process and refcount re-entrant acquires; a
+// condition variable serializes the first-acquire so two threads never race the
+// real flock for the same key. Cross-process serialization is unchanged: the OS
+// flock still blocks (or returns RepairInProgress) for a different process.
+
+const HeldLock = struct {
+    count: usize,
+    acquiring: bool,
+    file: ?std.fs.File = null,
+    path: ?[]const u8 = null, // held_gpa-owned absolute lockfile path
+};
+
+var held_mutex: std.Thread.Mutex = .{};
+var held_cond: std.Thread.Condition = .{};
+var held_locks: std.StringHashMapUnmanaged(HeldLock) = .{};
+const held_gpa = std.heap.page_allocator; // process-global; mutated only under held_mutex
+
 pub const RepairLock = struct {
     allocator: std.mem.Allocator,
-    path: []const u8,
-    file: std.fs.File,
+    key: []const u8, // caller-allocator-owned sanitized lock name
 
     pub fn release(self: *RepairLock) void {
-        self.file.close();
-        std.fs.deleteFileAbsolute(self.path) catch {};
-        self.allocator.free(self.path);
+        held_mutex.lock();
+        if (held_locks.getPtr(self.key)) |entry| {
+            if (entry.count > 0) entry.count -= 1;
+            if (entry.count == 0) {
+                if (entry.file) |f| f.close();
+                if (entry.path) |p| {
+                    std.fs.deleteFileAbsolute(p) catch {};
+                    held_gpa.free(p);
+                }
+                if (held_locks.fetchRemove(self.key)) |kv| held_gpa.free(kv.key);
+            }
+        }
+        held_mutex.unlock();
+        self.allocator.free(self.key);
     }
 };
 
@@ -450,12 +483,14 @@ pub fn acquireRepairLockBlocking(
     return acquireRepairLockWithMode(allocator, provider, account, false);
 }
 
-fn acquireRepairLockWithMode(
+const RealRepairLock = struct { file: std.fs.File, path: []const u8 };
+
+fn acquireRealRepairLock(
     allocator: std.mem.Allocator,
     provider: []const u8,
     account: []const u8,
     nonblocking: bool,
-) !RepairLock {
+) !RealRepairLock {
     const path = try lockPath(allocator, provider, account);
     errdefer allocator.free(path);
     try ensureParentDir(path);
@@ -481,11 +516,81 @@ fn acquireRepairLockWithMode(
     try std.json.stringify(account, .{}, writer);
     try writer.print(",\"started_at\":{d}}}\n", .{now});
 
-    return .{
-        .allocator = allocator,
-        .path = path,
-        .file = file,
+    return .{ .file = file, .path = path };
+}
+
+fn acquireRepairLockWithMode(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+    nonblocking: bool,
+) !RepairLock {
+    const key = try sanitizedLockFileName(allocator, provider, account);
+    errdefer allocator.free(key);
+
+    held_mutex.lock();
+    while (true) {
+        if (held_locks.getPtr(key)) |entry| {
+            if (entry.acquiring) {
+                // Another thread in this process is mid-flock for this key; wait.
+                held_cond.wait(&held_mutex);
+                continue;
+            }
+            // Already held by this process: re-entrant acquire, no new flock.
+            entry.count += 1;
+            held_mutex.unlock();
+            return .{ .allocator = allocator, .key = key };
+        }
+        break;
+    }
+    // Reserve the key as 'acquiring', then take the (possibly blocking) real
+    // flock OUTSIDE the mutex so other threads/keys are not stalled.
+    const reg_key = held_gpa.dupe(u8, key) catch {
+        held_mutex.unlock();
+        return error.OutOfMemory;
     };
+    held_locks.put(held_gpa, reg_key, .{ .count = 1, .acquiring = true }) catch {
+        held_gpa.free(reg_key);
+        held_mutex.unlock();
+        return error.OutOfMemory;
+    };
+    held_mutex.unlock();
+
+    const real = acquireRealRepairLock(allocator, provider, account, nonblocking) catch |e| {
+        held_mutex.lock();
+        if (held_locks.fetchRemove(key)) |kv| held_gpa.free(kv.key);
+        held_cond.broadcast();
+        held_mutex.unlock();
+        return e;
+    };
+
+    const owned_path = held_gpa.dupe(u8, real.path) catch {
+        real.file.close();
+        std.fs.deleteFileAbsolute(real.path) catch {};
+        allocator.free(real.path);
+        held_mutex.lock();
+        if (held_locks.fetchRemove(key)) |kv| held_gpa.free(kv.key);
+        held_cond.broadcast();
+        held_mutex.unlock();
+        return error.OutOfMemory;
+    };
+    allocator.free(real.path);
+
+    held_mutex.lock();
+    if (held_locks.getPtr(key)) |entry| {
+        entry.file = real.file;
+        entry.path = owned_path;
+        entry.acquiring = false;
+    } else {
+        // Should not happen (we own the 'acquiring' reservation), but stay safe.
+        real.file.close();
+        std.fs.deleteFileAbsolute(owned_path) catch {};
+        held_gpa.free(owned_path);
+    }
+    held_cond.broadcast();
+    held_mutex.unlock();
+
+    return .{ .allocator = allocator, .key = key };
 }
 
 pub fn probeRepairLock(
@@ -635,6 +740,24 @@ fn writeTextLines(writer: anytype, lines: []const []const u8) !void {
         try writer.writeAll(line);
         try writer.writeByte('\n');
     }
+}
+
+test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
+    const a = std.testing.allocator;
+    // First acquire takes the real OS flock.
+    var l1 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
+    // A second acquire of the SAME key from THIS process must return immediately
+    // (re-entrant) rather than self-deadlock on the per-fd flock.
+    var l2 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
+    // A nonblocking acquire from this process is also re-entrant (already serialized
+    // by the held lock), NOT RepairInProgress.
+    var l3 = try acquireRepairLock(a, "codex", "tin1851-reentrancy-test");
+    l3.release();
+    l2.release();
+    l1.release();
+    // Fully released: a fresh acquire succeeds and the registry entry is gone.
+    var l4 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
+    l4.release();
 }
 
 test "parseStartedAt reads lock metadata timestamp" {

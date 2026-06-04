@@ -18,6 +18,7 @@ const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
+const identity_hash = @import("identity_hash.zig");
 
 comptime {
     // Pull broker + adapter modules into the test build.
@@ -69,6 +70,10 @@ pub fn main() !void {
                 .account = adapter_args.account,
                 .session_home = adapter_args.session_home,
                 .isolated_session_store = adapter_args.isolated_session_store,
+                .mux_mode = if (adapter_args.mux_mode) |m| switch (m) {
+                    .isolated_persistent => codex_adapter.MuxMode.isolated_persistent,
+                    .shared_canonical => codex_adapter.MuxMode.shared_canonical,
+                } else null,
                 .json_status = adapter_args.json_status,
                 .json_status_file = adapter_args.json_status_file,
                 .forward_argv = adapter_args.forward_argv,
@@ -771,11 +776,9 @@ fn maskEmailHint(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
 }
 
 fn shortSha256HexAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(value, &digest, .{});
-    const out = try allocator.alloc(u8, 12);
-    _ = std.fmt.bufPrint(out, "{x}", .{std.fmt.fmtSliceHexLower(digest[0..6])}) catch unreachable;
-    return out;
+    // Delegates to the shared module so the codex adapter's muxxing identity
+    // guard (TIN-1851) computes the SAME account-id hash as this inventory path.
+    return identity_hash.sha256_12hex(allocator, value);
 }
 
 test "maskEmailHint masks local part and keeps domain for account inventory" {
