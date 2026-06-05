@@ -2,7 +2,7 @@
 
 Updated: 2026-05-18
 
-This is the DRY map for installer, package, CI, and local dogfood lanes.
+This is the DRY map for installer, package, CI, and dogfood lanes.
 Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 `docs/release-runbook.md`.
 
@@ -10,7 +10,7 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 
 | Lane | User command | Source of artifact | Proof gate | Claim |
 | --- | --- | --- | --- | --- |
-| Worktree dogfood | `./zig-out/bin/oauth-mux ...` | current checkout | `zig build`, `just check-local` | unreleased behavior only |
+| Worktree dogfood | `./zig-out/bin/oauth-mux ...` | current checkout | `just remote-build`, `just remote-check`, plus hash/version proof for the local copied artifact | unreleased behavior only |
 | User-local dogfood | `oauth-mux ...` and managed `codex ...` with PATH resolving to `~/.local/bin` | copied worktree binary plus shared POSIX shim | hash match with `./zig-out/bin/oauth-mux`, version check, shim pass-through smoke, preflight check | installed-command dogfood for current checkout |
 | Nix package | `nix build .#` | flake package plus shared POSIX shim | `./result/bin/oauth-mux version`, `nix flake check` binary+shim smoke | package derivation proof |
 | GitHub Release | downloaded tarball | `dist/out/v*/artifacts` from release workflow | checksum verify, tarball binary+shim smoke | public raw binary lane |
@@ -70,7 +70,7 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 | Surface | Workflow or command | Mutates registries? | Purpose |
 | --- | --- | --- | --- |
 | PR/push CI | `.github/workflows/ci.yml` | no | unit tests, example validation, local E2E, cross-compile, Nix build/check, optional GloriousFlywheel cache-first proof |
-| Release staging | `just release-proof <version>` / `.github/workflows/release-proof.yml` | no | build the release tree, smoke installers/packages, generate handoff |
+| Release staging | `just remote-release-proof <ref> <version>` / `.github/workflows/release-proof.yml` | no | build the release tree, smoke installers/packages, generate handoff on the remote runner |
 | GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged tarballs, npm tarballs, formula, checksums, installer, handoff |
 | Registry dry run | `.github/workflows/registry-dry-run.yml` | no | contact configured registries/taps with explicit non-publishing confirmation |
 | npm publish | `.github/workflows/npm-publish.yml` | yes, npm only | publish CI-generated npm tarballs after release proof |
@@ -82,11 +82,11 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 
 - Use `scripts/project-version.sh` as the version source. Do not hand-edit
   package versions independently.
-- `just release-proof <version>` is the local release tree proof. It must pass
+- `just remote-release-proof <ref> <version>` is the release tree proof. It must pass
   before any registry mutation.
-- `nix flake check` is a hybrid package smoke, not the full shell smoke suite.
-  It must prove the flake package runs, reports the source version, and
-  validates no-secret examples.
+- `nix flake check` is a local package debugging smoke, not release proof.
+  Remote release proof must prove the package runs, reports the source version,
+  and validates no-secret examples.
 - npm publication is CI-only through `.github/workflows/npm-publish.yml`.
   Workstation `npm publish` is unsupported.
 - Release and registry scripts must use an isolated npm cache so root-owned or
@@ -178,10 +178,14 @@ UX gates:
 
 DX gates:
 
-- `just check-local` is the single no-network local validation chain;
-- `just release-proof <version>` is the local release validation chain;
-- `nix build .#` proves the flake package for the current checkout;
-- `nix flake check` runs the package smoke without replacing `just check-local`.
+- `just remote-check` is the default validation chain for PR and dogfood
+  readiness;
+- `just remote-build`, `just remote-test`, and `just remote-e2e` are the
+  targeted remote proof lanes;
+- `just remote-release-proof <ref> <version>` is required before any registry
+  mutation;
+- local `just check-local`, `just release-proof <version>`, `nix build .#`, and
+  `nix flake check` are debugging tools only and do not replace remote proof.
 
 AX gates:
 

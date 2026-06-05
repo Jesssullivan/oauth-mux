@@ -97,9 +97,12 @@ UX:
 
 DX:
 
-- `just build`, `just test`, and `just check-local` remain the local development
-  gates.
-- `just release-proof <version>` is required before any registry mutation.
+- `just remote-build`, `just remote-test`, `just remote-check`, and
+  `just remote-e2e` are the development proof gates.
+- `just remote-release-proof <ref> <version>` is required before any registry
+  mutation.
+- Local build/check commands are debugging tools only; do not use them as PR,
+  release, or dogfood readiness proof on developer laptops.
 - Installed-command dogfood must use `oauth-mux version --json`,
   `which -a oauth-mux`, `which -a codex`, and `codex preflight` to prove the
   exact binary and shim path under test.
@@ -196,14 +199,14 @@ browser is needed; local Playwright is not part of this CLI proof path.
   `doctor`, `providers list`, `accounts list`, `route explain`,
   `codex preflight`, `broker-session-plan`, `stay-afloat next`,
   `status-latest`, and `daemon status`.
-- Local validation passes: `zig build test`, targeted Codex smokes,
-  `nix develop --command just check-local`, and the hybrid `nix flake check`
-  package smoke.
+- Remote validation passes: `just remote-check`, plus targeted remote lanes such
+  as `just remote-test`, `just remote-build`, and `just remote-e2e` when the
+  change warrants them. Local validation commands are debugging aids only.
 - Dogfood process/memory concerns are backed by at least two redacted
   `dogfood-process-snapshot` artifacts before being called leaks.
-- Public release validation passes: `just release-proof <version>`, release
-  proof workflow, npm dry run/publish workflow as appropriate, Homebrew QA, and
-  system package QA.
+- Public release validation passes: `just remote-release-proof <ref> <version>`,
+  release proof workflow, npm dry run/publish workflow as appropriate, Homebrew
+  QA, and system package QA.
 - Homebrew release validation proves both installed binary output and
   `brew info --json=v2` stable version semantics for the public tap formula.
 - Public copy does not claim same-thread continuity, mid-turn recovery,

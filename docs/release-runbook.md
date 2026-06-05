@@ -95,11 +95,12 @@ Useful overrides:
 - `OMUX_RELEASE_ZIG_JOBS=<n>` sets Zig release concurrency explicitly.
 - `OMUX_RELEASE_SKIP_PREFLIGHT=1` disables the host-resource guard.
 
-Run the full build-plus-smoke proof:
+Run the full build-plus-smoke proof on the remote runner:
 
 ```bash
 version="$(scripts/project-version.sh)"
-just release-proof "$version"
+ref="$(git rev-parse --abbrev-ref HEAD)"
+just remote-release-proof "$ref" "$version"
 ```
 
 This runs `release-local` and then checks:
@@ -218,13 +219,12 @@ cache stalls fail with an explicit step diagnostic before the outer workflow
 timeout. CI uses `OMUX_GF_CHECK_TIMEOUT` with a default of `25m`; the manual
 release proof uses `OMUX_GF_RELEASE_PROOF_TIMEOUT` with a default of `40m`.
 
-During known lab or runner outages, do not block release staging on a queued
-`tinyland-nix` job alone. Use these signals together:
+During known lab or runner outages, keep the release blocked rather than
+substituting local laptop proof. Use these hosted signals together:
 
-- local `just check`
-- local `nix flake check`
-- local `just release-proof <version>`
 - hosted CI `test`, `nix`, and six cross-compile jobs
+- remote `just remote-check`
+- remote `just remote-release-proof <ref> <version>`
 
 Only claim GloriousFlywheel cache-first CI proof when the GF job actually runs
 the private action and completes.
@@ -284,10 +284,10 @@ Current release evidence:
 
 ## Before Marking A PR Ready
 
-- `just check` passes.
-- `just release-proof <version>` produces and smoke-checks the release tree.
-- `nix flake check` passes, preferably with an isolated cache such as
-  `XDG_CACHE_HOME=/tmp/oauth-mux-nix-cache` on sandboxed agent hosts.
+- `just remote-check` passes.
+- `just remote-release-proof <ref> <version>` produces and smoke-checks the release
+  tree when release outputs or packaging changed.
+- Hosted CI `test`, `nix`, cross-compile, and GloriousFlywheel jobs pass.
 - Hosted `System Package Install QA` passes after release assets exist when the
   release changes deb/rpm packaging.
 - Homebrew QA proves both binary output and parsed formula stable version.

@@ -73,8 +73,8 @@ capability, such as `codex:max-3#codex-max`.
 
 ## Coverage Reality
 
-`just check-local` already includes synthetic smokes for the two highest-value
-negative Codex UX lanes:
+`just remote-check` already runs the synthetic smokes for the two highest-value
+negative Codex UX lanes on the remote validation substrate:
 
 - `scripts/smoke-codex-all-exhausted.sh` covers the all-fallbacks terminal
   vector, typed `503` repair body, redaction, and stable managed child PID.
