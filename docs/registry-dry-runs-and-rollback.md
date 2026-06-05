@@ -1,9 +1,9 @@
 # Registry Dry-Runs and Rollback
 
 Registry publication is intentionally separate from release artifact proof.
-`just release-proof <version>` proves the release tree and handoff without
-publication credentials. Authenticated registry dry-runs are CI/operator gates
-and non-publishing.
+`just remote-release-proof <ref> <version>` proves the release tree and handoff
+without publication credentials on the remote runner. Authenticated registry
+dry-runs are CI/operator gates and non-publishing.
 For the DRY lane map across worktree, Nix, GitHub Release, npm, Homebrew,
 curl, deb, and rpm installers, see `docs/release-install-lanes.md`.
 
@@ -18,7 +18,8 @@ Stage and prove artifacts:
 
 ```bash
 version="$(scripts/project-version.sh)"
-just release-proof "$version"
+ref="$(git rev-parse --abbrev-ref HEAD)"
+just remote-release-proof "$ref" "$version"
 ```
 
 Run a plan-only dry-run report:
@@ -146,7 +147,8 @@ GitHub Release:
 
 1. Delete or mark the bad release as draft.
 2. Delete the tag only after consumers are notified.
-3. Re-run `just release-proof <version>` before publishing a replacement.
+3. Re-run `just remote-release-proof <ref> <version>` before publishing a
+   replacement.
 
 npm:
 

@@ -265,13 +265,16 @@ UX:
 DX:
 
 ```bash
-just build
-just test
-just check-local
+just remote-build
+just remote-test
+just remote-check
+just remote-e2e
 ```
 
-Use `just release-proof <version>` before any registry mutation. Direct
-`zig build` is fine for iteration, but `just` is the operator entrypoint.
+Use `just remote-release-proof <ref> <version>` before any registry mutation. Local
+`zig build`, `just build`, and `just check-local` are debugging tools only; they
+are not the proof path for PR, release, or dogfood readiness on low-power
+developer machines.
 
 AX:
 

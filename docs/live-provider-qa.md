@@ -4,15 +4,16 @@ Live provider QA is manual and secret-scoped because provider probes can spend
 real subscription calls.
 The canonical route-state and handoff matrix is `docs/qa-handoff-matrix.md`.
 
-## Local Run
+## Remote-First Run
 
-Build first:
+Build/prove the checkout on the remote runner first:
 
 ```bash
-just build
+just remote-build
 ```
 
-Probe a profile:
+Then probe a profile from the intended operator machine, because live provider
+QA uses local account stores and may spend real subscription calls:
 
 ```bash
 OMUX_LIVE_QA_CONFIRM=spend-real-calls \

@@ -77,11 +77,12 @@ Because GitHub exposes manual dispatch workflows from the default branch, the
 remote validation workflow must land on `main` before branch/SHA validation can
 be requested through `just remote-*`.
 
-This is intentionally additive. `just check-local`, `just e2e-local`, and the
-direct Zig recipes remain available for tight local iteration and for debugging
-runner-specific failures. Remote validation is the preferred proof path when a
-developer only needs a trustworthy build/test/e2e answer and not local compiler
-feedback.
+This is intentionally remote-first. `just check-local`, `just e2e-local`, and
+direct Zig recipes remain available only for narrow local debugging and runner
+failure triage. They are not proof gates for PR readiness, release readiness, or
+dogfood readiness on developer laptops. Use `just remote-check`,
+`just remote-test`, `just remote-build`, `just remote-e2e`, and
+`just remote-release-proof` for completion claims.
 
 The remote workflow fails rather than silently falling back when the
 GloriousFlywheel action token is absent. A skipped or fallback local run is not
@@ -133,10 +134,10 @@ input:
 - npm package workspace and npm tarballs
 - nfpm configs and deb/rpm artifacts
 
-`just release-proof <version>` runs the same staging command and then validates
-the artifact tree, checksums, archive payloads, Homebrew rendering, local npm
-install path, local installer path, and non-publishing release handoff
-generation. The handoff captures GitHub Release attachments, npm publish order,
+`just remote-release-proof <ref> <version>` runs the same staging command on the
+remote runner and then validates the artifact tree, checksums, archive payloads,
+Homebrew rendering, npm install path, installer path, and non-publishing release
+handoff generation. The handoff captures GitHub Release attachments, npm publish order,
 Homebrew tap input, deb/rpm files, and full checksums under
 `dist/out/v<version>/handoff/`.
 

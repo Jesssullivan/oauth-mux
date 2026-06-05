@@ -30,9 +30,11 @@ flags, and synthetic smokes are not success.
 
 ## Current Evidence Stack
 
-`just check-local` delegates to `scripts/check-local.sh`. That script is the
-executable source of truth for the no-network local validation chain; do not
-copy its full command list into specs. At a high level it covers:
+`just remote-check` is the proof gate for merge/release claims. It dispatches
+the validation body to the GloriousFlywheel runner instead of asking developer
+laptops to compile and test the repo. The underlying local body is still
+`scripts/check-local.sh`; do not copy its full command list into specs. At a
+high level it covers:
 
 - `zig build test`, `zig build`, and config validation for every
   `examples/*.config.json`.
@@ -40,8 +42,8 @@ copy its full command list into specs. At a high level it covers:
   handoff, concurrent-session, child-refresh, tier, all-exhausted, 401,
   cassette replay/review, status-summary, and tracker-comment smokes.
 
-Run `just check-local` before merge/release claims when this review changes
-implementation or claim language.
+Run `just remote-check` before merge/release claims when this review changes
+implementation or claim language. Local `just check-local` is for debugging only.
 
 Repo-wide Zig test inventory is broad (`rg '^test "' src` finds 306
 in-file tests). The broker/Codex-adapter subset is materially covered by
