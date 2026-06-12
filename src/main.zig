@@ -1928,17 +1928,26 @@ fn writeClaudeStarterAccount(
 ) !void {
     const account_dir = try std.fs.path.join(allocator, &.{ config_root, account });
     defer allocator.free(account_dir);
-    const credentials_path = try std.fs.path.join(allocator, &.{ account_dir, ".credentials.json" });
-    defer allocator.free(credentials_path);
 
     try std.json.stringify(account, .{}, writer);
     try writer.writeAll(":{\"priority\":");
     try writer.print("{d}", .{priority});
     try writer.writeAll(",\"config_dir\":");
     try std.json.stringify(account_dir, .{}, writer);
-    try writer.writeAll(",\"secret\":{\"backend\":\"file\",\"path\":");
-    try std.json.stringify(credentials_path, .{}, writer);
-    try writer.writeAll("},\"tags\":[\"oauth\",\"claude\"]}");
+    if (comptime builtin.os.tag == .macos) {
+        // macOS Claude Code persists credentials only in the login keychain
+        // (TIN-2060 verified — .credentials.json is never written there);
+        // the suffixed service and item account derive from config_dir at
+        // load (TIN-2070), so the bare backend is the whole truth.
+        try writer.writeAll(",\"secret\":{\"backend\":\"keychain\"}");
+    } else {
+        const credentials_path = try std.fs.path.join(allocator, &.{ account_dir, ".credentials.json" });
+        defer allocator.free(credentials_path);
+        try writer.writeAll(",\"secret\":{\"backend\":\"file\",\"path\":");
+        try std.json.stringify(credentials_path, .{}, writer);
+        try writer.writeAll("}");
+    }
+    try writer.writeAll(",\"tags\":[\"oauth\",\"claude\"]}");
 }
 
 fn writeFigmaProviderWithEnrollment(
@@ -8799,6 +8808,17 @@ fn matchesProvider(key: []const u8, provider_filter: ?[]const u8) bool {
     return key.len > filter.len and key[filter.len] == ':';
 }
 
+// TIN-2070: on macOS the real keychain item carries acct=<local username>
+// (an explicit "default" never matches it), so the starter omits the account
+// and lets config load derive it. Elsewhere the keychain entry is
+// user-managed and keeps the historical explicit shape.
+const claude_starter_account_field = if (builtin.os.tag == .macos)
+    ""
+else
+    \\,
+    \\            "account": "default"
+;
+
 fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.InitArgs) !void {
     const path = try paths.configFilePath(allocator);
     defer allocator.free(path);
@@ -8830,8 +8850,9 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\          "priority": 10,
         \\          "secret": {
         \\            "backend": "keychain",
-        \\            "service": "Claude Code-credentials",
-        \\            "account": "default"
+        \\            "service": "Claude Code-credentials"
+    ++ claude_starter_account_field ++
+        \\
         \\          }
         \\        }
         \\      }
