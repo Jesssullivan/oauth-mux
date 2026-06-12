@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 const paths = @import("paths.zig");
 const types = @import("types.zig");
 
@@ -736,8 +737,42 @@ fn writeTextLines(writer: anytype, lines: []const []const u8) !void {
     }
 }
 
+/// Test helper: scope lock files to a per-test tmp runtime dir via the
+/// OMUX_RUNTIME_DIR seam so unit tests never write into the user's real
+/// runtime dir (locks persist after TIN-2041, so stray writes are permanent).
+const TestRuntimeDirScope = struct {
+    tmp: std.testing.TmpDir,
+    root: []const u8,
+    overrides: std.process.EnvMap,
+
+    fn init(allocator: std.mem.Allocator) !TestRuntimeDirScope {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const root = try tmp.dir.realpathAlloc(allocator, ".");
+        errdefer allocator.free(root);
+        var overrides = std.process.EnvMap.init(allocator);
+        errdefer overrides.deinit();
+        try overrides.put("OMUX_RUNTIME_DIR", root);
+        return .{ .tmp = tmp, .root = root, .overrides = overrides };
+    }
+
+    fn activate(self: *TestRuntimeDirScope) void {
+        env.test_overrides = &self.overrides;
+    }
+
+    fn deinit(self: *TestRuntimeDirScope, allocator: std.mem.Allocator) void {
+        env.test_overrides = null;
+        self.overrides.deinit();
+        allocator.free(self.root);
+        self.tmp.cleanup();
+    }
+};
+
 test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
     const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
     // First acquire takes the real OS flock.
     var l1 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
     // A second acquire of the SAME key from THIS process must return immediately
@@ -756,6 +791,9 @@ test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
 
 test "lock file path persists after acquire+release (TIN-2041 no unlink-on-release)" {
     const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
     const path = try lockPath(a, "codex", "tin2041-lockfile-persists");
     defer a.free(path);
     std.fs.deleteFileAbsolute(path) catch {}; // start from a clean slate
@@ -771,6 +809,9 @@ test "lock file path persists after acquire+release (TIN-2041 no unlink-on-relea
 test "release hands the SAME inode to the next acquirer under kernel flock conflict (TIN-2041)" {
     if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
     const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
     const provider = "codex";
     const account = "tin2041-ofd-conflict";
 

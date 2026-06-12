@@ -1428,6 +1428,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  OMUX_CONFIG        Override config file path
         \\  OMUX_CONFIG_DIR    Override config directory
         \\  OMUX_STATE_DIR     Override state directory
+        \\  OMUX_RUNTIME_DIR   Override runtime directory (locks, daemon socket)
         \\  OMUX_SHELL         Override shell detection
         \\  OMUX_DEBUG         Enable debug logging
         \\  NO_COLOR           Disable colored output
