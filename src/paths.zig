@@ -27,9 +27,15 @@ pub fn runtimeDir(allocator: std.mem.Allocator) ![]const u8 {
         return std.fs.path.join(allocator, &.{ dir, app_name });
     }
     if (comptime builtin.os.tag == .macos) {
-        const uid = (try env.get(allocator, "UID")) orelse try allocator.dupe(u8, "501");
-        defer allocator.free(uid);
-        return std.fmt.allocPrint(allocator, "/tmp/{s}-{s}", .{ app_name, uid });
+        // TIN-2041: the old fallback /tmp/oauth-mux-<uid> was subject to
+        // periodic /tmp cleaning, which can unlink HELD repair-lock files and
+        // break flock mutual exclusion (the same failure mode as
+        // unlink-on-release, OS-triggered). Use a persistent per-user runtime
+        // dir instead; it also hosts the daemon unix socket — that move is
+        // intended.
+        const home = (try env.get(allocator, "HOME")) orelse return error.OutOfMemory;
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, "Library", "Application Support", app_name, "runtime" });
     }
     const home = (try env.get(allocator, "HOME")) orelse try allocator.dupe(u8, "/tmp");
     defer allocator.free(home);
@@ -136,6 +142,21 @@ test "absolutePath keeps absolute and expands relative paths" {
         try std.testing.expect(std.fs.path.isAbsolute(result));
         try std.testing.expect(std.mem.endsWith(u8, result, "relative/path"));
     }
+}
+
+test "runtimeDir macOS fallback avoids periodically-cleaned /tmp (TIN-2041)" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const dir = try runtimeDir(allocator);
+    defer allocator.free(dir);
+    if (try env.get(allocator, "XDG_RUNTIME_DIR")) |base| {
+        defer allocator.free(base);
+        // Explicit XDG runtime dir stays honored.
+        try std.testing.expect(std.mem.startsWith(u8, dir, base));
+        return;
+    }
+    try std.testing.expect(!std.mem.startsWith(u8, dir, "/tmp/"));
+    try std.testing.expect(std.mem.endsWith(u8, dir, "Library/Application Support/oauth-mux/runtime"));
 }
 
 test "socketPathFromRuntimeDir keeps Unix socket paths under the platform limit" {

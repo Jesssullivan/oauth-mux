@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const paths = @import("paths.zig");
 const types = @import("types.zig");
 
@@ -43,7 +44,6 @@ const HeldLock = struct {
     count: usize,
     acquiring: bool,
     file: ?std.fs.File = null,
-    path: ?[]const u8 = null, // held_gpa-owned absolute lockfile path
 };
 
 var held_mutex: std.Thread.Mutex = .{};
@@ -60,11 +60,17 @@ pub const RepairLock = struct {
         if (held_locks.getPtr(self.key)) |entry| {
             if (entry.count > 0) entry.count -= 1;
             if (entry.count == 0) {
+                // Real-lock teardown: closing the fd drops the OS flock, and the
+                // lock FILE deliberately persists (TIN-2041). Unlinking it here
+                // raced waiters: a waiter blocked on the old inode acquires the
+                // kernel flock the instant the fd closes, the unlink then orphans
+                // the name it holds, and a later acquirer creates a NEW inode at
+                // the same path and locks immediately — two concurrent holders.
+                // flock(2) state is the only mutual-exclusion authority: stale
+                // lock files are simply re-locked on the next acquire, and
+                // probeRepairLock reports unlocked files as no repair in
+                // progress.
                 if (entry.file) |f| f.close();
-                if (entry.path) |p| {
-                    std.fs.deleteFileAbsolute(p) catch {};
-                    held_gpa.free(p);
-                }
                 if (held_locks.fetchRemove(self.key)) |kv| held_gpa.free(kv.key);
             }
         }
@@ -564,28 +570,16 @@ fn acquireRepairLockWithMode(
         return e;
     };
 
-    const owned_path = held_gpa.dupe(u8, real.path) catch {
-        real.file.close();
-        std.fs.deleteFileAbsolute(real.path) catch {};
-        allocator.free(real.path);
-        held_mutex.lock();
-        if (held_locks.fetchRemove(key)) |kv| held_gpa.free(kv.key);
-        held_cond.broadcast();
-        held_mutex.unlock();
-        return error.OutOfMemory;
-    };
     allocator.free(real.path);
 
     held_mutex.lock();
     if (held_locks.getPtr(key)) |entry| {
         entry.file = real.file;
-        entry.path = owned_path;
         entry.acquiring = false;
     } else {
         // Should not happen (we own the 'acquiring' reservation), but stay safe.
+        // Close only — the lock file itself persists (see release()).
         real.file.close();
-        std.fs.deleteFileAbsolute(owned_path) catch {};
-        held_gpa.free(owned_path);
     }
     held_cond.broadcast();
     held_mutex.unlock();
@@ -758,6 +752,61 @@ test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
     // Fully released: a fresh acquire succeeds and the registry entry is gone.
     var l4 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
     l4.release();
+}
+
+test "lock file path persists after acquire+release (TIN-2041 no unlink-on-release)" {
+    const a = std.testing.allocator;
+    const path = try lockPath(a, "codex", "tin2041-lockfile-persists");
+    defer a.free(path);
+    std.fs.deleteFileAbsolute(path) catch {}; // start from a clean slate
+
+    var lock = try acquireRepairLockBlocking(a, "codex", "tin2041-lockfile-persists");
+    try std.fs.accessAbsolute(path, .{});
+    lock.release();
+    // The lock file must STILL exist: release only drops the flock. Unlinking
+    // here is what orphaned the inode under a waiter (TIN-2041).
+    try std.fs.accessAbsolute(path, .{});
+}
+
+test "release hands the SAME inode to the next acquirer under kernel flock conflict (TIN-2041)" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    const provider = "codex";
+    const account = "tin2041-ofd-conflict";
+
+    const path = try lockPath(a, provider, account);
+    defer a.free(path);
+    std.fs.deleteFileAbsolute(path) catch {}; // start from a clean slate
+
+    // A: public-API acquire takes the real OS flock for this process.
+    var lock_a = try acquireRepairLock(a, provider, account);
+
+    const ino_before = blk: {
+        const f = try std.fs.openFileAbsolute(path, .{});
+        defer f.close();
+        break :blk (try f.stat()).inode;
+    };
+
+    // B: a second, distinct open-file-description on the same path. flock is
+    // per-OFD, so this conflicts even within one process; the public API would
+    // refcount-share, so go below it to create a real kernel conflict.
+    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true));
+
+    lock_a.release();
+
+    // B now acquires — and must get the SAME inode A held. The old
+    // unlink-on-release orphaned A's inode under any blocked waiter and a
+    // fresh acquire created a new inode at the path: two concurrent holders.
+    const lock_b = try acquireRealRepairLock(a, provider, account, true);
+    defer {
+        lock_b.file.close();
+        a.free(lock_b.path);
+    }
+    try std.testing.expectEqual(ino_before, (try lock_b.file.stat()).inode);
+
+    // Mutual exclusion holds while B owns the lock: a third distinct-OFD
+    // try-acquire fails.
+    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true));
 }
 
 test "parseStartedAt reads lock metadata timestamp" {

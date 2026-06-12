@@ -156,10 +156,9 @@ pub fn start(allocator: std.mem.Allocator) DaemonError!void {
 
 fn ensureRuntimeDir(sock_path: []const u8) !void {
     if (std.fs.path.dirname(sock_path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        // The macOS runtime dir lives under ~/Library/Application Support and
+        // is more than one level deep (TIN-2041); create the full path.
+        try std.fs.cwd().makePath(dir);
     }
 }
 
@@ -496,12 +495,7 @@ fn currentPid() Pid {
 }
 
 fn writePidFile(path: []const u8, pid: Pid) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
-    }
+    try ensureParentDir(path);
     const file = try std.fs.createFileAbsolute(path, .{ .mode = 0o600 });
     defer file.close();
     try file.writer().print("{d}", .{pid});
@@ -582,10 +576,9 @@ fn hasStayAfloatMetadata(allocator: std.mem.Allocator) bool {
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        // The macOS runtime dir lives under ~/Library/Application Support and
+        // is more than one level deep (TIN-2041); create the full path.
+        try std.fs.cwd().makePath(dir);
     }
 }
 
