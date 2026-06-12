@@ -21,14 +21,17 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes are versioned by channel. `0.1.12` is the current verified
-public release for GitHub Release, curl installer, deb/rpm assets, Homebrew,
-user-local dogfood, and the Home Manager source lane. It carries the Codex
-0.132 SQLite resume authority fix, the Codex capture-review proxy metadata
-gate, and the provider-namespace resume picker fix from PR #295. npm still
-reports `0.1.9` until CI npm auth is repaired. Homebrew remains binary-only by
-default: `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and
-must not install or link a managed `codex` shim.
+Public install lanes are versioned by channel. `0.1.13` is the current verified
+public release for GitHub Release, curl installer, deb/rpm assets, and the
+Homebrew tap. It is the first release carrying the home-is-store managed-Codex
+session-authority default (canonical bridge is explicit opt-in), the flock
+unlink-on-release race fix with the macOS runtime-dir move (restart long-lived
+managed sessions after upgrading), the default-mode native resume chooser, and
+corrected Claude OAuth endpoint constants. npm still reports `0.1.9` until the
+registry token is rotated — prefer Homebrew or the curl installer until the npm
+lane catches up. Homebrew remains binary-only by default:
+`brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
+install or link a managed `codex` shim.
 
 What works today:
 
@@ -121,9 +124,9 @@ ladder diagrams.
 Public install lanes:
 
 ```bash
-npm install -g oauth-mux
-# or
 brew install jesssullivan/omux/oauth-mux
+# or (npm lane currently lags at 0.1.9 pending a registry token rotation)
+npm install -g oauth-mux
 ```
 
 The Homebrew formula is intentionally binary-only. It should not change
