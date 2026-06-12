@@ -33,21 +33,24 @@ must not install or link a managed `codex` shim.
 What works today:
 
 - Managed Codex launch and resume through `oauth-mux codex` and
-  `oauth-mux codex resume`.
+  `oauth-mux codex resume`, including the native resume chooser against the
+  selected account's route-local persistent home in the default mode.
 - Current source/user-local dogfood and the npm wrapper lane can include a
   managed `codex` shim, so a bare `codex` command is managed only when PATH
   resolves that shim. Admin commands such as `codex login` and
   `codex --version` must pass through to native Codex. Direct native Codex
   binaries and already-running native sessions are not globally protected.
-- Native Codex chooser/session authority bridge, including canonical
-  `state_5.sqlite*` and `logs_2.sqlite*` when present, with managed Codex using
-  Codex's built-in `openai` provider namespace so the native and managed resume
-  pickers enumerate the same session rows. Managed resume also reports
-  canonical `state_5.sqlite` lock contention before child spawn instead of
-  forking or bypassing Codex's session authority.
-- Root-partitioned Codex config passthrough for user settings such as
-  `[features]`, legacy `experimental_*`, MCP servers, approval/sandbox policy,
-  profiles, model defaults, and non-managed provider definitions.
+- Route-local persistent Codex session authority for managed muxed runs. Current
+  managed Codex uses the selected account home as `CODEX_HOME`, keeps muxed
+  `state_5.sqlite*` / `logs_2.sqlite*` out of canonical `~/.codex` by default,
+  and preserves Codex's built-in `openai` provider namespace for proxy routing.
+  Legacy canonical bridge behavior is explicit opt-in via `shared_canonical`.
+- Managed Codex config is written fresh per launch in the default mode (proxy
+  override plus managed feature defaults) and scrubbed on exit; root-partitioned
+  user-config passthrough (`[features]`, legacy `experimental_*`, MCP servers,
+  approval/sandbox policy, profiles, model defaults, non-managed provider
+  definitions) currently applies on the legacy `shared_canonical` bridge path
+  only.
 - Lazy account refresh at credential materialization or explicit repair time;
   managed launch reports `pre_spawn_network_refresh:false`.
 - Managed Codex launch/resume auto-revalidates expired Codex quota/rate windows

@@ -12,12 +12,19 @@ Managed Codex resume UX/refactor plan:
 ## 0.0 Current Implementation Checkpoint
 
 The Codex bridge is implemented for the first-class `oauth-mux codex` managed
-frame. The adapter builds a composed managed `CODEX_HOME` with mux-owned
-`auth.json` and generated proxy `config.toml`, while session-authority entries
-are bridged by reference. Default session authority is the parent `CODEX_HOME`
-when set, otherwise `~/.codex`; `OMUX_CODEX_SESSION_HOME` and
-`--session-home <path>` can override that authority; `--isolated-session-store`
-opts out for tests/privacy.
+frame, but the default model changed after TIN-1851. Current main uses
+home-is-store / `isolated_persistent`: the selected route's durable account
+home is `CODEX_HOME`, owns muxed auth/config, and owns muxed session authority
+directly. The adapter does not set canonical `CODEX_SQLITE_HOME` by default and
+does not write muxed session rows into canonical `~/.codex`.
+
+The older canonical bridge remains available only as explicit
+`shared_canonical` mode. In that mode the adapter builds a composed managed
+`CODEX_HOME` with mux-owned `auth.json` and generated proxy `config.toml`, while
+session-authority entries are bridged by reference from the configured
+canonical authority home. `OMUX_CODEX_SESSION_HOME` and `--session-home <path>`
+select that authority; `--isolated-session-store` keeps a disposable diagnostic
+store.
 
 The synthetic acceptance smoke proves the managed overlay exposes
 `sessions/`, `history.jsonl`, `session_index.jsonl`, `shell_snapshots/`, and
@@ -31,17 +38,12 @@ through the proxy, including live quota handoff evidence tracked in
 
 Implementation update, 2026-05-26 / 2026-06-02: Codex 0.132+ reads native
 SQLite resume state from `CODEX_SQLITE_HOME` when set, and the chooser can
-depend on `logs_2.sqlite*` as well as `state_5.sqlite*`. Canonical bridge mode
-keeps the managed `CODEX_HOME` as mux-owned auth/config, sets child
-`CODEX_SQLITE_HOME` to the canonical session authority home, and bridges both
-SQLite families by reference when present. As of 2026-06-02, that managed
-`CODEX_HOME` is durable under
-`<authority>/.oauth-mux/managed-codex-homes/omux-managed-codex-*`; oauth-mux
-scrubs mux-owned `auth.json`, `installation_id`, and generated `config.toml` on
-exit but leaves the bridge in place so native Codex rollout paths recorded into
-canonical SQLite do not point at deleted temp homes. Isolated mode leaves SQLite
-state in the overlay, removes inherited `CODEX_SQLITE_HOME`, and deletes the
-overlay on exit.
+depend on `logs_2.sqlite*` as well as `state_5.sqlite*`. That discovery first
+led to durable canonical bridge homes under
+`<authority>/.oauth-mux/managed-codex-homes/omux-managed-codex-*`. TIN-1851
+then superseded that default with home-is-store after the bridge model poisoned
+canonical `state_5.sqlite` rollout paths. Canonical bridge now exists as a
+deliberate compatibility/diagnostic mode, not the normal dogfood architecture.
 
 The 2026-05-06 dogfood-6 auth failure exposed the auth-side counterpart:
 Codex can refresh tokens inside the managed overlay, and the adapter must
@@ -250,6 +252,10 @@ Near-term shape: the managed `CODEX_HOME` contains mux-owned `auth.json` and
 adapter-managed references to the canonical Codex store. In canonical bridge
 mode this home is durable and scrubbed on exit rather than deleted.
 
+Status update, 2026-06-12: this is no longer the default. It remains the
+`shared_canonical` compatibility mode for explicit operator use. The default is
+Option E below.
+
 For Codex on Unix-like systems, a candidate overlay is:
 
 ```text
@@ -302,23 +308,36 @@ Rejected. It is too large, too slow, racy under concurrent sessions, and
 creates a forked session authority that neither bare Codex nor oauth-mux can
 explain cleanly.
 
+### Option E: Home-Is-Store Route Homes
+
+Current default. The selected route's durable account home is the child
+`CODEX_HOME`; it contains the account auth, generated mux config, sessions, and
+SQLite state for muxed Codex runs. No canonical `CODEX_SQLITE_HOME` bridge is
+set. This trades native/canonical resume sharing for a simpler invariant:
+muxed sessions never write rollout paths into canonical `~/.codex`, and
+per-account auth/session state stays path-stable.
+
 ## 5. Default Policy
 
-Recommended default after tests are green:
+Current default after TIN-1851:
 
-- `oauth-mux codex run` uses canonical Codex session authority by reference.
-- `--isolated-session-store` or equivalent opts into a managed-only session
-  namespace for tests/privacy.
+- `oauth-mux codex run` uses the selected route's persistent account home as
+  `CODEX_HOME`.
+- `TINYLAND_CODEX_MUX_MODE=shared_canonical` or
+  `--mux-mode shared_canonical` opts into canonical Codex session authority by
+  reference.
+- `--isolated-session-store` or equivalent opts into a disposable managed-only
+  session namespace for tests/privacy.
 - `--session-home <path>` is an advanced override for operators who keep
-  Codex sessions outside `~/.codex`.
+  Codex sessions outside `~/.codex` and select bridge-style authority.
 - Normal output reports booleans such as
-  `session_authority:"canonical_bridge"` and
+  `session_authority:"isolated_persistent"` or `"shared_canonical"` and
   `canonical_session_paths_printed:false`. It does not print session ids,
   full paths, or transcript content.
 
-This default matches user expectation: if they can run `codex resume <id>`,
-then `oauth-mux codex run -- ... resume <id>` should see the same session
-authority unless they deliberately isolated it.
+This default matches the current safety bar: muxed Codex must not corrupt or
+fork canonical native Codex state. Native/canonical resume sharing is an
+explicit bridge-mode tradeoff, not assumed.
 
 ## 6. Harness-General Contract
 

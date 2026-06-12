@@ -1,0 +1,14 @@
+{
+  "after": {
+    "integrity_check": "ok",
+    "managed_bridge": 3,
+    "old_oauth_mux_codex": 2,
+    "total_threads": 843
+  },
+  "before": {
+    "integrity_check": "ok",
+    "managed_bridge": 3,
+    "old_oauth_mux_codex": 2,
+    "total_threads": 843
+  }
+}

@@ -47,3 +47,4 @@ dist/soak/
 
 # Operator wire captures. Commit only reviewed, scrubbed fixtures.
 captures/
+.gstack/

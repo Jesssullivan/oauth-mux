@@ -1,6 +1,14 @@
 # Codex Session-Store Portability And Resume Import Policy
 Date: 2026-05-18
-Status: implementation-backed policy for #161 / TIN-936.
+Status: historical policy for #161 / TIN-936; updated 2026-06-12 for the
+TIN-1851 home-is-store architecture.
+
+> Current main no longer uses canonical session bridging as the default muxed
+> Codex model. The default is `isolated_persistent`: the selected route's
+> durable account home is `CODEX_HOME`, owns its own `state_5.sqlite` /
+> `logs_2.sqlite`, and does not set canonical `CODEX_SQLITE_HOME`.
+> `shared_canonical` remains an explicit legacy/diagnostic mode for operators
+> who choose to point a managed session at canonical Codex authority.
 
 This policy defines what oauth-mux supports for Codex session continuity when
 auth/config are mux-owned. It supersedes the early idea of making every
@@ -10,9 +18,10 @@ session stores.
 ## Product Boundary
 
 oauth-mux owns managed auth/config for `oauth-mux codex`. Native Codex owns the
-user-visible session store. The supported daily UX is therefore a composed
-managed `CODEX_HOME`: mux-owned `auth.json` and generated proxy `config.toml`,
-with canonical session authority bridged by reference.
+canonical `~/.codex` session store. Current managed Codex uses a route-local
+durable account home as `CODEX_HOME` by default so muxed auth, config, sessions,
+and SQLite authority stay together and do not poison canonical native Codex
+state. Canonical bridging is opt-in only.
 
 The bridge is not a provider-thread-continuity guarantee. If a provider refuses
 continuation across accounts, that is thread/provider evidence, not a local
@@ -22,15 +31,20 @@ session-store portability failure.
 
 | Mode | Status | Behavior |
 | --- | --- | --- |
-| Canonical session bridge | Supported default | `oauth-mux codex`, `oauth-mux codex resume`, `resume --last`, and `resume <id>` expose the same canonical Codex session authority to the managed child while keeping auth/config mux-owned. |
-| Explicit session home | Supported advanced override | `--session-home <path>` or `OMUX_CODEX_SESSION_HOME=<path>` selects a non-default canonical session authority. |
-| Isolated managed session store | Supported opt-in | `--isolated-session-store` keeps managed sessions private to the overlay. It intentionally gives up native Codex resume parity. |
-| Native chooser under managed frame | Supported | `oauth-mux codex resume` with no id runs Codex's chooser only after a pre-spawn authority check proves chooser state is available. |
-| Route-local account home resume | Unsupported as a product claim | A route-local account directory is auth material, not session authority. oauth-mux does not promise `codex resume <id>` will work inside each account-local auth store. |
+| Route-local persistent account home | Supported default | `oauth-mux codex` uses the selected account's durable home as `CODEX_HOME`; muxed sessions and SQLite authority remain route-local and persistent. |
+| Canonical session bridge | Supported opt-in / legacy | `TINYLAND_CODEX_MUX_MODE=shared_canonical` or `--mux-mode shared_canonical` exposes canonical Codex session authority to the managed child while keeping auth/config mux-owned. Use only when the operator deliberately accepts canonical SQLite contention risk. |
+| Explicit session home | Supported advanced override | `--session-home <path>` or `OMUX_CODEX_SESSION_HOME=<path>` selects a non-default session authority for bridge-style operation. |
+| Ephemeral isolated managed store | Supported diagnostic override | `--isolated-session-store` keeps managed sessions private to a disposable overlay. It intentionally gives up persistent muxed resume parity. |
+| Native chooser under managed frame | Scoped | In default route-local mode, the chooser sees the selected route-local account home. In `shared_canonical` mode it can see canonical Codex authority after the pre-spawn authority check. |
+| Route-local account home resume | Supported for muxed sessions | A route-local account directory is the managed session authority in default mode. It is not a promise that native bare Codex will see those sessions from canonical `~/.codex`. |
 | Targeted import/export | Not shipped | No command imports unmanaged rollout files into a mux account store. Add only with explicit operator confirmation, redaction review, and conflict/writeback semantics. |
 | Full session-store copy | Rejected | Copying `~/.codex/sessions` or SQLite state into every account store is too large, racy, private, and creates forked session authority. |
 
 ## Canonical Authority Set
+
+This section applies only to `shared_canonical` bridge mode. In default
+`isolated_persistent` mode these entries live under the selected route-local
+account home instead of being bridged from `~/.codex`.
 
 The managed overlay bridges these canonical Codex entries by reference when
 present:
@@ -59,7 +73,8 @@ required for normal resume/chooser parity.
 - Existing sessions are discovered through canonical authority, not copied into
   route-local stores.
 - Managed sessions write through the bridged canonical authority unless
-  `--isolated-session-store` is set.
+  `shared_canonical` is explicitly selected. Default managed sessions write to
+  the selected route-local persistent account home.
 - The managed overlay may write mux-owned auth/config only inside the temporary
   child home and selected account source. It must not mutate canonical
   `~/.codex/auth.json` or `~/.codex/config.toml` as part of resume.
@@ -82,7 +97,8 @@ oauth-mux does not currently claim:
 
 ## Diagnostic Proof
 
-Current diagnostic regression coverage:
+Current diagnostic regression coverage is split between historical bridge
+smokes and newer home-is-store e2e gates:
 
 - `scripts/smoke-codex-cli-ux.sh`
   - proves first-class managed `resume`, `resume --last`, and `resume <id>`
@@ -100,8 +116,9 @@ Current diagnostic regression coverage:
   - proves concurrent managed overlays keep distinct proxy/auth/config state
     while sharing canonical session authority safely.
 
-These smokes are local and diagnostic. They prove filesystem/session-authority
-behavior, not provider acceptance of cross-account thread continuation.
+These smokes are diagnostic. Current completion proof must run through the
+remote validation lanes. They prove filesystem/session-authority behavior, not
+provider acceptance of cross-account thread continuation.
 
 ## Future Import Gate
 
@@ -116,5 +133,6 @@ new issue and all of these gates:
 6. proof that bare Codex can resume the imported session afterward;
 7. explicit claim text that file import is not same-thread provider continuity.
 
-Until those gates exist, the supported portability answer is the canonical
-session bridge, not import/export.
+Until those gates exist, the supported portability answer is route-local
+persistent managed homes by default, or explicit `shared_canonical` bridge mode
+when an operator deliberately wants canonical Codex authority exposed.
