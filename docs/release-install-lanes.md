@@ -14,7 +14,7 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 | User-local dogfood | `oauth-mux ...` and managed `codex ...` with PATH resolving to `~/.local/bin` | copied worktree binary plus shared POSIX shim | hash match with `./zig-out/bin/oauth-mux`, version check, shim pass-through smoke, preflight check | installed-command dogfood for current checkout |
 | Nix package | `nix build .#` | flake package plus shared POSIX shim | `./result/bin/oauth-mux version`, `nix flake check` binary+shim smoke | package derivation proof |
 | GitHub Release | downloaded tarball | `dist/out/v*/artifacts` from release workflow | checksum verify, tarball binary+shim smoke | public raw binary lane |
-| npm | `npm install -g oauth-mux` / `npx oauth-mux` | CI-generated npm tarballs plus JS `codex` shim | npm install smoke, shim pass-through smoke, and `npm view` | public JS package lane |
+| npm (RETIRED 2026-06-12) | — | lane retired; stale `0.1.9` package abandoned in place | none | excluded from the Bazel SSOT derived lanes (TIN-2046/2050) |
 | Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>`, formula test proves no `codex` install, parsed version check | public macOS/Linux tap lane |
 | curl installer | `curl .../install.sh \| sh` | GitHub Release `install.sh` + tarballs | local file URL binary+shim smoke and public installer smoke | shell installer lane |
 | deb/rpm | system package install | GitHub Release `.deb` / `.rpm` | hosted container install QA for `/usr/bin/oauth-mux`; set `OMUX_EXPECT_CODEX_SHIM=1` for releases that should include `/usr/bin/codex` | distro package lane |

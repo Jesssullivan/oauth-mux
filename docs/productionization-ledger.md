@@ -18,12 +18,14 @@ refreshed when release truth, route evidence, or tracker state changes.
   clean-lineage live e2e (`docs/evidence/codex-live-e2e-clean-lineage-20260612/`).
 - CI/release state: GitHub Actions is the live source for release proof. Release
   workflow `27432964644` published `v0.1.13` with the full 23-asset matrix;
-  the public GitHub Release is non-draft/non-prerelease. npm publish remains
-  blocked on a registry token rotation; npm `latest` still reports `0.1.9`
-  (diagnosis on TIN-2042: SOPS pipeline healthy, token 401s on `npm whoami`).
+  the public GitHub Release is non-draft/non-prerelease. The npm lane is
+  RETIRED (operator decision 2026-06-12, TIN-2042): packaging truth moves to
+  the Bazel SSOT and its derived lanes, which exclude npm; the published npm
+  package remains stale at `0.1.9` and cannot be deprecated until/unless a
+  registry token is ever rotated.
 - Version truth: source version is `0.1.13`. GitHub Release, curl installer
   assets, deb/rpm assets, and the public Homebrew tap resolve to `0.1.13`.
-  npm remains stale at `0.1.9`. The Homebrew formula remains binary-only by
+  The npm lane is retired. The Homebrew formula remains binary-only by
   default and must not install or link a managed `codex` shim.
 - Installed provenance: continue checking `which -a oauth-mux`, `which -a
   codex`, `oauth-mux version --json`, and `codex preflight` before treating
@@ -152,12 +154,12 @@ mutation, and release workflow `26469045026` published GitHub Release
 `v0.1.12` as non-draft/non-prerelease with 23 assets. The public Homebrew tap
 is updated to `0.1.12`, `brew fetch --force jesssullivan/omux/oauth-mux`
 passes, and the local Homebrew keg reports `0.1.12`. Lab PR #507 pins the Home
-Manager source lane to the same release commit with `codexShim` disabled. npm
-publication remains blocked/stale; npm `latest` still reports `0.1.9`.
+Manager source lane to the same release commit with `codexShim` disabled.
 Negative Codex cassettes, broader adapter proof, and daemon beta truth remain
 follow-up work.
-Windows managed-`codex` parity is intentionally assigned to the npm wrapper
-lane rather than raw tarballs until a native Windows operator need is proven.
+Windows managed-`codex` parity is unassigned since the npm wrapper lane was
+retired (2026-06-12); a Windows lane decision rides the Bazel SSOT work
+(TIN-2046/TIN-2050) if a native Windows operator need is ever proven.
 Future public install copy must avoid claiming a version or lane behavior until
 that version is actually published and verified.
 
@@ -166,7 +168,6 @@ The release lanes remain:
 - worktree dogfood;
 - user-local dogfood;
 - Nix package;
-- npm;
 - Homebrew;
 - deb/rpm packages;
 - Home Manager.

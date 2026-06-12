@@ -27,9 +27,9 @@ Homebrew tap. It is the first release carrying the home-is-store managed-Codex
 session-authority default (canonical bridge is explicit opt-in), the flock
 unlink-on-release race fix with the macOS runtime-dir move (restart long-lived
 managed sessions after upgrading), the default-mode native resume chooser, and
-corrected Claude OAuth endpoint constants. npm still reports `0.1.9` until the
-registry token is rotated — prefer Homebrew or the curl installer until the npm
-lane catches up. Homebrew remains binary-only by default:
+corrected Claude OAuth endpoint constants. The npm lane is retired as of
+2026-06-12 (the published package remains stale at `0.1.9`); install via
+Homebrew, the curl installer, or system packages. Homebrew remains binary-only by default:
 `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
 install or link a managed `codex` shim.
 
@@ -38,8 +38,8 @@ What works today:
 - Managed Codex launch and resume through `oauth-mux codex` and
   `oauth-mux codex resume`, including the native resume chooser against the
   selected account's route-local persistent home in the default mode.
-- Current source/user-local dogfood and the npm wrapper lane can include a
-  managed `codex` shim, so a bare `codex` command is managed only when PATH
+- Current source/user-local dogfood can include a managed `codex` shim, so a
+  bare `codex` command is managed only when PATH
   resolves that shim. Admin commands such as `codex login` and
   `codex --version` must pass through to native Codex. Direct native Codex
   binaries and already-running native sessions are not globally protected.
@@ -125,12 +125,10 @@ Public install lanes:
 
 ```bash
 brew install jesssullivan/omux/oauth-mux
-# or (npm lane currently lags at 0.1.9 pending a registry token rotation)
-npm install -g oauth-mux
 ```
 
 The Homebrew formula is intentionally binary-only. It should not change
-`command -v codex`; use the explicit local, npm, Nix, or future opt-in package
+`command -v codex`; use the explicit local, Nix, or future opt-in package
 shim lanes when testing managed bare-`codex` behavior.
 
 Nix users can choose the binary-only package or the managed-shim package:
