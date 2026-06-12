@@ -28,6 +28,13 @@
 #
 # Plus: stub-codex.report.pid_stable == true, proving this smoke did
 # not rely on child restart/relaunch behavior.
+#
+# Runs two adapter passes:
+#   1. legacy bridge (TINYLAND_CODEX_MUX_MODE=shared_canonical, explicit
+#      opt-in): canonical session bridge + websocket fallback wiring
+#   2. default isolated_persistent (home-is-store, TIN-1851; no mode var):
+#      the same proxy_turn -> 429 -> same-turn swap sequence against the
+#      route-local persistent home, asserting session_authority "isolated"
 
 set -euo pipefail
 
@@ -65,6 +72,10 @@ cleanup() {
     if [[ -n "${UPSTREAM_PID:-}" ]] && kill -0 "$UPSTREAM_PID" 2>/dev/null; then
         kill "$UPSTREAM_PID" 2>/dev/null || true
         wait "$UPSTREAM_PID" 2>/dev/null || true
+    fi
+    if [[ -n "${DM_UPSTREAM_PID:-}" ]] && kill -0 "$DM_UPSTREAM_PID" 2>/dev/null; then
+        kill "$DM_UPSTREAM_PID" 2>/dev/null || true
+        wait "$DM_UPSTREAM_PID" 2>/dev/null || true
     fi
     rm -rf "$TMP"
 }
@@ -121,7 +132,7 @@ OMUX_STUB_PORT=0 \
   python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$TMP/upstream.stderr" &
 UPSTREAM_PID=$!
 
-for i in {1..40}; do
+for _ in {1..40}; do
     [[ -s "$PORTFILE" ]] && break
     sleep 0.05
 done
@@ -133,10 +144,12 @@ fi
 UPSTREAM_PORT="$(cat "$PORTFILE" | tr -d '[:space:]')"
 echo "smoke-codex-acceptance: stub upstream pid=$UPSTREAM_PID port=$UPSTREAM_PORT"
 
-# 3. Run oauth-mux codex run
-echo "smoke-codex-acceptance: running adapter..."
-# This smoke exercises legacy canonical-bridge proxy/quota wiring. TIN-1851's
-# default home-is-store mode is covered by smoke-codex-cli-ux.
+# 3. Run oauth-mux codex run — legacy bridge pass.
+echo "smoke-codex-acceptance: running adapter (legacy bridge pass, shared_canonical opt-in)..."
+# This pass pins the legacy shared_canonical canonical-bridge mode explicitly
+# to keep the bridge proxy/quota wiring covered. The TIN-1851 default
+# isolated_persistent (home-is-store) mode gets its own acceptance pass below
+# with the same proxy_turn/swap sequence.
 TINYLAND_CODEX_MUX_MODE=shared_canonical \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
@@ -188,7 +201,7 @@ assert_no_grep() {
     fi
 }
 
-echo "smoke-codex-acceptance: assertions"
+echo "smoke-codex-acceptance: legacy bridge assertions"
 
 assert_grep "session_started"           '"kind":"session_started"'           "$NDJSON"
 assert_grep "session_started has proxy_port" '"proxy_port":[0-9]+'           "$NDJSON"
@@ -196,7 +209,7 @@ assert_grep "session_started has managed_frame_id" '"managed_frame_id":"omux-cod
 assert_grep "session_started has adapter version" '"adapter_version":"[0-9]+\.[0-9]+\.[0-9]+"' "$NDJSON"
 assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed":false' "$NDJSON"
 assert_grep "session_started records status file" '"status_file_present":true' "$NDJSON"
-assert_grep "session_started reports canonical session bridge" '"session_authority":"canonical_bridge"' "$NDJSON"
+assert_grep "legacy bridge session_started reports canonical session bridge" '"session_authority":"canonical_bridge"' "$NDJSON"
 assert_grep "session_started redacts session paths" '"session_paths_printed":false' "$NDJSON"
 assert_grep "session_started records runtime identity" '"runtime_identity":\{' "$NDJSON"
 assert_grep "runtime identity marks repo-local binary" '"binary_source":"repo_local"' "$NDJSON"
@@ -343,8 +356,187 @@ else
     exit 1
 fi
 
+# 5. Default-mode acceptance pass (TIN-1851 isolated_persistent / home-is-store,
+# no mode var). The proxy_turn -> quota 429 -> same-turn swap sequence is
+# mode-independent and must hold identically while the elected account's own
+# durable home serves as CODEX_HOME with an isolated sqlite overlay.
 echo
-echo "smoke-codex-acceptance: all 25 assertions passed."
-echo "  full ndjson: $NDJSON"
-echo "  stub upstream log: $UPLOG"
-echo "  stub codex report: $STUB_REPORT"
+echo "smoke-codex-acceptance: running adapter (default home-is-store pass)..."
+DM_PORTFILE="$TMP/upstream-dm.port"
+DM_UPLOG="$TMP/upstream-dm.log"
+DM_NDJSON="$TMP/adapter-dm.ndjson"
+DM_ADAPTER_STDERR="$TMP/adapter-dm.stderr"
+DM_STUB_PIDFILE="$TMP/stub-codex-dm.pid"
+DM_STUB_REPORT="$TMP/stub-codex-dm.report"
+DM_STATE_DIR="$TMP/dm-state"
+
+mkdir -p "$TMP/dm-account-A" "$TMP/dm-account-B" "$DM_STATE_DIR"
+cat >"$TMP/dm-account-A/auth.json" <<EOF
+{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-acceptance-dm-A","refresh_token":"RT-dm-A","account_id":"acc-dm-A-id"},"auth_mode":"Chatgpt"}
+EOF
+cat >"$TMP/dm-account-B/auth.json" <<EOF
+{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"AT-acceptance-dm-B","refresh_token":"RT-dm-B","account_id":"acc-dm-B-id"},"auth_mode":"Chatgpt"}
+EOF
+
+cat >"$TMP/oauth-mux-dm.config.json" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "$TMP/dm-account-A/auth.json" } },
+        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "$TMP/dm-account-B/auth.json" } }
+      }
+    }
+  },
+  "profiles": {
+    "codex-max": { "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"] }
+  }
+}
+EOF
+
+cat >"$DM_STATE_DIR/health.json" <<'EOF'
+{"version":2,"accounts":[
+  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}},
+  {"key":"codex:max-2#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
+]}
+EOF
+
+OMUX_STUB_PORT=0 \
+  OMUX_STUB_PORTFILE="$DM_PORTFILE" \
+  OMUX_STUB_OK_BEFORE_429=2 \
+  OMUX_STUB_LOGFILE="$DM_UPLOG" \
+  python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$TMP/upstream-dm.stderr" &
+DM_UPSTREAM_PID=$!
+
+for _ in {1..40}; do
+    [[ -s "$DM_PORTFILE" ]] && break
+    sleep 0.05
+done
+if [[ ! -s "$DM_PORTFILE" ]]; then
+    echo "smoke-codex-acceptance: default-mode stub upstream did not write port" >&2
+    cat "$TMP/upstream-dm.stderr" >&2
+    exit 1
+fi
+DM_UPSTREAM_PORT="$(cat "$DM_PORTFILE" | tr -d '[:space:]')"
+echo "smoke-codex-acceptance: default-mode stub upstream pid=$DM_UPSTREAM_PID port=$DM_UPSTREAM_PORT"
+
+env -u TINYLAND_CODEX_MUX_MODE \
+  OMUX_CONFIG="$TMP/oauth-mux-dm.config.json" \
+  OMUX_STATE_DIR="$DM_STATE_DIR" \
+  OMUX_UPSTREAM_HOST="127.0.0.1:$DM_UPSTREAM_PORT" \
+  OMUX_UPSTREAM_SCHEME="http" \
+  OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  OMUX_STUB_CODEX_TURNS=3 \
+  OMUX_STUB_CODEX_PIDFILE="$DM_STUB_PIDFILE" \
+  OMUX_STUB_CODEX_REPORT="$DM_STUB_REPORT" \
+  "$BIN" codex run --profile codex-max --json-status-file "$DM_NDJSON" 2>"$DM_ADAPTER_STDERR" || {
+    echo "smoke-codex-acceptance: default-mode adapter exited nonzero" >&2
+    echo "---NDJSON---" >&2
+    cat "$DM_NDJSON" >&2
+    echo "---stderr---" >&2
+    cat "$DM_ADAPTER_STDERR" >&2
+    echo "---upstream log---" >&2
+    cat "$DM_UPLOG" >&2 || true
+    exit 1
+}
+
+echo "smoke-codex-acceptance: default home-is-store assertions"
+
+assert_grep "default session_started" '"kind":"session_started"' "$DM_NDJSON"
+assert_grep "default session authority is isolated" '"kind":"session_started".*"session_authority":"isolated"' "$DM_NDJSON"
+assert_grep "default sqlite authority is isolated overlay" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$DM_NDJSON"
+assert_grep "default cleanup persists the route home" '"kind":"session_started".*"session_home_cleanup":"persist_scrub_config"' "$DM_NDJSON"
+assert_grep "default session_started redacts session paths" '"session_paths_printed":false' "$DM_NDJSON"
+assert_grep "default proxy_turn 200 ok" '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$DM_NDJSON"
+assert_grep "default proxy_turn 429 quota_exhausted" '"kind":"proxy_turn".*"status":429.*"classification":"quota_exhausted"' "$DM_NDJSON"
+assert_grep "default quota 429 was not delivered to Codex" '"kind":"proxy_turn".*"status":429.*"delivered_to_codex":false' "$DM_NDJSON"
+assert_grep "default proxy_same_turn_retry fired" '"kind":"proxy_same_turn_retry"' "$DM_NDJSON"
+assert_grep "default same-turn retry dropped x-codex-turn-state" '"dropped":"x-codex-turn-state"' "$DM_NDJSON"
+assert_grep "default claim_level remains broker_owned" '"claim_level":"broker_owned"' "$DM_NDJSON"
+assert_grep "default session_ended final_claim_level broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$DM_NDJSON"
+assert_grep "default session_ended records synthetic swap" '"kind":"session_ended".*"synthetic_swap_observed":true' "$DM_NDJSON"
+assert_no_grep "default pass never bridges canonical authority" '"session_authority":"canonical_bridge"' "$DM_NDJSON"
+
+if grep -q '"kind":"session_started"' "$DM_ADAPTER_STDERR"; then
+    echo "  ✗ default pass leaked adapter status frames to stderr" >&2
+    exit 1
+else
+    echo "  ✓ default pass keeps adapter status frames out of stderr"
+fi
+
+DM_ACCOUNT_HITS=$(grep -oE '"account":"codex:max-[12]"' "$DM_NDJSON" | sort -u | wc -l | tr -d ' ')
+if [[ "$DM_ACCOUNT_HITS" -ge 2 ]]; then
+    echo "  ✓ default pass elected both accounts max-1 and max-2"
+else
+    echo "  ✗ default pass expected both accounts elected; saw distinct=$DM_ACCOUNT_HITS" >&2
+    exit 1
+fi
+
+if [[ ! -s "$DM_STUB_REPORT" ]]; then
+    echo "  ✗ default pass stub-codex report missing" >&2
+    exit 1
+fi
+if [[ "$(jq -r .pid_stable "$DM_STUB_REPORT")" == "true" ]]; then
+    echo "  ✓ default pass stub-codex PID stable across swap"
+else
+    echo "  ✗ default pass stub-codex PID changed" >&2
+    cat "$DM_STUB_REPORT" >&2
+    exit 1
+fi
+if jq -e 'all(.turns[]; .status == 200)' "$DM_STUB_REPORT" >/dev/null; then
+    echo "  ✓ default pass stub-codex saw only 200 turns; quota 429 stayed inside proxy"
+else
+    echo "  ✗ default pass stub-codex saw a non-200 turn" >&2
+    cat "$DM_STUB_REPORT" >&2
+    exit 1
+fi
+
+DM_UPSTREAM_ACCT_COUNT=$(jq -r .account_id "$DM_UPLOG" 2>/dev/null | sort -u | wc -l | tr -d ' ' || echo 0)
+if [[ "$DM_UPSTREAM_ACCT_COUNT" -ge 2 ]]; then
+    echo "  ✓ default pass upstream saw 2+ distinct ChatGPT-Account-IDs (proxy substituted both)"
+else
+    echo "  ✗ default pass upstream saw only $DM_UPSTREAM_ACCT_COUNT distinct account-ids" >&2
+    cat "$DM_UPLOG" >&2
+    exit 1
+fi
+
+# home-is-store shape: the route-local persistent homes keep auth.json while a
+# clean exit scrubs the managed config.toml + auth shadow; no canonical bridge
+# root may appear next to the route homes.
+for dm_home in "$TMP/dm-account-A" "$TMP/dm-account-B"; do
+    if [[ ! -f "$dm_home/auth.json" ]]; then
+        echo "  ✗ default pass route home lost auth.json: $(basename "$dm_home")" >&2
+        ls -la "$dm_home" >&2 || true
+        exit 1
+    fi
+    if [[ -e "$dm_home/config.toml" || -e "$dm_home/auth.json.omux-bak" ]]; then
+        echo "  ✗ default pass route home kept managed config/auth shadow: $(basename "$dm_home")" >&2
+        ls -la "$dm_home" >&2 || true
+        exit 1
+    fi
+    if [[ -d "$dm_home/.oauth-mux/managed-codex-homes" ]]; then
+        echo "  ✗ default pass route home grew a canonical managed bridge root: $(basename "$dm_home")" >&2
+        find "$dm_home/.oauth-mux" -maxdepth 3 -print >&2 || true
+        exit 1
+    fi
+done
+echo "  ✓ default pass route homes kept auth.json and scrubbed managed config/auth shadow"
+
+if jq -e '.accounts[] | select(.key == "codex:max-2#codex-max" and .last_http_status == 200 and .last_probe_source == "broker_run_live" and .last_probe_decision == "use_this" and .liveness.state == "live" and .liveness.availability == "available")' "$DM_STATE_DIR/health.json" >/dev/null; then
+    echo "  ✓ default pass persisted capability route health after the swap"
+else
+    echo "  ✗ default pass did not persist capability route health" >&2
+    jq . "$DM_STATE_DIR/health.json" >&2
+    exit 1
+fi
+
+echo
+echo "smoke-codex-acceptance: all assertions passed (legacy bridge + default home-is-store)."
+echo "  legacy ndjson: $NDJSON"
+echo "  legacy stub upstream log: $UPLOG"
+echo "  legacy stub codex report: $STUB_REPORT"
+echo "  default ndjson: $DM_NDJSON"
+echo "  default stub upstream log: $DM_UPLOG"
+echo "  default stub codex report: $DM_STUB_REPORT"
