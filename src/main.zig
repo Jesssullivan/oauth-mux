@@ -19538,7 +19538,7 @@ test "Codex status summary keeps quota account across parsed lines" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-2","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-2","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":429,"classification":"quota_exhausted","body_class":"usage_limit_reached","delivered_to_codex":false}
         \\{"kind":"proxy_same_turn_retry","from":"codex:max-2","to":"codex:max-3"}
         \\{"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
@@ -19567,8 +19567,12 @@ test "Codex status summary preserves child signal terminal evidence" {
 
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
+    // Deliberate legacy-shape coverage: this fixture keeps the
+    // session_authority:"canonical_bridge" (legacy shared_canonical mode)
+    // frame so the summary still parses opt-in bridge sessions. The other
+    // status-summary fixtures carry the default isolated / isolated_overlay shape.
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-3","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-3","session_authority":"canonical_bridge","sqlite_authority":"canonical_env"}
         \\{"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
         \\{"kind":"session_aborted","adapter":"codex","reason":"child_signal","exit_code":-1,"term_kind":"signal","term_code":9,"signal_name":"SIGKILL","final_claim_level":"broker_owned","synthetic_swap_observed":false}
         \\
@@ -19600,7 +19604,7 @@ test "Codex status summary reports transport fallback recovery" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_upstream_failed","account":"codex:max-1","err":"ConnectionResetByPeer"}
         \\{"kind":"proxy_provider_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"provider_5xx"}
         \\{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
@@ -19632,7 +19636,7 @@ test "Codex status summary reports local transport retry recovery" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_transport_local_retry","account":"codex:max-1","method":"POST","path_kind":"responses","err":"ConnectionResetByPeer","attempt":1,"max_attempts":2,"backoff_ms":150,"delivered_to_codex":false}
         \\{"kind":"proxy_transport_local_retry_recovered","account":"codex:max-1","method":"POST","path_kind":"responses","attempts":1,"status":200,"classification":"ok","delivered_to_codex":true}
         \\{"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
@@ -19665,7 +19669,7 @@ test "Codex status summary flags historical responses GET 405 ok regression" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses","status":405,"classification":"ok","body_class":"json_error","delivered_to_codex":true}
         \\{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
         \\

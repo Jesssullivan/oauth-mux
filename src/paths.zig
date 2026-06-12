@@ -22,6 +22,10 @@ pub fn stateDir(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 pub fn runtimeDir(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.get(allocator, "OMUX_RUNTIME_DIR")) |dir| {
+        defer allocator.free(dir);
+        return absolutePath(allocator, dir);
+    }
     if (try env.get(allocator, "XDG_RUNTIME_DIR")) |dir| {
         defer allocator.free(dir);
         return std.fs.path.join(allocator, &.{ dir, app_name });
@@ -144,11 +148,35 @@ test "absolutePath keeps absolute and expands relative paths" {
     }
 }
 
+test "runtimeDir honors OMUX_RUNTIME_DIR override (test seam, 2026-06-12 audit)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var overrides = std.process.EnvMap.init(allocator);
+    defer overrides.deinit();
+    try overrides.put("OMUX_RUNTIME_DIR", root);
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
+
+    const dir = try runtimeDir(allocator);
+    defer allocator.free(dir);
+    try std.testing.expectEqualStrings(root, dir);
+}
+
 test "runtimeDir macOS fallback avoids periodically-cleaned /tmp (TIN-2041)" {
     if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const dir = try runtimeDir(allocator);
     defer allocator.free(dir);
+    if (try env.get(allocator, "OMUX_RUNTIME_DIR")) |base| {
+        defer allocator.free(base);
+        // Explicit override stays honored; the fallback contract is untestable here.
+        try std.testing.expect(std.fs.path.isAbsolute(dir));
+        return;
+    }
     if (try env.get(allocator, "XDG_RUNTIME_DIR")) |base| {
         defer allocator.free(base);
         // Explicit XDG runtime dir stays honored.

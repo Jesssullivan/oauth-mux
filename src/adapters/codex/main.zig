@@ -129,21 +129,30 @@ pub const MuxMode = enum {
 /// TINYLAND_CODEX_MUX_MODE=shared_canonical opts into the legacy bridge, else
 /// the safe default (isolated_persistent / home-is-store).
 fn resolveMuxMode(allocator: std.mem.Allocator, override: ?MuxMode) MuxMode {
+    const env_value = std.process.getEnvVarOwned(allocator, "TINYLAND_CODEX_MUX_MODE") catch null;
+    defer if (env_value) |v| allocator.free(v);
+    return resolveMuxModeFrom(override, env_value);
+}
+
+/// Pure mode resolution over an explicit env value; resolveMuxMode supplies
+/// the real TINYLAND_CODEX_MUX_MODE so unit tests stay hermetic.
+fn resolveMuxModeFrom(override: ?MuxMode, env_value: ?[]const u8) MuxMode {
     if (override) |m| return m;
-    const env = std.process.getEnvVarOwned(allocator, "TINYLAND_CODEX_MUX_MODE") catch return .isolated_persistent;
-    defer allocator.free(env);
-    if (std.mem.eql(u8, env, "shared_canonical")) return .shared_canonical;
+    if (env_value) |v| {
+        if (std.mem.eql(u8, v, "shared_canonical")) return .shared_canonical;
+    }
     return .isolated_persistent;
 }
 
 test "resolveMuxMode honors explicit override over env/default" {
-    try std.testing.expectEqual(MuxMode.shared_canonical, resolveMuxMode(std.testing.allocator, .shared_canonical));
-    try std.testing.expectEqual(MuxMode.isolated_persistent, resolveMuxMode(std.testing.allocator, .isolated_persistent));
+    try std.testing.expectEqual(MuxMode.shared_canonical, resolveMuxModeFrom(.shared_canonical, null));
+    try std.testing.expectEqual(MuxMode.isolated_persistent, resolveMuxModeFrom(.isolated_persistent, "shared_canonical"));
 }
 
 test "resolveMuxMode defaults to isolated_persistent when unset" {
-    // The test environment does not set TINYLAND_CODEX_MUX_MODE.
-    try std.testing.expectEqual(MuxMode.isolated_persistent, resolveMuxMode(std.testing.allocator, null));
+    try std.testing.expectEqual(MuxMode.isolated_persistent, resolveMuxModeFrom(null, null));
+    try std.testing.expectEqual(MuxMode.isolated_persistent, resolveMuxModeFrom(null, "garbage"));
+    try std.testing.expectEqual(MuxMode.shared_canonical, resolveMuxModeFrom(null, "shared_canonical"));
 }
 
 const CodexHomeCleanupMode = enum {
@@ -2272,7 +2281,8 @@ test "createPersistentCodexHome builds a home-is-store session and scrubs only t
 
 test "ensureNotCanonicalCodexHome refuses ~/.codex and its subtree, accepts a dedicated home" {
     const a = std.testing.allocator;
-    const canonical = (try defaultCodexHome(a)) orelse return; // no HOME → skip
+    // A HOME-less environment must be a visible skip, never a silent pass.
+    const canonical = (try defaultCodexHome(a)) orelse return error.SkipZigTest;
     defer a.free(canonical);
 
     try std.testing.expectError(error.CanonicalCodexHomeRefused, ensureNotCanonicalCodexHome(a, canonical));
@@ -2281,7 +2291,7 @@ test "ensureNotCanonicalCodexHome refuses ~/.codex and its subtree, accepts a de
     defer a.free(child);
     try std.testing.expectError(error.CanonicalCodexHomeRefused, ensureNotCanonicalCodexHome(a, child));
 
-    const home = std.process.getEnvVarOwned(a, "HOME") catch return;
+    const home = std.process.getEnvVarOwned(a, "HOME") catch return error.SkipZigTest;
     defer a.free(home);
     const dedicated = try std.fs.path.join(a, &.{ home, ".local", "share", "oauth-mux", "codex", "x" });
     defer a.free(dedicated);

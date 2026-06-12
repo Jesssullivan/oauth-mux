@@ -330,10 +330,13 @@ Current default after TIN-1851:
   session namespace for tests/privacy.
 - `--session-home <path>` is an advanced override for operators who keep
   Codex sessions outside `~/.codex` and select bridge-style authority.
-- Normal output reports booleans such as
-  `session_authority:"isolated_persistent"` or `"shared_canonical"` and
-  `canonical_session_paths_printed:false`. It does not print session ids,
-  full paths, or transcript content.
+- Normal output reports `session_authority:"isolated"` (the
+  `isolated_persistent` / home-is-store default mode) or
+  `session_authority:"canonical_bridge"` (the legacy `shared_canonical` mode),
+  plus `sqlite_authority:"isolated_overlay"` (default) or `"canonical_env"`
+  (legacy), and `session_paths_printed:false`. The emitted values
+  are the authority names, not the mux-mode names. It does not print session
+  ids, full paths, or transcript content.
 
 This default matches the current safety bar: muxed Codex must not corrupt or
 fork canonical native Codex state. Native/canonical resume sharing is an
