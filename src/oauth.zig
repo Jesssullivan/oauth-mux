@@ -112,7 +112,7 @@ pub fn generatePkce() PkceChallenge {
 
 pub fn refreshUrl(kind: types.ProviderKind) ?[]const u8 {
     return switch (kind) {
-        .claude => "https://claude.ai/api/auth/oauth/token",
+        .claude => "https://console.anthropic.com/v1/oauth/token",
         .codex => "https://auth.openai.com/oauth/token",
         .gemini => "https://oauth2.googleapis.com/token",
         .vercel => null, // discovered via OIDC metadata
@@ -155,7 +155,7 @@ test "writeUrlEncoded" {
 
 test "refreshUrl returns expected endpoints" {
     try std.testing.expectEqualStrings(
-        "https://claude.ai/api/auth/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
         refreshUrl(.claude).?,
     );
     try std.testing.expectEqualStrings(
@@ -163,4 +163,15 @@ test "refreshUrl returns expected endpoints" {
         refreshUrl(.codex).?,
     );
     try std.testing.expect(refreshUrl(.github) == null);
+}
+
+test "refreshUrl(.claude) stays consistent with claude_def token endpoint" {
+    // TIN-1817: both constants must point at the same verified endpoint so the
+    // schema and the refresh path can never drift apart. Constants only — no
+    // live HTTP.
+    const provider_schema = @import("provider_schema.zig");
+    try std.testing.expectEqualStrings(
+        provider_schema.claude_def.auth.token_endpoint.?,
+        refreshUrl(.claude).?,
+    );
 }
