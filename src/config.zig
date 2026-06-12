@@ -1,7 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const paths = @import("paths.zig");
 const provider_schema = @import("provider_schema.zig");
+const env = @import("env.zig");
+const log = @import("log.zig");
 
 pub const Config = struct {
     version: u32 = 1,
@@ -63,6 +66,53 @@ pub const SecretConfig = struct {
     variable: ?[]const u8 = null,
     command: ?[]const []const u8 = null,
     identity: ?[]const u8 = null,
+    // TIN-2070: set by applyClaudeKeychainDefaults when service/account were
+    // derived at load rather than written by the operator. Derived values are
+    // re-derivable from (config_dir, local user), so serialization elides
+    // them — otherwise any enroll rewrite would freeze a load-time hash into
+    // the config file as a fake operator pin that goes stale if config_dir
+    // ever moves.
+    derived_service: bool = false,
+    derived_account: bool = false,
+
+    pub fn jsonStringify(self: SecretConfig, jws: anytype) !void {
+        try jws.beginObject();
+        try jws.objectField("backend");
+        try jws.write(self.backend);
+        if (self.service) |v| if (!self.derived_service) {
+            try jws.objectField("service");
+            try jws.write(v);
+        };
+        if (self.account) |v| if (!self.derived_account) {
+            try jws.objectField("account");
+            try jws.write(v);
+        };
+        if (self.path) |v| {
+            try jws.objectField("path");
+            try jws.write(v);
+        }
+        if (self.key) |v| {
+            try jws.objectField("key");
+            try jws.write(v);
+        }
+        if (self.key_path) |v| {
+            try jws.objectField("key_path");
+            try jws.write(v);
+        }
+        if (self.variable) |v| {
+            try jws.objectField("variable");
+            try jws.write(v);
+        }
+        if (self.command) |v| {
+            try jws.objectField("command");
+            try jws.write(v);
+        }
+        if (self.identity) |v| {
+            try jws.objectField("identity");
+            try jws.write(v);
+        }
+        try jws.endObject();
+    }
 };
 
 pub const QuotaConfig = struct {
@@ -113,10 +163,54 @@ pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !std.json.Pa
 }
 
 pub fn loadFromBytes(allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(Config) {
-    return std.json.parseFromSlice(Config, allocator, bytes, .{
+    var parsed = try std.json.parseFromSlice(Config, allocator, bytes, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
     });
+    errdefer parsed.deinit();
+    try applyClaudeKeychainDefaults(&parsed.value, parsed.arena.allocator());
+    return parsed;
+}
+
+// TIN-2070: Claude Code keys its macOS keychain item on a per-config-dir
+// service name and the local username as the item account. When an enrolled
+// claude account with a config_dir omits keychain service/account, derive
+// them the same way the CLI does so reads and refresh writebacks target the
+// item the CLI actually uses. The hash input is the tilde-expanded config_dir
+// — the exact string the launcher exports as CLAUDE_CONFIG_DIR. Explicit
+// config always wins; accounts without a config_dir keep requiring an
+// explicit service (the launcher tmpdir-modes them, so no on-disk keychain
+// identity exists to derive). macOS only: the store contract is verified
+// there and nowhere else, so other platforms keep failing fast at validation.
+fn applyClaudeKeychainDefaults(cfg: *Config, arena: std.mem.Allocator) error{OutOfMemory}!void {
+    if (comptime builtin.os.tag != .macos) return;
+    var prov_it = cfg.providers.map.iterator();
+    while (prov_it.next()) |prov_entry| {
+        if (!std.mem.eql(u8, prov_entry.value_ptr.kind, "claude")) continue;
+        var acct_it = prov_entry.value_ptr.accounts.map.iterator();
+        while (acct_it.next()) |acct_entry| {
+            const acct = acct_entry.value_ptr;
+            if (!std.mem.eql(u8, acct.secret.backend, "keychain")) continue;
+            if (acct.secret.service == null) {
+                if (acct.config_dir) |dir| {
+                    const expanded = paths.expandTilde(arena, dir) catch return error.OutOfMemory;
+                    acct.secret.service = try provider_schema.claudeKeychainService(arena, expanded);
+                    acct.secret.derived_service = true;
+                }
+            }
+            if (acct.secret.account == null) {
+                // USER is a proxy for the passwd-database username Claude
+                // Code keys the item on; it diverges under sudo and is unset
+                // in launchd contexts — set secret.account explicitly there.
+                if (try env.get(arena, "USER")) |user| {
+                    acct.secret.account = user;
+                    acct.secret.derived_account = true;
+                } else {
+                    log.debug("config: USER unset; claude account '{s}' keychain account left for validation", .{acct_entry.key_ptr.*});
+                }
+            }
+        }
+    }
 }
 
 pub fn validate(cfg: Config, writer: anytype) !void {
@@ -1871,5 +1965,122 @@ test "resolveSecretBackend env" {
     switch (backend) {
         .env => |ref| try std.testing.expectEqualStrings("MY_TOKEN", ref.variable),
         else => return error.InvalidCharacter,
+    }
+}
+
+test "claude keychain accounts derive suffixed service from config_dir at load" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "xoxd": {
+        \\          "secret": { "backend": "keychain" },
+        \\          "config_dir": "/Users/jess/.local/share/oauth-mux/claude/xoxd"
+        \\        },
+        \\        "canonical": {
+        \\          "secret": { "backend": "keychain" }
+        \\        },
+        \\        "pinned": {
+        \\          "secret": { "backend": "keychain", "service": "Custom Service", "account": "explicit" },
+        \\          "config_dir": "/Users/jess/.local/share/oauth-mux/claude/sulliwood"
+        \\        }
+        \\      }
+        \\    },
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "work": { "secret": { "backend": "keychain", "service": "Codex Auth", "account": "work" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+
+    var overrides = std.process.EnvMap.init(std.testing.allocator);
+    defer overrides.deinit();
+    try overrides.put("USER", "jess");
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
+
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    const claude_accounts = parsed.value.providers.map.get("claude").?.accounts;
+
+    // TIN-2060 golden vector: derived from the absolute config_dir, and
+    // flagged derived so enroll rewrites never persist it as an operator pin.
+    const xoxd = claude_accounts.map.get("xoxd").?;
+    try std.testing.expectEqualStrings("Claude Code-credentials-26ae8e92", xoxd.secret.service.?);
+    try std.testing.expectEqualStrings("jess", xoxd.secret.account.?);
+    try std.testing.expect(xoxd.secret.derived_service);
+    try std.testing.expect(xoxd.secret.derived_account);
+
+    // No config_dir: nothing to derive a keychain identity from (the
+    // launcher tmpdir-modes such accounts) — service stays null and the
+    // account keeps failing validation loudly.
+    const canonical = claude_accounts.map.get("canonical").?;
+    try std.testing.expect(canonical.secret.service == null);
+
+    // Explicit service/account always win over derivation.
+    const pinned = claude_accounts.map.get("pinned").?;
+    try std.testing.expectEqualStrings("Custom Service", pinned.secret.service.?);
+    try std.testing.expectEqualStrings("explicit", pinned.secret.account.?);
+    try std.testing.expect(!pinned.secret.derived_service);
+    try std.testing.expect(!pinned.secret.derived_account);
+
+    // Non-claude providers are untouched.
+    const codex_work = parsed.value.providers.map.get("codex").?.accounts.map.get("work").?;
+    try std.testing.expectEqualStrings("Codex Auth", codex_work.secret.service.?);
+
+    // Round-trip: serializing a derived account elides the derived fields —
+    // the on-disk config stays pristine operator truth.
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.json.stringify(xoxd.secret, .{}, out.writer());
+    try std.testing.expectEqualStrings("{\"backend\":\"keychain\"}", out.items);
+
+    out.clearRetainingCapacity();
+    try std.json.stringify(pinned.secret, .{}, out.writer());
+    try std.testing.expectEqualStrings("{\"backend\":\"keychain\",\"service\":\"Custom Service\",\"account\":\"explicit\"}", out.items);
+}
+
+test "claude keychain derivation feeds resolveSecretBackend without explicit service" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "sulliwood": {
+        \\          "secret": { "backend": "keychain", "account": "jess" },
+        \\          "config_dir": "/Users/jess/.local/share/oauth-mux/claude/sulliwood"
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    const acct = parsed.value.providers.map.get("claude").?.accounts.map.get("sulliwood").?;
+    const backend = try resolveSecretBackend(acct.secret);
+    switch (backend) {
+        .keychain => |ref| {
+            try std.testing.expectEqualStrings("Claude Code-credentials-cec7498b", ref.service);
+            try std.testing.expectEqualStrings("jess", ref.account);
+        },
+        else => return error.TestUnexpectedResult,
     }
 }

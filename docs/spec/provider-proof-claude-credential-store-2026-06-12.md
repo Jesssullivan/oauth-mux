@@ -43,20 +43,46 @@ credentials are NOT in `.claude.json`.
 
 ## Decisions for the Claude lane
 
-1. **Claude refresh writeback on macOS requires keychain WRITE.** `secret.zig`
-   currently returns `keychain_write_not_implemented`; the Claude keepalive
-   path cannot use file-backend standardization on macOS. **New work**:
-   implement keychain write (via `/usr/bin/security add-generic-password
-   -U` or the Security framework) targeting
-   `Claude Code-credentials-<sha256(config_dir)[:8]>`, and keychain READ of the
-   same suffixed service (today's reader targets a fixed service name).
-2. **Service-name derivation is a shared helper.** `sha256(config_dir)[:8]`
-   lowercase hex — add to the Claude provider definition / secret backend so
-   read and write agree; unit-test the two vectors above as golden vectors.
+1. **Claude refresh writeback on macOS requires keychain WRITE.**
+   **Implemented (TIN-2070)**: `secret.zig` `writeKeychain` shells
+   `/usr/bin/security add-generic-password -U` (the plan reason is now
+   `keychain_writeback_available` on macOS; other platforms refuse with
+   `keychain_write_unproven_on_platform`). Reads target the suffixed service
+   via config-load derivation. The keychain items additionally key on
+   `acct=<local username>` (verified live: both enrolled accounts carry
+   `acct="jess"`) — `-U` updates in place only when (service, account) both
+   match, so config derivation also defaults the account to `$USER`.
+2. **Service-name derivation is a shared helper.**
+   **Implemented (TIN-2070)**: `provider_schema.claudeKeychainService` —
+   `sha256(config_dir)[:8]` lowercase hex over the tilde-expanded absolute
+   dir (the exact string the launcher exports as `CLAUDE_CONFIG_DIR`), with
+   the two vectors above as golden-vector unit tests. Config load
+   (`applyClaudeKeychainDefaults`) derives service/account for claude
+   keychain accounts that omit them; explicit config always wins.
 3. **Linux**: unverified here (no secret-tool/keychain run on Linux in this
    proof). The Claude lane on Linux likely uses `<CLAUDE_CONFIG_DIR>/.credentials.json`
    (file backend) or `secret-tool` — must be proven before a Linux Claude
-   keepalive claim. Tracked as follow-up.
+   keepalive claim. Tracked as follow-up. TIN-2070's derivation is therefore
+   comptime-gated to macOS; other platforms keep failing fast at validation.
+
+### Known caveats in the implementation (TIN-2070 review)
+
+- **`$USER` is a proxy** for the passwd-database username Claude Code keys the
+  item on. It diverges under `sudo` and is unset in launchd contexts — set
+  `secret.account` explicitly in config for those; explicit always wins.
+- **`config_dir` pointing at the default `~/.claude` is an unverified edge**:
+  the proof did not establish whether the CLI uses the unsuffixed base when
+  `CLAUDE_CONFIG_DIR` is exported but equals the default dir, or hashes
+  whatever the env var holds. The derivation suffixes whenever `config_dir`
+  is present; if an account deliberately targets the canonical dir, pin
+  `secret.service` explicitly until this edge is proven.
+- **Accounts without `config_dir` derive nothing**: the launcher tmpdir-modes
+  them (`CLAUDE_CONFIG_DIR=<tmpdir>`), so no stable keychain identity exists;
+  such accounts keep requiring an explicit service. Note the deeper issue:
+  per this proof, macOS Claude Code ignores injected `.credentials.json`
+  entirely, so tmpdir mode cannot deliver credentials to the CLI on macOS at
+  all — that is the Claude adapter contract amendment (#354 lane), not a
+  TIN-2070 concern.
 
 ## Operational finding: manual-paste OAuth has a per-account session-bleed defect
 

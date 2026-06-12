@@ -83,10 +83,17 @@ pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) Wri
             .automatic_refresh_admitted = false,
             .reason = "command_write_contract_missing",
         },
-        .keychain_write => .{
+        // TIN-2070: macOS keychain write is implemented (security
+        // add-generic-password -U). Other platforms remain refused until a
+        // write path is proven there (Linux secret-tool write is untested).
+        .keychain_write => if (comptime builtin.os.tag == .macos) .{
+            .capability = capability,
+            .automatic_refresh_admitted = true,
+            .reason = "keychain_writeback_available",
+        } else .{
             .capability = capability,
             .automatic_refresh_admitted = false,
-            .reason = "keychain_write_not_implemented",
+            .reason = "keychain_write_unproven_on_platform",
         },
         .sops_write => .{
             .capability = capability,
@@ -104,7 +111,8 @@ pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) Wri
 pub fn writeReplace(backend: types.SecretBackend, bytes: []const u8, allocator: std.mem.Allocator) WriteError!void {
     return switch (backend) {
         .file => |ref| writeFileReplace(ref, bytes, allocator),
-        .keychain, .sops, .age, .env, .command, .stdin => error.UnsupportedBackend,
+        .keychain => |ref| writeKeychain(ref, bytes, allocator),
+        .sops, .age, .env, .command, .stdin => error.UnsupportedBackend,
     };
 }
 
@@ -188,10 +196,16 @@ fn readKeychainMacOS(ref: types.SecretBackend.KeychainRef, allocator: std.mem.Al
     }) catch return error.CommandFailed;
     defer if (result.stderr.len > 0) allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
-        defer allocator.free(result.stdout);
-        log.debug("keychain: security exited {d}", .{result.term.Exited});
-        return error.NotFound;
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            defer allocator.free(result.stdout);
+            log.debug("keychain: security exited {d}", .{code});
+            return error.NotFound;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return error.CommandFailed;
+        },
     }
 
     // Strip trailing newline
@@ -215,11 +229,69 @@ fn readKeychainLinux(ref: types.SecretBackend.KeychainRef, allocator: std.mem.Al
     }) catch return error.CommandFailed;
     defer if (result.stderr.len > 0) allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
-        defer allocator.free(result.stdout);
-        return error.NotFound;
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            defer allocator.free(result.stdout);
+            return error.NotFound;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return error.CommandFailed;
+        },
     }
     return result.stdout;
+}
+
+// TIN-2070: keychain write for refresh writeback. -U updates the existing
+// (service, account) item in place; the account must match the item's acct
+// attribute (Claude Code sets the local username) or -U mints a divergent
+// second item the CLI never reads. The secret travels as a direct argv
+// element — no shell, no quoting, never logged. (It is briefly visible to
+// same-user `ps`, the tradeoff TIN-2070 accepted over `security -i` stdin
+// quoting fragility.) Known gap for the refresh hot path: runProcess has no
+// deadline, so a locked keychain that prompts can wedge the caller — bounded
+// waits belong to the TIN-2058/2059 refresh-authority hardening that admits
+// this write path in the first place.
+fn writeKeychain(ref: types.SecretBackend.KeychainRef, bytes: []const u8, allocator: std.mem.Allocator) WriteError!void {
+    if (comptime builtin.os.tag != .macos) return error.UnsupportedBackend;
+
+    const result = runProcess(allocator, &.{
+        "/usr/bin/security",
+        "add-generic-password",
+        "-U",
+        "-s",
+        ref.service,
+        "-a",
+        ref.account,
+        "-w",
+        bytes,
+    }) catch return error.IoError;
+    defer allocator.free(result.stdout);
+    defer if (result.stderr.len > 0) allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            // Log only the exit code; stderr could name the service but the
+            // payload never appears in security's output.
+            log.debug("keychain: add-generic-password exited {d}", .{code});
+            return error.AccessDenied;
+        },
+        else => return error.IoError,
+    }
+}
+
+// Test/cleanup helper: best-effort removal of a (service, account) item.
+fn deleteKeychainMacOS(ref: types.SecretBackend.KeychainRef, allocator: std.mem.Allocator) void {
+    const result = runProcess(allocator, &.{
+        "/usr/bin/security",
+        "delete-generic-password",
+        "-s",
+        ref.service,
+        "-a",
+        ref.account,
+    }) catch return;
+    allocator.free(result.stdout);
+    if (result.stderr.len > 0) allocator.free(result.stderr);
 }
 
 fn readCommand(ref: types.SecretBackend.CommandRef, allocator: std.mem.Allocator) ReadError![]const u8 {
@@ -228,10 +300,16 @@ fn readCommand(ref: types.SecretBackend.CommandRef, allocator: std.mem.Allocator
     const result = runProcess(allocator, ref.argv) catch return error.CommandFailed;
     defer if (result.stderr.len > 0) allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
-        defer allocator.free(result.stdout);
-        log.debug("command: exited {d}", .{result.term.Exited});
-        return error.CommandFailed;
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            defer allocator.free(result.stdout);
+            log.debug("command: exited {d}", .{code});
+            return error.CommandFailed;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return error.CommandFailed;
+        },
     }
 
     // Strip trailing newline
@@ -257,10 +335,16 @@ fn readSops(ref: types.SecretBackend.SopsRef, allocator: std.mem.Allocator) Read
     };
     defer if (result.stderr.len > 0) allocator.free(result.stderr);
 
-    if (result.term.Exited != 0) {
-        defer allocator.free(result.stdout);
-        log.debug("sops: decrypt exited {d}", .{result.term.Exited});
-        return error.DecryptFailed;
+    switch (result.term) {
+        .Exited => |code| if (code != 0) {
+            defer allocator.free(result.stdout);
+            log.debug("sops: decrypt exited {d}", .{code});
+            return error.DecryptFailed;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return error.DecryptFailed;
+        },
     }
 
     // If key_path specified, extract that JSON key from the decrypted output
@@ -431,4 +515,62 @@ test "writebackPlan requires oauth-mux refresh ownership" {
     try std.testing.expect(!env_owned.automatic_refresh_admitted);
     try std.testing.expect(env_owned.capability == .readonly);
     try std.testing.expectEqualStrings("secret_backend_is_readonly", env_owned.reason);
+}
+
+test "writebackPlan keychain write is platform-gated" {
+    const keychain_backend = types.SecretBackend{ .keychain = .{ .service = "oauth-mux-test", .account = "work" } };
+    const plan = writebackPlan(keychain_backend, .oauth_mux_refresh);
+    try std.testing.expect(plan.capability == .keychain_write);
+    if (comptime builtin.os.tag == .macos) {
+        try std.testing.expect(plan.automatic_refresh_admitted);
+        try std.testing.expectEqualStrings("keychain_writeback_available", plan.reason);
+    } else {
+        try std.testing.expect(!plan.automatic_refresh_admitted);
+        try std.testing.expectEqualStrings("keychain_write_unproven_on_platform", plan.reason);
+    }
+
+    // Ownership still trumps capability: claude-style upstream_cli_login
+    // accounts stay un-admitted even where write works (TIN-2058's gate).
+    const upstream = writebackPlan(keychain_backend, .upstream_cli_login);
+    try std.testing.expect(!upstream.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("provider_repair_owned_by_upstream_cli", upstream.reason);
+}
+
+test "keychain write/read/overwrite/delete round-trip (macOS)" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var nonce: [4]u8 = undefined;
+    std.crypto.random.bytes(&nonce);
+    const service = try std.fmt.allocPrint(allocator, "oauth-mux-test-keychain-rt-{x}", .{std.fmt.fmtSliceHexLower(&nonce)});
+    defer allocator.free(service);
+    const ref = types.SecretBackend.KeychainRef{ .service = service, .account = "omux-test" };
+    defer deleteKeychainMacOS(ref, allocator);
+
+    const backend = types.SecretBackend{ .keychain = ref };
+    // A locked login keychain (headless/SSH context) surfaces as
+    // AccessDenied on the first write; that's environmental, not a
+    // regression in our argv construction, so skip rather than fail. If the
+    // test binary dies before cleanup, the stranded item is clearly named
+    // oauth-mux-test-keychain-rt-* and holds only a fixture string.
+    writeReplace(backend, "fixture-keychain-rt-v1", allocator) catch |e| switch (e) {
+        error.AccessDenied => return error.SkipZigTest,
+        else => return e,
+    };
+    {
+        const got = try read(backend, allocator);
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings("fixture-keychain-rt-v1", got);
+    }
+
+    // -U must update the existing item in place, not mint a second one.
+    try writeReplace(backend, "fixture-keychain-rt-v2", allocator);
+    {
+        const got = try read(backend, allocator);
+        defer allocator.free(got);
+        try std.testing.expectEqualStrings("fixture-keychain-rt-v2", got);
+    }
+
+    deleteKeychainMacOS(ref, allocator);
+    try std.testing.expectError(error.NotFound, read(backend, allocator));
 }

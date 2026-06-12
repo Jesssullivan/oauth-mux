@@ -675,6 +675,23 @@ const codex_capabilities = [_]CapabilityDefinition{
     },
 };
 
+pub const claude_keychain_service_base = "Claude Code-credentials";
+
+// Claude Code keys its macOS login-keychain item on a per-config-dir service
+// name: the default dir (~/.claude) uses the unsuffixed base, and any other
+// CLAUDE_CONFIG_DIR appends "-<first 8 hex of sha256(absolute dir)>". The
+// input must be the same absolute string exported as CLAUDE_CONFIG_DIR
+// (tilde-expanded, not realpath'd) or the hash diverges from the CLI's own.
+// Verified live: docs/spec/provider-proof-claude-credential-store-2026-06-12.md.
+pub fn claudeKeychainService(allocator: std.mem.Allocator, config_dir_absolute: []const u8) error{OutOfMemory}![]u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(config_dir_absolute, &digest, .{});
+    return std.fmt.allocPrint(allocator, "{s}-{x}", .{
+        claude_keychain_service_base,
+        std.fmt.fmtSliceHexLower(digest[0..4]),
+    });
+}
+
 pub const claude_def = ProviderDefinition{
     .name = "claude",
     .display_name = "Claude Code",
@@ -2059,4 +2076,24 @@ test "classifyCodexAppServerJsonRpc usage limit as quota exhaustion" {
         .quota_exhausted => |quota| try std.testing.expectEqual(@as(u32, 7200), quota.retry_after_s),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "claudeKeychainService derives the TIN-2060 golden vectors" {
+    // Two real enrolled accounts, predicted-then-confirmed live against the
+    // macOS keychain (docs/spec/provider-proof-claude-credential-store-2026-06-12.md).
+    const xoxd = try claudeKeychainService(std.testing.allocator, "/Users/jess/.local/share/oauth-mux/claude/xoxd");
+    defer std.testing.allocator.free(xoxd);
+    try std.testing.expectEqualStrings("Claude Code-credentials-26ae8e92", xoxd);
+
+    const sulliwood = try claudeKeychainService(std.testing.allocator, "/Users/jess/.local/share/oauth-mux/claude/sulliwood");
+    defer std.testing.allocator.free(sulliwood);
+    try std.testing.expectEqualStrings("Claude Code-credentials-cec7498b", sulliwood);
+}
+
+test "claudeKeychainService distinct dirs never collide on the base service" {
+    const derived = try claudeKeychainService(std.testing.allocator, "/tmp/omux-claude-any");
+    defer std.testing.allocator.free(derived);
+    try std.testing.expect(!std.mem.eql(u8, derived, claude_keychain_service_base));
+    try std.testing.expect(std.mem.startsWith(u8, derived, "Claude Code-credentials-"));
+    try std.testing.expectEqual(claude_keychain_service_base.len + 1 + 8, derived.len);
 }
