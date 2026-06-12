@@ -48,9 +48,9 @@ capability, such as `codex:max-3#codex-max`.
 
 | Pattern | Entry | Evidence required | Current status |
 | --- | --- | --- | --- |
-| Managed resume chooser | `oauth-mux codex resume` | `resume_authority_check`, native chooser argv, `sqlite_authority:"canonical_env"`, `resume_authority_state_db_bridged` / `resume_authority_logs_db_bridged` when Codex SQLite authority exists, no recursive pre-spawn rollout scan | covered by CLI smoke |
-| Managed explicit resume | `oauth-mux codex resume <id>` | canonical session bridge, `resume_lookup_source`, redacted status, runtime identity | live-proven path |
-| Managed last resume | `oauth-mux codex resume --last` | canonical session bridge, writeback check | covered by CLI smoke |
+| Managed resume chooser | `oauth-mux codex resume` | `resume_authority_check` ok with diagnostic `isolated_persistent_store` on the default route-local home, native chooser argv, no recursive pre-spawn rollout scan; legacy `shared_canonical` opt-in instead requires `sqlite_authority:"canonical_env"` + `resume_authority_state_db_bridged` / `resume_authority_logs_db_bridged` | default mode unit-tested (TIN-2045 / #380); legacy bridge covered by CLI smoke |
+| Managed explicit resume | `oauth-mux codex resume <id>` | route-local persistent home (default) or canonical session bridge (legacy opt-in), `resume_lookup_source`, redacted status, runtime identity | live-proven path (bridge era); default-mode re-proof rides the TIN-1852 e2e |
+| Managed last resume | `oauth-mux codex resume --last` | route-local persistent home (default) or canonical session bridge (legacy opt-in), writeback check | covered by CLI smoke |
 | Labeled reauth | `oauth-mux codex login-device <account>` | action says `user_handoff`, route label named, no raw identity | live operator flow |
 | Auth fallback | selected route 401, fallback 200 | `proxy_auth_same_turn_retry`, `auth_health_observed quota_claim:false` | live and smoke evidence |
 | Quota handoff | selected route `usage_limit_reached`, fallback 200 | `proxy_turn 429`, durable quota evidence, `proxy_same_turn_retry`, fallback `200` | captured evidence in `docs/evidence/codex-engineered-quota-handoff-20260509/` — route truth volatile |
