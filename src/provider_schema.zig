@@ -680,7 +680,9 @@ pub const claude_def = ProviderDefinition{
     .display_name = "Claude Code",
     .extension_mode = .command_adapter,
     .auth = .{
-        .token_endpoint = "https://claude.ai/api/auth/oauth/token",
+        .token_endpoint = "https://console.anthropic.com/v1/oauth/token",
+        .authorization_endpoint = "https://console.anthropic.com/oauth/authorize",
+        .client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
     },
     .credential = .{
         .access_token_path = "accessToken",
@@ -1589,6 +1591,26 @@ test "buildCredentialGeneric with claude template" {
     // Should produce the wrapped format
     try std.testing.expect(std.mem.indexOf(u8, result, "claudeAiOauth") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "sk-test") != null);
+}
+
+test "claude_def pins verified Anthropic OAuth constants" {
+    // TIN-1817: the Claude OAuth endpoints live on console.anthropic.com,
+    // not claude.ai (verified against four independent sources in PR #354).
+    // Constants only — never perform live HTTP in tests.
+    try std.testing.expectEqualStrings(
+        "https://console.anthropic.com/v1/oauth/token",
+        claude_def.auth.token_endpoint.?,
+    );
+    try std.testing.expectEqualStrings(
+        "https://console.anthropic.com/oauth/authorize",
+        claude_def.auth.authorization_endpoint.?,
+    );
+    // Anthropic's token endpoint requires client_id, and oauth.refreshToken
+    // only sends client_id when the definition carries one (compare codex_def).
+    try std.testing.expectEqualStrings(
+        "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        claude_def.auth.client_id.?,
+    );
 }
 
 test "findBuiltin" {
