@@ -1,6 +1,10 @@
 name: Remote Validate
 
 on:
+  schedule:
+    # Weekly synthetic e2e on the remote runner (no provider spend) — the
+    # CI-enforcement cadence for the TIN-1852 session-lifecycle gate.
+    - cron: "0 6 * * 1"
   workflow_dispatch:
     inputs:
       target:
@@ -28,7 +32,7 @@ env:
 
 jobs:
   remote-validate:
-    name: ${{ inputs.target }} on GloriousFlywheel
+    name: ${{ inputs.target || 'e2e' }} on GloriousFlywheel
     runs-on: tinyland-nix
     timeout-minutes: 45
     steps:
@@ -67,7 +71,7 @@ jobs:
         uses: ./.gloriousflywheel/.github/actions/nix-job
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
-          OMUX_REMOTE_TARGET: ${{ inputs.target }}
+          OMUX_REMOTE_TARGET: ${{ inputs.target || 'e2e' }}
           OMUX_REMOTE_RELEASE_VERSION: ${{ inputs.version }}
         with:
           attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}

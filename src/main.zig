@@ -19702,4 +19702,6 @@ comptime {
     _ = @import("provider_schema.zig");
     _ = @import("fixture_redaction.zig");
     _ = @import("repair_state.zig");
+    _ = @import("enroll/tests.zig");
+    _ = @import("enroll/callback_server_tests.zig");
 }
