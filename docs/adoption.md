@@ -25,7 +25,6 @@ deep evidence or architecture:
 Recommended first-screen command block:
 
 ```bash
-npm install -g oauth-mux
 oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -52,7 +51,6 @@ then proof and provider-author material.
 
 Target install surfaces:
 
-- npm: `npm install -g oauth-mux`
 - Homebrew public tap:
   `brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git && brew install jesssullivan/omux/oauth-mux`
 - curl installer: `curl -fsSL ... | sh`
@@ -67,7 +65,8 @@ The DRY release/install lane contract is `docs/release-install-lanes.md`; keep
 new UX/DX/AX installer copy aligned with that file rather than duplicating
 package-state tables here. As of the 2026-06-12 v0.1.13 release, public GitHub
 Release, Homebrew tap, curl installer assets, and system package assets resolve
-to `0.1.13`; npm remains stale at `0.1.9` pending a registry token rotation
+to `0.1.13`; the npm lane is retired (2026-06-12; the stale `0.1.9` package
+is abandoned in place)
 (see the productionization ledger for per-lane truth). Package-lane QA proves
 installability and metadata, not live provider handoff behavior.
 
@@ -87,9 +86,10 @@ checks remain package-lane QA and should not be used as evidence for unreleased
 worktree behavior unless the local formula has been explicitly rebuilt and
 installed.
 
-Each release artifact should be derived from the same CI release tree. npm is
-published only from CI tarballs; workstation `npm publish` is not supported.
-Use npm provenance when the GitHub source repository is public.
+Each release artifact should be derived from the same CI release tree. The
+npm lane is retired (2026-06-12): the future single source of truth for
+package derivation is the Bazel SSOT (TIN-2046), whose derived lanes are
+Homebrew, deb/rpm, and a darwin pkg — npm is deliberately excluded.
 
 ## First User Experience
 

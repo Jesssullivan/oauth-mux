@@ -135,12 +135,12 @@ The handoff lists GitHub Release attachments, npm publish order, Homebrew tap
 input, deb/rpm files, and full checksums. It does not use registry credentials
 or publish anything.
 
-npm publication is intentionally separate and CI-only. Use
-`.github/workflows/npm-publish.yml`; it reuses the release derivation, resolves
-auth at runtime, and publishes only the generated tarballs. Keep npm provenance
-enabled when the source repository is public; npm rejects GitHub Actions
-provenance from private repositories. Do not publish npm packages from a
-workstation.
+The npm lane is RETIRED (operator decision 2026-06-12, TIN-2042). The release
+graph still stages npm tarballs as inert artifacts until the Bazel SSOT work
+(TIN-2046/TIN-2050) reshapes the derivation; do NOT dispatch
+`.github/workflows/npm-publish.yml`. The stale public `0.1.9` npm package is
+abandoned in place (deprecation requires a registry token that no longer
+exists). Future derived lanes are Homebrew, deb/rpm, and a darwin pkg.
 
 ## Release Workflow
 
