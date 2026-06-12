@@ -8,33 +8,31 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Release state: `v0.1.12` points at `38ac7e0`, including the
-  BrokenPipe/client-disconnect hardening from PR #279, the Codex 0.132 SQLite
-  resume authority fix from PR #289, the Codex capture-review proxy metadata
-  gate from PR #290, the `0.1.11` release from PR #291, the post-release
-  capture cookie redaction hardening from PR #292, and the provider-namespace
-  resume picker parity fix from PR #295, followed by the `0.1.12` release prep
-  from PR #296. Main after the release also includes PR #299, which promoted a
-  scrubbed auth-failure cassette fixture and local-path redaction gate; that
-  follow-up is not part of the published `0.1.12` release.
+- Release state: `v0.1.13` points at `4a7d02b`, the first release carrying the
+  TIN-1851 home-is-store session-authority default (#367/#370), the flock
+  unlink-on-release race fix with the macOS runtime-dir move (#379, TIN-2041),
+  the default-mode native resume chooser (#380, TIN-2045), corrected Claude
+  OAuth endpoint constants (#381, TIN-1817), the bounded repair-events log
+  (#369), and the remote-first proof policy (#368/#372). It was cut behind a
+  green remote release-proof on the GloriousFlywheel runner and a committed
+  clean-lineage live e2e (`docs/evidence/codex-live-e2e-clean-lineage-20260612/`).
 - CI/release state: GitHub Actions is the live source for release proof. Release
-  workflow `26469045026` published `v0.1.12`; release assets are present and
-  the public GitHub Release is non-draft/non-prerelease. npm dry-run/publish
-  remains blocked/stale; npm `latest` still reports `0.1.9`.
-- Version truth: source version is `0.1.12`. GitHub Release, curl installer
-  assets, deb/rpm assets, public Homebrew tap, user-local dogfood, and the lab
-  Home Manager source lane resolve to `0.1.12`. npm remains stale at `0.1.9`.
-  The Homebrew formula remains binary-only by default and must not install or
-  link a managed `codex` shim.
-- Installed provenance: user-local dogfood is PATH-first in the oauth-mux repo
-  shell and reports `0.1.12` with build id `v0.1.12`; Homebrew also reports
-  `0.1.12`. Continue checking `which -a oauth-mux`, `which -a codex`,
-  `oauth-mux version --json`, and `codex preflight` before treating any
-  installed-command run as release evidence.
+  workflow `27432964644` published `v0.1.13` with the full 23-asset matrix;
+  the public GitHub Release is non-draft/non-prerelease. npm publish remains
+  blocked on a registry token rotation; npm `latest` still reports `0.1.9`
+  (diagnosis on TIN-2042: SOPS pipeline healthy, token 401s on `npm whoami`).
+- Version truth: source version is `0.1.13`. GitHub Release, curl installer
+  assets, deb/rpm assets, and the public Homebrew tap resolve to `0.1.13`.
+  npm remains stale at `0.1.9`. The Homebrew formula remains binary-only by
+  default and must not install or link a managed `codex` shim.
+- Installed provenance: continue checking `which -a oauth-mux`, `which -a
+  codex`, `oauth-mux version --json`, and `codex preflight` before treating
+  any installed-command run as release evidence. Upgrade note: v0.1.13 moved
+  the macOS runtime dir off /tmp; restart long-lived managed sessions and any
+  daemon after upgrading so all lock holders converge on the new path.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
-  0.1.12`, the local linked keg is `0.1.12`, and
-  `brew fetch --force jesssullivan/omux/oauth-mux` passes after tap PR #10
-  corrected checksums against the published GitHub Release artifacts.
+  0.1.13` (`Formula/oauth-mux.rb` updated with checksums from the published
+  v0.1.13 GitHub Release artifacts).
   Homebrew is a binary-only package lane by default: QA must prove it installs
   `oauth-mux`, does not install an `OMUX_CODEX_SHIM`, and leaves native `codex`
   command resolution unchanged.
