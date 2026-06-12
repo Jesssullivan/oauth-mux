@@ -235,13 +235,18 @@ oauth-mux codex resume <session-id>
 ```
 
 The managed frame preserves native Codex session authority by reference while
-oauth-mux owns auth and the proxy provider override. In canonical bridge mode,
-the managed `CODEX_HOME` is durable under the authority home and scrubbed on
-exit: copied `auth.json`, `installation_id`, and generated `config.toml` are
-removed, but the bridge remains so native Codex rollout paths do not point at a
-deleted temp directory. Resume chooser mode stays native: oauth-mux checks the
-required session-authority entries before child spawn and fails with a redacted
-diagnostic rather than opening an empty chooser. Newer Codex `state_5.sqlite*`
+oauth-mux owns auth and the proxy provider override. In the default
+home-is-store mode the account's durable home is the session store, so
+`oauth-mux codex resume` opens the native chooser over that store directly;
+only the ephemeral `--isolated-session-store` overlay refuses the chooser
+(explicit `resume --last` / `resume <session-id>` still work there). In
+canonical bridge mode, the managed `CODEX_HOME` is durable under the authority
+home and scrubbed on exit: copied `auth.json`, `installation_id`, and generated
+`config.toml` are removed, but the bridge remains so native Codex rollout paths
+do not point at a deleted temp directory. Resume chooser mode stays native: in
+bridge mode oauth-mux checks the required session-authority entries before
+child spawn and fails with a redacted diagnostic rather than opening an empty
+chooser. Newer Codex `state_5.sqlite*`
 and `logs_2.sqlite*` chooser state is bridged by reference when present, and
 canonical bridge mode sets `CODEX_SQLITE_HOME` to the canonical authority home.
 Older homes fall back to `sessions/`, `history.jsonl`, `session_index.jsonl`,

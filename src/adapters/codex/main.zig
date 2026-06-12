@@ -169,6 +169,13 @@ const SessionCodexHome = struct {
     sqlite_authority: CodexSqliteAuthorityMode,
     authority_home: ?[]u8 = null,
     config_authority_home: ?[]u8 = null,
+    /// Explicit persistent-vs-ephemeral marker for the isolated session store
+    /// (never inferred from paths). true only for the home-is-store account
+    /// home built by createPersistentCodexHome, whose sessions/ and
+    /// state_5.sqlite are durable across runs so the native resume chooser can
+    /// safely list them. Ephemeral isolated overlays (--isolated-session-store)
+    /// stay false; canonical_bridge homes ignore this field.
+    persistent_store: bool = false,
     auth_initial_hash: [32]u8,
     cleanup_mode: CodexHomeCleanupMode = .delete_tree,
     config_source_present: bool = false,
@@ -2211,6 +2218,7 @@ fn createPersistentCodexHome(
         .sqlite_authority = .isolated_overlay,
         .authority_home = null,
         .config_authority_home = null,
+        .persistent_store = true,
         .auth_initial_hash = auth_initial_hash,
         .cleanup_mode = .persist_scrub_config,
         .config_source_present = config_observation.source_present,
@@ -2243,6 +2251,7 @@ test "createPersistentCodexHome builds a home-is-store session and scrubs only t
     try std.testing.expectEqual(CodexSqliteAuthorityMode.isolated_overlay, session.sqlite_authority);
     try std.testing.expectEqual(CodexHomeCleanupMode.persist_scrub_config, session.cleanup_mode);
     try std.testing.expect(session.authority_home == null);
+    try std.testing.expect(session.persistent_store);
 
     // Fresh managed config carries the session proxy port; shadow backup is staged.
     const cfg_path = try std.fs.path.join(a, &.{ home, "config.toml" });
@@ -2565,8 +2574,22 @@ fn checkResumeAuthority(
     };
     if (!request.requested()) return result;
     if (codex_home.session_authority == .isolated) {
-        result.ok = request.mode != .chooser;
-        result.diagnostic = if (result.ok) "isolated_session_store_explicit" else "chooser_requires_canonical_session_authority";
+        if (request.mode == .chooser) {
+            // TIN-2045: the home-is-store account home is a durable store
+            // (sessions/ + state_5.sqlite persist across runs), so the native
+            // chooser can safely list it. Only the ephemeral isolated overlay
+            // has nothing durable to choose from; its escape hatches are an
+            // explicit `resume --last` / `resume <session-id>`, or dropping
+            // --isolated-session-store for the persistent store.
+            result.ok = codex_home.persistent_store;
+            result.diagnostic = if (result.ok)
+                "isolated_persistent_store"
+            else
+                "ephemeral_store_chooser_unavailable_use_explicit_resume_or_persistent_store";
+        } else {
+            result.ok = true;
+            result.diagnostic = "isolated_session_store_explicit";
+        }
         return result;
     }
 
@@ -4067,6 +4090,7 @@ test "createSessionCodexHomeUnder copies auth and does not clobber source config
     defer codex_home.deinit(std.testing.allocator);
     try std.testing.expectEqual(SessionAuthorityMode.isolated, codex_home.session_authority);
     try std.testing.expectEqual(CodexSqliteAuthorityMode.isolated_overlay, codex_home.sqlite_authority);
+    try std.testing.expect(!codex_home.persistent_store);
 
     const session_auth = try std.fs.path.join(std.testing.allocator, &.{ codex_home.path, "auth.json" });
     defer std.testing.allocator.free(session_auth);
@@ -4844,6 +4868,12 @@ test "resume authority accepts bridged state db as chooser authority" {
     try std.testing.expect(check.state_db_bridged);
     try std.testing.expect(!check.logs_db_bridged);
     try std.testing.expectEqualStrings("state_db_available", check.diagnostic);
+
+    // TIN-2045: explicit resume forms stay available on the bridge too.
+    const last = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .last });
+    try std.testing.expect(last.ok);
+    const explicit = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .explicit, .explicit_id = "fixture-id" });
+    try std.testing.expect(explicit.ok);
 }
 
 test "resume authority accepts bridged logs db as chooser authority" {
@@ -4879,6 +4909,72 @@ test "resume authority accepts bridged logs db as chooser authority" {
     try std.testing.expect(check.logs_db_bridged);
     try std.testing.expectEqual(CodexSqliteAuthorityMode.canonical_env, check.sqlite_authority);
     try std.testing.expectEqualStrings("logs_db_available", check.diagnostic);
+}
+
+test "resume authority allows chooser on the persistent home-is-store and keeps explicit modes" {
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    defer a.free(root);
+    const home = try std.fs.path.join(a, &.{ root, "codex-acct" });
+    defer a.free(home);
+    try std.fs.cwd().makePath(home);
+    const auth_path = try std.fs.path.join(a, &.{ home, "auth.json" });
+    defer a.free(auth_path);
+    try writeFileReplaceBytes(a, auth_path, "{\"tokens\":{\"account_id\":\"acct-test\"}}");
+
+    const session = try createPersistentCodexHome(a, home, 45321);
+    defer session.deinit(a);
+    try std.testing.expect(session.persistent_store);
+
+    // TIN-2045: the durable home-is-store store is safe for the native chooser.
+    const chooser = try checkResumeAuthority(a, &session, .{ .mode = .chooser });
+    try std.testing.expect(chooser.ok);
+    try std.testing.expectEqual(SessionAuthorityMode.isolated, chooser.authority);
+    try std.testing.expectEqualStrings("isolated_persistent_store", chooser.diagnostic);
+
+    // resume --last / resume <id> are unchanged.
+    const last = try checkResumeAuthority(a, &session, .{ .mode = .last });
+    try std.testing.expect(last.ok);
+    try std.testing.expectEqualStrings("isolated_session_store_explicit", last.diagnostic);
+    const explicit = try checkResumeAuthority(a, &session, .{ .mode = .explicit, .explicit_id = "fixture-id" });
+    try std.testing.expect(explicit.ok);
+    try std.testing.expectEqualStrings("isolated_session_store_explicit", explicit.diagnostic);
+}
+
+test "resume authority still refuses chooser on an ephemeral isolated store" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("account");
+    {
+        const auth = try tmp.dir.createFile("account/auth.json", .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll("{\"tokens\":{\"access_token\":\"fixture\"}}\n");
+    }
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "account", "auth.json" });
+    defer std.testing.allocator.free(auth_path);
+
+    // --isolated-session-store shape: isolated overlay with no durable store.
+    const codex_home = try createSessionCodexHomeUnder(std.testing.allocator, root_path, auth_path, 45678, null, null, .delete_tree);
+    defer codex_home.deinit(std.testing.allocator);
+    try std.testing.expect(!codex_home.persistent_store);
+
+    const chooser = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .chooser });
+    try std.testing.expect(!chooser.ok);
+    try std.testing.expectEqualStrings("ephemeral_store_chooser_unavailable_use_explicit_resume_or_persistent_store", chooser.diagnostic);
+
+    // The explicit escape hatches keep working on the ephemeral store.
+    const last = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .last });
+    try std.testing.expect(last.ok);
+    try std.testing.expectEqualStrings("isolated_session_store_explicit", last.diagnostic);
+    const explicit = try checkResumeAuthority(std.testing.allocator, &codex_home, .{ .mode = .explicit, .explicit_id = "fixture-id" });
+    try std.testing.expect(explicit.ok);
+    try std.testing.expectEqualStrings("isolated_session_store_explicit", explicit.diagnostic);
 }
 
 test "resume authority reports legacy provider namespace residue without failing chooser" {
