@@ -69,13 +69,28 @@ non-interactive token refresh when BOTH hold:
 - the account's config carries explicit operator consent
   (`"allow_proactive_refresh": true` on the account).
 
-No builtin definition declares the grant yet — deliberately. The pipeline
-refresh write path is currently unserialized (no repair flock; a daemon
-probe tick could ride a probe budget into a mutating token rotation) and the
+No builtin definition declares the grant yet — deliberately. The refresh
+path is serialized (TIN-2073): `attemptRefresh` takes the same
+per-(provider,account) repair flock as every other **mux-owned** credential
+writer (upstream CLI logins are user-mediated writes outside this lock
+domain — lock-aware readiness for those is the TIN-1806 lane), revalidates
+the store **under the lock** (a peer rotation that completed first is
+adopted as `not_needed`/`concurrent_rotation_detected`; an actual rotation
+always uses the re-read refresh token, never a pre-lock snapshot), and
+defers typed with `refresh_lock_held` when another rotation is in flight —
+serving the still-valid token when merely inside the expiry skew, failing
+closed only when actually expired. The daemon's probe phase rotates only
+when daemon policy grants mutation (`policy.daemon.allow_mutating`, the
+same consent the repair phase requires); the default-deny tick defers with
+`refresh_requires_mutating_budget`. Batch revalidation surfaces
+(`codex revalidate-exhausted`, adapter auto-revalidation) never rotate.
+
+Remaining blockers before any builtin grant flips: TIN-2074 — the
 credential templates are lossy (claude drops `expiresAt`, codex drops
-`tokens.id_token` — the identity source). Each builtin's grant flips only
-after refresh-path locking and field-preserving writeback land; until then,
-opting an account in changes nothing for builtin providers.
+`tokens.id_token` — the identity source), so a refresh writeback would
+corrupt the native store; and a deadline on the token-endpoint call (the
+flock is held across it, and blocking acquirers have no timeout). Until
+both land, opting an account in changes nothing for builtin providers.
 
 Without consent the writeback plan refuses with
 `proactive_refresh_not_opted_in` (providers without the declared grant keep

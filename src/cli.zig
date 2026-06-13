@@ -102,6 +102,10 @@ pub const Command = union(enum) {
         account: ?[]const u8 = null,
         capability: ?[]const u8 = null,
         json: bool = false,
+        // TIN-2073: internal (not CLI-parsed). The daemon's probe phase sets
+        // this false so a probe-budget tick can never rotate tokens —
+        // rotation belongs to the repair phase under admission + lock.
+        allow_refresh_mutation: bool = true,
     };
 
     pub const DoctorMode = enum {

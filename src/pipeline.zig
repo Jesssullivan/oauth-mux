@@ -34,6 +34,14 @@ pub const Context = struct {
     last_probe_executed: bool = false,
     last_probe_status: ?u16 = null,
     last_probe_decision: ?types.MuxDecision = null,
+    // TIN-2073: probe-budget callers (the daemon tick's probe phase) set
+    // this false — they must never rotate tokens; rotation belongs to the
+    // repair phase under admission + the per-account repair lock.
+    allow_refresh_mutation: bool = true,
+    // Diagnostics: the most recent refresh outcome/reason recorded for this
+    // context (also the assertable seam in tests, where events are skipped).
+    last_refresh_outcome: ?[]const u8 = null,
+    last_refresh_reason: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config_mod.Config, store: *health_mod.HealthStore) Context {
         return .{
@@ -387,6 +395,14 @@ fn resolveProvider(ctx: *Context) PipelineError!void {
 }
 
 fn readSecret(ctx: *Context) PipelineError!void {
+    ctx.token = try readTokenSnapshot(ctx);
+}
+
+// Reads + parses the account's credential store WITHOUT touching ctx.token.
+// Used both for the initial load (readSecret) and the under-lock
+// revalidation in attemptRefresh (TIN-2073), where the pre-lock ctx.token
+// must stay live while the fresh snapshot is examined.
+fn readTokenSnapshot(ctx: *Context) PipelineError!provider.TokenFields {
     const prov_name = ctx.provider_name orelse return error.ProviderNotFound;
     const acct_name = ctx.account_name orelse return error.AccountNotFound;
 
@@ -405,18 +421,22 @@ fn readSecret(ctx: *Context) PipelineError!void {
     const generic = provider_schema.parseTokenGeneric(def, raw, ctx.allocator) catch {
         log.debug("token: schema parse failed for {s}:{s}, trying legacy parser", .{ prov_name, acct_name });
         const kind = ctx.provider_kind orelse return error.ProviderNotFound;
-        ctx.token = provider.parseToken(kind, raw, ctx.allocator) catch {
+        return provider.parseToken(kind, raw, ctx.allocator) catch {
             log.err("token: parse failed for {s}:{s}", .{ prov_name, acct_name });
             return error.TokenParseFailed;
         };
-        return;
     };
-    ctx.token = .{
+    return .{
         .access_token = generic.access_token,
         .refresh_token = generic.refresh_token,
         .token_type = generic.token_type,
         .expires_at = generic.expires_at,
     };
+}
+
+fn freeTokenFields(allocator: std.mem.Allocator, tok: provider.TokenFields) void {
+    allocator.free(tok.access_token);
+    if (tok.refresh_token) |token_rt| allocator.free(token_rt);
 }
 
 fn validateToken(ctx: *Context) PipelineError!void {
@@ -437,8 +457,22 @@ fn validateToken(ctx: *Context) PipelineError!void {
         const now = std.time.timestamp();
         if (now >= exp - 30) {
             if (tok.refresh_token) |rt| {
-                log.info("token: expired for {s}:{s}, attempting refresh", .{ prov, acct });
-                try attemptRefresh(ctx, rt);
+                if (!ctx.allow_refresh_mutation) {
+                    // TIN-2073: a probe-budget caller must not rotate
+                    // tokens. Record the typed deferral; a token that is
+                    // merely inside the skew window stays usable, an
+                    // actually-expired one fails closed for the repair
+                    // phase to handle under admission + lock.
+                    log.info("token: refresh needed for {s}:{s} but caller budget is non-mutating; deferring", .{ prov, acct });
+                    const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+                    if (refreshWritebackBackend(ctx, def)) |writeback| {
+                        recordRefreshEvent(ctx, writeback.plan, "deferred", "refresh_requires_mutating_budget", false, false);
+                    } else |_| {}
+                    if (now >= exp) return error.TokenExpired;
+                } else {
+                    log.info("token: expired for {s}:{s}, attempting refresh", .{ prov, acct });
+                    try attemptRefresh(ctx, rt);
+                }
             } else {
                 return error.TokenExpired;
             }
@@ -582,15 +616,77 @@ fn buildProbeEnv(
 
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
+    const acct = ctx.account_name orelse return error.AccountNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
     const writeback = try refreshWritebackBackend(ctx, def);
+
+    // TIN-2073: serialize against every other mux-owned writer to this
+    // account's credential store (repair run, daemon repair, broker, and
+    // adapter session flows take the same per-(provider,account) flock).
+    // Upstream CLI logins (e.g. `oauth-mux codex login` wrapping the vendor
+    // CLI) are user-mediated writes outside this lock domain — lock-aware
+    // readiness for those is the TIN-1806 lane. Nonblocking: a held lock
+    // means another rotation is in flight — racing it is the refresh-token
+    // self-revocation failure mode, so defer typed instead.
+    var refresh_lock = repair_state.acquireRepairLock(ctx.allocator, prov, acct) catch |e| switch (e) {
+        error.RepairInProgress => {
+            log.warn("token: refresh deferred for {s}:{s}: repair lock held", .{ prov, acct });
+            recordRefreshEvent(ctx, writeback.plan, "deferred", "refresh_lock_held", false, false);
+            // Inside the 30s skew the current token is still provider-valid:
+            // keep serving it so a benign in-flight peer rotation does not
+            // poison route health as an auth failure. Only an actually
+            // expired token fails closed.
+            if (ctx.token) |tok| {
+                if (tok.expires_at) |exp| {
+                    if (std.time.timestamp() < exp) return;
+                }
+            }
+            return error.TokenRefreshFailed;
+        },
+        else => {
+            recordRefreshEvent(ctx, writeback.plan, "lock_failed", @errorName(e), false, false);
+            return error.TokenRefreshFailed;
+        },
+    };
+    defer refresh_lock.release();
+
+    // TIN-2073 (review): revalidate under the lock — the broker's
+    // lock-then-revalidate pattern. The rt argument was read BEFORE the
+    // flock; a peer's rotation may have completed inside that window. If
+    // the re-read credential is already fresh, adopt it and skip the
+    // endpoint; otherwise rotate with the re-read refresh token, never the
+    // pre-lock snapshot.
+    const fresh_snapshot: ?provider.TokenFields = readTokenSnapshot(ctx) catch null;
+    var fresh_adopted = false;
+    defer if (fresh_snapshot) |f| {
+        if (!fresh_adopted) freeTokenFields(ctx.allocator, f);
+    };
+    if (fresh_snapshot) |f| {
+        if (f.expires_at) |exp| {
+            if (std.time.timestamp() < exp - 30) {
+                if (ctx.token) |old| freeTokenFields(ctx.allocator, old);
+                ctx.token = f;
+                fresh_adopted = true;
+                log.info("token: concurrent rotation detected for {s}:{s}; adopted fresh credential", .{ prov, acct });
+                recordRefreshEvent(ctx, writeback.plan, "not_needed", "concurrent_rotation_detected", true, false);
+                return;
+            }
+        }
+    }
+    const effective_rt = if (fresh_snapshot) |f| (f.refresh_token orelse rt) else rt;
+
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
         recordRefreshEvent(ctx, writeback.plan, "no_token_endpoint", "token_endpoint_missing", false, false);
         return error.TokenRefreshFailed;
     };
 
-    const result = oauth.refreshToken(ctx.allocator, url, rt, def.auth.client_id) catch |e| {
+    // Known residual (TIN-2074 gate): oauth.refreshToken has no deadline,
+    // so the flock is held across an unbounded network call; blocking
+    // acquirers of this key (adapter session start, broker) have no
+    // timeout. A deadline (or bounded blocking waits) must land before any
+    // builtin proactive_refresh grant flips.
+    const result = oauth.refreshToken(ctx.allocator, url, effective_rt, def.auth.client_id) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
         recordRefreshEvent(ctx, writeback.plan, "token_endpoint_failed", @errorName(e), false, true);
         return error.TokenRefreshFailed;
@@ -604,7 +700,7 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     if (result.refresh_token) |new_rt| {
         retained_refresh_token = new_rt;
     } else {
-        retained_refresh_token = ctx.allocator.dupe(u8, rt) catch return error.OutOfMemory;
+        retained_refresh_token = ctx.allocator.dupe(u8, effective_rt) catch return error.OutOfMemory;
         retained_refresh_token_from_old = true;
     }
     errdefer if (retained_refresh_token_from_old) {
@@ -683,6 +779,8 @@ fn recordRefreshEvent(
     ok: bool,
     executed: bool,
 ) void {
+    ctx.last_refresh_outcome = outcome;
+    ctx.last_refresh_reason = reason;
     if (comptime builtin.is_test) return;
     repair_state.appendEvent(ctx.allocator, .{
         .kind = "token_refresh",
@@ -698,7 +796,7 @@ fn recordRefreshEvent(
         .ok = ok,
         .executed = executed,
         .interactive = false,
-        .mutating = true,
+        .mutating = executed,
     }) catch {};
 }
 
@@ -1700,4 +1798,243 @@ test "refreshWritebackBackend admits opted-in proactive refresh under upstream l
         error.TokenRefreshFailed,
         refreshWritebackBackend(&default_ctx, config_mod.resolveProviderDefinition(defaulted.value, "toy")),
     );
+}
+
+test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "default";
+    ctx.allow_refresh_mutation = false;
+
+    const now = std.time.timestamp();
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-skew"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-skew"),
+        .expires_at = now + 10,
+    };
+
+    // Inside the 30s skew but not expired: the token stays usable, the
+    // refresh is deferred typed, and the endpoint is never contacted
+    // (attemptRefresh is never entered).
+    try validateToken(&ctx);
+    try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("refresh_requires_mutating_budget", ctx.last_refresh_reason.?);
+
+    // Actually expired: fails closed for the repair phase, still no rotation.
+    ctx.token.?.expires_at = now - 10;
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = null;
+    try std.testing.expectError(error.TokenExpired, validateToken(&ctx));
+    try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("refresh_requires_mutating_budget", ctx.last_refresh_reason.?);
+}
+
+test "attemptRefresh defers typed when the repair flock is held by another process (TIN-2073)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "tin2073-lock": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "tin2073-lock";
+
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-lock"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-lock"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // Simulate a FOREIGN process holding the account's repair flock: take
+    // the raw kernel flock on the lock file without this process's
+    // re-entrancy registry (the same technique as repair_state's own tests).
+    const lock_path = try repair_state.lockPath(std.testing.allocator, "toy", "tin2073-lock");
+    defer std.testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{
+        .truncate = false,
+        .mode = 0o600,
+        .lock = .exclusive,
+        .lock_nonblocking = true,
+    });
+
+    {
+        defer holder.close();
+        try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqualStrings("refresh_lock_held", ctx.last_refresh_reason.?);
+
+        // Within the skew window (expiring but not expired) a held lock
+        // defers WITHOUT failing the candidate: the token is still valid
+        // and health must not be poisoned by a benign peer rotation.
+        ctx.token.?.expires_at = std.time.timestamp() + 10;
+        ctx.last_refresh_outcome = null;
+        ctx.last_refresh_reason = null;
+        try validateToken(&ctx);
+        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqualStrings("refresh_lock_held", ctx.last_refresh_reason.?);
+        ctx.token.?.expires_at = std.time.timestamp() - 10;
+    }
+
+    // Holder released: the refresh proceeds past the lock to the token
+    // endpoint (a closed local port), proving the deferral above came from
+    // the flock and not the endpoint.
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = null;
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+}
+
+test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 TOCTOU)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "tin2073-toctou": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "tin2073-toctou";
+
+    // The store already holds a FRESH credential — a peer completed its
+    // rotation between this context's pre-lock read (simulated by the stale
+    // ctx.token below) and the lock acquisition.
+    const now = std.time.timestamp();
+    const fresh_credential = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"access_token\":\"at-peer-fresh\",\"refresh_token\":\"rt-peer-fresh\",\"expires_at\":{d}}}",
+        .{now + 3600},
+    );
+    defer std.testing.allocator.free(fresh_credential);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(fresh_credential);
+    }
+
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-stale"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-stale"),
+        .expires_at = now - 10,
+    };
+
+    // Succeeds WITHOUT contacting the (dead) token endpoint: the under-lock
+    // revalidation adopts the peer's rotation instead of re-rotating with
+    // the superseded refresh token.
+    try validateToken(&ctx);
+    try std.testing.expectEqualStrings("not_needed", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
+    try std.testing.expectEqualStrings("at-peer-fresh", ctx.token.?.access_token);
+    try std.testing.expectEqualStrings("rt-peer-fresh", ctx.token.?.refresh_token.?);
 }
