@@ -108,6 +108,15 @@ pub const CredentialFormat = struct {
     expires_from_jwt_path: ?[]const u8 = null,
     // Alternative paths for API key mode
     api_key_path: ?[]const u8 = null,
+    // TIN-2043: JSON path (relative to wrapper) to the stable UPSTREAM
+    // account identity carried in the credential — e.g. codex
+    // "tokens.account_id". The refresh path hashes it (sha256_12hex) and
+    // takes the same per-identity flock the managed session does, so a warm
+    // refresh of one config account never rotates the single-use RT chain
+    // shared by a sibling config account's live session. null = the
+    // credential carries no in-band identity (claude's lives in
+    // .claude.json, not the keychain blob).
+    identity_claim_path: ?[]const u8 = null,
     // Wrapper key — if the credential JSON is nested under a top-level key
     wrapper_key: ?[]const u8 = null,
     // Token type detection: if api_key_path resolves, treat as api_key
@@ -809,6 +818,10 @@ pub const codex_def = ProviderDefinition{
         // JWT whose `exp` claim is the truth (TIN-2087). The previously
         // declared "tokens.expires_in" never existed in the real store.
         .expires_from_jwt_path = "tokens.access_token",
+        // TIN-2043: the duplicate-identity guard keys on this (the live
+        // max-1 == max-4 Apple-ID shape). Same id the managed session
+        // hashes for codex-identity-<hash>.
+        .identity_claim_path = "tokens.account_id",
         .api_key_path = "OPENAI_API_KEY",
     },
     .injection = .{
@@ -1484,6 +1497,23 @@ pub const TokenFields = struct {
     token_type: types.TokenType = .bearer,
     expires_at: ?i64 = null,
 };
+
+// TIN-2043: resolve the upstream account-identity string declared at
+// `identity_claim_path` from a raw credential. Returns an owned copy, or
+// null if the provider declares no identity path or the value is absent.
+// Hashing is the caller's job (keeps this module free of identity_hash).
+pub fn identityClaimFromCredential(def: ProviderDefinition, raw: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+    const path = def.credential.identity_claim_path orelse return null;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return null;
+    defer parsed.deinit();
+    var root = parsed.value;
+    if (def.credential.wrapper_key) |wk| {
+        root = resolveJsonPath(root, wk) orelse root;
+    }
+    const value = resolveJsonString(root, path) orelse return null;
+    if (value.len == 0) return null;
+    return try allocator.dupe(u8, value);
+}
 
 pub fn parseTokenGeneric(
     def: ProviderDefinition,
@@ -2559,4 +2589,25 @@ test "parseTokenGeneric leaves codex expiry null when the access token is not a 
         if (result.refresh_token) |rt| allocator.free(rt);
     }
     try std.testing.expectEqual(@as(?i64, null), result.expires_at);
+}
+
+test "identityClaimFromCredential resolves codex tokens.account_id (TIN-2043)" {
+    const raw =
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt","account_id":"acct-uuid-xyz"}}
+    ;
+    const id = (try identityClaimFromCredential(codex_def, raw, std.testing.allocator)).?;
+    defer std.testing.allocator.free(id);
+    try std.testing.expectEqualStrings("acct-uuid-xyz", id);
+
+    // Absent account_id -> null (caller must not key a guard on a missing id).
+    const no_id =
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt"}}
+    ;
+    try std.testing.expectEqual(@as(?[]u8, null), try identityClaimFromCredential(codex_def, no_id, std.testing.allocator));
+
+    // A provider that declares no identity_claim_path -> null (e.g. claude).
+    const claude_raw =
+        \\{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt"}}
+    ;
+    try std.testing.expectEqual(@as(?[]u8, null), try identityClaimFromCredential(claude_def, claude_raw, std.testing.allocator));
 }
