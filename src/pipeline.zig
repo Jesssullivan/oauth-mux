@@ -14,6 +14,7 @@ const probe = @import("probe.zig");
 const env = @import("env.zig");
 const repair_state = @import("repair_state.zig");
 const runtime = @import("runtime.zig");
+const identity_hash = @import("identity_hash.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -697,6 +698,53 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
         recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "store_unreadable_refusing_lossy_write", false, false);
         return error.TokenRefreshFailed;
     };
+
+    // TIN-2043: serialize against any LIVE SESSION (or background refresh)
+    // of the same UPSTREAM IDENTITY, even when it is enrolled under a
+    // different config account (the live max-1 == max-4 Apple-ID shape). The
+    // per-account flock above does not cover that — two config accounts map
+    // to two different account locks but one shared single-use RT chain. Key
+    // the identity flock exactly as the managed session does
+    // (`("<provider>-identity", sha256_12(account_id))`), nonblocking: a held
+    // lock means a live session owns the chain's rotation, so defer typed —
+    // a warm refresh is never urgent. Lock order matches the adapter:
+    // per-account (held) then identity, no inversion. Released by defer.
+    var identity_lock: ?repair_state.RepairLock = null;
+    defer if (identity_lock) |*l| l.release();
+    if (def.credential.identity_claim_path != null) {
+        const account_id = (provider_schema.identityClaimFromCredential(def, raw_for_merge, ctx.allocator) catch null) orelse {
+            // Declared an identity path but the store carries no id: refuse
+            // rather than skip the duplicate-identity guard (the managed
+            // session refuses launch on a missing id; match that posture so
+            // a malformed store cannot dodge the guard). claude declares no
+            // path and is unaffected.
+            log.err("token: refusing refresh for {s}:{s}: identity claim unresolved", .{ prov, acct });
+            recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "identity_unresolved_refusing_refresh", false, false);
+            return error.TokenRefreshFailed;
+        };
+        defer ctx.allocator.free(account_id);
+        const id_hash = identity_hash.sha256_12hex(ctx.allocator, account_id) catch return error.OutOfMemory;
+        defer ctx.allocator.free(id_hash);
+        const identity_domain = std.fmt.allocPrint(ctx.allocator, "{s}-identity", .{prov}) catch return error.OutOfMemory;
+        defer ctx.allocator.free(identity_domain);
+        identity_lock = repair_state.acquireRepairLock(ctx.allocator, identity_domain, id_hash) catch |e| switch (e) {
+            error.RepairInProgress => {
+                log.warn("token: refresh deferred for {s}:{s}: identity lock held by a live session", .{ prov, acct });
+                recordRefreshEvent(ctx, writeback.plan, "deferred", "identity_lock_held", false, false);
+                // Token still valid inside the skew → keep serving it.
+                if (ctx.token) |tok| {
+                    if (tok.expires_at) |exp| {
+                        if (std.time.timestamp() < exp) return;
+                    }
+                }
+                return error.TokenRefreshFailed;
+            },
+            else => {
+                recordRefreshEvent(ctx, writeback.plan, "lock_failed", @errorName(e), false, false);
+                return error.TokenRefreshFailed;
+            },
+        };
+    }
 
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
@@ -2153,4 +2201,133 @@ test "attemptRefresh refuses lossy writeback when the store became unreadable un
 fn fileExists(path: []const u8) bool {
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
+}
+
+test "attemptRefresh defers when the identity lock is held by a sibling-identity session (TIN-2043)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // Two config accounts (tin2043-a, tin2043-b) sharing ONE upstream
+    // account_id — the max-1 == max-4 shape. We refresh tin2043-b while a
+    // foreign holder simulates tin2043-a's live session holding the shared
+    // identity flock.
+    const account_id = "shared-identity-uuid";
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(
+            \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt","account_id":"shared-identity-uuid"}}
+        );
+    }
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{ "name": "codex", "kind": "codex", "repair": {{ "owner": "oauth_mux_refresh" }}, "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}, "credential": {{ "access_token_path": "tokens.access_token", "refresh_token_path": "tokens.refresh_token", "identity_claim_path": "tokens.account_id" }} }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "accounts": {{ "tin2043-b": {{ "secret": {{ "backend": "file", "path": "{s}" }} }} }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{auth_path});
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "tin2043-b";
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // Foreign holder on the IDENTITY lock (codex-identity-<hash>), keyed
+    // exactly as attemptRefresh will compute it.
+    const id_hash = try identity_hash.sha256_12hex(std.testing.allocator, account_id);
+    defer std.testing.allocator.free(id_hash);
+    const identity_domain = try std.fmt.allocPrint(std.testing.allocator, "codex-identity", .{});
+    defer std.testing.allocator.free(identity_domain);
+    const lock_path = try repair_state.lockPath(std.testing.allocator, identity_domain, id_hash);
+    defer std.testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{ .truncate = false, .mode = 0o600, .lock = .exclusive, .lock_nonblocking = true });
+
+    {
+        defer holder.close();
+        // expired token + held identity lock → defer typed, fail closed (no endpoint).
+        try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqualStrings("identity_lock_held", ctx.last_refresh_reason.?);
+    }
+
+    // Holder released: the refresh proceeds past BOTH locks to the endpoint
+    // (closed port), proving the deferral was the identity lock.
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = null;
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+}
+
+test "attemptRefresh refuses when an identity path is declared but the store has no id (TIN-2043 missing-id policy)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // Store declares the shape but carries NO account_id.
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(
+            \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt"}}
+        );
+    }
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{ "name": "codex", "kind": "codex", "repair": {{ "owner": "oauth_mux_refresh" }}, "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}, "credential": {{ "access_token_path": "tokens.access_token", "refresh_token_path": "tokens.refresh_token", "identity_claim_path": "tokens.account_id" }} }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "accounts": {{ "noid": {{ "secret": {{ "backend": "file", "path": "{s}" }} }} }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{auth_path});
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "noid";
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // Refuses before the endpoint rather than dodging the identity guard.
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("identity_unresolved_refusing_refresh", ctx.last_refresh_reason.?);
 }

@@ -16,6 +16,8 @@ const oauth = @import("oauth.zig");
 const paths = @import("paths.zig");
 const repair_state = @import("repair_state.zig");
 const trace = @import("trace.zig");
+const provider_schema = @import("provider_schema.zig");
+const identity_hash = @import("identity_hash.zig");
 const types = @import("types.zig");
 
 /// Populate `pool` with one entry per `<provider>:<account>` defined in
@@ -375,11 +377,40 @@ fn refreshCodexAccountAuthFile(
         .needed => {},
     }
 
+    const def = config_mod.resolveProviderDefinition(cfg, provider);
+
+    // TIN-2043: defer if a live session of the same UPSTREAM IDENTITY holds
+    // the identity flock — even under a different config account (the
+    // max-1 == max-4 shape). The per-account blocking lock above does not
+    // cover a sibling config account sharing one single-use RT chain. Key
+    // it exactly as the managed session does; nonblocking, defer-on-held
+    // (background refresh is never urgent — the session holder rotates its
+    // own chain).
+    var identity_lock: ?repair_state.RepairLock = null;
+    defer if (identity_lock) |*l| l.release();
+    if (def.credential.identity_claim_path != null) {
+        const account_id = (provider_schema.identityClaimFromCredential(def, bytes, allocator) catch null) orelse
+            // Defensive: a store that reached here already parsed an
+            // account_id via refreshCodexAuthState above (a store without
+            // one bails as .not_needed before this point), so this refuse is
+            // belt-and-suspenders against future changes to that gate — never
+            // dodge the duplicate-identity guard on an unresolved id.
+            return error.NoIdentityClaim;
+        defer allocator.free(account_id);
+        const id_hash = try identity_hash.sha256_12hex(allocator, account_id);
+        defer allocator.free(id_hash);
+        const identity_domain = try std.fmt.allocPrint(allocator, "{s}-identity", .{provider});
+        defer allocator.free(identity_domain);
+        identity_lock = repair_state.acquireRepairLock(allocator, identity_domain, id_hash) catch |e| switch (e) {
+            error.RepairInProgress => return, // a live session owns the chain; skip this background refresh
+            else => return e,
+        };
+    }
+
     var material = try parseCodexAuthRefreshMaterial(allocator, bytes);
     defer material.deinit(allocator);
     const refresh_token = material.refresh_token orelse return error.NoRefreshToken;
 
-    const def = config_mod.resolveProviderDefinition(cfg, provider);
     const token_url = def.auth.token_endpoint orelse oauth.refreshUrl(.codex) orelse return error.NoTokenEndpoint;
     const result = try oauth.refreshToken(allocator, token_url, refresh_token, def.auth.client_id);
     defer allocator.free(result.access_token);
