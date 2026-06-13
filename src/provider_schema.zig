@@ -137,6 +137,19 @@ pub const RuntimeConfig = struct {
 
 pub const RepairConfig = struct {
     owner: types.RepairOwner = .manual_only,
+    // TIN-2058: whether oauth-mux is technically able to drive a proactive
+    // token refresh for this provider (a refresh_token grant the mux can
+    // execute against the provider's token endpoint). This declares
+    // capability, not permission — admission additionally requires the
+    // account's explicit `allow_proactive_refresh` consent in config. Login
+    // ownership (`owner`) is unaffected: interactive re-auth stays with the
+    // upstream CLI.
+    proactive_refresh: ProactiveRefreshSupport = .unsupported,
+};
+
+pub const ProactiveRefreshSupport = enum {
+    unsupported,
+    oauth_refresh_token,
 };
 
 pub const CapabilityDefinition = struct {
@@ -721,6 +734,12 @@ pub const claude_def = ProviderDefinition{
         .required_binaries = &.{"claude"},
         .env_vars = &.{"CLAUDE_CONFIG_DIR"},
     },
+    // The refresh grant (.proactive_refresh = .oauth_refresh_token) is
+    // deliberately NOT declared yet: the pipeline refresh write path is
+    // unserialized (no repair flock) and the credential template is lossy
+    // (drops expiresAt/scopes), so an opted-in refresh would corrupt the
+    // live store the CLI reads. Declare the grant only once both follow-ups
+    // land (refresh-path locking + field-preserving writeback).
     .repair = .{
         .owner = .upstream_cli_login,
     },
@@ -764,6 +783,9 @@ pub const codex_def = ProviderDefinition{
         .writable_paths = &.{"CODEX_HOME"},
         .session_paths = &.{"CODEX_HOME/auth.json"},
     },
+    // Refresh grant intentionally undeclared — same gating as claude_def:
+    // the unserialized refresh path + lossy template (drops tokens.id_token,
+    // the codex identity source) must be fixed before opt-in can be honored.
     .repair = .{
         .owner = .upstream_cli_login,
     },

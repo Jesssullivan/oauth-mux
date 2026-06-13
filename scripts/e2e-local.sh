@@ -698,7 +698,8 @@ cat >"$reauth_config" <<EOF
       "name": "codex",
       "display_name": "Codex Test Harness",
       "repair": {
-        "owner": "upstream_cli_login"
+        "owner": "upstream_cli_login",
+        "proactive_refresh": "oauth_refresh_token"
       },
       "runtime": {
         "writable_paths": ["CODEX_HOME"],
@@ -1517,7 +1518,7 @@ expect_contains "$repair_reauth" '"confirmation_required":true' "repair run requ
 expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run reports required flag"
 expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
 expect_contains "$repair_reauth" '"daemon_repair":{"admitted":false,"reason":"interactive_not_allowed","budget":"interactive"}' "repair run reports daemon policy refusal"
-expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"provider_repair_owned_by_upstream_cli"}' "repair run reports upstream-owned file writeback boundary"
+expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"proactive_refresh_not_opted_in"}' "repair run reports refresh-consent writeback boundary (TIN-2058: codex declares the refresh grant; account has not opted in)"
 test ! -e "$tmp/reauth-home/auth.json"
 
 printf 'e2e: stay-afloat next returns provider-mediated handoff when not afloat\n'

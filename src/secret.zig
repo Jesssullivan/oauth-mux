@@ -29,6 +29,17 @@ pub const WritebackPlan = struct {
     reason: []const u8,
 };
 
+// TIN-2058: the refresh-authority split. Login ownership (RepairOwner) and
+// proactive-refresh authority are different axes: a provider whose login is
+// upstream-CLI-owned can still grant oauth-mux the non-interactive refresh,
+// but only when the provider definition declares the refresh grant AND the
+// account's config carries explicit operator consent. Defaults keep today's
+// refusal.
+pub const RefreshAuthority = struct {
+    provider_supports_refresh: bool = false,
+    account_opted_in: bool = false,
+};
+
 pub fn read(backend: types.SecretBackend, allocator: std.mem.Allocator) ReadError![]const u8 {
     return switch (backend) {
         .keychain => |ref| readKeychain(ref, allocator),
@@ -52,14 +63,24 @@ pub fn writeCapability(backend: types.SecretBackend) types.SecretWriteCapability
     };
 }
 
-pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) WritebackPlan {
+pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner, authority: RefreshAuthority) WritebackPlan {
     const capability = writeCapability(backend);
-    if (owner != .oauth_mux_refresh) {
+    const authority_granted = switch (owner) {
+        .oauth_mux_refresh => true,
+        .upstream_cli_login => authority.provider_supports_refresh and authority.account_opted_in,
+        // manual_only / external_secret_owner exclude mux writes outright;
+        // account consent cannot override an operator/secret-owner boundary.
+        .external_secret_owner, .manual_only => false,
+    };
+    if (!authority_granted) {
         return .{
             .capability = capability,
             .automatic_refresh_admitted = false,
             .reason = switch (owner) {
-                .upstream_cli_login => "provider_repair_owned_by_upstream_cli",
+                .upstream_cli_login => if (authority.provider_supports_refresh)
+                    "proactive_refresh_not_opted_in"
+                else
+                    "provider_repair_owned_by_upstream_cli",
                 .external_secret_owner => "provider_repair_owned_by_external_secret",
                 .manual_only => "provider_repair_is_manual_only",
                 .oauth_mux_refresh => unreachable,
@@ -67,7 +88,7 @@ pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) Wri
         };
     }
 
-    return switch (capability) {
+    var plan: WritebackPlan = switch (capability) {
         .replace_file => .{
             .capability = capability,
             .automatic_refresh_admitted = true,
@@ -106,6 +127,13 @@ pub fn writebackPlan(backend: types.SecretBackend, owner: types.RepairOwner) Wri
             .reason = "secret_backend_writeback_unsupported",
         },
     };
+    // Consent-granted admission (vs mux-owned repair) is surfaced as its own
+    // reason so the audit trail records WHY the write was allowed; the
+    // capability field still names the mechanism.
+    if (owner != .oauth_mux_refresh and plan.automatic_refresh_admitted) {
+        plan.reason = "proactive_refresh_opted_in";
+    }
+    return plan;
 }
 
 pub fn writeReplace(backend: types.SecretBackend, bytes: []const u8, allocator: std.mem.Allocator) WriteError!void {
@@ -501,17 +529,17 @@ test "writeCapability classifies secret backend write surfaces" {
 
 test "writebackPlan requires oauth-mux refresh ownership" {
     const file_backend = types.SecretBackend{ .file = .{ .path = "/tmp/omux-auth.json" } };
-    const admitted = writebackPlan(file_backend, .oauth_mux_refresh);
+    const admitted = writebackPlan(file_backend, .oauth_mux_refresh, .{});
     try std.testing.expect(admitted.automatic_refresh_admitted);
     try std.testing.expect(admitted.capability == .replace_file);
     try std.testing.expectEqualStrings("replace_file_writeback_available", admitted.reason);
 
-    const upstream_owned = writebackPlan(file_backend, .upstream_cli_login);
+    const upstream_owned = writebackPlan(file_backend, .upstream_cli_login, .{});
     try std.testing.expect(!upstream_owned.automatic_refresh_admitted);
     try std.testing.expect(upstream_owned.capability == .replace_file);
     try std.testing.expectEqualStrings("provider_repair_owned_by_upstream_cli", upstream_owned.reason);
 
-    const env_owned = writebackPlan(.{ .env = .{ .variable = "OMUX_AUTH" } }, .oauth_mux_refresh);
+    const env_owned = writebackPlan(.{ .env = .{ .variable = "OMUX_AUTH" } }, .oauth_mux_refresh, .{});
     try std.testing.expect(!env_owned.automatic_refresh_admitted);
     try std.testing.expect(env_owned.capability == .readonly);
     try std.testing.expectEqualStrings("secret_backend_is_readonly", env_owned.reason);
@@ -519,7 +547,7 @@ test "writebackPlan requires oauth-mux refresh ownership" {
 
 test "writebackPlan keychain write is platform-gated" {
     const keychain_backend = types.SecretBackend{ .keychain = .{ .service = "oauth-mux-test", .account = "work" } };
-    const plan = writebackPlan(keychain_backend, .oauth_mux_refresh);
+    const plan = writebackPlan(keychain_backend, .oauth_mux_refresh, .{});
     try std.testing.expect(plan.capability == .keychain_write);
     if (comptime builtin.os.tag == .macos) {
         try std.testing.expect(plan.automatic_refresh_admitted);
@@ -529,9 +557,10 @@ test "writebackPlan keychain write is platform-gated" {
         try std.testing.expectEqualStrings("keychain_write_unproven_on_platform", plan.reason);
     }
 
-    // Ownership still trumps capability: claude-style upstream_cli_login
-    // accounts stay un-admitted even where write works (TIN-2058's gate).
-    const upstream = writebackPlan(keychain_backend, .upstream_cli_login);
+    // Ownership still trumps capability: an upstream_cli_login provider
+    // with no declared refresh grant (today's builtin claude/codex shape)
+    // stays un-admitted even where write works, with the historical reason.
+    const upstream = writebackPlan(keychain_backend, .upstream_cli_login, .{});
     try std.testing.expect(!upstream.automatic_refresh_admitted);
     try std.testing.expectEqualStrings("provider_repair_owned_by_upstream_cli", upstream.reason);
 }
@@ -573,4 +602,73 @@ test "keychain write/read/overwrite/delete round-trip (macOS)" {
 
     deleteKeychainMacOS(ref, allocator);
     try std.testing.expectError(error.NotFound, read(backend, allocator));
+}
+
+test "writebackPlan refresh-authority split: consent admits refresh under upstream login ownership" {
+    const file_backend = types.SecretBackend{ .file = .{ .path = "/tmp/omux-auth.json" } };
+
+    // Opted-in account + provider-declared refresh grant: admitted, with the
+    // consent basis in the audit reason; login ownership stays upstream.
+    const opted = writebackPlan(file_backend, .upstream_cli_login, .{
+        .provider_supports_refresh = true,
+        .account_opted_in = true,
+    });
+    try std.testing.expect(opted.automatic_refresh_admitted);
+    try std.testing.expect(opted.capability == .replace_file);
+    try std.testing.expectEqualStrings("proactive_refresh_opted_in", opted.reason);
+
+    // Provider supports refresh but the account has not consented: typed
+    // refusal that names the missing knob.
+    const not_opted = writebackPlan(file_backend, .upstream_cli_login, .{
+        .provider_supports_refresh = true,
+    });
+    try std.testing.expect(!not_opted.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("proactive_refresh_not_opted_in", not_opted.reason);
+
+    // Provider declares no refresh grant: consent alone changes nothing and
+    // the historical refusal reason is preserved.
+    const unsupported = writebackPlan(file_backend, .upstream_cli_login, .{
+        .account_opted_in = true,
+    });
+    try std.testing.expect(!unsupported.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("provider_repair_owned_by_upstream_cli", unsupported.reason);
+
+    // manual_only / external_secret_owner boundaries are not overridable by
+    // account consent.
+    const manual = writebackPlan(file_backend, .manual_only, .{
+        .provider_supports_refresh = true,
+        .account_opted_in = true,
+    });
+    try std.testing.expect(!manual.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("provider_repair_is_manual_only", manual.reason);
+
+    const external = writebackPlan(file_backend, .external_secret_owner, .{
+        .provider_supports_refresh = true,
+        .account_opted_in = true,
+    });
+    try std.testing.expect(!external.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("provider_repair_owned_by_external_secret", external.reason);
+
+    // Consent cannot bypass capability gating: a readonly backend stays
+    // refused on capability grounds.
+    const readonly = writebackPlan(.{ .env = .{ .variable = "OMUX_AUTH" } }, .upstream_cli_login, .{
+        .provider_supports_refresh = true,
+        .account_opted_in = true,
+    });
+    try std.testing.expect(!readonly.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("secret_backend_is_readonly", readonly.reason);
+
+    // TIN-2070 mechanism composes: consent admits the keychain write on
+    // macOS and keeps the platform refusal elsewhere.
+    const keychain = writebackPlan(.{ .keychain = .{ .service = "oauth-mux-test", .account = "work" } }, .upstream_cli_login, .{
+        .provider_supports_refresh = true,
+        .account_opted_in = true,
+    });
+    if (comptime builtin.os.tag == .macos) {
+        try std.testing.expect(keychain.automatic_refresh_admitted);
+        try std.testing.expectEqualStrings("proactive_refresh_opted_in", keychain.reason);
+    } else {
+        try std.testing.expect(!keychain.automatic_refresh_admitted);
+        try std.testing.expectEqualStrings("keychain_write_unproven_on_platform", keychain.reason);
+    }
 }
