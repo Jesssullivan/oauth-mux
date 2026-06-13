@@ -58,6 +58,38 @@ The repair owner values are:
 - `null`: the action is not credential repair, such as waiting, probing,
   fixing runtime, or inspecting provider scope.
 
+### Refresh-authority split (TIN-2058)
+
+Login ownership and proactive-refresh authority are separate axes. A provider
+whose login is `upstream_cli_login` can still grant oauth-mux the
+non-interactive token refresh when BOTH hold:
+
+- the provider definition declares the grant
+  (`repair.proactive_refresh: "oauth_refresh_token"`), and
+- the account's config carries explicit operator consent
+  (`"allow_proactive_refresh": true` on the account).
+
+No builtin definition declares the grant yet — deliberately. The pipeline
+refresh write path is currently unserialized (no repair flock; a daemon
+probe tick could ride a probe budget into a mutating token rotation) and the
+credential templates are lossy (claude drops `expiresAt`, codex drops
+`tokens.id_token` — the identity source). Each builtin's grant flips only
+after refresh-path locking and field-preserving writeback land; until then,
+opting an account in changes nothing for builtin providers.
+
+Without consent the writeback plan refuses with
+`proactive_refresh_not_opted_in` (providers without the declared grant keep
+the historical `provider_repair_owned_by_upstream_cli`). Consent-admitted
+plans report `proactive_refresh_opted_in`; the capability field names the
+mechanism (`replace_file`, `keychain_write`, …). Consent never overrides
+`manual_only` / `external_secret_owner` boundaries, and capability gating
+still applies (a readonly backend stays refused). Interactive login remains
+upstream-owned in every case.
+
+Even after a grant flips on, leave accounts un-opted until the dual-writer
+serialization story (TIN-2059) covers your native CLI's own refresh behavior
+— two writers rotating one refresh token can revoke each other.
+
 ## Action Kinds
 
 The current typed action kinds are:

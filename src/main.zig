@@ -3585,7 +3585,10 @@ fn routeWritebackPlan(
         .automatic_refresh_admitted = false,
         .reason = "secret_backend_invalid",
     };
-    return secret_mod.writebackPlan(backend, def.repair.owner);
+    return secret_mod.writebackPlan(backend, def.repair.owner, .{
+        .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
+        .account_opted_in = account.allow_proactive_refresh,
+    });
 }
 
 fn daemonProbeAdmission(policy: config.DaemonPolicyConfig, budget: ?types.ActionBudget) AdmissionDecision {
@@ -7401,7 +7404,10 @@ fn accountWritebackPlan(
         .automatic_refresh_admitted = false,
         .reason = "secret_backend_invalid",
     };
-    return secret_mod.writebackPlan(backend, def.repair.owner);
+    return secret_mod.writebackPlan(backend, def.repair.owner, .{
+        .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
+        .account_opted_in = account.allow_proactive_refresh,
+    });
 }
 
 fn runtimeAccountInfo(

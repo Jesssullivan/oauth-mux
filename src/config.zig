@@ -54,6 +54,13 @@ pub const AccountConfig = struct {
     config_dir: ?[]const u8 = null,
     quota: ?QuotaConfig = null,
     tags: ?[]const []const u8 = null,
+    // TIN-2058: explicit operator consent for oauth-mux to refresh this
+    // account's token proactively. Login stays upstream-CLI-owned; this
+    // only admits the non-interactive refresh writeback, and only for
+    // providers whose definition declares proactive_refresh support. Leave
+    // false until the dual-writer story (TIN-2059) covers your native CLI's
+    // own refresh behavior for this account.
+    allow_proactive_refresh: bool = false,
 };
 
 pub const SecretConfig = struct {

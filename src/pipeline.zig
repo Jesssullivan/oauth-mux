@@ -660,7 +660,10 @@ fn refreshWritebackBackend(
     const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
     const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return error.AccountNotFound;
     const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch return error.ConfigValidationError;
-    const plan = secret.writebackPlan(backend, def.repair.owner);
+    const plan = secret.writebackPlan(backend, def.repair.owner, .{
+        .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
+        .account_opted_in = acct_cfg.allow_proactive_refresh,
+    });
     if (!plan.automatic_refresh_admitted) {
         log.warn("token: refresh writeback not admitted for {s}:{s}: {s}", .{ prov, acct, plan.reason });
         recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
@@ -1630,4 +1633,71 @@ fn expectMissingEnvValue(pairs: []const [2][]const u8, key: []const u8, value: [
             return error.TestUnexpectedResult;
         }
     }
+}
+
+test "refreshWritebackBackend admits opted-in proactive refresh under upstream login ownership" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // Provider declares the refresh grant; login stays upstream-owned.
+    // Account consent is the only difference between the two configs.
+    const config_fmt =
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "upstream_cli_login", "proactive_refresh": "oauth_refresh_token" }},
+        \\      "auth": {{ "token_endpoint": "https://example.invalid/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }}{s} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ;
+
+    const opted_json = try std.fmt.allocPrint(std.testing.allocator, config_fmt, .{ auth_path, ", \"allow_proactive_refresh\": true" });
+    defer std.testing.allocator.free(opted_json);
+
+    const opted = try config_mod.loadFromBytes(std.testing.allocator, opted_json);
+    defer opted.deinit();
+    var opted_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer opted_store.deinit();
+    var opted_ctx = Context.init(std.testing.allocator, opted.value, &opted_store);
+    defer opted_ctx.deinit();
+    opted_ctx.provider_name = "toy";
+    opted_ctx.account_name = "default";
+    const opted_writeback = try refreshWritebackBackend(&opted_ctx, config_mod.resolveProviderDefinition(opted.value, "toy"));
+    try std.testing.expect(opted_writeback.plan.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("proactive_refresh_opted_in", opted_writeback.plan.reason);
+
+    // Default mode (no consent): the same provider definition still refuses.
+    const default_json = try std.fmt.allocPrint(std.testing.allocator, config_fmt, .{ auth_path, "" });
+    defer std.testing.allocator.free(default_json);
+
+    const defaulted = try config_mod.loadFromBytes(std.testing.allocator, default_json);
+    defer defaulted.deinit();
+    var default_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer default_store.deinit();
+    var default_ctx = Context.init(std.testing.allocator, defaulted.value, &default_store);
+    defer default_ctx.deinit();
+    default_ctx.provider_name = "toy";
+    default_ctx.account_name = "default";
+    try std.testing.expectError(
+        error.TokenRefreshFailed,
+        refreshWritebackBackend(&default_ctx, config_mod.resolveProviderDefinition(defaulted.value, "toy")),
+    );
 }
