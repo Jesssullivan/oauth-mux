@@ -442,7 +442,9 @@ semantics.
 
 ## Provider Author Experience
 
-A new provider should usually start as data, not Zig:
+A new provider should usually start as data, not Zig — **for
+home-scoped-file providers** (auth state is a file inside a relocatable
+config dir, the codex model):
 
 1. Write a JSON provider definition with credential parsing, injection, probes,
    and failure rules.
@@ -453,6 +455,14 @@ A new provider should usually start as data, not Zig:
 
 Compiled Zig changes should be reserved for new transports, parser primitives,
 or core liveness algebra changes.
+
+Providers whose harness keeps auth state in an OS keystore (the Claude
+macOS model: keychain item keyed off the config-dir path, identity in a
+separate file, browser-session consent isolation) currently need compiled
+support beyond the JSON definition. The auth-state-model taxonomy, the
+revised claim scope, and the schema extensions that will close this gap
+are designated in
+`docs/spec/auth-state-models-and-adapter-extensibility-2026-06-12.md`.
 
 Provider authors should use `oauth-mux providers list --json` to verify whether
 their provider is currently `built_in`, `schema_modeled`, `live_proven`, or still
