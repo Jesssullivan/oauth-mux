@@ -5357,7 +5357,7 @@ fn executeDaemonTickActions(
         if (!decision.admitted) continue;
 
         if (std.mem.eql(u8, decision.phase, "probe")) {
-            return try executeDaemonProbe(allocator, args, evaluation, decision, executions);
+            return try executeDaemonProbe(allocator, cfg, args, evaluation, decision, executions);
         }
 
         if (std.mem.eql(u8, decision.phase, "repair") and
@@ -5373,6 +5373,7 @@ fn executeDaemonTickActions(
 
 fn executeDaemonProbe(
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     args: cli.Command.DaemonTickArgs,
     evaluation: RouteEvaluation,
     decision: DaemonTickDecision,
@@ -5381,6 +5382,12 @@ fn executeDaemonProbe(
     var scratch = std.ArrayList(u8).init(allocator);
     defer scratch.deinit();
 
+    // TIN-2073: a probe-budget tick may rotate tokens only when daemon
+    // policy explicitly grants mutation — the same operator consent the
+    // repair phase requires. Default policy (allow_mutating=false) defers
+    // typed; rotation then needs a mutation-admitted tick.
+    const daemon_policy = config.effectiveDaemonPolicyForProvider(cfg.policy, evaluation.route.provider);
+
     var ok = true;
     var reason: []const u8 = "probe_completed";
     runProbe(allocator, scratch.writer(), .{
@@ -5388,6 +5395,7 @@ fn executeDaemonProbe(
         .account = evaluation.route.account,
         .capability = evaluation.route.capability,
         .json = true,
+        .allow_refresh_mutation = daemon_policy.allow_mutating,
     }) catch |e| {
         ok = false;
         reason = @errorName(e);
@@ -8338,6 +8346,7 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     ctx.account_name = args.account;
     ctx.capability_name = args.capability;
     ctx.probe_recheck_blocked = args.account != null;
+    ctx.allow_refresh_mutation = args.allow_refresh_mutation;
 
     const result = pipeline.runProbe(&ctx);
     store.persist();
@@ -9289,6 +9298,9 @@ fn runCodexRevalidateExhausted(
         ctx.provider_name = route.provider;
         ctx.account_name = route.account;
         ctx.capability_name = route.capability;
+        // revalidate-exhausted's JSON contract declares
+        // mutates_user_config:false — a credential rotation would break it.
+        ctx.allow_refresh_mutation = false;
 
         const probe_result = pipeline.runProbe(&ctx);
         var probe_error: ?types.PipelineError = null;

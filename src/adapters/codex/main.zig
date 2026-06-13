@@ -966,6 +966,9 @@ fn maybeAutoRevalidateCodexRoutes(
         ctx.provider_name = "codex";
         ctx.account_name = route.account;
         ctx.capability_name = route.capability;
+        // Auto-revalidation is gated on spend consent, not mutation consent
+        // (TIN-2073): it must never rotate credentials mid-launch.
+        ctx.allow_refresh_mutation = false;
 
         const probe_result = pipeline.runProbe(&ctx);
         var recorded_provider_evidence = true;

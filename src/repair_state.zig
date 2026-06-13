@@ -539,7 +539,15 @@ fn acquireRepairLockWithMode(
     while (true) {
         if (held_locks.getPtr(key)) |entry| {
             if (entry.acquiring) {
-                // Another thread in this process is mid-flock for this key; wait.
+                if (nonblocking) {
+                    // A sibling thread is mid-flock for this key. Waiting
+                    // would silently turn the caller's typed
+                    // refuse-on-held contract into an unbounded block
+                    // behind the sibling's (possibly blocking) acquire.
+                    held_mutex.unlock();
+                    return error.RepairInProgress;
+                }
+                // Blocking caller: wait for the sibling's flock to resolve.
                 held_cond.wait(&held_mutex);
                 continue;
             }
@@ -627,7 +635,7 @@ fn locksDir(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ dir, "repair-locks" });
 }
 
-fn lockPath(allocator: std.mem.Allocator, provider: []const u8, account: []const u8) ![]const u8 {
+pub fn lockPath(allocator: std.mem.Allocator, provider: []const u8, account: []const u8) ![]const u8 {
     const dir = try locksDir(allocator);
     defer allocator.free(dir);
     const file_name = try sanitizedLockFileName(allocator, provider, account);
