@@ -58,6 +58,15 @@ pub fn detectProvider(argv: []const []const u8) ?types.ProviderKind {
 // ── Claude Code ──
 // Format: {"accessToken":"...","refreshToken":"...","expiresAt":"2025-..."}
 
+// Claude Code stores expiresAt as 13-digit epoch MILLISECONDS (verified
+// live, TIN-2074); TokenFields carries epoch seconds. Values that are
+// plausibly ms (>= 1e12) are converted; anything smaller is already
+// seconds (or a test fixture).
+fn claudeExpiryToSeconds(raw_exp: ?i64) ?i64 {
+    const exp = raw_exp orelse return null;
+    return if (exp >= 1_000_000_000_000) @divTrunc(exp, 1000) else exp;
+}
+
 fn parseClaude(raw: []const u8, allocator: std.mem.Allocator) ParseError!TokenFields {
     // Try wrapped format first: {"claudeAiOauth":{"accessToken":"...",...}}
     if (std.json.parseFromSlice(ClaudeWrapped, allocator, raw, .{
@@ -72,7 +81,7 @@ fn parseClaude(raw: []const u8, allocator: std.mem.Allocator) ParseError!TokenFi
                     (allocator.dupe(u8, rt) catch return error.OutOfMemory)
                 else
                     null,
-                .expires_at = creds.expiresAt,
+                .expires_at = claudeExpiryToSeconds(creds.expiresAt),
             };
         }
     } else |_| {}
@@ -90,7 +99,7 @@ fn parseClaude(raw: []const u8, allocator: std.mem.Allocator) ParseError!TokenFi
             (allocator.dupe(u8, rt) catch return error.OutOfMemory)
         else
             null,
-        .expires_at = parsed.value.expiresAt,
+        .expires_at = claudeExpiryToSeconds(parsed.value.expiresAt),
     };
 }
 

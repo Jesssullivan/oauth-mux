@@ -403,6 +403,12 @@ fn readSecret(ctx: *Context) PipelineError!void {
 // revalidation in attemptRefresh (TIN-2073), where the pre-lock ctx.token
 // must stay live while the fresh snapshot is examined.
 fn readTokenSnapshot(ctx: *Context) PipelineError!provider.TokenFields {
+    const raw = try readSecretRaw(ctx);
+    defer ctx.allocator.free(raw);
+    return parseRawToken(ctx, raw);
+}
+
+fn readSecretRaw(ctx: *Context) PipelineError![]const u8 {
     const prov_name = ctx.provider_name orelse return error.ProviderNotFound;
     const acct_name = ctx.account_name orelse return error.AccountNotFound;
 
@@ -411,12 +417,15 @@ fn readTokenSnapshot(ctx: *Context) PipelineError!provider.TokenFields {
 
     const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch return error.ConfigParseError;
 
-    const raw = secret.read(backend, ctx.allocator) catch |e| {
+    return secret.read(backend, ctx.allocator) catch |e| {
         log.err("secret: {s}:{s}: {s}", .{ prov_name, acct_name, @errorName(e) });
         return error.SecretReadFailed;
     };
-    defer ctx.allocator.free(raw);
+}
 
+fn parseRawToken(ctx: *Context, raw: []const u8) PipelineError!provider.TokenFields {
+    const prov_name = ctx.provider_name orelse return error.ProviderNotFound;
+    const acct_name = ctx.account_name orelse return error.AccountNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov_name);
     const generic = provider_schema.parseTokenGeneric(def, raw, ctx.allocator) catch {
         log.debug("token: schema parse failed for {s}:{s}, trying legacy parser", .{ prov_name, acct_name });
@@ -656,7 +665,9 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     // the re-read credential is already fresh, adopt it and skip the
     // endpoint; otherwise rotate with the re-read refresh token, never the
     // pre-lock snapshot.
-    const fresh_snapshot: ?provider.TokenFields = readTokenSnapshot(ctx) catch null;
+    const existing_raw: ?[]const u8 = readSecretRaw(ctx) catch null;
+    defer if (existing_raw) |r| ctx.allocator.free(r);
+    const fresh_snapshot: ?provider.TokenFields = if (existing_raw) |r| (parseRawToken(ctx, r) catch null) else null;
     var fresh_adopted = false;
     defer if (fresh_snapshot) |f| {
         if (!fresh_adopted) freeTokenFields(ctx.allocator, f);
@@ -675,17 +686,32 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     }
     const effective_rt = if (fresh_snapshot) |f| (f.refresh_token orelse rt) else rt;
 
+    // TIN-2074: the field-preserving writeback needs the existing store to
+    // merge into. If the under-lock re-read failed, refuse BEFORE spending
+    // a refresh-token rotation we could only persist by clobbering the
+    // canonical store the CLI reads with a lossy template. The refresh path
+    // always has a pre-existing credential (the refresh token came from
+    // it), so a null here is a transient store-read failure, not bootstrap.
+    const raw_for_merge = existing_raw orelse {
+        log.err("token: refusing refresh for {s}: credential store unreadable under lock", .{prov});
+        recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "store_unreadable_refusing_lossy_write", false, false);
+        return error.TokenRefreshFailed;
+    };
+
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
         recordRefreshEvent(ctx, writeback.plan, "no_token_endpoint", "token_endpoint_missing", false, false);
         return error.TokenRefreshFailed;
     };
 
-    // Known residual (TIN-2074 gate): oauth.refreshToken has no deadline,
-    // so the flock is held across an unbounded network call; blocking
-    // acquirers of this key (adapter session start, broker) have no
-    // timeout. A deadline (or bounded blocking waits) must land before any
-    // builtin proactive_refresh grant flips.
+    // oauth.refreshToken bounds the post-connect send/recv legs with a
+    // 30s socket deadline (TIN-2074, posix only), so the dominant hang
+    // mode — server accepts then stalls — can no longer wedge the held
+    // flock indefinitely. Residual: DNS/TCP-connect/TLS-handshake are
+    // bounded only by the OS TCP timeout, and Windows has no deadline
+    // (winsock SO_RCVTIMEO takes DWORD ms, gated off). Acceptable while
+    // builtin grants stay off; revisit if a connect-phase stall proves
+    // material before the flip.
     const result = oauth.refreshToken(ctx.allocator, url, effective_rt, def.auth.client_id) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
         recordRefreshEvent(ctx, writeback.plan, "token_endpoint_failed", @errorName(e), false, true);
@@ -707,16 +733,28 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
         if (retained_refresh_token) |old_rt| ctx.allocator.free(old_rt);
     };
 
-    const credential = provider_schema.buildCredentialGeneric(
-        def,
-        .{
-            .access_token = result.access_token,
-            .refresh_token = retained_refresh_token,
-            .expires_at = expires_at,
-        },
-        ctx.allocator,
-    ) catch {
-        recordRefreshEvent(ctx, writeback.plan, "credential_build_failed", "credential_template_failed", false, true);
+    // TIN-2074: field-preserving writeback. Merge the refreshed token
+    // fields into the existing credential so store fields the token
+    // response does not own (claude scopes/subscriptionType/rateLimitTier,
+    // codex tokens.id_token/last_refresh) survive the rotation.
+    //
+    // FAIL CLOSED, never lossy: if the merge cannot apply (non-object /
+    // unexpected-shape store — e.g. a flat claude store where a wrapper is
+    // declared), falling back to the bootstrap template would overwrite the
+    // canonical store the CLI reads with a blob missing every preserved
+    // field — the exact corruption TIN-2074 exists to prevent. Refuse and
+    // keep the store intact; the just-minted access token stays usable
+    // in-process for this run. (buildCredentialGeneric remains the
+    // legitimate writer only for first-time injection of a fresh tmpdir
+    // credential, in injectEnv — a different path with no existing store.)
+    const schema_token = provider_schema.TokenFields{
+        .access_token = result.access_token,
+        .refresh_token = retained_refresh_token,
+        .expires_at = expires_at,
+    };
+    const credential = provider_schema.mergeCredentialGeneric(def, raw_for_merge, schema_token, ctx.allocator) catch |e| {
+        log.err("token: refusing lossy writeback for {s}: merge failed ({s})", .{ prov, @errorName(e) });
+        recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "merge_failed_refusing_lossy_write", false, false);
         return error.TokenRefreshFailed;
     };
     defer ctx.allocator.free(credential);
@@ -1949,9 +1987,18 @@ test "attemptRefresh defers typed when the repair flock is held by another proce
         ctx.token.?.expires_at = std.time.timestamp() - 10;
     }
 
-    // Holder released: the refresh proceeds past the lock to the token
-    // endpoint (a closed local port), proving the deferral above came from
-    // the flock and not the endpoint.
+    // Holder released: the refresh proceeds past the lock and the
+    // under-lock store re-read to the token endpoint (a closed local port),
+    // proving the deferral above came from the flock and not the endpoint.
+    // A real on-disk store is required so the TIN-2074 unreadable-store
+    // refusal does not short-circuit before the endpoint.
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(
+            \\{"access_token":"at-lock","refresh_token":"rt-lock","expires_at":1700000000}
+        );
+    }
     ctx.last_refresh_outcome = null;
     ctx.last_refresh_reason = null;
     try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
@@ -2037,4 +2084,73 @@ test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 
     try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
     try std.testing.expectEqualStrings("at-peer-fresh", ctx.token.?.access_token);
     try std.testing.expectEqualStrings("rt-peer-fresh", ctx.token.?.refresh_token.?);
+}
+
+test "attemptRefresh refuses lossy writeback when the store became unreadable under the lock (TIN-2074 review)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "credential": {{ "access_token_path": "access_token", "refresh_token_path": "refresh_token", "expires_at_path": "expires_at" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "default";
+
+    // ctx.token carries a refresh token (read earlier), but the on-disk
+    // store does NOT exist — simulating a transient read failure of the
+    // canonical store between the initial read and the under-lock re-read.
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-stale"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-stale"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // The refresh must refuse rather than write a lossy template blob over
+    // the (absent, but in production canonical) store. The endpoint is
+    // never reached.
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("store_unreadable_refusing_lossy_write", ctx.last_refresh_reason.?);
+    // The store was not created by a fallback template write.
+    try std.testing.expect(!fileExists(auth_path));
+}
+
+fn fileExists(path: []const u8) bool {
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
 }
