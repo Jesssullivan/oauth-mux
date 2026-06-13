@@ -26,6 +26,22 @@ pub fn runtimeDir(allocator: std.mem.Allocator) ![]const u8 {
         defer allocator.free(dir);
         return absolutePath(allocator, dir);
     }
+    // TIN-2039: repair-lock files intentionally persist after release
+    // (TIN-2041), so test builds must not silently fall through to the
+    // operator's real runtime dir. Tests that need cleanup still set
+    // OMUX_RUNTIME_DIR via repair_state.TestRuntimeDirScope; this is only the
+    // backstop for tests that forgot to scope themselves.
+    if (comptime builtin.is_test) return testRuntimeDir(allocator);
+    return productionRuntimeDir(allocator);
+}
+
+fn testRuntimeDir(allocator: std.mem.Allocator) ![]const u8 {
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "oauth-mux-test-runtime" });
+}
+
+fn productionRuntimeDir(allocator: std.mem.Allocator) ![]const u8 {
     if (try env.get(allocator, "XDG_RUNTIME_DIR")) |dir| {
         defer allocator.free(dir);
         return std.fs.path.join(allocator, &.{ dir, app_name });
@@ -169,14 +185,8 @@ test "runtimeDir honors OMUX_RUNTIME_DIR override (test seam, 2026-06-12 audit)"
 test "runtimeDir macOS fallback avoids periodically-cleaned /tmp (TIN-2041)" {
     if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
     const allocator = std.testing.allocator;
-    const dir = try runtimeDir(allocator);
+    const dir = try productionRuntimeDir(allocator);
     defer allocator.free(dir);
-    if (try env.get(allocator, "OMUX_RUNTIME_DIR")) |base| {
-        defer allocator.free(base);
-        // Explicit override stays honored; the fallback contract is untestable here.
-        try std.testing.expect(std.fs.path.isAbsolute(dir));
-        return;
-    }
     if (try env.get(allocator, "XDG_RUNTIME_DIR")) |base| {
         defer allocator.free(base);
         // Explicit XDG runtime dir stays honored.
@@ -185,6 +195,21 @@ test "runtimeDir macOS fallback avoids periodically-cleaned /tmp (TIN-2041)" {
     }
     try std.testing.expect(!std.mem.startsWith(u8, dir, "/tmp/"));
     try std.testing.expect(std.mem.endsWith(u8, dir, "Library/Application Support/oauth-mux/runtime"));
+}
+
+test "runtimeDir test fallback stays out of the operator runtime dir (TIN-2039)" {
+    if (try env.get(std.testing.allocator, "OMUX_RUNTIME_DIR")) |base| {
+        std.testing.allocator.free(base);
+        return error.SkipZigTest;
+    }
+
+    const allocator = std.testing.allocator;
+    const dir = try runtimeDir(allocator);
+    defer allocator.free(dir);
+
+    try std.testing.expect(std.fs.path.isAbsolute(dir));
+    try std.testing.expect(std.mem.indexOf(u8, dir, ".zig-cache") != null);
+    try std.testing.expect(std.mem.endsWith(u8, dir, "oauth-mux-test-runtime"));
 }
 
 test "socketPathFromRuntimeDir keeps Unix socket paths under the platform limit" {
