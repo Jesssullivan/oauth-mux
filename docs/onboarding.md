@@ -23,7 +23,10 @@ without reading token files.
 
 4. Provider author.
    The author wants to add support for a new OAuth-backed harness through a
-   JSON provider definition and fixtures before writing Zig.
+   JSON provider definition and fixtures before writing Zig. (Holds for
+   home-scoped-file harnesses; OS-keystore harnesses like Claude on macOS
+   need compiled support — see
+   `docs/spec/auth-state-models-and-adapter-extensibility-2026-06-12.md`.)
 
 5. Release operator.
    The operator wants local proof, self-hosted cache-first proof, registry
