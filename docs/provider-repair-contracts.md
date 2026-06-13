@@ -85,12 +85,20 @@ same consent the repair phase requires); the default-deny tick defers with
 `refresh_requires_mutating_budget`. Batch revalidation surfaces
 (`codex revalidate-exhausted`, adapter auto-revalidation) never rotate.
 
-Remaining blockers before any builtin grant flips: TIN-2074 — the
-credential templates are lossy (claude drops `expiresAt`, codex drops
-`tokens.id_token` — the identity source), so a refresh writeback would
-corrupt the native store; and a deadline on the token-endpoint call (the
-flock is held across it, and blocking acquirers have no timeout). Until
-both land, opting an account in changes nothing for builtin providers.
+Writeback is field-preserving (TIN-2074): `mergeCredentialGeneric` rewrites
+only the token fields at the definition's declared paths and preserves
+everything else (claude `scopes`/`subscriptionType`/`rateLimitTier`, codex
+`tokens.id_token`/`last_refresh`), unit-aware for stores that keep expiry in
+epoch milliseconds (claude). It FAILS CLOSED — if the store is unreadable
+under the lock or the merge cannot apply, the refresh is refused rather than
+overwriting the canonical store with a lossy template. The token-endpoint
+call now carries a 30s post-connect socket deadline (posix; winsock DWORD on
+Windows), bounding the flock-held window against a server stall.
+
+Remaining blocker before any builtin grant flips: the dual-writer story
+(TIN-2059) — the native CLI also rotates the same refresh token, and two
+writers can revoke each other. Until it lands, opting an account in changes
+nothing for builtin providers.
 
 Without consent the writeback plan refuses with
 `proactive_refresh_not_opted_in` (providers without the declared grant keep
