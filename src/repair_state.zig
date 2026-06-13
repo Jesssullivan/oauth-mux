@@ -748,12 +748,14 @@ fn writeTextLines(writer: anytype, lines: []const []const u8) !void {
 /// Test helper: scope lock files to a per-test tmp runtime dir via the
 /// OMUX_RUNTIME_DIR seam so unit tests never write into the user's real
 /// runtime dir (locks persist after TIN-2041, so stray writes are permanent).
-const TestRuntimeDirScope = struct {
+/// Pub so other modules' lock tests (pipeline refresh/probe) reuse it instead
+/// of polluting the real repair-locks dir (TIN-2039 review).
+pub const TestRuntimeDirScope = struct {
     tmp: std.testing.TmpDir,
     root: []const u8,
     overrides: std.process.EnvMap,
 
-    fn init(allocator: std.mem.Allocator) !TestRuntimeDirScope {
+    pub fn init(allocator: std.mem.Allocator) !TestRuntimeDirScope {
         var tmp = std.testing.tmpDir(.{});
         errdefer tmp.cleanup();
         const root = try tmp.dir.realpathAlloc(allocator, ".");
@@ -764,11 +766,11 @@ const TestRuntimeDirScope = struct {
         return .{ .tmp = tmp, .root = root, .overrides = overrides };
     }
 
-    fn activate(self: *TestRuntimeDirScope) void {
+    pub fn activate(self: *TestRuntimeDirScope) void {
         env.test_overrides = &self.overrides;
     }
 
-    fn deinit(self: *TestRuntimeDirScope, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *TestRuntimeDirScope, allocator: std.mem.Allocator) void {
         env.test_overrides = null;
         self.overrides.deinit();
         allocator.free(self.root);

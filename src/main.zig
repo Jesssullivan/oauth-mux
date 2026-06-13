@@ -8543,6 +8543,8 @@ fn writeProbeJson(writer: anytype, allocator: std.mem.Allocator, store: *health_
     }
     try writer.writeAll(",\"probe_executed\":");
     try writer.writeAll(if (ctx.last_probe_executed) "true" else "false");
+    try writer.writeAll(",\"lock_busy\":");
+    try writer.writeAll(if (ctx.last_probe_lock_busy) "true" else "false");
     try writer.writeAll(",\"probe_status\":");
     if (ctx.last_probe_status) |status| {
         try writer.print("{d}", .{status});

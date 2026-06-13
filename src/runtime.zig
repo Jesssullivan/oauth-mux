@@ -160,6 +160,26 @@ pub fn routeReadiness(
     return info.readiness;
 }
 
+// TIN-2039: binary/path readiness WITHOUT the advisory repair-lock probe.
+// For callers that have ALREADY acquired the per-account lock (the
+// command-probe store guard), probing it again would falsely report
+// repair_in_progress for the caller's own held lock. Same as routeReadiness
+// minus that middle check.
+pub fn routeReadinessHoldingLock(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    route: RouteRef,
+    def: provider_schema.ProviderDefinition,
+) !types.RuntimeReadiness {
+    const provider_runtime = try providerReadiness(allocator, def, route.capability);
+    if (!provider_runtime.isReady()) return provider_runtime;
+
+    const prov = cfg.providers.map.get(route.provider) orelse return .{ .session_unavailable = "provider_config_missing" };
+    const account = prov.accounts.map.get(route.account) orelse return .{ .session_unavailable = "account_config_missing" };
+    const info = try accountInfo(allocator, prov, account, def, config.resolveProviderKind(cfg, route.provider));
+    return info.readiness;
+}
+
 pub fn accountInfo(
     allocator: std.mem.Allocator,
     prov: config.ProviderConfig,

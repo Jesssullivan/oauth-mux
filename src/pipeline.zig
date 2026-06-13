@@ -35,6 +35,11 @@ pub const Context = struct {
     last_probe_executed: bool = false,
     last_probe_status: ?u16 = null,
     last_probe_decision: ?types.MuxDecision = null,
+    // TIN-2039: set when a command-transport probe of a real account store
+    // was skipped because the per-account lock was held by a live session —
+    // the probe did NOT touch the store (codex could otherwise rewrite
+    // auth.json under the live session). Surfaced as "lock_busy" in JSON.
+    last_probe_lock_busy: bool = false,
     // TIN-2073: probe-budget callers (the daemon tick's probe phase) set
     // this false — they must never rotate tokens; rotation belongs to the
     // repair phase under admission + the per-account repair lock.
@@ -507,12 +512,44 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
         else => return error.TokenParseFailed,
     };
 
+    // TIN-2039: a command-transport probe spawns the native CLI (codex exec)
+    // INSIDE the account's real store when the account has a config_dir, and
+    // the CLI may refresh + rewrite auth.json mid-probe. ACQUIRE the
+    // per-account lock and HOLD it across the probe so it never races a live
+    // managed session of the same account in another process (the lock is
+    // the same key the session/refresh paths use → cross-process). Acquired
+    // BEFORE the readiness check so a held lock is reported authoritatively
+    // as lock_busy (not the advisory repair_in_progress, which is a
+    // check-then-release with a TOCTOU window). Held → skip entirely: no
+    // store access, no health poison. HTTP-transport probes touch no store
+    // and are unaffected.
+    var probe_store_lock: ?repair_state.RepairLock = null;
+    defer if (probe_store_lock) |*l| l.release();
     if (plan.transport == .command) {
-        const readiness = runtime.routeReadiness(ctx.allocator, ctx.cfg, .{
-            .provider = prov,
-            .account = acct,
-            .capability = capability,
-        }, def) catch |e| switch (e) {
+        const store_guarded = probeTargetsRealAccountStore(ctx, prov, acct, def);
+        if (store_guarded) {
+            probe_store_lock = repair_state.acquireRepairLock(ctx.allocator, prov, acct) catch |e| switch (e) {
+                error.RepairInProgress => {
+                    log.warn("probe: {s}:{s} store lock held by a live session; skipping store probe (lock_busy)", .{ prov, acct });
+                    ctx.last_probe_executed = false;
+                    ctx.last_probe_lock_busy = true;
+                    // No store access, no new evidence — preserve the
+                    // account's existing recorded decision rather than poison
+                    // health on a benign "busy" outcome.
+                    const decision = ctx.health.muxDecisionFor(prov, acct, capability);
+                    ctx.last_probe_decision = decision;
+                    return decision;
+                },
+                else => return error.RuntimeNotReady,
+            };
+        }
+        // Readiness check: skip the advisory repair-lock probe when we
+        // already hold the lock (it would falsely conflict with ourselves).
+        const route_ref = runtime.RouteRef{ .provider = prov, .account = acct, .capability = capability };
+        const readiness = (if (store_guarded)
+            runtime.routeReadinessHoldingLock(ctx.allocator, ctx.cfg, route_ref, def)
+        else
+            runtime.routeReadiness(ctx.allocator, ctx.cfg, route_ref, def)) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.RuntimeNotReady,
         };
@@ -592,6 +629,18 @@ const ProbeEnv = struct {
         self.pairs.append(.{ key, value }) catch return error.OutOfMemory;
     }
 };
+
+// TIN-2039: true when a command-transport probe will run the native CLI in
+// the account's real store (config_dir set + a config-dir env to point it
+// there) — i.e. the CLI can mutate that store's auth.json mid-probe and must
+// be serialized against a live session. Mirrors buildProbeEnv's config-dir
+// gate so the lock is taken exactly when the store would be touched.
+fn probeTargetsRealAccountStore(ctx: *Context, prov: []const u8, acct: []const u8, def: provider_schema.ProviderDefinition) bool {
+    const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return false;
+    const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return false;
+    if (acct_cfg.config_dir == null) return false;
+    return providerConfigDirEnv(prov_cfg, def, ctx.provider_kind) != null;
+}
 
 fn buildProbeEnv(
     ctx: *Context,
@@ -1013,6 +1062,10 @@ test "splitProviderAccount" {
 }
 
 test "runEnv uses configured provider definition" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1204,6 +1257,10 @@ test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
 }
 
 test "runEnv honors capability route health from profile" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1279,6 +1336,10 @@ test "runEnv honors capability route health from profile" {
 }
 
 test "runEnv routes around degraded capability without poisoning account" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1373,6 +1434,10 @@ test "runEnv routes around degraded capability without poisoning account" {
 }
 
 test "runProbe honors explicit account filter without a configured probe plan" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1438,6 +1503,10 @@ test "runProbe honors explicit account filter without a configured probe plan" {
 }
 
 test "runProbe executes auth none command probe without reading missing secret" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     const json =
         \\{
         \\  "version": 1,
@@ -1503,6 +1572,10 @@ test "runProbe executes auth none command probe without reading missing secret" 
 }
 
 test "runProbe with explicit account rechecks previously degraded command route" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     const json =
         \\{
         \\  "version": 1,
@@ -1565,6 +1638,10 @@ test "runProbe with explicit account rechecks previously degraded command route"
 }
 
 test "runProbe does not poison liveness when command probe binary is missing" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     const missing_binary = "omux-definitely-missing-probe-runtime";
     const json = try std.fmt.allocPrint(
         std.testing.allocator,
@@ -1628,6 +1705,10 @@ test "runProbe does not poison liveness when command probe binary is missing" {
 }
 
 test "runProbe does not poison liveness when command account runtime is unavailable" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1717,6 +1798,10 @@ fn expectUnpoisonedRuntimeHealth(health: health_mod.AccountHealth) !void {
 }
 
 test "runEnv skips remaining accounts for degraded provider" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1887,6 +1972,10 @@ test "refreshWritebackBackend admits opted-in proactive refresh under upstream l
 }
 
 test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
+
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -1955,6 +2044,10 @@ test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
 }
 
 test "attemptRefresh defers typed when the repair flock is held by another process (TIN-2073)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -2054,6 +2147,10 @@ test "attemptRefresh defers typed when the repair flock is held by another proce
 }
 
 test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 TOCTOU)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -2135,6 +2232,10 @@ test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 
 }
 
 test "attemptRefresh refuses lossy writeback when the store became unreadable under the lock (TIN-2074 review)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -2204,6 +2305,10 @@ fn fileExists(path: []const u8) bool {
 }
 
 test "attemptRefresh defers when the identity lock is held by a sibling-identity session (TIN-2043)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -2281,6 +2386,10 @@ test "attemptRefresh defers when the identity lock is held by a sibling-identity
 }
 
 test "attemptRefresh refuses when an identity path is declared but the store has no id (TIN-2043 missing-id policy)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -2330,4 +2439,97 @@ test "attemptRefresh refuses when an identity path is declared but the store has
     try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
     try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("identity_unresolved_refusing_refresh", ctx.last_refresh_reason.?);
+}
+
+test "probeTargetsRealAccountStore gates on config_dir + a config-dir env (TIN-2039)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "config_dir_env": "CODEX_HOME",
+        \\      "accounts": {
+        \\        "homed": { "secret": { "backend": "file", "path": "/tmp/x" }, "config_dir": "/tmp/codex-homed" },
+        \\        "tmpd": { "secret": { "backend": "file", "path": "/tmp/y" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    const def = config_mod.resolveProviderDefinition(parsed.value, "codex");
+    // config_dir present + config_dir_env present → store is real → guard.
+    try std.testing.expect(probeTargetsRealAccountStore(&ctx, "codex", "homed", def));
+    // No config_dir → tmpdir mode, no real store to guard.
+    try std.testing.expect(!probeTargetsRealAccountStore(&ctx, "codex", "tmpd", def));
+}
+
+test "command probe of a lock-held account store reports lock_busy without touching the store (TIN-2039)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const store_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(store_dir);
+
+    // A command probe whose command writes a marker file — proves whether
+    // the probe actually executed (it must NOT when the lock is held).
+    const marker = try std.fmt.allocPrint(std.testing.allocator, "{s}/probe-ran", .{store_dir});
+    defer std.testing.allocator.free(marker);
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{
+        \\      "name": "codex", "kind": "codex", "config_dir_env": "CODEX_HOME",
+        \\      "capabilities": [
+        \\        {{ "name": "cap", "probe": {{ "transport": "command", "auth": "none", "timeout_ms": 5000, "command": ["/usr/bin/touch", "{s}"] }} }}
+        \\      ]
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "config_dir_env": "CODEX_HOME", "accounts": {{ "homed": {{ "secret": {{ "backend": "file", "path": "{s}/auth.json" }}, "config_dir": "{s}" }} }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{ marker, store_dir, store_dir });
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "homed";
+    ctx.capability_name = "cap";
+
+    // Foreign holder on the per-account lock (the session's key).
+    const lock_path = try repair_state.lockPath(std.testing.allocator, "codex", "homed");
+    defer std.testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{ .truncate = false, .mode = 0o600, .lock = .exclusive, .lock_nonblocking = true });
+
+    {
+        defer holder.close();
+        const decision = try probeCapability(&ctx);
+        _ = decision;
+        try std.testing.expect(ctx.last_probe_lock_busy);
+        try std.testing.expect(!ctx.last_probe_executed);
+        // The probe command never ran → no marker, the store was untouched.
+        try std.testing.expect(std.fs.accessAbsolute(marker, .{}) == error.FileNotFound);
+    }
 }
