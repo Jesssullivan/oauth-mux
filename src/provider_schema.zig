@@ -100,6 +100,12 @@ pub const CredentialFormat = struct {
     refresh_token_path: []const u8 = "refresh_token",
     expires_at_path: ?[]const u8 = null,
     expires_in_path: ?[]const u8 = null,
+    // TIN-2087: derive expiry from the `exp` claim of a JWT at this path
+    // (e.g. codex stores no wall-clock expiry — only a JWT access token).
+    // Tried only after expires_at_path/expires_in_path yield nothing. The
+    // payload is base64url-decoded and read; no signature verification (we
+    // trust our own store). `exp` is epoch seconds per RFC 7519.
+    expires_from_jwt_path: ?[]const u8 = null,
     // Alternative paths for API key mode
     api_key_path: ?[]const u8 = null,
     // Wrapper key — if the credential JSON is nested under a top-level key
@@ -799,7 +805,10 @@ pub const codex_def = ProviderDefinition{
     .credential = .{
         .access_token_path = "tokens.access_token",
         .refresh_token_path = "tokens.refresh_token",
-        .expires_in_path = "tokens.expires_in",
+        // Codex auth.json has no wall-clock expiry; the access token is a
+        // JWT whose `exp` claim is the truth (TIN-2087). The previously
+        // declared "tokens.expires_in" never existed in the real store.
+        .expires_from_jwt_path = "tokens.access_token",
         .api_key_path = "OPENAI_API_KEY",
     },
     .injection = .{
@@ -820,12 +829,13 @@ pub const codex_def = ProviderDefinition{
         .session_paths = &.{"CODEX_HOME/auth.json"},
     },
     // Refresh grant intentionally undeclared — same gating as claude_def.
-    // Serialization (TIN-2073) and field-preserving merge (TIN-2074:
-    // preserves tokens.id_token, the codex identity source) have landed.
-    // Remaining: the dual-writer story (TIN-2059) vs the native codex CLI,
-    // and codex stores expiry as tokens.expires_in (relative), which the
-    // merge does not rewrite — expiry tracking on writeback is via the JWT,
-    // verify before the flip.
+    // Serialization (TIN-2073), field-preserving merge (TIN-2074: preserves
+    // tokens.id_token, the codex identity source), and JWT-exp expiry
+    // derivation (TIN-2087: codex has no wall-clock expiry field) have
+    // landed. Remaining before the flip: the dual-writer story (TIN-2059)
+    // vs the native codex CLI — in particular warm-loop identity-lock
+    // participation (TIN-2043), since codex stores no expiry the merge
+    // rewrites (expiry is read from the access-token JWT, not persisted).
     .repair = .{
         .owner = .upstream_cli_login,
     },
@@ -1427,6 +1437,44 @@ pub fn resolveJsonInt(value: std.json.Value, path: []const u8) ?i64 {
     };
 }
 
+// TIN-2087: read the `exp` claim (epoch seconds, RFC 7519) from a JWT's
+// payload. Decode-only — no signature verification, since the token comes
+// from our own credential store. Returns null on any malformation rather
+// than failing the whole parse (a token without a readable exp just means
+// "no proactive-refresh signal", the pre-TIN-2087 behavior).
+pub fn jwtExpSeconds(jwt: []const u8, allocator: std.mem.Allocator) ?i64 {
+    var it = std.mem.splitScalar(u8, jwt, '.');
+    _ = it.next() orelse return null; // header
+    const payload_b64 = it.next() orelse return null; // payload
+    if (payload_b64.len == 0) return null;
+
+    const decoder = std.base64.url_safe_no_pad.Decoder;
+    const decoded_len = decoder.calcSizeForSlice(payload_b64) catch return null;
+    const buf = allocator.alloc(u8, decoded_len) catch return null;
+    defer allocator.free(buf);
+    decoder.decode(buf, payload_b64) catch return null;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, buf, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const exp = parsed.value.object.get("exp") orelse return null;
+    return switch (exp) {
+        .integer => |i| i,
+        // Some issuers emit exp as a float; truncate to seconds. Range-guard
+        // before @intFromFloat — in ReleaseSafe (the production lane) it
+        // PANICS on an out-of-i64-range value, which `catch` cannot recover
+        // (a panic is not an error), so a hand-edited/hostile exp like 1e30
+        // would abort the process instead of degrading to null. (NaN/inf
+        // never reach here — std.json routes them to .number_string.)
+        .float => |f| if (f >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+            f < @as(f64, @floatFromInt(std.math.maxInt(i64))))
+            @intFromFloat(f)
+        else
+            null,
+        else => null,
+    };
+}
+
 // ── Generic Token Parser ──
 // Parses any credential format using a ProviderDefinition ��� no provider-specific code.
 
@@ -1504,6 +1552,14 @@ pub fn parseTokenGeneric(
         if (def.credential.expires_in_path) |eip| {
             if (resolveJsonInt(root, eip)) |ei| {
                 result.expires_at = std.time.timestamp() + ei;
+            }
+        }
+    }
+    // TIN-2087: last resort — read `exp` from a JWT (codex's access token).
+    if (result.expires_at == null) {
+        if (def.credential.expires_from_jwt_path) |jp| {
+            if (resolveJsonString(root, jp)) |jwt| {
+                result.expires_at = jwtExpSeconds(jwt, allocator);
             }
         }
     }
@@ -1728,15 +1784,21 @@ test "parseTokenGeneric with claude def" {
 }
 
 test "parseTokenGeneric with codex def" {
-    const json =
-        \\{"auth_mode":"chatgpt","tokens":{"access_token":"oat-789","refresh_token":"ort-012","expires_in":3600}}
-    ;
+    // Real codex shape (TIN-2087): JWT access token, opaque refresh token,
+    // no expires_in. Expiry derives from the JWT exp claim.
+    const access_jwt = try testMakeJwt(std.testing.allocator, "{\"exp\":9999999999}");
+    defer std.testing.allocator.free(access_jwt);
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{"auth_mode":"chatgpt","tokens":{{"access_token":"{s}","refresh_token":"ort-012"}}}}
+    , .{access_jwt});
+    defer std.testing.allocator.free(json);
+
     const result = try parseTokenGeneric(codex_def, json, std.testing.allocator);
     defer std.testing.allocator.free(result.access_token);
     defer if (result.refresh_token) |rt| std.testing.allocator.free(rt);
-    try std.testing.expectEqualStrings("oat-789", result.access_token);
+    try std.testing.expectEqualStrings(access_jwt, result.access_token);
     try std.testing.expectEqualStrings("ort-012", result.refresh_token.?);
-    try std.testing.expect(result.expires_at != null);
+    try std.testing.expectEqual(@as(?i64, 9999999999), result.expires_at);
 }
 
 test "parseTokenGeneric with codex API key mode" {
@@ -2423,4 +2485,78 @@ test "expirySecondsToStore saturates instead of overflowing i64 (TIN-2074 review
     // repair flock — saturate to i64 max.
     try std.testing.expectEqual(std.math.maxInt(i64), expirySecondsToStore(.milliseconds, std.math.maxInt(i64)));
     try std.testing.expectEqual(@as(i64, 1781400000), expirySecondsToStore(.seconds, 1781400000));
+}
+
+// Helper for the tests below: assemble a JWT "header.payload.sig" whose
+// payload is the given JSON (base64url-no-pad), with throwaway header/sig.
+fn testMakeJwt(allocator: std.mem.Allocator, payload_json: []const u8) ![]const u8 {
+    const enc = std.base64.url_safe_no_pad.Encoder;
+    const buf = try allocator.alloc(u8, enc.calcSize(payload_json.len));
+    defer allocator.free(buf);
+    const payload_b64 = enc.encode(buf, payload_json);
+    return std.fmt.allocPrint(allocator, "eyJhbGciOiJSUzI1NiJ9.{s}.sig", .{payload_b64});
+}
+
+test "jwtExpSeconds reads the exp claim from a JWT (TIN-2087)" {
+    const jwt = try testMakeJwt(std.testing.allocator, "{\"exp\":1781400000,\"sub\":\"x\"}");
+    defer std.testing.allocator.free(jwt);
+    try std.testing.expectEqual(@as(?i64, 1781400000), jwtExpSeconds(jwt, std.testing.allocator));
+}
+
+test "jwtExpSeconds returns null on malformation rather than failing (TIN-2087)" {
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds("not-a-jwt", std.testing.allocator));
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds("only.two", std.testing.allocator));
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds("h..s", std.testing.allocator));
+    // Valid base64url payload but no exp claim.
+    const no_exp = try testMakeJwt(std.testing.allocator, "{\"sub\":\"x\"}");
+    defer std.testing.allocator.free(no_exp);
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds(no_exp, std.testing.allocator));
+
+    // A finite-but-out-of-i64-range float exp must yield null, never panic
+    // in ReleaseSafe (review finding). Integer-overflow exp -> number_string
+    // -> null already; this covers the .float branch's range guard.
+    const huge_float = try testMakeJwt(std.testing.allocator, "{\"exp\":1e30}");
+    defer std.testing.allocator.free(huge_float);
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds(huge_float, std.testing.allocator));
+    const neg_huge = try testMakeJwt(std.testing.allocator, "{\"exp\":-1e30}");
+    defer std.testing.allocator.free(neg_huge);
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds(neg_huge, std.testing.allocator));
+    // A normal float exp still truncates to seconds.
+    const float_exp = try testMakeJwt(std.testing.allocator, "{\"exp\":1781400000.5}");
+    defer std.testing.allocator.free(float_exp);
+    try std.testing.expectEqual(@as(?i64, 1781400000), jwtExpSeconds(float_exp, std.testing.allocator));
+}
+
+test "parseTokenGeneric derives codex expiry from the access-token JWT exp (TIN-2087)" {
+    const allocator = std.testing.allocator;
+    const access_jwt = try testMakeJwt(allocator, "{\"exp\":1781400000}");
+    defer allocator.free(access_jwt);
+
+    // Real codex auth.json shape: JWT access token, opaque refresh token,
+    // no expires_in / expires_at anywhere.
+    const raw = try std.fmt.allocPrint(allocator,
+        \\{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"access_token":"{s}","refresh_token":"rt.1.opaque","id_token":"idt","account_id":"acct"}},"last_refresh":"2026-06-03T01:51:47Z"}}
+    , .{access_jwt});
+    defer allocator.free(raw);
+
+    const result = try parseTokenGeneric(codex_def, raw, allocator);
+    defer {
+        allocator.free(result.access_token);
+        if (result.refresh_token) |rt| allocator.free(rt);
+    }
+    try std.testing.expectEqual(@as(?i64, 1781400000), result.expires_at);
+    try std.testing.expectEqualStrings("rt.1.opaque", result.refresh_token.?);
+}
+
+test "parseTokenGeneric leaves codex expiry null when the access token is not a readable JWT (TIN-2087)" {
+    const allocator = std.testing.allocator;
+    const raw =
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"opaque-not-a-jwt","refresh_token":"rt.1.x"}}
+    ;
+    const result = try parseTokenGeneric(codex_def, raw, allocator);
+    defer {
+        allocator.free(result.access_token);
+        if (result.refresh_token) |rt| allocator.free(rt);
+    }
+    try std.testing.expectEqual(@as(?i64, null), result.expires_at);
 }
