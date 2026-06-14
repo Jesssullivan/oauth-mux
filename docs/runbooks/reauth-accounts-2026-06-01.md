@@ -13,13 +13,15 @@ This runbook respects **mediation-not-control**
 (`docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`): **oauth-mux scaffolds
 config and emits handoffs; the OPERATOR runs every interactive login.** No step
 here has an agent run `codex login`, `claude /login`, open a browser, write a
-keychain, or perform provider calls.
+keychain, or run an unlabeled provider call. Bounded probes are called out
+explicitly as provider-call actions.
 
 Legend: **[AGENT-SAFE]** = read-only, or a broker-owned non-interactive scaffold —
 an agent may run it. **[USER]** = interactive, human-mediated; the agent presents
-the exact redacted command and waits. Never emit tokens, refresh tokens, keys,
-auth headers, raw account ids, raw emails, session ids, or credential file
-contents — masked hints only.
+the exact redacted command and waits. **[BOUNDED-PROBE]** = an intentional,
+metered provider probe; run it only when the operator has approved or pre-authorized
+that probe. Never emit tokens, refresh tokens, keys, auth headers, raw account
+ids, raw emails, session ids, or credential file contents — masked hints only.
 
 Contracts in force:
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md` (Visibility /
@@ -128,7 +130,9 @@ auth-death**. Auth-death would surface as `401 auth_unauthorized`, which is
 explicitly NOT reported. Reauth would risk the §1 revocation pattern for zero
 benefit.
 
-**[AGENT-SAFE]** Classify it with the exact emitted command:
+**[BOUNDED-PROBE]** Classify it with the exact emitted command. This spends one
+provider probe to classify the 4xx; it is not a login and must not mutate
+credentials:
 ```
 oauth-mux probe --provider codex --account max-3 --capability codex-max --json
 ```
@@ -174,7 +178,7 @@ run `login-device max-1`.
    *existing* refresh token. Recovery from a true death is human-escalation only
    (the #25737 fix or an account-policy change), never an automated re-login.
 
-**[AGENT-SAFE]** Monitoring (read-only, no spend):
+**[AGENT-SAFE]** Monitoring (local/status reads; no provider probe):
 ```
 oauth-mux accounts list --provider codex --json
 oauth-mux stay-afloat handoffs --json
@@ -192,20 +196,23 @@ prove auth-status.** The agent mediates; the OPERATOR runs the login. Claude is
 Claude CLI, which owns the credential write — oauth-mux does not rewrite
 Claude-owned state (`account-enrollment-agent-contract` Story B).
 
-> **macOS keychain caveat (unverified assumption — confirm with an operator fixture
-> before relying on it).** Claude Code on macOS stores OAuth creds in the encrypted
-> login keychain (`personal` shows `secret_backend=keychain`; `~/.claude/.credentials.json`
-> is absent for that reason). The keychain item *appears* to be a single shared
-> generic-password (`service = "Claude Code-credentials"`) that may **not** vary per
-> `CLAUDE_CONFIG_DIR` on macOS — if so, `CLAUDE_CONFIG_DIR` isolates filesystem state
-> but not the keychain, and a second `/login` could overwrite the first account's
-> token (the same single-token clobber that killed codex max-2). The repo's own
-> `provider-proof-claude-command-auth` spec lists real keychain/operator fixtures as
-> *remaining work*, so treat the keychain-collision behavior as **unproven**.
-> **Practical mitigation until proven:** isolate `CLAUDE_CONFIG_DIR` per account AND
-> **do not re-login the existing `personal` identity** — log in a genuinely distinct
-> account. If an operator fixture later proves the keychain collides across config
-> dirs, revisit with a file-based credential path; do not assume either way now.
+> **macOS keychain (verified live — TIN-2060, `docs/spec/provider-proof-claude-credential-store-2026-06-12.md`).**
+> Claude Code on macOS stores OAuth creds in the encrypted login keychain
+> (`personal` shows `secret_backend=keychain`; `~/.claude/.credentials.json` is absent
+> for that reason). The earlier "single shared item" worry is **overturned**: the
+> generic-password service is **suffixed per config dir** —
+> `Claude Code-credentials-<first 8 hex of sha256(absolute CLAUDE_CONFIG_DIR)>` for a
+> managed/isolated account (e.g. `Claude Code-credentials-26ae8e92`), vs the
+> unsuffixed `Claude Code-credentials` for the canonical `~/.claude` identity. So an
+> isolated `CLAUDE_CONFIG_DIR` **does** get its own keychain item; a second `/login`
+> under a distinct config dir does **not** clobber the `personal` token. (oauth-mux's
+> writeback layer additionally refuses to write the bare canonical item — the
+> `claude:canonical` guard, TIN-2054.) Two residuals the proof flagged: keychain
+> *write* was unproven on the test platform, and a manual credential **paste** during
+> a second-account OAuth flow can bleed the first account's browser session.
+> **Practical guidance:** isolate `CLAUDE_CONFIG_DIR` per account, do **not** re-login
+> the existing `personal` identity, and open each account's login in a **fresh
+> Private/incognito window** (avoids the paste/session bleed).
 
 ### Step 1 — inspect **[AGENT-SAFE]** (read-only)
 ```
@@ -278,5 +285,5 @@ and broke `codex resume` across repos (session/sqlite/logs all live under
 
 - **max-1:** leave alone; keepalive keeps it warm, serially, and escalates (never `login-device`).
 - **max-2:** duplicate of max-1 → **(A) drop/disable (recommended)**; (B) re-enroll only on a truly different account (assert `account_id_hash != 38079d6acec6`); **never (C) cold standby**. Never `login-device max-2`.
-- **max-3:** `oauth-mux probe --provider codex --account max-3 --capability codex-max --json` to classify; never reauth.
+- **max-3:** `oauth-mux probe --provider codex --account max-3 --capability codex-max --json` to classify with one bounded provider probe; never reauth.
 - **claude 2nd account:** enroll plan → `enroll --confirm-enroll` scaffold → `[USER] env CLAUDE_CONFIG_DIR=… claude /login` (fresh incognito, distinct identity) → prove via `accounts list --json`. Command-owned; isolate per account; do not re-login `personal`.
