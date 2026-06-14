@@ -21,9 +21,11 @@
 const std = @import("std");
 const ws = @import("warm_scheduler.zig");
 const bind = @import("warm_binding.zig");
+const ig = @import("../identity/identity_graph.zig");
 const pipeline = @import("../pipeline.zig");
 const config_mod = @import("../config.zig");
 const health_mod = @import("../health.zig");
+const log = @import("../log.zig");
 
 /// Context the binding's `DoRefreshFn`/`ClockFn` are bound to. Borrows the config
 /// and health store for the loop's lifetime.
@@ -91,25 +93,58 @@ pub fn enumeratePool(
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    var list = std.ArrayList(bind.Observed).init(a);
+    // Pass 1: every account with a readable expiry → a candidate carrying its
+    // "<provider>:<account>" key, expiry, and stable identity hash (null for a
+    // provider with no identity claim, e.g. claude — its identity lives in
+    // .claude.json, not the credential). A read failure / no-expiry skips it.
+    const Candidate = struct { key: []const u8, expires_at_ms: i64, id_hash: ?[]const u8 };
+    var candidates = std.ArrayList(Candidate).init(a);
     var prov_it = cfg.providers.map.iterator();
     while (prov_it.next()) |pe| {
         const prov = pe.key_ptr.*;
         var acct_it = pe.value_ptr.accounts.map.iterator();
         while (acct_it.next()) |ae| {
             const acct = ae.key_ptr.*;
-            // Read this account's expiry with a throwaway Context (transient
-            // allocations freed by its deinit). A read failure / no-expiry skips
-            // the account rather than poisoning the pool.
             var pctx = pipeline.Context.init(allocator, cfg, health);
             defer pctx.deinit();
             pctx.provider_name = prov;
             pctx.account_name = acct;
-            const maybe_exp = pipeline.readAccountExpiryMs(&pctx) catch null;
-            const exp = maybe_exp orelse continue;
+            const exp = (pipeline.readAccountExpiryMs(&pctx) catch null) orelse continue;
             const key = try std.fmt.allocPrint(a, "{s}:{s}", .{ prov, acct });
-            try list.append(.{ .key = key, .expires_at_ms = exp });
+            var id_hash: ?[]const u8 = null;
+            if (pipeline.readAccountIdentityHash(&pctx) catch null) |h| {
+                defer allocator.free(h); // WE own `h` (ctx.allocator); free it after duping (incl. on the dupe's OOM)
+                id_hash = try a.dupe(u8, h);
+            }
+            try candidates.append(.{ .key = key, .expires_at_ms = exp, .id_hash = id_hash });
         }
+    }
+
+    // Pass 2 (TIN-2113): two accounts with the same identity hash share ONE
+    // single-use refresh-token family — rotating either risks provider
+    // family-revocation of the other (outside the per-host lock domain). So
+    // EXCLUDE every colliding account from the warm pool. The identity graph's
+    // duplicateCollisions does the grouping; the slot's `account` is the full key
+    // so collisions report unambiguous "<provider>:<account>" names.
+    var slots = std.ArrayList(ig.AccountSlot).init(a);
+    for (candidates.items) |c| {
+        try slots.append(.{ .account = c.key, .provider = "keepalive", .capability = "keepalive", .account_id_hash = c.id_hash, .liveness = .live });
+    }
+    const collisions = try ig.duplicateCollisions(a, slots.items); // arena-owned; freed with the arena
+    var excluded = std.StringHashMap(void).init(a);
+    for (collisions) |col| {
+        for (col.accounts) |k| try excluded.put(k, {});
+    }
+
+    // Pass 3: build the pool, excluding colliding accounts (logged so the operator
+    // sees why an account is not being warmed).
+    var list = std.ArrayList(bind.Observed).init(a);
+    for (candidates.items) |c| {
+        if (excluded.contains(c.key)) {
+            log.warn("keepalive: refusing to warm {s} — shares an OAuth identity with another enrolled account (single-use refresh-token family; family-revocation risk, TIN-2113); resolve the duplicate to enable", .{c.key});
+            continue;
+        }
+        try list.append(.{ .key = c.key, .expires_at_ms = c.expires_at_ms });
     }
     return .{ .observed = try list.toOwnedSlice(), .arena = arena };
 }
