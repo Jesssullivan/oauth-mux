@@ -19834,6 +19834,7 @@ comptime {
     _ = @import("provider_schema.zig");
     _ = @import("fixture_redaction.zig");
     _ = @import("repair_state.zig");
+    _ = @import("reauth/orchestrator.zig"); // graduated from draft (TIN-2048/TIN-2064): tests now run in CI
     _ = @import("enroll/tests.zig");
     _ = @import("enroll/callback_server_tests.zig");
     _ = @import("enroll/claude_reauth_tests.zig");

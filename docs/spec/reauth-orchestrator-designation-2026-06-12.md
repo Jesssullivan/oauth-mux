@@ -61,14 +61,18 @@ wiring):**
 - Production `RunFlowFn` impls composing `device_code.zig` (RFC 8628),
   `callback_server.zig` (loopback PKCE), and `browser_launch.zig` — these
   modules each own their own seam bundles; the composition layer binds them.
-- `HandoffRecord` gains a correlation id (today it has none) so approval
-  verbs can name what they approve.
-- `MediationKind` gains `command_owned` / `pat_paste` variants (today it
-  cannot express two of the four flows) and `consentFor` stops hardcoding
-  `.device_login` for every provider.
+- `HandoffRecord` gains a correlation id so approval verbs can name what they
+  approve.
+- `MediationKind` gains `command_owned` / `pat_paste` variants and
+  `consentFor` stops hardcoding `.device_login` for every provider.
 - The mediator's `next_action` strings become flow-aware: vendor-CLI command
   for command-owned providers, `oauth-mux reauth run <handoff-id>` for
   engine-run flows.
+
+Graduation implementation note (2026-06-14): #378 now implements the mediator
+side of those deltas and wires the module into the main test root. Flow
+composition is still the next train car before approval can invoke engine-run
+flows.
 
 ### Binding map (corrected to the real seams)
 
@@ -78,7 +82,7 @@ Mediator seams (`orchestrator.zig`): `clock`, `read_evidence`, `refresh`,
 | Mediator seam | Binds to |
 | --- | --- |
 | `clock` | injected monotonic/wall clock (tests inject; daemon binds real) |
-| `read_evidence` | route readiness / health / probe evidence (no spend) |
+| `read_evidence` | route readiness / health / probe evidence (no provider call) |
 | `refresh` | broker-owned serialized refresh (TIN-1791) under the per-account lock — identity-lock participation is future work (TIN-2043), not current behavior |
 | `emit_handoff` | typed redacted handoff records (stay-afloat surface; web UI #347 later) |
 
@@ -121,10 +125,9 @@ command-owned** (upstream `claude /login` user-mediated). Moving Claude to an
 engine-run loopback-PKCE flow (#354's material) is a **provider-boundary
 amendment** that must be made explicitly in that contract — until amended,
 Claude's execution path remains vendor-CLI delegation even after the engine
-productionizes for other providers. Vocabulary unification (branch
-`RepairOwner {operator,broker,provider}` and `Redaction` field names vs the
-contract's `repair_owner`/redaction booleans) rides the #378 graduation
-wiring.
+productionizes for other providers. Vocabulary unification rides #378: the
+mediator now imports the shipped `types.RepairOwner` vocabulary and uses the
+contract's redaction boolean names.
 
 ## Why not the alternatives
 
