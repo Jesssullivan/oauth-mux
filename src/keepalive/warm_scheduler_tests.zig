@@ -171,7 +171,7 @@ test "tick: failures past the budget mark the account dead" {
     try std.testing.expect(accounts[0].dead);
 }
 
-test "tick: an OOM is transient and leaves state untouched" {
+test "tick: an OOM is transient (no death charge) but arms the backoff gate" {
     var clk = FakeClock{ .now = 1_000_000 };
     var ref = FakeRefresher{ .oom = true };
     const sched = scheduler(&clk, &ref, due_policy);
@@ -180,8 +180,10 @@ test "tick: an OOM is transient and leaves state untouched" {
     };
     const r = sched.tick(&accounts);
     try std.testing.expectEqual(@as(u32, 1), r.transient);
-    try std.testing.expectEqual(@as(u32, 0), accounts[0].failures); // unchanged
-    try std.testing.expectEqual(@as(i64, 0), accounts[0].next_attempt_ms);
+    try std.testing.expectEqual(@as(u32, 0), accounts[0].failures); // not charged toward death
+    // gate armed at now + backoffDelayMs(failures+1 = 1) = now + base, so a sticky
+    // OOM can't re-attempt every tick.
+    try std.testing.expectEqual(@as(i64, 1_005_000), accounts[0].next_attempt_ms);
 }
 
 test "tick: NEVER-HALT — a dead peer does not block a live account" {
@@ -200,4 +202,98 @@ test "tick: NEVER-HALT — a dead peer does not block a live account" {
     try std.testing.expectEqual(@as(u32, 1), r.not_due);
     try std.testing.expectEqual(@as(i64, 9_000_000), accounts[1].expires_at_ms); // got refreshed
     try std.testing.expectEqualStrings("live-due", ref.keyStr());
+}
+
+// ── Adversarial-review regression tests (TIN-2053 unpark) ────────────────────
+
+test "refreshDueAtMs: pathological i64-extreme inputs never overflow-panic" {
+    // expires at the `never` sentinel with a negative last_refresh would overflow a
+    // plain `expires - last_refresh`; the saturating ops must stay panic-free and
+    // yield a well-defined far-future instant (this test crashes if any op wraps).
+    const a = ws.Account{ .key = "k", .last_refresh_ms = -1, .expires_at_ms = ws.never };
+    try std.testing.expect(ws.refreshDueAtMs(a, .{ .refresh_percent = 75, .min_lead_ms = 60_000 }) > 0);
+    // an absurd min_lead must not overflow `expires - min_lead`.
+    const b = ws.Account{ .key = "k", .last_refresh_ms = 0, .expires_at_ms = 1000 };
+    _ = ws.refreshDueAtMs(b, .{ .refresh_percent = 100, .min_lead_ms = std.math.minInt(i64) });
+    // an extreme positive last_refresh near i64-max must not overflow the `+`.
+    const c = ws.Account{ .key = "k", .last_refresh_ms = std.math.maxInt(i64) - 10, .expires_at_ms = ws.never };
+    _ = ws.refreshDueAtMs(c, .{});
+    // and isDue/effectiveDueMs over the same extremes stay panic-free.
+    try std.testing.expect(!ws.isDue(c, .{}, 0));
+}
+
+test "tick: a degenerate success (expiry <= issue) is escalated, not committed" {
+    var clk = FakeClock{ .now = 1_000_000 };
+    // "success" but new_expires == new_last → adopting it would be perpetually due.
+    var ref = FakeRefresher{ .new_last = 2_000_000, .new_expires = 2_000_000 };
+    const sched = scheduler(&clk, &ref, due_policy);
+    var accounts = [_]ws.Account{
+        .{ .key = "k", .last_refresh_ms = 0, .expires_at_ms = 1_000_000 },
+    };
+    const r = sched.tick(&accounts);
+    try std.testing.expectEqual(@as(u32, 0), r.refreshed); // NOT adopted
+    try std.testing.expectEqual(@as(u32, 1), r.failed); // escalated like a failure
+    try std.testing.expectEqual(@as(u32, 1), accounts[0].failures);
+    try std.testing.expectEqual(@as(i64, 0), accounts[0].last_refresh_ms); // bad instants not committed
+    try std.testing.expect(accounts[0].next_attempt_ms > clk.now); // backoff gate armed → no busy-loop
+}
+
+test "tick: a sticky OOM is rate-limited by the backoff gate across ticks" {
+    var clk = FakeClock{ .now = 1_000_000 };
+    var ref = FakeRefresher{ .oom = true };
+    const sched = scheduler(&clk, &ref, due_policy);
+    var accounts = [_]ws.Account{
+        .{ .key = "k", .last_refresh_ms = 0, .expires_at_ms = 1_000_000 },
+    };
+    _ = sched.tick(&accounts); // due → OOM → arms next_attempt at now+base
+    try std.testing.expectEqual(@as(u32, 1), ref.calls);
+    // tick again at the SAME clock: the gate makes it not-due → no second call (no hammer).
+    const r2 = sched.tick(&accounts);
+    try std.testing.expectEqual(@as(u32, 1), ref.calls);
+    try std.testing.expectEqual(@as(u32, 1), r2.not_due);
+    // advancing past the gate re-attempts.
+    clk.now = accounts[0].next_attempt_ms;
+    _ = sched.tick(&accounts);
+    try std.testing.expectEqual(@as(u32, 2), ref.calls);
+}
+
+test "tick: OOM with saturated failure count still backs off without overflow" {
+    var clk = FakeClock{ .now = 1_000_000 };
+    var ref = FakeRefresher{ .oom = true };
+    const sched = scheduler(&clk, &ref, due_policy);
+    var accounts = [_]ws.Account{
+        .{ .key = "k", .last_refresh_ms = 0, .expires_at_ms = 1_000_000, .failures = std.math.maxInt(u32) },
+    };
+    const r = sched.tick(&accounts);
+    try std.testing.expectEqual(@as(u32, 1), r.transient);
+    try std.testing.expectEqual(std.math.maxInt(u32), accounts[0].failures);
+    try std.testing.expect(accounts[0].next_attempt_ms > clk.now);
+}
+
+test "tick: death is counted once, then the account is skipped on later ticks" {
+    var clk = FakeClock{ .now = 1_000_000 };
+    var ref = FakeRefresher{ .fail = true };
+    const policy = ws.Policy{ .refresh_percent = 75, .min_lead_ms = 0, .max_failures = 1 };
+    const sched = scheduler(&clk, &ref, policy);
+    var accounts = [_]ws.Account{
+        .{ .key = "k", .last_refresh_ms = 0, .expires_at_ms = 1_000_000 },
+    };
+    const r1 = sched.tick(&accounts); // first failure hits max_failures=1 → dead
+    try std.testing.expectEqual(@as(u32, 1), r1.died);
+    try std.testing.expect(accounts[0].dead);
+    try std.testing.expectEqual(@as(u32, 1), ref.calls);
+    const r2 = sched.tick(&accounts); // dead → skipped, not re-counted, no refresh call
+    try std.testing.expectEqual(@as(u32, 0), r2.died);
+    try std.testing.expectEqual(@as(u32, 1), r2.skipped_dead);
+    try std.testing.expectEqual(@as(u32, 1), ref.calls);
+}
+
+test "nextWakeMs: a live account's backoff gate is reflected; dead peer ignored" {
+    const policy = ws.Policy{ .refresh_percent = 75, .min_lead_ms = 0 };
+    var accounts = [_]ws.Account{
+        .{ .key = "dead", .last_refresh_ms = 0, .expires_at_ms = 500_000, .dead = true }, // ignored
+        // due at 750k, but the backoff gate pushes the effective wake to 900k.
+        .{ .key = "gated", .last_refresh_ms = 0, .expires_at_ms = 1_000_000, .next_attempt_ms = 900_000 },
+    };
+    try std.testing.expectEqual(@as(?i64, 900_000), ws.nextWakeMs(&accounts, policy));
 }

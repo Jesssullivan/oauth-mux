@@ -62,15 +62,17 @@ pub const never: i64 = std.math.maxInt(i64);
 /// of the way through its lifetime, but never later than `min_lead_ms` before
 /// expiry, and never before it was issued. Ignores backoff/dead state.
 pub fn refreshDueAtMs(account: Account, policy: Policy) i64 {
-    const lifetime = account.expires_at_ms - account.last_refresh_ms;
+    const lifetime = account.expires_at_ms -| account.last_refresh_ms;
     if (lifetime <= 0) return account.last_refresh_ms; // already expired/odd → due now
-    // last_refresh + lifetime * percent/100. Saturating multiply (`*|`) so a
-    // pathological expires_at_ms near i64-max (e.g. a "never expires" sentinel —
-    // cf. `never` above) can never overflow-panic the daemon; it just yields a
-    // far-future due instant, which the never-halt loop tolerates fine.
+    // last_refresh + lifetime * percent/100. EVERY arithmetic op here is
+    // saturating (`-|`/`*|`/`+|`) so even a pathological account — expires_at_ms
+    // at the `never` sentinel (i64-max), a negative or extreme last_refresh_ms,
+    // or an absurd min_lead_ms — can NEVER overflow-panic the daemon (the maximal
+    // never-halt violation: one bad account would abort warming for the fleet).
+    // The worst case degrades to a far-future (or due-now) instant, tolerated fine.
     const elapsed_target = @divTrunc(lifetime *| @as(i64, policy.refresh_percent), 100);
-    var due = account.last_refresh_ms + elapsed_target;
-    const latest = account.expires_at_ms - policy.min_lead_ms;
+    var due = account.last_refresh_ms +| elapsed_target;
+    const latest = account.expires_at_ms -| policy.min_lead_ms;
     if (due > latest) due = latest;
     if (due < account.last_refresh_ms) due = account.last_refresh_ms;
     return due;
@@ -124,11 +126,13 @@ pub const RefreshError = error{ OutOfMemory, RefreshFailed };
 /// Outcome of a successful refresh: the new issue + expiry instants the broker
 /// wrote. (The credential itself is materialized by the broker/adapter, not here.)
 ///
-/// Seam contract: `new_expires_at_ms` MUST be strictly greater than
-/// `new_last_refresh_ms`. A degenerate result (expiry <= issue) leaves the
-/// account perpetually `isDue`, so the daemon loop would re-refresh it every
-/// tick — the binding (B.2 follow-up) is responsible for rejecting/flooring a
-/// provider response that violates this, not the pure core here.
+/// Seam contract: `new_expires_at_ms` SHOULD be strictly greater than
+/// `new_last_refresh_ms`. A degenerate result (expiry <= issue) would leave the
+/// account perpetually `isDue` → a per-tick busy-loop against the broker. The
+/// pure core defends itself in depth: `tick` treats such a result as a refresh
+/// failure (rate-limited via backoff, escalates to `dead`) rather than committing
+/// the bad instants. The B.2 seam binding should still reject such a provider
+/// response upstream — this guard is the last line, not the first.
 pub const RefreshResult = struct {
     new_last_refresh_ms: i64,
     new_expires_at_ms: i64,
@@ -144,7 +148,8 @@ pub const TickReport = struct {
     died: u32 = 0,
     not_due: u32 = 0,
     skipped_dead: u32 = 0,
-    /// Transient errors (e.g. OOM) — retried next tick, no state change.
+    /// Transient errors (e.g. OOM) — not counted toward the death budget, but the
+    /// backoff gate IS armed so a sticky transient can't hammer the broker.
     transient: u32 = 0,
 };
 
@@ -156,6 +161,22 @@ pub const Scheduler = struct {
     clock_ctx: *anyopaque,
     refresh: RefreshFn,
     refresh_ctx: *anyopaque,
+
+    /// Record a refresh failure on `a`: increment the failure count, arm the
+    /// backoff gate, and mark the account `dead` exactly once when it exhausts the
+    /// failure budget. Shared by the hard-failure path and the degenerate-success
+    /// guard so both escalate identically. `now +| backoff` is saturating so a
+    /// huge clock value can't overflow the gate instant.
+    fn recordFailure(self: *const Scheduler, a: *Account, now: i64, report: *TickReport) void {
+        a.failures +|= 1;
+        if (a.failures >= self.policy.max_failures) {
+            a.dead = true;
+            report.died += 1;
+        } else {
+            a.next_attempt_ms = now +| backoffDelayMs(a.failures, self.policy);
+            report.failed += 1;
+        }
+    }
 
     /// Run one scheduling tick: refresh every account due now (updating its state
     /// in place), apply backoff on failure, and mark accounts dead past the
@@ -176,22 +197,26 @@ pub const Scheduler = struct {
             const result = self.refresh(self.refresh_ctx, a.key) catch |err| {
                 switch (err) {
                     error.OutOfMemory => {
-                        // Transient: leave state untouched, retry next tick.
+                        // Transient (host-wide pressure, not account-specific): do
+                        // NOT count toward the death budget, but arm the backoff
+                        // gate so a sticky OOM can't re-attempt every tick.
+                        // failures is untouched, so backoffDelayMs(failures+1)
+                        // floors at one backoff_base even on the first OOM.
+                        a.next_attempt_ms = now +| backoffDelayMs(a.failures +| 1, self.policy);
                         report.transient += 1;
                     },
-                    error.RefreshFailed => {
-                        a.failures += 1;
-                        if (a.failures >= self.policy.max_failures) {
-                            a.dead = true;
-                            report.died += 1;
-                        } else {
-                            a.next_attempt_ms = now + backoffDelayMs(a.failures, self.policy);
-                            report.failed += 1;
-                        }
-                    },
+                    error.RefreshFailed => self.recordFailure(a, now, &report),
                 }
                 continue;
             };
+            // Defend the pure core against a degenerate "success" (expiry <= issue):
+            // adopting it would make the account perpetually `isDue` → a per-tick
+            // busy-loop against the broker. Escalate it like a failure instead of
+            // committing the bad instants (see RefreshResult's seam contract).
+            if (result.new_expires_at_ms <= result.new_last_refresh_ms) {
+                self.recordFailure(a, now, &report);
+                continue;
+            }
             a.last_refresh_ms = result.new_last_refresh_ms;
             a.expires_at_ms = result.new_expires_at_ms;
             a.failures = 0;
