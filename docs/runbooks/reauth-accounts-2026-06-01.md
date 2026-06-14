@@ -3,11 +3,17 @@
 Date: 2026-06-01. Status: operator runbook, grounded in live `oauth-mux accounts
 list --json` state of 2026-06-01.
 
+Update 2026-06-14: the keepalive implementation described here is now live. The
+proactive refresh grant is flipped for Claude/Codex providers, accounts still
+must opt in with `allow_proactive_refresh`, and the TIN-2113 shared-identity
+guard excludes duplicate OAuth identities from the warm pool before any
+proactive refresh can rotate a shared refresh-token family.
+
 This runbook respects **mediation-not-control**
 (`docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`): **oauth-mux scaffolds
 config and emits handoffs; the OPERATOR runs every interactive login.** No step
 here has an agent run `codex login`, `claude /login`, open a browser, write a
-keychain, or spend provider calls.
+keychain, or perform provider calls.
 
 Legend: **[AGENT-SAFE]** = read-only, or a broker-owned non-interactive scaffold —
 an agent may run it. **[USER]** = interactive, human-mediated; the agent presents
@@ -148,15 +154,17 @@ lapses it is **permanently dead** — re-login hits the #25737 OTP wall, and any
 login attempt also risks revoking it. Do **not** touch it interactively; do **not**
 run `login-device max-1`.
 
-**Keepalive guarantees the warm scheduler MUST provide for max-1:**
+**Keepalive guarantees now in force for max-1-style critical accounts:**
 
-1. **Proactive refresh, treated as critical.** Refresh well before expiry (~75% of
-   lifetime); sessions go stale after ~8 days without refresh, so keep max-1's chain
-   hot continuously. The goal is to *never reach* a reactive/expired path.
+1. **Proactive refresh, treated as critical.** The warm loop refreshes opted-in
+   accounts well before expiry (~75% of lifetime); sessions go stale after ~8 days
+   without refresh, so keep max-1's chain hot continuously. The goal is to *never
+   reach* a reactive/expired path.
 2. **Serialize refresh per account; never concurrent.** Concurrent refreshes trigger
    `refresh_token_reused` / `token_revoked` — the same self-revocation as §1.
-   Refresh must be serialized by account and must not race the live `codex`
-   CLI/app-server (consistent with commit `a14872e`).
+   Refresh is serialized by account and must not race the live `codex` CLI/app-server.
+   The TIN-2039/TIN-2043/TIN-2073 lock path plus TIN-2113 shared-identity guard
+   prevents both same-account races and known duplicate-identity warm attempts.
 3. **Never-halt + escalation, not silent death.** The moment max-1's refresh starts
    failing or its remaining lifetime crosses a critical floor, emit a **redacted
    escalation handoff** that explicitly says: *"max-1 is un-reauthable — do NOT run
