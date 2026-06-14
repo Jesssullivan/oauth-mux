@@ -333,6 +333,9 @@ fn exitCodeFromPipelineError(e: anyerror) u8 {
         error.SecretReadFailed, error.SecretDecryptFailed => types.ExitCode.secret_read_failed.int(),
         error.TokenRefreshFailed => types.ExitCode.token_refresh_failed.int(),
         error.NetworkError => types.ExitCode.network_error.int(),
+        // TIN-2054: misconfigured account (Claude without a config_dir) — a
+        // config-shaped error, surfaced as such for scripts/agents.
+        error.ProviderNeedsConfigDir => types.ExitCode.config_error.int(),
         else => types.ExitCode.general_error.int(),
     };
 }

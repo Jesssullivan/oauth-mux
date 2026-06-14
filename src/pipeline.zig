@@ -958,6 +958,32 @@ fn injectEnv(ctx: *Context) PipelineError!void {
             ctx.addEnvOwned(env_var, expanded) catch return error.OutOfMemory;
         }
     } else if (config_dir_env) |env_var| {
+        // TIN-2054: Claude's credentials live in the macOS login keychain
+        // keyed off CLAUDE_CONFIG_DIR (TIN-2060) — it never reads an injected
+        // .credentials.json. Routing it through tmpdir mode writes a dead
+        // credential file AND points CLAUDE_CONFIG_DIR at an ephemeral dir, so
+        // the keychain service hash resolves to a fresh EMPTY slot → a
+        // guaranteed 401, plus an orphaned /tmp dir. This is also the exact
+        // temp-home shape that poisoned the canonical Codex store for 3 weeks
+        // (the TIN-1851 Model B guards live only in the codex adapter, not
+        // here). Refuse: a Claude account must declare a persistent config_dir
+        // (the `oauth-mux enroll claude` flow creates one). All platforms —
+        // an ephemeral Claude config dir can't persist credentials anywhere.
+        //
+        // Key on the HAZARD SIGNAL, not just the enum kind: the danger is that
+        // the config-dir env is CLAUDE_CONFIG_DIR (whose value is the keychain
+        // service-hash input), so a custom provider_definitions entry with a
+        // non-enum kind string but CLAUDE_CONFIG_DIR — which yields a null
+        // provider_kind and is reachable because runEnv/runProbe skip
+        // config.validate — is caught too. (Derive the kind from the name as a
+        // secondary signal so a bare kind:"claude" is covered even if
+        // provider_kind was never pre-resolved.)
+        const inject_kind = ctx.provider_kind orelse config_mod.resolveProviderKind(ctx.cfg, prov_name);
+        if (inject_kind == .claude or std.mem.eql(u8, env_var, "CLAUDE_CONFIG_DIR")) {
+            log.err("inject: claude account {s} has no config_dir; tmpdir credential injection cannot reach the keychain-backed CLI — set a persistent config_dir (e.g. via `oauth-mux enroll claude`)", .{acct_name});
+            return error.ProviderNeedsConfigDir;
+        }
+
         // Tmpdir mode: write credential file to temp dir
         const schema_token = schemaTokenFromProviderToken(tok);
         const cred_content = provider_schema.buildCredentialGeneric(def, schema_token, ctx.allocator) catch return error.OutOfMemory;
@@ -1062,7 +1088,6 @@ test "splitProviderAccount" {
 }
 
 test "runEnv uses configured provider definition" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1257,7 +1282,6 @@ test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
 }
 
 test "runEnv honors capability route health from profile" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1336,7 +1360,6 @@ test "runEnv honors capability route health from profile" {
 }
 
 test "runEnv routes around degraded capability without poisoning account" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1434,7 +1457,6 @@ test "runEnv routes around degraded capability without poisoning account" {
 }
 
 test "runProbe honors explicit account filter without a configured probe plan" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1503,7 +1525,6 @@ test "runProbe honors explicit account filter without a configured probe plan" {
 }
 
 test "runProbe executes auth none command probe without reading missing secret" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1572,7 +1593,6 @@ test "runProbe executes auth none command probe without reading missing secret" 
 }
 
 test "runProbe with explicit account rechecks previously degraded command route" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1638,7 +1658,6 @@ test "runProbe with explicit account rechecks previously degraded command route"
 }
 
 test "runProbe does not poison liveness when command probe binary is missing" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1705,7 +1724,6 @@ test "runProbe does not poison liveness when command probe binary is missing" {
 }
 
 test "runProbe does not poison liveness when command account runtime is unavailable" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1798,7 +1816,6 @@ fn expectUnpoisonedRuntimeHealth(health: health_mod.AccountHealth) !void {
 }
 
 test "runEnv skips remaining accounts for degraded provider" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -1972,7 +1989,6 @@ test "refreshWritebackBackend admits opted-in proactive refresh under upstream l
 }
 
 test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
-
     var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
     defer rt_scope.deinit(std.testing.allocator);
     rt_scope.activate();
@@ -2532,4 +2548,105 @@ test "command probe of a lock-held account store reports lock_busy without touch
         // The probe command never ran → no marker, the store was untouched.
         try std.testing.expect(std.fs.accessAbsolute(marker, .{}) == error.FileNotFound);
     }
+}
+
+test "injectEnv refuses a claude account without config_dir (TIN-2054 tmpdir guard)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "config_dir_env": "CLAUDE_CONFIG_DIR",
+        \\      "accounts": {
+        \\        "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
+        \\        "homed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" }, "config_dir": "~/.local/share/oauth-mux/claude/x" }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    // No config_dir → refuse with the typed error, before any tmpdir write.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "nodir";
+        ctx.provider_kind = .claude;
+        ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+        try std.testing.expectError(error.ProviderNeedsConfigDir, injectEnv(&ctx));
+    }
+
+    // Hardening: even if provider_kind was never resolved (null), the guard
+    // still fires by deriving the kind from the provider name.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "nodir";
+        ctx.provider_kind = null;
+        ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+        try std.testing.expectError(error.ProviderNeedsConfigDir, injectEnv(&ctx));
+    }
+
+    // With config_dir → safe path: CLAUDE_CONFIG_DIR is set to the (expanded) dir.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "homed";
+        ctx.provider_kind = .claude;
+        ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+        try injectEnv(&ctx);
+        try expectEnvPairContains(ctx.env_pairs.items, "CLAUDE_CONFIG_DIR", "oauth-mux/claude/x");
+    }
+}
+
+test "injectEnv refuses a custom-kind provider that sets CLAUDE_CONFIG_DIR (TIN-2054 hazard-signal guard)" {
+    // A provider_definitions entry with a NON-enum kind (provider_kind resolves
+    // null) but config_dir_env=CLAUDE_CONFIG_DIR is the keychain-hazard shape —
+    // reachable because runEnv/runProbe skip config.validate. Keyed on the
+    // env-var hazard signal, not the enum, so it is still refused.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "claude-kc": { "name": "claude-kc", "injection": { "config_dir_env": "CLAUDE_CONFIG_DIR", "credential_filename": ".credentials.json" } }
+        \\  },
+        \\  "providers": {
+        \\    "claude-kc": { "kind": "claude-kc", "accounts": { "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } } } }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "claude-kc";
+    ctx.account_name = "nodir";
+    ctx.provider_kind = null; // non-enum kind → null
+    ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+    try std.testing.expectError(error.ProviderNeedsConfigDir, injectEnv(&ctx));
+}
+
+fn expectEnvPairContains(pairs: []const [2][]const u8, key: []const u8, needle: []const u8) !void {
+    for (pairs) |p| {
+        if (std.mem.eql(u8, p[0], key)) {
+            if (std.mem.indexOf(u8, p[1], needle) != null) return;
+            std.debug.print("env {s}={s} does not contain {s}\n", .{ key, p[1], needle });
+            return error.TestUnexpectedResult;
+        }
+    }
+    return error.TestUnexpectedResult;
 }
