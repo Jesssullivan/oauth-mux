@@ -891,6 +891,28 @@ fn refreshWritebackBackend(
     const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
     const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return error.AccountNotFound;
     const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch return error.ConfigValidationError;
+
+    // TIN-2054 (criterion #2): NEVER rotate the canonical/shared Claude
+    // keychain item. The unsuffixed `Claude Code-credentials` service is what
+    // bare Claude Code uses when CLAUDE_CONFIG_DIR is unset — i.e. the user's
+    // own credential outside oauth-mux. A managed account configured with that
+    // exact service (e.g. a pre-TIN-2070 `omux init` starter) would, on a
+    // proactive refresh, rotate the user's bare-Claude refresh token — the
+    // dual-writer self-revocation hazard against a credential oauth-mux does
+    // not own. Refuse: the account must point at a per-config-dir SUFFIXED
+    // service (the enroll/derivation path produces one). Defense in depth —
+    // it holds even if the grant and consent gates are ever misconfigured.
+    if (backend == .keychain and std.mem.eql(u8, backend.keychain.service, provider_schema.claude_keychain_service_base)) {
+        const plan = secret.WritebackPlan{
+            .capability = secret.writeCapability(backend),
+            .automatic_refresh_admitted = false,
+            .reason = "writeback_refused_canonical_keychain_item",
+        };
+        log.err("token: refusing refresh writeback for {s}:{s}: targets the canonical shared keychain item '{s}' (the bare-Claude credential) — use a per-config-dir suffixed service", .{ prov, acct, provider_schema.claude_keychain_service_base });
+        recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
+        return error.TokenRefreshFailed;
+    }
+
     const plan = secret.writebackPlan(backend, def.repair.owner, .{
         .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
         .account_opted_in = acct_cfg.allow_proactive_refresh,
@@ -2649,4 +2671,60 @@ fn expectEnvPairContains(pairs: []const [2][]const u8, key: []const u8, needle: 
         }
     }
     return error.TestUnexpectedResult;
+}
+
+test "refreshWritebackBackend refuses the canonical shared Claude keychain item (TIN-2054 #2)" {
+    // An account whose keychain service is the UNSUFFIXED canonical
+    // `Claude Code-credentials` (the bare-Claude credential) must never be a
+    // proactive-refresh target — rotating it would revoke the user's own
+    // Claude RT. Refused regardless of platform/grant (defense in depth).
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "claude": { "name": "claude", "repair": { "owner": "oauth_mux_refresh" }, "auth": { "token_endpoint": "https://example.invalid/token" } }
+        \\  },
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "canonical": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
+        \\        "suffixed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials-26ae8e92", "account": "jess" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const def = config_mod.resolveProviderDefinition(parsed.value, "claude");
+
+    // Canonical unsuffixed service → refused with the canonical-item reason.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "canonical";
+        try std.testing.expectError(error.TokenRefreshFailed, refreshWritebackBackend(&ctx, def));
+        try std.testing.expectEqualStrings("writeback_refused_canonical_keychain_item", ctx.last_refresh_reason.?);
+    }
+
+    // A per-config-dir SUFFIXED service is NOT caught by this guard — it
+    // proceeds to the normal admission ladder (which then gates on platform
+    // keychain-write support + consent), never the canonical-item refusal.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "suffixed";
+        const result = refreshWritebackBackend(&ctx, def);
+        if (result) |_| {} else |_| {}
+        if (ctx.last_refresh_reason) |reason| {
+            try std.testing.expect(!std.mem.eql(u8, reason, "writeback_refused_canonical_keychain_item"));
+        }
+    }
 }
