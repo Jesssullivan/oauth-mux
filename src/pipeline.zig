@@ -103,6 +103,43 @@ pub fn runProbe(ctx: *Context) PipelineError!void {
     try selectWithFallback(ctx);
 }
 
+/// Proactively refresh ONE account's credential — the live seam the keepalive
+/// warm loop binds to (TIN-1825 B.2). Resolves the provider kind from the
+/// already-set `ctx.provider_name`, reads the account's refresh token from the
+/// store, and rotates it via `attemptRefresh` — serialized under the per-account
+/// and per-identity flock and field-preserving (TIN-2073/2074).
+///
+/// SAFE-BY-GATE: `attemptRefresh` calls `refreshWritebackBackend` FIRST, which
+/// returns `error.TokenRefreshFailed` ("not_admitted") for any account whose
+/// provider `proactive_refresh` grant and operator `allow_proactive_refresh` are
+/// not both admitted — BEFORE any network call or store write. So a warm loop
+/// over builtins (which declare no grant) only records refusals; nothing is
+/// rotated. On success `ctx.token` carries the new (access, refresh, expires_at).
+///
+/// Requires `ctx.provider_name` + `ctx.account_name`. Leak-safe: the snapshot set
+/// into `ctx.token` is freed by `attemptRefresh` on the success/adopt paths and
+/// by `Context.deinit` on the refusal/error paths.
+pub fn refreshAccount(ctx: *Context) PipelineError!void {
+    try resolveProvider(ctx);
+    ctx.token = try readTokenSnapshot(ctx);
+    const rt = ctx.token.?.refresh_token orelse return error.TokenRefreshFailed;
+    try attemptRefresh(ctx, rt);
+}
+
+/// Read one account's current credential expiry as absolute Unix MILLISECONDS for
+/// the warm-loop pool (`warm_binding.Observed`), without mutating anything.
+/// `TokenFields.expires_at` is normalized to seconds by the parser (claude's ms
+/// `expiresAt` is divided down per `expires_at_unit`), so this scales seconds →
+/// ms with a saturating multiply. Returns null when the credential carries no
+/// expiry. Requires `ctx.provider_name` + `ctx.account_name`.
+pub fn readAccountExpiryMs(ctx: *Context) PipelineError!?i64 {
+    try resolveProvider(ctx);
+    const snap = try readTokenSnapshot(ctx);
+    defer freeTokenFields(ctx.allocator, snap);
+    if (snap.expires_at) |exp_s| return exp_s *| std.time.ms_per_s;
+    return null;
+}
+
 /// The retry loop: try each candidate account in priority order.
 /// On failure, record the typed failure and move to the next candidate.
 fn selectWithFallback(ctx: *Context) PipelineError!void {
@@ -711,10 +748,12 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
 
     // TIN-2073 (review): revalidate under the lock — the broker's
     // lock-then-revalidate pattern. The rt argument was read BEFORE the
-    // flock; a peer's rotation may have completed inside that window. If
-    // the re-read credential is already fresh, adopt it and skip the
-    // endpoint; otherwise rotate with the re-read refresh token, never the
-    // pre-lock snapshot.
+    // flock; a peer's rotation may have completed inside that window. If the
+    // re-read RT DIFFERS from the pre-lock rt (a peer actually rotated) — or its
+    // expiry advanced past ours — adopt it and skip the endpoint; otherwise
+    // (same RT, still-our-token) rotate with the re-read refresh token, never the
+    // pre-lock snapshot. Keying on RT-change (not mere freshness) is what lets the
+    // proactive keepalive loop rotate a still-valid same-RT token (TIN-1825).
     const existing_raw: ?[]const u8 = readSecretRaw(ctx) catch null;
     defer if (existing_raw) |r| ctx.allocator.free(r);
     const fresh_snapshot: ?provider.TokenFields = if (existing_raw) |r| (parseRawToken(ctx, r) catch null) else null;
@@ -722,16 +761,36 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     defer if (fresh_snapshot) |f| {
         if (!fresh_adopted) freeTokenFields(ctx.allocator, f);
     };
+    // TIN-2073 (revised for TIN-1825 proactive keepalive): adopt-and-skip ONLY
+    // when a PEER ACTUALLY ROTATED, witnessed by the under-lock re-read RT
+    // DIFFERING from the pre-lock `rt` we were handed (or, belt-and-suspenders,
+    // its expiry advancing past ours). The OLD predicate keyed on freshness alone
+    // (now < exp-30), which is ALWAYS true for the warm loop's proactive call
+    // (token hours from expiry) → it skipped EVERY proactive refresh. Keying on
+    // RT-change lets a still-valid SAME-RT token fall through to a real rotation
+    // (proactive 75% keepalive), while a genuine peer rotation still
+    // short-circuits (no double-rotation of one single-use chain). Sound because
+    // Claude/Codex are single-use-RT and rewrite the stored RT on every rotation;
+    // the `expiry_advanced` arm covers a hypothetical non-RT-rotating provider's
+    // expiry-only peer refresh. effective_rt (below) already prefers the re-read
+    // RT, so the fall-through rotation never replays the pre-lock snapshot.
     if (fresh_snapshot) |f| {
-        if (f.expires_at) |exp| {
-            if (std.time.timestamp() < exp - 30) {
-                if (ctx.token) |old| freeTokenFields(ctx.allocator, old);
-                ctx.token = f;
-                fresh_adopted = true;
-                log.info("token: concurrent rotation detected for {s}:{s}; adopted fresh credential", .{ prov, acct });
-                recordRefreshEvent(ctx, writeback.plan, "not_needed", "concurrent_rotation_detected", true, false);
-                return;
-            }
+        // A null re-read RT is `false` (not a peer rotation): unreachable for the
+        // single-use-RT providers this guards, and a fall-through then rotates
+        // under the grant + identity + field-preserving guards — never a replay.
+        const peer_rotated = if (f.refresh_token) |frt| !std.mem.eql(u8, frt, rt) else false;
+        const expiry_advanced = blk: {
+            const pre = (ctx.token orelse break :blk false).expires_at orelse break :blk false;
+            const reread = f.expires_at orelse break :blk false;
+            break :blk reread > pre;
+        };
+        if (peer_rotated or expiry_advanced) {
+            if (ctx.token) |old| freeTokenFields(ctx.allocator, old);
+            ctx.token = f;
+            fresh_adopted = true;
+            log.info("token: concurrent rotation detected for {s}:{s}; adopted fresh credential", .{ prov, acct });
+            recordRefreshEvent(ctx, writeback.plan, "not_needed", "concurrent_rotation_detected", true, false);
+            return;
         }
     }
     const effective_rt = if (fresh_snapshot) |f| (f.refresh_token orelse rt) else rt;
@@ -2267,6 +2326,196 @@ test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 
     try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
     try std.testing.expectEqualStrings("at-peer-fresh", ctx.token.?.access_token);
     try std.testing.expectEqualStrings("rt-peer-fresh", ctx.token.?.refresh_token.?);
+}
+
+// Shared config for the TIN-1825 proactive-refresh tests: an admitted toy
+// account (oauth_mux_refresh owns refresh) over a DEAD token endpoint, with the
+// credential read from a file the test seeds.
+fn proactiveTestConfig(allocator: std.mem.Allocator, auth_path: []const u8, owner: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "{s}" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "warm": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{ owner, auth_path });
+}
+
+test "refreshAccount proactively rotates a still-valid same-RT token — past the adopt (TIN-1825 Option B)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // A STILL-VALID credential (hours from expiry), same RT the warm loop reads.
+    const now = std.time.timestamp();
+    const cred = try std.fmt.allocPrint(std.testing.allocator, "{{\"access_token\":\"at-A\",\"refresh_token\":\"rt-A\",\"expires_at\":{d}}}", .{now + 7200});
+    defer std.testing.allocator.free(cred);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(cred);
+    }
+
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "oauth_mux_refresh");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+
+    // The OLD freshness-adopt would short-circuit here ("not_needed") because the
+    // token is >30s from expiry. Option B (same RT, expiry not advanced) PROCEEDS
+    // past the adopt and rotates — so it fails AT THE DEAD ENDPOINT, proving the
+    // proactive rotation actually fired.
+    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
+    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+}
+
+test "attemptRefresh adopts on an expiry-advance with an unchanged RT (Option B belt-and-suspenders)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const now = std.time.timestamp();
+    // Store: SAME RT as pre-lock, but a LATER expiry (a non-rotating peer refresh).
+    const cred = try std.fmt.allocPrint(std.testing.allocator, "{{\"access_token\":\"at-A2\",\"refresh_token\":\"rt-A\",\"expires_at\":{d}}}", .{now + 7200});
+    defer std.testing.allocator.free(cred);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(cred);
+    }
+
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "oauth_mux_refresh");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+    // Pre-lock token: same RT, but an EARLIER expiry than the store.
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-A"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-A"),
+        .expires_at = now + 100,
+    };
+
+    // Same RT but the store expiry advanced → adopt (not_needed), endpoint NOT
+    // contacted (it is dead; a rotation attempt would surface token_endpoint_failed).
+    try attemptRefresh(&ctx, "rt-A");
+    try std.testing.expectEqualStrings("not_needed", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
+    try std.testing.expectEqual(@as(i64, now + 7200), ctx.token.?.expires_at.?);
+}
+
+test "refreshAccount refuses an un-admitted account at the grant gate (not_admitted, before rotation)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const now = std.time.timestamp();
+    const cred = try std.fmt.allocPrint(std.testing.allocator, "{{\"access_token\":\"at-A\",\"refresh_token\":\"rt-A\",\"expires_at\":{d}}}", .{now + 7200});
+    defer std.testing.allocator.free(cred);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(cred);
+    }
+
+    // upstream_cli_login owner + no proactive_refresh grant + no opt-in = builtin posture.
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "upstream_cli_login");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+
+    // The warm loop over a builtin (no grant) refuses BEFORE any lock/network —
+    // safe no-op until the proactive_refresh flip + live proof.
+    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
+    try std.testing.expectEqualStrings("not_admitted", ctx.last_refresh_outcome.?);
+}
+
+test "readAccountExpiryMs returns the credential expiry as Unix milliseconds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // expires_at stored in seconds (toy default unit); reader scales to ms.
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll("{\"access_token\":\"at-A\",\"refresh_token\":\"rt-A\",\"expires_at\":9999999999}");
+    }
+
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "oauth_mux_refresh");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+
+    const exp_ms = try readAccountExpiryMs(&ctx);
+    try std.testing.expectEqual(@as(?i64, 9999999999 * std.time.ms_per_s), exp_ms);
 }
 
 test "attemptRefresh refuses lossy writeback when the store became unreadable under the lock (TIN-2074 review)" {
