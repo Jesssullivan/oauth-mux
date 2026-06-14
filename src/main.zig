@@ -19752,6 +19752,7 @@ comptime {
     _ = @import("enroll/web_ui_tests.zig");
     _ = @import("keepalive/warm_scheduler_tests.zig");
     _ = @import("keepalive/warm_binding_tests.zig");
+    _ = @import("keepalive/warm_runner_tests.zig");
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
     _ = @import("identity/identity_lane_integration_tests.zig");
