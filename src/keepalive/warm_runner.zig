@@ -8,9 +8,11 @@
 //! SAFE-BY-GATE: `pipeline.refreshAccount` refuses any account whose
 //! `proactive_refresh` grant + operator opt-in are not both admitted (the
 //! writeback gate) BEFORE any network/store mutation, returning a typed failure.
-//! So a warm loop over builtins (which declare no grant) only records refusals;
-//! the scheduler backs each off and marks it dead, the loop drains harmlessly.
-//! Nothing is rotated until the grant flip + live proof (TIN-2054).
+//! The claude/codex providers declare the grant (TIN-2057), but admission still
+//! requires the account to opt in (`allow_proactive_refresh: true`, defaults
+//! false), so a warm loop over accounts that haven't opted in only records
+//! refusals; the scheduler backs each off and marks it dead, the loop drains
+//! harmlessly. Live-proven 2026-06-14 (TIN-2057).
 //!
 //! The actual timed wait + the CLI/daemon command that calls `bind.runLoop` are
 //! the thin, untested-by-design wrapper (a real wait blocks on the daemon stop

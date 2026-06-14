@@ -352,8 +352,10 @@ const KeepaliveWait = struct {
 /// `oauth-mux keepalive` — run the warm-loop scheduler over every configured
 /// account: proactively refresh each at ~75% of its token lifetime so an agent
 /// never hits a dead token. SAFE: refreshAccount refuses any account whose
-/// proactive_refresh grant is not admitted (every builtin today), so this only
-/// records refusals until the grant flip. Bounded by `iterations` (default 1).
+/// proactive_refresh is not admitted — the claude/codex providers now declare the
+/// grant (TIN-2057), but admission still requires the account to set
+/// `allow_proactive_refresh: true` (defaults false), so an account that hasn't
+/// opted in only records refusals. Bounded by `iterations` (default 1).
 fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.KeepaliveArgs) !void {
     const parsed = config.load(allocator) catch |e| {
         if (args.json) {
