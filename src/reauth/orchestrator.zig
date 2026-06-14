@@ -27,9 +27,10 @@
 //! NO credentials, opens NO sockets, starts NO provider probes on its own, and
 //! performs NO login. All real work stays behind the four seams below.
 //!
-//! The three real subsystems are reached only through the seams; in production
-//! the broker binds them to callback_server / claude_reauth / warm_scheduler,
-//! and the tests bind them to deterministic fakes.
+//! The real subsystems are reached only through those four seams; in production
+//! the broker binds them to the wall clock + callback_server / claude_reauth /
+//! warm_scheduler (one seam each), and the tests bind them to deterministic
+//! fakes.
 
 const std = @import("std");
 const types = @import("../types.zig");
@@ -451,7 +452,7 @@ pub fn nextActionFor(action: ActionClass, provider: []const u8) []const u8 {
             .command_owned => if (std.mem.eql(u8, provider, "codex"))
                 "oauth-mux codex login-device <account-slot>  (fresh incognito; per-account CODEX_HOME; verify account_id_hint != live sibling)"
             else
-                "env CLAUDE_CONFIG_DIR=<isolated> claude /login  (fresh incognito; file-based store, do not touch keychain)",
+                "env CLAUDE_CONFIG_DIR=<isolated> claude /login  (fresh incognito; isolated suffixed credential store, do not touch canonical identity)",
         },
         .capability_degraded => "oauth-mux probe --provider <provider> --account <account-slot> --capability <capability> --json  (probe only; DO NOT reauth)",
         .unreauthable => "DO NOT run login-device: un-reauthable (revokes the only live session + hits #25737 OTP wall). Escalate to provider/policy fix or retire the slot.",
@@ -765,6 +766,8 @@ test "graduation: next_action is flow-aware" {
     try testing.expectEqual(FlowExecution.command_owned, flowExecutionFor("claude"));
     try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "codex"), "login-device <account-slot>") != null);
     try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "claude"), "claude /login") != null);
+    try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "claude"), "suffixed credential store") != null);
+    try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "claude"), "file-based store") == null);
     // Command-owned login remains an account-slot template because the Codex CLI
     // verb accepts slots. Engine-run approval uses correlation ids.
     try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "codex"), "<correlation-id>") == null);
