@@ -19749,6 +19749,7 @@ comptime {
     _ = @import("enroll/tests.zig");
     _ = @import("enroll/callback_server_tests.zig");
     _ = @import("enroll/claude_reauth_tests.zig");
+    _ = @import("enroll/web_ui_tests.zig");
     _ = @import("keepalive/warm_scheduler_tests.zig");
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
