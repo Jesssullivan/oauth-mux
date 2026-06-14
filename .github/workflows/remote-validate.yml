@@ -1,4 +1,5 @@
 name: Remote Validate
+run-name: Remote Validate ${{ inputs.request_id || github.run_id }} ${{ inputs.target || 'e2e' }}
 
 on:
   schedule:
@@ -25,6 +26,11 @@ on:
         description: "Release version for release-proof"
         required: false
         default: "0.1.13"
+        type: string
+      request_id:
+        description: "Unique caller request id for dispatch/run correlation"
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -74,6 +80,7 @@ jobs:
         uses: ./.gloriousflywheel/.github/actions/nix-job
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+          OMUX_REMOTE_REQUEST_ID: ${{ inputs.request_id || github.run_id }}
           OMUX_REMOTE_TARGET: ${{ inputs.target || 'e2e' }}
           OMUX_REMOTE_RELEASE_VERSION: ${{ inputs.version }}
         with:
