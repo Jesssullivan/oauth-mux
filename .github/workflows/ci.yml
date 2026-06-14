@@ -29,8 +29,15 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GF_ACTIONS_TOKEN is unset; skipping private GloriousFlywheel action checkout"
           fi
+
+      - name: Require remote runner substrate
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Checkout GloriousFlywheel action
         if: steps.gf.outputs.enabled == 'true'
@@ -81,44 +88,93 @@ jobs:
 
             run_with_timeout "GloriousFlywheel cache-first validation" "${OMUX_GF_CHECK_TIMEOUT:-25m}" nix develop --command just check-local
 
-      - name: Record skipped cache-first validation
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GloriousFlywheel cache-first validation skipped because GF_ACTIONS_TOKEN is unset." >> "$GITHUB_STEP_SUMMARY"
-
   test:
-    runs-on: ubuntu-latest
+    runs-on: tinyland-nix
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.1
-
-      - name: Build
-        run: zig build
-
-      - name: Test
-        run: zig build test
-
-      - name: Validate examples
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
         run: |
-          for cfg in examples/*.config.json; do
-            OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
-          done
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Local E2E
-        run: ./scripts/e2e-local.sh
+      - name: Require remote runner substrate
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
-      - name: Build release
-        run: zig build -Doptimize=ReleaseSafe
+      - name: Checkout GloriousFlywheel action
+        if: steps.gf.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
 
-      - name: Binary size
-        run: ls -lh zig-out/bin/oauth-mux
+      - name: Run test lane on GloriousFlywheel
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+
+            run_with_timeout() {
+              local label="$1"
+              local duration="$2"
+              shift 2
+
+              if ! command -v timeout >/dev/null 2>&1; then
+                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+                "$@"
+                return
+              fi
+
+              set +e
+              timeout --foreground "${duration}" "$@"
+              local status=$?
+              set -e
+
+              if [ "${status}" -eq 124 ]; then
+                echo "::error::${label} timed out after ${duration}"
+              fi
+
+              return "${status}"
+            }
+
+            run_with_timeout "remote test lane" "${OMUX_GF_TEST_TIMEOUT:-25m}" nix develop --command bash -lc '
+              set -euxo pipefail
+              zig build
+              zig build test
+              for cfg in examples/*.config.json; do
+                OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
+              done
+              ./scripts/e2e-local.sh
+              zig build -Doptimize=ReleaseSafe
+              ls -lh zig-out/bin/oauth-mux
+            '
 
   cross-compile:
-    runs-on: ubuntu-latest
+    runs-on: tinyland-nix
+    timeout-minutes: 30
     strategy:
       matrix:
         target:
@@ -131,17 +187,78 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.1
-
-      - name: Build ${{ matrix.target }}
-        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
-
-      - name: Check binary
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
         run: |
-          ls -lh zig-out/bin/oauth-mux*
-          file zig-out/bin/oauth-mux*
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require remote runner substrate
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Checkout GloriousFlywheel action
+        if: steps.gf.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
+
+      - name: Build ${{ matrix.target }} on GloriousFlywheel
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+
+            run_with_timeout() {
+              local label="$1"
+              local duration="$2"
+              shift 2
+
+              if ! command -v timeout >/dev/null 2>&1; then
+                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+                "$@"
+                return
+              fi
+
+              set +e
+              timeout --foreground "${duration}" "$@"
+              local status=$?
+              set -e
+
+              if [ "${status}" -eq 124 ]; then
+                echo "::error::${label} timed out after ${duration}"
+              fi
+
+              return "${status}"
+            }
+
+            run_with_timeout "remote cross-compile ${{ matrix.target }}" "${OMUX_GF_CROSS_TIMEOUT:-20m}" nix develop --command bash -lc '
+              set -euxo pipefail
+              zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+              ls -lh zig-out/bin/oauth-mux*
+              file zig-out/bin/oauth-mux*
+            '
 
       - uses: actions/upload-artifact@v4
         with:
@@ -149,16 +266,76 @@ jobs:
           path: zig-out/bin/oauth-mux*
 
   nix:
-    runs-on: ubuntu-latest
+    runs-on: tinyland-nix
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v30
+      - name: Detect GloriousFlywheel action access
+        id: gf
+        shell: bash
+        env:
+          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
+        run: |
+          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require remote runner substrate
+        if: steps.gf.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Checkout GloriousFlywheel action
+        if: steps.gf.outputs.enabled == 'true'
+        uses: actions/checkout@v4
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
+          repository: tinyland-inc/GloriousFlywheel
+          ref: main
+          path: .gloriousflywheel
+          token: ${{ secrets.GF_ACTIONS_TOKEN }}
+          persist-credentials: false
 
-      - name: Nix build
-        run: nix build .#
+      - name: Run Nix lane on GloriousFlywheel
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
 
-      - name: Nix check
-        run: nix flake check
+            run_with_timeout() {
+              local label="$1"
+              local duration="$2"
+              shift 2
+
+              if ! command -v timeout >/dev/null 2>&1; then
+                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+                "$@"
+                return
+              fi
+
+              set +e
+              timeout --foreground "${duration}" "$@"
+              local status=$?
+              set -e
+
+              if [ "${status}" -eq 124 ]; then
+                echo "::error::${label} timed out after ${duration}"
+              fi
+
+              return "${status}"
+            }
+
+            run_with_timeout "remote nix build" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix build .#
+            run_with_timeout "remote nix check" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix flake check
