@@ -25,6 +25,7 @@ done
 ./scripts/stay-afloat-wrapper-doc-smoke.sh
 ./scripts/smoke-trace.sh
 ./scripts/smoke-remote-validate-contract.sh
+./scripts/smoke-bazel-remote-contract.sh
 ./scripts/smoke-dogfood-process-snapshot.sh
 ./scripts/smoke-broker.sh
 ./scripts/smoke-broker-claude.sh

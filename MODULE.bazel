@@ -1,0 +1,13 @@
+"""
+oauth-mux Bazel module.
+
+This graph is intentionally tiny: TIN-2105 uses it only to prove a bounded
+Zig build/test REAPI target class. The existing Just/Nix remote lanes remain
+the repository's validation authority until a forced GloriousFlywheel proof
+artifact promotes the target class.
+"""
+
+module(
+    name = "oauth_mux",
+    version = "0.1.13",
+)
