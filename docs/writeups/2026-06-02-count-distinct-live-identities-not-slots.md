@@ -79,10 +79,14 @@ graph TD
 
 ## What I built
 
-A provider-agnostic **identity graph**. Pure analysis — it does not touch route selection. It groups slots by an identity key and reports:
+A provider-agnostic **identity graph**. It began as pure analysis and is now also
+used by keepalive admission: when two enrolled accounts share one OAuth identity,
+the warm loop refuses to proactively refresh either member of that duplicate set,
+because either refresh can rotate the same single-use refresh-token family. The
+graph groups slots by an identity key and reports:
 
 - **`distinctLiveIdentities`** and **`isAfloat`**, both capability-scoped. This is the never-halt predicate, the real depth.
-- **`duplicateCollisions`** — auto-flags the same-identity-twice case I had been blind to.
+- **`duplicateCollisions`** — auto-flags the same-identity-twice case I had been blind to, and now gates keepalive warm-pool admission.
 - **`strictLossSlots`** — a dead slot whose re-auth would revoke a live same-identity sibling. The thing not to "fix."
 - **`wouldRetireReduceRedundancy`** — a per-capability delta, so before retiring a slot I see exactly which capabilities survive it.
 
