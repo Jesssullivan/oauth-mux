@@ -8,7 +8,7 @@
 //! redacted user-mediated handoff record, WAITS for operator-confirmed evidence,
 //! refreshes route evidence, and only marks an account selectable once evidence
 //! says so. It NEVER silently runs browser/device auth, upstream CLI login,
-//! provider-spend probes, credential rewrites, or session-store repairs.
+//! provider probes, credential rewrites, or session-store repairs.
 //!
 //! North star (resilience / never-halt): a dead or blocked account (e.g. the
 //! AAS-locked, un-reauthable Codex `max-1` of openai/codex#25737, or its
@@ -18,16 +18,31 @@
 //! looping forever or emitting a destructive login handoff. Live accounts keep
 //! flowing past it.
 //!
-//! Build constraints honored here: greenfield NEW FILE; std-only; NO @import of
-//! existing src; pure core over injected fn-pointer + *anyopaque seams;
-//! std.testing.allocator leak-checked; standalone `zig test`; Zig 0.14.1 idioms.
+//! Build constraints honored here: greenfield NEW FILE; pure core over injected
+//! fn-pointer + *anyopaque seams; std.testing.allocator leak-checked; Zig 0.14.1
+//! idioms. GRADUATED from draft (TIN-2048/TIN-2064): now wired into `zig build
+//! test` (its tests no longer compile to nothing), and it imports `../types.zig`
+//! for the SHARED `RepairOwner` vocabulary ONLY — that is the designation spec's
+//! contract-vocabulary unification, not an I/O dependency. The module still owns
+//! NO credentials, opens NO sockets, starts NO provider probes on its own, and
+//! performs NO login. All real work stays behind the four seams below.
 //!
-//! This module owns NO credentials, opens NO sockets, and spends NO provider
-//! calls. The three real subsystems are reached only through the seams below; in
-//! production the broker binds them to callback_server / claude_reauth /
-//! warm_scheduler, and the tests bind them to deterministic fakes.
+//! The three real subsystems are reached only through the seams; in production
+//! the broker binds them to callback_server / claude_reauth / warm_scheduler,
+//! and the tests bind them to deterministic fakes.
 
 const std = @import("std");
+const types = @import("../types.zig");
+
+/// Who owns the destructive/credential-mutating step. The orchestrator only ever
+/// mediates; the owner of the repair is recorded so an agent never assumes
+/// credential control. Unified onto the shipped `types.RepairOwner` vocabulary
+/// (designation spec 2026-06-12, §"contract-vocabulary unification") so the
+/// emitted record speaks the same owner language as `provider_schema` /
+/// `secret.writebackPlan`: `oauth_mux_refresh` (broker rotates the chain),
+/// `upstream_cli_login` (operator runs the vendor login), `manual_only` (no
+/// automated repair — a provider/policy fix or a human retiring the slot).
+pub const RepairOwner = types.RepairOwner;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // States
@@ -58,7 +73,7 @@ pub const State = enum {
     /// orchestrator polls evidence; it does NOT touch credentials.
     awaiting_user,
     /// Re-reading diagnostic evidence to learn whether the account became
-    /// selectable. Pure read; no spend.
+    /// selectable. Pure evidence read; no provider probe.
     evidence_refresh,
     /// Evidence proves the route is live + selectable. Hand back to the warm
     /// scheduler as a kept-warm account.
@@ -97,12 +112,11 @@ pub const ActionClass = enum {
 // Handoff record + consent fields (in-agent-reauth-handoff contract §record)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Who owns the actual repair. The orchestrator only ever mediates; the owner of
-/// the destructive step is recorded so an agent never assumes credential control.
-pub const RepairOwner = enum { operator, broker, provider };
-
 /// What kind of out-of-band action the operator must take. The orchestrator
-/// emits the *shape* of the action; it never performs it.
+/// emits the *shape* of the action; it never performs it. The four interactive
+/// re-login shapes mirror the contract's four flows (device_code /
+/// redirect_loopback / command_owned / pat_paste) so a record can name any of
+/// them (designation spec: "MediationKind cannot express two of the four flows").
 pub const MediationKind = enum {
     /// No mediation needed (refresh-only path, or already warm).
     none,
@@ -110,8 +124,16 @@ pub const MediationKind = enum {
     /// (login-device preferred over loopback to avoid profile-cookie
     /// bleed-through across multiple Chrome/Workspace profiles).
     device_login,
-    /// Operator runs a loopback browser login (callback_server path).
-    browser_login,
+    /// Operator runs a redirect-loopback browser login (callback_server path).
+    redirect_loopback,
+    /// Provider login is owned by the vendor CLI itself (contract-pinned for
+    /// Claude: `claude /login`). oauth-mux scaffolds the isolated config dir but
+    /// the upstream login is the vendor's, never oauth-mux's.
+    command_owned,
+    /// Operator pastes a personal-access-token / API key (no browser). No
+    /// current provider selects this; the variant exists so the record can
+    /// express the contract's fourth flow when a provider gains it.
+    pat_paste,
     /// Run a read-only capability probe (NOT reauth): max-3 unknown_4xx.
     capability_probe,
     /// Human escalation only: do NOT run any login. The route is un-reauthable;
@@ -119,21 +141,39 @@ pub const MediationKind = enum {
     escalation,
 };
 
+/// How an approved flow is EXECUTED once consent is given — flow-aware
+/// `next_action` selection (designation spec). Today every provider is
+/// `command_owned` (vendor-CLI delegation, valid forever and contract-pinned for
+/// Claude); `engine_run` flips on per-provider only when the flow-composition
+/// train car binds a production `RunFlowFn`, behind the contract amendment.
+pub const FlowExecution = enum { command_owned, engine_run };
+
+/// Which execution path a provider's re-login flow takes. Both current providers
+/// are command-owned (the engine has no production `RunFlowFn` yet — see the
+/// designation spec's "current state vs target"). Flipping a provider to
+/// `engine_run` is a one-line change gated on the flow-composition car + the
+/// Claude contract amendment.
+pub fn flowExecutionFor(provider: []const u8) FlowExecution {
+    _ = provider; // codex (login-device) + claude (claude /login) are both command-owned today
+    return .command_owned;
+}
+
 /// The consent fields the contract requires on every handoff record. These are
 /// the load-bearing safety booleans an agent reads before deciding whether it
 /// may proceed unattended. The orchestrator PRESERVES exactly these and never
 /// downgrades a destructive step to agent_safe.
 pub const Consent = struct {
     /// Can an agent run this step unattended with no side effects? True iff the
-    /// step neither prompts a human, mutates state, nor spends provider calls.
+    /// step neither prompts a human, mutates state, nor consumes a metered
+    /// provider call.
     agent_safe: bool,
     /// Does the step require a human (browser/device prompt, OTP, etc.)?
     interactive: bool,
     /// Does the step mutate oauth-mux-owned state (scaffold config / isolated
     /// CODEX_HOME|CLAUDE_CONFIG_DIR)? Login itself is the operator's, not ours.
     mutating: bool,
-    /// Does the step spend metered provider calls (a probe / refresh that hits
-    /// the upstream)? The orchestrator never lets an agent_safe step spend.
+    /// Does the step consume a metered provider call (a probe / refresh that
+    /// hits the upstream)? The orchestrator never lets an agent_safe step do so.
     spends_provider_calls: bool,
     /// Optional budget cap surfaced to the operator (e.g. "1 probe call").
     /// Empty string = unbounded/not-applicable; never a secret.
@@ -145,7 +185,7 @@ pub const Consent = struct {
 
     /// Derive the agent_safe invariant from the other three booleans so it can
     /// never be set inconsistently. agent_safe ⇔ not interactive ∧ not mutating
-    /// ∧ not spending.
+    /// and consumes no metered provider call.
     pub fn deriveAgentSafe(interactive: bool, mutating: bool, spends: bool) bool {
         return !interactive and !mutating and !spends;
     }
@@ -156,20 +196,21 @@ pub const Consent = struct {
 /// records from masked hints only; this struct is the machine-checkable witness
 /// that the redaction held.
 pub const Redaction = struct {
-    /// Email reduced to a masked hint (`j***@…`) — never the raw address.
-    email_masked: bool = true,
-    /// Account id reduced to a short non-reversible hash hint — never raw.
-    account_id_masked: bool = true,
-    /// No tokens / refresh / keys / auth headers anywhere in the record.
-    no_tokens: bool = true,
-    /// No session ids / state nonces.
-    no_session_ids: bool = true,
-    /// No credential file paths or full auth/model response bodies.
-    no_credential_paths: bool = true,
+    /// Were raw token / refresh / key / auth-header values printed? Never.
+    token_values_printed: bool = false,
+    /// Were raw (unhashed, unmasked) account ids printed? Never — only the short
+    /// non-reversible hash hint appears.
+    raw_account_ids_printed: bool = false,
+    /// Were session ids / state nonces printed? Never.
+    session_ids_printed: bool = false,
+    /// Were credential file paths / full auth or model response bodies printed?
+    /// Never.
+    credential_paths_printed: bool = false,
 
+    /// The witness holds iff NOTHING forbidden was printed.
     pub fn allRedacted(self: Redaction) bool {
-        return self.email_masked and self.account_id_masked and self.no_tokens and
-            self.no_session_ids and self.no_credential_paths;
+        return !self.token_values_printed and !self.raw_account_ids_printed and
+            !self.session_ids_printed and !self.credential_paths_printed;
     }
 };
 
@@ -177,6 +218,13 @@ pub const Redaction = struct {
 /// non-secret label; the struct as a whole is what `stay-afloat handoffs`
 /// surfaces. The orchestrator builds these; it never executes them.
 pub const HandoffRecord = struct {
+    /// Stable correlation id naming THIS handoff so an approval verb can say
+    /// exactly what it approves (`oauth-mux reauth run <correlation-id>` / ack / clear). It
+    /// is the account routing key ("codex:max-1") — deterministic, non-secret,
+    /// and unique per account (the state machine emits at most one live handoff
+    /// per account episode). Added at graduation (designation spec: "HandoffRecord
+    /// gains a correlation id").
+    correlation_id: []const u8,
     /// Provider label ("codex" / "claude"). Non-secret.
     provider: []const u8,
     /// Account slot label ("max-1"). Non-secret slot name, NOT the upstream id.
@@ -186,8 +234,10 @@ pub const HandoffRecord = struct {
     /// Short account-id hash hint ("38079d6acec6"). Non-reversible; used to
     /// detect same-account duplicates without revealing the raw id.
     account_id_hint: []const u8,
-    /// The exact, redacted next command the operator should run, OR — for an
-    /// escalation — the explicit instruction NOT to run it.
+    /// Redacted next-action template for the operator or approval surface, OR
+    /// for an escalation, the explicit instruction NOT to run it. Dynamic
+    /// placeholders are resolved by the surface from `correlation_id` and
+    /// `account_slot`; the pure core allocates nothing and never embeds secrets.
     next_action: []const u8,
     /// Human-readable, redacted reason.
     reason: []const u8,
@@ -250,7 +300,7 @@ pub const ClockFn = *const fn (ctx: *anyopaque) i64;
 
 /// Read fresh diagnostic evidence for one account (`accounts list --json` /
 /// `route explain --json`, agent-safe read). Returns the evidence the
-/// orchestrator classifies. MUST NOT spend provider calls or touch creds.
+/// orchestrator classifies. MUST NOT make provider calls or touch creds.
 pub const EvidenceError = error{ OutOfMemory, EvidenceUnavailable };
 pub const Evidence = struct {
     /// Route is live + selectable right now.
@@ -319,74 +369,91 @@ pub fn classify(ev: Evidence, account: Account) ActionClass {
     return ev.action;
 }
 
-/// Build the consent fields for a given action class. This is where the contract
-/// safety booleans are fixed; `agent_safe` is always derived, never asserted.
-pub fn consentFor(action: ActionClass) Consent {
+/// The interactive mediation shape for an `auth_revoked` re-login, by provider.
+/// Claude is contract-pinned command-owned (`claude /login`, user-mediated);
+/// Codex and the default use device-code login. This is why `consentFor` no
+/// longer hardcodes `.device_login` for every provider.
+pub fn reauthMediationFor(provider: []const u8) MediationKind {
+    if (std.mem.eql(u8, provider, "claude")) return .command_owned;
+    return .device_login;
+}
+
+/// Build the consent fields for a given action class + provider. This is where
+/// the contract safety booleans are fixed; `agent_safe` is always derived, never
+/// asserted. `repair_owner` speaks the shipped `types.RepairOwner` vocabulary.
+pub fn consentFor(action: ActionClass, provider: []const u8) Consent {
     return switch (action) {
         .refresh_due => .{
-            // Refresh-only rotation: machine-safe, no human, no spend beyond the
-            // token endpoint the broker already owns. Mutating (writes the new
-            // chain) so NOT agent_safe-without-side-effect; owner = broker.
+            // Refresh-only rotation: machine-safe, no human, no model/provider
+            // workload call. The broker-owned token endpoint call is explicit in
+            // the refresh seam. Mutating (writes the new chain), so NOT
+            // agent_safe-without-side-effect; the broker owns it.
             .agent_safe = Consent.deriveAgentSafe(false, true, false),
             .interactive = false,
             .mutating = true,
             .spends_provider_calls = false,
             .budget = "refresh-only",
             .mediation = .none,
-            .repair_owner = .broker,
+            .repair_owner = .oauth_mux_refresh,
         },
         .auth_revoked => .{
-            // User-mediated device login. Interactive + the operator's login is
-            // the destructive step (owner = operator). The orchestrator only
-            // scaffolds (mutating) and waits.
+            // User-mediated login. Interactive + the operator's upstream login
+            // is the destructive step. The orchestrator only scaffolds
+            // (mutating) and waits. Mediation shape is per-provider.
             .agent_safe = Consent.deriveAgentSafe(true, true, false),
             .interactive = true,
             .mutating = true,
             .spends_provider_calls = false,
-            .budget = "1 device login",
-            .mediation = .device_login,
-            .repair_owner = .operator,
+            .budget = "1 interactive login",
+            .mediation = reauthMediationFor(provider),
+            .repair_owner = .upstream_cli_login,
         },
         .capability_degraded => .{
             // Read-only probe (NOT reauth). Agent-safe is false only because it
-            // spends one metered probe call; bounded budget; owner = provider
-            // (it is a provider/tier evidence question).
+            // uses one bounded probe call. No credential repair is owned by
+            // anyone (it is a provider/tier evidence question), so manual_only.
             .agent_safe = Consent.deriveAgentSafe(false, false, true),
             .interactive = false,
             .mutating = false,
             .spends_provider_calls = true,
             .budget = "1 probe call",
             .mediation = .capability_probe,
-            .repair_owner = .provider,
+            .repair_owner = .manual_only,
         },
         .unreauthable => .{
             // Escalation only. NOT interactive for the agent (there is no safe
-            // action to take), NOT mutating, NO spend. The destructive login is
-            // explicitly forbidden; owner = provider (fix #25737 / policy) or a
-            // human retiring the slot.
+            // action to take), NOT mutating, and makes no provider call. The
+            // destructive login is explicitly forbidden; recovery is a
+            // provider/policy fix (#25737) or a human retiring the slot — no
+            // automated owner, so manual_only.
             .agent_safe = Consent.deriveAgentSafe(false, false, false),
             .interactive = false,
             .mutating = false,
             .spends_provider_calls = false,
             .budget = "do-not-login",
             .mediation = .escalation,
-            .repair_owner = .provider,
+            .repair_owner = .manual_only,
         },
     };
 }
 
-/// Build the exact redacted next-action string for a record. For the escalation
+/// Build the redacted next-action template for a record. For the escalation
 /// case this is the *negative* instruction that keeps an operator/agent from
 /// running the revocation-inducing login. Returns a borrowed static slice; no
 /// allocation, no secret.
+/// Flow-aware: a command-owned provider gets its vendor-CLI command template;
+/// an engine-run provider gets `oauth-mux reauth run <correlation-id>`.
 pub fn nextActionFor(action: ActionClass, provider: []const u8) []const u8 {
     return switch (action) {
         .refresh_due => "broker refreshes existing chain (serialized per account); no operator action",
-        .auth_revoked => if (std.mem.eql(u8, provider, "codex"))
-            "oauth-mux codex login-device <slot>  (fresh incognito; per-account CODEX_HOME; verify account_id_hint != live sibling)"
-        else
-            "env CLAUDE_CONFIG_DIR=<isolated> claude /login  (fresh incognito; file-based store, do not touch keychain)",
-        .capability_degraded => "oauth-mux probe --provider <p> --account <slot> --capability <cap> --json  (probe only; DO NOT reauth)",
+        .auth_revoked => switch (flowExecutionFor(provider)) {
+            .engine_run => "oauth-mux reauth run <correlation-id>  (engine-run flow; explicit, auditable approval invokes the engine)",
+            .command_owned => if (std.mem.eql(u8, provider, "codex"))
+                "oauth-mux codex login-device <account-slot>  (fresh incognito; per-account CODEX_HOME; verify account_id_hint != live sibling)"
+            else
+                "env CLAUDE_CONFIG_DIR=<isolated> claude /login  (fresh incognito; file-based store, do not touch keychain)",
+        },
+        .capability_degraded => "oauth-mux probe --provider <provider> --account <account-slot> --capability <capability> --json  (probe only; DO NOT reauth)",
         .unreauthable => "DO NOT run login-device: un-reauthable (revokes the only live session + hits #25737 OTP wall). Escalate to provider/policy fix or retire the slot.",
     };
 }
@@ -396,6 +463,7 @@ pub fn nextActionFor(action: ActionClass, provider: []const u8) []const u8 {
 /// to hold by construction (we only ever copy masked hints / static strings).
 pub fn buildHandoff(account: Account, action: ActionClass) HandoffRecord {
     return .{
+        .correlation_id = account.key,
         .provider = account.provider,
         .account_slot = account.account_slot,
         .email_hint = account.email_hint,
@@ -407,8 +475,8 @@ pub fn buildHandoff(account: Account, action: ActionClass) HandoffRecord {
             .capability_degraded => "capability 4xx on a live route; classify via probe, not reauth",
             .unreauthable => "un-reauthable account; login would revoke a live session and hit an OTP wall",
         },
-        .consent = consentFor(action),
-        .redaction = .{}, // all-true by construction
+        .consent = consentFor(action, account.provider),
+        .redaction = .{}, // all `*_printed = false` by construction
         .is_escalation = (action == .unreauthable),
     };
 }
@@ -651,21 +719,55 @@ fn testAccount(key: []const u8) Account {
 }
 
 test "consent agent_safe is derived, never asserted inconsistently" {
-    const c = consentFor(.auth_revoked);
+    const c = consentFor(.auth_revoked, "codex");
     try testing.expect(c.interactive);
     try testing.expect(!c.agent_safe); // interactive ⇒ not agent_safe
-    try testing.expectEqual(RepairOwner.operator, c.repair_owner);
+    // Unified vocabulary: the operator's upstream login owns the repair.
+    try testing.expectEqual(RepairOwner.upstream_cli_login, c.repair_owner);
 
-    const probe = consentFor(.capability_degraded);
+    const probe = consentFor(.capability_degraded, "codex");
     try testing.expect(probe.spends_provider_calls);
-    try testing.expect(!probe.agent_safe); // spends ⇒ not agent_safe
-    try testing.expectEqual(RepairOwner.provider, probe.repair_owner);
+    try testing.expect(!probe.agent_safe); // provider call => not agent_safe
+    // No automated credential repair owner for a capability/tier question.
+    try testing.expectEqual(RepairOwner.manual_only, probe.repair_owner);
 
-    const esc = consentFor(.unreauthable);
+    const esc = consentFor(.unreauthable, "codex");
     try testing.expect(!esc.interactive and !esc.mutating and !esc.spends_provider_calls);
-    // even with all-false inputs, escalation is "do-not-login", owner provider.
+    // even with all-false inputs, escalation is "do-not-login", owner manual_only.
     try testing.expectEqualStrings("do-not-login", esc.budget);
     try testing.expectEqual(MediationKind.escalation, esc.mediation);
+    try testing.expectEqual(RepairOwner.manual_only, esc.repair_owner);
+}
+
+test "graduation: claude reauth is command-owned, codex is device_login" {
+    // Contract pins Claude as command-owned (`claude /login`).
+    try testing.expectEqual(MediationKind.command_owned, consentFor(.auth_revoked, "claude").mediation);
+    try testing.expectEqual(MediationKind.command_owned, reauthMediationFor("claude"));
+    // Codex and the default use device-code login.
+    try testing.expectEqual(MediationKind.device_login, consentFor(.auth_revoked, "codex").mediation);
+    try testing.expectEqual(MediationKind.device_login, reauthMediationFor("anything-else"));
+    // Refresh-only rotation is owned by the broker.
+    try testing.expectEqual(RepairOwner.oauth_mux_refresh, consentFor(.refresh_due, "codex").repair_owner);
+}
+
+test "graduation: handoff carries a stable correlation id = account key" {
+    var acct = testAccount("codex:max-1");
+    acct.account_slot = "max-1";
+    const rec = buildHandoff(acct, .auth_revoked);
+    try testing.expectEqualStrings("codex:max-1", rec.correlation_id);
+    // It is the routing key, not a secret, and not the raw account id.
+    try testing.expect(std.mem.indexOf(u8, rec.correlation_id, rec.account_id_hint) == null);
+}
+
+test "graduation: next_action is flow-aware" {
+    // Current providers are command-owned today: codex -> login-device, claude -> /login.
+    try testing.expectEqual(FlowExecution.command_owned, flowExecutionFor("codex"));
+    try testing.expectEqual(FlowExecution.command_owned, flowExecutionFor("claude"));
+    try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "codex"), "login-device <account-slot>") != null);
+    try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "claude"), "claude /login") != null);
+    // Command-owned login remains an account-slot template because the Codex CLI
+    // verb accepts slots. Engine-run approval uses correlation ids.
+    try testing.expect(std.mem.indexOf(u8, nextActionFor(.auth_revoked, "codex"), "<correlation-id>") == null);
 }
 
 test "redaction witness holds by construction on every record" {
