@@ -21,33 +21,39 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes are versioned by channel. `0.1.12` is the current verified
-public release for GitHub Release, curl installer, deb/rpm assets, Homebrew,
-user-local dogfood, and the Home Manager source lane. It carries the Codex
-0.132 SQLite resume authority fix, the Codex capture-review proxy metadata
-gate, and the provider-namespace resume picker fix from PR #295. npm still
-reports `0.1.9` until CI npm auth is repaired. Homebrew remains binary-only by
-default: `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and
-must not install or link a managed `codex` shim.
+Public install lanes are versioned by channel. `0.1.13` is the current verified
+public release for GitHub Release, curl installer, deb/rpm assets, and the
+Homebrew tap. It is the first release carrying the home-is-store managed-Codex
+session-authority default (canonical bridge is explicit opt-in), the flock
+unlink-on-release race fix with the macOS runtime-dir move (restart long-lived
+managed sessions after upgrading), the default-mode native resume chooser, and
+corrected Claude OAuth endpoint constants. The npm lane is retired as of
+2026-06-12 (the published package remains stale at `0.1.9`); install via
+Homebrew, the curl installer, or system packages. Homebrew remains binary-only by default:
+`brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
+install or link a managed `codex` shim.
 
 What works today:
 
 - Managed Codex launch and resume through `oauth-mux codex` and
-  `oauth-mux codex resume`.
-- Current source/user-local dogfood and the npm wrapper lane can include a
-  managed `codex` shim, so a bare `codex` command is managed only when PATH
+  `oauth-mux codex resume`, including the native resume chooser against the
+  selected account's route-local persistent home in the default mode.
+- Current source/user-local dogfood can include a managed `codex` shim, so a
+  bare `codex` command is managed only when PATH
   resolves that shim. Admin commands such as `codex login` and
   `codex --version` must pass through to native Codex. Direct native Codex
   binaries and already-running native sessions are not globally protected.
-- Native Codex chooser/session authority bridge, including canonical
-  `state_5.sqlite*` and `logs_2.sqlite*` when present, with managed Codex using
-  Codex's built-in `openai` provider namespace so the native and managed resume
-  pickers enumerate the same session rows. Managed resume also reports
-  canonical `state_5.sqlite` lock contention before child spawn instead of
-  forking or bypassing Codex's session authority.
-- Root-partitioned Codex config passthrough for user settings such as
-  `[features]`, legacy `experimental_*`, MCP servers, approval/sandbox policy,
-  profiles, model defaults, and non-managed provider definitions.
+- Route-local persistent Codex session authority for managed muxed runs. Current
+  managed Codex uses the selected account home as `CODEX_HOME`, keeps muxed
+  `state_5.sqlite*` / `logs_2.sqlite*` out of canonical `~/.codex` by default,
+  and preserves Codex's built-in `openai` provider namespace for proxy routing.
+  Legacy canonical bridge behavior is explicit opt-in via `shared_canonical`.
+- Managed Codex config is written fresh per launch in the default mode (proxy
+  override plus managed feature defaults) and scrubbed on exit; root-partitioned
+  user-config passthrough (`[features]`, legacy `experimental_*`, MCP servers,
+  approval/sandbox policy, profiles, model defaults, non-managed provider
+  definitions) currently applies on the legacy `shared_canonical` bridge path
+  only.
 - Lazy account refresh at credential materialization or explicit repair time;
   managed launch reports `pre_spawn_network_refresh:false`.
 - Managed Codex launch/resume auto-revalidates expired Codex quota/rate windows
@@ -118,13 +124,11 @@ ladder diagrams.
 Public install lanes:
 
 ```bash
-npm install -g oauth-mux
-# or
 brew install jesssullivan/omux/oauth-mux
 ```
 
 The Homebrew formula is intentionally binary-only. It should not change
-`command -v codex`; use the explicit local, npm, Nix, or future opt-in package
+`command -v codex`; use the explicit local, Nix, or future opt-in package
 shim lanes when testing managed bare-`codex` behavior.
 
 Nix users can choose the binary-only package or the managed-shim package:
@@ -267,11 +271,24 @@ DX:
 ```bash
 just build
 just test
-just check-local
+just check
+just e2e
 ```
 
-Use `just release-proof <version>` before any registry mutation. Direct
-`zig build` is fine for iteration, but `just` is the operator entrypoint.
+The explicit aliases remain available:
+
+```bash
+just remote-build
+just remote-test
+just remote-check
+just remote-e2e
+```
+
+Use `just release-proof <version> [ref]` or
+`just remote-release-proof <ref> <version>` before any registry mutation. Local
+`zig build`, `just build-local`, `just test-local`, `just check-local`, and
+`just e2e-local` are debugging tools only; they are not the proof path for PR,
+release, or dogfood readiness on low-power developer machines.
 
 AX:
 

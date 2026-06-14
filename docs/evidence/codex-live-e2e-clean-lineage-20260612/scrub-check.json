@@ -1,0 +1,16 @@
+{
+  "after": {
+    "durable_session_bridges": 0,
+    "ok": true,
+    "root": "/Users/jess/.codex/.oauth-mux/managed-codex-homes",
+    "root_exists": false,
+    "token_or_config_leaks": 0
+  },
+  "before": {
+    "durable_session_bridges": 0,
+    "ok": true,
+    "root": "/Users/jess/.codex/.oauth-mux/managed-codex-homes",
+    "root_exists": false,
+    "token_or_config_leaks": 0
+  }
+}

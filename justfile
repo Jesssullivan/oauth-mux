@@ -8,18 +8,30 @@ default:
 
 # ── Build ──
 
-build:
+build REF="":
+    ./scripts/remote-validate.sh build {{REF}}
+
+build-local:
     {{zig}} build
 
-build-release:
+build-release REF="":
+    ./scripts/remote-validate.sh build-release {{REF}}
+
+build-release-local:
     {{zig}} build -Doptimize=ReleaseSafe
 
-build-small:
+build-small REF="":
+    ./scripts/remote-validate.sh build-small {{REF}}
+
+build-small-local:
     {{zig}} build -Doptimize=ReleaseSmall
 
 # ── Test ──
 
-test:
+test REF="":
+    ./scripts/remote-validate.sh test {{REF}}
+
+test-local:
     {{zig}} build test
 
 # ── Run ──
@@ -27,7 +39,7 @@ test:
 run *ARGS:
     {{zig}} build run -- {{ARGS}}
 
-version: build
+version: build-local
     ./zig-out/bin/oauth-mux version
 
 install-local-dogfood:
@@ -39,56 +51,56 @@ install-local-dogfood-shim:
 uninstall-local-dogfood:
     ./scripts/uninstall-local-dogfood.sh
 
-status: build
+status: build-local
     ./zig-out/bin/oauth-mux status --json
 
-doctor: build
+doctor: build-local
     ./zig-out/bin/oauth-mux doctor
 
-report: build
+report: build-local
     ./zig-out/bin/oauth-mux report --redacted
 
-providers: build
+providers: build-local
     ./zig-out/bin/oauth-mux providers list
 
-health: build
+health: build-local
     ./zig-out/bin/oauth-mux health
 
-probe *ARGS: build
+probe *ARGS: build-local
     ./zig-out/bin/oauth-mux probe {{ARGS}}
 
 # ── Codex Max operator helpers ──
 
 codex_max_config := "examples/codex-max.config.json"
 
-codex-max-bootstrap-dirs: build
+codex-max-bootstrap-dirs: build-local
     ./zig-out/bin/oauth-mux codex bootstrap-dirs
 
-codex-max-validate: build
+codex-max-validate: build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux config validate
 
-codex-max-login ACCOUNT: build
+codex-max-login ACCOUNT: build-local
     ./zig-out/bin/oauth-mux codex login {{ACCOUNT}}
 
-codex-max-login-device ACCOUNT: build
+codex-max-login-device ACCOUNT: build-local
     ./zig-out/bin/oauth-mux codex login-device {{ACCOUNT}}
 
-codex-max-login-status ACCOUNT: build
+codex-max-login-status ACCOUNT: build-local
     ./zig-out/bin/oauth-mux codex login-status {{ACCOUNT}}
 
-codex-max-login-status-all: build
+codex-max-login-status-all: build-local
     ./zig-out/bin/oauth-mux codex login-status-all
 
-codex-max-onboard: build
+codex-max-onboard: build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex onboard
 
-codex-max-setup: build
+codex-max-setup: build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux setup codex
 
-codex-max-canary: build
+codex-max-canary: build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex canary
 
-paid-cohort-soak-snapshot: build
+paid-cohort-soak-snapshot: build-local
     ./scripts/paid-cohort-soak-snapshot.sh
 
 codex-max-soak-snapshot: paid-cohort-soak-snapshot
@@ -102,32 +114,33 @@ dogfood-process-snapshot-json:
 codex-max-process-snapshot OUT="dist/dogfood/process":
     python3 ./scripts/dogfood-process-snapshot.py --out {{OUT}} --tag codex-max
 
-codex-max-live-qa: build
+codex-max-live-qa: build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex live-qa
 
-codex-max-live-qa-confirmed: build
+codex-max-live-qa-confirmed: build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex live-qa --confirm-spend
 
-codex-max-repair-plan CAPABILITY="codex-max": build
+codex-max-repair-plan CAPABILITY="codex-max": build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux repair-plan --profile {{CAPABILITY}} --capability {{CAPABILITY}} --json
 
-codex-max-config-candidate OUTPUT="/tmp/oauth-mux-codex-max.config.json": build
+codex-max-config-candidate OUTPUT="/tmp/oauth-mux-codex-max.config.json": build-local
     ./zig-out/bin/oauth-mux codex config-candidate --output {{OUTPUT}}
 
-codex-max-config-merge CANDIDATE="/tmp/oauth-mux-codex-max.config.json": build
+codex-max-config-merge CANDIDATE="/tmp/oauth-mux-codex-max.config.json": build-local
     ./zig-out/bin/oauth-mux codex config-merge --candidate {{CANDIDATE}}
 
-codex-max-probe ACCOUNT CAPABILITY="codex-mini": build
+codex-max-probe ACCOUNT CAPABILITY="codex-mini": build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux probe --provider codex --account {{ACCOUNT}} --capability {{CAPABILITY}} --json
 
-codex-max-probe-all CAPABILITY="codex-mini": build
+codex-max-probe-all CAPABILITY="codex-mini": build-local
     OMUX_CONFIG=$PWD/{{codex_max_config}} ./zig-out/bin/oauth-mux codex probe-all --capability {{CAPABILITY}} --json
 
 # ── Cross-compilation ──
 
-release: release-all
+release VERSION=release_version REF="":
+    OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
 
-release-all:
+release-all-local:
     {{zig}} build release
     @echo "all release builds complete"
 
@@ -152,8 +165,8 @@ homebrew-qa VERSION=release_version:
 npm-deprecate-plan VERSION="0.1.1":
     OMUX_NPM_DEPRECATE_PLAN_ONLY=1 nix develop --command ./scripts/npm-ci-deprecate.sh {{VERSION}}
 
-release-proof VERSION=release_version:
-    nix develop --command just release-proof-local {{VERSION}}
+release-proof VERSION=release_version REF="":
+    OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
 
 release-proof-local VERSION=release_version:
     ./scripts/release-local.sh {{VERSION}}
@@ -191,22 +204,22 @@ home-manager-smoke:
 
 # ── Validation ──
 
-check:
-    nix develop --command just check-local
+check REF="":
+    ./scripts/remote-validate.sh check {{REF}}
 
 check-local:
     ./scripts/check-local.sh
     @echo "all checks passed"
 
-e2e:
-    nix develop --command just e2e-local
+e2e REF="":
+    ./scripts/remote-validate.sh e2e {{REF}}
 
 e2e-local:
     zig build
     ./scripts/e2e-local.sh
 
-first-run-e2e:
-    nix develop --command just first-run-e2e-local
+first-run-e2e REF="":
+    ./scripts/remote-validate.sh first-run-e2e {{REF}}
 
 first-run-e2e-local:
     zig build
@@ -214,6 +227,35 @@ first-run-e2e-local:
 
 live-qa:
     nix develop --command ./scripts/live-provider-qa.sh
+
+# ── Remote validation (GloriousFlywheel runner dispatch) ──
+
+remote-validate TARGET="check" REF="":
+    ./scripts/remote-validate.sh {{TARGET}} {{REF}}
+
+remote-check REF="":
+    ./scripts/remote-validate.sh check {{REF}}
+
+remote-test REF="":
+    ./scripts/remote-validate.sh test {{REF}}
+
+remote-build REF="":
+    ./scripts/remote-validate.sh build {{REF}}
+
+remote-build-release REF="":
+    ./scripts/remote-validate.sh build-release {{REF}}
+
+remote-build-small REF="":
+    ./scripts/remote-validate.sh build-small {{REF}}
+
+remote-e2e REF="":
+    ./scripts/remote-validate.sh e2e {{REF}}
+
+remote-first-run-e2e REF="":
+    ./scripts/remote-validate.sh first-run-e2e {{REF}}
+
+remote-release-proof REF="" VERSION=release_version:
+    OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
 
 # ── Broker MCP smoke (provider-neutral regression catch-net) ──
 
@@ -327,53 +369,53 @@ github-tracker-comment ISSUE BODY_FILE:
 
 # ── Config ──
 
-init: build
+init: build-local
     ./zig-out/bin/oauth-mux init
 
-config-path: build
+config-path: build-local
     ./zig-out/bin/oauth-mux config path
 
-config-validate: build
+config-validate: build-local
     ./zig-out/bin/oauth-mux config validate
 
 # ── Daemon ──
 
-daemon-run: build
+daemon-run: build-local
     ./zig-out/bin/oauth-mux daemon run
 
-daemon-start: build
+daemon-start: build-local
     ./zig-out/bin/oauth-mux daemon start
 
-daemon-stop: build
+daemon-stop: build-local
     ./zig-out/bin/oauth-mux daemon stop
 
-daemon-status: build
+daemon-status: build-local
     ./zig-out/bin/oauth-mux daemon status --json
 
-daemon-events: build
+daemon-events: build-local
     ./zig-out/bin/oauth-mux daemon events --json
 
-daemon-tick PROFILE="codex-max" CAPABILITY="codex-max": build
+daemon-tick PROFILE="codex-max" CAPABILITY="codex-max": build-local
     ./zig-out/bin/oauth-mux daemon tick --once --profile {{PROFILE}} --capability {{CAPABILITY}} --json
 
-daemon-loop PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="2" INTERVAL_MS="0": build
+daemon-loop PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="2" INTERVAL_MS="0": build-local
     ./zig-out/bin/oauth-mux daemon tick --loop --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}} --profile {{PROFILE}} --capability {{CAPABILITY}} --json
 
-daemon-loop-host PROFILE="codex-max" CAPABILITY="codex-max" INTERVAL_MS="60000": build
+daemon-loop-host PROFILE="codex-max" CAPABILITY="codex-max" INTERVAL_MS="60000": build-local
     ./zig-out/bin/oauth-mux daemon loop --profile {{PROFILE}} --capability {{CAPABILITY}} --interval-ms {{INTERVAL_MS}}
 
-daemon-loop-smoke PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="3" INTERVAL_MS="500": build
+daemon-loop-smoke PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="3" INTERVAL_MS="500": build-local
     ./zig-out/bin/oauth-mux daemon loop --profile {{PROFILE}} --capability {{CAPABILITY}} --iterations {{ITERATIONS}} --interval-ms {{INTERVAL_MS}}
 
 # ── Shell integration ──
 
-completions-fish: build
+completions-fish: build-local
     ./zig-out/bin/oauth-mux completions fish
 
-completions-zsh: build
+completions-zsh: build-local
     ./zig-out/bin/oauth-mux completions zsh
 
-completions-bash: build
+completions-bash: build-local
     ./zig-out/bin/oauth-mux completions bash
 
 # ── Utilities ──
@@ -381,12 +423,12 @@ completions-bash: build
 clean:
     rm -rf zig-out .zig-cache
 
-size: build-release
+size: build-release-local
     @ls -lh zig-out/bin/oauth-mux
 
 # ── E2E smoke test ──
 
-smoke: build
+smoke: build-local
     #!/usr/bin/env bash
     set -euo pipefail
     echo "=== version ==="

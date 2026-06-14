@@ -65,19 +65,30 @@ easier to generalize into the next harness adapter, it is probably out of scope.
 8. `build.zig` / `build.zig.zon` — Zig build system
 9. `src/` — implementation
 
-## Build
+## Build And Validation
 
-Zig 0.14+ via Nix flake. Always use `just` as the entrypoint:
+Remote-first rule: proof builds, test gates, release checks, and agent validation
+must use the GloriousFlywheel remote lanes. The bare proof recipes dispatch
+remote by default:
 
 ```bash
-just build          # debug build
-just test           # run all tests
-just build-release  # ReleaseSafe optimized build
-just release        # cross-compile all 6 platform targets
-just check          # full validation (test suite)
+just build          # build on the GloriousFlywheel runner
+just test           # test on the GloriousFlywheel runner
+just check          # full check on the GloriousFlywheel runner
+just e2e            # e2e on the GloriousFlywheel runner
+
+just remote-build   # build on the GloriousFlywheel runner
+just remote-test    # test on the GloriousFlywheel runner
+just remote-check   # full check on the GloriousFlywheel runner
+just remote-e2e     # e2e on the GloriousFlywheel runner
 ```
 
-Direct `zig build` is acceptable when iterating, but `just` is the canonical path.
+Do not use local `zig build`, `just build-local`, `just test-local`,
+`just check-local`, or `just e2e-local` as the completion proof on a developer
+laptop. Local build commands remain available only for narrow debugging of a
+local toolchain, generated binary, or installer issue. If a local build is used
+for debugging, state that it is not validation and follow with the remote lane
+before making a completion or merge claim.
 
 ## Architecture
 
@@ -122,12 +133,14 @@ to avoid framework linking and keep the binary static.
 ## Testing
 
 ```bash
-just test           # unit tests via zig build test
-just test-verbose   # with output
+just remote-test    # unit tests on the GloriousFlywheel runner
+just remote-check   # full validation on the GloriousFlywheel runner
 ```
 
 Tests are in-file `test` blocks (Zig convention) plus `test/fixtures/` for
-provider token format samples.
+provider token format samples. `just test` is a remote proof lane. Local
+`just test-local` and `just test-verbose` are debugging tools only; do not use
+them as completion proof.
 
 ## Distribution
 

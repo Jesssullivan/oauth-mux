@@ -1,0 +1,92 @@
+{
+  "auth_failure_observed": false,
+  "auth_fallback_sequence": {
+    "observed": false,
+    "reason": "no auth_unauthorized proxy_turn"
+  },
+  "auth_health_events": 0,
+  "auth_health_quota_claim_observed": false,
+  "auth_health_recorded_observed": false,
+  "auth_recovered_observed": false,
+  "auth_retry_unavailable_events": 0,
+  "auth_same_turn_retry_events": 0,
+  "auth_unauthorized_turns": 0,
+  "brokered_session_observed": true,
+  "client_disconnected_events": 1,
+  "events": 29,
+  "fallback_sequence": {
+    "observed": false,
+    "reason": "no quota_exhausted proxy_turn"
+  },
+  "health_recording_expected_but_missing": false,
+  "launch_timing": {
+    "child_spawn_elapsed_ms": 48,
+    "events": 12,
+    "total_elapsed_ms": 48
+  },
+  "level4_shape_observed": false,
+  "next_action": "continue_managed_dogfood",
+  "no_account_selectable_rejections": [],
+  "observed_child_model": "gpt-5.5",
+  "observed_child_model_source": "codex_stderr",
+  "path": "/Users/jess/git/oauth-mux/dist/live-qa/tin1852-20260612T171039Z/status.ndjson",
+  "post_swap_turn_events": 0,
+  "provider_originated_live_fallback_claim": false,
+  "provider_retry_unavailable_events": 0,
+  "provider_same_turn_retry_events": 0,
+  "proxy_turns": 4,
+  "proxy_turns_by_account": {
+    "codex:max-3": 4
+  },
+  "proxy_turns_by_body_class": {
+    "none": 4
+  },
+  "proxy_turns_by_path_kind": {
+    "models": 1,
+    "responses": 3
+  },
+  "proxy_turns_by_status": {
+    "200": 4
+  },
+  "quota_event_observed": false,
+  "quota_handoff_failed_reason": null,
+  "quota_handoff_failure": {
+    "observed": false,
+    "reason": "no quota_exhausted proxy_turn"
+  },
+  "quota_handoff_observed": false,
+  "responses_401_turns": 0,
+  "responses_get_405_misclassified_ok": 0,
+  "route_capability_is_child_model": false,
+  "same_turn_retry_events": 0,
+  "same_turn_retry_unavailable_events": 0,
+  "selected_account": "codex:max-3",
+  "session_aborted_observed": false,
+  "session_authority": "isolated",
+  "stream_interrupted_events": 0,
+  "synthetic_swap_observed": false,
+  "terminal_event": {
+    "exit_code": 0,
+    "kind": "session_ended",
+    "signal_name": null,
+    "term_code": 0,
+    "term_kind": "exited"
+  },
+  "terminal_event_observed": true,
+  "transport_failure_observed": true,
+  "transport_local_recovery_sequence": {
+    "observed": false,
+    "reason": "no proxy_transport_local_retry event"
+  },
+  "transport_local_retry_events": 0,
+  "transport_local_retry_recovered_events": 0,
+  "transport_recovery_observed": false,
+  "transport_recovery_sequence": {
+    "observed": false,
+    "reason": "no proxy_upstream_failed event"
+  },
+  "unsupported_transport_events": 3,
+  "upstream_failure_events": 0,
+  "user_visible_failure_likely": false,
+  "verdict": "transport_unsupported_contained"
+}

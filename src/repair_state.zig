@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const env = @import("env.zig");
 const paths = @import("paths.zig");
 const types = @import("types.zig");
 
@@ -28,17 +30,65 @@ pub const HandoffKey = struct {
     capability: ?[]const u8 = null,
 };
 
+// ── Process-local re-entrancy guard (TIN-1851) ───────────────────────────────
+// The repair lock is an OS flock (createFileAbsolute .lock=.exclusive), which is
+// per-open-file-description. A SECOND acquire of the same (provider,account) key
+// from the SAME process — e.g. the in-process proxy materializer thread refreshing
+// while the session main thread already holds the account's repair lock — opens a
+// new fd and flock() would block on itself: a self-deadlock. We therefore hold
+// exactly ONE real flock per key per process and refcount re-entrant acquires; a
+// condition variable serializes the first-acquire so two threads never race the
+// real flock for the same key. Cross-process serialization is unchanged: the OS
+// flock still blocks (or returns RepairInProgress) for a different process.
+
+const HeldLock = struct {
+    count: usize,
+    acquiring: bool,
+    file: ?std.fs.File = null,
+};
+
+var held_mutex: std.Thread.Mutex = .{};
+var held_cond: std.Thread.Condition = .{};
+var held_locks: std.StringHashMapUnmanaged(HeldLock) = .{};
+const held_gpa = std.heap.page_allocator; // process-global; mutated only under held_mutex
+
 pub const RepairLock = struct {
     allocator: std.mem.Allocator,
-    path: []const u8,
-    file: std.fs.File,
+    key: []const u8, // caller-allocator-owned sanitized lock name
 
     pub fn release(self: *RepairLock) void {
-        self.file.close();
-        std.fs.deleteFileAbsolute(self.path) catch {};
-        self.allocator.free(self.path);
+        held_mutex.lock();
+        if (held_locks.getPtr(self.key)) |entry| {
+            if (entry.count > 0) entry.count -= 1;
+            if (entry.count == 0) {
+                // Real-lock teardown: closing the fd drops the OS flock, and the
+                // lock FILE deliberately persists (TIN-2041). Unlinking it here
+                // raced waiters: a waiter blocked on the old inode acquires the
+                // kernel flock the instant the fd closes, the unlink then orphans
+                // the name it holds, and a later acquirer creates a NEW inode at
+                // the same path and locks immediately — two concurrent holders.
+                // flock(2) state is the only mutual-exclusion authority: stale
+                // lock files are simply re-locked on the next acquire, and
+                // probeRepairLock reports unlocked files as no repair in
+                // progress.
+                if (entry.file) |f| f.close();
+                if (held_locks.fetchRemove(self.key)) |kv| held_gpa.free(kv.key);
+            }
+        }
+        held_mutex.unlock();
+        self.allocator.free(self.key);
     }
 };
+
+// The append-only repair-events log is read back whole by every reader
+// (hasPendingHandoff / writeEvents / writePendingHandoffView), each of which caps
+// the read at 1 MiB and FAILS with FileTooBig past that. Bound the file so reads
+// stay correct and O(tail): rotate to the most recent ~512 KiB once it grows past
+// 768 KiB (kept well under the 1 MiB read cap so a single post-rotation append can
+// never exceed it). Repair handoffs resolve within a handful of events, so the
+// retained tail covers every realistically-live pending handoff.
+const events_soft_cap_bytes: u64 = 768 * 1024;
+const events_retain_tail_bytes: usize = 512 * 1024;
 
 pub fn appendEvent(allocator: std.mem.Allocator, event: RepairEvent) !void {
     const path = try eventsPath(allocator);
@@ -55,6 +105,71 @@ pub fn appendEvent(allocator: std.mem.Allocator, event: RepairEvent) !void {
     try file.seekFromEnd(0);
     try writeEventJson(file.writer(), event);
     try file.writeAll("\n");
+
+    // Best-effort: a rotation hiccup must not drop the event we just recorded.
+    rotateEventsTailInPlace(allocator, file, events_soft_cap_bytes, events_retain_tail_bytes) catch {};
+}
+
+/// If `file` exceeds `soft_cap`, rewrite it in place keeping only the last
+/// ~`retain_tail` bytes, trimmed forward to the next line boundary so no JSONL
+/// record is split. Operates on the already-exclusively-locked handle. Pure of
+/// global state so it is unit-testable with small caps.
+fn rotateEventsTailInPlace(
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    soft_cap: u64,
+    retain_tail: usize,
+) !void {
+    const size = try file.getEndPos();
+    if (size <= soft_cap) return;
+
+    try file.seekTo(0);
+    const all = try file.readToEndAlloc(allocator, size + 1);
+    defer allocator.free(all);
+
+    var start: usize = if (all.len > retain_tail) all.len - retain_tail else 0;
+    if (start > 0) {
+        // Advance to just after the next newline so the kept tail starts on a
+        // record boundary; if none remains, keep nothing rather than a torn line.
+        start = if (std.mem.indexOfScalarPos(u8, all, start, '\n')) |nl| nl + 1 else all.len;
+    }
+
+    try file.seekTo(0);
+    try file.setEndPos(0);
+    try file.writeAll(all[start..]);
+}
+
+test "rotateEventsTailInPlace bounds the file to the recent tail on a record boundary" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("ev.jsonl", .{ .read = true, .truncate = true });
+    defer f.close();
+    var i: usize = 0;
+    while (i < 100) : (i += 1) try f.writer().print("rec{d:0>4}\n", .{i}); // 800 bytes total
+
+    try rotateEventsTailInPlace(std.testing.allocator, f, 200, 100);
+
+    try f.seekTo(0);
+    const out = try f.readToEndAlloc(std.testing.allocator, 1 << 20);
+    defer std.testing.allocator.free(out);
+    try std.testing.expect(out.len <= 100); // bounded to the retain tail
+    try std.testing.expect(out.len > 0 and out[0] == 'r'); // starts on a record boundary
+    try std.testing.expect(out[out.len - 1] == '\n'); // ends clean, no torn line
+    try std.testing.expect(std.mem.indexOf(u8, out, "rec0099") != null); // most recent kept
+    try std.testing.expect(std.mem.indexOf(u8, out, "rec0000") == null); // oldest dropped
+}
+
+test "rotateEventsTailInPlace is a no-op below the cap" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("ev2.jsonl", .{ .read = true, .truncate = true });
+    defer f.close();
+    try f.writeAll("a\nb\nc\n");
+    try rotateEventsTailInPlace(std.testing.allocator, f, 1024, 512);
+    try f.seekTo(0);
+    const out = try f.readToEndAlloc(std.testing.allocator, 1024);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("a\nb\nc\n", out);
 }
 
 pub fn writeEvents(allocator: std.mem.Allocator, writer: anytype, json: bool, limit: usize) !void {
@@ -375,12 +490,14 @@ pub fn acquireRepairLockBlocking(
     return acquireRepairLockWithMode(allocator, provider, account, false);
 }
 
-fn acquireRepairLockWithMode(
+const RealRepairLock = struct { file: std.fs.File, path: []const u8 };
+
+fn acquireRealRepairLock(
     allocator: std.mem.Allocator,
     provider: []const u8,
     account: []const u8,
     nonblocking: bool,
-) !RepairLock {
+) !RealRepairLock {
     const path = try lockPath(allocator, provider, account);
     errdefer allocator.free(path);
     try ensureParentDir(path);
@@ -406,11 +523,77 @@ fn acquireRepairLockWithMode(
     try std.json.stringify(account, .{}, writer);
     try writer.print(",\"started_at\":{d}}}\n", .{now});
 
-    return .{
-        .allocator = allocator,
-        .path = path,
-        .file = file,
+    return .{ .file = file, .path = path };
+}
+
+fn acquireRepairLockWithMode(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+    nonblocking: bool,
+) !RepairLock {
+    const key = try sanitizedLockFileName(allocator, provider, account);
+    errdefer allocator.free(key);
+
+    held_mutex.lock();
+    while (true) {
+        if (held_locks.getPtr(key)) |entry| {
+            if (entry.acquiring) {
+                if (nonblocking) {
+                    // A sibling thread is mid-flock for this key. Waiting
+                    // would silently turn the caller's typed
+                    // refuse-on-held contract into an unbounded block
+                    // behind the sibling's (possibly blocking) acquire.
+                    held_mutex.unlock();
+                    return error.RepairInProgress;
+                }
+                // Blocking caller: wait for the sibling's flock to resolve.
+                held_cond.wait(&held_mutex);
+                continue;
+            }
+            // Already held by this process: re-entrant acquire, no new flock.
+            entry.count += 1;
+            held_mutex.unlock();
+            return .{ .allocator = allocator, .key = key };
+        }
+        break;
+    }
+    // Reserve the key as 'acquiring', then take the (possibly blocking) real
+    // flock OUTSIDE the mutex so other threads/keys are not stalled.
+    const reg_key = held_gpa.dupe(u8, key) catch {
+        held_mutex.unlock();
+        return error.OutOfMemory;
     };
+    held_locks.put(held_gpa, reg_key, .{ .count = 1, .acquiring = true }) catch {
+        held_gpa.free(reg_key);
+        held_mutex.unlock();
+        return error.OutOfMemory;
+    };
+    held_mutex.unlock();
+
+    const real = acquireRealRepairLock(allocator, provider, account, nonblocking) catch |e| {
+        held_mutex.lock();
+        if (held_locks.fetchRemove(key)) |kv| held_gpa.free(kv.key);
+        held_cond.broadcast();
+        held_mutex.unlock();
+        return e;
+    };
+
+    allocator.free(real.path);
+
+    held_mutex.lock();
+    if (held_locks.getPtr(key)) |entry| {
+        entry.file = real.file;
+        entry.acquiring = false;
+    } else {
+        // Should not happen (we own the 'acquiring' reservation), but stay safe.
+        // Close only — the lock file itself persists (see release()).
+        real.file.close();
+    }
+    held_cond.broadcast();
+    held_mutex.unlock();
+
+    return .{ .allocator = allocator, .key = key };
 }
 
 pub fn probeRepairLock(
@@ -452,7 +635,7 @@ fn locksDir(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ dir, "repair-locks" });
 }
 
-fn lockPath(allocator: std.mem.Allocator, provider: []const u8, account: []const u8) ![]const u8 {
+pub fn lockPath(allocator: std.mem.Allocator, provider: []const u8, account: []const u8) ![]const u8 {
     const dir = try locksDir(allocator);
     defer allocator.free(dir);
     const file_name = try sanitizedLockFileName(allocator, provider, account);
@@ -560,6 +743,121 @@ fn writeTextLines(writer: anytype, lines: []const []const u8) !void {
         try writer.writeAll(line);
         try writer.writeByte('\n');
     }
+}
+
+/// Test helper: scope lock files to a per-test tmp runtime dir via the
+/// OMUX_RUNTIME_DIR seam so unit tests never write into the user's real
+/// runtime dir (locks persist after TIN-2041, so stray writes are permanent).
+/// Pub so other modules' lock tests (pipeline refresh/probe) reuse it instead
+/// of polluting the real repair-locks dir (TIN-2039 review).
+pub const TestRuntimeDirScope = struct {
+    tmp: std.testing.TmpDir,
+    root: []const u8,
+    overrides: std.process.EnvMap,
+
+    pub fn init(allocator: std.mem.Allocator) !TestRuntimeDirScope {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const root = try tmp.dir.realpathAlloc(allocator, ".");
+        errdefer allocator.free(root);
+        var overrides = std.process.EnvMap.init(allocator);
+        errdefer overrides.deinit();
+        try overrides.put("OMUX_RUNTIME_DIR", root);
+        return .{ .tmp = tmp, .root = root, .overrides = overrides };
+    }
+
+    pub fn activate(self: *TestRuntimeDirScope) void {
+        env.test_overrides = &self.overrides;
+    }
+
+    pub fn deinit(self: *TestRuntimeDirScope, allocator: std.mem.Allocator) void {
+        env.test_overrides = null;
+        self.overrides.deinit();
+        allocator.free(self.root);
+        self.tmp.cleanup();
+    }
+};
+
+test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+    // First acquire takes the real OS flock.
+    var l1 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
+    // A second acquire of the SAME key from THIS process must return immediately
+    // (re-entrant) rather than self-deadlock on the per-fd flock.
+    var l2 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
+    // A nonblocking acquire from this process is also re-entrant (already serialized
+    // by the held lock), NOT RepairInProgress.
+    var l3 = try acquireRepairLock(a, "codex", "tin1851-reentrancy-test");
+    l3.release();
+    l2.release();
+    l1.release();
+    // Fully released: a fresh acquire succeeds and the registry entry is gone.
+    var l4 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
+    l4.release();
+}
+
+test "lock file path persists after acquire+release (TIN-2041 no unlink-on-release)" {
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+    const path = try lockPath(a, "codex", "tin2041-lockfile-persists");
+    defer a.free(path);
+    std.fs.deleteFileAbsolute(path) catch {}; // start from a clean slate
+
+    var lock = try acquireRepairLockBlocking(a, "codex", "tin2041-lockfile-persists");
+    try std.fs.accessAbsolute(path, .{});
+    lock.release();
+    // The lock file must STILL exist: release only drops the flock. Unlinking
+    // here is what orphaned the inode under a waiter (TIN-2041).
+    try std.fs.accessAbsolute(path, .{});
+}
+
+test "release hands the SAME inode to the next acquirer under kernel flock conflict (TIN-2041)" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+    const provider = "codex";
+    const account = "tin2041-ofd-conflict";
+
+    const path = try lockPath(a, provider, account);
+    defer a.free(path);
+    std.fs.deleteFileAbsolute(path) catch {}; // start from a clean slate
+
+    // A: public-API acquire takes the real OS flock for this process.
+    var lock_a = try acquireRepairLock(a, provider, account);
+
+    const ino_before = blk: {
+        const f = try std.fs.openFileAbsolute(path, .{});
+        defer f.close();
+        break :blk (try f.stat()).inode;
+    };
+
+    // B: a second, distinct open-file-description on the same path. flock is
+    // per-OFD, so this conflicts even within one process; the public API would
+    // refcount-share, so go below it to create a real kernel conflict.
+    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true));
+
+    lock_a.release();
+
+    // B now acquires — and must get the SAME inode A held. The old
+    // unlink-on-release orphaned A's inode under any blocked waiter and a
+    // fresh acquire created a new inode at the path: two concurrent holders.
+    const lock_b = try acquireRealRepairLock(a, provider, account, true);
+    defer {
+        lock_b.file.close();
+        a.free(lock_b.path);
+    }
+    try std.testing.expectEqual(ino_before, (try lock_b.file.stat()).inode);
+
+    // Mutual exclusion holds while B owns the lock: a third distinct-OFD
+    // try-acquire fails.
+    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true));
 }
 
 test "parseStartedAt reads lock metadata timestamp" {

@@ -9,6 +9,9 @@ const types = @import("types.zig");
 const pipeline = @import("pipeline.zig");
 const health_mod = @import("health.zig");
 const provider = @import("provider.zig");
+const warm_scheduler = @import("keepalive/warm_scheduler.zig");
+const warm_binding = @import("keepalive/warm_binding.zig");
+const warm_runner = @import("keepalive/warm_runner.zig");
 const provider_schema = @import("provider_schema.zig");
 const daemon = @import("daemon.zig");
 const repair_state = @import("repair_state.zig");
@@ -18,6 +21,7 @@ const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
+const identity_hash = @import("identity_hash.zig");
 
 comptime {
     // Pull broker + adapter modules into the test build.
@@ -69,6 +73,10 @@ pub fn main() !void {
                 .account = adapter_args.account,
                 .session_home = adapter_args.session_home,
                 .isolated_session_store = adapter_args.isolated_session_store,
+                .mux_mode = if (adapter_args.mux_mode) |m| switch (m) {
+                    .isolated_persistent => codex_adapter.MuxMode.isolated_persistent,
+                    .shared_canonical => codex_adapter.MuxMode.shared_canonical,
+                } else null,
                 .json_status = adapter_args.json_status,
                 .json_status_file = adapter_args.json_status_file,
                 .forward_argv = adapter_args.forward_argv,
@@ -263,6 +271,13 @@ pub fn main() !void {
             };
         },
 
+        .keepalive => |ka_args| {
+            runKeepalive(allocator, stdout, ka_args) catch |e| {
+                log.err("keepalive: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -310,6 +325,84 @@ pub fn main() !void {
     }
 }
 
+/// Bounded real-sleep wait for the foreground keepalive loop: terminates after
+/// `remaining` more waits (so the loop runs a fixed number of ticks), and caps
+/// each sleep at `cap_ms` so a far-future due instant still re-ticks periodically.
+/// runLoop floors a past/now wake before calling this, so there is no busy-spin.
+const KeepaliveWait = struct {
+    remaining: u32,
+    cap_ms: u64,
+    fn wait(ctx: *anyopaque, wake_at_ms: i64) bool {
+        const self: *KeepaliveWait = @ptrCast(@alignCast(ctx));
+        if (self.remaining == 0) return false;
+        self.remaining -= 1;
+        const now = std.time.milliTimestamp();
+        if (wake_at_ms > now) {
+            const delta: u64 = @intCast(wake_at_ms - now);
+            // Clamp to a sane max (24h) so an absurd operator --interval-ms can't
+            // overflow the u64 ns multiply, and the loop never sleeps past a day.
+            const max_ms: u64 = 24 * 60 * 60 * 1000;
+            const sleep_ms = @min(@min(delta, self.cap_ms), max_ms);
+            std.time.sleep(sleep_ms * std.time.ns_per_ms);
+        }
+        return true;
+    }
+};
+
+/// `oauth-mux keepalive` — run the warm-loop scheduler over every configured
+/// account: proactively refresh each at ~75% of its token lifetime so an agent
+/// never hits a dead token. SAFE: refreshAccount refuses any account whose
+/// proactive_refresh is not admitted — the claude/codex providers now declare the
+/// grant (TIN-2057), but admission still requires the account to set
+/// `allow_proactive_refresh: true` (defaults false), so an account that hasn't
+/// opted in only records refusals. Bounded by `iterations` (default 1).
+fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.KeepaliveArgs) !void {
+    const parsed = config.load(allocator) catch |e| {
+        if (args.json) {
+            try writer.writeAll("{\"error\":\"config not found\"}\n");
+        } else {
+            log.err("keepalive: config load: {s}", .{@errorName(e)});
+        }
+        return e;
+    };
+    defer parsed.deinit();
+    const cfg = parsed.value;
+
+    var health = health_mod.HealthStore.load(allocator, .{});
+    defer health.deinit();
+
+    // Build the warm pool from live config + credential expiry.
+    var pool = try warm_runner.enumeratePool(allocator, cfg, &health);
+    defer pool.deinit();
+    const accounts = try warm_binding.buildPool(allocator, pool.observed, std.time.milliTimestamp());
+    defer allocator.free(accounts); // freed BEFORE pool.deinit (accounts borrow pool keys)
+
+    // Bind the scheduler to the live refresh path (proactive; refuses ungranted).
+    var wr = warm_runner.WarmRunner{ .allocator = allocator, .cfg = cfg, .health = &health };
+    var binding = warm_binding.RefreshBinding{ .do_refresh = warm_runner.WarmRunner.doRefresh, .do_refresh_ctx = &wr };
+    const sched = warm_scheduler.Scheduler{
+        .clock = warm_runner.WarmRunner.clock,
+        .clock_ctx = &wr,
+        .refresh = warm_binding.RefreshBinding.refresh,
+        .refresh_ctx = &binding,
+    };
+
+    var wait_ctx = KeepaliveWait{ .remaining = args.iterations -| 1, .cap_ms = args.interval_ms };
+    const report = warm_binding.runLoop(&sched, accounts, KeepaliveWait.wait, &wait_ctx);
+
+    if (args.json) {
+        try writer.print(
+            "{{\"accounts\":{d},\"ticks\":{d},\"refreshed\":{d},\"failed\":{d},\"died\":{d},\"drained\":{}}}\n",
+            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+        );
+    } else {
+        try writer.print(
+            "keepalive: {d} account(s); {d} tick(s) — refreshed={d} failed={d} died={d} drained={}\n",
+            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+        );
+    }
+}
+
 fn writeVersionJson(allocator: std.mem.Allocator, writer: anytype) !void {
     const identity = try runtime_mod.oauthMuxRuntimeIdentity(allocator, cli.version, cli.build_id);
     defer identity.deinit(allocator);
@@ -328,6 +421,9 @@ fn exitCodeFromPipelineError(e: anyerror) u8 {
         error.SecretReadFailed, error.SecretDecryptFailed => types.ExitCode.secret_read_failed.int(),
         error.TokenRefreshFailed => types.ExitCode.token_refresh_failed.int(),
         error.NetworkError => types.ExitCode.network_error.int(),
+        // TIN-2054: misconfigured account (Claude without a config_dir) — a
+        // config-shaped error, surfaced as such for scripts/agents.
+        error.ProviderNeedsConfigDir => types.ExitCode.config_error.int(),
         else => types.ExitCode.general_error.int(),
     };
 }
@@ -771,11 +867,9 @@ fn maskEmailHint(allocator: std.mem.Allocator, email: []const u8) ![]u8 {
 }
 
 fn shortSha256HexAlloc(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(value, &digest, .{});
-    const out = try allocator.alloc(u8, 12);
-    _ = std.fmt.bufPrint(out, "{x}", .{std.fmt.fmtSliceHexLower(digest[0..6])}) catch unreachable;
-    return out;
+    // Delegates to the shared module so the codex adapter's muxxing identity
+    // guard (TIN-1851) computes the SAME account-id hash as this inventory path.
+    return identity_hash.sha256_12hex(allocator, value);
 }
 
 test "maskEmailHint masks local part and keeps domain for account inventory" {
@@ -1925,17 +2019,26 @@ fn writeClaudeStarterAccount(
 ) !void {
     const account_dir = try std.fs.path.join(allocator, &.{ config_root, account });
     defer allocator.free(account_dir);
-    const credentials_path = try std.fs.path.join(allocator, &.{ account_dir, ".credentials.json" });
-    defer allocator.free(credentials_path);
 
     try std.json.stringify(account, .{}, writer);
     try writer.writeAll(":{\"priority\":");
     try writer.print("{d}", .{priority});
     try writer.writeAll(",\"config_dir\":");
     try std.json.stringify(account_dir, .{}, writer);
-    try writer.writeAll(",\"secret\":{\"backend\":\"file\",\"path\":");
-    try std.json.stringify(credentials_path, .{}, writer);
-    try writer.writeAll("},\"tags\":[\"oauth\",\"claude\"]}");
+    if (comptime builtin.os.tag == .macos) {
+        // macOS Claude Code persists credentials only in the login keychain
+        // (TIN-2060 verified — .credentials.json is never written there);
+        // the suffixed service and item account derive from config_dir at
+        // load (TIN-2070), so the bare backend is the whole truth.
+        try writer.writeAll(",\"secret\":{\"backend\":\"keychain\"}");
+    } else {
+        const credentials_path = try std.fs.path.join(allocator, &.{ account_dir, ".credentials.json" });
+        defer allocator.free(credentials_path);
+        try writer.writeAll(",\"secret\":{\"backend\":\"file\",\"path\":");
+        try std.json.stringify(credentials_path, .{}, writer);
+        try writer.writeAll("}");
+    }
+    try writer.writeAll(",\"tags\":[\"oauth\",\"claude\"]}");
 }
 
 fn writeFigmaProviderWithEnrollment(
@@ -3192,10 +3295,15 @@ fn collectRepairPlanRoutes(
         for (profile.providers) |provider_ref| {
             const parsed = parseRepairRouteSpec(provider_ref) orelse return error.ConfigValidationError;
             if (!repairRouteMatchesAccountFilter(parsed, args.account)) continue;
+            if (args.capability) |requested_capability| {
+                if (parsed.capability) |declared_capability| {
+                    if (!std.mem.eql(u8, declared_capability, requested_capability)) continue;
+                }
+            }
             try routes.append(.{
                 .provider = parsed.provider,
                 .account = parsed.account,
-                .capability = args.capability orelse parsed.capability,
+                .capability = parsed.capability orelse args.capability,
             });
         }
         return routes;
@@ -3568,7 +3676,10 @@ fn routeWritebackPlan(
         .automatic_refresh_admitted = false,
         .reason = "secret_backend_invalid",
     };
-    return secret_mod.writebackPlan(backend, def.repair.owner);
+    return secret_mod.writebackPlan(backend, def.repair.owner, .{
+        .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
+        .account_opted_in = account.allow_proactive_refresh,
+    });
 }
 
 fn daemonProbeAdmission(policy: config.DaemonPolicyConfig, budget: ?types.ActionBudget) AdmissionDecision {
@@ -5337,7 +5448,7 @@ fn executeDaemonTickActions(
         if (!decision.admitted) continue;
 
         if (std.mem.eql(u8, decision.phase, "probe")) {
-            return try executeDaemonProbe(allocator, args, evaluation, decision, executions);
+            return try executeDaemonProbe(allocator, cfg, args, evaluation, decision, executions);
         }
 
         if (std.mem.eql(u8, decision.phase, "repair") and
@@ -5353,6 +5464,7 @@ fn executeDaemonTickActions(
 
 fn executeDaemonProbe(
     allocator: std.mem.Allocator,
+    cfg: config.Config,
     args: cli.Command.DaemonTickArgs,
     evaluation: RouteEvaluation,
     decision: DaemonTickDecision,
@@ -5361,6 +5473,12 @@ fn executeDaemonProbe(
     var scratch = std.ArrayList(u8).init(allocator);
     defer scratch.deinit();
 
+    // TIN-2073: a probe-budget tick may rotate tokens only when daemon
+    // policy explicitly grants mutation — the same operator consent the
+    // repair phase requires. Default policy (allow_mutating=false) defers
+    // typed; rotation then needs a mutation-admitted tick.
+    const daemon_policy = config.effectiveDaemonPolicyForProvider(cfg.policy, evaluation.route.provider);
+
     var ok = true;
     var reason: []const u8 = "probe_completed";
     runProbe(allocator, scratch.writer(), .{
@@ -5368,6 +5486,7 @@ fn executeDaemonProbe(
         .account = evaluation.route.account,
         .capability = evaluation.route.capability,
         .json = true,
+        .allow_refresh_mutation = daemon_policy.allow_mutating,
     }) catch |e| {
         ok = false;
         reason = @errorName(e);
@@ -5583,10 +5702,9 @@ const DegradedSelection = struct {
 };
 
 // TIN-1811: collect a profile's routes for a single target capability, preserving
-// each route's *declared* capability. collectRepairPlanRoutes relabels every
-// route to `args.capability`, which would mislabel (e.g.) codex-max routes as
-// codex-mini during fallback evaluation; this keeps only the routes that actually
-// declare the target capability so the fallback set is correct.
+// each route's *declared* capability. This is used by degradation so the
+// fallback set is explicit and does not inherit the originally requested
+// capability label.
 fn collectProfileRoutesForCapability(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -7385,7 +7503,10 @@ fn accountWritebackPlan(
         .automatic_refresh_admitted = false,
         .reason = "secret_backend_invalid",
     };
-    return secret_mod.writebackPlan(backend, def.repair.owner);
+    return secret_mod.writebackPlan(backend, def.repair.owner, .{
+        .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
+        .account_opted_in = account.allow_proactive_refresh,
+    });
 }
 
 fn runtimeAccountInfo(
@@ -8316,6 +8437,7 @@ fn runProbe(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Pro
     ctx.account_name = args.account;
     ctx.capability_name = args.capability;
     ctx.probe_recheck_blocked = args.account != null;
+    ctx.allow_refresh_mutation = args.allow_refresh_mutation;
 
     const result = pipeline.runProbe(&ctx);
     store.persist();
@@ -8512,6 +8634,8 @@ fn writeProbeJson(writer: anytype, allocator: std.mem.Allocator, store: *health_
     }
     try writer.writeAll(",\"probe_executed\":");
     try writer.writeAll(if (ctx.last_probe_executed) "true" else "false");
+    try writer.writeAll(",\"lock_busy\":");
+    try writer.writeAll(if (ctx.last_probe_lock_busy) "true" else "false");
     try writer.writeAll(",\"probe_status\":");
     if (ctx.last_probe_status) |status| {
         try writer.print("{d}", .{status});
@@ -8792,6 +8916,17 @@ fn matchesProvider(key: []const u8, provider_filter: ?[]const u8) bool {
     return key.len > filter.len and key[filter.len] == ':';
 }
 
+// TIN-2070: on macOS the real keychain item carries acct=<local username>
+// (an explicit "default" never matches it), so the starter omits the account
+// and lets config load derive it. Elsewhere the keychain entry is
+// user-managed and keeps the historical explicit shape.
+const claude_starter_account_field = if (builtin.os.tag == .macos)
+    ""
+else
+    \\,
+    \\            "account": "default"
+;
+
 fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.InitArgs) !void {
     const path = try paths.configFilePath(allocator);
     defer allocator.free(path);
@@ -8823,8 +8958,9 @@ fn runInit(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Init
         \\          "priority": 10,
         \\          "secret": {
         \\            "backend": "keychain",
-        \\            "service": "Claude Code-credentials",
-        \\            "account": "default"
+        \\            "service": "Claude Code-credentials"
+    ++ claude_starter_account_field ++
+        \\
         \\          }
         \\        }
         \\      }
@@ -9255,6 +9391,9 @@ fn runCodexRevalidateExhausted(
         ctx.provider_name = route.provider;
         ctx.account_name = route.account;
         ctx.capability_name = route.capability;
+        // revalidate-exhausted's JSON contract declares
+        // mutates_user_config:false — a credential rotation would break it.
+        ctx.allow_refresh_mutation = false;
 
         const probe_result = pipeline.runProbe(&ctx);
         var probe_error: ?types.PipelineError = null;
@@ -17606,7 +17745,10 @@ test "collectRepairPlanRoutes expands profile capability routes" {
     const parsed = try config.loadFromBytes(std.testing.allocator, json);
     defer parsed.deinit();
 
-    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "codex-max" });
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
     defer routes.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), routes.items.len);
@@ -17614,6 +17756,53 @@ test "collectRepairPlanRoutes expands profile capability routes" {
     try std.testing.expectEqualStrings("max-1", routes.items[0].account);
     try std.testing.expectEqualStrings("codex-max", routes.items[0].capability.?);
     try std.testing.expectEqualStrings("max-2", routes.items[1].account);
+}
+
+test "collectRepairPlanRoutes preserves declared profile route capabilities when scoped" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "max-1": {
+        \\          "secret": { "backend": "file", "path": "/tmp/omux/max-1/auth.json" }
+        \\        },
+        \\        "max-2": {
+        \\          "secret": { "backend": "file", "path": "/tmp/omux/max-2/auth.json" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {
+        \\    "codex-max": {
+        \\      "providers": [
+        \\        "codex:max-1#codex-max",
+        \\        "codex:max-1#codex-mini",
+        \\        "codex:max-2#codex-max",
+        \\        "codex:max-2#codex-mini"
+        \\      ],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }
+        \\  },
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
+        .profile = "codex-max",
+        .capability = "codex-max",
+    });
+    defer routes.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), routes.items.len);
+    try std.testing.expectEqualStrings("max-1", routes.items[0].account);
+    try std.testing.expectEqualStrings("codex-max", routes.items[0].capability.?);
+    try std.testing.expectEqualStrings("max-2", routes.items[1].account);
+    try std.testing.expectEqualStrings("codex-max", routes.items[1].capability.?);
 }
 
 test "runtime doctor route scope reports only requested profile routes" {
@@ -19119,10 +19308,7 @@ test "Codex broker summary does not claim same-account duplicate as spare fallba
     const parsed = try config.loadFromBytes(std.testing.allocator, cfg_json);
     defer parsed.deinit();
 
-    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{
-        .profile = "codex-max",
-        .capability = "codex-max",
-    });
+    var routes = try collectRepairPlanRoutes(std.testing.allocator, parsed.value, .{ .profile = "codex-max" });
     defer routes.deinit();
     try std.testing.expectEqual(@as(usize, 2), routes.items.len);
     try std.testing.expect(sameFallbackAccount(routes.items[0], routes.items[1]));
@@ -19484,7 +19670,7 @@ test "Codex status summary keeps quota account across parsed lines" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-2","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-2","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":429,"classification":"quota_exhausted","body_class":"usage_limit_reached","delivered_to_codex":false}
         \\{"kind":"proxy_same_turn_retry","from":"codex:max-2","to":"codex:max-3"}
         \\{"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
@@ -19513,8 +19699,12 @@ test "Codex status summary preserves child signal terminal evidence" {
 
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
+    // Deliberate legacy-shape coverage: this fixture keeps the
+    // session_authority:"canonical_bridge" (legacy shared_canonical mode)
+    // frame so the summary still parses opt-in bridge sessions. The other
+    // status-summary fixtures carry the default isolated / isolated_overlay shape.
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-3","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-3","session_authority":"canonical_bridge","sqlite_authority":"canonical_env"}
         \\{"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
         \\{"kind":"session_aborted","adapter":"codex","reason":"child_signal","exit_code":-1,"term_kind":"signal","term_code":9,"signal_name":"SIGKILL","final_claim_level":"broker_owned","synthetic_swap_observed":false}
         \\
@@ -19546,7 +19736,7 @@ test "Codex status summary reports transport fallback recovery" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_upstream_failed","account":"codex:max-1","err":"ConnectionResetByPeer"}
         \\{"kind":"proxy_provider_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"provider_5xx"}
         \\{"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
@@ -19578,7 +19768,7 @@ test "Codex status summary reports local transport retry recovery" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_transport_local_retry","account":"codex:max-1","method":"POST","path_kind":"responses","err":"ConnectionResetByPeer","attempt":1,"max_attempts":2,"backoff_ms":150,"delivered_to_codex":false}
         \\{"kind":"proxy_transport_local_retry_recovered","account":"codex:max-1","method":"POST","path_kind":"responses","attempts":1,"status":200,"classification":"ok","delivered_to_codex":true}
         \\{"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","delivered_to_codex":true}
@@ -19611,7 +19801,7 @@ test "Codex status summary flags historical responses GET 405 ok regression" {
     var file = try tmp.dir.createFile("status.ndjson", .{});
     defer file.close();
     try file.writeAll(
-        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"canonical_bridge"}
+        \\{"kind":"session_started","claim_level":"broker_owned","selected_account":"codex:max-1","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
         \\{"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses","status":405,"classification":"ok","body_class":"json_error","delivered_to_codex":true}
         \\{"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
         \\
@@ -19644,4 +19834,16 @@ comptime {
     _ = @import("provider_schema.zig");
     _ = @import("fixture_redaction.zig");
     _ = @import("repair_state.zig");
+    _ = @import("enroll/tests.zig");
+    _ = @import("enroll/callback_server_tests.zig");
+    _ = @import("enroll/claude_reauth_tests.zig");
+    _ = @import("enroll/web_ui_tests.zig");
+    _ = @import("keepalive/warm_scheduler_tests.zig");
+    _ = @import("keepalive/warm_binding_tests.zig");
+    _ = @import("keepalive/warm_runner_tests.zig");
+    _ = @import("identity/identity_graph_tests.zig");
+    _ = @import("identity/claude_identity_tests.zig");
+    _ = @import("identity/identity_lane_integration_tests.zig");
+    _ = @import("cassettes/claude_oauth_cassette_tests.zig");
+    _ = @import("keepalive/ui_server_tests.zig");
 }

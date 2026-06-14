@@ -10,11 +10,14 @@ const std = @import("std");
 const config_mod = @import("config.zig");
 const broker = @import("broker/mod.zig");
 const broker_types = @import("broker/types.zig");
+const env = @import("env.zig");
 const health_mod = @import("health.zig");
 const oauth = @import("oauth.zig");
 const paths = @import("paths.zig");
 const repair_state = @import("repair_state.zig");
 const trace = @import("trace.zig");
+const provider_schema = @import("provider_schema.zig");
+const identity_hash = @import("identity_hash.zig");
 const types = @import("types.zig");
 
 /// Populate `pool` with one entry per `<provider>:<account>` defined in
@@ -98,61 +101,6 @@ const RouteHealthMatch = struct {
     health: health_mod.AccountHealth,
     capability: ?[]const u8 = null,
 };
-
-pub const CodexAuthRepairSummary = struct {
-    attempted: usize = 0,
-    refreshed: usize = 0,
-    failed: usize = 0,
-    skipped: usize = 0,
-};
-
-/// Repair Codex auth-dead durable health when the account store still has a
-/// refresh token. Codex's native child can refresh only the account it starts
-/// under; proxy fallback accounts need this preflight or an expired access
-/// token is misclassified as a permanently dead route.
-pub fn repairRefreshableCodexAuthFailures(
-    allocator: std.mem.Allocator,
-    cfg: config_mod.Config,
-    store: *health_mod.HealthStore,
-) CodexAuthRepairSummary {
-    var summary = CodexAuthRepairSummary{};
-    const provider_cfg = cfg.providers.map.get("codex") orelse return summary;
-
-    var it = provider_cfg.accounts.map.iterator();
-    while (it.next()) |entry| {
-        const account_name = entry.key_ptr.*;
-        const account_cfg = entry.value_ptr.*;
-
-        // The unmanaged default store is refreshed by the Codex child itself.
-        // oauth-mux should preflight-refresh only route-local account stores.
-        if (account_cfg.config_dir == null) {
-            summary.skipped += 1;
-            continue;
-        }
-
-        const key = health_mod.accountKey("codex", account_name);
-        const health = store.accounts.get(key.slice()) orelse {
-            summary.skipped += 1;
-            continue;
-        };
-        if (!authHealthCanBeRefreshRepaired(health)) {
-            summary.skipped += 1;
-            continue;
-        }
-
-        summary.attempted += 1;
-        refreshCodexAccountAuthFile(allocator, cfg, "codex", account_name, account_cfg) catch {
-            summary.failed += 1;
-            continue;
-        };
-
-        markAuthRefreshRepaired(store, key.slice());
-        summary.refreshed += 1;
-    }
-
-    if (summary.refreshed != 0) store.persist();
-    return summary;
-}
 
 fn applyRouteHealth(
     pool: *broker.AccountPool,
@@ -407,30 +355,6 @@ fn accountAuthMaterialPath(
     return error.FileNotFound;
 }
 
-fn authHealthCanBeRefreshRepaired(health: health_mod.AccountHealth) bool {
-    if (health.last_probe_hint_class) |hint| {
-        if (hint == .auth_dead) return true;
-    }
-    return switch (health.liveness) {
-        .dead => true,
-        .live, .degraded => false,
-    };
-}
-
-fn markAuthRefreshRepaired(store: *health_mod.HealthStore, key: []const u8) void {
-    const health = store.getOrCreate(key) catch return;
-    health.liveness = .{ .live = .{ .availability = .available } };
-    health.last_http_status = null;
-    health.last_probe_source = .credential_validation;
-    health.last_probe_observed_at = std.time.timestamp();
-    health.last_probe_retry_after_s = null;
-    health.last_probe_hint_class = .none;
-    health.last_probe_decision = .use_this;
-    health.consecutive_failures = 0;
-    health.quota_exhausted_until = null;
-    health.rate_limited_until = null;
-}
-
 fn refreshCodexAccountAuthFile(
     allocator: std.mem.Allocator,
     cfg: config_mod.Config,
@@ -453,11 +377,40 @@ fn refreshCodexAccountAuthFile(
         .needed => {},
     }
 
+    const def = config_mod.resolveProviderDefinition(cfg, provider);
+
+    // TIN-2043: defer if a live session of the same UPSTREAM IDENTITY holds
+    // the identity flock — even under a different config account (the
+    // max-1 == max-4 shape). The per-account blocking lock above does not
+    // cover a sibling config account sharing one single-use RT chain. Key
+    // it exactly as the managed session does; nonblocking, defer-on-held
+    // (background refresh is never urgent — the session holder rotates its
+    // own chain).
+    var identity_lock: ?repair_state.RepairLock = null;
+    defer if (identity_lock) |*l| l.release();
+    if (def.credential.identity_claim_path != null) {
+        const account_id = (provider_schema.identityClaimFromCredential(def, bytes, allocator) catch null) orelse
+            // Defensive: a store that reached here already parsed an
+            // account_id via refreshCodexAuthState above (a store without
+            // one bails as .not_needed before this point), so this refuse is
+            // belt-and-suspenders against future changes to that gate — never
+            // dodge the duplicate-identity guard on an unresolved id.
+            return error.NoIdentityClaim;
+        defer allocator.free(account_id);
+        const id_hash = try identity_hash.sha256_12hex(allocator, account_id);
+        defer allocator.free(id_hash);
+        const identity_domain = try std.fmt.allocPrint(allocator, "{s}-identity", .{provider});
+        defer allocator.free(identity_domain);
+        identity_lock = repair_state.acquireRepairLock(allocator, identity_domain, id_hash) catch |e| switch (e) {
+            error.RepairInProgress => return, // a live session owns the chain; skip this background refresh
+            else => return e,
+        };
+    }
+
     var material = try parseCodexAuthRefreshMaterial(allocator, bytes);
     defer material.deinit(allocator);
     const refresh_token = material.refresh_token orelse return error.NoRefreshToken;
 
-    const def = config_mod.resolveProviderDefinition(cfg, provider);
     const token_url = def.auth.token_endpoint orelse oauth.refreshUrl(.codex) orelse return error.NoTokenEndpoint;
     const result = try oauth.refreshToken(allocator, token_url, refresh_token, def.auth.client_id);
     defer allocator.free(result.access_token);
@@ -1010,6 +963,14 @@ test "codex refresh rechecks auth file before spending refresh token" {
     const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(config_dir);
 
+    // refreshCodexAccountAuthFile takes a real BLOCKING repair lock; scope the
+    // lock file to this test's tmp dir instead of the user's real runtime dir.
+    var overrides = std.process.EnvMap.init(std.testing.allocator);
+    defer overrides.deinit();
+    try overrides.put("OMUX_RUNTIME_DIR", config_dir);
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
+
     const cfg_json = try std.fmt.allocPrint(
         std.testing.allocator,
         \\{{
@@ -1114,6 +1075,15 @@ test "materializeChatgpt refuses stale codex token when refresh fails" {
     defer std.testing.allocator.free(auth_path);
     const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(config_dir);
+
+    // The stale-token path calls refreshCodexAccountAuthFile, which takes a
+    // real BLOCKING repair lock for codex:max-1 — the same lock name a live
+    // operator session uses. Scope it to this test's tmp dir.
+    var overrides = std.process.EnvMap.init(std.testing.allocator);
+    defer overrides.deinit();
+    try overrides.put("OMUX_RUNTIME_DIR", config_dir);
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
 
     const cfg_json = try std.fmt.allocPrint(
         std.testing.allocator,

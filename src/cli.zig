@@ -25,6 +25,7 @@ pub const Command = union(enum) {
     stay_afloat_observe: ObserveArgs,
     stay_afloat: DaemonTickArgs,
     stay_afloat_handoff: HandoffArgs,
+    keepalive: KeepaliveArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -48,12 +49,17 @@ pub const Command = union(enum) {
         capability: ?[]const u8 = null,
     };
 
+    /// TIN-1851 mux storage model, parsed from --mux-mode. null = not set on the
+    /// CLI (the adapter then resolves TINYLAND_CODEX_MUX_MODE, else the default).
+    pub const CodexMuxMode = enum { isolated_persistent, shared_canonical };
+
     pub const CodexAdapterArgs = struct {
         profile: ?[]const u8 = null,
         capability: ?[]const u8 = null,
         account: ?[]const u8 = null,
         session_home: ?[]const u8 = null,
         isolated_session_store: bool = false,
+        mux_mode: ?CodexMuxMode = null,
         json_status: bool = false,
         json_status_file: ?[]const u8 = null,
         invalid_option: ?[]const u8 = null,
@@ -97,6 +103,10 @@ pub const Command = union(enum) {
         account: ?[]const u8 = null,
         capability: ?[]const u8 = null,
         json: bool = false,
+        // TIN-2073: internal (not CLI-parsed). The daemon's probe phase sets
+        // this false so a probe-budget tick can never rotate tokens —
+        // rotation belongs to the repair phase under admission + lock.
+        allow_refresh_mutation: bool = true,
     };
 
     pub const DoctorMode = enum {
@@ -300,6 +310,16 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    /// `oauth-mux keepalive` — run the warm-loop scheduler over the configured
+    /// accounts. Bounded by `iterations` (default 1 = a single tick) so it always
+    /// terminates; `interval_ms` caps the per-tick sleep. Refuses to rotate any
+    /// account whose proactive_refresh grant is not admitted (safe over builtins).
+    pub const KeepaliveArgs = struct {
+        iterations: u32 = 1,
+        interval_ms: u64 = 60_000,
+        json: bool = false,
+    };
+
     pub const HandoffAction = enum {
         ack,
         clear,
@@ -340,6 +360,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "repair-plan")) return parseRepairPlan(rest);
     if (eql(cmd, "route")) return parseRoute(rest);
     if (eql(cmd, "stay-afloat")) return parseStayAfloat(rest);
+    if (eql(cmd, "keepalive")) return parseKeepalive(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
@@ -411,6 +432,17 @@ fn parseCodexAdapter(args: []const []const u8, strict_run: bool) Command {
             result.session_home = args[i];
         } else if (eql(args[i], "--isolated-session-store")) {
             result.isolated_session_store = true;
+        } else if (eql(args[i], "--mux-mode") and i + 1 < args.len) {
+            i += 1;
+            if (eql(args[i], "isolated_persistent")) {
+                result.mux_mode = .isolated_persistent;
+            } else if (eql(args[i], "shared_canonical")) {
+                result.mux_mode = .shared_canonical;
+            } else {
+                result.invalid_option = args[i];
+                result.forward_argv = &.{};
+                break;
+            }
         } else if (eql(args[i], "--json-status")) {
             result.json_status = true;
         } else if (eql(args[i], "--json-status-file") and i + 1 < args.len) {
@@ -897,6 +929,25 @@ fn parseStayAfloat(args: []const []const u8) Command {
         return .{ .stay_afloat = tick };
     }
     return .{ .stay_afloat = parseDaemonTickArgs(args) };
+}
+
+fn parseKeepalive(args: []const []const u8) Command {
+    var result = Command.KeepaliveArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (eql(args[i], "--once")) {
+            result.iterations = 1;
+        } else if (eql(args[i], "--iterations")) {
+            i += 1;
+            if (i < args.len) result.iterations = std.fmt.parseInt(u32, args[i], 10) catch result.iterations;
+        } else if (eql(args[i], "--interval-ms")) {
+            i += 1;
+            if (i < args.len) result.interval_ms = std.fmt.parseInt(u64, args[i], 10) catch result.interval_ms;
+        }
+    }
+    return .{ .keepalive = result };
 }
 
 fn parseStayAfloatObserve(args: []const []const u8) Command {
@@ -1412,6 +1463,7 @@ pub fn printUsage(writer: anytype) !void {
         \\  OMUX_CONFIG        Override config file path
         \\  OMUX_CONFIG_DIR    Override config directory
         \\  OMUX_STATE_DIR     Override state directory
+        \\  OMUX_RUNTIME_DIR   Override runtime directory (locks, daemon socket)
         \\  OMUX_SHELL         Override shell detection
         \\  OMUX_DEBUG         Enable debug logging
         \\  NO_COLOR           Disable colored output
@@ -1520,6 +1572,25 @@ test "parse status json" {
     const cmd = parse(&args);
     switch (cmd) {
         .status => |status| try std.testing.expect(status.json),
+        else => return error.Unexpected,
+    }
+}
+
+test "parse keepalive defaults and flags" {
+    switch (parse(&[_][]const u8{"keepalive"})) {
+        .keepalive => |k| {
+            try std.testing.expectEqual(@as(u32, 1), k.iterations);
+            try std.testing.expectEqual(@as(u64, 60_000), k.interval_ms);
+            try std.testing.expect(!k.json);
+        },
+        else => return error.Unexpected,
+    }
+    switch (parse(&[_][]const u8{ "keepalive", "--iterations", "5", "--interval-ms", "1000", "--json" })) {
+        .keepalive => |k| {
+            try std.testing.expectEqual(@as(u32, 5), k.iterations);
+            try std.testing.expectEqual(@as(u64, 1000), k.interval_ms);
+            try std.testing.expect(k.json);
+        },
         else => return error.Unexpected,
     }
 }

@@ -37,7 +37,12 @@ Requirements:
 The status artifact must show all of the following in order:
 
 1. `session_started` with `claim_level:"broker_owned"` and
-   `session_authority:"canonical_bridge"`.
+   `session_authority:"isolated"` (the default `isolated_persistent` /
+   home-is-store mode). A run that instead shows
+   `session_authority:"canonical_bridge"` is the labeled legacy
+   `shared_canonical` variant and is closeable only when the opt-in
+   (`TINYLAND_CODEX_MUX_MODE=shared_canonical` or `--mux-mode
+   shared_canonical`) is recorded with the evidence.
 2. A normal `200` provider turn on account A before exhaustion.
 3. Provider-originated quota evidence on account A:
    - `kind:"proxy_turn"`

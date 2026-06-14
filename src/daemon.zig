@@ -1,4 +1,5 @@
 const std = @import("std");
+const env = @import("env.zig");
 const health_mod = @import("health.zig");
 const paths = @import("paths.zig");
 const log = @import("log.zig");
@@ -156,10 +157,9 @@ pub fn start(allocator: std.mem.Allocator) DaemonError!void {
 
 fn ensureRuntimeDir(sock_path: []const u8) !void {
     if (std.fs.path.dirname(sock_path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        // The macOS runtime dir lives under ~/Library/Application Support and
+        // is more than one level deep (TIN-2041); create the full path.
+        try std.fs.cwd().makePath(dir);
     }
 }
 
@@ -496,12 +496,7 @@ fn currentPid() Pid {
 }
 
 fn writePidFile(path: []const u8, pid: Pid) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
-    }
+    try ensureParentDir(path);
     const file = try std.fs.createFileAbsolute(path, .{ .mode = 0o600 });
     defer file.close();
     try file.writer().print("{d}", .{pid});
@@ -582,18 +577,72 @@ fn hasStayAfloatMetadata(allocator: std.mem.Allocator) bool {
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        // The macOS runtime dir lives under ~/Library/Application Support and
+        // is more than one level deep (TIN-2041); create the full path.
+        try std.fs.cwd().makePath(dir);
     }
 }
 
+/// Test helper: point the runtime and state dirs at a per-test tmp dir via
+/// the OMUX_RUNTIME_DIR / OMUX_STATE_DIR seams so daemon tests assert a
+/// synthetic state instead of the developer's real machine state.
+const TestDaemonDirScope = struct {
+    tmp: std.testing.TmpDir,
+    root: []const u8,
+    overrides: std.process.EnvMap,
+
+    fn init(allocator: std.mem.Allocator) !TestDaemonDirScope {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const root = try tmp.dir.realpathAlloc(allocator, ".");
+        errdefer allocator.free(root);
+        var overrides = std.process.EnvMap.init(allocator);
+        errdefer overrides.deinit();
+        try overrides.put("OMUX_RUNTIME_DIR", root);
+        try overrides.put("OMUX_STATE_DIR", root);
+        return .{ .tmp = tmp, .root = root, .overrides = overrides };
+    }
+
+    fn activate(self: *TestDaemonDirScope) void {
+        env.test_overrides = &self.overrides;
+    }
+
+    fn deinit(self: *TestDaemonDirScope, allocator: std.mem.Allocator) void {
+        env.test_overrides = null;
+        self.overrides.deinit();
+        allocator.free(self.root);
+        self.tmp.cleanup();
+    }
+};
+
 test "isRunning returns false when no daemon" {
+    var scope = try TestDaemonDirScope.init(std.testing.allocator);
+    defer scope.deinit(std.testing.allocator);
+    scope.activate();
+
     try std.testing.expect(!isRunning(std.testing.allocator));
 }
 
+test "isRunning returns true for a live pid in the runtime pid file" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var scope = try TestDaemonDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    // Synthetic pid file carrying this test process's own (live) pid.
+    const pid_path = try pidPath(a);
+    defer a.free(pid_path);
+    try writePidFile(pid_path, currentPid());
+
+    try std.testing.expect(isRunning(a));
+}
+
 test "status json exposes socket daemon contract" {
+    var scope = try TestDaemonDirScope.init(std.testing.allocator);
+    defer scope.deinit(std.testing.allocator);
+    scope.activate();
+
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 

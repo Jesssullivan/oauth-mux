@@ -1,6 +1,7 @@
 # Zig
 zig-out/
 .zig-cache/
+*.o
 
 # Nix
 result
@@ -20,6 +21,7 @@ token.json
 # Claude/AI state
 .claude/
 memory/
+.huskycat/
 
 # OS
 .DS_Store
@@ -47,3 +49,4 @@ dist/soak/
 
 # Operator wire captures. Commit only reviewed, scrubbed fixtures.
 captures/
+.gstack/

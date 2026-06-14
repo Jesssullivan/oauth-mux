@@ -14,6 +14,14 @@
 #   oauth-mux codex run resume --last
 #
 # That path must fail helpfully rather than silently dropping args.
+#
+# Coverage runs in two mux modes:
+#   - default isolated_persistent (home-is-store, TIN-1851): the primary
+#     coverage, including the default-mode resume/chooser family and every
+#     mode-neutral section below the legacy block
+#   - legacy shared_canonical bridge: clearly labeled "legacy bridge" cases
+#     that pin TINYLAND_CODEX_MUX_MODE=shared_canonical explicitly and are
+#     scoped so the opt-in never leaks into later sections
 
 set -euo pipefail
 
@@ -22,7 +30,7 @@ BIN="$ROOT/zig-out/bin/oauth-mux"
 
 if [[ ! -x "$BIN" ]]; then
     echo "smoke-codex-cli-ux: oauth-mux binary not built at $BIN" >&2
-    echo "  run: just build" >&2
+    echo "  run: just build-local" >&2
     exit 64
 fi
 
@@ -153,7 +161,78 @@ assert_grep() {
     fi
 }
 
-run_case() {
+assert_durable_bridge_homes_scrubbed() {
+    local label=$1
+    local root="$CANONICAL_SESSION_HOME/.oauth-mux/managed-codex-homes"
+    if [[ ! -d "$root" ]]; then
+        echo "  ✗ $label durable managed home root missing" >&2
+        exit 1
+    fi
+
+    local leaked
+    leaked="$(find "$root" -mindepth 2 -maxdepth 2 \( -name auth.json -o -name installation_id -o -name config.toml \) -print -quit)"
+    if [[ -n "$leaked" ]]; then
+        echo "  ✗ $label left token/config material in durable managed home" >&2
+        find "$root" -mindepth 2 -maxdepth 2 \( -name auth.json -o -name installation_id -o -name config.toml \) -print >&2
+        exit 1
+    fi
+
+    local bridge_count
+    bridge_count="$(find "$root" -mindepth 2 -maxdepth 2 -type l -name sessions -print | wc -l | tr -d ' ')"
+    if [[ "$bridge_count" -eq 0 ]]; then
+        echo "  ✗ $label preserved no durable session bridge" >&2
+        find "$root" -maxdepth 2 -print >&2
+        exit 1
+    fi
+
+    echo "  ✓ $label scrubbed durable auth/config material while preserving bridge homes"
+}
+
+echo "smoke-codex-cli-ux: default mux mode is home-is-store"
+DEFAULT_HOME_NDJSON="$TMP/default-home/status.ndjson"
+DEFAULT_HOME_STDERR="$TMP/default-home.stderr"
+DEFAULT_HOME_REPORT="$TMP/default-home.report"
+mkdir -p "$(dirname "$DEFAULT_HOME_NDJSON")"
+env -u TINYLAND_CODEX_MUX_MODE \
+  OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+  OMUX_STATE_DIR="$STATE_DIR" \
+  OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+  CODEX_HOME="$CANONICAL_SESSION_HOME" \
+  CODEX_SQLITE_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+  OMUX_STUB_CODEX_TURNS=0 \
+  OMUX_STUB_CODEX_REPORT="$DEFAULT_HOME_REPORT" \
+  "$BIN" codex --profile codex-max --json-status-file "$DEFAULT_HOME_NDJSON" -- exec --skip-git-repo-check "default-home-is-store" 2>"$DEFAULT_HOME_STDERR"
+assert_grep "default home-is-store session authority" '"kind":"session_started".*"session_authority":"isolated"' "$DEFAULT_HOME_NDJSON"
+assert_grep "default home-is-store sqlite authority" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$DEFAULT_HOME_NDJSON"
+assert_grep "default home-is-store cleanup" '"kind":"session_started".*"session_home_cleanup":"persist_scrub_config"' "$DEFAULT_HOME_NDJSON"
+assert_grep "default home-is-store session ends" '"kind":"session_ended".*"exit_code":0' "$DEFAULT_HOME_NDJSON"
+if [[ "$(jq -r .sqlite_env.codex_sqlite_home_env_set "$DEFAULT_HOME_REPORT")" == "false" \
+      && "$(jq -r .sqlite_env.path_printed "$DEFAULT_HOME_REPORT")" == "false" ]]; then
+    echo "  ✓ default home-is-store scrubbed inherited CODEX_SQLITE_HOME"
+else
+    echo "  ✗ default home-is-store leaked CODEX_SQLITE_HOME" >&2
+    cat "$DEFAULT_HOME_REPORT" >&2
+    exit 1
+fi
+if [[ -d "$CANONICAL_SESSION_HOME/.oauth-mux/managed-codex-homes" ]]; then
+    echo "  ✗ default home-is-store wrote a canonical managed bridge" >&2
+    find "$CANONICAL_SESSION_HOME/.oauth-mux" -maxdepth 3 -print >&2
+    exit 1
+else
+    echo "  ✓ default home-is-store did not create a canonical managed bridge"
+fi
+
+# The legacy-bridge resume/chooser assertions below intentionally exercise the
+# legacy canonical bridge. TIN-1851 makes home-is-store the default, so this
+# block must opt into the bridge instead of relying on ambient defaults. The
+# opt-in is scoped: it is unset immediately after the legacy
+# run_legacy_bridge_case calls so every later section runs in the default
+# isolated_persistent mode unless it pins the bridge explicitly.
+export TINYLAND_CODEX_MUX_MODE=shared_canonical
+
+run_legacy_bridge_case() {
     local mode=$1 label=$2 expected_argv=$3
     shift 3
     local dir="$TMP/$label"
@@ -195,6 +274,7 @@ run_case() {
     assert_grep "$label session_started" '"kind":"session_started"' "$ndjson"
     assert_grep "$label canonical session bridge" '"session_authority":"canonical_bridge"' "$ndjson"
     assert_grep "$label canonical sqlite authority" '"sqlite_authority":"canonical_env"' "$ndjson"
+    assert_grep "$label durable bridge cleanup" '"session_home_cleanup":"scrub_durable_bridge"' "$ndjson"
     assert_grep "$label config passthrough status" '"config_passthrough":true,"user_config_present":true' "$ndjson"
     assert_grep "$label config layout" '"config_layout":"root_partitioned"' "$ndjson"
     assert_grep "$label experimental defaults injected" '"experimental_feature_defaults_injected":4' "$ndjson"
@@ -202,7 +282,7 @@ run_case() {
     assert_grep "$label no pre-spawn network refresh" '"pre_spawn_network_refresh":false' "$ndjson"
     assert_grep "$label child spawn timing" '"kind":"launch_timing".*"phase":"child_spawn"' "$ndjson"
     assert_grep "$label resume preflight" '"kind":"resume_preflight"' "$ndjson"
-    if [[ "$label" == "resume-chooser" ]]; then
+    if [[ "$label" == "legacy-bridge-resume-chooser" ]]; then
         assert_grep "$label resume authority check" '"kind":"resume_authority_check".*"ok":true' "$ndjson"
         assert_grep "$label state db authority" '"kind":"resume_authority_check".*"resume_authority_state_db_bridged":true' "$ndjson"
         assert_grep "$label logs db authority" '"kind":"resume_authority_check".*"resume_authority_logs_db_bridged":true' "$ndjson"
@@ -210,7 +290,7 @@ run_case() {
         assert_grep "$label no chooser rollout scan before spawn" '"kind":"resume_preflight".*"mode":"chooser".*"rollouts_before":0' "$ndjson"
         assert_grep "$label chooser lookup not scanned" '"kind":"resume_preflight".*"mode":"chooser".*"resume_lookup_source":"not_scanned"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"mode":"chooser"' "$ndjson"
-    elif [[ "$label" == "resume-id" ]]; then
+    elif [[ "$label" == "legacy-bridge-resume-id" ]]; then
         assert_grep "$label explicit state-db lookup" '"kind":"resume_preflight".*"mode":"explicit".*"resume_lookup_source":"state_db"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"changed_existing":[1-9]' "$ndjson"
     else
@@ -295,17 +375,144 @@ run_case() {
     fi
 }
 
-echo "smoke-codex-cli-ux: first-class resume aliases"
-run_case top "resume-last" '["resume","--last"]' resume --last
-run_case top "resume-id" '["resume","managed-good-session"]' resume managed-good-session
-run_case top "resume-chooser" '["resume"]' resume
-run_case raw "raw-run" '["resume","--last"]' resume --last
+echo "smoke-codex-cli-ux: legacy bridge resume aliases (shared_canonical opt-in)"
+run_legacy_bridge_case top "legacy-bridge-resume-last" '["resume","--last"]' resume --last
+run_legacy_bridge_case top "legacy-bridge-resume-id" '["resume","managed-good-session"]' resume managed-good-session
+run_legacy_bridge_case top "legacy-bridge-resume-chooser" '["resume"]' resume
+run_legacy_bridge_case raw "legacy-bridge-raw-run" '["resume","--last"]' resume --last
 
-echo "smoke-codex-cli-ux: isolated session store keeps sqlite authority local"
+# Legacy bridge coverage ends here. Everything below runs in the TIN-1851
+# default isolated_persistent (home-is-store) mode unless a section pins
+# TINYLAND_CODEX_MUX_MODE=shared_canonical explicitly for canonical-bridge
+# diagnostics.
+unset TINYLAND_CODEX_MUX_MODE
+
+# Default-mode resume coverage: no mode var, the elected account's own durable
+# home (home-is-store) is the CODEX_HOME, sqlite stays isolated, and a clean
+# exit scrubs only the managed config.toml + auth shadow.
+DEFAULT_ROUTE_HOME="$TMP/account-A"
+
+run_default_case() {
+    local mode=$1 label=$2 expected_argv=$3
+    shift 3
+    local dir="$TMP/$label"
+    local ndjson="$dir/status/nested/adapter.ndjson"
+    local stderr="$dir/adapter.stderr"
+    local report="$dir/stub.report"
+    local -a cmd
+
+    mkdir -p "$dir"
+    if [[ "$mode" == "top" ]]; then
+        cmd=( "$BIN" codex --profile codex-max --json-status-file "$ndjson" "$@" )
+    else
+        cmd=( "$BIN" codex run --profile codex-max --json-status-file "$ndjson" -- "$@" )
+    fi
+
+    env -u TINYLAND_CODEX_MUX_MODE \
+      OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$STATE_DIR" \
+      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+      CODEX_HOME="$CANONICAL_SESSION_HOME" \
+      CODEX_SQLITE_HOME="$CANONICAL_SESSION_HOME" \
+      OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+      OMUX_STUB_CODEX_TURNS=0 \
+      OMUX_STUB_CODEX_REPORT="$report" \
+      "${cmd[@]}" 2>"$stderr"
+
+    if [[ ! -s "$ndjson" ]]; then
+        echo "  ✗ $label status file was not created at nested path" >&2
+        cat "$stderr" >&2 || true
+        exit 1
+    fi
+    if [[ ! -s "$report" ]]; then
+        echo "  ✗ $label stub report missing" >&2
+        cat "$stderr" >&2 || true
+        exit 1
+    fi
+
+    assert_grep "$label session_started" '"kind":"session_started"' "$ndjson"
+    assert_grep "$label isolated session authority" '"kind":"session_started".*"session_authority":"isolated"' "$ndjson"
+    assert_grep "$label isolated sqlite authority" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$ndjson"
+    assert_grep "$label persistent home cleanup" '"kind":"session_started".*"session_home_cleanup":"persist_scrub_config"' "$ndjson"
+    assert_grep "$label no pre-spawn network refresh" '"pre_spawn_network_refresh":false' "$ndjson"
+    assert_grep "$label resume preflight" '"kind":"resume_preflight"' "$ndjson"
+    if [[ "$label" == "default-resume-chooser" ]]; then
+        assert_grep "$label resume authority check ok" '"kind":"resume_authority_check".*"ok":true' "$ndjson"
+        assert_grep "$label persistent store chooser diagnostic" '"kind":"resume_authority_check".*"diagnostic":"isolated_persistent_store"' "$ndjson"
+    fi
+    assert_grep "$label resume writeback" '"kind":"resume_writeback"' "$ndjson"
+    assert_grep "$label resume status redacts paths" '"kind":"resume_writeback".*"session_id_printed":false,"path_printed":false' "$ndjson"
+    assert_grep "$label session_ended" '"kind":"session_ended".*"exit_code":0' "$ndjson"
+
+    if grep -q '"kind":"session_started"' "$stderr"; then
+        echo "  ✗ $label leaked adapter status frames to stderr" >&2
+        cat "$stderr" >&2
+        exit 1
+    fi
+
+    local actual_argv
+    actual_argv="$(jq -c .argv "$report")"
+    if [[ "$actual_argv" == "$expected_argv" ]]; then
+        echo "  ✓ $label forwarded argv $expected_argv"
+    else
+        echo "  ✗ $label argv mismatch: expected $expected_argv actual $actual_argv" >&2
+        cat "$report" >&2
+        exit 1
+    fi
+
+    if [[ "$(jq -r .sqlite_env.codex_sqlite_home_env_set "$report")" == "false" \
+          && "$(jq -r .sqlite_env.path_printed "$report")" == "false" ]]; then
+        echo "  ✓ $label scrubbed inherited CODEX_SQLITE_HOME"
+    else
+        echo "  ✗ $label leaked CODEX_SQLITE_HOME" >&2
+        cat "$report" >&2
+        exit 1
+    fi
+
+    if [[ "$(jq -r .session_append.checked "$report")" == "true" \
+          && "$(jq -r .session_append.path_printed "$report")" == "false" ]]; then
+        echo "  ✓ $label appended into the persistent route home"
+    else
+        echo "  ✗ $label persistent route home append evidence failed" >&2
+        cat "$report" >&2
+        exit 1
+    fi
+
+    if [[ -f "$DEFAULT_ROUTE_HOME/auth.json" \
+          && ! -e "$DEFAULT_ROUTE_HOME/config.toml" \
+          && ! -e "$DEFAULT_ROUTE_HOME/auth.json.omux-bak" ]]; then
+        echo "  ✓ $label persistent route home kept auth.json and scrubbed managed config"
+    else
+        echo "  ✗ $label persistent route home shape failed (auth.json must persist; config.toml and auth shadow must be scrubbed)" >&2
+        ls -la "$DEFAULT_ROUTE_HOME" >&2 || true
+        exit 1
+    fi
+}
+
+count_canonical_bridge_homes() {
+    find "$CANONICAL_SESSION_HOME/.oauth-mux/managed-codex-homes" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '
+}
+
+echo "smoke-codex-cli-ux: default home-is-store resume aliases"
+DEFAULT_FAMILY_BRIDGE_BEFORE="$(count_canonical_bridge_homes)"
+run_default_case top "default-resume-last" '["resume","--last"]' resume --last
+run_default_case top "default-resume-id" '["resume","managed-good-session"]' resume managed-good-session
+run_default_case top "default-resume-chooser" '["resume"]' resume
+run_default_case raw "default-raw-run" '["resume","--last"]' resume --last
+DEFAULT_FAMILY_BRIDGE_AFTER="$(count_canonical_bridge_homes)"
+if [[ "$DEFAULT_FAMILY_BRIDGE_BEFORE" == "$DEFAULT_FAMILY_BRIDGE_AFTER" ]]; then
+    echo "  ✓ default resume aliases created no canonical managed bridge homes"
+else
+    echo "  ✗ default resume aliases grew canonical managed bridge homes: before=$DEFAULT_FAMILY_BRIDGE_BEFORE after=$DEFAULT_FAMILY_BRIDGE_AFTER" >&2
+    find "$CANONICAL_SESSION_HOME/.oauth-mux" -maxdepth 3 -print >&2 || true
+    exit 1
+fi
+
+echo "smoke-codex-cli-ux: isolated session store keeps sqlite authority local (default mode, explicit --isolated-session-store)"
 ISOLATED_NDJSON="$TMP/isolated-status.ndjson"
 ISOLATED_STDERR="$TMP/isolated.stderr"
 ISOLATED_REPORT="$TMP/isolated.report"
-env \
+env -u TINYLAND_CODEX_MUX_MODE \
   OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
@@ -317,6 +524,7 @@ env \
   "$BIN" codex --profile codex-max --isolated-session-store --json-status-file "$ISOLATED_NDJSON" resume --last 2>"$ISOLATED_STDERR"
 assert_grep "isolated session authority" '"kind":"session_started".*"session_authority":"isolated"' "$ISOLATED_NDJSON"
 assert_grep "isolated sqlite authority" '"kind":"session_started".*"sqlite_authority":"isolated_overlay"' "$ISOLATED_NDJSON"
+assert_grep "isolated cleanup deletes overlay" '"kind":"session_started".*"session_home_cleanup":"delete_tree"' "$ISOLATED_NDJSON"
 if [[ "$(jq -r .sqlite_env.codex_sqlite_home_env_set "$ISOLATED_REPORT")" == "false" \
       && "$(jq -r .sqlite_env.path_printed "$ISOLATED_REPORT")" == "false" ]]; then
     echo "  ✓ isolated run scrubbed inherited CODEX_SQLITE_HOME"
@@ -326,7 +534,7 @@ else
     exit 1
 fi
 
-echo "smoke-codex-cli-ux: capability-scoped route election matches broker-session-plan"
+echo "smoke-codex-cli-ux: capability-scoped route election matches broker-session-plan (default mode)"
 MIXED_CONFIG="$TMP/mixed-capability.config.json"
 MIXED_STATE="$TMP/mixed-capability-state"
 mkdir -p "$MIXED_STATE"
@@ -364,12 +572,11 @@ OMUX_CONFIG="$MIXED_CONFIG" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$MIXED_REPORT" \
   "$BIN" codex --profile mixed --capability codex-max --json-status-file "$MIXED_NDJSON" resume --last 2>"$MIXED_STDERR"
 assert_grep "mixed capability selected max-2" '"kind":"session_started".*"selected_account":"codex:max-2"' "$MIXED_NDJSON"
+assert_grep "mixed capability default-mode session authority" '"kind":"session_started".*"session_authority":"isolated"' "$MIXED_NDJSON"
 if [[ "$(jq -r .active_account_at_start "$MIXED_REPORT")" == "max-2" ]]; then
     echo "  ✓ mixed capability launch used the codex-max selectable route"
 else
@@ -430,13 +637,17 @@ else
     echo "  ✓ ambiguous mixed-capability profile fails before child spawn"
 fi
 
-echo "smoke-codex-cli-ux: resume chooser missing authority fails before spawn"
+# Legacy bridge diagnostic: a missing canonical session authority only exists
+# in shared_canonical mode (the default isolated_persistent chooser lists the
+# durable route home instead), so this case pins the bridge explicitly.
+echo "smoke-codex-cli-ux: legacy bridge resume chooser missing canonical authority fails before spawn"
 BAD_AUTHORITY_HOME="$TMP/bad-canonical-codex"
 BAD_AUTHORITY_NDJSON="$TMP/bad-authority/status.ndjson"
 BAD_AUTHORITY_STDERR="$TMP/bad-authority.stderr"
 BAD_AUTHORITY_REPORT="$TMP/bad-authority.report"
 mkdir -p "$BAD_AUTHORITY_HOME/sessions" "$(dirname "$BAD_AUTHORITY_NDJSON")"
-if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+if TINYLAND_CODEX_MUX_MODE=shared_canonical \
+     OMUX_CONFIG="$TMP/oauth-mux.config.json" \
      OMUX_STATE_DIR="$STATE_DIR" \
      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
      OMUX_CODEX_SESSION_HOME="$BAD_AUTHORITY_HOME" \
@@ -465,14 +676,20 @@ if grep -q -E 'managed-good-session|'"$BAD_AUTHORITY_HOME" "$BAD_AUTHORITY_NDJSO
     exit 1
 fi
 
-echo "smoke-codex-cli-ux: locked canonical sqlite authority fails before spawn"
+# Legacy bridge diagnostic: only shared_canonical sessions adopt the canonical
+# sqlite authority (sqlite_authority:"canonical_env"), so the lock checks pin
+# the bridge explicitly.
+echo "smoke-codex-cli-ux: legacy bridge locked canonical sqlite authority is diagnostic by default"
 SQLITE_AUTH_LOCK_NDJSON="$TMP/sqlite-authority-lock/status.ndjson"
 SQLITE_AUTH_LOCK_STDERR="$TMP/sqlite-authority-lock.stderr"
 SQLITE_AUTH_LOCK_REPORT="$TMP/sqlite-authority-lock.report"
 SQLITE_AUTH_LOCK_HEALTH_BEFORE="$TMP/sqlite-authority-lock.health.before"
+SQLITE_AUTH_LOCK_STRICT_NDJSON="$TMP/sqlite-authority-lock-strict/status.ndjson"
+SQLITE_AUTH_LOCK_STRICT_STDERR="$TMP/sqlite-authority-lock-strict.stderr"
+SQLITE_AUTH_LOCK_STRICT_REPORT="$TMP/sqlite-authority-lock-strict.report"
 SQLITE_LOCK_READY="$TMP/sqlite-authority-lock.ready"
 SQLITE_LOCK_RELEASE="$TMP/sqlite-authority-lock.release"
-mkdir -p "$(dirname "$SQLITE_AUTH_LOCK_NDJSON")"
+mkdir -p "$(dirname "$SQLITE_AUTH_LOCK_NDJSON")" "$(dirname "$SQLITE_AUTH_LOCK_STRICT_NDJSON")"
 cp "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"
 python3 - "$CANONICAL_SESSION_HOME/state_5.sqlite" "$SQLITE_LOCK_READY" "$SQLITE_LOCK_RELEASE" <<'PY' &
 import fcntl
@@ -509,51 +726,87 @@ if [[ ! -e "$SQLITE_LOCK_READY" ]]; then
     echo "  ✗ sqlite lock helper did not become ready" >&2
     exit 1
 fi
-if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+
+TINYLAND_CODEX_MUX_MODE=shared_canonical \
+     OMUX_CONFIG="$TMP/oauth-mux.config.json" \
      OMUX_STATE_DIR="$STATE_DIR" \
      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
      CODEX_HOME="$CANONICAL_SESSION_HOME" \
      OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
      OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_TURNS=0 \
      OMUX_STUB_CODEX_REPORT="$SQLITE_AUTH_LOCK_REPORT" \
-     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STDERR"; then
-    echo "  ✗ locked sqlite authority unexpectedly launched" >&2
+     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STDERR"
+assert_grep "sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock non-strict" '"kind":"sqlite_authority_check".*"strict_guard":false.*"fatal":false' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock still launches" '"kind":"session_started".*"sqlite_authority":"canonical_env"' "$SQLITE_AUTH_LOCK_NDJSON"
+assert_grep "sqlite authority lock session ends" '"kind":"session_ended".*"exit_code":0' "$SQLITE_AUTH_LOCK_NDJSON"
+if [[ ! -s "$SQLITE_AUTH_LOCK_REPORT" ]]; then
+    echo "  ✗ diagnostic sqlite lock did not launch stub" >&2
+    cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
+    cat "$SQLITE_AUTH_LOCK_STDERR" >&2
+    exit 1
+fi
+if grep -q '"kind":"session_aborted"' "$SQLITE_AUTH_LOCK_NDJSON"; then
+    echo "  ✗ diagnostic sqlite lock aborted before child spawn" >&2
+    cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
+    exit 1
+fi
+if TINYLAND_CODEX_MUX_MODE=shared_canonical \
+     OMUX_CODEX_STRICT_SQLITE_LOCK_GUARD=1 \
+     OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+     OMUX_STATE_DIR="$STATE_DIR" \
+     OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+     CODEX_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
+     OMUX_STUB_CODEX_TURNS=0 \
+     OMUX_STUB_CODEX_REPORT="$SQLITE_AUTH_LOCK_STRICT_REPORT" \
+     "$BIN" codex --profile codex-max --json-status-file "$SQLITE_AUTH_LOCK_STRICT_NDJSON" resume 2>"$SQLITE_AUTH_LOCK_STRICT_STDERR"; then
+    echo "  ✗ strict locked sqlite authority unexpectedly launched" >&2
     exit 1
 fi
 touch "$SQLITE_LOCK_RELEASE"
 wait "$SQLITE_LOCK_PID"
 SQLITE_LOCK_PID=""
-assert_grep "sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock owner pid printed" '"kind":"sqlite_authority_check".*"lock_owner_pid_printed":true' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock terminal status" '"kind":"session_aborted".*"reason":"session_authority_locked".*"phase":"sqlite_authority_check".*"pre_spawn":true.*"child_spawned":false' "$SQLITE_AUTH_LOCK_NDJSON"
-assert_grep "sqlite authority lock stderr" 'canonical Codex sqlite state is locked by another Codex process \(pid [0-9]+\)' "$SQLITE_AUTH_LOCK_STDERR"
-if [[ -e "$SQLITE_AUTH_LOCK_REPORT" ]]; then
-    echo "  ✗ locked sqlite authority launched stub unexpectedly" >&2
-    cat "$SQLITE_AUTH_LOCK_REPORT" >&2
+assert_grep "strict sqlite authority lock diagnostic" '"kind":"sqlite_authority_check".*"ok":false.*"diagnostic":"database_locked".*"db_basename":"state_5.sqlite".*"sqlite_error_class":"database_locked".*"sqlite_error_code":5' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock owner pid" '"kind":"sqlite_authority_check".*"lock_owner_pid":[0-9]+' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock owner pid printed" '"kind":"sqlite_authority_check".*"lock_owner_pid_printed":true' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock fatal" '"kind":"sqlite_authority_check".*"strict_guard":true.*"fatal":true' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock terminal status" '"kind":"session_aborted".*"reason":"session_authority_locked".*"phase":"sqlite_authority_check".*"pre_spawn":true.*"child_spawned":false' "$SQLITE_AUTH_LOCK_STRICT_NDJSON"
+assert_grep "strict sqlite authority lock stderr" 'canonical Codex sqlite state is locked by another Codex process \(pid [0-9]+\)' "$SQLITE_AUTH_LOCK_STRICT_STDERR"
+if [[ -e "$SQLITE_AUTH_LOCK_STRICT_REPORT" ]]; then
+    echo "  ✗ strict locked sqlite authority launched stub unexpectedly" >&2
+    cat "$SQLITE_AUTH_LOCK_STRICT_REPORT" >&2
     exit 1
 fi
 if ! cmp -s "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"; then
-    echo "  ✗ locked sqlite authority mutated route health" >&2
+    echo "  ✗ sqlite authority lock check mutated route health" >&2
     diff -u "$SQLITE_AUTH_LOCK_HEALTH_BEFORE" "$STATE_DIR/health.json" >&2 || true
     exit 1
 fi
-if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR"; then
+if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR" "$SQLITE_AUTH_LOCK_STRICT_NDJSON" "$SQLITE_AUTH_LOCK_STRICT_STDERR"; then
     echo "  ✗ locked sqlite authority leaked path or session id" >&2
     cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
     cat "$SQLITE_AUTH_LOCK_STDERR" >&2
+    cat "$SQLITE_AUTH_LOCK_STRICT_NDJSON" >&2
+    cat "$SQLITE_AUTH_LOCK_STRICT_STDERR" >&2
     exit 1
 fi
-echo "  ✓ locked canonical sqlite authority fails before child spawn"
+echo "  ✓ locked canonical sqlite authority is diagnostic unless strict guard is set"
 
-echo "smoke-codex-cli-ux: sqlite lock shaped child startup failure records abort"
+# Legacy bridge diagnostic: asserts canonical_env sqlite authority and durable
+# bridge scrub behavior, so it pins the bridge explicitly.
+echo "smoke-codex-cli-ux: legacy bridge sqlite lock shaped child startup failure records abort"
 SQLITE_LOCK_NDJSON="$TMP/sqlite-lock/status.ndjson"
 SQLITE_LOCK_STDERR="$TMP/sqlite-lock.stderr"
 SQLITE_LOCK_REPORT="$TMP/sqlite-lock.report"
 SQLITE_LOCK_HEALTH_BEFORE="$TMP/sqlite-lock.health.before"
 mkdir -p "$(dirname "$SQLITE_LOCK_NDJSON")"
 cp "$STATE_DIR/health.json" "$SQLITE_LOCK_HEALTH_BEFORE"
-if OMUX_CONFIG="$TMP/oauth-mux.config.json" \
+if TINYLAND_CODEX_MUX_MODE=shared_canonical \
+     OMUX_CONFIG="$TMP/oauth-mux.config.json" \
      OMUX_STATE_DIR="$STATE_DIR" \
      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
      CODEX_HOME="$CANONICAL_SESSION_HOME" \
@@ -588,9 +841,10 @@ if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_LOCK_NDJ
     cat "$SQLITE_LOCK_NDJSON" >&2
     exit 1
 fi
+assert_durable_bridge_homes_scrubbed "sqlite lock nonzero child cleanup"
 echo "  ✓ sqlite lock shaped startup failure records abort without route-health mutation"
 
-echo "smoke-codex-cli-ux: forwarded config provider override fails before spawn"
+echo "smoke-codex-cli-ux: forwarded config provider override fails before spawn (default mode)"
 BAD_CONFIG_NDJSON="$TMP/bad-config/status.ndjson"
 BAD_CONFIG_STDERR="$TMP/bad-config.stderr"
 BAD_CONFIG_REPORT="$TMP/bad-config.report"
@@ -624,21 +878,20 @@ if grep -q -E 'model_provider="openai"|profile_provider|https://example.invalid|
     exit 1
 fi
 
-echo "smoke-codex-cli-ux: bare codex resolution from PATH"
+echo "smoke-codex-cli-ux: bare codex resolution from PATH (default mode)"
 PATH_STUB_DIR="$TMP/path-bin"
 PATH_NDJSON="$TMP/path-resolution/status.ndjson"
 PATH_STDERR="$TMP/path-resolution.stderr"
 PATH_REPORT="$TMP/path-resolution.report"
 mkdir -p "$PATH_STUB_DIR" "$(dirname "$PATH_NDJSON")"
 ln -s "$ROOT/scripts/test-stub-codex.py" "$PATH_STUB_DIR/codex"
-env -u OMUX_CODEX_BIN \
+env -u OMUX_CODEX_BIN -u TINYLAND_CODEX_MUX_MODE \
   PATH="$PATH_STUB_DIR:$PATH" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$PATH_REPORT" \
@@ -840,19 +1093,18 @@ else
     echo "  ✓ login-status-all --json is redacted structured inspection"
 fi
 
-echo "smoke-codex-cli-ux: no-profile codex election is provider-scoped"
+echo "smoke-codex-cli-ux: no-profile codex election is provider-scoped (default mode)"
 NO_PROFILE_NDJSON="$TMP/no-profile/status.ndjson"
 NO_PROFILE_STDERR="$TMP/no-profile.stderr"
 NO_PROFILE_REPORT="$TMP/no-profile.report"
 mkdir -p "$(dirname "$NO_PROFILE_NDJSON")"
-env -u OMUX_CODEX_BIN \
+env -u OMUX_CODEX_BIN -u TINYLAND_CODEX_MUX_MODE \
   PATH="$PATH_STUB_DIR:$PATH" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$NO_PROFILE_REPORT" \
@@ -867,19 +1119,18 @@ else
     exit 1
 fi
 
-echo "smoke-codex-cli-ux: default status artifact without extra flags"
+echo "smoke-codex-cli-ux: default status artifact without extra flags (default mode)"
 DEFAULT_STATUS_DIR="$STATE_DIR/codex/status"
 DEFAULT_STDERR="$TMP/default-status.stderr"
 DEFAULT_REPORT="$TMP/default-status.report"
 rm -rf "$DEFAULT_STATUS_DIR"
-env -u OMUX_CODEX_BIN \
+env -u OMUX_CODEX_BIN -u TINYLAND_CODEX_MUX_MODE \
   PATH="$PATH_STUB_DIR:$PATH" \
   OMUX_CONFIG="$TMP/oauth-mux.config.json" \
   OMUX_STATE_DIR="$STATE_DIR" \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$DEFAULT_REPORT" \

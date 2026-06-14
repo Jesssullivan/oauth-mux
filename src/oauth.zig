@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const log = @import("log.zig");
 
@@ -14,6 +15,22 @@ pub const RefreshResult = struct {
     refresh_token: ?[]const u8 = null,
     expires_in: ?i64 = null,
 };
+
+// Best-effort SO_RCVTIMEO/SO_SNDTIMEO on a connected socket. winsock takes
+// a DWORD of milliseconds; posix takes a timeval. Both platforms get a
+// real bound; any failure is swallowed (a missing timeout must never fail
+// the refresh).
+fn setSocketTimeout(handle: std.posix.socket_t, seconds: u32) void {
+    if (comptime builtin.os.tag == .windows) {
+        const millis: u32 = seconds * 1000;
+        _ = std.os.windows.ws2_32.setsockopt(handle, std.os.windows.ws2_32.SOL.SOCKET, std.os.windows.ws2_32.SO.RCVTIMEO, std.mem.asBytes(&millis), @sizeOf(u32));
+        _ = std.os.windows.ws2_32.setsockopt(handle, std.os.windows.ws2_32.SOL.SOCKET, std.os.windows.ws2_32.SO.SNDTIMEO, std.mem.asBytes(&millis), @sizeOf(u32));
+    } else {
+        const timeout = std.posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
+        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&timeout)) catch {};
+        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&timeout)) catch {};
+    }
+}
 
 pub fn refreshToken(
     allocator: std.mem.Allocator,
@@ -45,6 +62,17 @@ pub fn refreshToken(
         },
     }) catch return error.NetworkError;
     defer req.deinit();
+
+    // TIN-2074: bound the send/recv legs so a stalled connection cannot
+    // wedge the caller — attemptRefresh holds the per-account repair flock
+    // across this call, and the flock's blocking acquirers (adapter session
+    // start, broker) have no timeout of their own. Socket-level deadlines
+    // turn a post-connect stall into a NetworkError within ~30s per leg.
+    // DNS/TCP-connect/TLS-handshake are bounded only by the OS TCP timeout.
+    // Best-effort: a setsockopt failure must never fail the refresh.
+    if (req.connection) |conn| {
+        setSocketTimeout(conn.stream.handle, 30);
+    }
 
     req.transfer_encoding = .{ .content_length = body_buf.items.len };
     req.send() catch return error.NetworkError;
@@ -112,7 +140,7 @@ pub fn generatePkce() PkceChallenge {
 
 pub fn refreshUrl(kind: types.ProviderKind) ?[]const u8 {
     return switch (kind) {
-        .claude => "https://claude.ai/api/auth/oauth/token",
+        .claude => "https://console.anthropic.com/v1/oauth/token",
         .codex => "https://auth.openai.com/oauth/token",
         .gemini => "https://oauth2.googleapis.com/token",
         .vercel => null, // discovered via OIDC metadata
@@ -155,7 +183,7 @@ test "writeUrlEncoded" {
 
 test "refreshUrl returns expected endpoints" {
     try std.testing.expectEqualStrings(
-        "https://claude.ai/api/auth/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
         refreshUrl(.claude).?,
     );
     try std.testing.expectEqualStrings(
@@ -163,4 +191,15 @@ test "refreshUrl returns expected endpoints" {
         refreshUrl(.codex).?,
     );
     try std.testing.expect(refreshUrl(.github) == null);
+}
+
+test "refreshUrl(.claude) stays consistent with claude_def token endpoint" {
+    // TIN-1817: both constants must point at the same verified endpoint so the
+    // schema and the refresh path can never drift apart. Constants only — no
+    // live HTTP.
+    const provider_schema = @import("provider_schema.zig");
+    try std.testing.expectEqualStrings(
+        provider_schema.claude_def.auth.token_endpoint.?,
+        refreshUrl(.claude).?,
+    );
 }

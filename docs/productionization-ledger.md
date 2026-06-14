@@ -8,33 +8,33 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Release state: `v0.1.12` points at `38ac7e0`, including the
-  BrokenPipe/client-disconnect hardening from PR #279, the Codex 0.132 SQLite
-  resume authority fix from PR #289, the Codex capture-review proxy metadata
-  gate from PR #290, the `0.1.11` release from PR #291, the post-release
-  capture cookie redaction hardening from PR #292, and the provider-namespace
-  resume picker parity fix from PR #295, followed by the `0.1.12` release prep
-  from PR #296. Main after the release also includes PR #299, which promoted a
-  scrubbed auth-failure cassette fixture and local-path redaction gate; that
-  follow-up is not part of the published `0.1.12` release.
+- Release state: `v0.1.13` points at `4a7d02b`, the first release carrying the
+  TIN-1851 home-is-store session-authority default (#367/#370), the flock
+  unlink-on-release race fix with the macOS runtime-dir move (#379, TIN-2041),
+  the default-mode native resume chooser (#380, TIN-2045), corrected Claude
+  OAuth endpoint constants (#381, TIN-1817), the bounded repair-events log
+  (#369), and the remote-first proof policy (#368/#372). It was cut behind a
+  green remote release-proof on the GloriousFlywheel runner and a committed
+  clean-lineage live e2e (`docs/evidence/codex-live-e2e-clean-lineage-20260612/`).
 - CI/release state: GitHub Actions is the live source for release proof. Release
-  workflow `26469045026` published `v0.1.12`; release assets are present and
-  the public GitHub Release is non-draft/non-prerelease. npm dry-run/publish
-  remains blocked/stale; npm `latest` still reports `0.1.9`.
-- Version truth: source version is `0.1.12`. GitHub Release, curl installer
-  assets, deb/rpm assets, public Homebrew tap, user-local dogfood, and the lab
-  Home Manager source lane resolve to `0.1.12`. npm remains stale at `0.1.9`.
-  The Homebrew formula remains binary-only by default and must not install or
-  link a managed `codex` shim.
-- Installed provenance: user-local dogfood is PATH-first in the oauth-mux repo
-  shell and reports `0.1.12` with build id `v0.1.12`; Homebrew also reports
-  `0.1.12`. Continue checking `which -a oauth-mux`, `which -a codex`,
-  `oauth-mux version --json`, and `codex preflight` before treating any
-  installed-command run as release evidence.
+  workflow `27432964644` published `v0.1.13` with the full 23-asset matrix;
+  the public GitHub Release is non-draft/non-prerelease. The npm lane is
+  RETIRED (operator decision 2026-06-12, TIN-2042): packaging truth moves to
+  the Bazel SSOT and its derived lanes, which exclude npm; the published npm
+  package remains stale at `0.1.9` and cannot be deprecated until/unless a
+  registry token is ever rotated.
+- Version truth: source version is `0.1.13`. GitHub Release, curl installer
+  assets, deb/rpm assets, and the public Homebrew tap resolve to `0.1.13`.
+  The npm lane is retired. The Homebrew formula remains binary-only by
+  default and must not install or link a managed `codex` shim.
+- Installed provenance: continue checking `which -a oauth-mux`, `which -a
+  codex`, `oauth-mux version --json`, and `codex preflight` before treating
+  any installed-command run as release evidence. Upgrade note: v0.1.13 moved
+  the macOS runtime dir off /tmp; restart long-lived managed sessions and any
+  daemon after upgrading so all lock holders converge on the new path.
 - Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
-  0.1.12`, the local linked keg is `0.1.12`, and
-  `brew fetch --force jesssullivan/omux/oauth-mux` passes after tap PR #10
-  corrected checksums against the published GitHub Release artifacts.
+  0.1.13` (`Formula/oauth-mux.rb` updated with checksums from the published
+  v0.1.13 GitHub Release artifacts).
   Homebrew is a binary-only package lane by default: QA must prove it installs
   `oauth-mux`, does not install an `OMUX_CODEX_SHIM`, and leaves native `codex`
   command resolution unchanged.
@@ -73,7 +73,7 @@ refreshed when release truth, route evidence, or tracker state changes.
 | --- | --- | --- |
 | Managed Codex launch/resume | Live-proven | Reference adapter path for `oauth-mux codex` and `oauth-mux codex resume`. |
 | Codex quota handoff | Live-proven for managed Codex | Strongest preserved proof lives in `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Session authority bridge | Implemented | Managed auth/config overlays bridge canonical Codex session authority, including `state_5.sqlite*` and `logs_2.sqlite*` when present, with canonical `CODEX_SQLITE_HOME` for Codex 0.132+. |
+| Session authority model | Codex-implemented, shifted by TIN-1851 | Current managed Codex defaults to route-local persistent account homes: the selected route home is `CODEX_HOME` and owns muxed `state_5.sqlite*` / `logs_2.sqlite*`. Legacy canonical bridge / `CODEX_SQLITE_HOME` behavior is explicit `shared_canonical` opt-in only. |
 | Resume picker namespace parity | Published | PR #295 keeps managed Codex on the built-in `openai` provider namespace while routing through mux via `openai_base_url`, so native and managed `codex resume` enumerate the same provider-filtered session rows. Published in `0.1.12`. |
 | Config/TOML preservation | Implemented | Root-partitioned Codex config passthrough keeps user settings, MCP servers, profiles, model defaults, approval/sandbox policy, and non-managed provider definitions. |
 | Experimental Codex settings injection | Implemented | Defaults can be injected without treating user config as disposable. |
@@ -82,8 +82,8 @@ refreshed when release truth, route evidence, or tracker state changes.
 | Route-health recovery | Implemented | Transient provider degradation can recover after retry windows without becoming permanent auth death. Source after PR #279 also separates downstream client disconnects from upstream/provider failures so client `BrokenPipe` does not poison route health. |
 | Redacted diagnostics and tracing | Implemented | JSON diagnostics and `OMUX_TRACE=1` support route/session/auth/runtime debugging without token, raw account id, session id, or path leakage. |
 | Agent-safe reauth mediation | Contracted, partial surfaces | CLI JSON exposes consent/action fields and safe handoff-plan commands for upstream-owned login surfaces; future MCP tools must mirror CLI semantics. |
-| Beta daemon | Experimental | Foreground tick engine and daemon-hosted beta may mediate status/handoffs; not a hidden dependency and not unmanaged hot-swap. |
-| Claude adapter | Provider-proof only | `auth-status` and account-store isolation are the first proof lane; no Claude stay-afloat claim. |
+| Beta daemon | Socket stub (non-functional) | Foreground tick engine and daemon-hosted beta may mediate status/handoffs; not a hidden dependency and not unmanaged hot-swap. |
+| Claude adapter | Synthetic smoke only | `auth-status` and account-store isolation are the first proof lane; no Claude stay-afloat claim. |
 | OMO, Pi, OpenCode, Kimi | Adapter-candidate only | Adjacent agent-control-plane proof does not equal oauth-mux keepalive support. |
 
 ## UX, DX, AX Stance
@@ -97,9 +97,15 @@ UX:
 
 DX:
 
-- `just build`, `just test`, and `just check-local` remain the local development
-  gates.
-- `just release-proof <version>` is required before any registry mutation.
+- `just build`, `just test`, `just check`, and `just e2e` dispatch remote
+  development proof gates on GloriousFlywheel.
+- `just remote-build`, `just remote-test`, `just remote-check`, and
+  `just remote-e2e` remain explicit aliases for the same remote lanes.
+- `just release-proof <version> [ref]` or
+  `just remote-release-proof <ref> <version>` is required before any registry
+  mutation.
+- Local `*-local` build/check commands are debugging tools only; do not use them
+  as PR, release, or dogfood readiness proof on developer laptops.
 - Installed-command dogfood must use `oauth-mux version --json`,
   `which -a oauth-mux`, `which -a codex`, and `codex preflight` to prove the
   exact binary and shim path under test.
@@ -151,12 +157,12 @@ mutation, and release workflow `26469045026` published GitHub Release
 `v0.1.12` as non-draft/non-prerelease with 23 assets. The public Homebrew tap
 is updated to `0.1.12`, `brew fetch --force jesssullivan/omux/oauth-mux`
 passes, and the local Homebrew keg reports `0.1.12`. Lab PR #507 pins the Home
-Manager source lane to the same release commit with `codexShim` disabled. npm
-publication remains blocked/stale; npm `latest` still reports `0.1.9`.
+Manager source lane to the same release commit with `codexShim` disabled.
 Negative Codex cassettes, broader adapter proof, and daemon beta truth remain
 follow-up work.
-Windows managed-`codex` parity is intentionally assigned to the npm wrapper
-lane rather than raw tarballs until a native Windows operator need is proven.
+Windows managed-`codex` parity is unassigned since the npm wrapper lane was
+retired (2026-06-12); a Windows lane decision rides the Bazel SSOT work
+(TIN-2046/TIN-2050) if a native Windows operator need is ever proven.
 Future public install copy must avoid claiming a version or lane behavior until
 that version is actually published and verified.
 
@@ -165,7 +171,6 @@ The release lanes remain:
 - worktree dogfood;
 - user-local dogfood;
 - Nix package;
-- npm;
 - Homebrew;
 - deb/rpm packages;
 - Home Manager.
@@ -181,11 +186,11 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Codex next-turn broker switch | TIN-916 | #131 | Closed for the proven managed Codex live handoff. Remaining negative/permutation work lives in #212/#176; same-thread, mid-turn, and unmanaged daemon behavior remain separate non-claims. |
 | Upstream Codex usage-limit hook | TIN-939 | #164 | Draft proposal written; use it to request a first-class external-auth usage-limit handoff hook while keeping oauth-mux claims scoped to proven managed-proxy behavior. |
 | Live Codex account-swap acceptance | TIN-951 | #177 | Done for managed Codex; strongest preserved proof is `docs/evidence/codex-engineered-quota-handoff-20260509/`. |
-| Wire cassette coverage | TIN-950 | #176 | PR #299 promoted a scrubbed current-release auth-failure fixture and replay smoke. Quota/rate-limit and all-fallbacks-exhausted cassette evidence is still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile only after real cassette acceptance or an explicit tracker correction. |
-| Harness session authority bridge | TIN-979 / TIN-1624 | #191 / #288 | Closed for the original Codex bridge, with TIN-1624/#288 covering the Codex 0.132 `logs_2.sqlite*` / `CODEX_SQLITE_HOME` parity regression. Managed auth/config overlays bridge canonical session authority and root config while rejecting silent session-store import/copy. Future cross-harness authority work stays under #67/#68. |
-| Codex session-store portability | TIN-936 | #161 | Policy is explicit: canonical bridge is supported; silent route-local session import/copy is rejected until a separate confirmed import command exists. |
+| Wire cassette coverage | TIN-950 | #176 | PR #299 promoted a scrubbed current-release auth-failure fixture and replay smoke. Quota/rate-limit and all-fallbacks-exhausted cassette evidence is still needed before treating negative permutations as stable release proof. Linear currently marks TIN-950 Done while GitHub #176 remains open; reconcile this tracker inconsistency immediately — real cassette acceptance is a separate release-readiness gate, not a precondition for the tracker correction. |
+| Harness session authority bridge | TIN-979 / TIN-1624 / TIN-1851 | #191 / #288 / #367 | Original canonical bridge work is historical. Current main defaults to home-is-store / route-local persistent Codex authority; `shared_canonical` remains explicit opt-in. Future cross-harness authority work stays under #67/#68. |
+| Codex session-store portability | TIN-936 / TIN-1851 | #161 / #367 | Policy is explicit: default muxed sessions live in route-local persistent account homes; canonical bridge is opt-in; silent session-store copy/import is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
-| Package parity and install lanes | TIN-1255 | #252 | `0.1.12` is published and verified across GitHub Release, Homebrew, curl installer assets, deb/rpm release assets, user-local dogfood, and lab Home Manager source pin; npm remains stale at `0.1.9`. |
+| Package parity and install lanes | TIN-1255 | #252 | `0.1.12` is published and verified across GitHub Release, Homebrew, curl installer assets, deb/rpm release assets, user-local dogfood, and lab Home Manager source pin; npm as of 2026-05-26 remains at `0.1.9` — verify before recommending. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
@@ -196,14 +201,14 @@ browser is needed; local Playwright is not part of this CLI proof path.
   `doctor`, `providers list`, `accounts list`, `route explain`,
   `codex preflight`, `broker-session-plan`, `stay-afloat next`,
   `status-latest`, and `daemon status`.
-- Local validation passes: `zig build test`, targeted Codex smokes,
-  `nix develop --command just check-local`, and the hybrid `nix flake check`
-  package smoke.
+- Remote validation passes: `just remote-check`, plus targeted remote lanes such
+  as `just remote-test`, `just remote-build`, and `just remote-e2e` when the
+  change warrants them. Local validation commands are debugging aids only.
 - Dogfood process/memory concerns are backed by at least two redacted
   `dogfood-process-snapshot` artifacts before being called leaks.
-- Public release validation passes: `just release-proof <version>`, release
-  proof workflow, npm dry run/publish workflow as appropriate, Homebrew QA, and
-  system package QA.
+- Public release validation passes: `just remote-release-proof <ref> <version>`,
+  release proof workflow, npm dry run/publish workflow as appropriate, Homebrew
+  QA, and system package QA.
 - Homebrew release validation proves both installed binary output and
   `brew info --json=v2` stable version semantics for the public tap formula.
 - Public copy does not claim same-thread continuity, mid-turn recovery,

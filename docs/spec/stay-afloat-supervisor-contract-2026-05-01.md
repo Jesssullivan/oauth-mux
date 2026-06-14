@@ -137,7 +137,9 @@ State:
 Runtime:
 
 - `XDG_RUNTIME_DIR/oauth-mux` when `XDG_RUNTIME_DIR` is set.
-- `/tmp/oauth-mux-$UID` on macOS when no XDG runtime dir is present.
+- `$HOME/Library/Application Support/oauth-mux/runtime` on macOS when no XDG
+  runtime dir is present (`/tmp` is periodically cleaned and can unlink held
+  lock files — TIN-2041).
 - `$HOME/.local/state/oauth-mux` on other platforms as the current fallback.
 - The socket path is `daemon.sock` under the runtime directory.
 - Repair locks are under `repair-locks` in the runtime directory.

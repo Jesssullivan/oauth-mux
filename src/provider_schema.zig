@@ -100,13 +100,58 @@ pub const CredentialFormat = struct {
     refresh_token_path: []const u8 = "refresh_token",
     expires_at_path: ?[]const u8 = null,
     expires_in_path: ?[]const u8 = null,
+    // TIN-2087: derive expiry from the `exp` claim of a JWT at this path
+    // (e.g. codex stores no wall-clock expiry — only a JWT access token).
+    // Tried only after expires_at_path/expires_in_path yield nothing. The
+    // payload is base64url-decoded and read; no signature verification (we
+    // trust our own store). `exp` is epoch seconds per RFC 7519.
+    expires_from_jwt_path: ?[]const u8 = null,
     // Alternative paths for API key mode
     api_key_path: ?[]const u8 = null,
+    // TIN-2043: JSON path (relative to wrapper) to the stable UPSTREAM
+    // account identity carried in the credential — e.g. codex
+    // "tokens.account_id". The refresh path hashes it (sha256_12hex) and
+    // takes the same per-identity flock the managed session does, so a warm
+    // refresh of one config account never rotates the single-use RT chain
+    // shared by a sibling config account's live session. null = the
+    // credential carries no in-band identity (claude's lives in
+    // .claude.json, not the keychain blob).
+    identity_claim_path: ?[]const u8 = null,
     // Wrapper key — if the credential JSON is nested under a top-level key
     wrapper_key: ?[]const u8 = null,
     // Token type detection: if api_key_path resolves, treat as api_key
     token_type: []const u8 = "bearer",
+    // Unit of the value at expires_at_path IN THE STORE. TokenFields is
+    // always epoch seconds; reads convert from this unit and writes convert
+    // back to it. Claude Code stores epoch milliseconds (verified live,
+    // TIN-2074: 13-digit expiresAt) — without this, expiry math treats a
+    // Claude token as never expiring.
+    expires_at_unit: ExpiresAtUnit = .seconds,
 };
+
+pub const ExpiresAtUnit = enum { seconds, milliseconds };
+
+// Convert a stored expiry value into epoch seconds (TokenFields' unit).
+// For .milliseconds, a value that is implausibly small to be epoch-ms
+// (< 1e12 ≈ year 2001 in ms) is treated as already-seconds rather than
+// divided — so a legacy or hand-edited seconds-valued store is never
+// corrupted into year 1970.
+pub fn expiryStoreToSeconds(unit: ExpiresAtUnit, raw: i64) i64 {
+    return switch (unit) {
+        .seconds => raw,
+        .milliseconds => if (raw >= 1_000_000_000_000) @divTrunc(raw, 1000) else raw,
+    };
+}
+
+// Convert epoch seconds back into the store's unit. Saturating: a token
+// endpoint that returns an absurd expires_in must not overflow i64 and
+// panic while the repair flock is held.
+pub fn expirySecondsToStore(unit: ExpiresAtUnit, secs: i64) i64 {
+    return switch (unit) {
+        .seconds => secs,
+        .milliseconds => secs *| 1000,
+    };
+}
 
 pub const InjectionConfig = struct {
     // Config dir env var (e.g., CLAUDE_CONFIG_DIR, CODEX_HOME)
@@ -137,6 +182,19 @@ pub const RuntimeConfig = struct {
 
 pub const RepairConfig = struct {
     owner: types.RepairOwner = .manual_only,
+    // TIN-2058: whether oauth-mux is technically able to drive a proactive
+    // token refresh for this provider (a refresh_token grant the mux can
+    // execute against the provider's token endpoint). This declares
+    // capability, not permission — admission additionally requires the
+    // account's explicit `allow_proactive_refresh` consent in config. Login
+    // ownership (`owner`) is unaffected: interactive re-auth stays with the
+    // upstream CLI.
+    proactive_refresh: ProactiveRefreshSupport = .unsupported,
+};
+
+pub const ProactiveRefreshSupport = enum {
+    unsupported,
+    oauth_refresh_token,
 };
 
 pub const CapabilityDefinition = struct {
@@ -621,7 +679,7 @@ const flakehub_capabilities = [_]CapabilityDefinition{
 const codex_capabilities = [_]CapabilityDefinition{
     .{
         .name = "codex-max",
-        .aliases = &.{ "max", "gpt-5.3-codex", "gpt-5.1-codex-max" },
+        .aliases = &.{ "max", "gpt-5.5", "gpt-5.3-codex", "gpt-5.1-codex-max" },
         .proof_status = proof_live,
         .proof_requirements = &.{
             "codex CLI installed",
@@ -640,7 +698,7 @@ const codex_capabilities = [_]CapabilityDefinition{
                 "--ephemeral",
                 "--ignore-rules",
                 "-m",
-                "gpt-5.3-codex",
+                "gpt-5.5",
                 "Reply exactly: OMUX_CODEX_MAX_PROBE",
             },
             .budget = .spend_provider,
@@ -675,24 +733,48 @@ const codex_capabilities = [_]CapabilityDefinition{
     },
 };
 
+pub const claude_keychain_service_base = "Claude Code-credentials";
+
+// Claude Code keys its macOS login-keychain item on a per-config-dir service
+// name: the default dir (~/.claude) uses the unsuffixed base, and any other
+// CLAUDE_CONFIG_DIR appends "-<first 8 hex of sha256(absolute dir)>". The
+// input must be the same absolute string exported as CLAUDE_CONFIG_DIR
+// (tilde-expanded, not realpath'd) or the hash diverges from the CLI's own.
+// Verified live: docs/spec/provider-proof-claude-credential-store-2026-06-12.md.
+pub fn claudeKeychainService(allocator: std.mem.Allocator, config_dir_absolute: []const u8) error{OutOfMemory}![]u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(config_dir_absolute, &digest, .{});
+    return std.fmt.allocPrint(allocator, "{s}-{x}", .{
+        claude_keychain_service_base,
+        std.fmt.fmtSliceHexLower(digest[0..4]),
+    });
+}
+
 pub const claude_def = ProviderDefinition{
     .name = "claude",
     .display_name = "Claude Code",
     .extension_mode = .command_adapter,
     .auth = .{
-        .token_endpoint = "https://claude.ai/api/auth/oauth/token",
+        .token_endpoint = "https://console.anthropic.com/v1/oauth/token",
+        .authorization_endpoint = "https://console.anthropic.com/oauth/authorize",
+        .client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
     },
     .credential = .{
         .access_token_path = "accessToken",
         .refresh_token_path = "refreshToken",
         .expires_at_path = "expiresAt",
         .wrapper_key = "claudeAiOauth",
+        // Verified live (TIN-2074): Claude Code stores 13-digit epoch ms.
+        .expires_at_unit = .milliseconds,
     },
     .injection = .{
         .config_dir_env = "CLAUDE_CONFIG_DIR",
         .credential_filename = ".credentials.json",
+        // Bootstrap-only: refresh writeback merges into the existing store
+        // (mergeCredentialGeneric) and never goes through this template
+        // when a credential already exists.
         .credential_template =
-        \\{"claudeAiOauth":{"accessToken":"{{access_token}}","refreshToken":"{{refresh_token}}"}}
+        \\{"claudeAiOauth":{"accessToken":"{{access_token}}","refreshToken":"{{refresh_token}}","expiresAt":{{expires_at}}}}
         ,
     },
     .detection = .{
@@ -702,8 +784,21 @@ pub const claude_def = ProviderDefinition{
         .required_binaries = &.{"claude"},
         .env_vars = &.{"CLAUDE_CONFIG_DIR"},
     },
+    // GRANT FLIPPED (TIN-2057): the provider now SUPPORTS proactive refresh.
+    // Substrate complete — serialization (TIN-2073), field-preserving writeback
+    // (TIN-2074: merge preserves expiresAt/scopes/subscriptionType, ms-unit
+    // aware), Option B proactive-rotation (TIN-2055), the per-account + identity
+    // flocks, and the canonical-keychain writeback refusal (TIN-2054/#406). Login
+    // stays upstream_cli_login, so refresh is admitted ONLY for an account that
+    // also opts in (allow_proactive_refresh: true) — no behaviour change for any
+    // account that hasn't opted in. The bare-CLI dual-writer (R3, TIN-2059) is the
+    // accepted residual: the store-invariant (never persist an RT it didn't mint)
+    // downgrades a concurrent native-CLI rotation to a wasted refresh, never
+    // corruption. Live-proven 2026-06-14 (2×Claude proactively refreshed via
+    // `oauth-mux keepalive`, scopes/subscriptionType preserved, zero collateral).
     .repair = .{
         .owner = .upstream_cli_login,
+        .proactive_refresh = .oauth_refresh_token,
     },
     .capabilities = &claude_capabilities,
     .failure_rules = &claude_failure_rules,
@@ -725,7 +820,14 @@ pub const codex_def = ProviderDefinition{
     .credential = .{
         .access_token_path = "tokens.access_token",
         .refresh_token_path = "tokens.refresh_token",
-        .expires_in_path = "tokens.expires_in",
+        // Codex auth.json has no wall-clock expiry; the access token is a
+        // JWT whose `exp` claim is the truth (TIN-2087). The previously
+        // declared "tokens.expires_in" never existed in the real store.
+        .expires_from_jwt_path = "tokens.access_token",
+        // TIN-2043: the duplicate-identity guard keys on this (the live
+        // max-1 == max-4 Apple-ID shape). Same id the managed session
+        // hashes for codex-identity-<hash>.
+        .identity_claim_path = "tokens.account_id",
         .api_key_path = "OPENAI_API_KEY",
     },
     .injection = .{
@@ -745,8 +847,20 @@ pub const codex_def = ProviderDefinition{
         .writable_paths = &.{"CODEX_HOME"},
         .session_paths = &.{"CODEX_HOME/auth.json"},
     },
+    // GRANT FLIPPED (TIN-2057): the provider now SUPPORTS proactive refresh.
+    // Substrate complete — serialization (TIN-2073), field-preserving merge
+    // (TIN-2074: preserves tokens.id_token, the codex identity source), JWT-exp
+    // expiry derivation (TIN-2087), Option B proactive-rotation (TIN-2055), and —
+    // critically for codex's shared-identity shape (max-N == one Apple ID) — the
+    // warm-loop identity flock (TIN-2043), which serializes any two config
+    // accounts on one RT chain. Login stays upstream_cli_login → refresh admitted
+    // ONLY for an opted-in account. Live-proven 2026-06-14 (2×Codex proactively
+    // refreshed via `oauth-mux keepalive`, zero collateral). NOTE: two accounts
+    // that share an account_id MUST NOT both be opted in (provider family
+    // revocation is outside the lock domain) — see TIN-2113.
     .repair = .{
         .owner = .upstream_cli_login,
+        .proactive_refresh = .oauth_refresh_token,
     },
     .rate_limits = .{
         .remaining_header = "x-ratelimit-remaining-requests",
@@ -1346,6 +1460,44 @@ pub fn resolveJsonInt(value: std.json.Value, path: []const u8) ?i64 {
     };
 }
 
+// TIN-2087: read the `exp` claim (epoch seconds, RFC 7519) from a JWT's
+// payload. Decode-only — no signature verification, since the token comes
+// from our own credential store. Returns null on any malformation rather
+// than failing the whole parse (a token without a readable exp just means
+// "no proactive-refresh signal", the pre-TIN-2087 behavior).
+pub fn jwtExpSeconds(jwt: []const u8, allocator: std.mem.Allocator) ?i64 {
+    var it = std.mem.splitScalar(u8, jwt, '.');
+    _ = it.next() orelse return null; // header
+    const payload_b64 = it.next() orelse return null; // payload
+    if (payload_b64.len == 0) return null;
+
+    const decoder = std.base64.url_safe_no_pad.Decoder;
+    const decoded_len = decoder.calcSizeForSlice(payload_b64) catch return null;
+    const buf = allocator.alloc(u8, decoded_len) catch return null;
+    defer allocator.free(buf);
+    decoder.decode(buf, payload_b64) catch return null;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, buf, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const exp = parsed.value.object.get("exp") orelse return null;
+    return switch (exp) {
+        .integer => |i| i,
+        // Some issuers emit exp as a float; truncate to seconds. Range-guard
+        // before @intFromFloat — in ReleaseSafe (the production lane) it
+        // PANICS on an out-of-i64-range value, which `catch` cannot recover
+        // (a panic is not an error), so a hand-edited/hostile exp like 1e30
+        // would abort the process instead of degrading to null. (NaN/inf
+        // never reach here — std.json routes them to .number_string.)
+        .float => |f| if (f >= @as(f64, @floatFromInt(std.math.minInt(i64))) and
+            f < @as(f64, @floatFromInt(std.math.maxInt(i64))))
+            @intFromFloat(f)
+        else
+            null,
+        else => null,
+    };
+}
+
 // ── Generic Token Parser ──
 // Parses any credential format using a ProviderDefinition ��� no provider-specific code.
 
@@ -1355,6 +1507,23 @@ pub const TokenFields = struct {
     token_type: types.TokenType = .bearer,
     expires_at: ?i64 = null,
 };
+
+// TIN-2043: resolve the upstream account-identity string declared at
+// `identity_claim_path` from a raw credential. Returns an owned copy, or
+// null if the provider declares no identity path or the value is absent.
+// Hashing is the caller's job (keeps this module free of identity_hash).
+pub fn identityClaimFromCredential(def: ProviderDefinition, raw: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+    const path = def.credential.identity_claim_path orelse return null;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch return null;
+    defer parsed.deinit();
+    var root = parsed.value;
+    if (def.credential.wrapper_key) |wk| {
+        root = resolveJsonPath(root, wk) orelse root;
+    }
+    const value = resolveJsonString(root, path) orelse return null;
+    if (value.len == 0) return null;
+    return try allocator.dupe(u8, value);
+}
 
 pub fn parseTokenGeneric(
     def: ProviderDefinition,
@@ -1413,14 +1582,24 @@ pub fn parseTokenGeneric(
         result.refresh_token = try allocator.dupe(u8, rt);
     }
 
-    // Resolve expiry
+    // Resolve expiry (store unit -> epoch seconds)
     if (def.credential.expires_at_path) |eap| {
-        result.expires_at = resolveJsonInt(root, eap);
+        if (resolveJsonInt(root, eap)) |raw_exp| {
+            result.expires_at = expiryStoreToSeconds(def.credential.expires_at_unit, raw_exp);
+        }
     }
     if (result.expires_at == null) {
         if (def.credential.expires_in_path) |eip| {
             if (resolveJsonInt(root, eip)) |ei| {
                 result.expires_at = std.time.timestamp() + ei;
+            }
+        }
+    }
+    // TIN-2087: last resort — read `exp` from a JWT (codex's access token).
+    if (result.expires_at == null) {
+        if (def.credential.expires_from_jwt_path) |jp| {
+            if (resolveJsonString(root, jp)) |jwt| {
+                result.expires_at = jwtExpSeconds(jwt, allocator);
             }
         }
     }
@@ -1435,6 +1614,94 @@ pub fn parseTokenGeneric(
 
 // ── Generic Credential Builder ──
 // Builds a credential file from a template + token fields.
+
+// ── Field-Preserving Credential Merge (TIN-2074) ──
+// Refresh writeback must not be lossy: the native store carries fields the
+// token response does not own (claude: scopes/subscriptionType/rateLimitTier;
+// codex: tokens.id_token/last_refresh — the identity source). Parse the
+// existing credential, replace ONLY the token fields at the definition's
+// declared paths, preserve everything else (including key order), and
+// serialize. Callers fall back to buildCredentialGeneric when there is no
+// existing credential to merge into.
+pub fn mergeCredentialGeneric(
+    def: ProviderDefinition,
+    existing_raw: []const u8,
+    token: TokenFields,
+    allocator: std.mem.Allocator,
+) ![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, existing_raw, .{}) catch
+        return error.InvalidCharacter;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidCharacter;
+
+    const arena = parsed.arena.allocator();
+
+    // Resolve (creating if absent) the wrapper object the credential paths
+    // are relative to. A wrapped store (claude keychain, prior merge) is
+    // used in place; a flat store for a wrapper-declaring provider gets the
+    // wrapper established and tokens written into it. This is safe because
+    // every reader of a wrapper-declaring store — the upstream CLI and
+    // oauth-mux's own parseTokenGeneric (resolveJsonPath(root, wk) orelse
+    // root) — resolves the wrapper FIRST and ignores any stale top-level
+    // fields, so there is no dual-format ambiguity, and a flat custom
+    // oauth_mux_refresh provider is not falsely refused on its first
+    // refresh. ensureJsonObjectPath errors only if the path collides with a
+    // non-object (e.g. wrapper_key points at a string), where the caller
+    // fails closed rather than corrupt an unexpected shape.
+    var root: *std.json.Value = &parsed.value;
+    if (def.credential.wrapper_key) |wk| {
+        root = try ensureJsonObjectPath(root, wk, arena);
+    }
+
+    try setJsonPathString(root, def.credential.access_token_path, token.access_token, arena);
+    if (token.refresh_token) |rt| {
+        try setJsonPathString(root, def.credential.refresh_token_path, rt, arena);
+    }
+    if (def.credential.expires_at_path) |eap| {
+        if (token.expires_at) |ea| {
+            const store_exp = expirySecondsToStore(def.credential.expires_at_unit, ea);
+            try setJsonPath(root, eap, .{ .integer = store_exp }, arena);
+        }
+    }
+
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+    try std.json.stringify(parsed.value, .{}, out.writer());
+    return out.toOwnedSlice();
+}
+
+// Walks a dot-separated path of objects below `root`, creating missing
+// intermediate objects, and returns a pointer to the object at the path.
+fn ensureJsonObjectPath(root: *std.json.Value, path: []const u8, arena: std.mem.Allocator) !*std.json.Value {
+    var current = root;
+    var it = std.mem.splitScalar(u8, path, '.');
+    while (it.next()) |segment| {
+        if (current.* != .object) return error.InvalidCharacter;
+        const gop = try current.object.getOrPut(try arena.dupe(u8, segment));
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{ .object = std.json.ObjectMap.init(arena) };
+        } else if (gop.value_ptr.* != .object) {
+            return error.InvalidCharacter;
+        }
+        current = gop.value_ptr;
+    }
+    return current;
+}
+
+fn setJsonPath(root: *std.json.Value, path: []const u8, value: std.json.Value, arena: std.mem.Allocator) !void {
+    const last_dot = std.mem.lastIndexOfScalar(u8, path, '.');
+    const parent = if (last_dot) |idx|
+        try ensureJsonObjectPath(root, path[0..idx], arena)
+    else
+        root;
+    if (parent.* != .object) return error.InvalidCharacter;
+    const leaf = if (last_dot) |idx| path[idx + 1 ..] else path;
+    try parent.object.put(try arena.dupe(u8, leaf), value);
+}
+
+fn setJsonPathString(root: *std.json.Value, path: []const u8, value: []const u8, arena: std.mem.Allocator) !void {
+    try setJsonPath(root, path, .{ .string = try arena.dupe(u8, value) }, arena);
+}
 
 pub fn buildCredentialGeneric(
     def: ProviderDefinition,
@@ -1475,7 +1742,13 @@ pub fn buildCredentialGeneric(
                 try w.writeAll(token.refresh_token orelse "");
             } else if (std.mem.eql(u8, key, "expires_at")) {
                 if (token.expires_at) |ea| {
-                    try w.print("{d}", .{ea});
+                    try w.print("{d}", .{expirySecondsToStore(def.credential.expires_at_unit, ea)});
+                } else {
+                    // Bare {{expires_at}} in a JSON template would emit
+                    // malformed output if elided; epoch 0 reads back as
+                    // long-expired, which forces a refresh — the honest
+                    // value for "unknown".
+                    try w.writeAll("0");
                 }
             }
             i = end + 2;
@@ -1540,7 +1813,7 @@ test "resolveJsonPath deep nesting" {
 
 test "parseTokenGeneric with claude def" {
     const json =
-        \\{"claudeAiOauth":{"accessToken":"sk-ant-123","refreshToken":"rt-456","expiresAt":9999999999}}
+        \\{"claudeAiOauth":{"accessToken":"sk-ant-123","refreshToken":"rt-456","expiresAt":9999999999000}}
     ;
     const result = try parseTokenGeneric(claude_def, json, std.testing.allocator);
     defer std.testing.allocator.free(result.access_token);
@@ -1551,15 +1824,21 @@ test "parseTokenGeneric with claude def" {
 }
 
 test "parseTokenGeneric with codex def" {
-    const json =
-        \\{"auth_mode":"chatgpt","tokens":{"access_token":"oat-789","refresh_token":"ort-012","expires_in":3600}}
-    ;
+    // Real codex shape (TIN-2087): JWT access token, opaque refresh token,
+    // no expires_in. Expiry derives from the JWT exp claim.
+    const access_jwt = try testMakeJwt(std.testing.allocator, "{\"exp\":9999999999}");
+    defer std.testing.allocator.free(access_jwt);
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{"auth_mode":"chatgpt","tokens":{{"access_token":"{s}","refresh_token":"ort-012"}}}}
+    , .{access_jwt});
+    defer std.testing.allocator.free(json);
+
     const result = try parseTokenGeneric(codex_def, json, std.testing.allocator);
     defer std.testing.allocator.free(result.access_token);
     defer if (result.refresh_token) |rt| std.testing.allocator.free(rt);
-    try std.testing.expectEqualStrings("oat-789", result.access_token);
+    try std.testing.expectEqualStrings(access_jwt, result.access_token);
     try std.testing.expectEqualStrings("ort-012", result.refresh_token.?);
-    try std.testing.expect(result.expires_at != null);
+    try std.testing.expectEqual(@as(?i64, 9999999999), result.expires_at);
 }
 
 test "parseTokenGeneric with codex API key mode" {
@@ -1589,6 +1868,26 @@ test "buildCredentialGeneric with claude template" {
     // Should produce the wrapped format
     try std.testing.expect(std.mem.indexOf(u8, result, "claudeAiOauth") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "sk-test") != null);
+}
+
+test "claude_def pins verified Anthropic OAuth constants" {
+    // TIN-1817: the Claude OAuth endpoints live on console.anthropic.com,
+    // not claude.ai (verified against four independent sources in PR #354).
+    // Constants only — never perform live HTTP in tests.
+    try std.testing.expectEqualStrings(
+        "https://console.anthropic.com/v1/oauth/token",
+        claude_def.auth.token_endpoint.?,
+    );
+    try std.testing.expectEqualStrings(
+        "https://console.anthropic.com/oauth/authorize",
+        claude_def.auth.authorization_endpoint.?,
+    );
+    // Anthropic's token endpoint requires client_id, and oauth.refreshToken
+    // only sends client_id when the definition carries one (compare codex_def).
+    try std.testing.expectEqualStrings(
+        "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        claude_def.auth.client_id.?,
+    );
 }
 
 test "findBuiltin" {
@@ -1711,11 +2010,11 @@ test "codex capabilities include semantic max and mini command probes" {
     try std.testing.expectEqualStrings("codex", codex_def.runtime.required_binaries[0]);
 
     try std.testing.expectEqualStrings("codex-max", codex_def.capabilities[0].name);
-    const max_plan = probePlanForCapability(codex_def, "gpt-5.3-codex").?;
+    const max_plan = probePlanForCapability(codex_def, "gpt-5.5").?;
     try std.testing.expectEqual(ProbeTransport.command, max_plan.transport);
     try std.testing.expectEqualStrings("codex-max", max_plan.capability);
     try std.testing.expectEqualStrings("codex", max_plan.command.?[0]);
-    try std.testing.expectEqualStrings("gpt-5.3-codex", max_plan.command.?[6]);
+    try std.testing.expectEqualStrings("gpt-5.5", max_plan.command.?[6]);
     try std.testing.expectEqual(@as(u32, 120_000), max_plan.timeout_ms);
     try std.testing.expectEqual(types.ActionBudget.spend_provider, max_plan.budget);
     try std.testing.expectEqualStrings("codex-max", probePlanForCapability(codex_def, "max").?.capability);
@@ -2037,4 +2336,300 @@ test "classifyCodexAppServerJsonRpc usage limit as quota exhaustion" {
         .quota_exhausted => |quota| try std.testing.expectEqual(@as(u32, 7200), quota.retry_after_s),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "claudeKeychainService derives the TIN-2060 golden vectors" {
+    // Two real enrolled accounts, predicted-then-confirmed live against the
+    // macOS keychain (docs/spec/provider-proof-claude-credential-store-2026-06-12.md).
+    const xoxd = try claudeKeychainService(std.testing.allocator, "/Users/jess/.local/share/oauth-mux/claude/xoxd");
+    defer std.testing.allocator.free(xoxd);
+    try std.testing.expectEqualStrings("Claude Code-credentials-26ae8e92", xoxd);
+
+    const sulliwood = try claudeKeychainService(std.testing.allocator, "/Users/jess/.local/share/oauth-mux/claude/sulliwood");
+    defer std.testing.allocator.free(sulliwood);
+    try std.testing.expectEqualStrings("Claude Code-credentials-cec7498b", sulliwood);
+}
+
+test "claudeKeychainService distinct dirs never collide on the base service" {
+    const derived = try claudeKeychainService(std.testing.allocator, "/tmp/omux-claude-any");
+    defer std.testing.allocator.free(derived);
+    try std.testing.expect(!std.mem.eql(u8, derived, claude_keychain_service_base));
+    try std.testing.expect(std.mem.startsWith(u8, derived, "Claude Code-credentials-"));
+    try std.testing.expectEqual(claude_keychain_service_base.len + 1 + 8, derived.len);
+}
+
+test "parseTokenGeneric converts millisecond expiresAt to epoch seconds (TIN-2074)" {
+    // The live claude store carries 13-digit epoch ms; without conversion
+    // the expiry math treats the token as never expiring.
+    const raw =
+        \\{"claudeAiOauth":{"accessToken":"at-ms-unit","refreshToken":"rt-ms-unit","expiresAt":1781400000000}}
+    ;
+    const result = try parseTokenGeneric(claude_def, raw, std.testing.allocator);
+    defer {
+        std.testing.allocator.free(result.access_token);
+        if (result.refresh_token) |rt| std.testing.allocator.free(rt);
+    }
+    try std.testing.expectEqual(@as(?i64, 1781400000), result.expires_at);
+}
+
+test "mergeCredentialGeneric preserves the claude store fields the token response does not own (TIN-2074)" {
+    // Field inventory verified live: accessToken, expiresAt, rateLimitTier,
+    // refreshToken, scopes, subscriptionType.
+    const existing =
+        \\{"claudeAiOauth":{"accessToken":"at-old","refreshToken":"rt-old","expiresAt":1781300000000,"scopes":["user:inference","user:profile"],"subscriptionType":"max","rateLimitTier":"default_claude_ai"}}
+    ;
+    const merged = try mergeCredentialGeneric(claude_def, existing, .{
+        .access_token = "at-rotated",
+        .refresh_token = "rt-rotated",
+        .expires_at = 1781400000,
+    }, std.testing.allocator);
+    defer std.testing.allocator.free(merged);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, merged, .{});
+    defer parsed.deinit();
+    const oa = parsed.value.object.get("claudeAiOauth").?.object;
+
+    try std.testing.expectEqualStrings("at-rotated", oa.get("accessToken").?.string);
+    try std.testing.expectEqualStrings("rt-rotated", oa.get("refreshToken").?.string);
+    // Written back in the STORE unit (ms).
+    try std.testing.expectEqual(@as(i64, 1781400000000), oa.get("expiresAt").?.integer);
+    // Every field the rotation does not own survives with value + order
+    // intact (string/int/array fidelity; the live claude store carries no
+    // floats, which std.json re-serializes in exponent form).
+    try std.testing.expectEqualStrings("max", oa.get("subscriptionType").?.string);
+    try std.testing.expectEqualStrings("default_claude_ai", oa.get("rateLimitTier").?.string);
+    try std.testing.expectEqual(@as(usize, 2), oa.get("scopes").?.array.items.len);
+    try std.testing.expectEqualStrings("user:inference", oa.get("scopes").?.array.items[0].string);
+    // Key order preserved: accessToken stays first.
+    try std.testing.expectEqualStrings("accessToken", oa.keys()[0]);
+}
+
+test "mergeCredentialGeneric preserves codex tokens.id_token and last_refresh (TIN-2074)" {
+    const existing =
+        \\{"auth_mode":"chatgpt","tokens":{"id_token":"idt-identity-source","access_token":"at-old","refresh_token":"rt-old","account_id":"acct-fixture"},"last_refresh":"2026-06-01T00:00:00Z"}
+    ;
+    const merged = try mergeCredentialGeneric(codex_def, existing, .{
+        .access_token = "at-rotated",
+        .refresh_token = "rt-rotated",
+        .expires_at = null,
+    }, std.testing.allocator);
+    defer std.testing.allocator.free(merged);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, merged, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    const tokens = root.get("tokens").?.object;
+
+    try std.testing.expectEqualStrings("at-rotated", tokens.get("access_token").?.string);
+    try std.testing.expectEqualStrings("rt-rotated", tokens.get("refresh_token").?.string);
+    // The identity source and CLI metadata survive.
+    try std.testing.expectEqualStrings("idt-identity-source", tokens.get("id_token").?.string);
+    try std.testing.expectEqualStrings("acct-fixture", tokens.get("account_id").?.string);
+    try std.testing.expectEqualStrings("chatgpt", root.get("auth_mode").?.string);
+    try std.testing.expectEqualStrings("2026-06-01T00:00:00Z", root.get("last_refresh").?.string);
+}
+
+test "mergeCredentialGeneric creates missing token paths without disturbing siblings" {
+    const existing =
+        \\{"operator_note":"hand-managed","tokens":{}}
+    ;
+    const merged = try mergeCredentialGeneric(codex_def, existing, .{
+        .access_token = "at-bootstrap",
+        .refresh_token = "rt-bootstrap",
+        .expires_at = null,
+    }, std.testing.allocator);
+    defer std.testing.allocator.free(merged);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, merged, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("hand-managed", parsed.value.object.get("operator_note").?.string);
+    try std.testing.expectEqualStrings("at-bootstrap", parsed.value.object.get("tokens").?.object.get("access_token").?.string);
+}
+
+test "mergeCredentialGeneric refuses non-object stores (caller falls back to template)" {
+    try std.testing.expectError(error.InvalidCharacter, mergeCredentialGeneric(claude_def, "raw-api-key-not-json", .{
+        .access_token = "at-x",
+    }, std.testing.allocator));
+    try std.testing.expectError(error.InvalidCharacter, mergeCredentialGeneric(claude_def, "[1,2]", .{
+        .access_token = "at-x",
+    }, std.testing.allocator));
+}
+
+test "claude bootstrap template writes expiresAt in store milliseconds (TIN-2074)" {
+    const built = try buildCredentialGeneric(claude_def, .{
+        .access_token = "at-bootstrap",
+        .refresh_token = "rt-bootstrap",
+        .expires_at = 1781400000,
+    }, std.testing.allocator);
+    defer std.testing.allocator.free(built);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, built, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 1781400000000), parsed.value.object.get("claudeAiOauth").?.object.get("expiresAt").?.integer);
+}
+
+test "mergeCredentialGeneric establishes the wrapper for a flat wrapper-declaring store (TIN-2074 re-review)" {
+    // A flat store for a wrapper-declaring provider must NOT be refused
+    // (that would false-refuse a custom oauth_mux_refresh provider's first
+    // refresh, burning the rotated RT each attempt). The wrapper is
+    // established and the fresh tokens written into it; the reader resolves
+    // the wrapper first, so the new tokens win.
+    const flat =
+        \\{"accessToken":"at-flat-stale","refreshToken":"rt-flat-stale"}
+    ;
+    const merged = try mergeCredentialGeneric(claude_def, flat, .{
+        .access_token = "at-new",
+        .refresh_token = "rt-new",
+        .expires_at = 1781400000,
+    }, std.testing.allocator);
+    defer std.testing.allocator.free(merged);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, merged, .{});
+    defer parsed.deinit();
+    const oa = parsed.value.object.get("claudeAiOauth").?.object;
+    try std.testing.expectEqualStrings("at-new", oa.get("accessToken").?.string);
+    try std.testing.expectEqualStrings("rt-new", oa.get("refreshToken").?.string);
+    try std.testing.expectEqual(@as(i64, 1781400000000), oa.get("expiresAt").?.integer);
+
+    // parseTokenGeneric reads the wrapper, so the fresh tokens win over any
+    // inert top-level remnants.
+    const reparsed = try parseTokenGeneric(claude_def, merged, std.testing.allocator);
+    defer {
+        std.testing.allocator.free(reparsed.access_token);
+        if (reparsed.refresh_token) |rt| std.testing.allocator.free(rt);
+    }
+    try std.testing.expectEqualStrings("at-new", reparsed.access_token);
+    try std.testing.expectEqualStrings("rt-new", reparsed.refresh_token.?);
+
+    // A non-object wrapper collision still fails closed.
+    const collision =
+        \\{"claudeAiOauth":"not-an-object"}
+    ;
+    try std.testing.expectError(error.InvalidCharacter, mergeCredentialGeneric(claude_def, collision, .{
+        .access_token = "x",
+    }, std.testing.allocator));
+}
+
+test "expiryStoreToSeconds guards a seconds-valued store declared milliseconds (TIN-2074 review)" {
+    // 13-digit ms -> seconds.
+    try std.testing.expectEqual(@as(i64, 1781400000), expiryStoreToSeconds(.milliseconds, 1781400000000));
+    // A value too small to be epoch-ms is left alone, not divided into 1970.
+    try std.testing.expectEqual(@as(i64, 1781400000), expiryStoreToSeconds(.milliseconds, 1781400000));
+    // seconds unit passes through.
+    try std.testing.expectEqual(@as(i64, 1781400000), expiryStoreToSeconds(.seconds, 1781400000));
+}
+
+test "expirySecondsToStore saturates instead of overflowing i64 (TIN-2074 review)" {
+    // A normal value round-trips.
+    try std.testing.expectEqual(@as(i64, 1781400000000), expirySecondsToStore(.milliseconds, 1781400000));
+    // An absurd endpoint expires_in must not panic the writeback under the
+    // repair flock — saturate to i64 max.
+    try std.testing.expectEqual(std.math.maxInt(i64), expirySecondsToStore(.milliseconds, std.math.maxInt(i64)));
+    try std.testing.expectEqual(@as(i64, 1781400000), expirySecondsToStore(.seconds, 1781400000));
+}
+
+// Helper for the tests below: assemble a JWT "header.payload.sig" whose
+// payload is the given JSON (base64url-no-pad), with throwaway header/sig.
+fn testMakeJwt(allocator: std.mem.Allocator, payload_json: []const u8) ![]const u8 {
+    const enc = std.base64.url_safe_no_pad.Encoder;
+    const buf = try allocator.alloc(u8, enc.calcSize(payload_json.len));
+    defer allocator.free(buf);
+    const payload_b64 = enc.encode(buf, payload_json);
+    return std.fmt.allocPrint(allocator, "eyJhbGciOiJSUzI1NiJ9.{s}.sig", .{payload_b64});
+}
+
+test "jwtExpSeconds reads the exp claim from a JWT (TIN-2087)" {
+    const jwt = try testMakeJwt(std.testing.allocator, "{\"exp\":1781400000,\"sub\":\"x\"}");
+    defer std.testing.allocator.free(jwt);
+    try std.testing.expectEqual(@as(?i64, 1781400000), jwtExpSeconds(jwt, std.testing.allocator));
+}
+
+test "jwtExpSeconds returns null on malformation rather than failing (TIN-2087)" {
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds("not-a-jwt", std.testing.allocator));
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds("only.two", std.testing.allocator));
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds("h..s", std.testing.allocator));
+    // Valid base64url payload but no exp claim.
+    const no_exp = try testMakeJwt(std.testing.allocator, "{\"sub\":\"x\"}");
+    defer std.testing.allocator.free(no_exp);
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds(no_exp, std.testing.allocator));
+
+    // A finite-but-out-of-i64-range float exp must yield null, never panic
+    // in ReleaseSafe (review finding). Integer-overflow exp -> number_string
+    // -> null already; this covers the .float branch's range guard.
+    const huge_float = try testMakeJwt(std.testing.allocator, "{\"exp\":1e30}");
+    defer std.testing.allocator.free(huge_float);
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds(huge_float, std.testing.allocator));
+    const neg_huge = try testMakeJwt(std.testing.allocator, "{\"exp\":-1e30}");
+    defer std.testing.allocator.free(neg_huge);
+    try std.testing.expectEqual(@as(?i64, null), jwtExpSeconds(neg_huge, std.testing.allocator));
+    // A normal float exp still truncates to seconds.
+    const float_exp = try testMakeJwt(std.testing.allocator, "{\"exp\":1781400000.5}");
+    defer std.testing.allocator.free(float_exp);
+    try std.testing.expectEqual(@as(?i64, 1781400000), jwtExpSeconds(float_exp, std.testing.allocator));
+}
+
+test "parseTokenGeneric derives codex expiry from the access-token JWT exp (TIN-2087)" {
+    const allocator = std.testing.allocator;
+    const access_jwt = try testMakeJwt(allocator, "{\"exp\":1781400000}");
+    defer allocator.free(access_jwt);
+
+    // Real codex auth.json shape: JWT access token, opaque refresh token,
+    // no expires_in / expires_at anywhere.
+    const raw = try std.fmt.allocPrint(allocator,
+        \\{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"access_token":"{s}","refresh_token":"rt.1.opaque","id_token":"idt","account_id":"acct"}},"last_refresh":"2026-06-03T01:51:47Z"}}
+    , .{access_jwt});
+    defer allocator.free(raw);
+
+    const result = try parseTokenGeneric(codex_def, raw, allocator);
+    defer {
+        allocator.free(result.access_token);
+        if (result.refresh_token) |rt| allocator.free(rt);
+    }
+    try std.testing.expectEqual(@as(?i64, 1781400000), result.expires_at);
+    try std.testing.expectEqualStrings("rt.1.opaque", result.refresh_token.?);
+}
+
+test "parseTokenGeneric leaves codex expiry null when the access token is not a readable JWT (TIN-2087)" {
+    const allocator = std.testing.allocator;
+    const raw =
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"opaque-not-a-jwt","refresh_token":"rt.1.x"}}
+    ;
+    const result = try parseTokenGeneric(codex_def, raw, allocator);
+    defer {
+        allocator.free(result.access_token);
+        if (result.refresh_token) |rt| allocator.free(rt);
+    }
+    try std.testing.expectEqual(@as(?i64, null), result.expires_at);
+}
+
+test "identityClaimFromCredential resolves codex tokens.account_id (TIN-2043)" {
+    const raw =
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt","account_id":"acct-uuid-xyz"}}
+    ;
+    const id = (try identityClaimFromCredential(codex_def, raw, std.testing.allocator)).?;
+    defer std.testing.allocator.free(id);
+    try std.testing.expectEqualStrings("acct-uuid-xyz", id);
+
+    // Absent account_id -> null (caller must not key a guard on a missing id).
+    const no_id =
+        \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt"}}
+    ;
+    try std.testing.expectEqual(@as(?[]u8, null), try identityClaimFromCredential(codex_def, no_id, std.testing.allocator));
+
+    // A provider that declares no identity_claim_path -> null (e.g. claude).
+    const claude_raw =
+        \\{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt"}}
+    ;
+    try std.testing.expectEqual(@as(?[]u8, null), try identityClaimFromCredential(claude_def, claude_raw, std.testing.allocator));
+}
+
+test "claude/codex builtins declare the proactive_refresh grant but still require opt-in (TIN-2057)" {
+    // The grant flip: both providers SUPPORT proactive refresh now.
+    try std.testing.expect(claude_def.repair.proactive_refresh == .oauth_refresh_token);
+    try std.testing.expect(codex_def.repair.proactive_refresh == .oauth_refresh_token);
+    // Ownership stays upstream_cli_login, so secret.writebackPlan still admits a
+    // refresh ONLY for an account that also sets allow_proactive_refresh — the
+    // grant is provider-CAPABILITY, not auto-enable. (The admission logic itself
+    // is covered by the writebackPlan tests in secret.zig.)
+    try std.testing.expect(claude_def.repair.owner == .upstream_cli_login);
+    try std.testing.expect(codex_def.repair.owner == .upstream_cli_login);
 }

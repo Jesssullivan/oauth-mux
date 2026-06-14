@@ -14,6 +14,7 @@ const probe = @import("probe.zig");
 const env = @import("env.zig");
 const repair_state = @import("repair_state.zig");
 const runtime = @import("runtime.zig");
+const identity_hash = @import("identity_hash.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -34,6 +35,19 @@ pub const Context = struct {
     last_probe_executed: bool = false,
     last_probe_status: ?u16 = null,
     last_probe_decision: ?types.MuxDecision = null,
+    // TIN-2039: set when a command-transport probe of a real account store
+    // was skipped because the per-account lock was held by a live session —
+    // the probe did NOT touch the store (codex could otherwise rewrite
+    // auth.json under the live session). Surfaced as "lock_busy" in JSON.
+    last_probe_lock_busy: bool = false,
+    // TIN-2073: probe-budget callers (the daemon tick's probe phase) set
+    // this false — they must never rotate tokens; rotation belongs to the
+    // repair phase under admission + the per-account repair lock.
+    allow_refresh_mutation: bool = true,
+    // Diagnostics: the most recent refresh outcome/reason recorded for this
+    // context (also the assertable seam in tests, where events are skipped).
+    last_refresh_outcome: ?[]const u8 = null,
+    last_refresh_reason: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config_mod.Config, store: *health_mod.HealthStore) Context {
         return .{
@@ -87,6 +101,61 @@ pub fn runProbe(ctx: *Context) PipelineError!void {
     ctx.probe_only = true;
     defer ctx.probe_only = false;
     try selectWithFallback(ctx);
+}
+
+/// Proactively refresh ONE account's credential — the live seam the keepalive
+/// warm loop binds to (TIN-1825 B.2). Resolves the provider kind from the
+/// already-set `ctx.provider_name`, reads the account's refresh token from the
+/// store, and rotates it via `attemptRefresh` — serialized under the per-account
+/// and per-identity flock and field-preserving (TIN-2073/2074).
+///
+/// SAFE-BY-GATE: `attemptRefresh` calls `refreshWritebackBackend` FIRST, which
+/// returns `error.TokenRefreshFailed` ("not_admitted") for any account whose
+/// provider `proactive_refresh` grant and operator `allow_proactive_refresh` are
+/// not both admitted — BEFORE any network call or store write. So a warm loop
+/// over builtins (which declare no grant) only records refusals; nothing is
+/// rotated. On success `ctx.token` carries the new (access, refresh, expires_at).
+///
+/// Requires `ctx.provider_name` + `ctx.account_name`. Leak-safe: the snapshot set
+/// into `ctx.token` is freed by `attemptRefresh` on the success/adopt paths and
+/// by `Context.deinit` on the refusal/error paths.
+pub fn refreshAccount(ctx: *Context) PipelineError!void {
+    try resolveProvider(ctx);
+    ctx.token = try readTokenSnapshot(ctx);
+    const rt = ctx.token.?.refresh_token orelse return error.TokenRefreshFailed;
+    try attemptRefresh(ctx, rt);
+}
+
+/// Read one account's current credential expiry as absolute Unix MILLISECONDS for
+/// the warm-loop pool (`warm_binding.Observed`), without mutating anything.
+/// `TokenFields.expires_at` is normalized to seconds by the parser (claude's ms
+/// `expiresAt` is divided down per `expires_at_unit`), so this scales seconds →
+/// ms with a saturating multiply. Returns null when the credential carries no
+/// expiry. Requires `ctx.provider_name` + `ctx.account_name`.
+pub fn readAccountExpiryMs(ctx: *Context) PipelineError!?i64 {
+    try resolveProvider(ctx);
+    const snap = try readTokenSnapshot(ctx);
+    defer freeTokenFields(ctx.allocator, snap);
+    if (snap.expires_at) |exp_s| return exp_s *| std.time.ms_per_s;
+    return null;
+}
+
+/// Read one account's stable identity as `sha256_12hex(account-id claim)`, for the
+/// keepalive shared-identity guard (TIN-2113): two accounts with the same hash
+/// share one single-use refresh-token family, so the warm loop must not rotate
+/// either (provider family-revocation is outside the per-host lock domain).
+/// Returns null when the provider declares no `identity_claim_path` (claude — its
+/// identity lives in .claude.json, not the credential) or the claim is absent.
+/// Caller OWNS the returned hash. Requires `ctx.provider_name` + `ctx.account_name`.
+pub fn readAccountIdentityHash(ctx: *Context) PipelineError!?[]u8 {
+    try resolveProvider(ctx);
+    const prov = ctx.provider_name orelse return error.ProviderNotFound;
+    const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+    const raw = try readSecretRaw(ctx);
+    defer ctx.allocator.free(raw);
+    const account_id = (provider_schema.identityClaimFromCredential(def, raw, ctx.allocator) catch null) orelse return null;
+    defer ctx.allocator.free(account_id);
+    return identity_hash.sha256_12hex(ctx.allocator, account_id) catch return error.OutOfMemory;
 }
 
 /// The retry loop: try each candidate account in priority order.
@@ -387,6 +456,20 @@ fn resolveProvider(ctx: *Context) PipelineError!void {
 }
 
 fn readSecret(ctx: *Context) PipelineError!void {
+    ctx.token = try readTokenSnapshot(ctx);
+}
+
+// Reads + parses the account's credential store WITHOUT touching ctx.token.
+// Used both for the initial load (readSecret) and the under-lock
+// revalidation in attemptRefresh (TIN-2073), where the pre-lock ctx.token
+// must stay live while the fresh snapshot is examined.
+fn readTokenSnapshot(ctx: *Context) PipelineError!provider.TokenFields {
+    const raw = try readSecretRaw(ctx);
+    defer ctx.allocator.free(raw);
+    return parseRawToken(ctx, raw);
+}
+
+fn readSecretRaw(ctx: *Context) PipelineError![]const u8 {
     const prov_name = ctx.provider_name orelse return error.ProviderNotFound;
     const acct_name = ctx.account_name orelse return error.AccountNotFound;
 
@@ -395,28 +478,35 @@ fn readSecret(ctx: *Context) PipelineError!void {
 
     const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch return error.ConfigParseError;
 
-    const raw = secret.read(backend, ctx.allocator) catch |e| {
+    return secret.read(backend, ctx.allocator) catch |e| {
         log.err("secret: {s}:{s}: {s}", .{ prov_name, acct_name, @errorName(e) });
         return error.SecretReadFailed;
     };
-    defer ctx.allocator.free(raw);
+}
 
+fn parseRawToken(ctx: *Context, raw: []const u8) PipelineError!provider.TokenFields {
+    const prov_name = ctx.provider_name orelse return error.ProviderNotFound;
+    const acct_name = ctx.account_name orelse return error.AccountNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov_name);
     const generic = provider_schema.parseTokenGeneric(def, raw, ctx.allocator) catch {
         log.debug("token: schema parse failed for {s}:{s}, trying legacy parser", .{ prov_name, acct_name });
         const kind = ctx.provider_kind orelse return error.ProviderNotFound;
-        ctx.token = provider.parseToken(kind, raw, ctx.allocator) catch {
+        return provider.parseToken(kind, raw, ctx.allocator) catch {
             log.err("token: parse failed for {s}:{s}", .{ prov_name, acct_name });
             return error.TokenParseFailed;
         };
-        return;
     };
-    ctx.token = .{
+    return .{
         .access_token = generic.access_token,
         .refresh_token = generic.refresh_token,
         .token_type = generic.token_type,
         .expires_at = generic.expires_at,
     };
+}
+
+fn freeTokenFields(allocator: std.mem.Allocator, tok: provider.TokenFields) void {
+    allocator.free(tok.access_token);
+    if (tok.refresh_token) |token_rt| allocator.free(token_rt);
 }
 
 fn validateToken(ctx: *Context) PipelineError!void {
@@ -437,8 +527,22 @@ fn validateToken(ctx: *Context) PipelineError!void {
         const now = std.time.timestamp();
         if (now >= exp - 30) {
             if (tok.refresh_token) |rt| {
-                log.info("token: expired for {s}:{s}, attempting refresh", .{ prov, acct });
-                try attemptRefresh(ctx, rt);
+                if (!ctx.allow_refresh_mutation) {
+                    // TIN-2073: a probe-budget caller must not rotate
+                    // tokens. Record the typed deferral; a token that is
+                    // merely inside the skew window stays usable, an
+                    // actually-expired one fails closed for the repair
+                    // phase to handle under admission + lock.
+                    log.info("token: refresh needed for {s}:{s} but caller budget is non-mutating; deferring", .{ prov, acct });
+                    const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+                    if (refreshWritebackBackend(ctx, def)) |writeback| {
+                        recordRefreshEvent(ctx, writeback.plan, "deferred", "refresh_requires_mutating_budget", false, false);
+                    } else |_| {}
+                    if (now >= exp) return error.TokenExpired;
+                } else {
+                    log.info("token: expired for {s}:{s}, attempting refresh", .{ prov, acct });
+                    try attemptRefresh(ctx, rt);
+                }
             } else {
                 return error.TokenExpired;
             }
@@ -463,12 +567,44 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
         else => return error.TokenParseFailed,
     };
 
+    // TIN-2039: a command-transport probe spawns the native CLI (codex exec)
+    // INSIDE the account's real store when the account has a config_dir, and
+    // the CLI may refresh + rewrite auth.json mid-probe. ACQUIRE the
+    // per-account lock and HOLD it across the probe so it never races a live
+    // managed session of the same account in another process (the lock is
+    // the same key the session/refresh paths use → cross-process). Acquired
+    // BEFORE the readiness check so a held lock is reported authoritatively
+    // as lock_busy (not the advisory repair_in_progress, which is a
+    // check-then-release with a TOCTOU window). Held → skip entirely: no
+    // store access, no health poison. HTTP-transport probes touch no store
+    // and are unaffected.
+    var probe_store_lock: ?repair_state.RepairLock = null;
+    defer if (probe_store_lock) |*l| l.release();
     if (plan.transport == .command) {
-        const readiness = runtime.routeReadiness(ctx.allocator, ctx.cfg, .{
-            .provider = prov,
-            .account = acct,
-            .capability = capability,
-        }, def) catch |e| switch (e) {
+        const store_guarded = probeTargetsRealAccountStore(ctx, prov, acct, def);
+        if (store_guarded) {
+            probe_store_lock = repair_state.acquireRepairLock(ctx.allocator, prov, acct) catch |e| switch (e) {
+                error.RepairInProgress => {
+                    log.warn("probe: {s}:{s} store lock held by a live session; skipping store probe (lock_busy)", .{ prov, acct });
+                    ctx.last_probe_executed = false;
+                    ctx.last_probe_lock_busy = true;
+                    // No store access, no new evidence — preserve the
+                    // account's existing recorded decision rather than poison
+                    // health on a benign "busy" outcome.
+                    const decision = ctx.health.muxDecisionFor(prov, acct, capability);
+                    ctx.last_probe_decision = decision;
+                    return decision;
+                },
+                else => return error.RuntimeNotReady,
+            };
+        }
+        // Readiness check: skip the advisory repair-lock probe when we
+        // already hold the lock (it would falsely conflict with ourselves).
+        const route_ref = runtime.RouteRef{ .provider = prov, .account = acct, .capability = capability };
+        const readiness = (if (store_guarded)
+            runtime.routeReadinessHoldingLock(ctx.allocator, ctx.cfg, route_ref, def)
+        else
+            runtime.routeReadiness(ctx.allocator, ctx.cfg, route_ref, def)) catch |e| switch (e) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.RuntimeNotReady,
         };
@@ -549,6 +685,18 @@ const ProbeEnv = struct {
     }
 };
 
+// TIN-2039: true when a command-transport probe will run the native CLI in
+// the account's real store (config_dir set + a config-dir env to point it
+// there) — i.e. the CLI can mutate that store's auth.json mid-probe and must
+// be serialized against a live session. Mirrors buildProbeEnv's config-dir
+// gate so the lock is taken exactly when the store would be touched.
+fn probeTargetsRealAccountStore(ctx: *Context, prov: []const u8, acct: []const u8, def: provider_schema.ProviderDefinition) bool {
+    const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return false;
+    const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return false;
+    if (acct_cfg.config_dir == null) return false;
+    return providerConfigDirEnv(prov_cfg, def, ctx.provider_kind) != null;
+}
+
 fn buildProbeEnv(
     ctx: *Context,
     prov: []const u8,
@@ -582,15 +730,163 @@ fn buildProbeEnv(
 
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
+    const acct = ctx.account_name orelse return error.AccountNotFound;
     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
     const writeback = try refreshWritebackBackend(ctx, def);
+
+    // TIN-2073: serialize against every other mux-owned writer to this
+    // account's credential store (repair run, daemon repair, broker, and
+    // adapter session flows take the same per-(provider,account) flock).
+    // Upstream CLI logins (e.g. `oauth-mux codex login` wrapping the vendor
+    // CLI) are user-mediated writes outside this lock domain — lock-aware
+    // readiness for those is the TIN-1806 lane. Nonblocking: a held lock
+    // means another rotation is in flight — racing it is the refresh-token
+    // self-revocation failure mode, so defer typed instead.
+    var refresh_lock = repair_state.acquireRepairLock(ctx.allocator, prov, acct) catch |e| switch (e) {
+        error.RepairInProgress => {
+            log.warn("token: refresh deferred for {s}:{s}: repair lock held", .{ prov, acct });
+            recordRefreshEvent(ctx, writeback.plan, "deferred", "refresh_lock_held", false, false);
+            // Inside the 30s skew the current token is still provider-valid:
+            // keep serving it so a benign in-flight peer rotation does not
+            // poison route health as an auth failure. Only an actually
+            // expired token fails closed.
+            if (ctx.token) |tok| {
+                if (tok.expires_at) |exp| {
+                    if (std.time.timestamp() < exp) return;
+                }
+            }
+            return error.TokenRefreshFailed;
+        },
+        else => {
+            recordRefreshEvent(ctx, writeback.plan, "lock_failed", @errorName(e), false, false);
+            return error.TokenRefreshFailed;
+        },
+    };
+    defer refresh_lock.release();
+
+    // TIN-2073 (review): revalidate under the lock — the broker's
+    // lock-then-revalidate pattern. The rt argument was read BEFORE the
+    // flock; a peer's rotation may have completed inside that window. If the
+    // re-read RT DIFFERS from the pre-lock rt (a peer actually rotated) — or its
+    // expiry advanced past ours — adopt it and skip the endpoint; otherwise
+    // (same RT, still-our-token) rotate with the re-read refresh token, never the
+    // pre-lock snapshot. Keying on RT-change (not mere freshness) is what lets the
+    // proactive keepalive loop rotate a still-valid same-RT token (TIN-1825).
+    const existing_raw: ?[]const u8 = readSecretRaw(ctx) catch null;
+    defer if (existing_raw) |r| ctx.allocator.free(r);
+    const fresh_snapshot: ?provider.TokenFields = if (existing_raw) |r| (parseRawToken(ctx, r) catch null) else null;
+    var fresh_adopted = false;
+    defer if (fresh_snapshot) |f| {
+        if (!fresh_adopted) freeTokenFields(ctx.allocator, f);
+    };
+    // TIN-2073 (revised for TIN-1825 proactive keepalive): adopt-and-skip ONLY
+    // when a PEER ACTUALLY ROTATED, witnessed by the under-lock re-read RT
+    // DIFFERING from the pre-lock `rt` we were handed (or, belt-and-suspenders,
+    // its expiry advancing past ours). The OLD predicate keyed on freshness alone
+    // (now < exp-30), which is ALWAYS true for the warm loop's proactive call
+    // (token hours from expiry) → it skipped EVERY proactive refresh. Keying on
+    // RT-change lets a still-valid SAME-RT token fall through to a real rotation
+    // (proactive 75% keepalive), while a genuine peer rotation still
+    // short-circuits (no double-rotation of one single-use chain). Sound because
+    // Claude/Codex are single-use-RT and rewrite the stored RT on every rotation;
+    // the `expiry_advanced` arm covers a hypothetical non-RT-rotating provider's
+    // expiry-only peer refresh. effective_rt (below) already prefers the re-read
+    // RT, so the fall-through rotation never replays the pre-lock snapshot.
+    if (fresh_snapshot) |f| {
+        // A null re-read RT is `false` (not a peer rotation): unreachable for the
+        // single-use-RT providers this guards, and a fall-through then rotates
+        // under the grant + identity + field-preserving guards — never a replay.
+        const peer_rotated = if (f.refresh_token) |frt| !std.mem.eql(u8, frt, rt) else false;
+        const expiry_advanced = blk: {
+            const pre = (ctx.token orelse break :blk false).expires_at orelse break :blk false;
+            const reread = f.expires_at orelse break :blk false;
+            break :blk reread > pre;
+        };
+        if (peer_rotated or expiry_advanced) {
+            if (ctx.token) |old| freeTokenFields(ctx.allocator, old);
+            ctx.token = f;
+            fresh_adopted = true;
+            log.info("token: concurrent rotation detected for {s}:{s}; adopted fresh credential", .{ prov, acct });
+            recordRefreshEvent(ctx, writeback.plan, "not_needed", "concurrent_rotation_detected", true, false);
+            return;
+        }
+    }
+    const effective_rt = if (fresh_snapshot) |f| (f.refresh_token orelse rt) else rt;
+
+    // TIN-2074: the field-preserving writeback needs the existing store to
+    // merge into. If the under-lock re-read failed, refuse BEFORE spending
+    // a refresh-token rotation we could only persist by clobbering the
+    // canonical store the CLI reads with a lossy template. The refresh path
+    // always has a pre-existing credential (the refresh token came from
+    // it), so a null here is a transient store-read failure, not bootstrap.
+    const raw_for_merge = existing_raw orelse {
+        log.err("token: refusing refresh for {s}: credential store unreadable under lock", .{prov});
+        recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "store_unreadable_refusing_lossy_write", false, false);
+        return error.TokenRefreshFailed;
+    };
+
+    // TIN-2043: serialize against any LIVE SESSION (or background refresh)
+    // of the same UPSTREAM IDENTITY, even when it is enrolled under a
+    // different config account (the live max-1 == max-4 Apple-ID shape). The
+    // per-account flock above does not cover that — two config accounts map
+    // to two different account locks but one shared single-use RT chain. Key
+    // the identity flock exactly as the managed session does
+    // (`("<provider>-identity", sha256_12(account_id))`), nonblocking: a held
+    // lock means a live session owns the chain's rotation, so defer typed —
+    // a warm refresh is never urgent. Lock order matches the adapter:
+    // per-account (held) then identity, no inversion. Released by defer.
+    var identity_lock: ?repair_state.RepairLock = null;
+    defer if (identity_lock) |*l| l.release();
+    if (def.credential.identity_claim_path != null) {
+        const account_id = (provider_schema.identityClaimFromCredential(def, raw_for_merge, ctx.allocator) catch null) orelse {
+            // Declared an identity path but the store carries no id: refuse
+            // rather than skip the duplicate-identity guard (the managed
+            // session refuses launch on a missing id; match that posture so
+            // a malformed store cannot dodge the guard). claude declares no
+            // path and is unaffected.
+            log.err("token: refusing refresh for {s}:{s}: identity claim unresolved", .{ prov, acct });
+            recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "identity_unresolved_refusing_refresh", false, false);
+            return error.TokenRefreshFailed;
+        };
+        defer ctx.allocator.free(account_id);
+        const id_hash = identity_hash.sha256_12hex(ctx.allocator, account_id) catch return error.OutOfMemory;
+        defer ctx.allocator.free(id_hash);
+        const identity_domain = std.fmt.allocPrint(ctx.allocator, "{s}-identity", .{prov}) catch return error.OutOfMemory;
+        defer ctx.allocator.free(identity_domain);
+        identity_lock = repair_state.acquireRepairLock(ctx.allocator, identity_domain, id_hash) catch |e| switch (e) {
+            error.RepairInProgress => {
+                log.warn("token: refresh deferred for {s}:{s}: identity lock held by a live session", .{ prov, acct });
+                recordRefreshEvent(ctx, writeback.plan, "deferred", "identity_lock_held", false, false);
+                // Token still valid inside the skew → keep serving it.
+                if (ctx.token) |tok| {
+                    if (tok.expires_at) |exp| {
+                        if (std.time.timestamp() < exp) return;
+                    }
+                }
+                return error.TokenRefreshFailed;
+            },
+            else => {
+                recordRefreshEvent(ctx, writeback.plan, "lock_failed", @errorName(e), false, false);
+                return error.TokenRefreshFailed;
+            },
+        };
+    }
+
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
         recordRefreshEvent(ctx, writeback.plan, "no_token_endpoint", "token_endpoint_missing", false, false);
         return error.TokenRefreshFailed;
     };
 
-    const result = oauth.refreshToken(ctx.allocator, url, rt, def.auth.client_id) catch |e| {
+    // oauth.refreshToken bounds the post-connect send/recv legs with a
+    // 30s socket deadline (TIN-2074, posix only), so the dominant hang
+    // mode — server accepts then stalls — can no longer wedge the held
+    // flock indefinitely. Residual: DNS/TCP-connect/TLS-handshake are
+    // bounded only by the OS TCP timeout, and Windows has no deadline
+    // (winsock SO_RCVTIMEO takes DWORD ms, gated off). Acceptable while
+    // builtin grants stay off; revisit if a connect-phase stall proves
+    // material before the flip.
+    const result = oauth.refreshToken(ctx.allocator, url, effective_rt, def.auth.client_id) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
         recordRefreshEvent(ctx, writeback.plan, "token_endpoint_failed", @errorName(e), false, true);
         return error.TokenRefreshFailed;
@@ -604,23 +900,35 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     if (result.refresh_token) |new_rt| {
         retained_refresh_token = new_rt;
     } else {
-        retained_refresh_token = ctx.allocator.dupe(u8, rt) catch return error.OutOfMemory;
+        retained_refresh_token = ctx.allocator.dupe(u8, effective_rt) catch return error.OutOfMemory;
         retained_refresh_token_from_old = true;
     }
     errdefer if (retained_refresh_token_from_old) {
         if (retained_refresh_token) |old_rt| ctx.allocator.free(old_rt);
     };
 
-    const credential = provider_schema.buildCredentialGeneric(
-        def,
-        .{
-            .access_token = result.access_token,
-            .refresh_token = retained_refresh_token,
-            .expires_at = expires_at,
-        },
-        ctx.allocator,
-    ) catch {
-        recordRefreshEvent(ctx, writeback.plan, "credential_build_failed", "credential_template_failed", false, true);
+    // TIN-2074: field-preserving writeback. Merge the refreshed token
+    // fields into the existing credential so store fields the token
+    // response does not own (claude scopes/subscriptionType/rateLimitTier,
+    // codex tokens.id_token/last_refresh) survive the rotation.
+    //
+    // FAIL CLOSED, never lossy: if the merge cannot apply (non-object /
+    // unexpected-shape store — e.g. a flat claude store where a wrapper is
+    // declared), falling back to the bootstrap template would overwrite the
+    // canonical store the CLI reads with a blob missing every preserved
+    // field — the exact corruption TIN-2074 exists to prevent. Refuse and
+    // keep the store intact; the just-minted access token stays usable
+    // in-process for this run. (buildCredentialGeneric remains the
+    // legitimate writer only for first-time injection of a fresh tmpdir
+    // credential, in injectEnv — a different path with no existing store.)
+    const schema_token = provider_schema.TokenFields{
+        .access_token = result.access_token,
+        .refresh_token = retained_refresh_token,
+        .expires_at = expires_at,
+    };
+    const credential = provider_schema.mergeCredentialGeneric(def, raw_for_merge, schema_token, ctx.allocator) catch |e| {
+        log.err("token: refusing lossy writeback for {s}: merge failed ({s})", .{ prov, @errorName(e) });
+        recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "merge_failed_refusing_lossy_write", false, false);
         return error.TokenRefreshFailed;
     };
     defer ctx.allocator.free(credential);
@@ -660,7 +968,32 @@ fn refreshWritebackBackend(
     const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return error.ProviderNotFound;
     const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return error.AccountNotFound;
     const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch return error.ConfigValidationError;
-    const plan = secret.writebackPlan(backend, def.repair.owner);
+
+    // TIN-2054 (criterion #2): NEVER rotate the canonical/shared Claude
+    // keychain item. The unsuffixed `Claude Code-credentials` service is what
+    // bare Claude Code uses when CLAUDE_CONFIG_DIR is unset — i.e. the user's
+    // own credential outside oauth-mux. A managed account configured with that
+    // exact service (e.g. a pre-TIN-2070 `omux init` starter) would, on a
+    // proactive refresh, rotate the user's bare-Claude refresh token — the
+    // dual-writer self-revocation hazard against a credential oauth-mux does
+    // not own. Refuse: the account must point at a per-config-dir SUFFIXED
+    // service (the enroll/derivation path produces one). Defense in depth —
+    // it holds even if the grant and consent gates are ever misconfigured.
+    if (backend == .keychain and std.mem.eql(u8, backend.keychain.service, provider_schema.claude_keychain_service_base)) {
+        const plan = secret.WritebackPlan{
+            .capability = secret.writeCapability(backend),
+            .automatic_refresh_admitted = false,
+            .reason = "writeback_refused_canonical_keychain_item",
+        };
+        log.err("token: refusing refresh writeback for {s}:{s}: targets the canonical shared keychain item '{s}' (the bare-Claude credential) — use a per-config-dir suffixed service", .{ prov, acct, provider_schema.claude_keychain_service_base });
+        recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
+        return error.TokenRefreshFailed;
+    }
+
+    const plan = secret.writebackPlan(backend, def.repair.owner, .{
+        .provider_supports_refresh = def.repair.proactive_refresh != .unsupported,
+        .account_opted_in = acct_cfg.allow_proactive_refresh,
+    });
     if (!plan.automatic_refresh_admitted) {
         log.warn("token: refresh writeback not admitted for {s}:{s}: {s}", .{ prov, acct, plan.reason });
         recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
@@ -680,6 +1013,8 @@ fn recordRefreshEvent(
     ok: bool,
     executed: bool,
 ) void {
+    ctx.last_refresh_outcome = outcome;
+    ctx.last_refresh_reason = reason;
     if (comptime builtin.is_test) return;
     repair_state.appendEvent(ctx.allocator, .{
         .kind = "token_refresh",
@@ -695,7 +1030,7 @@ fn recordRefreshEvent(
         .ok = ok,
         .executed = executed,
         .interactive = false,
-        .mutating = true,
+        .mutating = executed,
     }) catch {};
 }
 
@@ -722,6 +1057,32 @@ fn injectEnv(ctx: *Context) PipelineError!void {
             ctx.addEnvOwned(env_var, expanded) catch return error.OutOfMemory;
         }
     } else if (config_dir_env) |env_var| {
+        // TIN-2054: Claude's credentials live in the macOS login keychain
+        // keyed off CLAUDE_CONFIG_DIR (TIN-2060) — it never reads an injected
+        // .credentials.json. Routing it through tmpdir mode writes a dead
+        // credential file AND points CLAUDE_CONFIG_DIR at an ephemeral dir, so
+        // the keychain service hash resolves to a fresh EMPTY slot → a
+        // guaranteed 401, plus an orphaned /tmp dir. This is also the exact
+        // temp-home shape that poisoned the canonical Codex store for 3 weeks
+        // (the TIN-1851 Model B guards live only in the codex adapter, not
+        // here). Refuse: a Claude account must declare a persistent config_dir
+        // (the `oauth-mux enroll claude` flow creates one). All platforms —
+        // an ephemeral Claude config dir can't persist credentials anywhere.
+        //
+        // Key on the HAZARD SIGNAL, not just the enum kind: the danger is that
+        // the config-dir env is CLAUDE_CONFIG_DIR (whose value is the keychain
+        // service-hash input), so a custom provider_definitions entry with a
+        // non-enum kind string but CLAUDE_CONFIG_DIR — which yields a null
+        // provider_kind and is reachable because runEnv/runProbe skip
+        // config.validate — is caught too. (Derive the kind from the name as a
+        // secondary signal so a bare kind:"claude" is covered even if
+        // provider_kind was never pre-resolved.)
+        const inject_kind = ctx.provider_kind orelse config_mod.resolveProviderKind(ctx.cfg, prov_name);
+        if (inject_kind == .claude or std.mem.eql(u8, env_var, "CLAUDE_CONFIG_DIR")) {
+            log.err("inject: claude account {s} has no config_dir; tmpdir credential injection cannot reach the keychain-backed CLI — set a persistent config_dir (e.g. via `oauth-mux enroll claude`)", .{acct_name});
+            return error.ProviderNeedsConfigDir;
+        }
+
         // Tmpdir mode: write credential file to temp dir
         const schema_token = schemaTokenFromProviderToken(tok);
         const cred_content = provider_schema.buildCredentialGeneric(def, schema_token, ctx.allocator) catch return error.OutOfMemory;
@@ -826,6 +1187,9 @@ test "splitProviderAccount" {
 }
 
 test "runEnv uses configured provider definition" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1017,6 +1381,9 @@ test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
 }
 
 test "runEnv honors capability route health from profile" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1092,6 +1459,9 @@ test "runEnv honors capability route health from profile" {
 }
 
 test "runEnv routes around degraded capability without poisoning account" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1186,6 +1556,9 @@ test "runEnv routes around degraded capability without poisoning account" {
 }
 
 test "runProbe honors explicit account filter without a configured probe plan" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1251,6 +1624,9 @@ test "runProbe honors explicit account filter without a configured probe plan" {
 }
 
 test "runProbe executes auth none command probe without reading missing secret" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     const json =
         \\{
         \\  "version": 1,
@@ -1316,6 +1692,9 @@ test "runProbe executes auth none command probe without reading missing secret" 
 }
 
 test "runProbe with explicit account rechecks previously degraded command route" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     const json =
         \\{
         \\  "version": 1,
@@ -1378,6 +1757,9 @@ test "runProbe with explicit account rechecks previously degraded command route"
 }
 
 test "runProbe does not poison liveness when command probe binary is missing" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     const missing_binary = "omux-definitely-missing-probe-runtime";
     const json = try std.fmt.allocPrint(
         std.testing.allocator,
@@ -1441,6 +1823,9 @@ test "runProbe does not poison liveness when command probe binary is missing" {
 }
 
 test "runProbe does not poison liveness when command account runtime is unavailable" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1530,6 +1915,9 @@ fn expectUnpoisonedRuntimeHealth(health: health_mod.AccountHealth) !void {
 }
 
 test "runEnv skips remaining accounts for degraded provider" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1628,6 +2016,982 @@ fn expectMissingEnvValue(pairs: []const [2][]const u8, key: []const u8, value: [
     for (pairs) |pair| {
         if (std.mem.eql(u8, pair[0], key) and std.mem.eql(u8, pair[1], value)) {
             return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "refreshWritebackBackend admits opted-in proactive refresh under upstream login ownership" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // Provider declares the refresh grant; login stays upstream-owned.
+    // Account consent is the only difference between the two configs.
+    const config_fmt =
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "upstream_cli_login", "proactive_refresh": "oauth_refresh_token" }},
+        \\      "auth": {{ "token_endpoint": "https://example.invalid/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }}{s} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ;
+
+    const opted_json = try std.fmt.allocPrint(std.testing.allocator, config_fmt, .{ auth_path, ", \"allow_proactive_refresh\": true" });
+    defer std.testing.allocator.free(opted_json);
+
+    const opted = try config_mod.loadFromBytes(std.testing.allocator, opted_json);
+    defer opted.deinit();
+    var opted_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer opted_store.deinit();
+    var opted_ctx = Context.init(std.testing.allocator, opted.value, &opted_store);
+    defer opted_ctx.deinit();
+    opted_ctx.provider_name = "toy";
+    opted_ctx.account_name = "default";
+    const opted_writeback = try refreshWritebackBackend(&opted_ctx, config_mod.resolveProviderDefinition(opted.value, "toy"));
+    try std.testing.expect(opted_writeback.plan.automatic_refresh_admitted);
+    try std.testing.expectEqualStrings("proactive_refresh_opted_in", opted_writeback.plan.reason);
+
+    // Default mode (no consent): the same provider definition still refuses.
+    const default_json = try std.fmt.allocPrint(std.testing.allocator, config_fmt, .{ auth_path, "" });
+    defer std.testing.allocator.free(default_json);
+
+    const defaulted = try config_mod.loadFromBytes(std.testing.allocator, default_json);
+    defer defaulted.deinit();
+    var default_store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer default_store.deinit();
+    var default_ctx = Context.init(std.testing.allocator, defaulted.value, &default_store);
+    defer default_ctx.deinit();
+    default_ctx.provider_name = "toy";
+    default_ctx.account_name = "default";
+    try std.testing.expectError(
+        error.TokenRefreshFailed,
+        refreshWritebackBackend(&default_ctx, config_mod.resolveProviderDefinition(defaulted.value, "toy")),
+    );
+}
+
+test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "default";
+    ctx.allow_refresh_mutation = false;
+
+    const now = std.time.timestamp();
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-skew"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-skew"),
+        .expires_at = now + 10,
+    };
+
+    // Inside the 30s skew but not expired: the token stays usable, the
+    // refresh is deferred typed, and the endpoint is never contacted
+    // (attemptRefresh is never entered).
+    try validateToken(&ctx);
+    try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("refresh_requires_mutating_budget", ctx.last_refresh_reason.?);
+
+    // Actually expired: fails closed for the repair phase, still no rotation.
+    ctx.token.?.expires_at = now - 10;
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = null;
+    try std.testing.expectError(error.TokenExpired, validateToken(&ctx));
+    try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("refresh_requires_mutating_budget", ctx.last_refresh_reason.?);
+}
+
+test "attemptRefresh defers typed when the repair flock is held by another process (TIN-2073)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "tin2073-lock": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "tin2073-lock";
+
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-lock"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-lock"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // Simulate a FOREIGN process holding the account's repair flock: take
+    // the raw kernel flock on the lock file without this process's
+    // re-entrancy registry (the same technique as repair_state's own tests).
+    const lock_path = try repair_state.lockPath(std.testing.allocator, "toy", "tin2073-lock");
+    defer std.testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{
+        .truncate = false,
+        .mode = 0o600,
+        .lock = .exclusive,
+        .lock_nonblocking = true,
+    });
+
+    {
+        defer holder.close();
+        try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqualStrings("refresh_lock_held", ctx.last_refresh_reason.?);
+
+        // Within the skew window (expiring but not expired) a held lock
+        // defers WITHOUT failing the candidate: the token is still valid
+        // and health must not be poisoned by a benign peer rotation.
+        ctx.token.?.expires_at = std.time.timestamp() + 10;
+        ctx.last_refresh_outcome = null;
+        ctx.last_refresh_reason = null;
+        try validateToken(&ctx);
+        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqualStrings("refresh_lock_held", ctx.last_refresh_reason.?);
+        ctx.token.?.expires_at = std.time.timestamp() - 10;
+    }
+
+    // Holder released: the refresh proceeds past the lock and the
+    // under-lock store re-read to the token endpoint (a closed local port),
+    // proving the deferral above came from the flock and not the endpoint.
+    // A real on-disk store is required so the TIN-2074 unreadable-store
+    // refusal does not short-circuit before the endpoint.
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(
+            \\{"access_token":"at-lock","refresh_token":"rt-lock","expires_at":1700000000}
+        );
+    }
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = null;
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+}
+
+test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 TOCTOU)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "tin2073-toctou": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "tin2073-toctou";
+
+    // The store already holds a FRESH credential — a peer completed its
+    // rotation between this context's pre-lock read (simulated by the stale
+    // ctx.token below) and the lock acquisition.
+    const now = std.time.timestamp();
+    const fresh_credential = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"access_token\":\"at-peer-fresh\",\"refresh_token\":\"rt-peer-fresh\",\"expires_at\":{d}}}",
+        .{now + 3600},
+    );
+    defer std.testing.allocator.free(fresh_credential);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(fresh_credential);
+    }
+
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-stale"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-stale"),
+        .expires_at = now - 10,
+    };
+
+    // Succeeds WITHOUT contacting the (dead) token endpoint: the under-lock
+    // revalidation adopts the peer's rotation instead of re-rotating with
+    // the superseded refresh token.
+    try validateToken(&ctx);
+    try std.testing.expectEqualStrings("not_needed", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
+    try std.testing.expectEqualStrings("at-peer-fresh", ctx.token.?.access_token);
+    try std.testing.expectEqualStrings("rt-peer-fresh", ctx.token.?.refresh_token.?);
+}
+
+// Shared config for the TIN-1825 proactive-refresh tests: an admitted toy
+// account (oauth_mux_refresh owns refresh) over a DEAD token endpoint, with the
+// credential read from a file the test seeds.
+fn proactiveTestConfig(allocator: std.mem.Allocator, auth_path: []const u8, owner: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "{s}" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "warm": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{ owner, auth_path });
+}
+
+test "refreshAccount proactively rotates a still-valid same-RT token — past the adopt (TIN-1825 Option B)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // A STILL-VALID credential (hours from expiry), same RT the warm loop reads.
+    const now = std.time.timestamp();
+    const cred = try std.fmt.allocPrint(std.testing.allocator, "{{\"access_token\":\"at-A\",\"refresh_token\":\"rt-A\",\"expires_at\":{d}}}", .{now + 7200});
+    defer std.testing.allocator.free(cred);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(cred);
+    }
+
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "oauth_mux_refresh");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+
+    // The OLD freshness-adopt would short-circuit here ("not_needed") because the
+    // token is >30s from expiry. Option B (same RT, expiry not advanced) PROCEEDS
+    // past the adopt and rotates — so it fails AT THE DEAD ENDPOINT, proving the
+    // proactive rotation actually fired.
+    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
+    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+}
+
+test "attemptRefresh adopts on an expiry-advance with an unchanged RT (Option B belt-and-suspenders)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const now = std.time.timestamp();
+    // Store: SAME RT as pre-lock, but a LATER expiry (a non-rotating peer refresh).
+    const cred = try std.fmt.allocPrint(std.testing.allocator, "{{\"access_token\":\"at-A2\",\"refresh_token\":\"rt-A\",\"expires_at\":{d}}}", .{now + 7200});
+    defer std.testing.allocator.free(cred);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(cred);
+    }
+
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "oauth_mux_refresh");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+    // Pre-lock token: same RT, but an EARLIER expiry than the store.
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-A"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-A"),
+        .expires_at = now + 100,
+    };
+
+    // Same RT but the store expiry advanced → adopt (not_needed), endpoint NOT
+    // contacted (it is dead; a rotation attempt would surface token_endpoint_failed).
+    try attemptRefresh(&ctx, "rt-A");
+    try std.testing.expectEqualStrings("not_needed", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
+    try std.testing.expectEqual(@as(i64, now + 7200), ctx.token.?.expires_at.?);
+}
+
+test "refreshAccount refuses an un-admitted account at the grant gate (not_admitted, before rotation)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const now = std.time.timestamp();
+    const cred = try std.fmt.allocPrint(std.testing.allocator, "{{\"access_token\":\"at-A\",\"refresh_token\":\"rt-A\",\"expires_at\":{d}}}", .{now + 7200});
+    defer std.testing.allocator.free(cred);
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(cred);
+    }
+
+    // upstream_cli_login owner + no proactive_refresh grant + no opt-in = builtin posture.
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "upstream_cli_login");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+
+    // The warm loop over a builtin (no grant) refuses BEFORE any lock/network —
+    // safe no-op until the proactive_refresh flip + live proof.
+    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
+    try std.testing.expectEqualStrings("not_admitted", ctx.last_refresh_outcome.?);
+}
+
+test "readAccountExpiryMs returns the credential expiry as Unix milliseconds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // expires_at stored in seconds (toy default unit); reader scales to ms.
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll("{\"access_token\":\"at-A\",\"refresh_token\":\"rt-A\",\"expires_at\":9999999999}");
+    }
+
+    const json = try proactiveTestConfig(std.testing.allocator, auth_path, "oauth_mux_refresh");
+    defer std.testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "warm";
+
+    const exp_ms = try readAccountExpiryMs(&ctx);
+    try std.testing.expectEqual(@as(?i64, 9999999999 * std.time.ms_per_s), exp_ms);
+}
+
+test "attemptRefresh refuses lossy writeback when the store became unreadable under the lock (TIN-2074 review)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "credential": {{ "access_token_path": "access_token", "refresh_token_path": "refresh_token", "expires_at_path": "expires_at" }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{
+        \\      "kind": "toy",
+        \\      "accounts": {{
+        \\        "default": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "default";
+
+    // ctx.token carries a refresh token (read earlier), but the on-disk
+    // store does NOT exist — simulating a transient read failure of the
+    // canonical store between the initial read and the under-lock re-read.
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at-stale"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt-stale"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // The refresh must refuse rather than write a lossy template blob over
+    // the (absent, but in production canonical) store. The endpoint is
+    // never reached.
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("store_unreadable_refusing_lossy_write", ctx.last_refresh_reason.?);
+    // The store was not created by a fallback template write.
+    try std.testing.expect(!fileExists(auth_path));
+}
+
+fn fileExists(path: []const u8) bool {
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
+}
+
+test "attemptRefresh defers when the identity lock is held by a sibling-identity session (TIN-2043)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // Two config accounts (tin2043-a, tin2043-b) sharing ONE upstream
+    // account_id — the max-1 == max-4 shape. We refresh tin2043-b while a
+    // foreign holder simulates tin2043-a's live session holding the shared
+    // identity flock.
+    const account_id = "shared-identity-uuid";
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(
+            \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt","account_id":"shared-identity-uuid"}}
+        );
+    }
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{ "name": "codex", "kind": "codex", "repair": {{ "owner": "oauth_mux_refresh" }}, "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}, "credential": {{ "access_token_path": "tokens.access_token", "refresh_token_path": "tokens.refresh_token", "identity_claim_path": "tokens.account_id" }} }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "accounts": {{ "tin2043-b": {{ "secret": {{ "backend": "file", "path": "{s}" }} }} }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{auth_path});
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "tin2043-b";
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // Foreign holder on the IDENTITY lock (codex-identity-<hash>), keyed
+    // exactly as attemptRefresh will compute it.
+    const id_hash = try identity_hash.sha256_12hex(std.testing.allocator, account_id);
+    defer std.testing.allocator.free(id_hash);
+    const identity_domain = try std.fmt.allocPrint(std.testing.allocator, "codex-identity", .{});
+    defer std.testing.allocator.free(identity_domain);
+    const lock_path = try repair_state.lockPath(std.testing.allocator, identity_domain, id_hash);
+    defer std.testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{ .truncate = false, .mode = 0o600, .lock = .exclusive, .lock_nonblocking = true });
+
+    {
+        defer holder.close();
+        // expired token + held identity lock → defer typed, fail closed (no endpoint).
+        try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqualStrings("identity_lock_held", ctx.last_refresh_reason.?);
+    }
+
+    // Holder released: the refresh proceeds past BOTH locks to the endpoint
+    // (closed port), proving the deferral was the identity lock.
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = null;
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+}
+
+test "attemptRefresh refuses when an identity path is declared but the store has no id (TIN-2043 missing-id policy)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root_path);
+    const auth_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/auth.json", .{root_path});
+    defer std.testing.allocator.free(auth_path);
+
+    // Store declares the shape but carries NO account_id.
+    {
+        const f = try std.fs.createFileAbsolute(auth_path, .{});
+        defer f.close();
+        try f.writeAll(
+            \\{"auth_mode":"chatgpt","tokens":{"access_token":"at","refresh_token":"rt"}}
+        );
+    }
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{ "name": "codex", "kind": "codex", "repair": {{ "owner": "oauth_mux_refresh" }}, "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }}, "credential": {{ "access_token_path": "tokens.access_token", "refresh_token_path": "tokens.refresh_token", "identity_claim_path": "tokens.account_id" }} }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "accounts": {{ "noid": {{ "secret": {{ "backend": "file", "path": "{s}" }} }} }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{auth_path});
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "noid";
+    ctx.token = .{
+        .access_token = try std.testing.allocator.dupe(u8, "at"),
+        .refresh_token = try std.testing.allocator.dupe(u8, "rt"),
+        .expires_at = std.time.timestamp() - 10,
+    };
+
+    // Refuses before the endpoint rather than dodging the identity guard.
+    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
+    try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqualStrings("identity_unresolved_refusing_refresh", ctx.last_refresh_reason.?);
+}
+
+test "probeTargetsRealAccountStore gates on config_dir + a config-dir env (TIN-2039)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "config_dir_env": "CODEX_HOME",
+        \\      "accounts": {
+        \\        "homed": { "secret": { "backend": "file", "path": "/tmp/x" }, "config_dir": "/tmp/codex-homed" },
+        \\        "tmpd": { "secret": { "backend": "file", "path": "/tmp/y" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    const def = config_mod.resolveProviderDefinition(parsed.value, "codex");
+    // config_dir present + config_dir_env present → store is real → guard.
+    try std.testing.expect(probeTargetsRealAccountStore(&ctx, "codex", "homed", def));
+    // No config_dir → tmpdir mode, no real store to guard.
+    try std.testing.expect(!probeTargetsRealAccountStore(&ctx, "codex", "tmpd", def));
+}
+
+test "command probe of a lock-held account store reports lock_busy without touching the store (TIN-2039)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const store_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(store_dir);
+
+    // A command probe whose command writes a marker file — proves whether
+    // the probe actually executed (it must NOT when the lock is held).
+    const marker = try std.fmt.allocPrint(std.testing.allocator, "{s}/probe-ran", .{store_dir});
+    defer std.testing.allocator.free(marker);
+
+    const json = try std.fmt.allocPrint(std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex": {{
+        \\      "name": "codex", "kind": "codex", "config_dir_env": "CODEX_HOME",
+        \\      "capabilities": [
+        \\        {{ "name": "cap", "probe": {{ "transport": "command", "auth": "none", "timeout_ms": 5000, "command": ["/usr/bin/touch", "{s}"] }} }}
+        \\      ]
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "config_dir_env": "CODEX_HOME", "accounts": {{ "homed": {{ "secret": {{ "backend": "file", "path": "{s}/auth.json" }}, "config_dir": "{s}" }} }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{ marker, store_dir, store_dir });
+    defer std.testing.allocator.free(json);
+
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "codex";
+    ctx.account_name = "homed";
+    ctx.capability_name = "cap";
+
+    // Foreign holder on the per-account lock (the session's key).
+    const lock_path = try repair_state.lockPath(std.testing.allocator, "codex", "homed");
+    defer std.testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{ .truncate = false, .mode = 0o600, .lock = .exclusive, .lock_nonblocking = true });
+
+    {
+        defer holder.close();
+        const decision = try probeCapability(&ctx);
+        _ = decision;
+        try std.testing.expect(ctx.last_probe_lock_busy);
+        try std.testing.expect(!ctx.last_probe_executed);
+        // The probe command never ran → no marker, the store was untouched.
+        try std.testing.expect(std.fs.accessAbsolute(marker, .{}) == error.FileNotFound);
+    }
+}
+
+test "injectEnv refuses a claude account without config_dir (TIN-2054 tmpdir guard)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "config_dir_env": "CLAUDE_CONFIG_DIR",
+        \\      "accounts": {
+        \\        "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
+        \\        "homed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" }, "config_dir": "~/.local/share/oauth-mux/claude/x" }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    // No config_dir → refuse with the typed error, before any tmpdir write.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "nodir";
+        ctx.provider_kind = .claude;
+        ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+        try std.testing.expectError(error.ProviderNeedsConfigDir, injectEnv(&ctx));
+    }
+
+    // Hardening: even if provider_kind was never resolved (null), the guard
+    // still fires by deriving the kind from the provider name.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "nodir";
+        ctx.provider_kind = null;
+        ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+        try std.testing.expectError(error.ProviderNeedsConfigDir, injectEnv(&ctx));
+    }
+
+    // With config_dir → safe path: CLAUDE_CONFIG_DIR is set to the (expanded) dir.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "homed";
+        ctx.provider_kind = .claude;
+        ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+        try injectEnv(&ctx);
+        try expectEnvPairContains(ctx.env_pairs.items, "CLAUDE_CONFIG_DIR", "oauth-mux/claude/x");
+    }
+}
+
+test "injectEnv refuses a custom-kind provider that sets CLAUDE_CONFIG_DIR (TIN-2054 hazard-signal guard)" {
+    // A provider_definitions entry with a NON-enum kind (provider_kind resolves
+    // null) but config_dir_env=CLAUDE_CONFIG_DIR is the keychain-hazard shape —
+    // reachable because runEnv/runProbe skip config.validate. Keyed on the
+    // env-var hazard signal, not the enum, so it is still refused.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "claude-kc": { "name": "claude-kc", "injection": { "config_dir_env": "CLAUDE_CONFIG_DIR", "credential_filename": ".credentials.json" } }
+        \\  },
+        \\  "providers": {
+        \\    "claude-kc": { "kind": "claude-kc", "accounts": { "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } } } }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "claude-kc";
+    ctx.account_name = "nodir";
+    ctx.provider_kind = null; // non-enum kind → null
+    ctx.token = .{ .access_token = try std.testing.allocator.dupe(u8, "at") };
+    try std.testing.expectError(error.ProviderNeedsConfigDir, injectEnv(&ctx));
+}
+
+fn expectEnvPairContains(pairs: []const [2][]const u8, key: []const u8, needle: []const u8) !void {
+    for (pairs) |p| {
+        if (std.mem.eql(u8, p[0], key)) {
+            if (std.mem.indexOf(u8, p[1], needle) != null) return;
+            std.debug.print("env {s}={s} does not contain {s}\n", .{ key, p[1], needle });
+            return error.TestUnexpectedResult;
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "refreshWritebackBackend refuses the canonical shared Claude keychain item (TIN-2054 #2)" {
+    // An account whose keychain service is the UNSUFFIXED canonical
+    // `Claude Code-credentials` (the bare-Claude credential) must never be a
+    // proactive-refresh target — rotating it would revoke the user's own
+    // Claude RT. Refused regardless of platform/grant (defense in depth).
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "claude": { "name": "claude", "repair": { "owner": "oauth_mux_refresh" }, "auth": { "token_endpoint": "https://example.invalid/token" } }
+        \\  },
+        \\  "providers": {
+        \\    "claude": {
+        \\      "kind": "claude",
+        \\      "accounts": {
+        \\        "canonical": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
+        \\        "suffixed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials-26ae8e92", "account": "jess" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const def = config_mod.resolveProviderDefinition(parsed.value, "claude");
+
+    // Canonical unsuffixed service → refused with the canonical-item reason.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "canonical";
+        try std.testing.expectError(error.TokenRefreshFailed, refreshWritebackBackend(&ctx, def));
+        try std.testing.expectEqualStrings("writeback_refused_canonical_keychain_item", ctx.last_refresh_reason.?);
+    }
+
+    // A per-config-dir SUFFIXED service is NOT caught by this guard — it
+    // proceeds to the normal admission ladder (which then gates on platform
+    // keychain-write support + consent), never the canonical-item refusal.
+    {
+        var ctx = Context.init(std.testing.allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "claude";
+        ctx.account_name = "suffixed";
+        const result = refreshWritebackBackend(&ctx, def);
+        if (result) |_| {} else |_| {}
+        if (ctx.last_refresh_reason) |reason| {
+            try std.testing.expect(!std.mem.eql(u8, reason, "writeback_refused_canonical_keychain_item"));
         }
     }
 }

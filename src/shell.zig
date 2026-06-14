@@ -77,11 +77,6 @@ pub fn execTarget(argv: []const []const u8, env_map: *std.process.EnvMap) error{
     };
 }
 
-test "detect returns a valid ShellKind" {
-    const shell = detect();
-    _ = shell;
-}
-
 test "shellFromPath" {
     try std.testing.expectEqual(types.ShellKind.fish, shellFromPath("/usr/bin/fish"));
     try std.testing.expectEqual(types.ShellKind.zsh, shellFromPath("/bin/zsh"));

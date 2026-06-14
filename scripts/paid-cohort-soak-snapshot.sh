@@ -17,7 +17,7 @@ config_path="${OMUX_CONFIG:-}"
 
 if [ ! -x "$bin" ]; then
   printf 'oauth-mux binary not found at %s\n' "$bin" >&2
-  printf 'run: just build\n' >&2
+  printf 'run: just build-local\n' >&2
   exit 1
 fi
 
@@ -141,7 +141,7 @@ run_artifact "stay-afloat loop" "stay-afloat-loop.json" "$bin" stay-afloat --loo
 
 {
   printf '\nSpend-gated commands intentionally not run.\n'
-  printf 'The confirmation artifacts prove the spend gates remain closed without --confirm-spend.\n'
+  printf 'The confirmation artifacts prove provider-mutating gates remain closed without --confirm-spend.\n'
   printf 'Use codex revalidate-exhausted, broker-run, or live-provider QA only from an explicit operator-confirmed spend path.\n'
 } | tee -a "$summary"
 

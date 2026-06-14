@@ -58,6 +58,61 @@ The repair owner values are:
 - `null`: the action is not credential repair, such as waiting, probing,
   fixing runtime, or inspecting provider scope.
 
+### Refresh-authority split (TIN-2058)
+
+Login ownership and proactive-refresh authority are separate axes. A provider
+whose login is `upstream_cli_login` can still grant oauth-mux the
+non-interactive token refresh when BOTH hold:
+
+- the provider definition declares the grant
+  (`repair.proactive_refresh: "oauth_refresh_token"`), and
+- the account's config carries explicit operator consent
+  (`"allow_proactive_refresh": true` on the account).
+
+No builtin definition declares the grant yet — deliberately. The refresh
+path is serialized (TIN-2073): `attemptRefresh` takes the same
+per-(provider,account) repair flock as every other **mux-owned** credential
+writer (upstream CLI logins are user-mediated writes outside this lock
+domain — lock-aware readiness for those is the TIN-1806 lane), revalidates
+the store **under the lock** (a peer rotation that completed first is
+adopted as `not_needed`/`concurrent_rotation_detected`; an actual rotation
+always uses the re-read refresh token, never a pre-lock snapshot), and
+defers typed with `refresh_lock_held` when another rotation is in flight —
+serving the still-valid token when merely inside the expiry skew, failing
+closed only when actually expired. The daemon's probe phase rotates only
+when daemon policy grants mutation (`policy.daemon.allow_mutating`, the
+same consent the repair phase requires); the default-deny tick defers with
+`refresh_requires_mutating_budget`. Batch revalidation surfaces
+(`codex revalidate-exhausted`, adapter auto-revalidation) never rotate.
+
+Writeback is field-preserving (TIN-2074): `mergeCredentialGeneric` rewrites
+only the token fields at the definition's declared paths and preserves
+everything else (claude `scopes`/`subscriptionType`/`rateLimitTier`, codex
+`tokens.id_token`/`last_refresh`), unit-aware for stores that keep expiry in
+epoch milliseconds (claude). It FAILS CLOSED — if the store is unreadable
+under the lock or the merge cannot apply, the refresh is refused rather than
+overwriting the canonical store with a lossy template. The token-endpoint
+call now carries a 30s post-connect socket deadline (posix; winsock DWORD on
+Windows), bounding the flock-held window against a server stall.
+
+Remaining blocker before any builtin grant flips: the dual-writer story
+(TIN-2059) — the native CLI also rotates the same refresh token, and two
+writers can revoke each other. Until it lands, opting an account in changes
+nothing for builtin providers.
+
+Without consent the writeback plan refuses with
+`proactive_refresh_not_opted_in` (providers without the declared grant keep
+the historical `provider_repair_owned_by_upstream_cli`). Consent-admitted
+plans report `proactive_refresh_opted_in`; the capability field names the
+mechanism (`replace_file`, `keychain_write`, …). Consent never overrides
+`manual_only` / `external_secret_owner` boundaries, and capability gating
+still applies (a readonly backend stays refused). Interactive login remains
+upstream-owned in every case.
+
+Even after a grant flips on, leave accounts un-opted until the dual-writer
+serialization story (TIN-2059) covers your native CLI's own refresh behavior
+— two writers rotating one refresh token can revoke each other.
+
 ## Action Kinds
 
 The current typed action kinds are:

@@ -8,7 +8,7 @@ bin="${OMUX_BIN:-$repo_root/zig-out/bin/oauth-mux}"
 
 if [ ! -x "$bin" ]; then
   printf 'missing oauth-mux binary: %s\n' "$bin" >&2
-  printf 'run `zig build` or `just e2e` first\n' >&2
+  printf 'run `zig build` or `just build-local` first\n' >&2
   exit 1
 fi
 
@@ -35,12 +35,14 @@ short_runtime_dir() {
 
 config="$tmp/config.json"
 state_dir="$tmp/state"
+runtime_dir="$tmp/runtime"
 exec_out="$tmp/exec.out"
 probe_cmd="$tmp/probe-harness.sh"
 probe_mode_file="$tmp/probe-mode"
 reauth_probe_cmd="$tmp/reauth-probe-harness.sh"
 
-mkdir -p "$state_dir" "$tmp/a1-home" "$tmp/a2-home"
+mkdir -p "$state_dir" "$runtime_dir" "$tmp/a1-home" "$tmp/a2-home"
+export OMUX_RUNTIME_DIR="$runtime_dir"
 
 cat >"$probe_cmd" <<'EOF'
 #!/usr/bin/env sh
@@ -215,6 +217,7 @@ auth_a2='{"access_token":"omux-e2e-a2"}'
 omux() {
   OMUX_CONFIG="$config" \
     OMUX_STATE_DIR="$state_dir" \
+    OMUX_RUNTIME_DIR="$runtime_dir" \
     OMUX_E2E_A1_AUTH="$auth_a1" \
     OMUX_E2E_A2_AUTH="$auth_a2" \
     OMUX_E2E_PROBE_MODE_FILE="$probe_mode_file" \
@@ -577,12 +580,12 @@ daemon_log="$tmp/daemon.log"
 mkdir -p "$daemon_state"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$daemon_state" \
-  XDG_RUNTIME_DIR="$daemon_runtime" \
+  OMUX_RUNTIME_DIR="$daemon_runtime" \
   "$bin" daemon run >"$daemon_log" 2>&1 &
 daemon_pid=$!
 daemon_status=""
 for _ in $(seq 1 200); do
-  daemon_status="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json || true)"
+  daemon_status="$(OMUX_STATE_DIR="$daemon_state" OMUX_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json || true)"
   case "$daemon_status" in
     *'"status":"running"'*) break ;;
   esac
@@ -599,7 +602,7 @@ expect_contains "$daemon_status" '"status":"running"' "daemon status reports for
 expect_contains "$daemon_status" '"socket":' "daemon status reports socket path"
 expect_contains "$daemon_status" '"contract":"experimental_socket_stub"' "daemon status reports socket contract"
 expect_contains "$daemon_status" '"hosts_stay_afloat":false' "daemon status does not claim to host stay-afloat"
-OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon stop >/dev/null 2>&1
+OMUX_STATE_DIR="$daemon_state" OMUX_RUNTIME_DIR="$daemon_runtime" "$bin" daemon stop >/dev/null 2>&1
 set +e
 wait "$daemon_pid" 2>/dev/null
 daemon_wait_status=$?
@@ -613,7 +616,7 @@ case "$daemon_wait_status" in
     exit 1
     ;;
 esac
-daemon_stopped="$(OMUX_STATE_DIR="$daemon_state" XDG_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json)"
+daemon_stopped="$(OMUX_STATE_DIR="$daemon_state" OMUX_RUNTIME_DIR="$daemon_runtime" "$bin" daemon status --json)"
 expect_contains "$daemon_stopped" '"status":"not_running"' "daemon status reports stopped foreground daemon"
 expect_contains "$daemon_stopped" '"wrapper_contract":"foreground_tick"' "daemon status reports wrapper contract when stopped"
 
@@ -622,12 +625,12 @@ loop_runtime="$(short_runtime_dir)"
 loop_log="$tmp/foreground-loop-daemon.log"
 OMUX_CONFIG="$config" \
   OMUX_STATE_DIR="$state_dir" \
-  XDG_RUNTIME_DIR="$loop_runtime" \
+  OMUX_RUNTIME_DIR="$loop_runtime" \
   "$bin" daemon run --stay-afloat --profile expensive --capability expensive --iterations 200 --interval-ms 50 >"$loop_log" 2>&1 &
 daemon_pid=$!
 loop_status=""
 for _ in $(seq 1 200); do
-  loop_status="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$loop_runtime" "$bin" daemon status --json || true)"
+  loop_status="$(OMUX_STATE_DIR="$state_dir" OMUX_RUNTIME_DIR="$loop_runtime" "$bin" daemon status --json || true)"
   case "$loop_status" in
     *'"status":"running"'*'"stay_afloat_loop":{"hosted":true'*'"stay_afloat":{"version":'*'"current_loop_observed":true'*) break ;;
   esac
@@ -649,7 +652,7 @@ expect_contains "$loop_status" '"execution_mode":"execute"' "foreground loop dae
 expect_contains "$loop_status" '"transport":"foreground_tick_loop"' "foreground loop daemon status reports foreground loop transport"
 expect_contains "$loop_status" '"socket":null' "foreground loop daemon does not claim a socket transport"
 expect_contains "$loop_status" '"selected":{"provider":"toy","account":"a2"' "foreground loop daemon snapshot carries selected fallback route"
-OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$loop_runtime" "$bin" daemon stop >/dev/null 2>&1
+OMUX_STATE_DIR="$state_dir" OMUX_RUNTIME_DIR="$loop_runtime" "$bin" daemon stop >/dev/null 2>&1
 set +e
 wait "$daemon_pid" 2>/dev/null
 loop_wait_status=$?
@@ -663,7 +666,7 @@ case "$loop_wait_status" in
     exit 1
     ;;
 esac
-loop_stopped="$(OMUX_STATE_DIR="$state_dir" XDG_RUNTIME_DIR="$loop_runtime" "$bin" daemon status --json)"
+loop_stopped="$(OMUX_STATE_DIR="$state_dir" OMUX_RUNTIME_DIR="$loop_runtime" "$bin" daemon status --json)"
 expect_contains "$loop_stopped" '"status":"not_running"' "foreground loop daemon status reports stopped"
 expect_contains "$loop_stopped" '"stay_afloat_loop":{"hosted":false' "foreground loop daemon clears hosted loop metadata after stop"
 expect_contains "$loop_stopped" '"stay_afloat":{"version":' "foreground loop daemon leaves latest redacted snapshot visible after stop"
@@ -698,7 +701,8 @@ cat >"$reauth_config" <<EOF
       "name": "codex",
       "display_name": "Codex Test Harness",
       "repair": {
-        "owner": "upstream_cli_login"
+        "owner": "upstream_cli_login",
+        "proactive_refresh": "oauth_refresh_token"
       },
       "runtime": {
         "writable_paths": ["CODEX_HOME"],
@@ -1517,7 +1521,7 @@ expect_contains "$repair_reauth" '"confirmation_required":true' "repair run requ
 expect_contains "$repair_reauth" '"requires":"--confirm-repair"' "repair run reports required flag"
 expect_contains "$repair_reauth" '"command":"oauth-mux codex login-device max-1"' "repair run reports upstream command"
 expect_contains "$repair_reauth" '"daemon_repair":{"admitted":false,"reason":"interactive_not_allowed","budget":"interactive"}' "repair run reports daemon policy refusal"
-expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"provider_repair_owned_by_upstream_cli"}' "repair run reports upstream-owned file writeback boundary"
+expect_contains "$repair_reauth" '"writeback":{"capability":"replace_file","automatic_refresh_admitted":false,"reason":"proactive_refresh_not_opted_in"}' "repair run reports refresh-consent writeback boundary (TIN-2058: codex declares the refresh grant; account has not opted in)"
 test ! -e "$tmp/reauth-home/auth.json"
 
 printf 'e2e: stay-afloat next returns provider-mediated handoff when not afloat\n'

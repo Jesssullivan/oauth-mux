@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Smoke-test the Codex status summarizer against brokered-only and fallback
 # shaped NDJSON artifacts.
+#
+# Fixture authority shapes: the default TIN-1851 home-is-store mode
+# (session_authority:"isolated", sqlite_authority:"isolated_overlay") is the
+# primary fixture shape; the SIGNALED stream is kept as clearly labeled legacy
+# shared_canonical bridge coverage.
 
 set -euo pipefail
 
@@ -30,14 +35,14 @@ BAD_405="$TMP/bad-405.ndjson"
 cat >"$BROKERED" <<'EOF'
 {"kind":"launch_timing","phase":"config_health_load","duration_ms":4,"elapsed_ms":4,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
 {"kind":"launch_timing","phase":"child_spawn","duration_ms":3,"elapsed_ms":19,"path_printed":false,"token_material_printed":false,"session_id_printed":false}
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
 
 cat >"$FALLBACK" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":429,"classification":"quota_exhausted","body_class":"usage_limit_reached","delivered_to_codex":false}
 {"kind":"proxy_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"quota_exhausted","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
@@ -47,7 +52,7 @@ cat >"$FALLBACK" <<'EOF'
 EOF
 
 cat >"$FAILED_QUOTA" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
 {"kind":"proxy_auth_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"auth_unauthorized","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
@@ -63,7 +68,7 @@ cat >"$FAILED_QUOTA" <<'EOF'
 EOF
 
 cat >"$AUTH_FAILED" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_observed_401_codex_handles","account":"codex:max-1"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 {"kind":"proxy_observed_401_codex_handles","account":"codex:max-1"}
@@ -73,7 +78,7 @@ cat >"$AUTH_FAILED" <<'EOF'
 EOF
 
 cat >"$AUTH_FALLBACK" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
 {"kind":"proxy_auth_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"auth_unauthorized","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
@@ -82,7 +87,7 @@ cat >"$AUTH_FALLBACK" <<'EOF'
 EOF
 
 cat >"$AUTH_FALLBACK_CHAIN" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
 {"kind":"proxy_auth_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"auth_unauthorized","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"GET","path_kind":"codex_other","status":401,"classification":"auth_unauthorized","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":false}
@@ -91,12 +96,16 @@ cat >"$AUTH_FALLBACK_CHAIN" <<'EOF'
 EOF
 
 cat >"$INCOMPLETE" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":401,"classification":"auth_unauthorized","body_class":"empty","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
 EOF
 
+# Legacy coverage: this stream intentionally stays on the legacy
+# shared_canonical bridge shape (session_authority:"canonical_bridge") so the
+# summarizer keeps reproducing legacy-bridge artifacts; every other fixture is
+# the TIN-1851 default home-is-store shape ("isolated" + "isolated_overlay").
 cat >"$SIGNALED" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-3","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-3","claim_level":"broker_owned","session_authority":"canonical_bridge","sqlite_authority":"canonical_env"}
 {"kind":"proxy_turn","account":"codex:max-3","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true}
 {"kind":"session_aborted","adapter":"codex","reason":"child_signal","exit_code":-1,"term_kind":"signal","term_code":9,"signal_name":"SIGKILL","final_claim_level":"broker_owned","synthetic_swap_observed":false}
 EOF
@@ -107,7 +116,7 @@ cat >"$PRE_SPAWN" <<'EOF'
 EOF
 
 cat >"$TRANSPORT_RECOVERY" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_upstream_failed","account":"codex:max-1","err":"ConnectionResetByPeer"}
 {"kind":"proxy_provider_same_turn_retry","from":"codex:max-1","to":"codex:max-2","reason":"provider_5xx","dropped":"x-codex-turn-state"}
 {"kind":"proxy_turn","account":"codex:max-2","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
@@ -116,7 +125,7 @@ cat >"$TRANSPORT_RECOVERY" <<'EOF'
 EOF
 
 cat >"$LOCAL_TRANSPORT_RECOVERY" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_transport_local_retry","account":"codex:max-1","method":"POST","path_kind":"responses","err":"ConnectionResetByPeer","attempt":1,"max_attempts":2,"backoff_ms":150,"delivered_to_codex":false}
 {"kind":"proxy_transport_local_retry_recovered","account":"codex:max-1","method":"POST","path_kind":"responses","attempts":1,"status":200,"classification":"ok","delivered_to_codex":true}
 {"kind":"proxy_turn","account":"codex:max-1","method":"POST","path_kind":"responses","status":200,"classification":"ok","body_class":"none","claim_level":"broker_owned","streamed":true,"delivered_to_codex":true}
@@ -124,7 +133,7 @@ cat >"$LOCAL_TRANSPORT_RECOVERY" <<'EOF'
 EOF
 
 cat >"$BAD_405" <<'EOF'
-{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"canonical_bridge"}
+{"kind":"session_started","selected_account":"codex:max-1","claim_level":"broker_owned","session_authority":"isolated","sqlite_authority":"isolated_overlay"}
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses","status":405,"classification":"ok","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":true}
 {"kind":"proxy_turn","account":"codex:max-1","method":"GET","path_kind":"responses_websocket","status":405,"classification":"ok","body_class":"json_error","claim_level":"broker_owned","streamed":false,"delivered_to_codex":true}
 {"kind":"session_ended","adapter":"codex","exit_code":0,"final_claim_level":"broker_owned","synthetic_swap_observed":false}
@@ -133,6 +142,11 @@ EOF
 BROKERED_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$BROKERED" --require-brokered)"
 if [[ "$(jq -r .verdict <<<"$BROKERED_SUMMARY")" != "brokered_without_fallback" ]]; then
     echo "brokered verdict mismatch" >&2
+    echo "$BROKERED_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .session_authority <<<"$BROKERED_SUMMARY")" != "isolated" ]]; then
+    echo "brokered summary should reproduce the default isolated session authority" >&2
     echo "$BROKERED_SUMMARY" >&2
     exit 1
 fi
@@ -320,6 +334,11 @@ if [[ "$(jq -r .terminal_event.signal_name <<<"$SIGNALED_SUMMARY")" != "SIGKILL"
     echo "$SIGNALED_SUMMARY" >&2
     exit 1
 fi
+if [[ "$(jq -r .session_authority <<<"$SIGNALED_SUMMARY")" != "canonical_bridge" ]]; then
+    echo "signaled legacy-bridge artifact should reproduce canonical_bridge authority" >&2
+    echo "$SIGNALED_SUMMARY" >&2
+    exit 1
+fi
 
 PRE_SPAWN_SUMMARY="$(python3 "$ROOT/scripts/summarize-codex-status.py" "$PRE_SPAWN")"
 if [[ "$(jq -r .session_aborted_observed <<<"$PRE_SPAWN_SUMMARY")" != "true" ]]; then
@@ -373,6 +392,11 @@ if [[ "$(jq -r .verdict <<<"$TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "transport_
 fi
 if [[ "$(jq -r .transport_recovery_observed <<<"$TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "true" ]]; then
     echo "native transport-recovery should report recovery" >&2
+    echo "$TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
+    exit 1
+fi
+if [[ "$(jq -r .session_authority <<<"$TRANSPORT_RECOVERY_NATIVE_SUMMARY")" != "isolated" ]]; then
+    echo "native summary should reproduce the default isolated session authority" >&2
     echo "$TRANSPORT_RECOVERY_NATIVE_SUMMARY" >&2
     exit 1
 fi

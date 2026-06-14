@@ -25,7 +25,6 @@ deep evidence or architecture:
 Recommended first-screen command block:
 
 ```bash
-npm install -g oauth-mux
 oauth-mux init --codex-max
 oauth-mux doctor
 oauth-mux route explain --profile codex-max --capability codex-max --json
@@ -52,7 +51,6 @@ then proof and provider-author material.
 
 Target install surfaces:
 
-- npm: `npm install -g oauth-mux`
 - Homebrew public tap:
   `brew tap jesssullivan/omux https://github.com/Jesssullivan/homebrew-omux.git && brew install jesssullivan/omux/oauth-mux`
 - curl installer: `curl -fsSL ... | sh`
@@ -65,10 +63,12 @@ The public Homebrew tap is `Jesssullivan/homebrew-omux`, documented in
 infrastructure, not public adoption copy.
 The DRY release/install lane contract is `docs/release-install-lanes.md`; keep
 new UX/DX/AX installer copy aligned with that file rather than duplicating
-package-state tables here. As of the 2026-05-20 release-hygiene refresh, public
-GitHub Release, npm, Homebrew, curl installer assets, and system package assets
-resolve to `0.1.9`. Package-lane QA proves installability and metadata, not
-live provider handoff behavior.
+package-state tables here. As of the 2026-06-12 v0.1.13 release, public GitHub
+Release, Homebrew tap, curl installer assets, and system package assets resolve
+to `0.1.13`; the npm lane is retired (2026-06-12; the stale `0.1.9` package
+is abandoned in place)
+(see the productionization ledger for per-lane truth). Package-lane QA proves
+installability and metadata, not live provider handoff behavior.
 
 When validating unreleased source behavior, install or invoke the worktree build
 deliberately and record provenance:
@@ -86,9 +86,10 @@ checks remain package-lane QA and should not be used as evidence for unreleased
 worktree behavior unless the local formula has been explicitly rebuilt and
 installed.
 
-Each release artifact should be derived from the same CI release tree. npm is
-published only from CI tarballs; workstation `npm publish` is not supported.
-Use npm provenance when the GitHub source repository is public.
+Each release artifact should be derived from the same CI release tree. The
+npm lane is retired (2026-06-12): the future single source of truth for
+package derivation is the Bazel SSOT (TIN-2046), whose derived lanes are
+Homebrew, deb/rpm, and a darwin pkg — npm is deliberately excluded.
 
 ## First User Experience
 
@@ -128,9 +129,11 @@ Source checkouts prove the first-run path without touching real operator state:
 just first-run-e2e
 ```
 
-When checking unreleased behavior from source, use `just run -- ...` or
-`./zig-out/bin/oauth-mux` after `just build` so local observations match repo
-`main` rather than an older installed package.
+When checking unreleased behavior from source, use the remote validation lanes
+first (`just remote-build`, `just remote-check`, or `just remote-e2e`). Local
+`just run -- ...`, `just build-local`, or `./zig-out/bin/oauth-mux` are
+debugging tools only and should not be used as readiness proof on developer
+laptops.
 
 Live probes remain explicit because they can spend subscription calls:
 
@@ -150,11 +153,14 @@ oauth-mux codex resume <session-id>
 ```
 
 These commands launch the real Codex CLI inside an oauth-mux managed frame.
-Auth and the proxy base URL are mux-owned in a temporary overlay, while Codex
+Auth and the proxy base URL are mux-owned in a managed `CODEX_HOME`, while Codex
 session authority is bridged by reference to the canonical Codex home unless
-`--isolated-session-store` is set. `oauth-mux codex resume` with no id keeps
-native Codex chooser ownership; oauth-mux only checks before spawn that the
-managed overlay exposes the same required session-authority entries so the
+`--isolated-session-store` is set. In canonical bridge mode the managed home is
+durable under the authority home and scrubbed on exit; oauth-mux removes copied
+auth/config material but keeps the bridge so native Codex rollout paths recorded
+through the managed frame remain resumable. `oauth-mux codex resume` with no id
+keeps native Codex chooser ownership; oauth-mux only checks before spawn that
+the managed overlay exposes the same required session-authority entries so the
 chooser does not open empty. When canonical Codex has `state_5.sqlite*` or
 `logs_2.sqlite*`, those files are bridged by reference; in canonical bridge
 mode `CODEX_SQLITE_HOME` points at the canonical authority home so Codex 0.132+
@@ -437,7 +443,9 @@ semantics.
 
 ## Provider Author Experience
 
-A new provider should usually start as data, not Zig:
+A new provider should usually start as data, not Zig — **for
+home-scoped-file providers** (auth state is a file inside a relocatable
+config dir, the codex model):
 
 1. Write a JSON provider definition with credential parsing, injection, probes,
    and failure rules.
@@ -448,6 +456,14 @@ A new provider should usually start as data, not Zig:
 
 Compiled Zig changes should be reserved for new transports, parser primitives,
 or core liveness algebra changes.
+
+Providers whose harness keeps auth state in an OS keystore (the Claude
+macOS model: keychain item keyed off the config-dir path, identity in a
+separate file, browser-session consent isolation) currently need compiled
+support beyond the JSON definition. The auth-state-model taxonomy, the
+revised claim scope, and the schema extensions that will close this gap
+are designated in
+`docs/spec/auth-state-models-and-adapter-extensibility-2026-06-12.md`.
 
 Provider authors should use `oauth-mux providers list --json` to verify whether
 their provider is currently `built_in`, `schema_modeled`, `live_proven`, or still

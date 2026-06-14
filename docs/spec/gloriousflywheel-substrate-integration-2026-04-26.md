@@ -48,12 +48,75 @@ The CI workflow now has a cache-first lane:
 Because `GloriousFlywheel` is private, `oauth-mux` does not reference the
 cross-repo composite action directly. The workflow checks out the substrate repo
 into `.gloriousflywheel` with `GF_ACTIONS_TOKEN` and then uses the local
-composite action path. If `GF_ACTIONS_TOKEN` is not configured, the job records
-that the cache-first proof was skipped rather than failing before any useful
-diagnostics can run.
+composite action path.
 
-The existing GitHub-hosted lane remains as a portability check. It still builds
-and tests with Zig directly, and now validates all example configs too.
+Update, 2026-06-13: CI has no GitHub-hosted build/test fallback. The stable check
+names remain (`test`, `cross-compile`, `nix`, and `GloriousFlywheel cache-first
+check`) so branch protection and operator muscle memory do not churn, but every
+build/test/check body now runs on `tinyland-nix` through the GloriousFlywheel
+`nix-job` action. If `GF_ACTIONS_TOKEN` or the Attic/Nix runtime evidence is
+missing, the job fails rather than silently proving the repo on a local hosted
+runner.
+
+## Remote-First Operator Dispatch
+
+Update, 2026-06-03: low-power developer machines should not have to prove the
+full repo locally. The repo now exposes an explicit remote validation lane:
+
+- `.github/workflows/remote-validate.yml`
+- `scripts/remote-validate.sh`
+- `just remote-check`
+- `just remote-test`
+- `just remote-build`
+- `just remote-e2e`
+- `just remote-release-proof`
+
+These commands dispatch a `workflow_dispatch` run on `tinyland-nix` and, by
+default, watch the resulting GitHub Actions run. The workflow uses the same
+private GloriousFlywheel `nix-job` composite action as the cache-first CI lane,
+requires `GF_ACTIONS_TOKEN`, requires the Nix/Attic environment variables, and
+then runs the existing Just/Zig validation bodies inside `nix develop`.
+Because GitHub exposes manual dispatch workflows from the default branch, the
+remote validation workflow must land on `main` before branch/SHA validation can
+be requested through `just remote-*`.
+
+Update, 2026-06-13: the bare proof entrypoints now dispatch the same remote
+lane:
+
+- `just build` -> `just remote-build`
+- `just build-release` -> `just remote-build-release`
+- `just build-small` -> `just remote-build-small`
+- `just test` -> `just remote-test`
+- `just check` -> `just remote-check`
+- `just e2e` -> `just remote-e2e`
+- `just first-run-e2e` -> `just remote-first-run-e2e`
+- `just release-proof <version> [ref]` -> remote release proof
+
+Local execution is intentionally explicit through `build-local`, `test-local`,
+`check-local`, `e2e-local`, `first-run-e2e-local`, and
+`release-proof-local`. Just recipes that need `./zig-out/bin/oauth-mux` still
+depend on `build-local`; that is a local debug/build-artifact dependency, not a
+proof claim.
+
+This is intentionally remote-first. `just check-local`, `just e2e-local`, and
+direct Zig recipes remain available only for narrow local debugging and runner
+failure triage. They are not proof gates for PR readiness, release readiness, or
+dogfood readiness on developer laptops. Use `just remote-check`,
+`just remote-test`, `just remote-build`, `just remote-e2e`, and
+`just remote-release-proof` for completion claims.
+
+The remote workflow fails rather than silently falling back when the
+GloriousFlywheel action token is absent. A skipped or fallback local run is not
+remote validation.
+
+Update, 2026-06-13: remote validation dispatches include a caller-generated
+`request_id`, and the workflow run-name includes that id. `scripts/remote-validate.sh`
+uses the id to find the exact `workflow_dispatch` run instead of watching the
+latest run on the branch, which is racy when several agents or tabs dispatch the
+same workflow close together. As with the original remote workflow bootstrap,
+this request-id path is available only after the workflow input has landed on
+the repository default branch; before then, branch-local edits are validated by
+PR CI rather than by manually dispatching the not-yet-landed input shape.
 
 ## What This Proves
 
@@ -72,6 +135,7 @@ It does not yet prove:
 - cache-first CI execution when the private action checkout token is absent;
 - full remote execution for every local developer action;
 - Bazel remote-cache behavior, because this repo has no Bazel targets;
+- Bazel remote execution, because `oauth-mux` still has no Bazel target graph;
 - package publication to npm, Homebrew, deb, rpm, or GitHub Releases;
 - live OAuth provider route health, except when explicit operator probe jobs
   are run with real credentials.
@@ -100,10 +164,10 @@ input:
 - npm package workspace and npm tarballs
 - nfpm configs and deb/rpm artifacts
 
-`just release-proof <version>` runs the same staging command and then validates
-the artifact tree, checksums, archive payloads, Homebrew rendering, local npm
-install path, local installer path, and non-publishing release handoff
-generation. The handoff captures GitHub Release attachments, npm publish order,
+`just remote-release-proof <ref> <version>` runs the same staging command on the
+remote runner and then validates the artifact tree, checksums, archive payloads,
+Homebrew rendering, npm install path, installer path, and non-publishing release
+handoff generation. The handoff captures GitHub Release attachments, npm publish order,
 Homebrew tap input, deb/rpm files, and full checksums under
 `dist/out/v<version>/handoff/`.
 
@@ -130,7 +194,14 @@ available for focused iteration.
    pre-publication self-hosted gate once `tinyland-nix` capacity is stable
    enough to block releases on it.
 3. Keep Bazel out until there is a real target graph or downstream adoption
-   reason; if added later, copy the GloriousFlywheel shape:
-   `cache-contract-strict` before any cache-backed Bazel command.
-4. Add a scheduled or manual live-provider QA workflow only after secret
+   reason. Remote-first validation should ride the existing Just/Nix contract
+   first. If Bazel is added later, copy the GloriousFlywheel shape:
+   `cache-contract-strict` before any cache-backed Bazel command, and require
+   explicit executor-backed evidence before claiming remote execution.
+4. TIN-2105 is the bounded Zig REAPI candidate. Its first acceptable shape is
+   an `oauth-mux-zig-build-test` target class for `zig build test` and
+   `zig build`, proved by forced GloriousFlywheel REAPI execution with
+   `remote_processes > 0`, worker image digest, and no local fallback. See
+   `docs/spec/oauth-mux-zig-reapi-target-class-plan-2026-06-14.md`.
+5. Add a scheduled or manual live-provider QA workflow only after secret
    scoping is explicit; route probes spend real subscription calls.
