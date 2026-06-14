@@ -109,6 +109,15 @@ The remote workflow fails rather than silently falling back when the
 GloriousFlywheel action token is absent. A skipped or fallback local run is not
 remote validation.
 
+Update, 2026-06-13: remote validation dispatches include a caller-generated
+`request_id`, and the workflow run-name includes that id. `scripts/remote-validate.sh`
+uses the id to find the exact `workflow_dispatch` run instead of watching the
+latest run on the branch, which is racy when several agents or tabs dispatch the
+same workflow close together. As with the original remote workflow bootstrap,
+this request-id path is available only after the workflow input has landed on
+the repository default branch; before then, branch-local edits are validated by
+PR CI rather than by manually dispatching the not-yet-landed input shape.
+
 ## What This Proves
 
 When `GF_ACTIONS_TOKEN` and the Attic settings are present, this proves that

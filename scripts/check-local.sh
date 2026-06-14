@@ -11,6 +11,7 @@ bash -n ./scripts/uninstall-local-dogfood.sh
 bash -n ./scripts/release-local.sh
 bash -n ./scripts/release-smoke.sh
 bash -n ./scripts/release-handoff.sh
+bash -n ./scripts/remote-validate.sh
 python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 sh -n ./dist/codex-shim.sh
 sh -n ./dist/install.sh
@@ -23,6 +24,7 @@ done
 ./scripts/first-run-e2e.sh
 ./scripts/stay-afloat-wrapper-doc-smoke.sh
 ./scripts/smoke-trace.sh
+./scripts/smoke-remote-validate-contract.sh
 ./scripts/smoke-dogfood-process-snapshot.sh
 ./scripts/smoke-broker.sh
 ./scripts/smoke-broker-claude.sh
