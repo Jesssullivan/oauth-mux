@@ -30,7 +30,7 @@ BIN="$ROOT/zig-out/bin/oauth-mux"
 
 if [[ ! -x "$BIN" ]]; then
     echo "smoke-broker: oauth-mux binary not built at $BIN" >&2
-    echo "  run: just build" >&2
+    echo "  run: just build-local" >&2
     exit 64
 fi
 

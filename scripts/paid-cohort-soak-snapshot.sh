@@ -17,7 +17,7 @@ config_path="${OMUX_CONFIG:-}"
 
 if [ ! -x "$bin" ]; then
   printf 'oauth-mux binary not found at %s\n' "$bin" >&2
-  printf 'run: just build\n' >&2
+  printf 'run: just build-local\n' >&2
   exit 1
 fi
 

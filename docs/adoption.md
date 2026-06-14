@@ -131,8 +131,9 @@ just first-run-e2e
 
 When checking unreleased behavior from source, use the remote validation lanes
 first (`just remote-build`, `just remote-check`, or `just remote-e2e`). Local
-`just run -- ...`, `just build`, or `./zig-out/bin/oauth-mux` are debugging
-tools only and should not be used as readiness proof on developer laptops.
+`just run -- ...`, `just build-local`, or `./zig-out/bin/oauth-mux` are
+debugging tools only and should not be used as readiness proof on developer
+laptops.
 
 Live probes remain explicit because they can spend subscription calls:
 

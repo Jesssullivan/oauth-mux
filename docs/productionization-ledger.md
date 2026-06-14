@@ -97,12 +97,15 @@ UX:
 
 DX:
 
+- `just build`, `just test`, `just check`, and `just e2e` dispatch remote
+  development proof gates on GloriousFlywheel.
 - `just remote-build`, `just remote-test`, `just remote-check`, and
-  `just remote-e2e` are the development proof gates.
-- `just remote-release-proof <ref> <version>` is required before any registry
+  `just remote-e2e` remain explicit aliases for the same remote lanes.
+- `just release-proof <version> [ref]` or
+  `just remote-release-proof <ref> <version>` is required before any registry
   mutation.
-- Local build/check commands are debugging tools only; do not use them as PR,
-  release, or dogfood readiness proof on developer laptops.
+- Local `*-local` build/check commands are debugging tools only; do not use them
+  as PR, release, or dogfood readiness proof on developer laptops.
 - Installed-command dogfood must use `oauth-mux version --json`,
   `which -a oauth-mux`, `which -a codex`, and `codex preflight` to prove the
   exact binary and shim path under test.

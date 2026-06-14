@@ -77,6 +77,24 @@ Because GitHub exposes manual dispatch workflows from the default branch, the
 remote validation workflow must land on `main` before branch/SHA validation can
 be requested through `just remote-*`.
 
+Update, 2026-06-13: the bare proof entrypoints now dispatch the same remote
+lane:
+
+- `just build` -> `just remote-build`
+- `just build-release` -> `just remote-build-release`
+- `just build-small` -> `just remote-build-small`
+- `just test` -> `just remote-test`
+- `just check` -> `just remote-check`
+- `just e2e` -> `just remote-e2e`
+- `just first-run-e2e` -> `just remote-first-run-e2e`
+- `just release-proof <version> [ref]` -> remote release proof
+
+Local execution is intentionally explicit through `build-local`, `test-local`,
+`check-local`, `e2e-local`, `first-run-e2e-local`, and
+`release-proof-local`. Just recipes that need `./zig-out/bin/oauth-mux` still
+depend on `build-local`; that is a local debug/build-artifact dependency, not a
+proof claim.
+
 This is intentionally remote-first. `just check-local`, `just e2e-local`, and
 direct Zig recipes remain available only for narrow local debugging and runner
 failure triage. They are not proof gates for PR readiness, release readiness, or

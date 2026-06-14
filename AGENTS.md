@@ -68,21 +68,27 @@ easier to generalize into the next harness adapter, it is probably out of scope.
 ## Build And Validation
 
 Remote-first rule: proof builds, test gates, release checks, and agent validation
-must use the GloriousFlywheel remote lanes. Do not use local `zig build`,
-`just build`, `just test`, or `just check-local` as the completion proof on a
-developer laptop.
+must use the GloriousFlywheel remote lanes. The bare proof recipes dispatch
+remote by default:
 
 ```bash
+just build          # build on the GloriousFlywheel runner
+just test           # test on the GloriousFlywheel runner
+just check          # full check on the GloriousFlywheel runner
+just e2e            # e2e on the GloriousFlywheel runner
+
 just remote-build   # build on the GloriousFlywheel runner
 just remote-test    # test on the GloriousFlywheel runner
 just remote-check   # full check on the GloriousFlywheel runner
 just remote-e2e     # e2e on the GloriousFlywheel runner
 ```
 
-Local build commands remain available only for narrow debugging of a local
-toolchain, generated binary, or installer issue. If a local build is used for
-debugging, state that it is not validation and follow with the remote lane before
-making a completion or merge claim.
+Do not use local `zig build`, `just build-local`, `just test-local`,
+`just check-local`, or `just e2e-local` as the completion proof on a developer
+laptop. Local build commands remain available only for narrow debugging of a
+local toolchain, generated binary, or installer issue. If a local build is used
+for debugging, state that it is not validation and follow with the remote lane
+before making a completion or merge claim.
 
 ## Architecture
 
@@ -132,8 +138,9 @@ just remote-check   # full validation on the GloriousFlywheel runner
 ```
 
 Tests are in-file `test` blocks (Zig convention) plus `test/fixtures/` for
-provider token format samples. Local `just test` and `just test-verbose` are
-debugging tools only; do not use them as completion proof.
+provider token format samples. `just test` is a remote proof lane. Local
+`just test-local` and `just test-verbose` are debugging tools only; do not use
+them as completion proof.
 
 ## Distribution
 
