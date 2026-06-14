@@ -257,6 +257,17 @@ remote-first-run-e2e REF="":
 remote-release-proof REF="" VERSION=release_version:
     OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
 
+# ── Bazel / REAPI candidate (TIN-2105, not proof authority yet) ──
+
+flywheel-zig-info *ARGS:
+    ./scripts/gloriousflywheel-bazel.sh info {{ARGS}}
+
+flywheel-zig-build *ARGS:
+    ./scripts/gloriousflywheel-bazel.sh build //:zig_build {{ARGS}}
+
+flywheel-zig-test *ARGS:
+    ./scripts/gloriousflywheel-bazel.sh test //:zig_build_test {{ARGS}}
+
 # ── Broker MCP smoke (provider-neutral regression catch-net) ──
 
 smoke-broker:

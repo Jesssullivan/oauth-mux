@@ -1,0 +1,19 @@
+# Endpoint-free GloriousFlywheel behavior for oauth-mux's TIN-2105 candidate.
+#
+# Runtime authority lives in scripts/gloriousflywheel-bazel.sh:
+# BAZEL_REMOTE_CACHE, BAZEL_REMOTE_EXECUTOR, auth headers, and upload policy
+# are validated there and passed as explicit Bazel flags.
+
+common:flywheel --remote_upload_local_results=false
+common:flywheel --remote_timeout=60
+common:flywheel --remote_download_minimal
+
+common:flywheel-executor --config=flywheel
+common:flywheel-executor --remote_local_fallback=false
+common:flywheel-executor --spawn_strategy=remote
+common:flywheel-executor --jobs=200
+
+# Candidate-only filter. Do not switch this to `flywheel-eligible` until the
+# target class is proved and promoted in GloriousFlywheel.
+common:flywheel-executor --build_tag_filters=gloriousflywheel-rbe-candidate
+common:flywheel-executor --test_tag_filters=gloriousflywheel-rbe-candidate

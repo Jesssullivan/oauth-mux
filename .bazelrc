@@ -1,0 +1,18 @@
+# oauth-mux Bazel configuration.
+#
+# Endpoint authority is runtime-only. Do not put remote_cache,
+# remote_executor, credentials, or auth headers in checked-in rc files.
+
+common --noenable_bzlmod
+common --color=yes
+common --curses=yes
+
+build --jobs=auto
+build --show_timestamps
+test --test_output=errors
+test --test_summary=detailed
+
+# GloriousFlywheel behavior is endpoint-free. The wrapper supplies cache and
+# executor endpoints as validated command-line flags.
+try-import %workspace%/.bazelrc.flywheel
+try-import %workspace%/user.bazelrc

@@ -1,0 +1,46 @@
+"""
+Bounded Bazel surface for TIN-2105.
+
+These labels are candidates for an `oauth-mux-zig-build-test` REAPI target
+class. They deliberately use only candidate tags; GloriousFlywheel eligibility
+must wait for a forced proof artifact with nonzero remote processes, worker
+image provenance, executor/cache attachment, and no local fallback.
+"""
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "zig_inputs",
+    srcs = [
+        "build.zig",
+        "build.zig.zon",
+    ] + glob(["src/**/*.zig"]),
+)
+
+genrule(
+    name = "zig_build",
+    srcs = [
+        ":zig_inputs",
+        "scripts/bazel/zig-build-action.sh",
+    ],
+    outs = ["zig_build.marker"],
+    cmd = "$(location scripts/bazel/zig-build-action.sh) build $@",
+    tags = [
+        "gloriousflywheel-rbe-candidate",
+        "target-class=oauth-mux-zig-build-test",
+    ],
+)
+
+genrule(
+    name = "zig_build_test",
+    srcs = [
+        ":zig_inputs",
+        "scripts/bazel/zig-build-action.sh",
+    ],
+    outs = ["zig_build_test.marker"],
+    cmd = "$(location scripts/bazel/zig-build-action.sh) test $@",
+    tags = [
+        "gloriousflywheel-rbe-candidate",
+        "target-class=oauth-mux-zig-build-test",
+    ],
+)
