@@ -19748,5 +19748,8 @@ comptime {
     _ = @import("repair_state.zig");
     _ = @import("enroll/tests.zig");
     _ = @import("enroll/callback_server_tests.zig");
+    _ = @import("identity/identity_graph_tests.zig");
+    _ = @import("identity/claude_identity_tests.zig");
+    _ = @import("identity/identity_lane_integration_tests.zig");
     _ = @import("keepalive/warm_scheduler_tests.zig");
 }
