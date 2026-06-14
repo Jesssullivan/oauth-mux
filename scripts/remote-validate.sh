@@ -33,6 +33,7 @@ shift || true
 watch=1
 ref=""
 version="${OMUX_REMOTE_RELEASE_VERSION:-}"
+request_id="${OMUX_REMOTE_REQUEST_ID:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -99,31 +100,48 @@ fi
 repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 workflow="remote-validate.yml"
 
-echo "remote-validate: dispatching ${target} on ${repo}@${ref}"
+if [ -z "$request_id" ]; then
+  repo_slug="$(printf '%s' "$repo" | sed 's#[/[:space:]]#-#g' | tr -c 'A-Za-z0-9_.:-' '-')"
+  target_slug="$(printf '%s' "$target" | tr -c 'A-Za-z0-9_.:-' '-')"
+  nonce="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  request_id="omux-remote-${repo_slug}-${target_slug}-${nonce}"
+fi
+request_id="$(printf '%s' "$request_id" | tr -c 'A-Za-z0-9_.:-' '-')"
+request_id="${request_id:0:200}"
+dispatch_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-args=(workflow run "$workflow" --repo "$repo" --ref "$ref" -f "target=$target")
+echo "remote-validate: dispatching ${target} on ${repo}@${ref} (request_id=${request_id})"
+
+args=(workflow run "$workflow" --repo "$repo" --ref "$ref" -f "target=$target" -f "request_id=$request_id")
 if [ -n "$version" ]; then
   args+=(-f "version=$version")
 fi
 gh "${args[@]}"
 
 if [ "$watch" != "1" ]; then
-  echo "remote-validate: dispatched; watch with: gh run list --repo ${repo} --workflow ${workflow}"
+  echo "remote-validate: dispatched request_id=${request_id}"
+  echo "remote-validate: watch with: gh run list --repo ${repo} --workflow ${workflow}"
   exit 0
 fi
 
-echo "remote-validate: locating latest workflow_dispatch run"
-run_id="$(gh run list \
-  --repo "$repo" \
-  --workflow "$workflow" \
-  --branch "$ref" \
-  --event workflow_dispatch \
-  --json databaseId,status,createdAt \
-  --jq 'sort_by(.createdAt) | reverse | .[0].databaseId // empty' \
-  --limit 10)"
+echo "remote-validate: locating workflow_dispatch run for request_id=${request_id}"
+run_id=""
+for _ in $(seq 1 60); do
+  run_id="$(gh run list \
+    --repo "$repo" \
+    --workflow "$workflow" \
+    --event workflow_dispatch \
+    --json databaseId,createdAt,displayTitle \
+    --jq "[.[] | select(.createdAt >= \"${dispatch_time}\") | select((.displayTitle // \"\") | contains(\"${request_id}\"))] | sort_by(.createdAt, .databaseId) | first | .databaseId // empty" \
+    --limit 50)" || run_id=""
+  if [ -n "$run_id" ]; then
+    break
+  fi
+  sleep 5
+done
 
 if [ -z "$run_id" ]; then
-  echo "remote-validate: dispatched, but GitHub has not exposed the run yet" >&2
+  echo "remote-validate: dispatched request_id=${request_id}, but GitHub has not exposed the matching run yet" >&2
   echo "remote-validate: check: gh run list --repo ${repo} --workflow ${workflow}" >&2
   exit 1
 fi
