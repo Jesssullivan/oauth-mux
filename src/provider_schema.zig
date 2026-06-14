@@ -784,15 +784,21 @@ pub const claude_def = ProviderDefinition{
         .required_binaries = &.{"claude"},
         .env_vars = &.{"CLAUDE_CONFIG_DIR"},
     },
-    // The refresh grant (.proactive_refresh = .oauth_refresh_token) is
-    // deliberately NOT declared yet. Serialization (TIN-2073) and
-    // field-preserving writeback (TIN-2074: merge preserves expiresAt/
-    // scopes/subscriptionType, ms-unit aware) have landed. Remaining gate
-    // before the flip: the dual-writer story (TIN-2059) — the native
-    // Claude CLI also rotates this account's refresh token, and two
-    // writers rotating one token can revoke each other.
+    // GRANT FLIPPED (TIN-2057): the provider now SUPPORTS proactive refresh.
+    // Substrate complete — serialization (TIN-2073), field-preserving writeback
+    // (TIN-2074: merge preserves expiresAt/scopes/subscriptionType, ms-unit
+    // aware), Option B proactive-rotation (TIN-2055), the per-account + identity
+    // flocks, and the canonical-keychain writeback refusal (TIN-2054/#406). Login
+    // stays upstream_cli_login, so refresh is admitted ONLY for an account that
+    // also opts in (allow_proactive_refresh: true) — no behaviour change for any
+    // account that hasn't opted in. The bare-CLI dual-writer (R3, TIN-2059) is the
+    // accepted residual: the store-invariant (never persist an RT it didn't mint)
+    // downgrades a concurrent native-CLI rotation to a wasted refresh, never
+    // corruption. Live-proven 2026-06-14 (2×Claude proactively refreshed via
+    // `oauth-mux keepalive`, scopes/subscriptionType preserved, zero collateral).
     .repair = .{
         .owner = .upstream_cli_login,
+        .proactive_refresh = .oauth_refresh_token,
     },
     .capabilities = &claude_capabilities,
     .failure_rules = &claude_failure_rules,
@@ -841,16 +847,20 @@ pub const codex_def = ProviderDefinition{
         .writable_paths = &.{"CODEX_HOME"},
         .session_paths = &.{"CODEX_HOME/auth.json"},
     },
-    // Refresh grant intentionally undeclared — same gating as claude_def.
-    // Serialization (TIN-2073), field-preserving merge (TIN-2074: preserves
-    // tokens.id_token, the codex identity source), and JWT-exp expiry
-    // derivation (TIN-2087: codex has no wall-clock expiry field) have
-    // landed. Remaining before the flip: the dual-writer story (TIN-2059)
-    // vs the native codex CLI — in particular warm-loop identity-lock
-    // participation (TIN-2043), since codex stores no expiry the merge
-    // rewrites (expiry is read from the access-token JWT, not persisted).
+    // GRANT FLIPPED (TIN-2057): the provider now SUPPORTS proactive refresh.
+    // Substrate complete — serialization (TIN-2073), field-preserving merge
+    // (TIN-2074: preserves tokens.id_token, the codex identity source), JWT-exp
+    // expiry derivation (TIN-2087), Option B proactive-rotation (TIN-2055), and —
+    // critically for codex's shared-identity shape (max-N == one Apple ID) — the
+    // warm-loop identity flock (TIN-2043), which serializes any two config
+    // accounts on one RT chain. Login stays upstream_cli_login → refresh admitted
+    // ONLY for an opted-in account. Live-proven 2026-06-14 (2×Codex proactively
+    // refreshed via `oauth-mux keepalive`, zero collateral). NOTE: two accounts
+    // that share an account_id MUST NOT both be opted in (provider family
+    // revocation is outside the lock domain) — see TIN-2113.
     .repair = .{
         .owner = .upstream_cli_login,
+        .proactive_refresh = .oauth_refresh_token,
     },
     .rate_limits = .{
         .remaining_header = "x-ratelimit-remaining-requests",
@@ -2610,4 +2620,16 @@ test "identityClaimFromCredential resolves codex tokens.account_id (TIN-2043)" {
         \\{"claudeAiOauth":{"accessToken":"at","refreshToken":"rt"}}
     ;
     try std.testing.expectEqual(@as(?[]u8, null), try identityClaimFromCredential(claude_def, claude_raw, std.testing.allocator));
+}
+
+test "claude/codex builtins declare the proactive_refresh grant but still require opt-in (TIN-2057)" {
+    // The grant flip: both providers SUPPORT proactive refresh now.
+    try std.testing.expect(claude_def.repair.proactive_refresh == .oauth_refresh_token);
+    try std.testing.expect(codex_def.repair.proactive_refresh == .oauth_refresh_token);
+    // Ownership stays upstream_cli_login, so secret.writebackPlan still admits a
+    // refresh ONLY for an account that also sets allow_proactive_refresh — the
+    // grant is provider-CAPABILITY, not auto-enable. (The admission logic itself
+    // is covered by the writebackPlan tests in secret.zig.)
+    try std.testing.expect(claude_def.repair.owner == .upstream_cli_login);
+    try std.testing.expect(codex_def.repair.owner == .upstream_cli_login);
 }
