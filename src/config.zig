@@ -401,6 +401,15 @@ fn validateProviderConfig(cfg: Config, provider_name: []const u8, prov: Provider
         ok.* = false;
     }
 
+    // A provider name must not contain ':': the keepalive warm-loop encodes an
+    // account key as "<provider>:<account>" and decodes by splitting on the FIRST
+    // ':' (so account names may contain ':' but provider names may not). A colon
+    // here would mis-target the decoded (provider, account) — refuse it at load.
+    if (std.mem.indexOfScalar(u8, provider_name, ':') != null) {
+        try writer.print("config error: provider name '{s}' must not contain ':'\n", .{provider_name});
+        ok.* = false;
+    }
+
     if (prov.kind.len == 0) {
         try writer.print("config error: providers.{s}.kind must not be empty\n", .{provider_name});
         ok.* = false;
@@ -1026,6 +1035,31 @@ test "validate rejects unknown provider kind without definition" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "has no built-in or provider_definitions entry") != null);
+}
+
+test "validate rejects a provider name containing ':' (warm-loop key codec contract)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "a:b": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "default": { "secret": { "backend": "env", "variable": "X" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "must not contain ':'") != null);
 }
 
 test "validate rejects unknown profile account" {
