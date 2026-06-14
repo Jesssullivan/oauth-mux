@@ -9,6 +9,9 @@ const types = @import("types.zig");
 const pipeline = @import("pipeline.zig");
 const health_mod = @import("health.zig");
 const provider = @import("provider.zig");
+const warm_scheduler = @import("keepalive/warm_scheduler.zig");
+const warm_binding = @import("keepalive/warm_binding.zig");
+const warm_runner = @import("keepalive/warm_runner.zig");
 const provider_schema = @import("provider_schema.zig");
 const daemon = @import("daemon.zig");
 const repair_state = @import("repair_state.zig");
@@ -268,6 +271,13 @@ pub fn main() !void {
             };
         },
 
+        .keepalive => |ka_args| {
+            runKeepalive(allocator, stdout, ka_args) catch |e| {
+                log.err("keepalive: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -312,6 +322,82 @@ pub fn main() !void {
                 std.process.exit(exitCodeFromPipelineError(e));
             };
         },
+    }
+}
+
+/// Bounded real-sleep wait for the foreground keepalive loop: terminates after
+/// `remaining` more waits (so the loop runs a fixed number of ticks), and caps
+/// each sleep at `cap_ms` so a far-future due instant still re-ticks periodically.
+/// runLoop floors a past/now wake before calling this, so there is no busy-spin.
+const KeepaliveWait = struct {
+    remaining: u32,
+    cap_ms: u64,
+    fn wait(ctx: *anyopaque, wake_at_ms: i64) bool {
+        const self: *KeepaliveWait = @ptrCast(@alignCast(ctx));
+        if (self.remaining == 0) return false;
+        self.remaining -= 1;
+        const now = std.time.milliTimestamp();
+        if (wake_at_ms > now) {
+            const delta: u64 = @intCast(wake_at_ms - now);
+            // Clamp to a sane max (24h) so an absurd operator --interval-ms can't
+            // overflow the u64 ns multiply, and the loop never sleeps past a day.
+            const max_ms: u64 = 24 * 60 * 60 * 1000;
+            const sleep_ms = @min(@min(delta, self.cap_ms), max_ms);
+            std.time.sleep(sleep_ms * std.time.ns_per_ms);
+        }
+        return true;
+    }
+};
+
+/// `oauth-mux keepalive` — run the warm-loop scheduler over every configured
+/// account: proactively refresh each at ~75% of its token lifetime so an agent
+/// never hits a dead token. SAFE: refreshAccount refuses any account whose
+/// proactive_refresh grant is not admitted (every builtin today), so this only
+/// records refusals until the grant flip. Bounded by `iterations` (default 1).
+fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.KeepaliveArgs) !void {
+    const parsed = config.load(allocator) catch |e| {
+        if (args.json) {
+            try writer.writeAll("{\"error\":\"config not found\"}\n");
+        } else {
+            log.err("keepalive: config load: {s}", .{@errorName(e)});
+        }
+        return e;
+    };
+    defer parsed.deinit();
+    const cfg = parsed.value;
+
+    var health = health_mod.HealthStore.load(allocator, .{});
+    defer health.deinit();
+
+    // Build the warm pool from live config + credential expiry.
+    var pool = try warm_runner.enumeratePool(allocator, cfg, &health);
+    defer pool.deinit();
+    const accounts = try warm_binding.buildPool(allocator, pool.observed, std.time.milliTimestamp());
+    defer allocator.free(accounts); // freed BEFORE pool.deinit (accounts borrow pool keys)
+
+    // Bind the scheduler to the live refresh path (proactive; refuses ungranted).
+    var wr = warm_runner.WarmRunner{ .allocator = allocator, .cfg = cfg, .health = &health };
+    var binding = warm_binding.RefreshBinding{ .do_refresh = warm_runner.WarmRunner.doRefresh, .do_refresh_ctx = &wr };
+    const sched = warm_scheduler.Scheduler{
+        .clock = warm_runner.WarmRunner.clock,
+        .clock_ctx = &wr,
+        .refresh = warm_binding.RefreshBinding.refresh,
+        .refresh_ctx = &binding,
+    };
+
+    var wait_ctx = KeepaliveWait{ .remaining = args.iterations -| 1, .cap_ms = args.interval_ms };
+    const report = warm_binding.runLoop(&sched, accounts, KeepaliveWait.wait, &wait_ctx);
+
+    if (args.json) {
+        try writer.print(
+            "{{\"accounts\":{d},\"ticks\":{d},\"refreshed\":{d},\"failed\":{d},\"died\":{d},\"drained\":{}}}\n",
+            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+        );
+    } else {
+        try writer.print(
+            "keepalive: {d} account(s); {d} tick(s) — refreshed={d} failed={d} died={d} drained={}\n",
+            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+        );
     }
 }
 
