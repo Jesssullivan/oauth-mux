@@ -140,6 +140,24 @@ pub fn readAccountExpiryMs(ctx: *Context) PipelineError!?i64 {
     return null;
 }
 
+/// Read one account's stable identity as `sha256_12hex(account-id claim)`, for the
+/// keepalive shared-identity guard (TIN-2113): two accounts with the same hash
+/// share one single-use refresh-token family, so the warm loop must not rotate
+/// either (provider family-revocation is outside the per-host lock domain).
+/// Returns null when the provider declares no `identity_claim_path` (claude — its
+/// identity lives in .claude.json, not the credential) or the claim is absent.
+/// Caller OWNS the returned hash. Requires `ctx.provider_name` + `ctx.account_name`.
+pub fn readAccountIdentityHash(ctx: *Context) PipelineError!?[]u8 {
+    try resolveProvider(ctx);
+    const prov = ctx.provider_name orelse return error.ProviderNotFound;
+    const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+    const raw = try readSecretRaw(ctx);
+    defer ctx.allocator.free(raw);
+    const account_id = (provider_schema.identityClaimFromCredential(def, raw, ctx.allocator) catch null) orelse return null;
+    defer ctx.allocator.free(account_id);
+    return identity_hash.sha256_12hex(ctx.allocator, account_id) catch return error.OutOfMemory;
+}
+
 /// The retry loop: try each candidate account in priority order.
 /// On failure, record the typed failure and move to the next candidate.
 fn selectWithFallback(ctx: *Context) PipelineError!void {
