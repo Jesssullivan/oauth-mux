@@ -211,8 +211,9 @@ The normal CI workflow has a GloriousFlywheel cache-first lane on
 `tinyland-nix`. Because `GloriousFlywheel` is private, that lane needs
 `GF_ACTIONS_TOKEN` to check out the private composite action.
 
-If `GF_ACTIONS_TOKEN` is absent, CI records a token-gated skip instead of
-claiming a cache-first proof.
+If `GF_ACTIONS_TOKEN` is absent, CI fails closed instead of silently falling
+back to local or GitHub-hosted validation. A token-gated skip is not a
+GloriousFlywheel proof.
 
 oauth-mux wraps the private action command with an inner timeout so runner or
 cache stalls fail with an explicit step diagnostic before the outer workflow

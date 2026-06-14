@@ -198,5 +198,10 @@ available for focused iteration.
    first. If Bazel is added later, copy the GloriousFlywheel shape:
    `cache-contract-strict` before any cache-backed Bazel command, and require
    explicit executor-backed evidence before claiming remote execution.
-4. Add a scheduled or manual live-provider QA workflow only after secret
+4. TIN-2105 is the bounded Zig REAPI candidate. Its first acceptable shape is
+   an `oauth-mux-zig-build-test` target class for `zig build test` and
+   `zig build`, proved by forced GloriousFlywheel REAPI execution with
+   `remote_processes > 0`, worker image digest, and no local fallback. See
+   `docs/spec/oauth-mux-zig-reapi-target-class-plan-2026-06-14.md`.
+5. Add a scheduled or manual live-provider QA workflow only after secret
    scoping is explicit; route probes spend real subscription calls.
