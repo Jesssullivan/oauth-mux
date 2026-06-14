@@ -589,6 +589,13 @@ pub const PipelineError = error{
     RuntimeNotReady,
     ExecFailed,
     ShellDetectionFailed,
+    // TIN-2054: an os-keystore-singleton provider (e.g. Claude on macOS, whose
+    // credentials live in the login keychain keyed off CLAUDE_CONFIG_DIR) was
+    // routed through the tmpdir credential-injection path, which writes a
+    // credential FILE the CLI never reads and points the config-dir env at an
+    // ephemeral dir → a fresh empty keychain slot → guaranteed auth failure.
+    // Such accounts must declare a persistent config_dir.
+    ProviderNeedsConfigDir,
     OutOfMemory,
 };
 
