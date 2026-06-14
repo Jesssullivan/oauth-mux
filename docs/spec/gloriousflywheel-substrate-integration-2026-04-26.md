@@ -48,12 +48,15 @@ The CI workflow now has a cache-first lane:
 Because `GloriousFlywheel` is private, `oauth-mux` does not reference the
 cross-repo composite action directly. The workflow checks out the substrate repo
 into `.gloriousflywheel` with `GF_ACTIONS_TOKEN` and then uses the local
-composite action path. If `GF_ACTIONS_TOKEN` is not configured, the job records
-that the cache-first proof was skipped rather than failing before any useful
-diagnostics can run.
+composite action path.
 
-The existing GitHub-hosted lane remains as a portability check. It still builds
-and tests with Zig directly, and now validates all example configs too.
+Update, 2026-06-13: CI has no GitHub-hosted build/test fallback. The stable check
+names remain (`test`, `cross-compile`, `nix`, and `GloriousFlywheel cache-first
+check`) so branch protection and operator muscle memory do not churn, but every
+build/test/check body now runs on `tinyland-nix` through the GloriousFlywheel
+`nix-job` action. If `GF_ACTIONS_TOKEN` or the Attic/Nix runtime evidence is
+missing, the job fails rather than silently proving the repo on a local hosted
+runner.
 
 ## Remote-First Operator Dispatch
 
