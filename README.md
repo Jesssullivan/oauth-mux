@@ -269,16 +269,26 @@ UX:
 DX:
 
 ```bash
+just build
+just test
+just check
+just e2e
+```
+
+The explicit aliases remain available:
+
+```bash
 just remote-build
 just remote-test
 just remote-check
 just remote-e2e
 ```
 
-Use `just remote-release-proof <ref> <version>` before any registry mutation. Local
-`zig build`, `just build`, and `just check-local` are debugging tools only; they
-are not the proof path for PR, release, or dogfood readiness on low-power
-developer machines.
+Use `just release-proof <version> [ref]` or
+`just remote-release-proof <ref> <version>` before any registry mutation. Local
+`zig build`, `just build-local`, `just test-local`, `just check-local`, and
+`just e2e-local` are debugging tools only; they are not the proof path for PR,
+release, or dogfood readiness on low-power developer machines.
 
 AX:
 

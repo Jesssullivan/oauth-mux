@@ -16,7 +16,10 @@ on:
           - check
           - test
           - build
+          - build-release
+          - build-small
           - e2e
+          - first-run-e2e
           - release-proof
       version:
         description: "Release version for release-proof"
@@ -118,9 +121,21 @@ jobs:
                 run_with_timeout "remote build" "${OMUX_REMOTE_BUILD_TIMEOUT:-20m}" \
                   nix develop --command zig build
                 ;;
+              build-release)
+                run_with_timeout "remote release build" "${OMUX_REMOTE_BUILD_TIMEOUT:-20m}" \
+                  nix develop --command zig build -Doptimize=ReleaseSafe
+                ;;
+              build-small)
+                run_with_timeout "remote small build" "${OMUX_REMOTE_BUILD_TIMEOUT:-20m}" \
+                  nix develop --command zig build -Doptimize=ReleaseSmall
+                ;;
               e2e)
                 run_with_timeout "remote e2e" "${OMUX_REMOTE_E2E_TIMEOUT:-20m}" \
                   nix develop --command just e2e-local
+                ;;
+              first-run-e2e)
+                run_with_timeout "remote first-run e2e" "${OMUX_REMOTE_E2E_TIMEOUT:-20m}" \
+                  nix develop --command just first-run-e2e-local
                 ;;
               release-proof)
                 run_with_timeout "remote release proof" "${OMUX_REMOTE_RELEASE_PROOF_TIMEOUT:-40m}" \

@@ -9,7 +9,10 @@ Targets:
   check          Run just check-local on the GloriousFlywheel runner.
   test           Run zig build test on the GloriousFlywheel runner.
   build          Run zig build on the GloriousFlywheel runner.
+  build-release  Run zig build -Doptimize=ReleaseSafe on the GloriousFlywheel runner.
+  build-small    Run zig build -Doptimize=ReleaseSmall on the GloriousFlywheel runner.
   e2e            Run just e2e-local on the GloriousFlywheel runner.
+  first-run-e2e  Run just first-run-e2e-local on the GloriousFlywheel runner.
   release-proof  Run just release-proof-local on the GloriousFlywheel runner.
 
 The workflow file must already exist on the repository default branch. After
@@ -67,7 +70,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$target" in
-  check|test|build|e2e|release-proof)
+  check|test|build|build-release|build-small|e2e|first-run-e2e|release-proof)
     ;;
   *)
     echo "remote-validate: unsupported target: $target" >&2

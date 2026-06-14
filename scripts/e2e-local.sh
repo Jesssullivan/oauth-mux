@@ -8,7 +8,7 @@ bin="${OMUX_BIN:-$repo_root/zig-out/bin/oauth-mux}"
 
 if [ ! -x "$bin" ]; then
   printf 'missing oauth-mux binary: %s\n' "$bin" >&2
-  printf 'run `zig build` or `just e2e` first\n' >&2
+  printf 'run `zig build` or `just build-local` first\n' >&2
   exit 1
 fi
 

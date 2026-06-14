@@ -178,14 +178,17 @@ UX gates:
 
 DX gates:
 
-- `just remote-check` is the default validation chain for PR and dogfood
-  readiness;
-- `just remote-build`, `just remote-test`, and `just remote-e2e` are the
-  targeted remote proof lanes;
-- `just remote-release-proof <ref> <version>` is required before any registry
+- `just check` is the default validation chain for PR and dogfood readiness; it
+  dispatches the GloriousFlywheel remote lane;
+- `just build`, `just test`, and `just e2e` are targeted remote proof lanes;
+- `just remote-build`, `just remote-test`, `just remote-check`, and
+  `just remote-e2e` remain explicit aliases for the same dispatch path;
+- `just release-proof <version> [ref]` or
+  `just remote-release-proof <ref> <version>` is required before any registry
   mutation;
-- local `just check-local`, `just release-proof <version>`, `nix build .#`, and
-  `nix flake check` are debugging tools only and do not replace remote proof.
+- local `just check-local`, `just release-proof-local <version>`, `nix build .#`,
+  and `nix flake check` are debugging tools only and do not replace remote
+  proof.
 
 AX gates:
 
