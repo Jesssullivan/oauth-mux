@@ -19755,4 +19755,5 @@ comptime {
     _ = @import("identity/claude_identity_tests.zig");
     _ = @import("identity/identity_lane_integration_tests.zig");
     _ = @import("cassettes/claude_oauth_cassette_tests.zig");
+    _ = @import("keepalive/ui_server_tests.zig");
 }
