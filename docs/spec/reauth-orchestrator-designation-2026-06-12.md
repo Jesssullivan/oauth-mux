@@ -41,38 +41,41 @@ executes — and the consent boundary sits exactly between them.**
 
 ### Current state vs target (honesty section)
 
-The review established that **today, approval does not reach the engine**:
+The review established that **approval still does not reach the engine**:
 the mediator's emitted `next_action` for `auth_revoked` points at
 vendor-CLI paths (`oauth-mux codex login-device <slot>`, which shells the
 vendor's own `codex login --device-auth`; `env CLAUDE_CONFIG_DIR=… claude
-/login`), and no production `RunFlowFn` implementation exists for **any**
-engine flow — `reauth.zig` / `device_code.zig` / `browser_launch.zig` /
-`callback_server.zig` are mutually unconnected std-only modules wired only
-into the test root. `command_owned` and `pat_paste` are enum variants with
-no mechanics.
+/login`). As of the flow-composition car, a production `RunFlowFn` exists for
+the `device_code` arm, and `device_code.zig` / `browser_launch.zig` are wired
+into the main test root. That does **not** mean any provider has flipped to
+engine-run yet: no approval verb or UI action invokes the engine, loopback
+still lacks a live `awaitCallback` seam, and `command_owned` / `pat_paste`
+remain non-engine-run by design.
 
 That is acceptable and intended: **vendor-CLI delegation remains a valid
 execution path forever** (it is the contract-pinned path for Claude — see
 Contract note). The engine becomes the executor for flows as they gain
 production bindings, via a named workstream:
 
-**NEW TRAIN CAR — "flow composition" (insert into TIN-2053 before #347/#354
+**TRAIN CAR — "flow composition" (inserted into TIN-2053 before #347/#354
 wiring):**
-- Production `RunFlowFn` impls composing `device_code.zig` (RFC 8628),
-  `callback_server.zig` (loopback PKCE), and `browser_launch.zig` — these
-  modules each own their own seam bundles; the composition layer binds them.
-- `HandoffRecord` gains a correlation id so approval verbs can name what they
-  approve.
-- `MediationKind` gains `command_owned` / `pat_paste` variants and
-  `consentFor` stops hardcoding `.device_login` for every provider.
-- The mediator's `next_action` strings become flow-aware: vendor-CLI command
-  for command-owned providers, `oauth-mux reauth run <handoff-id>` for
-  engine-run flows.
+- Done in #422: production `RunFlowFn` composition for `device_code.zig` (RFC
+  8628), plus main-test-root wiring for `device_code.zig` and
+  `browser_launch.zig`.
+- Still pending: `callback_server.zig` loopback PKCE composition needs a live
+  `awaitCallback` seam, and `browser_launch.zig` is not yet consumed by a live
+  runner.
+- Done in #378: `HandoffRecord` has a correlation id so approval verbs can name
+  what they approve.
+- Done in #378: `MediationKind` gained `command_owned` / `pat_paste` variants
+  and `consentFor` stopped hardcoding `.device_login` for every provider.
+- Still pending: approval verbs / UI wiring that invoke `oauth-mux reauth run
+  <handoff-id>` for engine-run flows.
 
 Graduation implementation note (2026-06-14): #378 now implements the mediator
-side of those deltas and wires the module into the main test root. Flow
-composition is still the next train car before approval can invoke engine-run
-flows.
+side of those deltas and wires the module into the main test root. #422 adds
+the first production flow-composition runner for `device_code`, but approval
+still cannot invoke engine-run flows.
 
 ### Binding map (corrected to the real seams)
 
@@ -91,7 +94,7 @@ Engine seams (`reauth.zig`): `run_flow`, `confirm_identity`, `write_store`,
 
 | Engine seam | Binds to |
 | --- | --- |
-| `run_flow` | the flow-composition layer (new train car): device_code / callback_server / command-owned mechanics, each with its own seam bundle |
+| `run_flow` | the flow-composition layer: `device_code` is composed; loopback / browser launch execution remain pending; command-owned remains vendor delegation |
 | `confirm_identity` | identity-hash compare (`identity_hash.zig`; clone-gate semantics from #344) |
 | `write_store` | atomic `writeFileReplace` 0600; invoked only under the externally-held account lock (see Locks) |
 | `process_spawn` | OS process spawn (browser/vendor-CLI); `browser_launch.zig` has its own seam bundle consumed by `run_flow` impls, not bound here directly |

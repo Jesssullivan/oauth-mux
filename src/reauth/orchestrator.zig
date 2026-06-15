@@ -150,10 +150,10 @@ pub const MediationKind = enum {
 pub const FlowExecution = enum { command_owned, engine_run };
 
 /// Which execution path a provider's re-login flow takes. Both current providers
-/// are command-owned (the engine has no production `RunFlowFn` yet — see the
-/// designation spec's "current state vs target"). Flipping a provider to
-/// `engine_run` is a one-line change gated on the flow-composition car + the
-/// Claude contract amendment.
+/// are command-owned today. A production `RunFlowFn` now exists for the
+/// device-code arm, but no approval surface invokes engine-run flows yet; flipping
+/// a provider to `engine_run` is gated on that approval wiring and, for Claude,
+/// the contract amendment.
 pub fn flowExecutionFor(provider: []const u8) FlowExecution {
     _ = provider; // codex (login-device) + claude (claude /login) are both command-owned today
     return .command_owned;
