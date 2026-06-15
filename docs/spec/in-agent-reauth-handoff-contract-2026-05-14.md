@@ -61,6 +61,7 @@ oauth-mux route explain --profile <profile> --capability <capability> --json
 oauth-mux repair-plan --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat --once --profile <profile> --capability <capability> --json
 oauth-mux stay-afloat handoffs --json
+oauth-mux reauth drain --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
 ```
 
@@ -120,6 +121,23 @@ refresh rather than assuming success:
 ```bash
 oauth-mux stay-afloat refresh --profile <profile> --capability <capability> --json
 ```
+
+The reauth approval surface is command-owned until a provider is explicitly
+flipped to engine-run:
+
+```bash
+oauth-mux reauth start --provider <provider> --account <account> --json
+oauth-mux reauth wait --provider <provider> --account <account> --json
+oauth-mux reauth drain --json
+oauth-mux reauth run <provider>:<account> --json
+```
+
+`reauth start` records the handoff under the per-account repair lock and prints
+the redacted next action; `reauth run` refuses with
+`engine_run_available:false` until an approved provider flow is wired to the
+engine. For browser/device OAuth, the JSON surface includes
+`fresh_browser_context_required` so agents do not reuse ambient personal,
+work, startup, or family browser profiles by accident.
 
 For pending daemon handoffs, agents may acknowledge visibility or clear stale
 records with explicit commands:

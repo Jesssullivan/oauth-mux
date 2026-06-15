@@ -13,6 +13,14 @@ pub const RepairEvent = struct {
     capability: ?[]const u8 = null,
     action: ?[]const u8 = null,
     command: ?[]const u8 = null,
+    engine_run_available: ?bool = null,
+    execution: ?[]const u8 = null,
+    agent_safe: ?bool = null,
+    spends_provider_calls: ?bool = null,
+    budget: ?[]const u8 = null,
+    repair_owner: ?[]const u8 = null,
+    fresh_browser_context_required: ?bool = null,
+    browser_context: ?[]const u8 = null,
     writeback_capability: ?[]const u8 = null,
     automatic_refresh_admitted: ?bool = null,
     outcome: []const u8,
@@ -719,6 +727,22 @@ fn writeEventJson(writer: anytype, event: RepairEvent) !void {
     if (event.action) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"command\":");
     if (event.command) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"engine_run_available\":");
+    if (event.engine_run_available) |value| try writer.writeAll(if (value) "true" else "false") else try writer.writeAll("null");
+    try writer.writeAll(",\"execution\":");
+    if (event.execution) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"agent_safe\":");
+    if (event.agent_safe) |value| try writer.writeAll(if (value) "true" else "false") else try writer.writeAll("null");
+    try writer.writeAll(",\"spends_provider_calls\":");
+    if (event.spends_provider_calls) |value| try writer.writeAll(if (value) "true" else "false") else try writer.writeAll("null");
+    try writer.writeAll(",\"budget\":");
+    if (event.budget) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"repair_owner\":");
+    if (event.repair_owner) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+    try writer.writeAll(",\"fresh_browser_context_required\":");
+    if (event.fresh_browser_context_required) |value| try writer.writeAll(if (value) "true" else "false") else try writer.writeAll("null");
+    try writer.writeAll(",\"browser_context\":");
+    if (event.browser_context) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"writeback_capability\":");
     if (event.writeback_capability) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"automatic_refresh_admitted\":");
@@ -987,6 +1011,38 @@ test "refresh event json carries redacted writeback evidence" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"outcome\":\"persisted\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "access_token") == null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "refresh_token") == null);
+}
+
+test "handoff event json carries redacted consent metadata" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+
+    try writeEventJson(buf.writer(), .{
+        .ts = 44,
+        .kind = "daemon_handoff",
+        .provider = "codex",
+        .account = "max-1",
+        .action = "reauth_start",
+        .command = "oauth-mux codex login-device max-1",
+        .engine_run_available = false,
+        .execution = "command_owned",
+        .agent_safe = false,
+        .spends_provider_calls = false,
+        .budget = "1 interactive login",
+        .repair_owner = "upstream_cli_login",
+        .fresh_browser_context_required = true,
+        .browser_context = "fresh_incognito_or_isolated_profile",
+        .outcome = "handoff_queued",
+        .reason = "reauth_user_mediated",
+        .interactive = true,
+        .mutating = true,
+    });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"daemon_handoff\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"engine_run_available\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"execution\":\"command_owned\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"fresh_browser_context_required\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"browser_context\":\"fresh_incognito_or_isolated_profile\"") != null);
 }
 
 test "sanitized lock file names do not preserve path separators" {

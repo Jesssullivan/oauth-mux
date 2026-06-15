@@ -278,6 +278,13 @@ pub fn main() !void {
             };
         },
 
+        .reauth => |reauth_args| {
+            runReauth(allocator, stdout, reauth_args) catch |e| {
+                log.err("reauth: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .completions => |comp_args| {
             try cli.printCompletions(stdout, comp_args.shell);
         },
@@ -5417,6 +5424,266 @@ fn runStayAfloatHandoff(
     try writer.print("  handoff_resolved: {s}\n", .{if (args.action == .clear and event_recorded and !pending_after) "true" else "false"});
     try writer.print("  event_recorded: {s}\n", .{if (event_recorded) "true" else "false"});
     try writer.print("  reason: {s}\n", .{reason});
+}
+
+fn runReauth(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ReauthArgs,
+) !void {
+    switch (args.action) {
+        .start => try runReauthStart(allocator, writer, args),
+        .wait => try runReauthWait(allocator, writer, args),
+        .drain => try runReauthDrain(allocator, writer, args),
+        .run => try runReauthRun(allocator, writer, args),
+    }
+}
+
+fn runReauthStart(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ReauthArgs,
+) !void {
+    const provider_name = args.provider orelse return error.ConfigValidationError;
+    const account = args.account orelse return error.ConfigValidationError;
+    const key = repair_state.HandoffKey{
+        .profile = args.profile,
+        .provider = provider_name,
+        .account = account,
+        .capability = args.capability,
+    };
+
+    var lock = repair_state.acquireRepairLock(allocator, provider_name, account) catch |e| switch (e) {
+        error.RepairInProgress => {
+            try writeReauthStartResult(writer, allocator, args, false, false, true, false, "repair_lock_busy");
+            return;
+        },
+        else => return e,
+    };
+    defer lock.release();
+
+    const pending_before = try repair_state.hasPendingHandoff(allocator, key);
+    if (!pending_before) {
+        const command = try reauthCommandOwnedCommandAlloc(allocator, provider_name, account);
+        defer allocator.free(command);
+        try repair_state.appendEvent(allocator, .{
+            .kind = "daemon_handoff",
+            .profile = args.profile,
+            .provider = provider_name,
+            .account = account,
+            .capability = args.capability,
+            .action = "reauth_start",
+            .command = command,
+            .engine_run_available = false,
+            .execution = "command_owned",
+            .agent_safe = false,
+            .spends_provider_calls = false,
+            .budget = "1 interactive login",
+            .repair_owner = "upstream_cli_login",
+            .fresh_browser_context_required = reauthNeedsFreshBrowserContext(provider_name),
+            .browser_context = "fresh_incognito_or_isolated_profile",
+            .outcome = "handoff_queued",
+            .reason = "reauth_user_mediated",
+            .ok = false,
+            .executed = false,
+            .interactive = true,
+            .mutating = true,
+        });
+    }
+
+    try writeReauthStartResult(writer, allocator, args, true, !pending_before, false, true, if (pending_before) "handoff_already_pending" else "handoff_queued");
+}
+
+fn runReauthWait(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ReauthArgs,
+) !void {
+    const provider_name = args.provider orelse return error.ConfigValidationError;
+    const account = args.account orelse return error.ConfigValidationError;
+    const key = repair_state.HandoffKey{
+        .profile = args.profile,
+        .provider = provider_name,
+        .account = account,
+        .capability = args.capability,
+    };
+
+    var pending = try repair_state.hasPendingHandoff(allocator, key);
+    const start_ms = std.time.milliTimestamp();
+    while (pending and args.timeout_ms > 0) {
+        const elapsed: u64 = @intCast(@max(0, std.time.milliTimestamp() - start_ms));
+        if (elapsed >= args.timeout_ms) break;
+        const remaining = args.timeout_ms - elapsed;
+        const sleep_ms: u64 = @min(@as(u64, 100), remaining);
+        std.time.sleep(sleep_ms * @as(u64, std.time.ns_per_ms));
+        pending = try repair_state.hasPendingHandoff(allocator, key);
+    }
+
+    try writeReauthWaitResult(writer, args, pending, if (pending) "handoff_pending" else "handoff_resolved");
+}
+
+fn runReauthDrain(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ReauthArgs,
+) !void {
+    _ = args.provider; // Parsed for CLI compatibility; provider filtering is a later queue refinement.
+    try repair_state.writeHandoffs(allocator, writer, args.json, 50, false);
+}
+
+fn runReauthRun(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ReauthArgs,
+) !void {
+    const correlation_id = args.correlation_id orelse return error.ConfigValidationError;
+    const split = std.mem.indexOfScalar(u8, correlation_id, ':');
+    const provider_name = if (split) |idx| blk: {
+        const value = correlation_id[0..idx];
+        if (value.len == 0) return error.ConfigValidationError;
+        break :blk value;
+    } else args.provider orelse return error.ConfigValidationError;
+    const account = if (split) |idx| blk: {
+        const value = correlation_id[idx + 1 ..];
+        if (value.len == 0) return error.ConfigValidationError;
+        break :blk value;
+    } else args.account orelse correlation_id;
+    if (account.len == 0) return error.ConfigValidationError;
+    const command = try reauthCommandOwnedCommandAlloc(allocator, provider_name, account);
+    defer allocator.free(command);
+
+    if (args.json) {
+        try writer.writeAll("{\"ok\":false,\"action\":\"run\",\"correlation_id\":");
+        try std.json.stringify(correlation_id, .{}, writer);
+        try writer.writeAll(",\"provider\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"account\":");
+        try std.json.stringify(account, .{}, writer);
+        try writer.writeAll(",\"engine_run_available\":false,\"execution\":\"command_owned\",\"fresh_browser_context_required\":");
+        try writer.writeAll(if (reauthNeedsFreshBrowserContext(provider_name)) "true" else "false");
+        try writer.writeAll(",\"next_action\":");
+        try std.json.stringify(command, .{}, writer);
+        try writer.writeAll(",\"reason\":\"no_provider_flipped_to_engine_run\"}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux reauth run\n\n");
+    try writer.print("  correlation_id: {s}\n", .{correlation_id});
+    try writer.writeAll("  engine_run_available: false\n");
+    try writer.writeAll("  execution: command_owned\n");
+    try writer.print("  fresh_browser_context_required: {s}\n", .{if (reauthNeedsFreshBrowserContext(provider_name)) "true" else "false"});
+    try writer.print("  next_action: {s}\n", .{command});
+    try writer.writeAll("  reason: no_provider_flipped_to_engine_run\n");
+}
+
+fn writeReauthStartResult(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    args: cli.Command.ReauthArgs,
+    ok: bool,
+    queued: bool,
+    lock_busy: bool,
+    pending: bool,
+    reason: []const u8,
+) !void {
+    const provider_name = args.provider orelse "";
+    const account = args.account orelse "";
+    const correlation_id = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ provider_name, account });
+    defer allocator.free(correlation_id);
+    const command = try reauthCommandOwnedCommandAlloc(allocator, provider_name, account);
+    defer allocator.free(command);
+
+    if (args.json) {
+        try writer.writeAll("{\"ok\":");
+        try writer.writeAll(if (ok) "true" else "false");
+        try writer.writeAll(",\"action\":\"start\",\"profile\":");
+        try writeOptionalJsonString(writer, args.profile);
+        try writer.writeAll(",\"provider\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"account\":");
+        try std.json.stringify(account, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        try writeOptionalJsonString(writer, args.capability);
+        try writer.writeAll(",\"correlation_id\":");
+        try std.json.stringify(correlation_id, .{}, writer);
+        try writer.writeAll(",\"handoff_queued\":");
+        try writer.writeAll(if (queued) "true" else "false");
+        try writer.writeAll(",\"handoff_pending\":");
+        try writer.writeAll(if (pending) "true" else "false");
+        try writer.writeAll(",\"lock_busy\":");
+        try writer.writeAll(if (lock_busy) "true" else "false");
+        try writer.writeAll(",\"engine_run_available\":false,\"execution\":\"command_owned\",\"agent_safe\":false,\"interactive\":true,\"mutating\":true,\"spends_provider_calls\":false,\"budget\":\"1 interactive login\",\"repair_owner\":\"upstream_cli_login\",\"fresh_browser_context_required\":");
+        try writer.writeAll(if (reauthNeedsFreshBrowserContext(provider_name)) "true" else "false");
+        try writer.writeAll(",\"browser_context\":\"fresh_incognito_or_isolated_profile\",\"next_action\":");
+        try std.json.stringify(command, .{}, writer);
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(reason, .{}, writer);
+        try writer.writeAll("}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux reauth start\n\n");
+    try writer.print("  ok: {s}\n", .{if (ok) "true" else "false"});
+    try writer.print("  provider: {s}\n", .{provider_name});
+    try writer.print("  account: {s}\n", .{account});
+    if (args.profile) |profile| try writer.print("  profile: {s}\n", .{profile});
+    if (args.capability) |capability| try writer.print("  capability: {s}\n", .{capability});
+    try writer.print("  correlation_id: {s}\n", .{correlation_id});
+    try writer.print("  handoff_queued: {s}\n", .{if (queued) "true" else "false"});
+    try writer.print("  handoff_pending: {s}\n", .{if (pending) "true" else "false"});
+    try writer.print("  lock_busy: {s}\n", .{if (lock_busy) "true" else "false"});
+    try writer.writeAll("  execution: command_owned\n");
+    try writer.print("  fresh_browser_context_required: {s}\n", .{if (reauthNeedsFreshBrowserContext(provider_name)) "true" else "false"});
+    try writer.writeAll("  browser_context: fresh_incognito_or_isolated_profile\n");
+    try writer.print("  next_action: {s}\n", .{command});
+    try writer.print("  reason: {s}\n", .{reason});
+}
+
+fn writeReauthWaitResult(
+    writer: anytype,
+    args: cli.Command.ReauthArgs,
+    pending: bool,
+    reason: []const u8,
+) !void {
+    const provider_name = args.provider orelse "";
+    const account = args.account orelse "";
+
+    if (args.json) {
+        try writer.writeAll("{\"ok\":true,\"action\":\"wait\",\"profile\":");
+        try writeOptionalJsonString(writer, args.profile);
+        try writer.writeAll(",\"provider\":");
+        try std.json.stringify(provider_name, .{}, writer);
+        try writer.writeAll(",\"account\":");
+        try std.json.stringify(account, .{}, writer);
+        try writer.writeAll(",\"capability\":");
+        try writeOptionalJsonString(writer, args.capability);
+        try writer.writeAll(",\"handoff_pending\":");
+        try writer.writeAll(if (pending) "true" else "false");
+        try writer.writeAll(",\"reason\":");
+        try std.json.stringify(reason, .{}, writer);
+        try writer.writeAll("}\n");
+        return;
+    }
+
+    try writer.writeAll("oauth-mux reauth wait\n\n");
+    try writer.print("  provider: {s}\n", .{provider_name});
+    try writer.print("  account: {s}\n", .{account});
+    try writer.print("  handoff_pending: {s}\n", .{if (pending) "true" else "false"});
+    try writer.print("  reason: {s}\n", .{reason});
+}
+
+fn reauthCommandOwnedCommandAlloc(allocator: std.mem.Allocator, provider_name: []const u8, account: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, provider_name, "codex")) {
+        return try std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{account});
+    }
+    if (std.mem.eql(u8, provider_name, "claude")) {
+        return try std.fmt.allocPrint(allocator, "oauth-mux enroll plan claude --account {s} --json", .{account});
+    }
+    return try std.fmt.allocPrint(allocator, "oauth-mux enroll plan {s} --account {s} --json", .{ provider_name, account });
+}
+
+fn reauthNeedsFreshBrowserContext(provider_name: []const u8) bool {
+    return std.mem.eql(u8, provider_name, "codex");
 }
 
 fn daemonTickMessage(args: cli.Command.DaemonTickArgs) []const u8 {
