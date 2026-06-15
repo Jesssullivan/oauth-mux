@@ -40,9 +40,8 @@ pub const BrowserLaunchError = error{
 /// Result of a launch, so callers/tests can introspect what happened.
 pub const LaunchResult = struct {
     tier: BrowserTier,
-    /// For Tier 2: the ephemeral profile dir that was created (and then deleted).
-    /// Null for Tier 1. Borrowed view into engine-owned memory; valid until the
-    /// LaunchResult is dropped (the dir itself is already deleted by launch()).
+    /// Reserved for future lifecycle reporting. Today `launch()` deletes the
+    /// ephemeral profile before returning and reports null for both tiers.
     ephemeral_dir: ?[]const u8 = null,
 };
 

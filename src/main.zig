@@ -19837,6 +19837,9 @@ comptime {
     _ = @import("reauth/orchestrator.zig"); // graduated from draft (TIN-2048/TIN-2064): tests now run in CI
     _ = @import("enroll/tests.zig");
     _ = @import("enroll/callback_server_tests.zig");
+    _ = @import("enroll/device_code.zig"); // unparked (flow-composition car): RFC 8628 device flow, tests now run in CI
+    _ = @import("enroll/browser_launch.zig"); // unparked (flow-composition car): cookieless launcher, tests now run in CI
+    _ = @import("enroll/flow_composition.zig"); // flow-composition car: production RunFlowFn (device_code composed)
     _ = @import("enroll/claude_reauth_tests.zig");
     _ = @import("enroll/web_ui_tests.zig");
     _ = @import("keepalive/warm_scheduler_tests.zig");
