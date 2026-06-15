@@ -26,6 +26,7 @@ pub const Command = union(enum) {
     stay_afloat: DaemonTickArgs,
     stay_afloat_handoff: HandoffArgs,
     keepalive: KeepaliveArgs,
+    reauth: ReauthArgs,
     config_validate,
     config_path,
     init: InitArgs,
@@ -320,6 +321,24 @@ pub const Command = union(enum) {
         json: bool = false,
     };
 
+    pub const ReauthAction = enum {
+        start,
+        wait,
+        drain,
+        run,
+    };
+
+    pub const ReauthArgs = struct {
+        action: ReauthAction = .start,
+        profile: ?[]const u8 = null,
+        provider: ?[]const u8 = null,
+        account: ?[]const u8 = null,
+        capability: ?[]const u8 = null,
+        correlation_id: ?[]const u8 = null,
+        timeout_ms: u64 = 0,
+        json: bool = false,
+    };
+
     pub const HandoffAction = enum {
         ack,
         clear,
@@ -361,6 +380,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "route")) return parseRoute(rest);
     if (eql(cmd, "stay-afloat")) return parseStayAfloat(rest);
     if (eql(cmd, "keepalive")) return parseKeepalive(rest);
+    if (eql(cmd, "reauth")) return parseReauth(rest);
     if (eql(cmd, "config")) return parseConfig(rest);
     if (eql(cmd, "init")) return parseInit(rest);
     if (eql(cmd, "setup")) return parseSetup(rest);
@@ -950,6 +970,54 @@ fn parseKeepalive(args: []const []const u8) Command {
     return .{ .keepalive = result };
 }
 
+fn parseReauth(args: []const []const u8) Command {
+    var result = Command.ReauthArgs{};
+    var i: usize = 0;
+    if (args.len > 0) {
+        if (eql(args[0], "start")) {
+            result.action = .start;
+            i = 1;
+        } else if (eql(args[0], "wait")) {
+            result.action = .wait;
+            i = 1;
+        } else if (eql(args[0], "drain")) {
+            result.action = .drain;
+            i = 1;
+        } else if (eql(args[0], "run")) {
+            result.action = .run;
+            i = 1;
+            if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+                result.correlation_id = args[i];
+                i += 1;
+            }
+        }
+    }
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--profile") or eql(args[i], "-p")) {
+            i += 1;
+            if (i < args.len) result.profile = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        } else if (eql(args[i], "--account")) {
+            i += 1;
+            if (i < args.len) result.account = args[i];
+        } else if (eql(args[i], "--capability")) {
+            i += 1;
+            if (i < args.len) result.capability = args[i];
+        } else if (eql(args[i], "--correlation-id")) {
+            i += 1;
+            if (i < args.len) result.correlation_id = args[i];
+        } else if (eql(args[i], "--timeout-ms")) {
+            i += 1;
+            if (i < args.len) result.timeout_ms = std.fmt.parseInt(u64, args[i], 10) catch result.timeout_ms;
+        } else if (eql(args[i], "--json")) {
+            result.json = true;
+        }
+    }
+    return .{ .reauth = result };
+}
+
 fn parseStayAfloatObserve(args: []const []const u8) Command {
     var result = Command.ObserveArgs{};
     var i: usize = 0;
@@ -1353,6 +1421,14 @@ pub fn printUsage(writer: anytype) !void {
         \\      Show pending user-mediated stay-afloat handoffs; --all includes history.
         \\  stay-afloat handoff ack|clear --provider <name> --account <name> [--profile <name>] [--capability <name>] [--json]
         \\      Acknowledge or clear a pending user-mediated handoff.
+        \\  reauth start --provider <name> --account <name> [--profile <name>] [--capability <name>] [--json]
+        \\      Queue/report a redacted user-mediated reauth handoff; refuses if the per-account lock is busy.
+        \\  reauth wait --provider <name> --account <name> [--profile <name>] [--capability <name>] [--timeout-ms <ms>] [--json]
+        \\      Report whether a user-mediated reauth handoff is still pending.
+        \\  reauth drain [--json]
+        \\      List pending reauth/stay-afloat handoffs; does not run login flows.
+        \\  reauth run <correlation-id> [--json]
+        \\      Approval-surface placeholder for engine-run flows; refuses until a provider is explicitly flipped.
         \\
         \\  config validate    Validate the configuration file.
         \\  config path        Print the config file path.
@@ -2397,6 +2473,50 @@ test "parse stay-afloat handoff clear" {
     }
 }
 
+test "parse reauth start" {
+    const args = [_][]const u8{ "reauth", "start", "--profile", "codex-max", "--provider", "codex", "--account", "max-1", "--capability", "codex-max", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .reauth => |reauth| {
+            try std.testing.expectEqual(Command.ReauthAction.start, reauth.action);
+            try std.testing.expectEqualStrings("codex-max", reauth.profile.?);
+            try std.testing.expectEqualStrings("codex", reauth.provider.?);
+            try std.testing.expectEqualStrings("max-1", reauth.account.?);
+            try std.testing.expectEqualStrings("codex-max", reauth.capability.?);
+            try std.testing.expect(reauth.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse reauth wait timeout" {
+    const args = [_][]const u8{ "reauth", "wait", "--provider", "codex", "--account", "max-1", "--timeout-ms", "250", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .reauth => |reauth| {
+            try std.testing.expectEqual(Command.ReauthAction.wait, reauth.action);
+            try std.testing.expectEqualStrings("codex", reauth.provider.?);
+            try std.testing.expectEqualStrings("max-1", reauth.account.?);
+            try std.testing.expectEqual(@as(u64, 250), reauth.timeout_ms);
+            try std.testing.expect(reauth.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse reauth run correlation id" {
+    const args = [_][]const u8{ "reauth", "run", "codex:max-1", "--json" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .reauth => |reauth| {
+            try std.testing.expectEqual(Command.ReauthAction.run, reauth.action);
+            try std.testing.expectEqualStrings("codex:max-1", reauth.correlation_id.?);
+            try std.testing.expect(reauth.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
 test "parse daemon tick bounded loop" {
     const args = [_][]const u8{ "daemon", "tick", "--loop", "--execute", "--iterations", "3", "--interval-ms", "250", "--profile", "codex-max", "--capability", "codex-max", "--json" };
     const cmd = parse(&args);
@@ -2558,6 +2678,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a repair -d 'Run admitted repair actions'
             \\complete -c oauth-mux -n __fish_use_subcommand -a route -d 'Select or explain routes'
             \\complete -c oauth-mux -n __fish_use_subcommand -a stay-afloat -d 'Run stay-afloat planner'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a reauth -d 'User-mediated reauth handoffs'
             \\complete -c oauth-mux -n __fish_use_subcommand -a config -d 'Config operations'
             \\complete -c oauth-mux -n __fish_use_subcommand -a init -d 'Generate config'
             \\complete -c oauth-mux -n __fish_use_subcommand -a setup -d 'First-run setup'
@@ -2566,10 +2687,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a mcp -d 'Run broker MCP server'
             \\complete -c oauth-mux -n __fish_use_subcommand -a version -d 'Print version'
             \\complete -c oauth-mux -n __fish_use_subcommand -a completions -d 'Generate completions'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec probe route stay-afloat' -l account -d 'Account name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat reauth' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat reauth' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec probe route stay-afloat reauth' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from exec env probe route stay-afloat reauth' -l capability -d 'Route capability' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from probe' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -a runtime -d 'Runtime readiness checks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from doctor' -l json -d 'JSON output'
@@ -2612,6 +2733,10 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -a 'next launch observe handoffs handoff refresh' -d 'Stay-afloat subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from handoff' -a 'ack clear' -d 'Handoff action'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from reauth' -a 'start wait drain run' -d 'Reauth subcommand'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from reauth' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from reauth' -l timeout-ms -d 'Bounded wait timeout' -r
+            \\complete -c oauth-mux -n '__fish_seen_subcommand_from reauth' -l correlation-id -d 'Reauth handoff correlation id' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l once -d 'Run one stay-afloat tick'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l loop -d 'Run bounded foreground stay-afloat ticks'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l execute -d 'Execute one admitted non-interactive action'

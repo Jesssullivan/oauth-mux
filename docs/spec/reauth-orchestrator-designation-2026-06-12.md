@@ -77,6 +77,14 @@ side of those deltas and wires the module into the main test root. #422 adds
 the first production flow-composition runner for `device_code`, but approval
 still cannot invoke engine-run flows.
 
+Approval-surface implementation note (2026-06-14): TIN-1806 now has the first
+CLI surface shape: `oauth-mux reauth start|wait|drain|run`. `start` queues a
+redacted user-mediated handoff under the per-account repair lock, `wait`
+observes pending/resolved state, `drain` lists pending handoffs, and `run`
+refuses with `engine_run_available:false` until a provider is explicitly
+flipped to engine-run. This is intentionally command-owned only; it does not
+silently invoke browser, device, vendor CLI, or credential-write flows.
+
 ### Binding map (corrected to the real seams)
 
 Mediator seams (`orchestrator.zig`): `clock`, `read_evidence`, `refresh`,
