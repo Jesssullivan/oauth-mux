@@ -268,6 +268,12 @@ flywheel-zig-build *ARGS:
 flywheel-zig-test *ARGS:
     ./scripts/gloriousflywheel-bazel.sh test //:zig_build_test {{ARGS}}
 
+flywheel-zig-proof-dispatch *ARGS:
+    ./scripts/dispatch-zig-reapi-proof.sh {{ARGS}}
+
+flywheel-zig-proof-verify RUN_ID *ARGS:
+    ./scripts/verify-zig-reapi-proof.sh --run-id {{RUN_ID}} {{ARGS}}
+
 # ── Broker MCP smoke (provider-neutral regression catch-net) ──
 
 smoke-broker:

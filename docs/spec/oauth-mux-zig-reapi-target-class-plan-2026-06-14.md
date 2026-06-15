@@ -155,6 +155,34 @@ TIN-2105 is complete only when a forced GloriousFlywheel proof artifact cites:
 Only after that proof should GloriousFlywheel target-class eligibility mention
 `oauth-mux-zig-build-test`.
 
+## Spoke Proof Dispatch
+
+`oauth-mux` now has spoke-side helpers for the next proof gate:
+
+```bash
+just flywheel-zig-proof-dispatch --image-digest sha256:<gf-reapi-cell-digest>
+just flywheel-zig-proof-verify <run-id> --image-digest sha256:<gf-reapi-cell-digest>
+```
+
+The dispatch helper calls GloriousFlywheel's `gf-reapi-cell-proof.yml` with:
+
+- `consumer_repository=Jesssullivan/oauth-mux`
+- `workspace_path=consumer-workspace`
+- `target=//:zig_build_test`
+- `bazel_command=build`
+- `force_execution=true`
+- `apply=true` for the Linux proof endpoint
+
+The verifier helper delegates to GloriousFlywheel's
+`download-gf-reapi-proof-artifact.sh` and requires forced execution,
+`gloriousflywheel-rbe-linux-x86_64`, the expected target, and the expected
+worker image digest when supplied.
+
+These scripts are convenience wrappers only. The proof authority remains the
+GloriousFlywheel artifact verifier and `proof-result.json`. Dispatching a
+workflow, seeing a cache hit, or passing oauth-mux's normal hosted CI still
+does not count as REAPI eligibility.
+
 ## Risk Controls
 
 - Do not replace current Just/Nix remote proof lanes before the target class is
