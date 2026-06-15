@@ -291,6 +291,7 @@ RuntimeReadiness =
   | session_unavailable(path)
   | sandbox_blocked(operation)
   | needs_reauth(methods, reason)
+  | reauth_in_progress(account, started_at)
   | repair_in_progress(account, started_at)
 ```
 

@@ -3843,6 +3843,13 @@ fn repairActionFor(
             .budget = .free_local,
         },
         .needs_reauth => return reauthAction(route, def),
+        .reauth_in_progress => return .{
+            .kind = .wait_for_repair,
+            .severity = "info",
+            .message = "reauth handoff is already in progress",
+            .mediation = .wait,
+            .budget = .free_local,
+        },
         .repair_in_progress => return .{
             .kind = .wait_for_repair,
             .severity = "info",
@@ -7736,6 +7743,11 @@ fn writeRuntimeReadinessRedactedJson(writer: anytype, readiness: types.RuntimeRe
             try writer.writeAll(",\"methods\":");
             try writeStringArrayJson(writer, info.methods);
         },
+        .reauth_in_progress => |info| {
+            try writer.writeAll(",\"account\":");
+            try std.json.stringify(info.account, .{}, writer);
+            try writer.print(",\"started_at\":{d}", .{info.started_at});
+        },
         .repair_in_progress => |info| {
             try writer.writeAll(",\"account\":");
             try std.json.stringify(info.account, .{}, writer);
@@ -8611,6 +8623,11 @@ fn writeRuntimeReadinessJson(writer: anytype, readiness: types.RuntimeReadiness)
             try writeStringArrayJson(writer, info.methods);
             try writer.writeAll(",\"reason\":");
             try std.json.stringify(info.reason, .{}, writer);
+        },
+        .reauth_in_progress => |info| {
+            try writer.writeAll(",\"account\":");
+            try std.json.stringify(info.account, .{}, writer);
+            try writer.print(",\"started_at\":{d}", .{info.started_at});
         },
         .repair_in_progress => |info| {
             try writer.writeAll(",\"account\":");

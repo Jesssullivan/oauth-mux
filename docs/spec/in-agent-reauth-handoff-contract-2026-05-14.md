@@ -139,6 +139,19 @@ engine. For browser/device OAuth, the JSON surface includes
 `fresh_browser_context_required` so agents do not reuse ambient personal,
 work, startup, or family browser profiles by accident.
 
+Managed child processes and command probes receive the same reauth coordination
+breadcrumbs as environment variables:
+
+- `OMUX_REAUTH_JOB`: stable `provider:account` correlation id.
+- `OMUX_REAUTH_LOCK_DIR`: the per-account flock directory shared with
+  refresh/session/repair.
+- `OMUX_REAUTH_UI_URL`: operator UI URL when one is provided; empty when no
+  live UI is bound.
+
+Runtime diagnostics report a pending auth handoff as `reauth_in_progress`,
+distinct from generic `repair_in_progress`, so other agents wait for the user
+handoff instead of launching duplicate login attempts.
+
 For pending daemon handoffs, agents may acknowledge visibility or clear stale
 records with explicit commands:
 
