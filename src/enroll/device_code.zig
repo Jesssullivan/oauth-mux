@@ -253,8 +253,8 @@ pub const DeviceCodeFlow = struct {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.InvalidToken => return error.IdentityExtractFailed,
             };
-            // identity.email / identity.account_id are owned; on any failure below
-            // we must free them. There is no failure below, so they pass through.
+            // identity.email / identity.account_id are owned; token dupes below may
+            // still fail, so those failure branches must free identity explicitly.
 
             const expires_at: ?i64 = if (token_resp.expires_in) |e|
                 self.seams.clock(self.seams.clock_ctx) + e
