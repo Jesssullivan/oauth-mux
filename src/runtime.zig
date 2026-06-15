@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const config = @import("config.zig");
+const env = @import("env.zig");
 const paths = @import("paths.zig");
 const provider_schema = @import("provider_schema.zig");
 const repair_state = @import("repair_state.zig");
@@ -153,6 +154,13 @@ pub fn routeReadiness(
 
     const prov = cfg.providers.map.get(route.provider) orelse return .{ .session_unavailable = "provider_config_missing" };
     const account = prov.accounts.map.get(route.account) orelse return .{ .session_unavailable = "account_config_missing" };
+    if (try repair_state.pendingHandoffProgress(allocator, .{
+        .provider = route.provider,
+        .account = route.account,
+        .capability = route.capability,
+    })) |progress| {
+        return .{ .reauth_in_progress = progress };
+    }
     if (try repair_state.probeRepairLock(allocator, route.provider, route.account)) |progress| {
         return .{ .repair_in_progress = progress };
     }
@@ -176,6 +184,13 @@ pub fn routeReadinessHoldingLock(
 
     const prov = cfg.providers.map.get(route.provider) orelse return .{ .session_unavailable = "provider_config_missing" };
     const account = prov.accounts.map.get(route.account) orelse return .{ .session_unavailable = "account_config_missing" };
+    if (try repair_state.pendingHandoffProgress(allocator, .{
+        .provider = route.provider,
+        .account = route.account,
+        .capability = route.capability,
+    })) |progress| {
+        return .{ .reauth_in_progress = progress };
+    }
     const info = try accountInfo(allocator, prov, account, def, config.resolveProviderKind(cfg, route.provider));
     return info.readiness;
 }
@@ -327,6 +342,7 @@ pub fn summary(readiness: types.RuntimeReadiness) []const u8 {
         .session_unavailable => "session_unavailable",
         .sandbox_blocked => "sandbox_blocked",
         .needs_reauth => "needs_reauth",
+        .reauth_in_progress => "reauth_in_progress",
         .repair_in_progress => "repair_in_progress",
     };
 }
@@ -464,6 +480,62 @@ test "routeReadiness reports missing command capability binary" {
     const readiness = try providerReadiness(std.testing.allocator, def, "status");
     switch (readiness) {
         .missing_binary => |binary| try std.testing.expectEqualStrings(missing_binary, binary),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "routeReadiness reports pending reauth handoff distinctly" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    var overrides = std.process.EnvMap.init(std.testing.allocator);
+    defer overrides.deinit();
+    try overrides.put("OMUX_STATE_DIR", root);
+    try overrides.put("OMUX_RUNTIME_DIR", root);
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
+
+    const cfg_json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": { "secret": { "backend": "env", "variable": "OMUX_TEST_SECRET_THAT_IS_NOT_SET" } }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    try repair_state.appendEvent(std.testing.allocator, .{
+        .kind = "daemon_handoff",
+        .provider = "toy",
+        .account = "default",
+        .capability = "status",
+        .action = "reauth_start",
+        .outcome = "handoff_queued",
+        .reason = "reauth_user_mediated",
+        .interactive = true,
+        .mutating = true,
+    });
+
+    const readiness = try routeReadiness(std.testing.allocator, parsed.value, .{
+        .provider = "toy",
+        .account = "default",
+        .capability = "status",
+    }, .{ .name = "toy" });
+    switch (readiness) {
+        .reauth_in_progress => |info| {
+            try std.testing.expectEqualStrings("default", info.account);
+            try std.testing.expect(info.started_at > 0);
+        },
         else => return error.TestUnexpectedResult,
     }
 }

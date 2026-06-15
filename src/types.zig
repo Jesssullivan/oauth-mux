@@ -309,6 +309,7 @@ pub const RuntimeReadiness = union(enum) {
     session_unavailable: []const u8,
     sandbox_blocked: []const u8,
     needs_reauth: ReauthInfo,
+    reauth_in_progress: RepairProgress,
     repair_in_progress: RepairProgress,
 
     pub const PathOperation = struct {

@@ -724,8 +724,18 @@ fn buildProbeEnv(
     try probe_env.addBorrowed("OMUX_ACTIVE_ACCOUNT", acct);
     try probe_env.addBorrowed("OMUX_ACTIVE_CAPABILITY", plan.capability);
     if (ctx.profile_name) |profile| try probe_env.addBorrowed("OMUX_ACTIVE_PROFILE", profile);
+    try addProbeReauthEnv(ctx, &probe_env, prov, acct);
 
     return probe_env;
+}
+
+fn addProbeReauthEnv(ctx: *Context, probe_env: *ProbeEnv, prov: []const u8, acct: []const u8) !void {
+    const job = try repair_state.reauthJobAlloc(ctx.allocator, prov, acct);
+    try probe_env.addOwned("OMUX_REAUTH_JOB", job);
+    const lock_dir = try repair_state.reauthLocksDir(ctx.allocator);
+    try probe_env.addOwned("OMUX_REAUTH_LOCK_DIR", lock_dir);
+    const ui_url = (try env.get(ctx.allocator, "OMUX_REAUTH_UI_URL")) orelse try ctx.allocator.dupe(u8, "");
+    try probe_env.addOwned("OMUX_REAUTH_UI_URL", ui_url);
 }
 
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
@@ -1109,6 +1119,20 @@ fn injectEnv(ctx: *Context) PipelineError!void {
     if (ctx.capability_name) |capability| {
         ctx.env_pairs.append(.{ "OMUX_ACTIVE_CAPABILITY", capability }) catch return error.OutOfMemory;
     }
+    try addReauthEnv(ctx, prov_name, acct_name);
+}
+
+fn addReauthEnv(ctx: *Context, prov_name: []const u8, acct_name: []const u8) PipelineError!void {
+    const job = repair_state.reauthJobAlloc(ctx.allocator, prov_name, acct_name) catch return error.OutOfMemory;
+    ctx.addEnvOwned("OMUX_REAUTH_JOB", job) catch return error.OutOfMemory;
+    const lock_dir = repair_state.reauthLocksDir(ctx.allocator) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.RuntimeNotReady,
+    };
+    ctx.addEnvOwned("OMUX_REAUTH_LOCK_DIR", lock_dir) catch return error.OutOfMemory;
+    const ui_url = (env.get(ctx.allocator, "OMUX_REAUTH_UI_URL") catch return error.OutOfMemory) orelse
+        (ctx.allocator.dupe(u8, "") catch return error.OutOfMemory);
+    ctx.addEnvOwned("OMUX_REAUTH_UI_URL", ui_url) catch return error.OutOfMemory;
 }
 
 fn providerConfigDirEnv(
@@ -1253,6 +1277,9 @@ test "runEnv uses configured provider definition" {
     try expectEnvPair(ctx.env_pairs.items, "TOY_TOKEN", "toy-at");
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_PROVIDER", "toy");
     try expectEnvPair(ctx.env_pairs.items, "OMUX_ACTIVE_ACCOUNT", "default");
+    try expectEnvPair(ctx.env_pairs.items, "OMUX_REAUTH_JOB", "toy:default");
+    try expectEnvKey(ctx.env_pairs.items, "OMUX_REAUTH_LOCK_DIR");
+    try expectEnvPair(ctx.env_pairs.items, "OMUX_REAUTH_UI_URL", "");
 }
 
 test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
@@ -1641,7 +1668,7 @@ test "runProbe executes auth none command probe without reading missing secret" 
         \\          "probe": {
         \\            "transport": "command",
         \\            "auth": "none",
-        \\            "command": ["sh", "-c", "printf '{\"loggedIn\":true}'"],
+        \\            "command": ["sh", "-c", "test \"$OMUX_REAUTH_JOB\" = \"toy:default\" && test -n \"$OMUX_REAUTH_LOCK_DIR\" && test \"$OMUX_REAUTH_UI_URL\" = \"\" && printf '{\"loggedIn\":true}'"],
         \\            "budget": "free_command"
         \\          }
         \\        }
@@ -2008,6 +2035,13 @@ fn expectEnvPair(pairs: []const [2][]const u8, key: []const u8, value: []const u
             try std.testing.expectEqualStrings(value, pair[1]);
             return;
         }
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectEnvKey(pairs: []const [2][]const u8, key: []const u8) !void {
+    for (pairs) |pair| {
+        if (std.mem.eql(u8, pair[0], key)) return;
     }
     return error.TestUnexpectedResult;
 }

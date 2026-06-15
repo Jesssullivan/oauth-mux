@@ -33,6 +33,7 @@ const broker_types = @import("../../broker/types.zig");
 const broker_loader = @import("../../broker_loader.zig");
 const cli = @import("../../cli.zig");
 const config_mod = @import("../../config.zig");
+const env_mod = @import("../../env.zig");
 const health_mod = @import("../../health.zig");
 const identity_hash = @import("../../identity_hash.zig");
 const paths = @import("../../paths.zig");
@@ -1665,6 +1666,16 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     const account_only = elected.id[std.mem.indexOfScalar(u8, elected.id, ':').? + 1 ..];
     try env_map.put("OMUX_ACTIVE_ACCOUNT", account_only);
     if (launch_defaults.profile) |p| try env_map.put("OMUX_ACTIVE_PROFILE", p);
+    if (route_capability) |capability| try env_map.put("OMUX_ACTIVE_CAPABILITY", capability);
+    const reauth_job = try repair_state.reauthJobAlloc(allocator, "codex", account_only);
+    defer allocator.free(reauth_job);
+    try env_map.put("OMUX_REAUTH_JOB", reauth_job);
+    const reauth_lock_dir = try repair_state.reauthLocksDir(allocator);
+    defer allocator.free(reauth_lock_dir);
+    try env_map.put("OMUX_REAUTH_LOCK_DIR", reauth_lock_dir);
+    const reauth_ui_url = (try env_mod.get(allocator, "OMUX_REAUTH_UI_URL")) orelse try allocator.dupe(u8, "");
+    defer allocator.free(reauth_ui_url);
+    try env_map.put("OMUX_REAUTH_UI_URL", reauth_ui_url);
     try launch_timer.mark(status_writer, emit_status, "env_build");
 
     traceManagedSessionStart(allocator, elected.id, launch_defaults.profile, opts.forward_argv.len, resume_request.mode, &codex_home);

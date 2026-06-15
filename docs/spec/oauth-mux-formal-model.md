@@ -213,6 +213,7 @@ RuntimeReadiness =
   | session_unavailable
   | sandbox_blocked
   | needs_reauth
+  | reauth_in_progress
   | repair_in_progress
 ```
 

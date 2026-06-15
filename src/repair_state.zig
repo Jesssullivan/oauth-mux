@@ -219,11 +219,15 @@ pub fn readDaemonSnapshotAlloc(allocator: std.mem.Allocator) !?[]const u8 {
 }
 
 pub fn hasPendingHandoff(allocator: std.mem.Allocator, key: HandoffKey) !bool {
+    return (try pendingHandoffProgress(allocator, key)) != null;
+}
+
+pub fn pendingHandoffProgress(allocator: std.mem.Allocator, key: HandoffKey) !?types.RuntimeReadiness.RepairProgress {
     const path = try eventsPath(allocator);
     defer allocator.free(path);
 
     const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
-        error.FileNotFound => return false,
+        error.FileNotFound => return null,
         else => return e,
     };
     defer file.close();
@@ -231,19 +235,25 @@ pub fn hasPendingHandoff(allocator: std.mem.Allocator, key: HandoffKey) !bool {
     const bytes = try file.readToEndAlloc(allocator, 1024 * 1024);
     defer allocator.free(bytes);
 
-    var pending = false;
+    var pending_started_at: ?i64 = null;
     var it = std.mem.splitScalar(u8, bytes, '\n');
     while (it.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0 or !eventRouteKeyMatchesHandoffKey(trimmed, key)) continue;
         if (isQueuedHandoffEvent(trimmed)) {
-            pending = true;
+            pending_started_at = eventFieldInt(trimmed, "ts") orelse 0;
         } else if (eventResolvesHandoff(trimmed)) {
-            pending = false;
+            pending_started_at = null;
         }
     }
 
-    return pending;
+    if (pending_started_at) |started_at| {
+        return .{
+            .account = key.account,
+            .started_at = started_at,
+        };
+    }
+    return null;
 }
 
 fn writeEventView(
@@ -449,6 +459,16 @@ fn eventFieldBool(line: []const u8, field: []const u8) ?bool {
     return null;
 }
 
+fn eventFieldInt(line: []const u8, field: []const u8) ?i64 {
+    var idx = eventFieldValueStart(line, field) orelse return null;
+    while (idx < line.len and line[idx] == ' ') : (idx += 1) {}
+    const start = idx;
+    if (idx < line.len and line[idx] == '-') idx += 1;
+    while (idx < line.len and std.ascii.isDigit(line[idx])) : (idx += 1) {}
+    if (idx == start or (idx == start + 1 and line[start] == '-')) return null;
+    return std.fmt.parseInt(i64, line[start..idx], 10) catch null;
+}
+
 fn eventFieldString(line: []const u8, field: []const u8) ?[]const u8 {
     var idx = eventFieldValueStart(line, field) orelse return null;
     if (std.mem.startsWith(u8, line[idx..], "null")) return null;
@@ -641,6 +661,18 @@ fn locksDir(allocator: std.mem.Allocator) ![]const u8 {
     const dir = try paths.runtimeDir(allocator);
     defer allocator.free(dir);
     return std.fs.path.join(allocator, &.{ dir, "repair-locks" });
+}
+
+// TIN-1806: reauth jobs serialize against the same per-account flock domain as
+// refresh/session/repair. Exporting this as "reauth" metadata gives child
+// processes and probes a stable place to coordinate without inventing a second
+// lock namespace that would fail to protect the credential store.
+pub fn reauthLocksDir(allocator: std.mem.Allocator) ![]const u8 {
+    return locksDir(allocator);
+}
+
+pub fn reauthJobAlloc(allocator: std.mem.Allocator, provider: []const u8, account: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}:{s}", .{ provider, account });
 }
 
 pub fn lockPath(allocator: std.mem.Allocator, provider: []const u8, account: []const u8) ![]const u8 {
