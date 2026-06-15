@@ -239,7 +239,8 @@ pub const DeviceCodeFlow = struct {
                 error.HttpFailed => return error.HttpFailed,
                 error.InvalidResponse => return error.InvalidResponse,
             };
-            // From here the token response is owned by us; free on every exit.
+            // From here (on a successful poll) the token response is owned by us;
+            // free on every exit. The error `continue`s above never reach here.
             defer self.freeTokenResp(token_resp);
 
             // 4. Extract identity for the confirm gate.
@@ -260,16 +261,27 @@ pub const DeviceCodeFlow = struct {
             else
                 null;
 
-            return FlowResult{
-                .access_token = self.allocator.dupe(u8, token_resp.access_token) catch {
+            // Allocate to locals with explicit cleanup so a later dupe failure
+            // never leaks an earlier one. (Building these inline in the struct
+            // literal leaked `access_token` when the `refresh_token` dupe OOM'd.)
+            const access_owned = self.allocator.dupe(u8, token_resp.access_token) catch {
+                self.allocator.free(identity.email);
+                self.allocator.free(identity.account_id);
+                return error.OutOfMemory;
+            };
+            const refresh_owned: ?[]const u8 = if (token_resp.refresh_token) |rt|
+                (self.allocator.dupe(u8, rt) catch {
+                    self.allocator.free(access_owned);
                     self.allocator.free(identity.email);
                     self.allocator.free(identity.account_id);
                     return error.OutOfMemory;
-                },
-                .refresh_token = if (token_resp.refresh_token) |rt|
-                    (self.allocator.dupe(u8, rt) catch return error.OutOfMemory)
-                else
-                    null,
+                })
+            else
+                null;
+
+            return FlowResult{
+                .access_token = access_owned,
+                .refresh_token = refresh_owned,
                 .expires_at = expires_at,
                 .email = identity.email,
                 .account_id = identity.account_id,
@@ -317,11 +329,21 @@ const Harness = struct {
         _: []const u8,
     ) error{ HttpFailed, InvalidResponse, OutOfMemory }!DeviceAuthResponse {
         _ = ctx;
+        // OOM-safe: free earlier dupes if a later one fails (so checkAllAllocationFailures
+        // exercises run()'s leak-safety, not a leak in this fake).
+        const dc = try allocator.dupe(u8, "DEVICE_CODE_SECRET_OK_TO_HOLD");
+        errdefer allocator.free(dc);
+        const uc = try allocator.dupe(u8, "WXYZ-7788");
+        errdefer allocator.free(uc);
+        const vu = try allocator.dupe(u8, "https://auth.example.com/device");
+        errdefer allocator.free(vu);
+        const vuc = try allocator.dupe(u8, "https://auth.example.com/device?user_code=WXYZ-7788");
+        errdefer allocator.free(vuc);
         return .{
-            .device_code = try allocator.dupe(u8, "DEVICE_CODE_SECRET_OK_TO_HOLD"),
-            .user_code = try allocator.dupe(u8, "WXYZ-7788"),
-            .verification_uri = try allocator.dupe(u8, "https://auth.example.com/device"),
-            .verification_uri_complete = try allocator.dupe(u8, "https://auth.example.com/device?user_code=WXYZ-7788"),
+            .device_code = dc,
+            .user_code = uc,
+            .verification_uri = vu,
+            .verification_uri_complete = vuc,
             .expires_in = 600,
             .interval = 5,
         };
@@ -353,13 +375,25 @@ const Harness = struct {
             .pending => error.AuthorizationPending,
             .slow_down => error.SlowDown,
             .denied => error.AuthorizationDenied,
-            .success => .{
-                .access_token = try allocator.dupe(u8, "ACCESS_secret"),
-                .token_type = try allocator.dupe(u8, "Bearer"),
-                .expires_in = 3600,
-                .refresh_token = try allocator.dupe(u8, "REFRESH_secret"),
-                .scope = try allocator.dupe(u8, "openid email"),
-                .id_token = try allocator.dupe(u8, "header.payload.sig"),
+            .success => blk: {
+                const at = try allocator.dupe(u8, "ACCESS_secret");
+                errdefer allocator.free(at);
+                const tt = try allocator.dupe(u8, "Bearer");
+                errdefer allocator.free(tt);
+                const rt = try allocator.dupe(u8, "REFRESH_secret");
+                errdefer allocator.free(rt);
+                const sc = try allocator.dupe(u8, "openid email");
+                errdefer allocator.free(sc);
+                const it = try allocator.dupe(u8, "header.payload.sig");
+                errdefer allocator.free(it); // redundant today (last alloc), kept for insert-safety
+                break :blk .{
+                    .access_token = at,
+                    .token_type = tt,
+                    .expires_in = 3600,
+                    .refresh_token = rt,
+                    .scope = sc,
+                    .id_token = it,
+                };
             },
         };
     }
@@ -371,10 +405,10 @@ const Harness = struct {
         _: []const u8,
     ) error{ InvalidToken, OutOfMemory }!IdentityInfo {
         _ = ctx;
-        return .{
-            .email = try allocator.dupe(u8, "dev@example.com"),
-            .account_id = try allocator.dupe(u8, "acct_dev_42"),
-        };
+        const em = try allocator.dupe(u8, "dev@example.com");
+        errdefer allocator.free(em);
+        const aid = try allocator.dupe(u8, "acct_dev_42");
+        return .{ .email = em, .account_id = aid };
     }
 
     fn display(
@@ -426,6 +460,23 @@ fn freeResult(allocator: std.mem.Allocator, r: FlowResult) void {
     if (r.refresh_token) |rt| allocator.free(rt);
     allocator.free(r.email);
     allocator.free(r.account_id);
+}
+
+/// Drive the flow to success under the given allocator and free the result. Used
+/// by the OOM-safety check below: every allocation in `run()` (including the
+/// FlowResult access/refresh dupes) propagates OutOfMemory and must not leak.
+fn runHappyToCompletion(allocator: std.mem.Allocator) !void {
+    var h = Harness{ .poll_script = &.{.success} };
+    const flow = DeviceCodeFlow.init(allocator, h.seams(), "https://x/device", "https://x/token", "cid", "openid");
+    const r = try flow.run();
+    freeResult(allocator, r);
+}
+
+test "device_code: run() is OOM-safe at every allocation point (regression: FlowResult dupe must not leak access_token)" {
+    // checkAllAllocationFailures re-runs the flow failing at each allocation index
+    // in turn, asserting OutOfMemory is returned AND nothing leaks. Before the fix,
+    // failing on the refresh_token dupe leaked the already-duped access_token.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, runHappyToCompletion, .{});
 }
 
 test "device_code: authorization_pending x2 then success yields token + identity" {
