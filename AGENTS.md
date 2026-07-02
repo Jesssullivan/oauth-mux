@@ -149,4 +149,25 @@ Binary name: `oauth-mux`. Distributed as static binaries for 6 targets:
 - x86_64-macos, aarch64-macos
 - x86_64-windows, aarch64-windows
 
-Packaging: npm (esbuild pattern), Homebrew, deb/rpm (nfpm), curl|sh, GitHub Releases.
+Packaging (real lanes, 2026-07-02): 6 CLI tarballs + curl installer + rpm/deb (nfpm) +
+the `Jesssullivan/homebrew-omux` tap (binary-only Formula) + nix source flake, all off
+GitHub Releases. **npm is RETIRED** — `npm-deprecate.yml` exists to keep it dead; never
+recommend the npm lane. There is no `.app`/`.dmg`/AppImage; systemd/launchd exist only
+as user-wrapper templates.
+
+## Repo Boundary Map
+
+This repo is the **broker runtime authority**. Full matrix with proof anchors:
+`docs/research/omux-foundation-2026-07-02T0532Z.md` (boundary map section).
+
+- `Jesssullivan/oauth-mux` (here): broker/OAuth runtime logic, locks, refresh, resume,
+  provider truth (`src/provider_schema.zig` `proof_status` +
+  `docs/spec/provider-truth-matrix-2026-07-02.md`), release lane and versioning
+  (`build.zig.zon` is the version SSOT).
+- `tinyland-inc/omux.xoxd.ai`: static docs/marketing rendering ONLY. It never owns
+  runtime claims; its provider page must derive from the truth matrix here and may
+  never show a capability as live from another capability's local proof.
+- `Jesssullivan/homebrew-omux`: the brew release surface (binary-only Formula).
+- GloriousFlywheel + `tinyland-inc/ci-templates`: build/cache/RBE and CI-shape
+  authority. Endpoints are environment authority — never baked into rc files.
+- `lab` (sops/age fleet repo): secrets. No secret material ever lands in any omux repo.

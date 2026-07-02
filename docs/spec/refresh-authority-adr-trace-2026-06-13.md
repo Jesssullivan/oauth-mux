@@ -131,3 +131,13 @@ An intermediate project-memory snapshot recorded R4/identity-lock as "SOLVED"
 before TIN-2043 actually landed — it predated the corrected #396 spec. Ground
 truth: the merged spec + git order. R4 was genuinely closed by TIN-2043 (#398),
 the final substrate commit; this trace reflects that final state.
+
+## Correction note (2026-07-02, decision-ledger pattern)
+
+The trace diagram above marks "builtin proactive_refresh GRANT FLIP" as BLOCKED. That
+was true when drawn (2026-06-13) and stale one day later: the flip landed in PR #418
+(2026-06-14, TIN-2057), consent-gated on `allow_proactive_refresh`; the keepalive warm
+loop itself landed in PR #417. The downstream boxes remain accurate: warm-loop **live
+proof** (a committed `docs/evidence/` run) and the TIN-2059 dual-writer live leg are
+still open, and TIN-2057 (golden metric) is unstarted. Read the diagram's BLOCKED
+marker as "flipped 2026-06-14; evidence still owed".

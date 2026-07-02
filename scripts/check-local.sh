@@ -13,6 +13,7 @@ bash -n ./scripts/release-smoke.sh
 bash -n ./scripts/release-handoff.sh
 bash -n ./scripts/remote-validate.sh
 python3 -m py_compile ./scripts/dogfood-process-snapshot.py
+python3 -m py_compile ./scripts/test-refresh-exactly-once.py
 sh -n ./dist/codex-shim.sh
 sh -n ./dist/install.sh
 
@@ -32,6 +33,7 @@ done
 ./scripts/smoke-codex-cli-ux.sh
 ./scripts/smoke-codex-acceptance.sh
 ./scripts/smoke-codex-concurrent-sessions.sh
+./scripts/smoke-codex-refresh-exactly-once.sh
 ./scripts/smoke-codex-child-refresh.sh
 ./scripts/smoke-codex-tier-insufficient.sh
 ./scripts/smoke-codex-all-exhausted.sh
