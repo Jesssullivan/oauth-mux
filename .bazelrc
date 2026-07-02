@@ -7,6 +7,12 @@
 # sole module authority; the legacy WORKSPACE stub was removed 2026-07-02.
 common --enable_bzlmod
 common --noenable_workspace
+
+# Module resolution order (house rule): tinyland-inc/bazel-registry first,
+# then the BCR. Form mirrors site.scaffold's canonical two-registry chain.
+common --registry=https://raw.githubusercontent.com/tinyland-inc/bazel-registry/main/
+common --registry=https://bcr.bazel.build
+
 common --color=yes
 common --curses=yes
 
