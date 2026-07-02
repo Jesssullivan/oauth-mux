@@ -1,0 +1,54 @@
+{
+	"$schema": "https://raw.githubusercontent.com/tinyland-inc/site.scaffold/main/docs/schemas/tinyland-repo-manifest.schema.json",
+	"schema_version": 1,
+	"repo": {
+		"name": "oauth-mux",
+		"github": "Jesssullivan/oauth-mux",
+		"description": "Race-safe, embeddable, resumable multi-harness OAuth broker (omux). Pure Zig; brokers/multiplexes OAuth so agent harnesses stay afloat across accounts.",
+		"linear": {
+			"initiative": "omux Foundations: Race-Safe, Embeddable, Resumable Multi-Harness OAuth Broker",
+			"issue": "TIN-2105"
+		}
+	},
+	"taxonomy": {
+		"primary_role": "zig-runtime",
+		"layers": ["org-wide-repo-contract", "bazel-package-cache-rbe", "zig-runtime"]
+	},
+	"enrollment": {
+		"forgeScope": "Jesssullivan",
+		"operatorOverlay": "jesssullivan-infra",
+		"executionPool": "tinyland-nix",
+		"substrateMode": "shared-cache-backed",
+		"notes": "TIN-2105 bounded Zig REAPI candidate: targets //:zig_build //:zig_build_test tagged gloriousflywheel-rbe-candidate (target-class=oauth-mux-zig-build-test). Candidate until a forced executor-backed proof promotes the class."
+	},
+	"contracts": {
+		"agent_contract": "AGENTS.md",
+		"just": "justfile",
+		"nix": "flake.nix",
+		"github_actions": ".github/workflows",
+		"secrets_scan": "gitleaks",
+		"conformance": "just check"
+	},
+	"boundaries": {
+		"owns_runtime_backend": true,
+		"owns_auth": true,
+		"owns_payments": false,
+		"owns_activitypub_delivery": false,
+		"owns_live_broker_fetch": true,
+		"owns_static_projection_ingest": false,
+		"owns_gitops_apply": false,
+		"owns_cloudflare_mutation": false,
+		"owns_bazel_module_authority": false
+	},
+	"authorities": {
+		"content_authority": "tinyland-inc/omux.xoxd.ai",
+		"gitops_receiver": "tinyland-inc/blahaj",
+		"ci_templates": "tinyland-inc/ci-templates",
+		"cache_rbe_authority": "tinyland-inc/GloriousFlywheel",
+		"package_registry": "tinyland-inc/bazel-registry"
+	},
+	"known_divergences": {
+		"ci_templates_not_consumed": "Workflows predate ci-templates@v2.0.0; migration workstream tracked under the omux Foundations release-packaging project.",
+		"repo_local_flywheel_wrapper": "scripts/gloriousflywheel-bazel.sh is a repo-local dispatcher; house direction is sourcing the canonical wrapper from nix develop / profile-tools."
+	}
+}
