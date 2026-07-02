@@ -11,6 +11,7 @@ VERIFY="$ROOT/scripts/verify-zig-reapi-proof.sh"
 BAZELRC="$ROOT/.bazelrc"
 FLYWHEEL_RC="$ROOT/.bazelrc.flywheel"
 BUILD_FILE="$ROOT/BUILD.bazel"
+MODULE_FILE="$ROOT/MODULE.bazel"
 BAZELIGNORE="$ROOT/.bazelignore"
 JUSTFILE="$ROOT/justfile"
 
@@ -34,8 +35,17 @@ for rc in "$BAZELRC" "$FLYWHEEL_RC"; do
   fi
 done
 
-grep -F -- '--noenable_bzlmod' "$BAZELRC" >/dev/null ||
-  fail "dependency-free candidate graph must not opt into checked-in Bzlmod deps"
+grep -F -- '--enable_bzlmod' "$BAZELRC" >/dev/null ||
+  fail "Bzlmod-only posture requires --enable_bzlmod in .bazelrc"
+grep -F -- '--noenable_workspace' "$BAZELRC" >/dev/null ||
+  fail "Bzlmod-only posture requires --noenable_workspace in .bazelrc"
+if [ -e "$ROOT/WORKSPACE.bazel" ] || [ -e "$ROOT/WORKSPACE" ]; then
+  fail "WORKSPACE must not exist; MODULE.bazel is the sole module authority"
+fi
+[ -f "$MODULE_FILE" ] || fail "missing MODULE.bazel"
+if grep -F 'bazel_dep' "$MODULE_FILE" >/dev/null; then
+  fail "dependency-free candidate graph must not declare checked-in bazel_dep entries"
+fi
 grep -F 'build:ci-cached --config=flywheel-executor' "$BAZELRC" >/dev/null ||
   fail "GF proof workflow invokes --config=ci-cached; it must map to the candidate executor config"
 
