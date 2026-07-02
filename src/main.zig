@@ -20129,6 +20129,8 @@ comptime {
     _ = @import("keepalive/warm_scheduler_tests.zig");
     _ = @import("keepalive/warm_binding_tests.zig");
     _ = @import("keepalive/warm_runner_tests.zig");
+    _ = @import("keepalive/refresh_race_tests.zig"); // TIN-2059 in-process actor-gate race
+
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
     _ = @import("identity/identity_lane_integration_tests.zig");
