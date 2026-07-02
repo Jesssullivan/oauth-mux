@@ -44,21 +44,32 @@ TMP="$(mktemp -d -t omux-smoke-broker.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/state"
 
-# A minimal codex auth.json shape so credential/materialize can resolve
-# fixture token strings. id_token payload encodes plan_type=pro and
-# chatgpt_account_is_fedramp=true so the JWT decoder is exercised.
-cat >"$TMP/auth.json" <<'EOF'
+# Minimal codex auth.json shapes so credential/materialize can resolve
+# fixture token strings. The distinct account_id values are part of this smoke:
+# spare_fallback_ready means spare upstream identity, not a duplicate config slot.
+# id_token payload encodes plan_type=pro and chatgpt_account_is_fedramp=true so
+# the JWT decoder is exercised.
+write_auth_json() {
+    local path=$1
+    local access_token=$2
+    local account_id=$3
+    cat >"$path" <<EOF
 {
   "OPENAI_API_KEY": null,
   "tokens": {
     "id_token": "h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s",
-    "access_token": "AT-smoke-1",
+    "access_token": "$access_token",
     "refresh_token": "RT-smoke",
-    "account_id": "acc-smoke-1"
+    "account_id": "$account_id"
   },
   "auth_mode": "Chatgpt"
 }
 EOF
+}
+
+write_auth_json "$TMP/auth-max-1.json" "AT-smoke-1" "acc-smoke-1"
+write_auth_json "$TMP/auth-max-2.json" "AT-smoke-2" "acc-smoke-2"
+write_auth_json "$TMP/auth-max-3.json" "AT-smoke-3" "acc-smoke-3"
 
 cat >"$TMP/state/health.json" <<'EOF'
 {
@@ -93,9 +104,9 @@ cat >"$TMP/config.json" <<EOF
     "codex": {
       "kind": "codex",
       "accounts": {
-        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "$TMP/auth.json" } },
-        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "$TMP/auth.json" } },
-        "max-3": { "priority": 10, "secret": { "backend": "file", "path": "$TMP/auth.json" } }
+        "max-1": { "priority": 30, "secret": { "backend": "file", "path": "$TMP/auth-max-1.json" } },
+        "max-2": { "priority": 20, "secret": { "backend": "file", "path": "$TMP/auth-max-2.json" } },
+        "max-3": { "priority": 10, "secret": { "backend": "file", "path": "$TMP/auth-max-3.json" } }
       }
     }
   },
@@ -161,6 +172,9 @@ r=$(send_rpc "$(jq -nc --arg sid "$sid" '{jsonrpc:"2.0",id:3,method:"account/lis
 assert_eq "account/list count" "3" "$(echo "$r" | jq -r '.result.accounts | length')"
 assert_eq "account/list[0].id" "codex:max-1" "$(echo "$r" | jq -r .result.accounts[0].id)"
 assert_eq "account/list[0].liveness" "live" "$(echo "$r" | jq -r .result.accounts[0].liveness)"
+# TIN-1822 dedupe surface: distinct identities are NOT marked as duplicates.
+assert_eq "account/list[0].duplicate_of" "null" "$(echo "$r" | jq -r .result.accounts[0].duplicate_of)"
+assert_eq "account/list duplicate count" "0" "$(echo "$r" | jq -r '[.result.accounts[] | select(.duplicate_of != null)] | length')"
 
 # 4. account/select picks max-1
 r=$(send_rpc "$(jq -nc --arg sid "$sid" '{jsonrpc:"2.0",id:4,method:"account/select",params:{session_id:$sid,profile:"codex-max",capability:"codex-max"}}')")
