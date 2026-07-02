@@ -1,0 +1,74 @@
+# oauth-mux gitleaks config — mirrors the tinyland house shape
+# (prompts-enqueue/.gitleaks.toml, itself mirroring site.scaffold canonical).
+#
+# Consumed by:
+#   - `just secrets-scan-dir` (working-tree scan via scripts/secrets-scan-dir.sh)
+#   - ci-templates spoke-ci secrets-scan action (history scan) once the
+#     ci-templates latch lands (tinyland.repo.json: contracts.secrets_scan).
+#
+# NOTE on test/fixtures/: deliberately NOT allowlisted. The in-repo
+# fixture_redaction scanner (src/fixture_redaction.zig) forbids token
+# markers on disk (neutralize-on-disk + reconstruct-in-memory cassettes),
+# so fixtures are marker-free by construction and both scanners stay armed
+# without fighting.
+
+[extend]
+useDefault = true
+
+# NOTE on examples/: deliberately NOT allowlisted (the house-shape
+# examples/samples/templates path allowlist is dropped here). oauth-mux
+# examples/*.config.json carry no literal secret placeholders — every secret
+# is an env-var name or a file path — so a whole-directory allowlist would
+# only ever mask a real planted token. If an example someday needs a literal
+# placeholder, allowlist that exact placeholder shape as a regex, not the
+# directory.
+
+[[allowlists]]
+description = "gitignored build/runtime outputs (working-tree `gitleaks dir` scans only; never committed)"
+paths = [
+  '''(^|/)zig-out/''',
+  '''(^|/)\.zig-cache/''',
+  '''(^|/)\.direnv/''',
+  '''(^|/)\.claude/''',
+  '''(^|/)\.gloriousflywheel/''',
+  '''(^|/)\.gstack/''',
+  '''(^|/)captures/''',
+  '''(^|/)dist/(build|out|dogfood|live-qa|codex-canary|soak)/''',
+  '''(^|/)result(-[^/]+)?/''',
+]
+
+[[allowlists]]
+description = "known non-secret infra literals (public recipients, placeholders, store paths)"
+regexes = [
+  '''age1[0-9a-z]{58}''',          # age PUBLIC recipients are not secret
+  '''\{\{[^}]*vault[^}]*\}\}''',    # vault-style placeholders
+  '''/nix/store/[0-9a-z]{32}-''',   # nix store paths
+]
+
+[[allowlists]]
+description = "oauth-mux synthetic test tokens (structurally fake: 1-3 char JWT header + 1-3 char signature; real JWTs have long base64 segments)"
+regexes = [
+  '''\b(h|hdr)\.eyJ[A-Za-z0-9_\-]+\.(s|sig)\b''',  # fake JWTs in smokes/tests
+  '''dGhlIHNhbXBsZSBub25jZQ==''',                   # RFC 6455 sample WebSocket nonce (scripts/test-stub-codex.py)
+]
+
+# Tinyland provider token shapes (narrow rules so real leaks are caught).
+[[rules]]
+id = "tinyland-cloudflare-api-token"
+description = "Cloudflare API token"
+regex = '''cfat_[0-9A-Za-z_\-]{20,}'''
+
+[[rules]]
+id = "tinyland-porkbun-api-key"
+description = "Porkbun API/secret key"
+regex = '''(pk1_|sk1_)[0-9a-f]{40,}'''
+
+[[rules]]
+id = "tinyland-age-secret-key"
+description = "age SECRET key (never commit)"
+regex = '''AGE-SECRET-KEY-1[0-9A-Z]{58}'''
+
+[[rules]]
+id = "tinyland-tailscale-auth-key"
+description = "Tailscale auth/api/client key"
+regex = '''tskey-(auth|api|client)-[0-9A-Za-z\-]{10,}'''

@@ -12,10 +12,15 @@ bash -n ./scripts/release-local.sh
 bash -n ./scripts/release-smoke.sh
 bash -n ./scripts/release-handoff.sh
 bash -n ./scripts/remote-validate.sh
+sh -n ./scripts/endpoint-free-check.sh
+sh -n ./scripts/secrets-scan-dir.sh
 python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 python3 -m py_compile ./scripts/test-refresh-exactly-once.py
 sh -n ./dist/codex-shim.sh
 sh -n ./dist/install.sh
+
+./scripts/endpoint-free-check.sh
+./scripts/secrets-scan-dir.sh
 
 for cfg in examples/*.config.json; do
   OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
