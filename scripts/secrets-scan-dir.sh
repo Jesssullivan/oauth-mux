@@ -2,9 +2,10 @@
 # secrets-scan-dir — gitleaks over the working tree (directory scan, not git
 # history), using the repo's .gitleaks.toml (house tinyland config shape).
 #
-# The ci-templates spoke-ci secrets-scan action runs `gitleaks detect`
-# (history) with the same config; this recipe is the local working-tree
-# complement so a leak is caught before it is ever committed.
+# Once the ci-templates latch lands (tinyland.repo.json:
+# contracts.secrets_scan), the spoke-ci secrets-scan action will run
+# `gitleaks detect` (history) with this same config; today this recipe is
+# the only armed gitleaks gate, catching a leak before it is committed.
 #
 # Tooling: gitleaks is provided by the nix devShell (flake.nix). If it is
 # missing from PATH we re-exec under `nix develop`; if nix is also missing

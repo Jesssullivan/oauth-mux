@@ -48,28 +48,37 @@ fi
 # comment-stripped content.
 #
 #   grpcs?://                    raw gRPC endpoint literal (any host)
-#   --remote_cache=              cache endpoint pinned in config (any scheme,
-#                                including https://) — must come from
+#   --remote_cache(=| )          cache endpoint pinned in config (any scheme,
+#                                including https://; = and space-separated flag
+#                                forms both) — must come from
 #                                BAZEL_REMOTE_CACHE at runtime
-#   --remote_executor=           executor endpoint pinned in config — must
+#   --remote_executor(=| )       executor endpoint pinned in config — must
 #                                come from BAZEL_REMOTE_EXECUTOR at runtime
-#   --remote_(cache_|exec_)?header=   auth/header material in config — comes
+#   remote_cache/_executor ... https?://
+#                                endpoint URL bound to a remote_cache /
+#                                remote_executor key in any non-flag shape
+#                                (JSON/TOML/Starlark value)
+#   --remote_(cache_|exec_)?header(=| )   auth/header material in config — comes
 #                                from BAZEL_REMOTE_*HEADER env at runtime
-#   --bes_backend=|--bes_results_url=  build-event endpoints pinned in config
+#   --bes_backend(=| )|--bes_results_url(=| )  build-event endpoints pinned in config
 #   gf-reapi|gf-rbe              GloriousFlywheel REAPI cell host names
 #   svc\.cluster\.local          in-cluster service DNS (GF executor cells)
 #   attic-cache-dev|fuzzy-dev|attic\.dev-cluster|attic\.tinyland
 #                                stale/live GF attic cache host names
 #   [a-z0-9-]+\.ts\.net          tailnet host names
+# NOTE: the table is split on "|", so regexes must not use alternation;
+# use bracket expressions ([[:space:]=] catches both --flag=v and --flag v).
 patterns='
 grpcs?://|raw gRPC endpoint literal
---remote_cache=|remote cache endpoint pinned in config (use BAZEL_REMOTE_CACHE)
---remote_executor=|remote executor endpoint pinned in config (use BAZEL_REMOTE_EXECUTOR)
---remote_header=|remote auth header pinned in config (use BAZEL_REMOTE_HEADER)
---remote_cache_header=|cache auth header pinned in config (use BAZEL_REMOTE_CACHE_HEADER)
---remote_exec_header=|executor auth header pinned in config (use BAZEL_REMOTE_EXEC_HEADER)
---bes_backend=|BES backend endpoint pinned in config
---bes_results_url=|BES results endpoint pinned in config
+--remote_cache[[:space:]=]|remote cache endpoint pinned in config (use BAZEL_REMOTE_CACHE)
+--remote_executor[[:space:]=]|remote executor endpoint pinned in config (use BAZEL_REMOTE_EXECUTOR)
+remote_cache[^_[:alnum:]].*https?://|remote cache https endpoint value in config (use BAZEL_REMOTE_CACHE)
+remote_executor[^_[:alnum:]].*https?://|remote executor https endpoint value in config (use BAZEL_REMOTE_EXECUTOR)
+--remote_header[[:space:]=]|remote auth header pinned in config (use BAZEL_REMOTE_HEADER)
+--remote_cache_header[[:space:]=]|cache auth header pinned in config (use BAZEL_REMOTE_CACHE_HEADER)
+--remote_exec_header[[:space:]=]|executor auth header pinned in config (use BAZEL_REMOTE_EXEC_HEADER)
+--bes_backend[[:space:]=]|BES backend endpoint pinned in config
+--bes_results_url[[:space:]=]|BES results endpoint pinned in config
 gf-reapi|GloriousFlywheel REAPI cell host name
 gf-rbe|GloriousFlywheel RBE host name
 svc\.cluster\.local|in-cluster service DNS name
@@ -81,9 +90,10 @@ attic\.tinyland|GF attic cache host name
 '
 
 for f in $files; do
-  # Strip full-line comments (#-first lines in rc files, """-free heredoc-style
-  # module docstrings stay: they contain no flags by construction).
-  stripped="$(grep -Ev '^[[:space:]]*#' "$f" || true)"
+  # Blank out full-line comments (#-first lines in rc files) instead of
+  # deleting them so the line count is preserved and the grep -Ein diagnostic
+  # below reports true file line numbers.
+  stripped="$(sed -E 's/^[[:space:]]*#.*$//' "$f")"
   printf '%s\n' "$patterns" | while IFS='|' read -r regex reason; do
     [ -n "$regex" ] || continue
     if printf '%s\n' "$stripped" | grep -Eiq -- "$regex"; then

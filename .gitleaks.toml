@@ -15,13 +15,13 @@
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "template / example / sample files"
-paths = [
-  '''.*\.template$''',
-  '''.*\.example$''',
-  '''(^|/)(examples?|samples?|templates?)/''',
-]
+# NOTE on examples/: deliberately NOT allowlisted (the house-shape
+# examples/samples/templates path allowlist is dropped here). oauth-mux
+# examples/*.config.json carry no literal secret placeholders — every secret
+# is an env-var name or a file path — so a whole-directory allowlist would
+# only ever mask a real planted token. If an example someday needs a literal
+# placeholder, allowlist that exact placeholder shape as a regex, not the
+# directory.
 
 [[allowlists]]
 description = "gitignored build/runtime outputs (working-tree `gitleaks dir` scans only; never committed)"
