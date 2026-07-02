@@ -125,17 +125,26 @@ const RouteHealthMatch = struct {
 //     identity. The identity is treated dead unless some live sibling's
 //     evidence is STRICTLY newer than every death observation (the
 //     re-auth repair shape — authMaterialRepairHealth stamps the auth
-//     material mtime). Unverifiable liveness (no timestamp) never
-//     launders death evidence; that is exactly the #338 stale-live trap.
+//     material mtime). Unverifiable evidence never launders in EITHER
+//     direction: liveness with no timestamp cannot outrank death (the
+//     #338 stale-live trap), and death with no timestamp cannot be
+//     outranked by any liveness (it cannot be ordered, so fail closed).
 //   * Dead identity → every slot in the group is demoted dead (one dead
-//     identity, not N routes).
-//   * Live identity → exactly ONE slot stays electable (prefer the first
-//     selectable+available slot, else the first selectable, else the
-//     first slot — it keeps its `next_eligible_at` so a quota-exhausted
-//     identity still recovers via refreshTimeBased, counted ONCE per
-//     TIN-1812). Every other slot is demoted: selectable=false and
-//     next_eligible_at=null, so refreshTimeBased can never resurrect a
-//     duplicate as second capacity.
+//     identity, not N routes), stamped `duplicate_of` the sibling whose
+//     death evidence won.
+//   * Live identity → exactly ONE slot stays electable: the keeper is
+//     the most RECOVERABLE, freshest-evidenced sibling (keeperOutranks:
+//     never a dead slot — dead is sticky and would bury the identity's
+//     recovery clock forever; then a slot that can return via elect or
+//     refreshTimeBased over one that cannot; then the newest
+//     health_observed_at — a fresh quota_exhausted with its reset clock
+//     outranks a stale "available" probe; ties prefer the slot usable
+//     now, then pool order). The keeper keeps its `next_eligible_at` so
+//     a quota-exhausted identity still recovers via refreshTimeBased,
+//     counted ONCE per TIN-1812. Every other slot is demoted:
+//     selectable=false, next_eligible_at=null, and `duplicate_of` set to
+//     the keeper so refreshTimeBased (and any later broker-MCP mark) can
+//     never resurrect a duplicate as second capacity.
 //
 // A slot whose identity cannot be read (missing credential, or a
 // provider with no identity claim — claude's identity lives in
@@ -156,9 +165,18 @@ fn applyIdentityDedupe(
     for (pool.accounts.items) |*entry| {
         if (entry.account_id_hash != null) continue;
         const colon = std.mem.indexOfScalar(u8, entry.id, ':') orelse continue;
+        const provider_name = entry.id[0..colon];
+        // A provider with no identity claim in its credential (claude — its
+        // identity lives in .claude.json, not the credential) can never
+        // contribute a hash, so skip BEFORE touching the secret backend:
+        // populate must not spawn `security find-generic-password`
+        // subprocesses (keychain prompt / wedge risk, TIN-2060) or log
+        // secret-read errors for accounts that cannot group anyway.
+        const def = config_mod.resolveProviderDefinition(cfg, provider_name);
+        if (def.credential.identity_claim_path == null) continue;
         var pctx = pipeline.Context.init(pool.allocator, cfg, store);
         defer pctx.deinit();
-        pctx.provider_name = entry.id[0..colon];
+        pctx.provider_name = provider_name;
         pctx.account_name = entry.id[colon + 1 ..];
         if (pipeline.readAccountIdentityHash(&pctx) catch null) |hash| {
             // Owned by pool.allocator already; pool.deinit frees it.
@@ -188,7 +206,7 @@ fn applyIdentityDedupe(
     // Collision slices are arena-owned; freed with the arena.
 
     // Pass 3: resolve each duplicate-identity group.
-    for (collisions) |collision| resolveDuplicateIdentityGroup(pool, collision);
+    for (collisions) |collision| try resolveDuplicateIdentityGroup(pool, collision);
 }
 
 fn igLivenessForPoolEntry(entry: broker.account_pool_mod.AccountSummary) ig.Liveness {
@@ -213,18 +231,30 @@ fn collisionHasAccount(collision: ig.Collision, id: []const u8) bool {
     return false;
 }
 
-fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collision) void {
+fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collision) !void {
     // Death arbitration (see the module comment above applyIdentityDedupe).
     var any_dead = false;
-    var newest_dead_ts: i64 = 0; // null death timestamps count as epoch
+    var untimestamped_dead = false;
+    var newest_dead_ts: i64 = 0;
+    var newest_dead_id: ?[]const u8 = null;
     var newest_live_ts: ?i64 = null;
     for (pool.accounts.items) |entry| {
         if (!collisionHasAccount(collision, entry.id)) continue;
         switch (entry.liveness) {
             .dead => {
                 any_dead = true;
-                const ts = entry.health_observed_at orelse 0;
-                if (ts > newest_dead_ts) newest_dead_ts = ts;
+                if (entry.health_observed_at) |ts| {
+                    if (newest_dead_id == null or ts > newest_dead_ts) {
+                        newest_dead_ts = ts;
+                        newest_dead_id = entry.id;
+                    }
+                } else {
+                    // Untimestamped death evidence cannot be ordered, so no
+                    // liveness can be proven strictly newer than it — fail
+                    // closed rather than let stale liveness launder it.
+                    untimestamped_dead = true;
+                    if (newest_dead_id == null) newest_dead_id = entry.id;
+                }
             },
             .live => {
                 if (entry.health_observed_at) |ts| {
@@ -235,7 +265,7 @@ fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collis
         }
     }
     const identity_dead = any_dead and
-        (newest_live_ts == null or newest_live_ts.? <= newest_dead_ts);
+        (untimestamped_dead or newest_live_ts == null or newest_live_ts.? <= newest_dead_ts);
 
     if (identity_dead) {
         for (pool.accounts.items) |*entry| {
@@ -245,6 +275,9 @@ fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collis
                     "broker: route {s} shares one OAuth identity with a slot carrying newer auth-death evidence — one dead identity, not {d} routes (GH #338 / TIN-1822); resolve the duplicate config slot",
                     .{ entry.id, collision.accounts.len },
                 );
+                // Durable operator evidence: name the sibling whose death
+                // evidence demoted this live-looking route.
+                if (newest_dead_id) |source| try setPoolEntryDuplicateOf(pool, entry, source);
             }
             entry.liveness = .dead;
             entry.availability = .unknown;
@@ -254,28 +287,22 @@ fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collis
         return;
     }
 
-    // Live (or transiently unavailable) identity: keep exactly one slot.
-    var keeper: ?*broker.account_pool_mod.AccountSummary = null;
-    var keeper_selectable: ?*broker.account_pool_mod.AccountSummary = null;
-    var keeper_first: ?*broker.account_pool_mod.AccountSummary = null;
+    // Live (or transiently unavailable) identity: keep exactly ONE slot —
+    // the most recoverable, freshest-evidenced sibling (keeperOutranks).
+    var kept: ?*broker.account_pool_mod.AccountSummary = null;
     for (pool.accounts.items) |*entry| {
         if (!collisionHasAccount(collision, entry.id)) continue;
-        if (keeper_first == null) keeper_first = entry;
-        if (entry.selectable and keeper_selectable == null) keeper_selectable = entry;
-        if (entry.selectable and entry.availability == .available) {
-            keeper = entry;
-            break;
-        }
+        if (kept == null or keeperOutranks(entry, kept.?)) kept = entry;
     }
-    const kept = keeper orelse keeper_selectable orelse keeper_first orelse return;
+    const kept_entry = kept orelse return;
 
     for (pool.accounts.items) |*entry| {
         if (!collisionHasAccount(collision, entry.id)) continue;
-        if (entry == kept) continue;
+        if (entry == kept_entry) continue;
         if (entry.selectable or entry.next_eligible_at != null) {
             log.warn(
                 "broker: route {s} shares one OAuth identity with {s} — a duplicate enrollment is not failover capacity (GH #338 / TIN-1822); demoting the duplicate; resolve the duplicate config slot to re-enable",
-                .{ entry.id, kept.id },
+                .{ entry.id, kept_entry.id },
             );
         }
         entry.selectable = false;
@@ -283,7 +310,62 @@ fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collis
         // duplicate as apparent second capacity; the keeper carries the
         // identity's recovery window (TIN-1812 wait-and-continue, once).
         entry.next_eligible_at = null;
+        // Durable demotion marker: refreshTimeBased skips slots carrying
+        // duplicate_of, so no later broker-MCP mark (account/swap,
+        // quota/observe) can resurrect the duplicate either; accounts/list
+        // exposes it so operators can see WHY this route is never used.
+        try setPoolEntryDuplicateOf(pool, entry, kept_entry.id);
     }
+}
+
+/// Strict "candidate outranks incumbent" ordering for choosing the ONE kept
+/// slot of a live duplicate-identity group (TIN-1822). Pool (= config) order
+/// breaks exact ties because the scan only replaces the incumbent on a
+/// strictly better candidate.
+fn keeperOutranks(
+    candidate: *const broker.account_pool_mod.AccountSummary,
+    incumbent: *const broker.account_pool_mod.AccountSummary,
+) bool {
+    // 1. Never keep a dead slot while a non-dead sibling exists: dead is
+    //    sticky (refreshTimeBased cannot restore it), so a dead keeper buries
+    //    the identity's recovery clock and makes a live, quota-waiting
+    //    identity permanently invisible.
+    const candidate_dead = candidate.liveness == .dead;
+    const incumbent_dead = incumbent.liveness == .dead;
+    if (candidate_dead != incumbent_dead) return !candidate_dead;
+    // 2. Recoverable beats unrecoverable: a slot that is selectable now or
+    //    carries a recovery clock can return via elect/refreshTimeBased; an
+    //    unselectable slot with no clock (out-of-profile, missing route
+    //    health) cannot.
+    const candidate_recoverable = candidate.selectable or candidate.next_eligible_at != null;
+    const incumbent_recoverable = incumbent.selectable or incumbent.next_eligible_at != null;
+    if (candidate_recoverable != incumbent_recoverable) return candidate_recoverable;
+    // 3. Evidence freshness: the slots are ONE upstream account, so the
+    //    newest observation is the identity's truth — a fresh quota_exhausted
+    //    (with its reset clock) outranks a stale "available" probe, and
+    //    timestamped evidence outranks unverifiable evidence.
+    const candidate_ts = candidate.health_observed_at;
+    const incumbent_ts = incumbent.health_observed_at;
+    if ((candidate_ts != null) != (incumbent_ts != null)) return candidate_ts != null;
+    if (candidate_ts != null and candidate_ts.? != incumbent_ts.?) return candidate_ts.? > incumbent_ts.?;
+    // 4. Same-freshness tie: prefer the slot usable right now.
+    const candidate_available = candidate.selectable and candidate.availability == .available;
+    const incumbent_available = incumbent.selectable and incumbent.availability == .available;
+    if (candidate_available != incumbent_available) return candidate_available;
+    if (candidate.selectable != incumbent.selectable) return candidate.selectable;
+    return false;
+}
+
+fn setPoolEntryDuplicateOf(
+    pool: *broker.AccountPool,
+    entry: *broker.account_pool_mod.AccountSummary,
+    keeper_id: []const u8,
+) !void {
+    if (entry.duplicate_of) |old| {
+        pool.allocator.free(old);
+        entry.duplicate_of = null;
+    }
+    entry.duplicate_of = try pool.allocator.dupe(u8, keeper_id);
 }
 
 fn applyRouteHealth(
@@ -2062,6 +2144,220 @@ test "identity dedupe: quota-exhausted duplicate identity waits once, not twice 
         broker_types.BrokerError.NoAccountSelectable,
         pool.elect("codex-max", "codex-max", &.{"codex:max-1"}),
     );
+}
+
+/// Two-slot fixture config for the keeper-ranking tests: max-1 declared
+/// first (pool order), max-4 second, both on the codex-max capability.
+fn testDedupePairConfigJson(
+    allocator: std.mem.Allocator,
+    max1_path: []const u8,
+    max4_path: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "priority": 30, "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-4": {{ "priority": 20, "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "codex-max": {{ "providers": ["codex:max-1#codex-max", "codex:max-4#codex-max"] }}
+        \\  }}
+        \\}}
+    ,
+        .{ max1_path, max4_path },
+    );
+}
+
+test "identity dedupe: dead duplicate never buries the identity's recovery clock (TIN-1822)" {
+    // Review-blocker shape: max-1 (pool-order first) is DEAD with older
+    // evidence; max-4 — the SAME identity — is quota-exhausted with FRESH
+    // evidence and a reset clock. Death arbitration correctly concludes the
+    // identity is alive (live evidence strictly newer), but the keeper must
+    // then be the recoverable max-4, not the sticky-dead max-1: keeping the
+    // dead slot would null max-4's clock and make the identity permanently
+    // invisible to refreshTimeBased/elect for the life of the pool.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestCodexAuthFile(tmp.dir, "max-1.json", "acct-shared-338");
+    try writeTestCodexAuthFile(tmp.dir, "max-4.json", "acct-shared-338");
+
+    const p1 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1.json");
+    defer std.testing.allocator.free(p1);
+    const p4 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-4.json");
+    defer std.testing.allocator.free(p4);
+    const cfg_json = try testDedupePairConfigJson(std.testing.allocator, p1, p4);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const now = std.time.timestamp();
+    const resets_at = now + 7200;
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Death observed at T0 (stamped past the fixture files' mtime so the
+    // newer-auth-material repair path stays out of this test's way).
+    const dead = try store.getOrCreate("codex:max-1");
+    dead.liveness = .{ .dead = .{ .reason = .token_revoked, .since = now - 120 } };
+    dead.last_probe_hint_class = .auth_dead;
+    dead.last_probe_decision = .try_next_account;
+    dead.last_probe_observed_at = now + 60;
+    // Quota exhaustion on the duplicate observed at T1 > T0, carrying the
+    // identity's one reset window.
+    const quota = try store.getOrCreate("codex:max-4#codex-max");
+    quota.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .window_resets_at = resets_at,
+        .exhausted_at = now - 60,
+    } } } };
+    quota.last_probe_hint_class = .quota_exhausted;
+    quota.last_probe_decision = .try_next_account;
+    quota.last_probe_observed_at = now + 120;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    // Nothing electable during the wait window...
+    try std.testing.expectError(broker_types.BrokerError.NoAccountSelectable, pool.elect("codex-max", "codex-max", &.{}));
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) {
+            // The dead slot is the demoted duplicate, with durable evidence.
+            try std.testing.expectEqual(broker.account_pool_mod.Liveness.dead, entry.liveness);
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqualStrings("codex:max-4", entry.duplicate_of.?);
+        }
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            // The keeper carries the identity's recovery clock.
+            try std.testing.expectEqual(resets_at, entry.next_eligible_at.?);
+            try std.testing.expect(entry.duplicate_of == null);
+        }
+    }
+
+    // ...and after the window the identity comes BACK, exactly once. On the
+    // pre-fix keeper (first-in-pool-order = the dead max-1) this returned
+    // NoAccountSelectable forever: the dead keeper has no clock and the
+    // demoted duplicate's clock was destroyed.
+    pool.refreshTimeBased(resets_at + 1);
+    const recovered = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-4", recovered.id);
+    try std.testing.expectError(
+        broker_types.BrokerError.NoAccountSelectable,
+        pool.elect("codex-max", "codex-max", &.{"codex:max-4"}),
+    );
+}
+
+test "identity dedupe: fresh quota evidence outranks a stale available duplicate (TIN-1822)" {
+    // Same root cause as the dead-keeper blocker, softer consequence: a
+    // STALE "available" probe on the pool-order-first duplicate must not
+    // beat a FRESH quota_exhausted observation on its sibling — the slots
+    // are one upstream account, so electing the stale-available slot is one
+    // blind doomed attempt and the known reset clock is discarded.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestCodexAuthFile(tmp.dir, "max-1.json", "acct-shared-338");
+    try writeTestCodexAuthFile(tmp.dir, "max-4.json", "acct-shared-338");
+
+    const p1 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1.json");
+    defer std.testing.allocator.free(p1);
+    const p4 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-4.json");
+    defer std.testing.allocator.free(p4);
+    const cfg_json = try testDedupePairConfigJson(std.testing.allocator, p1, p4);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const now = std.time.timestamp();
+    const resets_at = now + 7200;
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Stale available probe on the first slot.
+    try markTestCapabilityLive(&store, "codex:max-1#codex-max", now - 7200);
+    // Fresh quota exhaustion on the duplicate (stamped past file mtime so
+    // the auth-material repair path stays inert).
+    const quota = try store.getOrCreate("codex:max-4#codex-max");
+    quota.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .window_resets_at = resets_at,
+        .exhausted_at = now - 60,
+    } } } };
+    quota.last_probe_hint_class = .quota_exhausted;
+    quota.last_probe_decision = .try_next_account;
+    quota.last_probe_observed_at = now + 60;
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    // Honest outcome: the identity WAITS from the known clock (pre-fix the
+    // stale-available max-1 was kept and elected — an exhausted identity
+    // presented as available).
+    try std.testing.expectError(broker_types.BrokerError.NoAccountSelectable, pool.elect("codex-max", "codex-max", &.{}));
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) {
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqualStrings("codex:max-4", entry.duplicate_of.?);
+        }
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expectEqual(resets_at, entry.next_eligible_at.?);
+        }
+    }
+
+    pool.refreshTimeBased(resets_at + 1);
+    const recovered = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-4", recovered.id);
+}
+
+test "identity dedupe: untimestamped death evidence is never laundered by stale liveness (TIN-1822)" {
+    // Symmetric arbitration: unverifiable evidence launders in NEITHER
+    // direction. A death observation with no timestamp cannot be ordered, so
+    // no liveness can be proven strictly newer than it — the identity fails
+    // closed as dead. Pre-fix, null death timestamps counted as epoch 0 and
+    // ANY timestamped live duplicate (here 2h stale) kept the identity
+    // electable.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestCodexAuthFile(tmp.dir, "max-1.json", "acct-shared-338");
+    try writeTestCodexAuthFile(tmp.dir, "max-4.json", "acct-shared-338");
+
+    const p1 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1.json");
+    defer std.testing.allocator.free(p1);
+    const p4 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-4.json");
+    defer std.testing.allocator.free(p4);
+    const cfg_json = try testDedupePairConfigJson(std.testing.allocator, p1, p4);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const now = std.time.timestamp();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Death with NO observation timestamp (the repair path needs a timestamp
+    // to fire, so the fresh fixture file mtime cannot resurrect it).
+    const dead = try store.getOrCreate("codex:max-1");
+    dead.liveness = .{ .dead = .{ .reason = .token_revoked, .since = now - 120 } };
+    dead.last_probe_hint_class = .auth_dead;
+    dead.last_probe_decision = .try_next_account;
+    dead.last_probe_observed_at = null;
+    // Timestamped but stale live probe on the duplicate.
+    try markTestCapabilityLive(&store, "codex:max-4#codex-max", now - 7200);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    try std.testing.expectError(broker_types.BrokerError.NoAccountSelectable, pool.elect("codex-max", "codex-max", &.{}));
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expectEqual(broker.account_pool_mod.Liveness.dead, entry.liveness);
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqualStrings("codex:max-1", entry.duplicate_of.?);
+        }
+    }
 }
 
 test "identity golden: codex claim and claude accountUuid hash into one sha256_12hex space (TIN-1822)" {

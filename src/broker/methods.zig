@@ -197,6 +197,20 @@ fn accountList(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
             "next_eligible_at",
             if (a.next_eligible_at) |t| std.json.Value{ .integer = t } else std.json.Value{ .null = {} },
         ) catch return oom();
+        // Identity dedupe evidence (TIN-1822 / GH #338): the non-secret
+        // sha256_12hex identity key, and — when this slot was demoted because
+        // it shares one upstream OAuth identity with another slot — the kept
+        // sibling's id. Without this, a demoted duplicate is indistinguishable
+        // from any other non-selectable route and the only operator signal is
+        // a transient WRN log line at populate time.
+        entry.put(
+            "account_id_hash",
+            if (a.account_id_hash) |h| std.json.Value{ .string = h } else std.json.Value{ .null = {} },
+        ) catch return oom();
+        entry.put(
+            "duplicate_of",
+            if (a.duplicate_of) |keeper| std.json.Value{ .string = keeper } else std.json.Value{ .null = {} },
+        ) catch return oom();
         arr.append(.{ .object = entry }) catch return oom();
     }
 

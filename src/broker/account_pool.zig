@@ -33,6 +33,15 @@ pub const AccountSummary = struct {
     /// dedupe pass uses it to arbitrate conflicting evidence between duplicate
     /// slots of one identity (fresh death vs stale liveness).
     health_observed_at: ?i64 = null,
+    /// Set when this slot was demoted by the identity dedupe pass because it
+    /// shares one upstream OAuth identity with the named keeper slot (owned by
+    /// pool when present; `provider:account`). A demoted duplicate is NEVER
+    /// failover capacity: `refreshTimeBased` skips it, so no broker-MCP
+    /// mutation (account/swap, quota/observe) can resurrect it as apparent
+    /// second capacity below the populate pass (TIN-1822 / GH #338). It also
+    /// gives operators durable accounts/list evidence for why a live-looking
+    /// route is never used.
+    duplicate_of: ?[]const u8 = null,
 };
 
 /// The pool. Phase 1 implementation uses an in-memory list seeded from
@@ -51,6 +60,7 @@ pub const AccountPool = struct {
             self.allocator.free(a.id);
             if (a.capability) |capability| self.allocator.free(capability);
             if (a.account_id_hash) |hash| self.allocator.free(hash);
+            if (a.duplicate_of) |keeper| self.allocator.free(keeper);
         }
         self.accounts.deinit(self.allocator);
     }
@@ -68,10 +78,16 @@ pub const AccountPool = struct {
         else
             null;
         errdefer if (owned_hash) |hash| self.allocator.free(hash);
+        const owned_duplicate_of = if (summary.duplicate_of) |keeper|
+            try self.allocator.dupe(u8, keeper)
+        else
+            null;
+        errdefer if (owned_duplicate_of) |keeper| self.allocator.free(keeper);
         var owned = summary;
         owned.id = owned_id;
         owned.capability = owned_capability;
         owned.account_id_hash = owned_hash;
+        owned.duplicate_of = owned_duplicate_of;
         try self.accounts.append(self.allocator, owned);
     }
 
@@ -174,6 +190,12 @@ pub const AccountPool = struct {
     /// is in the past. Called opportunistically before elect.
     pub fn refreshTimeBased(self: *AccountPool, now_unix: i64) void {
         for (self.accounts.items) |*a| {
+            // A demoted duplicate-identity slot is never restored below the
+            // populate pass: even if a confused broker-MCP client set a
+            // recovery clock on it (account/swap, quota/observe name
+            // arbitrary ids), restoring it would present one upstream
+            // identity as second capacity — the GH #338 lie (TIN-1822).
+            if (a.duplicate_of != null) continue;
             if (a.next_eligible_at) |t| {
                 if (t <= now_unix) {
                     // Reset to available; selectability flag follows.
@@ -329,6 +351,47 @@ test "AccountPool markProviderDegraded blocks selection until retry window" {
         }
     }
     try std.testing.expect(found_max1_available);
+}
+
+test "AccountPool demoted duplicate is never resurrected by broker-MCP marks (TIN-1822)" {
+    var pool = AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try pool.add(.{ .id = "codex:max-1", .selectable = true, .liveness = .live, .availability = .available });
+    try pool.add(.{
+        .id = "codex:max-4",
+        .selectable = false,
+        .liveness = .live,
+        .availability = .available,
+        .duplicate_of = "codex:max-1",
+    });
+
+    // A confused/misbehaving broker-MCP client names the demoted duplicate
+    // directly (account/swap and quota/observe accept arbitrary account ids)
+    // and hands it a recovery clock. The mark lands, but the time-based walk
+    // must never flip the duplicate selectable again — that would present one
+    // upstream identity as second capacity (the GH #338 lie).
+    try pool.markQuotaExhausted("codex:max-4", 1_800_000_000);
+    pool.refreshTimeBased(1_800_000_001);
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expect(!entry.selectable);
+        }
+    }
+    const elected = try pool.elect(null, null, &.{});
+    try std.testing.expectEqualStrings("codex:max-1", elected.id);
+    try std.testing.expectError(
+        types.BrokerError.NoAccountSelectable,
+        pool.elect(null, null, &.{"codex:max-1"}),
+    );
+
+    // Same for the short-window rate-limit mark.
+    try pool.markRateLimited("codex:max-4", 1_800_000_100);
+    pool.refreshTimeBased(1_800_000_101);
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expect(!entry.selectable);
+        }
+    }
 }
 
 test "AccountPool markUnauthorized stays dead through refresh" {
