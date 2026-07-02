@@ -4,6 +4,12 @@
 
 Repo @ `ba7cdd2` (2026-07-02). Every claim anchored to file:line, PR, or TIN. Contradictions flagged inline with **⚠** and consolidated in §7.
 
+Post-merge note (2026-07-02T19:55Z): this remains a point-in-time gap map.
+Since capture, PR #427, PR #425, and PR #426 merged; current `origin/main` is
+`d37aed05`. Treat any "PR #427 open" / "WORKSPACE.bazel exists" language below
+as historical orientation. The live residue is W1-1's TIN-2059 in-process gate,
+W1-2's gate-remainder branch, and the evidence lanes.
+
 ---
 
 ## 1. CURRENT STATE (one page, skeptical)

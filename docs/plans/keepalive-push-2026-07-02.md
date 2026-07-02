@@ -37,6 +37,16 @@ supersede parts of the wave-1 lane charters below:
 Train order stands: #427 → gate (#426 + remainder) → TIN-2059 gate PR → …
 One CI-triggering PR at a time; docs-only PRs fill gaps.
 
+### Post-merge reconciliation (2026-07-02T19:55Z)
+
+The snapshot above is intentionally preserved as dispatch history, but the
+front of the train has moved: PR #427, PR #425, and PR #426 are now merged into
+`origin/main` (`d37aed05`). W1-2's remaining scope is therefore only the
+gate-remainder branch (`endpoint-free-check`, `secrets-scan-dir`, ci-templates
+latch report, and honest TIN-2105 proof-status notes). W1-1's remaining scope
+is the TIN-2059 in-process re-entrancy gate. Do not reopen or duplicate the
+merged PR work when using this plan.
+
 ---
 
 ## Scores

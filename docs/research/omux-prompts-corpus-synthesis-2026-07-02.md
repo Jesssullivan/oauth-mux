@@ -5,6 +5,13 @@
 
 Authority order for anything below: (1) decision-ledger-2026-07 numbered items override everything older; (2) repo HEAD (Jesssullivan/oauth-mux) is runtime truth; (3) the prompts are *drafts* — DAG-shaped work orders whose framings the ledger may have superseded; (4) the three 2026-06-13 refresh-authority decision docs are STALE at HEAD and must never be cited in either direction.
 
+Post-merge note (2026-07-02T19:55Z): PR #427, PR #425, and PR #426 have merged
+since this corpus snapshot was written; current `origin/main` is `d37aed05`.
+The shared build-gate base is no longer to be re-performed. Remaining gate work
+is the stacked remainder (`endpoint-free-check`, `secrets-scan-dir`, ci-template
+latch report, and TIN-2105 proof-status honesty), plus the TIN-2059 in-process
+refresh gate.
+
 ---
 
 ## 1. Product vision — "keepalive to the masses" in one page
