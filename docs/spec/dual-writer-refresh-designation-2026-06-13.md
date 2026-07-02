@@ -179,3 +179,16 @@ This checklist — not this doc — gates the flip:
 The design's deliverable (this doc + the corrected mechanism) is complete; the
 **grant flip remains blocked** until prerequisites 1–5 land with the live leg
 recorded.
+
+## Correction note (2026-07-02, decision-ledger pattern)
+
+The sentence above ("the **grant flip remains blocked**") is superseded by merged
+reality: the `proactive_refresh` grant was **flipped** for the claude/codex builtins in
+PR #418 (2026-06-14, TIN-2057), consent-gated on `allow_proactive_refresh`, one day
+after this doc froze. The `oauth-mux keepalive` warm loop landed in PR #417 and
+shared-identity accounts were excluded from the warm pool in PR #419 (TIN-2113).
+
+Status at HEAD, kept honest: the flip is **merged, not evidence-proven** — there is no
+committed `docs/evidence/` warm-loop run, and prerequisite 5's live leg (engineered
+dual-writer race with a warm tick, TIN-2059) remains open/In Progress. This note
+corrects the stale gate claim without rewriting the 2026-06-13 design record.
