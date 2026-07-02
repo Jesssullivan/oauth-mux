@@ -30,6 +30,7 @@ paths = [
   '''(^|/)\.zig-cache/''',
   '''(^|/)\.direnv/''',
   '''(^|/)\.claude/''',
+  '''(^|/)\.gloriousflywheel/''',
   '''(^|/)\.gstack/''',
   '''(^|/)captures/''',
   '''(^|/)dist/(build|out|dogfood|live-qa|codex-canary|soak)/''',
