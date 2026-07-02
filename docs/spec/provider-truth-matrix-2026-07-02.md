@@ -6,7 +6,9 @@ Single source of provider-support truth, keyed to the **runtime's** `proof_statu
 `src/provider_schema.zig:203`). Marketing surfaces (omux.xoxd.ai) must *derive* from this
 table, never curate ahead of it.
 
-## The enum (runtime truth)
+## The runtime enum (4 values, `src/provider_schema.zig:5-8`)
+
+The runtime defines exactly four `proof_status` values:
 
 | `proof_status` | Meaning | Evidence bar |
 |---|---|---|
@@ -14,8 +16,15 @@ table, never curate ahead of it.
 | `local_live_proven` | a *local* probe ran against real local state — proves the probe, **not** quota, tier, or a model call | probe output in a proof doc |
 | `public_live_proven` | proven against a public, unauthenticated surface | probe output |
 | `needs_operator_proof` | schema-modeled only; typed but never live-run | none yet (say so) |
+
+## Matrix-level doc statuses (layered on top; NOT in the runtime enum)
+
+This matrix additionally uses two doc-only statuses the runtime does not model:
+
+| status | Meaning | Evidence bar |
+|---|---|---|
 | `planned` | named intent, no schema | — |
-| `blocked` | attempted, refused by the provider (e.g. 400/403) | the refusal, dated |
+| `blocked` | a correctly-shaped, correctly-scoped attempt was refused by the provider (e.g. 400/403) | the dated refusal; a mis-shaped credential or mis-scoped token does **not** meet this bar and stays `needs_operator_proof` |
 
 ## Capability rows (verified against `src/provider_schema.zig` @ main `ba7cdd2`)
 
@@ -29,9 +38,9 @@ table, never curate ahead of it.
 | Vercel CLI | `identity` | `local_live_proven` | `src/provider_schema.zig:492` |
 | GitHub CLI | `identity` | `local_live_proven` | `src/provider_schema.zig:509` |
 | Linear | `identity-api-key` | `local_live_proven` | `src/provider_schema.zig:560` |
-| Linear | `identity` (OAuth bearer) | **blocked** (400/403 observed) | probe-admission matrix; keep the refusal dated |
+| Linear | `identity` (OAuth bearer) | `needs_operator_proof` | `docs/live-provider-qa.md:240-241`. Negative evidence 2026-05-01: HTTP 400 came from sending the *personal API key* as a bearer — a mis-shaped credential, not a provider refusal of OAuth bearer auth; no correctly-shaped OAuth bearer has ever been attempted, so the row "stays `needs_operator_proof`" |
 | Figma REST API | `identity-pat` | `local_live_proven` | `src/provider_schema.zig:609` |
-| Figma REST API | `identity` (OAuth bearer) | **blocked** (400/403 observed) | probe-admission matrix |
+| Figma REST API | `identity` (OAuth bearer) | `needs_operator_proof` | `docs/spec/provider-proof-figma-rest-2026-05-01.md` ("Current Proof Status: `needs_operator_proof`"). Negative evidence 2026-05-01: HTTP 403 classified `degraded.scope_insufficient` on a mis-scoped token — a scope defect on the attempted token, not a provider refusal of OAuth bearer auth; no correctly-scoped OAuth bearer has ever been attempted |
 | Figma REST API | `file-metadata-plan` | `needs_operator_proof` | default |
 | FlakeHub / Determinate Nix | `status` | `local_live_proven` | `src/provider_schema.zig:664` |
 | Gemini CLI | (all) | `needs_operator_proof` | schema-modeled only |
@@ -54,7 +63,7 @@ The site enum (`src/lib/content/providers.schema.ts:10`) is 3-valued. Canonical 
 | `live_proven` | `live-proven` |
 | `local_live_proven`, `public_live_proven`, `needs_operator_proof` | `schema-modeled` (with the honest note) |
 | `planned` | `planned` |
-| `blocked` | `schema-modeled` + explicit "OAuth bearer blocked by provider" note (never hidden) |
+| `blocked` (matrix-level) | `schema-modeled` + the dated refusal note (never hidden). No row currently carries this status — the Linear and Figma OAuth-bearer rows are `needs_operator_proof` and must render as unproven/not-live, never as "blocked by provider" |
 
 `scripts/regen-providers.mts` currently reads the 2026-04-26 probe-admission matrix plus a
 curated status map **inside the site script** — the curated map must be replaced by/checked

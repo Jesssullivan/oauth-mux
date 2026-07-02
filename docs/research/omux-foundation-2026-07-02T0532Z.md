@@ -108,7 +108,7 @@ working trees and Linear on 2026-07-02 (step-0 mandate), not carried from the pr
 |---|---|---|
 | Broker/OAuth runtime logic, locks, refresh, resume | `Jesssullivan/oauth-mux` | omux.xoxd.ai (renders only), homebrew-omux |
 | Provider truth (proof_status) | `oauth-mux` `src/provider_schema.zig` + `docs/spec/provider-truth-matrix-2026-07-02.md` | the site's curated map must derive from it |
-| Static docs/marketing | `tinyland-inc/omux.xoxd.ai` | must not overstate: 3-value enum maps from 6-value runtime truth |
+| Static docs/marketing | `tinyland-inc/omux.xoxd.ai` | must not overstate: 3-value enum maps from the 4-value runtime enum (`src/provider_schema.zig:5-8`) via the matrix layer |
 | Packaging: brew | `Jesssullivan/homebrew-omux` (binary-only Formula) | |
 | Packaging: tarballs/curl/rpm/deb/nix | `oauth-mux` release lane (`release.yml`, nfpm, flake) | npm RETIRED; no .app/.dmg/AppImage; systemd/launchd are user-wrapper templates only |
 | Release notes/versioning | `oauth-mux` (`build.zig.zon` + `scripts/project-version.sh`) | |
@@ -123,8 +123,11 @@ working trees and Linear on 2026-07-02 (step-0 mandate), not carried from the pr
    matrix keyed to `proof_status` with proof links; site regen must consume it.
 3. **"Merged ≠ proven"** (keepalive wired but no evidence dir) → keepalive stays
    *merged-not-proven* until a committed `docs/evidence/keepalive-warmloop-*/` run exists.
-4. **Race-class regressions** (two burns + one incident) → exactly-once smoke as a
-   permanent gate (`scripts/smoke-codex-refresh-exactly-once.sh`).
+4. **Race-class regressions** (two burns + one incident) → exactly-once smoke as the
+   permanent gate (`scripts/smoke-codex-refresh-exactly-once.sh`). At this packet's
+   timestamp the script existed only on branch `jess/tin-1785-refresh-exactly-once-smoke`
+   (PR #427); it landed on main 2026-07-02 when #427 merged (wired into
+   `scripts/check-local.sh`) and is not present at this branch's base (`ba7cdd2`).
 5. **Lock semantics trap** (found this session): the in-process holder registry in
    `repair_state.zig` (`acquireRepairLockWithMode`) is **process-re-entrant** — a second
    *thread* in the same process re-enters (`entry.count += 1`) instead of serializing. Two
