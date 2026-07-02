@@ -72,16 +72,27 @@ pub const form_content_type = "application/x-www-form-urlencoded";
 pub const access_token_prefix = "sk-ant-oat01-";
 pub const refresh_token_prefix = "sk-ant-ort01-";
 
-/// Known token markers. A neutral cassette line must contain NONE of these — the
-/// recorder checks the FINAL emitted line against this set (defense in depth) so
-/// that even a passthrough field (scope/token_type) carrying a marker fails closed
-/// rather than writing something the fixture scanner would reject. `sk-ant-`
-/// subsumes both token prefixes; `eyJ` is the base64url JWT header.
-const token_markers = [_][]const u8{ "sk-ant-", "eyJ" };
+/// Mirrors `fixture_redaction.zig`. A neutral cassette line must contain NONE
+/// of these markers, even through non-secret passthrough fields. Keep this local
+/// instead of importing `src` so the cassette module remains self-contained.
+const forbidden_fixture_markers = [_][]const u8{
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "client_secret",
+    "authorization:",
+    "authorization=",
+    "bearer ",
+    "bearer%20",
+    "set-cookie:",
+    "cookie:",
+    "sk-",
+    "sess-",
+};
 
-fn containsTokenMarker(s: []const u8) bool {
-    for (token_markers) |m| {
-        if (std.mem.indexOf(u8, s, m) != null) return true;
+fn containsForbiddenFixtureMarker(s: []const u8) bool {
+    for (forbidden_fixture_markers) |m| {
+        if (std.ascii.indexOfIgnoreCase(s, m) != null) return true;
     }
     return false;
 }
@@ -346,16 +357,25 @@ pub fn neutralizeSuccessBody(a: std.mem.Allocator, op: Op, real_body: []const u8
         .exchange => "exchange",
         .refresh => "refresh",
     };
-    const line = try std.fmt.allocPrint(
-        a,
-        "{{\"v\":1,\"op\":\"{s}\",\"status\":200,\"at_len\":{d},\"rt_len\":{d}," ++
-            "\"ttl_s\":{d},\"scope\":\"{s}\",\"ttype\":\"{s}\"}}",
-        .{ op_str, s.access_token.len, s.refresh_token.len, s.expires_in, s.scope, s.token_type },
+    var line_buf = std.ArrayList(u8).init(a);
+    errdefer line_buf.deinit();
+    const writer = line_buf.writer();
+    try writer.writeAll("{\"v\":1,\"op\":");
+    try std.json.stringify(op_str, .{}, writer);
+    try writer.print(
+        ",\"status\":200,\"at_len\":{d},\"rt_len\":{d},\"ttl_s\":{d},\"scope\":",
+        .{ s.access_token.len, s.refresh_token.len, s.expires_in },
     );
+    try std.json.stringify(s.scope, .{}, writer);
+    try writer.writeAll(",\"ttype\":");
+    try std.json.stringify(s.token_type, .{}, writer);
+    try writer.writeByte('}');
+
+    const line = try line_buf.toOwnedSlice();
     // Defense in depth: scope/token_type are echoed from the real response. Refuse
-    // to emit any neutral line that itself carries a token marker, so the recorder
-    // can never write something the fixture scanner would reject (fail-closed).
-    if (containsTokenMarker(line)) {
+    // to emit any neutral line that itself carries a fixture-forbidden marker, so
+    // the recorder can never write something the fixture scanner would reject.
+    if (containsForbiddenFixtureMarker(line)) {
         a.free(line);
         return error.MalformedCassette;
     }

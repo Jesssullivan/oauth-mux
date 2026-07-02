@@ -18,9 +18,9 @@ test {
 // The exact forbidden markers from src/fixture_redaction.zig — anything the
 // repo's fixture scanner rejects. Neutral cassette output must contain NONE.
 const forbidden_markers = [_][]const u8{
-    "access_token", "refresh_token", "id_token",     "client_secret",
-    "authorization:", "authorization=", "bearer ",   "bearer%20",
-    "set-cookie:",  "cookie:",       "sk-",          "sess-",
+    "access_token",   "refresh_token",  "id_token", "client_secret",
+    "authorization:", "authorization=", "bearer ",  "bearer%20",
+    "set-cookie:",    "cookie:",        "sk-",      "sess-",
 };
 
 fn containsForbidden(bytes: []const u8) bool {
@@ -34,13 +34,23 @@ fn containsForbidden(bytes: []const u8) bool {
 // sk-ant- prefix comes from the module's public constant, never a literal here;
 // this file lives under src/, which the fixture scanner does not walk).
 fn fakeRealBody(a: std.mem.Allocator, ttl: i64) ![]u8 {
+    return fakeRealBodyWithFields(a, ttl, "user:inference user:profile", "Bearer");
+}
+
+fn fakeRealBodyWithFields(a: std.mem.Allocator, ttl: i64, scope: []const u8, token_type: []const u8) ![]u8 {
     const pad = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // length-class filler
-    return std.fmt.allocPrint(
-        a,
-        "{{\"access_token\":\"{s}{s}\",\"refresh_token\":\"{s}{s}\"," ++
-            "\"expires_in\":{d},\"scope\":\"user:inference user:profile\",\"token_type\":\"Bearer\"}}",
+    var out = std.ArrayList(u8).init(a);
+    errdefer out.deinit();
+    const writer = out.writer();
+    try writer.print(
+        "{{\"access_token\":\"{s}{s}\",\"refresh_token\":\"{s}{s}\",\"expires_in\":{d},\"scope\":",
         .{ cas.access_token_prefix, pad, cas.refresh_token_prefix, pad, ttl },
     );
+    try std.json.stringify(scope, .{}, writer);
+    try writer.writeAll(",\"token_type\":");
+    try std.json.stringify(token_type, .{}, writer);
+    try writer.writeByte('}');
+    return out.toOwnedSlice();
 }
 
 fn cassetteFromLine(a: std.mem.Allocator, line: []const u8) !cas.Cassette {
@@ -124,6 +134,31 @@ test "neutralize is fail-closed when a token marker rides in the scope passthrou
     try testing.expectError(error.MalformedCassette, cas.neutralizeSuccessBody(a, .refresh, body));
 }
 
+test "neutralize escapes passthrough strings before parsing cassette" {
+    const a = testing.allocator;
+    const scope = "user:inference \"quoted\" \\ slash\nnext";
+    const real = try fakeRealBodyWithFields(a, 3600, scope, "Bearer");
+    defer a.free(real);
+
+    const line = try cas.neutralizeSuccessBody(a, .refresh, real);
+    defer a.free(line);
+    try testing.expect(!containsForbidden(line));
+    try testing.expect(std.mem.indexOf(u8, line, "\\\"quoted\\\"") != null);
+
+    var cassette = try cassetteFromLine(a, line);
+    defer cassette.deinit();
+    try testing.expectEqual(@as(usize, 1), cassette.entries.len);
+    try testing.expectEqualStrings(scope, cassette.entries[0].scope);
+}
+
+test "neutralize is fail-closed when any fixture-forbidden marker rides in passthrough" {
+    const a = testing.allocator;
+    const real = try fakeRealBodyWithFields(a, 3600, "user:inference authorization: bearer token", "Bearer");
+    defer a.free(real);
+
+    try testing.expectError(error.MalformedCassette, cas.neutralizeSuccessBody(a, .refresh, real));
+}
+
 test "neutralize round-trip: real -> neutral -> cassette -> reconstruct keeps prefixes" {
     const a = testing.allocator;
     const real = try fakeRealBody(a, 1200);
@@ -178,8 +213,7 @@ test "Recorder forwards the call unchanged and appends a marker-free neutral lin
 
 test "Replayer.post replays a refresh 200 as a reconstructed body" {
     const a = testing.allocator;
-    var cassette = try cassetteFromLine(a,
-        "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":3600,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
+    var cassette = try cassetteFromLine(a, "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":3600,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
     defer cassette.deinit();
     var rp = cas.Replayer{ .cassette = &cassette };
 
@@ -192,8 +226,7 @@ test "Replayer.post replays a refresh 200 as a reconstructed body" {
 test "Replayer.post on an op with no recorded line returns HttpFailed + value-free miss" {
     const a = testing.allocator;
     // exchange-only cassette, but we replay a refresh
-    var cassette = try cassetteFromLine(a,
-        "{\"v\":1,\"op\":\"exchange\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":1,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
+    var cassette = try cassetteFromLine(a, "{\"v\":1,\"op\":\"exchange\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":1,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
     defer cassette.deinit();
     var rp = cas.Replayer{ .cassette = &cassette };
 
@@ -214,8 +247,7 @@ test "Replayer.post on a failure-status entry returns HttpFailed" {
 
 test "Replayer cursor plays in order then saturates on the last entry" {
     const a = testing.allocator;
-    var cassette = try cassetteFromLine(a,
-        "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":1,\"scope\":\"s\",\"ttype\":\"Bearer\"}\n" ++
+    var cassette = try cassetteFromLine(a, "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":1,\"scope\":\"s\",\"ttype\":\"Bearer\"}\n" ++
         "{\"v\":1,\"op\":\"refresh\",\"status\":400}");
     defer cassette.deinit();
     var rp = cas.Replayer{ .cassette = &cassette };
@@ -230,8 +262,7 @@ test "Replayer cursor plays in order then saturates on the last entry" {
 test "Replayer routing is anchored: a grant_type substring in a param value can't misroute" {
     const a = testing.allocator;
     // refresh-only cassette.
-    var cassette = try cassetteFromLine(a,
-        "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":3600,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
+    var cassette = try cassetteFromLine(a, "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":3600,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
     defer cassette.deinit();
     var rp = cas.Replayer{ .cassette = &cassette };
     // a real refresh body whose redirect_uri VALUE contains "grant_type=authorization_code".
@@ -256,8 +287,7 @@ test "Cassette.parse: empty/whitespace -> 0 entries; garbage line -> MalformedCa
 
 test "SchedulerBinding.refresh maps a 200 cassette to an advanced RefreshResult" {
     const a = testing.allocator;
-    var cassette = try cassetteFromLine(a,
-        "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":3600,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
+    var cassette = try cassetteFromLine(a, "{\"v\":1,\"op\":\"refresh\",\"status\":200,\"at_len\":80,\"rt_len\":80,\"ttl_s\":3600,\"scope\":\"s\",\"ttype\":\"Bearer\"}");
     defer cassette.deinit();
     var rp = cas.Replayer{ .cassette = &cassette };
     var bind = cas.SchedulerBinding{ .replayer = &rp, .allocator = a, .now_ms = 1_000_000 };
