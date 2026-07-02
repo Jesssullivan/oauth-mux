@@ -36,6 +36,14 @@ requires a binary built from main after PR #417.
 - Linux: `~/.config/systemd/user/oauth-mux-keepalive.service`, logs in
   the user journal (`journalctl --user -u oauth-mux-keepalive`).
 
+The units pin `PATH` to system directories only (`/usr/bin:/bin:/usr/sbin:/sbin`
+in the plist; the systemd user manager's own default on Linux). The builtin
+keychain backend is unaffected (`/usr/bin/security` is invoked by absolute
+path), but a config-driven `command` secret backend that names a bare
+executable (e.g. `op`, `pass`) will not resolve under the service even though
+it works in your login shell — use absolute paths in config for
+command-backend secret references.
+
 ## What actually gets warmed (consent model)
 
 Keepalive is consent-gated per account. Installing the service warms
@@ -61,6 +69,11 @@ launchd uses `KeepAlive=true` + `ThrottleInterval=300`; systemd uses
   `{"accounts":N,"ticks":N,"refreshed":N,"failed":N,"died":N,"drained":bool}`
 - Diagnostics go to stderr (`NO_COLOR=1` is set in the unit environment).
 - Redacted refresh events: `oauth-mux daemon events --json`.
+- macOS log growth: launchd appends to the `StandardOutPath`/`StandardErrorPath`
+  files and macOS never rotates custom files under `~/Library/Logs/` — a
+  persistently failing account logs one warning per account per tick.
+  Truncate periodically or add a `newsyslog.d` rule. journald on the systemd
+  side rotates on its own.
 
 ## Guardrails (binding)
 

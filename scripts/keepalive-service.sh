@@ -59,7 +59,7 @@ resolve_bin() {
 render_template() { # $1=template path, $2=binary path
   [ -f "$1" ] || fail "missing template $1"
   case "$2$log_dir" in
-    *'|'* | *'&'* | *"$nl"*) fail "refusing path containing '|', '&', or newline" ;;
+    *'|'* | *'&'* | *"\\"* | *"$nl"*) fail "refusing path containing '|', '&', '\\', or newline" ;;
   esac
   sed -e "s|@OMUX_BIN@|$2|g" -e "s|@OMUX_LOG_DIR@|$log_dir|g" "$1"
 }
@@ -75,7 +75,13 @@ check_unit_text() { # $1=rendered text, $2=name  (shared offline assertions)
 }
 
 do_render() {
-  dr_bin="$(resolve_bin 2>/dev/null || printf '/usr/local/bin/oauth-mux')"
+  # An explicitly-set OMUX_BIN must fail closed; the placeholder is only for
+  # the no-binary-anywhere preview case.
+  if [ -n "${OMUX_BIN:-}" ]; then
+    dr_bin="$(resolve_bin)"
+  else
+    dr_bin="$(resolve_bin 2>/dev/null || printf '/usr/local/bin/oauth-mux')"
+  fi
   printf '# --- rendered %s ---\n' "$plist_template"
   render_template "$plist_template" "$dr_bin"
   printf '# --- rendered %s ---\n' "$systemd_template"
@@ -150,7 +156,12 @@ status_linux() {
 verify_offline() {
   vo_ok=1
   vo_tmpdir=""
-  vo_bin="$(resolve_bin 2>/dev/null || printf '/usr/local/bin/oauth-mux')"
+  trap '[ -z "${vo_tmpdir:-}" ] || rm -rf "$vo_tmpdir"' EXIT
+  if [ -n "${OMUX_BIN:-}" ]; then
+    vo_bin="$(resolve_bin)"
+  else
+    vo_bin="$(resolve_bin 2>/dev/null || printf '/usr/local/bin/oauth-mux')"
+  fi
   vo_plist="$(render_template "$plist_template" "$vo_bin")"
   vo_unit="$(render_template "$systemd_template" "$vo_bin")"
   check_unit_text "$vo_plist" "plist"
