@@ -172,6 +172,9 @@ r=$(send_rpc "$(jq -nc --arg sid "$sid" '{jsonrpc:"2.0",id:3,method:"account/lis
 assert_eq "account/list count" "3" "$(echo "$r" | jq -r '.result.accounts | length')"
 assert_eq "account/list[0].id" "codex:max-1" "$(echo "$r" | jq -r .result.accounts[0].id)"
 assert_eq "account/list[0].liveness" "live" "$(echo "$r" | jq -r .result.accounts[0].liveness)"
+# TIN-1822 dedupe surface: distinct identities are NOT marked as duplicates.
+assert_eq "account/list[0].duplicate_of" "null" "$(echo "$r" | jq -r .result.accounts[0].duplicate_of)"
+assert_eq "account/list duplicate count" "0" "$(echo "$r" | jq -r '[.result.accounts[] | select(.duplicate_of != null)] | length')"
 
 # 4. account/select picks max-1
 r=$(send_rpc "$(jq -nc --arg sid "$sid" '{jsonrpc:"2.0",id:4,method:"account/select",params:{session_id:$sid,profile:"codex-max",capability:"codex-max"}}')")
