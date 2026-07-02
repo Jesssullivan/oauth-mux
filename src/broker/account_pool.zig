@@ -20,6 +20,19 @@ pub const AccountSummary = struct {
     liveness: Liveness,
     availability: Availability,
     next_eligible_at: ?i64 = null,
+    /// sha256_12hex of the provider's account-id claim (owned by pool when
+    /// present); null = identity unknown. Filled by broker_loader's identity
+    /// dedupe pass (TIN-1822 / GH #338) so duplicate-identity config slots are
+    /// never presented to `elect` as independent failover capacity. Never
+    /// contains token material — it is the same non-secret hash space as
+    /// src/identity_hash.zig (golden: sha256_12hex("acct-test") ==
+    /// "660d25a9d7ee").
+    account_id_hash: ?[]const u8 = null,
+    /// Unix seconds of the health evidence behind liveness/availability
+    /// (AccountHealth.last_probe_observed_at at population time); the identity
+    /// dedupe pass uses it to arbitrate conflicting evidence between duplicate
+    /// slots of one identity (fresh death vs stale liveness).
+    health_observed_at: ?i64 = null,
 };
 
 /// The pool. Phase 1 implementation uses an in-memory list seeded from
@@ -37,6 +50,7 @@ pub const AccountPool = struct {
         for (self.accounts.items) |a| {
             self.allocator.free(a.id);
             if (a.capability) |capability| self.allocator.free(capability);
+            if (a.account_id_hash) |hash| self.allocator.free(hash);
         }
         self.accounts.deinit(self.allocator);
     }
@@ -49,9 +63,15 @@ pub const AccountPool = struct {
         else
             null;
         errdefer if (owned_capability) |capability| self.allocator.free(capability);
+        const owned_hash = if (summary.account_id_hash) |hash|
+            try self.allocator.dupe(u8, hash)
+        else
+            null;
+        errdefer if (owned_hash) |hash| self.allocator.free(hash);
         var owned = summary;
         owned.id = owned_id;
         owned.capability = owned_capability;
+        owned.account_id_hash = owned_hash;
         try self.accounts.append(self.allocator, owned);
     }
 

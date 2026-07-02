@@ -19,6 +19,9 @@ const trace = @import("trace.zig");
 const provider_schema = @import("provider_schema.zig");
 const identity_hash = @import("identity_hash.zig");
 const types = @import("types.zig");
+const pipeline = @import("pipeline.zig");
+const ig = @import("identity/identity_graph.zig");
+const log = @import("log.zig");
 
 /// Populate `pool` with one entry per `<provider>:<account>` defined in
 /// the active Config. Liveness is `.unknown` and availability is
@@ -95,12 +98,193 @@ pub fn populatePoolFromRouteHealthScoped(
 ) !void {
     try populatePool(pool, cfg, profile_name);
     applyRouteHealth(pool, cfg, profile_name, capability_name, store);
+    try applyIdentityDedupe(pool, cfg, store);
 }
 
 const RouteHealthMatch = struct {
     health: health_mod.AccountHealth,
     capability: ?[]const u8 = null,
 };
+
+// ── identity dedupe before election (TIN-1822 / GH #338) ─────────────
+//
+// Two config slots enrolled on ONE upstream OAuth identity (the live
+// max-1 == max-2 shape, account_id_hash 38079d6acec6 in GH #338) must
+// never present to `AccountPool.elect` as independent routes: a
+// duplicate is not failover capacity, and a stale live-looking duplicate
+// of a dead identity is a lie. This mirrors the landed TIN-2113
+// warm-pool pattern (src/keepalive/warm_runner.zig enumeratePool):
+// identity hashes come from the same producer
+// (pipeline.readAccountIdentityHash → identity_hash.sha256_12hex) and
+// grouping is the same landed graph primitive
+// (identity_graph.duplicateCollisions) — NOT re-implemented here.
+//
+// Resolution per collision group, in pool (= config) order:
+//   * Death arbitration: slots in one group are one upstream account, so
+//     account-death evidence on any sibling is evidence about the shared
+//     identity. The identity is treated dead unless some live sibling's
+//     evidence is STRICTLY newer than every death observation (the
+//     re-auth repair shape — authMaterialRepairHealth stamps the auth
+//     material mtime). Unverifiable liveness (no timestamp) never
+//     launders death evidence; that is exactly the #338 stale-live trap.
+//   * Dead identity → every slot in the group is demoted dead (one dead
+//     identity, not N routes).
+//   * Live identity → exactly ONE slot stays electable (prefer the first
+//     selectable+available slot, else the first selectable, else the
+//     first slot — it keeps its `next_eligible_at` so a quota-exhausted
+//     identity still recovers via refreshTimeBased, counted ONCE per
+//     TIN-1812). Every other slot is demoted: selectable=false and
+//     next_eligible_at=null, so refreshTimeBased can never resurrect a
+//     duplicate as second capacity.
+//
+// A slot whose identity cannot be read (missing credential, or a
+// provider with no identity claim — claude's identity lives in
+// .claude.json, not the credential) keeps a null hash; the graph keys it
+// opaquely and never coalesces two unknowns. Grouping is hash-only (like
+// the warm pool): hashes live in one shared sha256_12hex space, and a
+// cross-provider 48-bit collision is negligible (claude hashes are not
+// plumbed to pool entries yet anyway).
+fn applyIdentityDedupe(
+    pool: *broker.AccountPool,
+    cfg: config_mod.Config,
+    store: *health_mod.HealthStore,
+) !void {
+    if (pool.accounts.items.len < 2) return;
+
+    // Pass 1: resolve each entry's stable identity hash from its
+    // credential. Failures leave the hash null (opaque key, no grouping).
+    for (pool.accounts.items) |*entry| {
+        if (entry.account_id_hash != null) continue;
+        const colon = std.mem.indexOfScalar(u8, entry.id, ':') orelse continue;
+        var pctx = pipeline.Context.init(pool.allocator, cfg, store);
+        defer pctx.deinit();
+        pctx.provider_name = entry.id[0..colon];
+        pctx.account_name = entry.id[colon + 1 ..];
+        if (pipeline.readAccountIdentityHash(&pctx) catch null) |hash| {
+            // Owned by pool.allocator already; pool.deinit frees it.
+            entry.account_id_hash = hash;
+        }
+    }
+
+    // Pass 2: group by identity via the landed graph primitive. Slot
+    // account = pool id ("provider:account") so collisions name routes
+    // unambiguously.
+    var arena = std.heap.ArenaAllocator.init(pool.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var slots = std.ArrayList(ig.AccountSlot).init(a);
+    for (pool.accounts.items) |entry| {
+        const colon = std.mem.indexOfScalar(u8, entry.id, ':') orelse continue;
+        try slots.append(.{
+            .account = entry.id,
+            .provider = entry.id[0..colon],
+            .capability = "election",
+            .account_id_hash = entry.account_id_hash,
+            .liveness = igLivenessForPoolEntry(entry),
+        });
+    }
+    const collisions = try ig.duplicateCollisions(a, slots.items);
+    // Collision slices are arena-owned; freed with the arena.
+
+    // Pass 3: resolve each duplicate-identity group.
+    for (collisions) |collision| resolveDuplicateIdentityGroup(pool, collision);
+}
+
+fn igLivenessForPoolEntry(entry: broker.account_pool_mod.AccountSummary) ig.Liveness {
+    return switch (entry.liveness) {
+        .dead => .dead,
+        .degraded => .degraded,
+        .unknown => .unknown,
+        .live => switch (entry.availability) {
+            .available => .live,
+            .rate_limited => .rate_limited,
+            .quota_exhausted => .quota_exhausted,
+            .cooldown => .cooldown,
+            .unknown => .unknown,
+        },
+    };
+}
+
+fn collisionHasAccount(collision: ig.Collision, id: []const u8) bool {
+    for (collision.accounts) |name| {
+        if (std.mem.eql(u8, name, id)) return true;
+    }
+    return false;
+}
+
+fn resolveDuplicateIdentityGroup(pool: *broker.AccountPool, collision: ig.Collision) void {
+    // Death arbitration (see the module comment above applyIdentityDedupe).
+    var any_dead = false;
+    var newest_dead_ts: i64 = 0; // null death timestamps count as epoch
+    var newest_live_ts: ?i64 = null;
+    for (pool.accounts.items) |entry| {
+        if (!collisionHasAccount(collision, entry.id)) continue;
+        switch (entry.liveness) {
+            .dead => {
+                any_dead = true;
+                const ts = entry.health_observed_at orelse 0;
+                if (ts > newest_dead_ts) newest_dead_ts = ts;
+            },
+            .live => {
+                if (entry.health_observed_at) |ts| {
+                    if (newest_live_ts == null or ts > newest_live_ts.?) newest_live_ts = ts;
+                }
+            },
+            .degraded, .unknown => {},
+        }
+    }
+    const identity_dead = any_dead and
+        (newest_live_ts == null or newest_live_ts.? <= newest_dead_ts);
+
+    if (identity_dead) {
+        for (pool.accounts.items) |*entry| {
+            if (!collisionHasAccount(collision, entry.id)) continue;
+            if (entry.liveness != .dead) {
+                log.warn(
+                    "broker: route {s} shares one OAuth identity with a slot carrying newer auth-death evidence — one dead identity, not {d} routes (GH #338 / TIN-1822); resolve the duplicate config slot",
+                    .{ entry.id, collision.accounts.len },
+                );
+            }
+            entry.liveness = .dead;
+            entry.availability = .unknown;
+            entry.selectable = false;
+            entry.next_eligible_at = null;
+        }
+        return;
+    }
+
+    // Live (or transiently unavailable) identity: keep exactly one slot.
+    var keeper: ?*broker.account_pool_mod.AccountSummary = null;
+    var keeper_selectable: ?*broker.account_pool_mod.AccountSummary = null;
+    var keeper_first: ?*broker.account_pool_mod.AccountSummary = null;
+    for (pool.accounts.items) |*entry| {
+        if (!collisionHasAccount(collision, entry.id)) continue;
+        if (keeper_first == null) keeper_first = entry;
+        if (entry.selectable and keeper_selectable == null) keeper_selectable = entry;
+        if (entry.selectable and entry.availability == .available) {
+            keeper = entry;
+            break;
+        }
+    }
+    const kept = keeper orelse keeper_selectable orelse keeper_first orelse return;
+
+    for (pool.accounts.items) |*entry| {
+        if (!collisionHasAccount(collision, entry.id)) continue;
+        if (entry == kept) continue;
+        if (entry.selectable or entry.next_eligible_at != null) {
+            log.warn(
+                "broker: route {s} shares one OAuth identity with {s} — a duplicate enrollment is not failover capacity (GH #338 / TIN-1822); demoting the duplicate; resolve the duplicate config slot to re-enable",
+                .{ entry.id, kept.id },
+            );
+        }
+        entry.selectable = false;
+        // Clear the recovery clock so refreshTimeBased never resurrects a
+        // duplicate as apparent second capacity; the keeper carries the
+        // identity's recovery window (TIN-1812 wait-and-continue, once).
+        entry.next_eligible_at = null;
+    }
+}
 
 fn applyRouteHealth(
     pool: *broker.AccountPool,
@@ -613,6 +797,7 @@ fn writeFileReplace(path: []const u8, bytes: []const u8, allocator: std.mem.Allo
 
 fn applyHealthToPoolEntry(entry: *broker.account_pool_mod.AccountSummary, health: health_mod.AccountHealth) void {
     entry.selectable = types.selectable(health.liveness, .ready);
+    entry.health_observed_at = health.last_probe_observed_at;
     switch (health.liveness) {
         .dead => {
             entry.liveness = .dead;
@@ -1601,4 +1786,318 @@ test "populatePoolFromRouteHealth treats newer auth material as route repair evi
     const elected = try pool.elect(null, null, &.{});
     try std.testing.expectEqualStrings("codex:default", elected.id);
     try std.testing.expectEqual(broker.account_pool_mod.Availability.available, elected.availability);
+}
+
+// ── identity dedupe before election: tests (TIN-1822 / GH #338) ──────
+
+fn writeTestCodexAuthFile(dir: std.fs.Dir, name: []const u8, account_id: []const u8) !void {
+    const file = try dir.createFile(name, .{ .mode = 0o600 });
+    defer file.close();
+    var buf: [256]u8 = undefined;
+    const bytes = try std.fmt.bufPrint(
+        &buf,
+        "{{\"tokens\":{{\"access_token\":\"AT\",\"refresh_token\":\"RT\",\"account_id\":\"{s}\"}}}}",
+        .{account_id},
+    );
+    try file.writeAll(bytes);
+}
+
+/// Three-account codex-max fixture config: max-1 and max-4 are the GH #338
+/// duplicate pair (same upstream identity), max-2 is the genuinely distinct
+/// route enrolled only for the degraded codex-mini capability (TIN-1811 chain).
+fn testDedupeConfigJson(
+    allocator: std.mem.Allocator,
+    max1_path: []const u8,
+    max4_path: []const u8,
+    max2_path: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "priority": 30, "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-4": {{ "priority": 20, "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-2": {{ "priority": 10, "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "codex-max": {{
+        \\      "providers": ["codex:max-1#codex-max", "codex:max-4#codex-max", "codex:max-2#codex-mini"],
+        \\      "capability_degradation_chain": ["codex-mini"]
+        \\    }}
+        \\  }}
+        \\}}
+    ,
+        .{ max1_path, max4_path, max2_path },
+    );
+}
+
+fn markTestCapabilityLive(store: *health_mod.HealthStore, key: []const u8, observed_at: ?i64) !void {
+    const health = try store.getOrCreate(key);
+    health.liveness = .{ .live = .{ .availability = .available } };
+    health.last_probe_hint_class = .none;
+    health.last_probe_decision = .use_this;
+    health.last_probe_observed_at = observed_at;
+}
+
+test "identity dedupe: duplicate slot is never failover capacity (GH #338 / TIN-1822)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // max-1 == max-4: one upstream identity enrolled twice. The shared
+    // account-id claim is the repo golden input so this test also pins the
+    // pool path into the shared sha256_12hex identity space.
+    try writeTestCodexAuthFile(tmp.dir, "max-1.json", "acct-test");
+    try writeTestCodexAuthFile(tmp.dir, "max-4.json", "acct-test");
+    try writeTestCodexAuthFile(tmp.dir, "max-2.json", "acct-distinct-338");
+
+    const p1 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1.json");
+    defer std.testing.allocator.free(p1);
+    const p4 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-4.json");
+    defer std.testing.allocator.free(p4);
+    const p2 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-2.json");
+    defer std.testing.allocator.free(p2);
+    const cfg_json = try testDedupeConfigJson(std.testing.allocator, p1, p4, p2);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "codex:max-1#codex-max", null);
+    try markTestCapabilityLive(&store, "codex:max-4#codex-max", null);
+    try markTestCapabilityLive(&store, "codex:max-2#codex-mini", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    // Pool path golden: identity keys come from identity_hash.sha256_12hex
+    // (same space as the codex inventory and the claude labeler).
+    var max1_hash: ?[]const u8 = null;
+    var max4_hash: ?[]const u8 = null;
+    var max2_hash: ?[]const u8 = null;
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) max1_hash = entry.account_id_hash;
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) max4_hash = entry.account_id_hash;
+        if (std.mem.eql(u8, entry.id, "codex:max-2")) max2_hash = entry.account_id_hash;
+    }
+    try std.testing.expectEqualStrings("660d25a9d7ee", max1_hash.?);
+    try std.testing.expectEqualStrings("660d25a9d7ee", max4_hash.?);
+    try std.testing.expect(!std.mem.eql(u8, max2_hash.?, max1_hash.?));
+
+    // The keeper (first available slot of the identity) is still electable.
+    const first = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-1", first.id);
+
+    // The duplicate must NOT be the failover: excluding the keeper elects the
+    // genuinely distinct degraded route, not the same account under another
+    // name. Pre-dedupe election returned codex:max-4 here (proved by
+    // disabling the applyIdentityDedupe call and observing this fail).
+    const fallback = try pool.elect("codex-max", "codex-max", &.{"codex:max-1"});
+    try std.testing.expectEqualStrings("codex:max-2", fallback.id);
+    try std.testing.expectEqualStrings("codex-mini", fallback.capability.?);
+
+    // The demoted duplicate keeps its health evidence but can never be
+    // resurrected by the time-based recovery walk.
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqual(broker.account_pool_mod.Liveness.live, entry.liveness);
+            try std.testing.expect(entry.next_eligible_at == null);
+        }
+    }
+}
+
+test "identity dedupe: stale live duplicate of a dead identity is demoted dead (GH #338)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestCodexAuthFile(tmp.dir, "max-1.json", "acct-shared-338");
+    try writeTestCodexAuthFile(tmp.dir, "max-4.json", "acct-shared-338");
+    try writeTestCodexAuthFile(tmp.dir, "max-2.json", "acct-distinct-338");
+
+    const p1 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1.json");
+    defer std.testing.allocator.free(p1);
+    const p4 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-4.json");
+    defer std.testing.allocator.free(p4);
+    const p2 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-2.json");
+    defer std.testing.allocator.free(p2);
+    const cfg_json = try testDedupeConfigJson(std.testing.allocator, p1, p4, p2);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const now = std.time.timestamp();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Fresh account-level death on max-1 (the AAS-locked / auth-failed shape).
+    // The observation is stamped slightly in the future so the auth fixture
+    // files written moments ago cannot trip the newer-auth-material repair
+    // path (which has its own tests) and so the death evidence is strictly
+    // newer than the duplicate's stale liveness.
+    const dead = try store.getOrCreate("codex:max-1");
+    dead.liveness = .{ .dead = .{ .reason = .token_revoked, .since = now - 120 } };
+    dead.last_probe_hint_class = .auth_dead;
+    dead.last_probe_decision = .try_next_account;
+    dead.last_probe_observed_at = now + 60;
+    // Stale live capability probe on the duplicate: pre-dedupe this presented
+    // the SAME dead account as a live route.
+    try markTestCapabilityLive(&store, "codex:max-4#codex-max", now - 7200);
+    try markTestCapabilityLive(&store, "codex:max-2#codex-mini", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    // Honest outcome: one dead identity — not one dead route plus one "live"
+    // duplicate — and the genuinely distinct degraded route is elected.
+    // Pre-dedupe election returned codex:max-4 here (proved by disabling the
+    // applyIdentityDedupe call and observing this fail).
+    const elected = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-2", elected.id);
+    try std.testing.expectEqualStrings("codex-mini", elected.capability.?);
+
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expectEqual(broker.account_pool_mod.Liveness.dead, entry.liveness);
+        }
+    }
+
+    // Graph-level view of the same trap (identity_graph is the analysis the
+    // dedupe consumes): the pair collides, the AAS lockout marks it
+    // un-reauthable, and the capability keeps ONE distinct live identity.
+    const slots = [_]ig.AccountSlot{
+        .{ .account = "max-1", .provider = "codex", .capability = "codex-max", .account_id_hash = "38079d6acec6", .liveness = .dead, .reauthable = false },
+        .{ .account = "max-4", .provider = "codex", .capability = "codex-max", .account_id_hash = "38079d6acec6", .liveness = .dead, .reauthable = false },
+        .{ .account = "max-2", .provider = "codex", .capability = "codex-mini", .account_id_hash = "aaaaaaaaaaaa", .liveness = .live },
+    };
+    const collisions = try ig.duplicateCollisions(std.testing.allocator, &slots);
+    defer ig.freeCollisions(std.testing.allocator, collisions);
+    try std.testing.expectEqual(@as(usize, 1), collisions.len);
+    try std.testing.expectEqual(@as(usize, 2), collisions[0].accounts.len);
+    try std.testing.expect(collisions[0].any_unreauthable);
+    try std.testing.expectEqual(@as(usize, 0), ig.distinctLiveIdentities(&slots, "codex", "codex-max"));
+    try std.testing.expectEqual(@as(usize, 1), ig.distinctLiveIdentities(&slots, "codex", "codex-mini"));
+}
+
+test "identity dedupe: quota-exhausted duplicate identity waits once, not twice (TIN-1812)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestCodexAuthFile(tmp.dir, "max-1.json", "acct-shared-338");
+    try writeTestCodexAuthFile(tmp.dir, "max-4.json", "acct-shared-338");
+
+    const p1 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-1.json");
+    defer std.testing.allocator.free(p1);
+    const p4 = try tmp.dir.realpathAlloc(std.testing.allocator, "max-4.json");
+    defer std.testing.allocator.free(p4);
+    const cfg_json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "max-1": {{ "priority": 30, "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "max-4": {{ "priority": 20, "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "codex-max": {{ "providers": ["codex:max-1#codex-max", "codex:max-4#codex-max"] }}
+        \\  }}
+        \\}}
+    ,
+        .{ p1, p4 },
+    );
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+
+    const now = std.time.timestamp();
+    const resets_at = now + 7200;
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    for ([_][]const u8{ "codex:max-1#codex-max", "codex:max-4#codex-max" }) |key| {
+        const health = try store.getOrCreate(key);
+        health.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+            .window_resets_at = resets_at,
+            .exhausted_at = now - 60,
+        } } } };
+        health.last_probe_hint_class = .quota_exhausted;
+        health.last_probe_decision = .try_next_account;
+    }
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(&pool, parsed.value, "codex-max", "codex-max", &store);
+
+    // Quota is wait-and-continue (TIN-1812), never counted twice: nothing is
+    // electable now, the keeper carries the identity's single reset window,
+    // and the duplicate's recovery clock is cleared.
+    try std.testing.expectError(broker_types.BrokerError.NoAccountSelectable, pool.elect("codex-max", "codex-max", &.{}));
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "codex:max-1")) {
+            try std.testing.expectEqual(resets_at, entry.next_eligible_at.?);
+        }
+        if (std.mem.eql(u8, entry.id, "codex:max-4")) {
+            try std.testing.expect(!entry.selectable);
+            try std.testing.expect(entry.next_eligible_at == null);
+        }
+    }
+
+    // After the window passes exactly ONE route of the identity returns.
+    // Pre-dedupe, elect(exclude=keeper) returned codex:max-4 here — the same
+    // exhausted account resurrected as apparent second capacity (proved by
+    // disabling the applyIdentityDedupe call and observing this fail).
+    pool.refreshTimeBased(resets_at + 1);
+    const recovered = try pool.elect("codex-max", "codex-max", &.{});
+    try std.testing.expectEqualStrings("codex:max-1", recovered.id);
+    try std.testing.expectError(
+        broker_types.BrokerError.NoAccountSelectable,
+        pool.elect("codex-max", "codex-max", &.{"codex:max-1"}),
+    );
+}
+
+test "identity golden: codex claim and claude accountUuid hash into one sha256_12hex space (TIN-1822)" {
+    const a = std.testing.allocator;
+    const claude_identity = @import("identity/claude_identity.zig");
+
+    // Codex producer: the tokens.account_id claim, hashed by the shared
+    // module. Pins the repo golden through the provider-schema extractor.
+    const codex_auth =
+        \\{"tokens":{"access_token":"AT","account_id":"acct-test"}}
+    ;
+    const claim = (try provider_schema.identityClaimFromCredential(provider_schema.codex_def, codex_auth, a)).?;
+    defer a.free(claim);
+    const codex_hash = try identity_hash.sha256_12hex(a, claim);
+    defer a.free(codex_hash);
+    try std.testing.expectEqualStrings("660d25a9d7ee", codex_hash);
+
+    // Claude producer: oauthAccount.accountUuid must land in the byte-identical
+    // hash space (claude_identity re-derives sha256_12hex locally).
+    const claude_same = try claude_identity.parseClaudeIdentity(a,
+        \\{"oauthAccount":{"accountUuid":"acct-test"}}
+    );
+    defer claude_same.deinit(a);
+    try std.testing.expect(claude_same.present);
+    try std.testing.expectEqualStrings("660d25a9d7ee", claude_same.account_id_hash.?);
+
+    // Second pinned vector (uuid-shaped, the real claude input class) so a
+    // refactor cannot change the key derivation while preserving the single
+    // legacy golden. sha256("0f7a2b1c-9e4d-4a3b-8c6f-2d5e7a9b1c3d")[0..6].
+    const uuid = "0f7a2b1c-9e4d-4a3b-8c6f-2d5e7a9b1c3d";
+    const codex_uuid_hash = try identity_hash.sha256_12hex(a, uuid);
+    defer a.free(codex_uuid_hash);
+    try std.testing.expectEqualStrings("7b29dfead5c3", codex_uuid_hash);
+    const claude_uuid = try claude_identity.parseClaudeIdentity(a,
+        \\{"oauthAccount":{"accountUuid":"0f7a2b1c-9e4d-4a3b-8c6f-2d5e7a9b1c3d"}}
+    );
+    defer claude_uuid.deinit(a);
+    try std.testing.expectEqualStrings("7b29dfead5c3", claude_uuid.account_id_hash.?);
 }
