@@ -51,6 +51,20 @@ install-local-dogfood-shim:
 uninstall-local-dogfood:
     ./scripts/uninstall-local-dogfood.sh
 
+# ── Keepalive service units (TIN-1830, operator-explicit) ──
+
+keepalive-service-install:
+    ./scripts/keepalive-service.sh install
+
+keepalive-service-uninstall:
+    ./scripts/keepalive-service.sh uninstall
+
+keepalive-service-status:
+    ./scripts/keepalive-service.sh status
+
+keepalive-service-verify:
+    ./scripts/keepalive-service.sh verify
+
 status: build-local
     ./zig-out/bin/oauth-mux status --json
 
