@@ -38,20 +38,52 @@ pub const HandoffKey = struct {
     capability: ?[]const u8 = null,
 };
 
-// ── Process-local re-entrancy guard (TIN-1851) ───────────────────────────────
+// ── Process-local actor gate (TIN-1851 no-self-deadlock, TIN-2059 no-self-race) ──
 // The repair lock is an OS flock (createFileAbsolute .lock=.exclusive), which is
 // per-open-file-description. A SECOND acquire of the same (provider,account) key
 // from the SAME process — e.g. the in-process proxy materializer thread refreshing
 // while the session main thread already holds the account's repair lock — opens a
 // new fd and flock() would block on itself: a self-deadlock. We therefore hold
-// exactly ONE real flock per key per process and refcount re-entrant acquires; a
-// condition variable serializes the first-acquire so two threads never race the
-// real flock for the same key. Cross-process serialization is unchanged: the OS
-// flock still blocks (or returns RepairInProgress) for a different process.
+// exactly ONE real flock per key per process; a condition variable serializes the
+// first-acquire so two threads never race the real flock for the same key.
+// Cross-process serialization is unchanged: the OS flock still blocks (or returns
+// RepairInProgress) for a different process.
+//
+// TIN-2059: plain refcounting made the in-process side re-entrant for EVERYONE —
+// a daemon hosting a warm-scheduler tick AND a live session / broker materializer
+// for one provider:account re-entered (`entry.count += 1`) and raced itself: two
+// logical actors, one process, zero serialization, double-spend of a single-use
+// refresh-token chain. The registry therefore tracks the OWNING ACTOR of each
+// held key and only the same actor may nest:
+//
+//   - actor = the acquiring thread, unless the thread acts on behalf of another
+//     actor via a cooperative blocking join (below);
+//   - same-actor re-acquire → refcount join (one actor is sequential; it cannot
+//     race itself);
+//   - cross-actor NONBLOCKING acquire → error.RepairInProgress — the same typed
+//     lock_busy/deferred contract every nonblocking caller already implements
+//     for the cross-process case (pipeline probe/refresh/identity, CLI
+//     repair/reauth/daemon-tick, broker + adapter identity guards);
+//   - cross-actor BLOCKING acquire of a BLOCKING-held key → cooperative join +
+//     actor adoption. The only blocking pair in the tree is the managed codex
+//     session (adapters/codex/main.zig, holds across spawn→wait→finalize) and
+//     the broker materializer refresh (broker_loader.refreshCodexAccountAuthFile)
+//     running mid-session on the proxy thread ON BEHALF OF that session. The
+//     joiner adopts the owner's actor for the duration of the hold so its nested
+//     identity-lock acquire is recognized as the same actor;
+//   - cross-actor BLOCKING acquire of a NONBLOCKING-held key → wait for full
+//     release, then take the real flock. A nonblocking holder is a short-hold
+//     typed writer (warm tick, probe, CLI repair), never a parent actor: the
+//     materializer serializes BEHIND it, and its under-lock revalidation then
+//     sees the freshly rotated credential (lock-then-revalidate, TIN-2073).
+
+const ActorId = u64;
 
 const HeldLock = struct {
     count: usize,
     acquiring: bool,
+    owner_actor: ActorId,
+    owner_blocking: bool,
     file: ?std.fs.File = null,
 };
 
@@ -60,9 +92,25 @@ var held_cond: std.Thread.Condition = .{};
 var held_locks: std.StringHashMapUnmanaged(HeldLock) = .{};
 const held_gpa = std.heap.page_allocator; // process-global; mutated only under held_mutex
 
+/// Actor identity this thread acts as. Defaults to the thread itself; a
+/// cooperative blocking join temporarily adopts the lock owner's actor
+/// (materializer-on-behalf-of-session), restored by release() in LIFO order.
+threadlocal var adopted_actor: ?ActorId = null;
+
+fn currentActor() ActorId {
+    if (adopted_actor) |actor| return actor;
+    return @intCast(std.Thread.getCurrentId());
+}
+
 pub const RepairLock = struct {
     allocator: std.mem.Allocator,
     key: []const u8, // caller-allocator-owned sanitized lock name
+    /// Set on a cooperative blocking join: this hold adopted the owner's actor.
+    /// release() restores the previous binding; every caller releases via defer
+    /// in the acquiring frame, so restoration runs on the acquiring thread and
+    /// unwinds LIFO with any nested holds.
+    adopted: bool = false,
+    prev_actor: ?ActorId = null,
 
     pub fn release(self: *RepairLock) void {
         held_mutex.lock();
@@ -81,9 +129,14 @@ pub const RepairLock = struct {
                 // progress.
                 if (entry.file) |f| f.close();
                 if (held_locks.fetchRemove(self.key)) |kv| held_gpa.free(kv.key);
+                // Wake cross-actor blocking acquirers serialized behind this
+                // hold (TIN-2059): they re-check the registry and take the
+                // real flock only after full release.
+                held_cond.broadcast();
             }
         }
         held_mutex.unlock();
+        if (self.adopted) adopted_actor = self.prev_actor;
         self.allocator.free(self.key);
     }
 };
@@ -562,6 +615,7 @@ fn acquireRepairLockWithMode(
 ) !RepairLock {
     const key = try sanitizedLockFileName(allocator, provider, account);
     errdefer allocator.free(key);
+    const self_actor = currentActor();
 
     held_mutex.lock();
     while (true) {
@@ -579,10 +633,39 @@ fn acquireRepairLockWithMode(
                 held_cond.wait(&held_mutex);
                 continue;
             }
-            // Already held by this process: re-entrant acquire, no new flock.
-            entry.count += 1;
-            held_mutex.unlock();
-            return .{ .allocator = allocator, .key = key };
+            if (entry.owner_actor == self_actor) {
+                // Same logical actor: genuine nesting (a single actor is
+                // sequential and cannot race itself). Refcount, no new flock.
+                entry.count += 1;
+                held_mutex.unlock();
+                return .{ .allocator = allocator, .key = key };
+            }
+            if (nonblocking) {
+                // TIN-2059: a DIFFERENT in-process actor holds this key.
+                // The old unconditional `entry.count += 1` join here is what
+                // let a warm tick race a live session/materializer inside one
+                // process. Refuse typed instead — identical contract to the
+                // cross-process flock's WouldBlock arm.
+                held_mutex.unlock();
+                return error.RepairInProgress;
+            }
+            if (entry.owner_blocking) {
+                // Cooperative hierarchical join (TIN-1851): a blocking
+                // acquirer joining a blocking hold is the proxy materializer
+                // refreshing on behalf of the live session that owns this
+                // key. Adopt the owner's actor for the duration of the hold
+                // so nested acquires (the identity lock) match the session.
+                entry.count += 1;
+                const prev = adopted_actor;
+                adopted_actor = entry.owner_actor;
+                held_mutex.unlock();
+                return .{ .allocator = allocator, .key = key, .adopted = true, .prev_actor = prev };
+            }
+            // Blocking acquirer vs a short-hold typed writer (warm tick,
+            // probe, CLI repair): serialize BEHIND it — wait for the full
+            // release, then take the real flock and revalidate under it.
+            held_cond.wait(&held_mutex);
+            continue;
         }
         break;
     }
@@ -592,7 +675,12 @@ fn acquireRepairLockWithMode(
         held_mutex.unlock();
         return error.OutOfMemory;
     };
-    held_locks.put(held_gpa, reg_key, .{ .count = 1, .acquiring = true }) catch {
+    held_locks.put(held_gpa, reg_key, .{
+        .count = 1,
+        .acquiring = true,
+        .owner_actor = self_actor,
+        .owner_blocking = !nonblocking,
+    }) catch {
         held_gpa.free(reg_key);
         held_mutex.unlock();
         return error.OutOfMemory;
@@ -834,18 +922,19 @@ pub const TestRuntimeDirScope = struct {
     }
 };
 
-test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
+test "repair lock is re-entrant within one actor (TIN-1851 no self-deadlock)" {
     const a = std.testing.allocator;
     var scope = try TestRuntimeDirScope.init(a);
     defer scope.deinit(a);
     scope.activate();
     // First acquire takes the real OS flock.
     var l1 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
-    // A second acquire of the SAME key from THIS process must return immediately
-    // (re-entrant) rather than self-deadlock on the per-fd flock.
+    // A second acquire of the SAME key from the SAME actor (this thread) must
+    // return immediately (re-entrant) rather than self-deadlock on the per-fd
+    // flock.
     var l2 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
-    // A nonblocking acquire from this process is also re-entrant (already serialized
-    // by the held lock), NOT RepairInProgress.
+    // A nonblocking acquire from the same actor is also re-entrant (already
+    // serialized by the held lock), NOT RepairInProgress.
     var l3 = try acquireRepairLock(a, "codex", "tin1851-reentrancy-test");
     l3.release();
     l2.release();
@@ -853,6 +942,148 @@ test "repair lock is re-entrant within a process (TIN-1851 no self-deadlock)" {
     // Fully released: a fresh acquire succeeds and the registry entry is gone.
     var l4 = try acquireRepairLockBlocking(a, "codex", "tin1851-reentrancy-test");
     l4.release();
+}
+
+test "cross-actor in-process nonblocking acquire is refused, not re-entrant (TIN-2059)" {
+    // Two logical actors in ONE process contending for one provider:account:
+    // the second (warm-tick-shaped, nonblocking) actor must get the typed
+    // RepairInProgress busy result while the first holds — never a refcount
+    // join. Deterministic: the worker thread is joined BEFORE the holder
+    // releases, so the hold provably spans the worker's attempt.
+    //
+    // FAILS-against-old proof: with the actor gate temporarily reverted to the
+    // pre-TIN-2059 unconditional `entry.count += 1` join (removing the
+    // owner_actor check so any in-process acquire refcounts), the expect below
+    // failed — the worker's acquire SUCCEEDED while the main thread held the
+    // key. Verified 2026-07-02 by reverting the gate locally, observing this
+    // test fail, then restoring the gate.
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    var holder = try acquireRepairLock(a, "codex", "tin2059-cross-actor-nonblocking");
+
+    const Worker = struct {
+        fn run(refused: *bool) void {
+            // Distinct thread = distinct actor. Must be refused while held.
+            if (acquireRepairLock(std.testing.allocator, "codex", "tin2059-cross-actor-nonblocking")) |lock| {
+                var l = lock;
+                l.release();
+                refused.* = false; // joined a cross-actor hold: the TIN-2059 defect
+            } else |e| {
+                refused.* = (e == error.RepairInProgress);
+            }
+        }
+    };
+    var refused = false;
+    const worker = try std.Thread.spawn(.{}, Worker.run, .{&refused});
+    worker.join();
+    try std.testing.expect(refused);
+
+    holder.release();
+    // Fully released: the key is free again for any actor.
+    var again = try acquireRepairLock(a, "codex", "tin2059-cross-actor-nonblocking");
+    again.release();
+}
+
+test "blocking join adopts the session actor so materializer nesting works (TIN-1851/TIN-2059)" {
+    // The managed-session shape from the real call graph: the session main
+    // thread holds the account lock (blocking, adapters/codex/main.zig:1440
+    // shape) AND the identity lock (nonblocking, :1452 shape). The proxy
+    // materializer thread blocking-joins the account hold
+    // (broker_loader.zig:368 shape) and must then be recognized as the SAME
+    // actor for its nested identity acquire (:404 shape) — while a third,
+    // unrelated actor is still refused on both keys.
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    var account_hold = try acquireRepairLockBlocking(a, "codex", "tin2059-adopt-account");
+    var identity_hold = try acquireRepairLock(a, "codex-identity", "tin2059-adopt-id");
+
+    const Materializer = struct {
+        fn run(ok: *bool) void {
+            const ta = std.testing.allocator;
+            // Blocking join of the blocking-held account key: immediate (no
+            // self-deadlock), adopting the session's actor for the hold.
+            var acct = acquireRepairLockBlocking(ta, "codex", "tin2059-adopt-account") catch {
+                ok.* = false;
+                return;
+            };
+            defer acct.release();
+            // Nested identity acquire is now same-actor: allowed.
+            var ident = acquireRepairLock(ta, "codex-identity", "tin2059-adopt-id") catch {
+                ok.* = false;
+                return;
+            };
+            ident.release();
+            ok.* = true;
+        }
+    };
+    var materializer_ok = false;
+    const mt = try std.Thread.spawn(.{}, Materializer.run, .{&materializer_ok});
+    mt.join(); // joined while the session still holds both keys
+    try std.testing.expect(materializer_ok);
+
+    const Stranger = struct {
+        fn run(refused: *bool) void {
+            if (acquireRepairLock(std.testing.allocator, "codex-identity", "tin2059-adopt-id")) |lock| {
+                var l = lock;
+                l.release();
+                refused.* = false;
+            } else |e| {
+                refused.* = (e == error.RepairInProgress);
+            }
+        }
+    };
+    var stranger_refused = false;
+    const st = try std.Thread.spawn(.{}, Stranger.run, .{&stranger_refused});
+    st.join();
+    try std.testing.expect(stranger_refused);
+
+    identity_hold.release();
+    account_hold.release();
+}
+
+test "cross-actor blocking acquire serializes BEHIND a nonblocking hold (TIN-2059)" {
+    // The warm-tick-holds / materializer-arrives shape: a blocking acquirer
+    // hitting a NONBLOCKING (short-hold typed writer) hold must WAIT for full
+    // release — never cooperative-join it — so its under-lock revalidation
+    // runs strictly after the holder's rotation. Under the actor gate the
+    // waiter can only acquire after release, so `overlapped` stays false by
+    // construction. Against the old unconditional join this leg failed
+    // whenever the waiter got scheduled inside the yield window (near-always;
+    // the deterministic old-behavior witness is the cross-actor nonblocking
+    // test above).
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    var holder = try acquireRepairLock(a, "codex", "tin2059-serialize-behind");
+    var holder_released = std.atomic.Value(bool).init(false);
+    var overlapped = std.atomic.Value(bool).init(false);
+
+    const Waiter = struct {
+        fn run(released: *std.atomic.Value(bool), ov: *std.atomic.Value(bool)) void {
+            var l = acquireRepairLockBlocking(std.testing.allocator, "codex", "tin2059-serialize-behind") catch {
+                ov.store(true, .seq_cst); // a blocking acquire must not fail here
+                return;
+            };
+            if (!released.load(.seq_cst)) ov.store(true, .seq_cst);
+            l.release();
+        }
+    };
+    const waiter = try std.Thread.spawn(.{}, Waiter.run, .{ &holder_released, &overlapped });
+    // Give an (incorrect) instant join every chance to happen before release.
+    var i: usize = 0;
+    while (i < 200) : (i += 1) std.Thread.yield() catch {};
+    holder_released.store(true, .seq_cst);
+    holder.release();
+    waiter.join();
+    try std.testing.expect(!overlapped.load(.seq_cst));
 }
 
 test "lock file path persists after acquire+release (TIN-2041 no unlink-on-release)" {

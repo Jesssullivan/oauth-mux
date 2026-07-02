@@ -288,6 +288,20 @@ flywheel-zig-proof-dispatch *ARGS:
 flywheel-zig-proof-verify RUN_ID *ARGS:
     ./scripts/verify-zig-reapi-proof.sh --run-id {{RUN_ID}} {{ARGS}}
 
+# ── Delivery gates (TIN-2105 W1-2: config hygiene, endpoint + secrets) ──
+
+# Checked-in Bazel config must never pin remote cache/executor endpoints;
+# endpoint authority is env-only (BAZEL_REMOTE_CACHE, BAZEL_REMOTE_EXECUTOR,
+# GF_BAZEL_SUBSTRATE_MODE, GF_BAZEL_REMOTE_UPLOAD). Guard list lives in the
+# script, explicit and commented.
+endpoint-free-check:
+    ./scripts/endpoint-free-check.sh
+
+# gitleaks over the working tree with the repo .gitleaks.toml (house shape).
+# Fails closed with a clear message when gitleaks and nix are both missing.
+secrets-scan-dir:
+    ./scripts/secrets-scan-dir.sh
+
 # ── Broker MCP smoke (provider-neutral regression catch-net) ──
 
 smoke-broker:
