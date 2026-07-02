@@ -292,7 +292,7 @@ test "enumeratePool excludes ALL members of a 3-way identity collision (TIN-2113
     try testing.expectEqual(@as(usize, 0), pool.observed.len);
 }
 
-test "enumeratePool does NOT exclude accounts with no identity claim (claude-style, TIN-2113)" {
+test "enumeratePool does NOT exclude custom providers with no identity claim (opaque identities, TIN-2113)" {
     // twoAccountConfig declares NO identity_claim_path -> both accounts key opaquely
     // (null identity) -> no false collision -> both kept.
     var tmp = std.testing.tmpDir(.{});
@@ -314,4 +314,94 @@ test "enumeratePool does NOT exclude accounts with no identity claim (claude-sty
     var pool = try runner.enumeratePool(testing.allocator, parsed.value, &store);
     defer pool.deinit();
     try testing.expectEqual(@as(usize, 2), pool.observed.len);
+}
+
+fn writeClaudeCred(path: []const u8, refresh_token: []const u8) !void {
+    const f = try std.fs.createFileAbsolute(path, .{});
+    defer f.close();
+    var buf: [512]u8 = undefined;
+    const s = try std.fmt.bufPrint(
+        &buf,
+        "{{\"claudeAiOauth\":{{\"accessToken\":\"at\",\"refreshToken\":\"{s}\",\"expiresAt\":9000000000000}}}}",
+        .{refresh_token},
+    );
+    try f.writeAll(s);
+}
+
+fn writeClaudeProfile(dir: []const u8, account_uuid: []const u8) !void {
+    const path = try std.fs.path.join(testing.allocator, &.{ dir, ".claude.json" });
+    defer testing.allocator.free(path);
+    const f = try std.fs.createFileAbsolute(path, .{});
+    defer f.close();
+    var buf: [256]u8 = undefined;
+    const s = try std.fmt.bufPrint(&buf, "{{\"oauthAccount\":{{\"accountUuid\":\"{s}\"}}}}", .{account_uuid});
+    try f.writeAll(s);
+}
+
+fn claudeConfig(
+    allocator: std.mem.Allocator,
+    cred_a: []const u8,
+    dir_a: []const u8,
+    cred_b: []const u8,
+    dir_b: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "claude": {{
+        \\      "kind": "claude",
+        \\      "accounts": {{
+        \\        "a": {{ "secret": {{ "backend": "file", "path": "{s}" }}, "config_dir": "{s}" }},
+        \\        "b": {{ "secret": {{ "backend": "file", "path": "{s}" }}, "config_dir": "{s}" }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{ cred_a, dir_a, cred_b, dir_b });
+}
+
+fn claudePoolLen(account_uuid_a: ?[]const u8, account_uuid_b: ?[]const u8) !usize {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("a");
+    try tmp.dir.makeDir("b");
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+    const dir_a = try tmp.dir.realpathAlloc(testing.allocator, "a");
+    defer testing.allocator.free(dir_a);
+    const dir_b = try tmp.dir.realpathAlloc(testing.allocator, "b");
+    defer testing.allocator.free(dir_b);
+    const cred_a = try std.fs.path.join(testing.allocator, &.{ root, "a.json" });
+    defer testing.allocator.free(cred_a);
+    const cred_b = try std.fs.path.join(testing.allocator, &.{ root, "b.json" });
+    defer testing.allocator.free(cred_b);
+    try writeClaudeCred(cred_a, "rt-a");
+    try writeClaudeCred(cred_b, "rt-b");
+    if (account_uuid_a) |uuid| try writeClaudeProfile(dir_a, uuid);
+    if (account_uuid_b) |uuid| try writeClaudeProfile(dir_b, uuid);
+
+    const json = try claudeConfig(testing.allocator, cred_a, dir_a, cred_b, dir_b);
+    defer testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(testing.allocator, .{});
+    defer store.deinit();
+    var pool = try runner.enumeratePool(testing.allocator, parsed.value, &store);
+    defer pool.deinit();
+    return pool.observed.len;
+}
+
+test "enumeratePool EXCLUDES Claude config dirs sharing oauthAccount.accountUuid (TIN-2057/TIN-1825)" {
+    try testing.expectEqual(@as(usize, 0), try claudePoolLen("same-claude-account", "same-claude-account"));
+}
+
+test "enumeratePool KEEPS Claude config dirs with distinct oauthAccount.accountUuid values" {
+    try testing.expectEqual(@as(usize, 2), try claudePoolLen("claude-account-a", "claude-account-b"));
+}
+
+test "enumeratePool keeps Claude accounts opaque when .claude.json identity is absent" {
+    try testing.expectEqual(@as(usize, 2), try claudePoolLen(null, null));
 }

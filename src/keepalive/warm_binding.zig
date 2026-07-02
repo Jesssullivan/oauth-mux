@@ -59,18 +59,33 @@ pub const Observed = struct {
     expires_at_ms: i64,
 };
 
+const max_initial_stagger_ms: i64 = 60 * std.time.ms_per_min;
+
+fn initialStaggerMs(key: []const u8, now_ms: i64, expires_at_ms: i64) i64 {
+    const remaining = expires_at_ms -| now_ms;
+    if (remaining <= 0) return 0;
+    const window = @min(max_initial_stagger_ms, @divTrunc(remaining, 2));
+    if (window <= 0) return 0;
+    const hash = std.hash.Wyhash.hash(0x6f6d75785f776172, key);
+    return @intCast(hash % @as(u64, @intCast(window + 1)));
+}
+
 /// Build the scheduler's mutable Account list from observed credential state at
 /// `now_ms`. The credential store does NOT persist an issue instant, so
-/// `last_refresh_ms` is seeded to `now_ms`: the scheduler then refreshes at
+/// `last_refresh_ms` is seeded near `now_ms`: the scheduler then refreshes at
 /// `refresh_percent` of the OBSERVED-REMAINING lifetime (i.e. "refresh once
 /// refresh_percent of the life left at first observation has elapsed"), which is
-/// a safe, slightly-earlier trigger than 75%-of-total. Caller owns the slice.
+/// a safe, slightly-earlier trigger than 75%-of-total. A deterministic,
+/// key-derived backward stagger prevents a fresh loop from aligning every
+/// account into one due cohort; it can only make first refreshes earlier, never
+/// later than the no-stagger schedule. Caller owns the slice.
 pub fn buildPool(allocator: std.mem.Allocator, observed: []const Observed, now_ms: i64) std.mem.Allocator.Error![]ws.Account {
     const accounts = try allocator.alloc(ws.Account, observed.len);
     for (observed, accounts) |o, *a| {
+        const stagger = initialStaggerMs(o.key, now_ms, o.expires_at_ms);
         a.* = .{
             .key = o.key,
-            .last_refresh_ms = now_ms,
+            .last_refresh_ms = now_ms -| stagger,
             .expires_at_ms = o.expires_at_ms,
         };
     }

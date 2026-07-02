@@ -117,7 +117,7 @@ test "encodeKey rejects empty components (symmetric with decodeKey)" {
 
 // ── Pool construction ────────────────────────────────────────────────────────
 
-test "buildPool seeds last_refresh to now and preserves expiry per account" {
+test "buildPool seeds last_refresh near now and preserves expiry per account" {
     const a = testing.allocator;
     const observed = [_]bind.Observed{
         .{ .key = "claude:work", .expires_at_ms = 5_000_000 },
@@ -127,10 +127,59 @@ test "buildPool seeds last_refresh to now and preserves expiry per account" {
     defer a.free(pool);
     try testing.expectEqual(@as(usize, 2), pool.len);
     try testing.expectEqualStrings("claude:work", pool[0].key);
-    try testing.expectEqual(@as(i64, 1_000_000), pool[0].last_refresh_ms);
+    try testing.expect(pool[0].last_refresh_ms <= 1_000_000);
+    try testing.expect(pool[0].last_refresh_ms >= 1_000_000 - 60 * std.time.ms_per_min);
     try testing.expectEqual(@as(i64, 5_000_000), pool[0].expires_at_ms);
     try testing.expectEqual(@as(i64, 9_000_000), pool[1].expires_at_ms);
     try testing.expectEqual(@as(u32, 0), pool[0].failures);
+}
+
+test "buildPool deterministically staggers a fresh pool instead of one due cohort" {
+    const a = testing.allocator;
+    const observed = [_]bind.Observed{
+        .{ .key = "claude:work", .expires_at_ms = 24 * std.time.ms_per_hour },
+        .{ .key = "claude:personal", .expires_at_ms = 24 * std.time.ms_per_hour },
+        .{ .key = "codex:work", .expires_at_ms = 24 * std.time.ms_per_hour },
+        .{ .key = "codex:personal", .expires_at_ms = 24 * std.time.ms_per_hour },
+    };
+    const pool1 = try bind.buildPool(a, &observed, 1_000_000);
+    defer a.free(pool1);
+    const pool2 = try bind.buildPool(a, &observed, 1_000_000);
+    defer a.free(pool2);
+
+    var all_same = true;
+    for (pool1, pool2) |p1, p2| {
+        try testing.expectEqual(p1.last_refresh_ms, p2.last_refresh_ms);
+        try testing.expect(p1.last_refresh_ms <= 1_000_000);
+        if (p1.last_refresh_ms != pool1[0].last_refresh_ms) all_same = false;
+    }
+    try testing.expect(!all_same);
+}
+
+test "buildPool stagger only pulls first due times earlier, never later" {
+    const a = testing.allocator;
+    const now: i64 = 1_000_000;
+    const expires = now + 24 * std.time.ms_per_hour;
+    const observed = [_]bind.Observed{
+        .{ .key = "claude:work", .expires_at_ms = expires },
+        .{ .key = "claude:personal", .expires_at_ms = expires },
+        .{ .key = "codex:work", .expires_at_ms = expires },
+        .{ .key = "codex:personal", .expires_at_ms = expires },
+    };
+    const pool = try bind.buildPool(a, &observed, now);
+    defer a.free(pool);
+
+    const policy = ws.Policy{ .refresh_percent = 75, .min_lead_ms = 0 };
+    const unstaggered = ws.Account{ .key = "baseline", .last_refresh_ms = now, .expires_at_ms = expires };
+    const baseline_due = ws.refreshDueAtMs(unstaggered, policy);
+    var pulled_earlier = false;
+    for (pool) |account| {
+        const due = ws.refreshDueAtMs(account, policy);
+        try testing.expect(due <= baseline_due);
+        try testing.expect(due >= baseline_due - 60 * std.time.ms_per_min);
+        if (due < baseline_due) pulled_earlier = true;
+    }
+    try testing.expect(pulled_earlier);
 }
 
 // ── Refresh binding ──────────────────────────────────────────────────────────
