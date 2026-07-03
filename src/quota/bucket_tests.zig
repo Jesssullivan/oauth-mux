@@ -247,6 +247,31 @@ test "P4 quota_exhausted + rate_limited recover as a monotone step" {
         try std.testing.expect(rl.status == .rate_limited);
         const rl_boundary = at +| (@as(i64, retry) *| 1000);
         try expectMonotoneStep(rl, rl_boundary);
+
+        // plan_gated: steps plan_gated -> available at its stated reset instant.
+        const plan_resets = at +| r.intRangeAtMost(i64, 1, 5_000_000);
+        const pg = bucket.reduceBucket(bucket.QuotaBucket{}, .{
+            .at = at,
+            .source = .error_body,
+            .attribution = .from_response_model,
+            .signal = .{ .provider_plan = .{ .reason = .subscription_paused, .resets_at = plan_resets } },
+        }, null, THRESHOLD_S);
+        try std.testing.expect(pg.status == .plan_gated);
+        try std.testing.expect(bucket.effectiveStatus(pg, plan_resets - 1) == .plan_gated);
+        try std.testing.expect(bucket.effectiveStatus(pg, plan_resets) == .available);
+        try std.testing.expect(bucket.effectiveStatus(pg, plan_resets +| 1_000_000) == .available);
+
+        // tier_blocked: never self-heals — constant at any query instant.
+        const tb = bucket.reduceBucket(bucket.QuotaBucket{}, .{
+            .at = at,
+            .source = .error_body,
+            .attribution = .from_response_model,
+            .signal = .tier_insufficient,
+        }, null, THRESHOLD_S);
+        try std.testing.expect(tb.status == .tier_blocked);
+        try std.testing.expect(bucket.effectiveStatus(tb, at -| 1_000_000) == .tier_blocked);
+        try std.testing.expect(bucket.effectiveStatus(tb, at +| 5_000_000) == .tier_blocked);
+        try std.testing.expect(bucket.effectiveStatus(tb, std.math.maxInt(i64)) == .tier_blocked);
     }
 }
 

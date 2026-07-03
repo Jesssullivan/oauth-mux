@@ -942,9 +942,12 @@ pub const Proxy = struct {
         capability: ?[]const u8,
         c: Classification,
     ) !void {
-        const now_unix = std.time.timestamp();
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
+        // Effect boundary (TIN-2407 P0): read AFTER the store load, preserving
+        // the pre-inversion ordering (the old internal read happened post-load),
+        // so persisted instants never shift by the load-crossing skew.
+        const now_unix = std.time.timestamp();
         try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix, capability orelse self.capability);
         store.persist();
     }
@@ -957,10 +960,11 @@ pub const Proxy = struct {
         status: u16,
         retry_after_s: ?u32,
     ) void {
-        // Effect boundary (TIN-2407 P0): mirror applyClassification's clock read.
-        const now_unix = std.time.timestamp();
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
+        // Effect boundary (TIN-2407 P0): read AFTER the store load (mirrors
+        // applyClassification; preserves the pre-inversion read ordering).
+        const now_unix = std.time.timestamp();
         recordDurableRouteStateInStore(&store, account_id, capability orelse self.capability, state, status, retry_after_s, now_unix);
         store.persist();
     }
