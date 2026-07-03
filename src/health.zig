@@ -842,7 +842,10 @@ pub const HealthStore = struct {
         hint: ?[]const u8,
     ) void {
         const classification = provider_schema.classifyHttp(def, status, retry_after, hint);
-        self.recordHttpClassification(key, status, classification);
+        // Effect boundary: read the clock once here and thread it in (TIN-2407 P0).
+        // classifyHttp is pure, so reading before/after it is value-equivalent.
+        const now_s = std.time.timestamp();
+        self.recordHttpClassification(key, status, classification, now_s);
         self.recordProbeEvidence(
             key,
             .http_status,
@@ -857,9 +860,14 @@ pub const HealthStore = struct {
         key: []const u8,
         status: u16,
         classification: types.HttpClassification,
+        // TIN-2407 P0 clock inversion: the observation instant (Unix seconds) is
+        // supplied by the caller's effect boundary instead of read internally, so
+        // this classification path is a pure function of its inputs. The body is
+        // otherwise byte-identical (semantics-preserving).
+        now_s: i64,
     ) void {
         const health = self.getOrCreate(key) catch return;
-        const now = std.time.timestamp();
+        const now = now_s;
         health.last_http_status = status;
 
         switch (classification) {

@@ -48,7 +48,7 @@ pub fn dispatch(
     if (std.mem.eql(u8, method, "credential/materialize")) return credentialMaterialize(ctx, params);
     if (std.mem.eql(u8, method, "credential/refresh")) return notImpl("credential/refresh is Phase 3 (task #27)");
 
-    if (std.mem.eql(u8, method, "quota/observe")) return quotaObserve(ctx, params);
+    if (std.mem.eql(u8, method, "quota/observe")) return quotaObserve(ctx, params, std.time.timestamp());
     if (std.mem.eql(u8, method, "quota/status")) return quotaStatus(ctx, params);
 
     if (std.mem.eql(u8, method, "events/append")) return notImpl("events/append is Phase 1 follow-up");
@@ -407,7 +407,10 @@ fn anotherSelectableExists(pool: anytype, except_id: []const u8) bool {
 /// quota/observe: record an observation on the current account
 /// without forcing a swap. Used by the wire proxy on EVERY response,
 /// so the broker has up-to-date quota state for the next elect.
-fn quotaObserve(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
+// TIN-2407 P0 clock inversion: the observation instant (Unix seconds) is read
+// once by `dispatch` (the RPC wire boundary) and threaded in, instead of being
+// read inside the handler — making the handler a pure function of its inputs.
+fn quotaObserve(ctx: *Context, params: ?std.json.Value, now_s: i64) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
     _ = switch (requireSessionId(ctx, p.object)) {
@@ -426,7 +429,7 @@ fn quotaObserve(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     var now_selectable = true;
     var next_eligible_at: ?i64 = null;
 
-    const now_unix = std.time.timestamp();
+    const now_unix = now_s;
     switch (kind) {
         .ok => {
             // Healthy turn — opportunity to clear stale rate-limit

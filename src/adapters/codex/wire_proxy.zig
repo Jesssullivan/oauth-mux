@@ -942,9 +942,12 @@ pub const Proxy = struct {
         capability: ?[]const u8,
         c: Classification,
     ) !void {
-        const now_unix = std.time.timestamp();
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
+        // Effect boundary (TIN-2407 P0): read AFTER the store load, preserving
+        // the pre-inversion ordering (the old internal read happened post-load),
+        // so persisted instants never shift by the load-crossing skew.
+        const now_unix = std.time.timestamp();
         try applyClassificationWithStore(self.pool, &store, account_id, c, now_unix, capability orelse self.capability);
         store.persist();
     }
@@ -959,7 +962,10 @@ pub const Proxy = struct {
     ) void {
         var store = health_mod.HealthStore.load(std.heap.page_allocator, .{});
         defer store.deinit();
-        recordDurableRouteStateInStore(&store, account_id, capability orelse self.capability, state, status, retry_after_s);
+        // Effect boundary (TIN-2407 P0): read AFTER the store load (mirrors
+        // applyClassification; preserves the pre-inversion read ordering).
+        const now_unix = std.time.timestamp();
+        recordDurableRouteStateInStore(&store, account_id, capability orelse self.capability, state, status, retry_after_s, now_unix);
         store.persist();
     }
 
@@ -1202,7 +1208,7 @@ fn recordDurableClassificationInStore(
         .provider_5xx => 500,
     };
     const retry_after_s = retryAfterSeconds(now_unix, c.resets_at, c.kind);
-    recordDurableRouteStateInStore(store, account_id, capability, state, status, retry_after_s);
+    recordDurableRouteStateInStore(store, account_id, capability, state, status, retry_after_s, now_unix);
 }
 
 fn recordDurableRouteStateInStore(
@@ -1212,6 +1218,8 @@ fn recordDurableRouteStateInStore(
     state: RouteState,
     status: u16,
     retry_after_s: ?u32,
+    // TIN-2407 P0 clock inversion: caller supplies the observation instant.
+    now_unix: i64,
 ) void {
     const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse return;
     if (colon == 0 or colon + 1 >= account_id.len) return;
@@ -1235,7 +1243,7 @@ fn recordDurableRouteStateInStore(
         .credential_unavailable => .{ .dead = .credential_unavailable },
     };
 
-    store.recordHttpClassification(key.slice(), status, classification);
+    store.recordHttpClassification(key.slice(), status, classification, now_unix);
     store.recordProbeEvidence(
         key.slice(),
         .broker_run_live,

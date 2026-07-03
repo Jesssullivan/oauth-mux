@@ -628,15 +628,18 @@ fn probeCapability(ctx: *Context) PipelineError!types.MuxDecision {
     ctx.last_probe_executed = true;
     ctx.last_probe_status = result.status;
     var evidence_key: health_mod.KeyBuf = undefined;
+    // Effect boundary (TIN-2407 P0): one clock read for this probe result, threaded
+    // into whichever arm records the classification.
+    const now_s = std.time.timestamp();
     switch (classification) {
         .dead => {
             const key = health_mod.accountKey(prov, acct);
-            ctx.health.recordHttpClassification(key.slice(), result.status, classification);
+            ctx.health.recordHttpClassification(key.slice(), result.status, classification, now_s);
             evidence_key = key;
         },
         else => {
             const key = health_mod.capabilityKey(prov, acct, capability);
-            ctx.health.recordHttpClassification(key.slice(), result.status, classification);
+            ctx.health.recordHttpClassification(key.slice(), result.status, classification, now_s);
             evidence_key = key;
         },
     }
@@ -1557,6 +1560,7 @@ test "runEnv routes around degraded capability without poisoning account" {
         degraded_route.slice(),
         403,
         .{ .degraded = .tier_insufficient },
+        std.time.timestamp(),
     );
 
     var max_ctx = Context.init(std.testing.allocator, parsed.value, &store);
@@ -1762,7 +1766,7 @@ test "runProbe with explicit account rechecks previously degraded command route"
 
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
-    store.recordHttpClassification("toy:default#status", 400, .{ .degraded = .unknown_4xx });
+    store.recordHttpClassification("toy:default#status", 400, .{ .degraded = .unknown_4xx }, std.time.timestamp());
 
     var ctx = Context.init(std.testing.allocator, parsed.value, &store);
     defer ctx.deinit();
@@ -2015,7 +2019,7 @@ test "runEnv skips remaining accounts for degraded provider" {
 
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
-    store.recordHttpClassification("codex:max-1", 500, .provider_degraded);
+    store.recordHttpClassification("codex:max-1", 500, .provider_degraded, std.time.timestamp());
 
     var ctx = Context.init(std.testing.allocator, parsed.value, &store);
     defer ctx.deinit();
