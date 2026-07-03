@@ -4550,7 +4550,10 @@ fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 fn recordStayAfloatObserveRouteHealth(store: *health_mod.HealthStore, route: RepairPlanRoute) bool {
     const key = repairPlanRouteHealthKey(route);
     const classification = types.HttpClassification{ .quota_exhausted = .{ .retry_after_s = 7200 } };
-    store.recordHttpClassification(key.slice(), 429, classification);
+    // Effect boundary (TIN-2407 P0): this fn observes a child's stdout, so it owns
+    // the clock read for the classification it records.
+    const now_s = std.time.timestamp();
+    store.recordHttpClassification(key.slice(), 429, classification, now_s);
     store.recordProbeEvidence(
         key.slice(),
         .observed_child_output,
@@ -13597,7 +13600,9 @@ fn recordCodexBrokerRunRouteHealth(
     classification: types.HttpClassification,
 ) void {
     const key = repairPlanRouteHealthKey(route);
-    store.recordHttpClassification(key.slice(), 429, classification);
+    // Effect boundary (TIN-2407 P0): the broker-run path owns its clock read.
+    const now_s = std.time.timestamp();
+    store.recordHttpClassification(key.slice(), 429, classification, now_s);
     store.recordProbeEvidence(
         key.slice(),
         .broker_run_live,
@@ -20130,6 +20135,7 @@ comptime {
     _ = @import("keepalive/warm_binding_tests.zig");
     _ = @import("keepalive/warm_runner_tests.zig");
     _ = @import("keepalive/refresh_race_tests.zig"); // TIN-2059 in-process actor-gate race
+    _ = @import("quota/bucket_tests.zig"); // TIN-2407 P0: pure quota-bucket algebra
 
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
