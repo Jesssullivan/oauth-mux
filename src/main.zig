@@ -344,17 +344,22 @@ const KeepaliveWait = struct {
         if (self.remaining == 0) return false;
         self.remaining -= 1;
         const now = std.time.milliTimestamp();
-        if (wake_at_ms > now) {
-            const delta: u64 = @intCast(wake_at_ms - now);
-            // Clamp to a sane max (24h) so an absurd operator --interval-ms can't
-            // overflow the u64 ns multiply, and the loop never sleeps past a day.
-            const max_ms: u64 = 24 * 60 * 60 * 1000;
-            const sleep_ms = @min(@min(delta, self.cap_ms), max_ms);
-            std.time.sleep(sleep_ms * std.time.ns_per_ms);
-        }
+        const sleep_ms = boundedKeepaliveSleepMs(wake_at_ms, now, self.cap_ms);
+        if (sleep_ms > 0) std.time.sleep(sleep_ms * std.time.ns_per_ms);
         return true;
     }
 };
+
+fn boundedKeepaliveSleepMs(wake_at_ms: i64, now_ms: i64, cap_ms: u64) u64 {
+    if (wake_at_ms <= now_ms or cap_ms == 0) return 0;
+
+    const raw_delta = std.math.sub(i64, wake_at_ms, now_ms) catch std.math.maxInt(i64);
+    const delta: u64 = @intCast(raw_delta);
+    // Clamp to a sane max (24h) so an absurd operator --interval-ms can't
+    // overflow the u64 ns multiply, and the loop never sleeps past a day.
+    const max_ms: u64 = 24 * 60 * 60 * 1000;
+    return @min(@min(delta, cap_ms), max_ms);
+}
 
 /// `oauth-mux keepalive` — run the warm-loop scheduler over every configured
 /// account: proactively refresh each at ~75% of its token lifetime so an agent
@@ -18432,6 +18437,14 @@ test "daemon tick sleep handles immediate and final wake-up cases" {
         @as(u64, 0),
         daemonTickSleepMs(.{ .interval_ms = 0 }, 0, 2, .{ .next_tick_after = 1030 }, 1000),
     );
+}
+
+test "keepalive wait sleep is bounded for far-future wake-up sentinels" {
+    try std.testing.expectEqual(@as(u64, 0), boundedKeepaliveSleepMs(1000, 1000, 60_000));
+    try std.testing.expectEqual(@as(u64, 0), boundedKeepaliveSleepMs(1030, 1000, 0));
+    try std.testing.expectEqual(@as(u64, 30), boundedKeepaliveSleepMs(1030, 1000, 60_000));
+    try std.testing.expectEqual(@as(u64, 5_000), boundedKeepaliveSleepMs(100_000, 1000, 5_000));
+    try std.testing.expectEqual(@as(u64, 60_000), boundedKeepaliveSleepMs(std.math.maxInt(i64), 1000, 60_000));
 }
 
 test "repairActionFor classifies quota exhaustion as wait action" {

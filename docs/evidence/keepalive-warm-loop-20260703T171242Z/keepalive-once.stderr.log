@@ -1,0 +1,6 @@
+[ERR] secret: gemini:default: NotFound
+[ERR] secret: vercel:default: NotFound
+[WRN] keepalive: refusing to warm codex:default — shares an OAuth identity with another enrolled account (single-use refresh-token family; family-revocation risk, TIN-2113); resolve the duplicate to enable
+[WRN] keepalive: refusing to warm codex:max-1 — shares an OAuth identity with another enrolled account (single-use refresh-token family; family-revocation risk, TIN-2113); resolve the duplicate to enable
+[WRN] token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[WRN] token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
