@@ -1,0 +1,22 @@
+# oauth-mux keepalive user unit template (TIN-1830).
+# Rendered by scripts/keepalive-service.sh install; @OMUX_BIN@ is substituted
+# with an absolute binary path at install time.
+# Guardrail: no credential material may ever appear in this file or in
+# Environment= lines - the binary reads credential stores live at runtime.
+# Restart=always (not on-failure): the loop exits 0 when the pool drains
+# (report counters are the failure signal), so residency must not key off
+# exit status. The loop itself is bounded (100000 ticks, sleep capped 60s).
+
+[Unit]
+Description=oauth-mux keepalive warm loop (foreground tick engine wrapper)
+Documentation=https://github.com/Jesssullivan/oauth-mux/blob/main/docs/keepalive-service-units.md
+
+[Service]
+Type=simple
+ExecStart=@OMUX_BIN@ keepalive --iterations 100000 --interval-ms 60000 --json
+Environment=NO_COLOR=1
+Restart=always
+RestartSec=300
+
+[Install]
+WantedBy=default.target

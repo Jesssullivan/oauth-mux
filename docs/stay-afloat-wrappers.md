@@ -265,6 +265,12 @@ Rollback is just:
 oauth-mux daemon stop
 ```
 
+> **Keepalive service units:** for the shipped `oauth-mux keepalive` loop,
+> use the maintained templates and install lane in
+> [`docs/keepalive-service-units.md`](keepalive-service-units.md) (TIN-1830).
+> The launchd/systemd examples below predate the `keepalive` verb and wrap
+> the older `daemon loop` surface.
+
 ## macOS Launchd
 
 Create `~/Library/LaunchAgents/dev.xoxd.omux.codex-max.plist`:
