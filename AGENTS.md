@@ -65,6 +65,24 @@ easier to generalize into the next harness adapter, it is probably out of scope.
 8. `build.zig` / `build.zig.zon` — Zig build system
 9. `src/` — implementation
 
+## Active Design Notes (working theories — traceable, not yet implemented)
+
+Design of record that is agreed but **not yet built**. Treat as the plan to
+implement against; never cite as shipped. Each links a durable tracker.
+
+- **Model-class quota granularity across n accounts** —
+  `docs/spec/model-quota-granularity-2026-07-03.md` · Linear TIN-2400 (parent) /
+  TIN-2407 (P0 enabler, July-safe) · GitHub #436. Working theory: model-class quota
+  (Fable/Opus/Sonnet cadence) rides the existing `provider:account#capability` route
+  key + HealthStore v2 per-capability rows; a pure quota-bucket algebra folds an
+  event log, availability is a query (`now ≥ resets_at`), spread = least-recently-
+  selected per capability ring. **Hard boundary: credential keepalive ≠ model-quota
+  keepalive** — a credential is per-account (one refresh warms all model classes);
+  only routing is per-model. No model-quota claim until a committed
+  `test/evidence/quota-observation/` proves the provider's real signals. August
+  (adapter-maturation) scope; only P0 (pure-core clock inversion) is July-safe; does
+  not block the credential-keepalive dogfood.
+
 ## Build And Validation
 
 Remote-first rule: proof builds, test gates, release checks, and agent validation
