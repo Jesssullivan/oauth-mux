@@ -1,0 +1,14 @@
+old pid: 8410
+killed 8410
+	state = spawn scheduled
+		state = active
+	state = spawn scheduled
+		state = active
+		state = active
+[WRN] token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[WRN] token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[WRN] token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[WRN] token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[WRN] token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[WRN] token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+RESPAWNED pid=15658 at 16:20:25Z (old was 8410; throttle honored)
