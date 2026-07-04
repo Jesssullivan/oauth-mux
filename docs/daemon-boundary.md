@@ -41,7 +41,8 @@ into a seamless fallback path.
 
 The current paid Codex Max route matrix is also newer than the original
 2026-04-30 example, and it changes with real auth/quota state. The 2026-05-17
-installed `0.1.7` diagnostic snapshot has `max-1#codex-max` selected,
+installed `0.1.7` diagnostic snapshot (historical snapshot, binary predates
+v0.1.14) has `max-1#codex-max` selected,
 `max-3#codex-max` and `max-4#codex-max` selectable as spare fallbacks, and
 `max-2#codex-max` blocked as `token_revoked` until the labeled upstream login
 handoff runs. Dashboard credit or mini/Spark availability must not be treated

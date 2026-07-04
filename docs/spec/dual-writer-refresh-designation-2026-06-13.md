@@ -177,8 +177,8 @@ This checklist — not this doc — gates the flip:
 - "Cassette/synthetic test" and "live leg with a warm tick" — prereq 5.
 
 The design's deliverable (this doc + the corrected mechanism) is complete; the
-**grant flip remains blocked** until prerequisites 1–5 land with the live leg
-recorded.
+**grant flip remains blocked** (superseded — see correction note) until
+prerequisites 1–5 land with the live leg recorded.
 
 ## Correction note (2026-07-02, decision-ledger pattern)
 
@@ -192,3 +192,9 @@ Status at HEAD, kept honest: the flip is **merged, not evidence-proven** — the
 committed `docs/evidence/` warm-loop run, and prerequisite 5's live leg (engineered
 dual-writer race with a warm tick, TIN-2059) remains open/In Progress. This note
 corrects the stale gate claim without rewriting the 2026-06-13 design record.
+
+Further correction (2026-07-04): the warm-loop live proof is no longer owed —
+committed evidence now exists: `docs/evidence/keepalive-warm-loop-20260702T214211Z/`,
+`keepalive-warm-loop-20260703T171242Z/`, and
+`keepalive-rotation-soak-20260703T213916Z/` (2 accounts refreshed on the
+proactive tick, PR #440).

@@ -1,6 +1,6 @@
 # Release And Install Lanes
 
-Updated: 2026-05-18
+Updated: 2026-07-04
 
 This is the DRY map for installer, package, CI, and dogfood lanes.
 Detailed historical evidence stays in `docs/install-beta-matrix.md` and
@@ -73,8 +73,8 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 | Release staging | `just remote-release-proof <ref> <version>` / `.github/workflows/release-proof.yml` | no | build the release tree, smoke installers/packages, generate handoff on the remote runner |
 | GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged tarballs, npm tarballs, formula, checksums, installer, handoff |
 | Registry dry run | `.github/workflows/registry-dry-run.yml` | no | contact configured registries/taps with explicit non-publishing confirmation |
-| npm publish | `.github/workflows/npm-publish.yml` | yes, npm only | publish CI-generated npm tarballs after release proof |
-| npm deprecate | `.github/workflows/npm-deprecate.yml` | yes when `plan_only=false` | repair bad npm package versions through an explicit production environment |
+| npm publish (RETIRED 2026-06-12, TIN-2042) | `.github/workflows/npm-publish.yml` | dead-letter; do not dispatch | npm publication is retired; this workflow exists only as a dead-letter, not a live lane |
+| npm deprecate (RETIRED lane, keeper-only) | `.github/workflows/npm-deprecate.yml` | yes when `plan_only=false` | npm publication is retired; this workflow's only remaining job is keeping the stale `0.1.9` registry package deprecated |
 | System package QA | `.github/workflows/system-package-install-qa.yml` | no | install published `.deb` and `.rpm` assets in clean containers; `expect_codex_shim` gates new shim-bearing releases |
 | Live provider QA | `.github/workflows/live-provider-qa.yml` | provider calls only with confirmation | produce redacted live/cassette evidence; never a default CI gate |
 
@@ -87,8 +87,10 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 - `nix flake check` is a local package debugging smoke, not release proof.
   Remote release proof must prove the package runs, reports the source version,
   and validates no-secret examples.
-- npm publication is CI-only through `.github/workflows/npm-publish.yml`.
-  Workstation `npm publish` is unsupported.
+- npm publication is retired (operator decision 2026-06-12, TIN-2042). Do not
+  dispatch `.github/workflows/npm-publish.yml`; it exists only as a
+  dead-letter. `.github/workflows/npm-deprecate.yml` remains live only to keep
+  the stale published `0.1.9` package deprecated.
 - Release and registry scripts must use an isolated npm cache so root-owned or
   stale workstation `~/.npm` state cannot affect release proof.
 - Registry dry-runs are non-publishing gates. Use

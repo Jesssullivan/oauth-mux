@@ -532,6 +532,12 @@ supervisor. It reports `contract:"experimental_socket_stub"` and
 `hosts_stay_afloat:false` until the socket daemon is deliberately aligned with
 the foreground tick contract.
 
+Proactive credential keepalive: `oauth-mux keepalive [--once]` warms
+explicitly opted-in accounts (`allow_proactive_refresh`, default false) at
+~75% token lifetime; operator-explicit service residency via
+`just keepalive-service-install`. See `docs/keepalive-service-units.md` and
+`CHANGELOG.md` for evidence-bound claims.
+
 Route, runtime, repair-plan, and stay-afloat JSON include a `writeback` object.
 That object separates the secret backend surface (`readonly`, `replace_file`,
 `command_write`, `keychain_write`, `sops_write`, or `unsupported`) from whether
