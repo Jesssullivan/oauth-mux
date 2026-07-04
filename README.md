@@ -21,15 +21,21 @@ diagnostic infrastructure. They are not product success.
 
 ## Current Truth
 
-Public install lanes are versioned by channel. `0.1.13` is the current verified
-public release for GitHub Release, curl installer, deb/rpm assets, and the
-Homebrew tap. It is the first release carrying the home-is-store managed-Codex
-session-authority default (canonical bridge is explicit opt-in), the flock
-unlink-on-release race fix with the macOS runtime-dir move (restart long-lived
-managed sessions after upgrading), the default-mode native resume chooser, and
-corrected Claude OAuth endpoint constants. The npm lane is retired as of
-2026-06-12 (the published package remains stale at `0.1.9`); install via
-Homebrew, the curl installer, or system packages. Homebrew remains binary-only by default:
+Public install lanes are versioned by channel. `0.1.14` is the current public
+release for GitHub Release, curl installer, deb/rpm assets, and the Homebrew
+tap. It is the first release carrying **credential keepalive**: the
+`oauth-mux keepalive` warm loop (proactive per-account refresh at ~75% token
+lifetime, consent-gated per account, off by default), its safety rails
+(shared-identity exclusion, identity dedupe before election, the in-process
+refresh actor gate), operator-explicit launchd/systemd service unit templates,
+and isolated-browser login helpers for multi-account Claude enrollment. See
+`CHANGELOG.md` for the full list and the evidence each claim is bound to.
+Prior release `0.1.13` (2026-06-12) carried the home-is-store managed-Codex
+session-authority default, the flock unlink-on-release race fix, the native
+resume chooser, and corrected Claude OAuth endpoints — it pre-dates the
+`keepalive` command. The npm lane is retired as of 2026-06-12 (the published
+package remains stale at `0.1.9`); install via Homebrew, the curl installer, or
+system packages. Homebrew remains binary-only by default:
 `brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
 install or link a managed `codex` shim.
 
@@ -54,6 +60,18 @@ What works today:
   approval/sandbox policy, profiles, model defaults, non-managed provider
   definitions) currently applies on the legacy `shared_canonical` bridge path
   only.
+- Proactive credential keepalive via `oauth-mux keepalive [--once]`: enrolled,
+  explicitly opted-in accounts (`allow_proactive_refresh`, default `false`) are
+  refreshed at ~75% of token lifetime under the per-account and identity locks.
+  Accounts sharing one OAuth identity are refused (refresh-token family
+  protection). Proven by committed evidence: a refused-safely tick, a 5-account
+  isolated Claude fleet admission + stability soak, and proactive rotation
+  firing inside the running loop (`docs/evidence/keepalive-*`). Service
+  residency is operator-explicit via `just keepalive-service-install`
+  (launchd/systemd-user templates; nothing auto-enables) — live residency proof
+  is still open. Credential keepalive does not create capacity: quota windows
+  reset on the provider's clock; model/quota-class keepalive is design-only
+  (`docs/spec/model-quota-granularity-2026-07-03.md`).
 - Lazy account refresh at credential materialization or explicit repair time;
   managed launch reports `pre_spawn_network_refresh:false`.
 - Managed Codex launch/resume auto-revalidates expired Codex quota/rate windows
