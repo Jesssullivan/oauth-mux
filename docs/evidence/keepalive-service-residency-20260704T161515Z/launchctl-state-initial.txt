@@ -1,0 +1,8 @@
+	state = running
+	program = /Users/jess/.local/bin/oauth-mux
+		XDG_STATE_HOME => /Users/jess/.local/state
+	pid = 8410
+	last exit code = (never exited)
+		state = active
+		state = active
+	properties = keepalive | runatload | inferred program

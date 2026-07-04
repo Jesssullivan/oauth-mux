@@ -1,0 +1,3 @@
+binary: /Users/jess/.local/bin/oauth-mux
+installed and loaded: /Users/jess/Library/LaunchAgents/dev.xoxd.omux.keepalive.plist
+logs: /Users/jess/Library/Logs/oauth-mux/keepalive.{out,err}.log
