@@ -1,0 +1,20 @@
+[31m[ERR][0m secret: gemini:default: NotFound
+[31m[ERR][0m secret: vercel:default: NotFound
+[33m[WRN][0m keepalive: refusing to warm codex:default — shares an OAuth identity with another enrolled account (single-use refresh-token family; family-revocation risk, TIN-2113); resolve the duplicate to enable
+[33m[WRN][0m keepalive: refusing to warm codex:max-1 — shares an OAuth identity with another enrolled account (single-use refresh-token family; family-revocation risk, TIN-2113); resolve the duplicate to enable
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-3: proactive_refresh_not_opted_in
+[33m[WRN][0m token: refresh writeback not admitted for codex:max-4: proactive_refresh_not_opted_in
