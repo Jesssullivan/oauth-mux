@@ -7,10 +7,12 @@ dry-runs are CI/operator gates and non-publishing.
 For the DRY lane map across worktree, Nix, GitHub Release, npm, Homebrew,
 curl, deb, and rpm installers, see `docs/release-install-lanes.md`.
 
-npm publication is CI-only. Do not run `npm publish` from a workstation. The
-publish workflow stages the same release derivation, then publishes the
-generated tarballs. npm provenance is enabled by default and requires a public
-source repository.
+npm publication is retired (operator decision 2026-06-12, TIN-2042). Do not run
+`npm publish` from a workstation and do not dispatch
+`.github/workflows/npm-publish.yml`; it exists only as a dead-letter. The
+`npm Publish` section below is retained as historical procedure record, not a
+live operator path. `.github/workflows/npm-deprecate.yml` remains live only to
+keep the stale published `0.1.9` package deprecated.
 
 ## Dry-Run
 
@@ -81,11 +83,12 @@ Required secret and variable surfaces:
   release artifacts are intentionally not published yet.
 - The default workflow `GITHUB_TOKEN` for the GitHub lane.
 
-## npm Publish
+## npm Publish (RETIRED 2026-06-12, TIN-2042 — historical procedure record)
 
-`.github/workflows/npm-publish.yml` is the only supported npm mutation path. It
-requires `confirm=publish-npm`, stages `just release-proof-local <version>`, and
-then publishes the generated tarballs in this order:
+`.github/workflows/npm-publish.yml` was the npm mutation path before the npm
+lane was retired; do not dispatch it. It required `confirm=publish-npm`,
+staged `just release-proof-local <version>`, and then published the generated
+tarballs in this order:
 
 1. `oauth-mux-linux-x64`
 2. `oauth-mux-linux-arm64`
@@ -150,12 +153,15 @@ GitHub Release:
 3. Re-run `just remote-release-proof <ref> <version>` before publishing a
    replacement.
 
-npm:
+npm (RETIRED lane; kept for historical/orientation value only — do not
+publish):
 
 1. Prefer deprecating bad packages over unpublish after the npm unpublish
    window or when downstream consumers may already depend on them.
-2. Deprecate platform packages and the root shim with the same message.
-3. Publish a fixed patch version.
+2. Deprecate platform packages and the root shim with the same message using
+   `.github/workflows/npm-deprecate.yml`, the one surviving live npm action.
+3. Do not publish a fixed patch version to npm; the lane is retired
+   (TIN-2042). Ship the fix through the non-npm lanes instead.
 
 Homebrew:
 

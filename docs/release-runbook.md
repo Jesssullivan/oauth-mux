@@ -1,6 +1,9 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-05-09
+Updated: 2026-07-04
+
+Release discipline (2026-07-04): cuts are evidence-bound per `CHANGELOG.md`;
+cadence + tag-drift warning tracked in TIN-2462.
 
 ## Local Quality Gates
 
@@ -70,8 +73,10 @@ Expected output:
 - `artifacts/SHA256SUMS`
 - `artifacts/install.sh`
 - `homebrew/oauth-mux.rb`
-- `npm/` package workspace
-- `npm-tarballs/*.tgz`
+- `npm/` package workspace (inert artifacts — staged but never published;
+  retained until TIN-2046/TIN-2050 reshape the derivation)
+- `npm-tarballs/*.tgz` (inert artifacts — staged but never published; retained
+  until TIN-2046/TIN-2050 reshape the derivation)
 - `nfpm/oauth-mux-{amd64,arm64}.yaml`
 - deb/rpm artifacts
 
@@ -105,18 +110,22 @@ just remote-release-proof "$ref" "$version"
 
 This runs `release-local` and then checks:
 
-- required binary tarballs, debs, rpms, npm tarballs, and Homebrew formula
+- required binary tarballs, debs, rpms, npm tarballs (inert artifacts — staged
+  but never published; retained until TIN-2046/TIN-2050 reshape the
+  derivation), and Homebrew formula
 - `SHA256SUMS` against the artifact directory
 - tarball payload names for Unix and Windows targets
 - rendered Homebrew formula placeholders and Ruby syntax when Ruby is present
 - rendered Homebrew formula explicit version metadata
-- local npm install of the matching platform package plus root shim
+- local npm install of the matching platform package plus root shim (inert
+  artifacts — staged but never published; retained until TIN-2046/TIN-2050
+  reshape the derivation)
 - local installer execution against the staged artifact directory
 - non-publishing release handoff generation
 
-The release scripts set an isolated npm cache for packing, dry-run, publish, and
-deprecation operations. A broken workstation `~/.npm` cache must not change
-release proof results.
+The release scripts set an isolated npm cache for packing and dry-run
+operations (publish/deprecate lanes retired). A broken workstation `~/.npm`
+cache must not change release proof results.
 
 Generate only the handoff for an already staged tree:
 
@@ -160,9 +169,9 @@ and handoff generation pass. It then attaches these files to the GitHub release:
 - `v*/homebrew/oauth-mux.rb`
 - `v*/handoff/*`
 
-This tag workflow does not publish npm packages. npm publication is handled by
-the manual `NPM Publish` workflow after the release artifacts and registry
-dry-run are reviewed.
+This tag workflow does not publish npm packages. npm publication is retired
+(TIN-2042). `.github/workflows/npm-publish.yml` exists only as a dead-letter;
+do not dispatch it. `npm-deprecate.yml` keeps the registry package deprecated.
 
 The staged `install.sh` verifies the selected tarball against `SHA256SUMS`
 before installing. For local proof, `OMUX_RELEASE_BASE_URL=file://...` points it
@@ -231,6 +240,14 @@ Only claim GloriousFlywheel cache-first CI proof when the GF job actually runs
 the private action and completes.
 
 Current release evidence:
+
+### v0.1.14 (2026-07-04)
+
+Remote release proof GF job `85131314417` (`release-proof` on
+GloriousFlywheel, 11m31s, pass) on branch `jess/release-v0.1.14`; see
+`CHANGELOG.md` for the evidence-bound claims.
+
+### History
 
 - PR-head CI run `25031620446` completed `test`, `nix`, all six
   cross-compiles, and real GloriousFlywheel cache-first validation.

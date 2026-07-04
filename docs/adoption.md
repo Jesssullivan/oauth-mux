@@ -63,12 +63,13 @@ The public Homebrew tap is `Jesssullivan/homebrew-omux`, documented in
 infrastructure, not public adoption copy.
 The DRY release/install lane contract is `docs/release-install-lanes.md`; keep
 new UX/DX/AX installer copy aligned with that file rather than duplicating
-package-state tables here. As of the 2026-06-12 v0.1.13 release, public GitHub
+package-state tables here. As of the 2026-07-04 v0.1.14 release, public GitHub
 Release, Homebrew tap, curl installer assets, and system package assets resolve
-to `0.1.13`; the npm lane is retired (2026-06-12; the stale `0.1.9` package
+to `0.1.14`; the npm lane is retired (2026-06-12; the stale `0.1.9` package
 is abandoned in place)
-(see the productionization ledger for per-lane truth). Package-lane QA proves
-installability and metadata, not live provider handoff behavior.
+(see the productionization ledger for per-lane truth, including pending
+re-verification status in `docs/install-beta-matrix.md`). Package-lane QA
+proves installability and metadata, not live provider handoff behavior.
 
 When validating unreleased source behavior, install or invoke the worktree build
 deliberately and record provenance:
@@ -410,6 +411,12 @@ permission broker around stay-afloat.
 The account enrollment and agent inventory contract lives in
 `docs/spec/account-enrollment-agent-contract-2026-05-01.md`. Use that contract
 before broadening provider-neutral enrollment commands or MCP mutation tools.
+
+Proactive credential keepalive: `oauth-mux keepalive [--once]` warms
+explicitly opted-in accounts (`allow_proactive_refresh`, default false) at
+~75% token lifetime; operator-explicit service residency via
+`just keepalive-service-install`. See `docs/keepalive-service-units.md` and
+`CHANGELOG.md` for evidence-bound claims.
 
 ## Wrapper Author Experience
 

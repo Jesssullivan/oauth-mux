@@ -59,7 +59,7 @@ the live concurrent-proof leg, and the Claude posture decision.
                                                 │
                                                 ▼
                           ┌──────────────────────────────────────────┐
-                          │  builtin proactive_refresh GRANT FLIP     │ ◀── BLOCKED
+                          │  builtin proactive_refresh GRANT FLIP     │ ◀── BLOCKED (superseded — flipped 2026-06-14, see correction note)
                           │  gated on the checklist, not the doc      │
                           └──────────────────────────────────────────┘
                                                 │
@@ -141,3 +141,9 @@ loop itself landed in PR #417. The downstream boxes remain accurate: warm-loop *
 proof** (a committed `docs/evidence/` run) and the TIN-2059 dual-writer live leg are
 still open, and TIN-2057 (golden metric) is unstarted. Read the diagram's BLOCKED
 marker as "flipped 2026-06-14; evidence still owed".
+
+Further correction (2026-07-04): the warm-loop live proof is no longer owed —
+committed evidence now exists: `docs/evidence/keepalive-warm-loop-20260702T214211Z/`,
+`keepalive-warm-loop-20260703T171242Z/`, and
+`keepalive-rotation-soak-20260703T213916Z/` (2 accounts refreshed on the
+proactive tick, PR #440).

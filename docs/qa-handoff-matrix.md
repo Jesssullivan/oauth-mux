@@ -101,15 +101,17 @@ publishable evidence for those same negative shapes.
 - The strongest preserved proof is
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
 - Current diagnostic route truth is volatile and must be refreshed before each
-  live session. The 2026-05-17 22:24 EDT installed Homebrew `0.1.7` snapshot is
-  historical evidence, not current route truth; it was `not_afloat` for
+  live session. The 2026-05-17 22:24 EDT installed Homebrew `0.1.7` snapshot
+  (historical snapshot, binary predates v0.1.14) is historical evidence, not
+  current route truth; it was `not_afloat` for
   `codex-max` with all four named routes runtime-ready and broker-ready but
   route liveness `unrecorded`.
 - The 2026-05-20 17:01 UTC diagnostic snapshot improved that to one selectable
   route (`max-3`) but still had no spare fallback; treat it as historical
   single-route-risk evidence.
 - The 2026-05-21 02:57 UTC post-repair diagnostic snapshot used user-local
-  `oauth-mux 0.1.9`: `codex:max-3#codex-max` is selected, `max-4` is a live
+  `oauth-mux 0.1.9` (historical snapshot, binary predates v0.1.14):
+  `codex:max-3#codex-max` is selected, `max-4` is a live
   selectable fallback, and `max-1` / `max-2` remain runtime/broker ready but
   blocked as `unrecorded`.
 - Current resilience from that refresh is `session_start_ready:true`,

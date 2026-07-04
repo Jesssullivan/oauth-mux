@@ -1,6 +1,6 @@
 # Productionization Ledger
 
-Updated: 2026-05-26
+Updated: 2026-07-04
 
 This ledger is the short operator map for oauth-mux productionization. It is
 subordinate to the broker contract and Codex adapter contract, and it should be
@@ -8,34 +8,54 @@ refreshed when release truth, route evidence, or tracker state changes.
 
 ## Current Snapshot
 
-- Release state: `v0.1.13` points at `4a7d02b`, the first release carrying the
+- Release state: `v0.1.14` ("keepalive") is the current release line, cut from
+  `build.zig.zon` version `0.1.14`. It is the first release carrying the
+  `oauth-mux keepalive` warm loop (proactive per-account credential refresh at
+  ~75% token lifetime, consent-gated via `allow_proactive_refresh`, default
+  false), the keepalive safety rails (shared-identity exclusion with
+  first-refresh stagger, broker identity dedupe before election, the
+  in-process actor gate on the repair-lock registry), operator-explicit
+  `just keepalive-service-install` launchd/systemd unit templates, and
+  isolated-browser Claude login helpers. See `CHANGELOG.md` for the
+  evidence-bound claim list. Prior release `v0.1.13` (`4a7d02b`) carried the
   TIN-1851 home-is-store session-authority default (#367/#370), the flock
   unlink-on-release race fix with the macOS runtime-dir move (#379, TIN-2041),
   the default-mode native resume chooser (#380, TIN-2045), corrected Claude
   OAuth endpoint constants (#381, TIN-1817), the bounded repair-events log
-  (#369), and the remote-first proof policy (#368/#372). It was cut behind a
+  (#369), and the remote-first proof policy (#368/#372); it was cut behind a
   green remote release-proof on the GloriousFlywheel runner and a committed
   clean-lineage live e2e (`docs/evidence/codex-live-e2e-clean-lineage-20260612/`).
-- CI/release state: GitHub Actions is the live source for release proof. Release
-  workflow `27432964644` published `v0.1.13` with the full 23-asset matrix;
-  the public GitHub Release is non-draft/non-prerelease. The npm lane is
-  RETIRED (operator decision 2026-06-12, TIN-2042): packaging truth moves to
-  the Bazel SSOT and its derived lanes, which exclude npm; the published npm
-  package remains stale at `0.1.9` and cannot be deprecated until/unless a
-  registry token is ever rotated.
-- Version truth: source version is `0.1.13`. GitHub Release, curl installer
-  assets, deb/rpm assets, and the public Homebrew tap resolve to `0.1.13`.
-  The npm lane is retired. The Homebrew formula remains binary-only by
-  default and must not install or link a managed `codex` shim.
+- CI/release state: GitHub Actions is the live source for release proof. The
+  v0.1.14 remote release proof passed (GloriousFlywheel job `85131314417`,
+  `release-proof` lane, 11m31s) on branch `jess/release-v0.1.14`; the release
+  PR (#441) and the tag/publish step that produces the 23-asset GitHub Release
+  matrix are pending as of this snapshot. Once merged and tagged, update this
+  bullet with the release workflow run id and confirm the release is
+  non-draft/non-prerelease, matching the v0.1.13 precedent (workflow
+  `27432964644`). The npm lane is RETIRED (operator decision 2026-06-12,
+  TIN-2042): packaging truth moves to the Bazel SSOT and its derived lanes,
+  which exclude npm; the published npm package remains stale at `0.1.9` and
+  cannot be deprecated until/unless a registry token is ever rotated.
+- Version truth: source version is `0.1.14`. GitHub Release, curl installer
+  assets, deb/rpm assets, and the public Homebrew tap should resolve to
+  `0.1.14` once the pending publish step completes; see
+  `docs/install-beta-matrix.md` for per-lane re-verification status (rows are
+  marked pending, not Pass, until each lane is actually re-run at 0.1.14). The
+  npm lane is retired. The Homebrew formula remains binary-only by default and
+  must not install or link a managed `codex` shim.
 - Installed provenance: continue checking `which -a oauth-mux`, `which -a
   codex`, `oauth-mux version --json`, and `codex preflight` before treating
   any installed-command run as release evidence. Upgrade note: v0.1.13 moved
-  the macOS runtime dir off /tmp; restart long-lived managed sessions and any
-  daemon after upgrading so all lock holders converge on the new path.
-- Homebrew truth: the public `jesssullivan/omux` tap advertises `oauth-mux
-  0.1.13` (`Formula/oauth-mux.rb` updated with checksums from the published
-  v0.1.13 GitHub Release artifacts).
-  Homebrew is a binary-only package lane by default: QA must prove it installs
+  the macOS runtime dir off /tmp; v0.1.14 adds the keepalive warm loop
+  (consent-gated, off by default). Restart long-lived managed sessions and any
+  daemon after upgrading so all lock holders converge on the new runtime-dir
+  path and any newly opted-in keepalive config takes effect.
+- Homebrew truth: the public `jesssullivan/omux` tap last verified against
+  `oauth-mux 0.1.13` (`Formula/oauth-mux.rb` updated with checksums from the
+  published v0.1.13 GitHub Release artifacts); the v0.1.14 tap update is
+  pending the release publish step. Re-verify per
+  `docs/install-beta-matrix.md` before treating the tap as resolved to
+  `0.1.14`. Homebrew is a binary-only package lane by default: QA must prove it installs
   `oauth-mux`, does not install an `OMUX_CODEX_SHIM`, and leaves native `codex`
   command resolution unchanged.
 - Codex route truth: the 2026-05-26 local preflight uses user-local
@@ -149,15 +169,27 @@ tracker mismatch, then later sidecar and non-Codex provider work.
 
 ## Release And Distribution Posture
 
-`0.1.12` is the current verified public release. It carries Codex 0.132 resume
-authority parity for `logs_2.sqlite*` / `CODEX_SQLITE_HOME`, the #176
-capture-review `--require-proxy-meta` gate, and PR #295's provider-namespace
-resume picker fix. `just release-proof 0.1.12` passed before tag/release
-mutation, and release workflow `26469045026` published GitHub Release
-`v0.1.12` as non-draft/non-prerelease with 23 assets. The public Homebrew tap
-is updated to `0.1.12`, `brew fetch --force jesssullivan/omux/oauth-mux`
-passes, and the local Homebrew keg reports `0.1.12`. Lab PR #507 pins the Home
-Manager source lane to the same release commit with `codexShim` disabled.
+`v0.1.14` ("keepalive") is the current release line. It carries the
+`oauth-mux keepalive` warm loop, its safety rails (shared-identity exclusion,
+identity dedupe before election, the in-process actor gate on the repair-lock
+registry), operator-explicit `just keepalive-service-install` unit templates,
+and isolated-browser Claude login helpers — see `CHANGELOG.md` for the full
+evidence-bound claim list. The v0.1.14 remote release proof passed
+(GloriousFlywheel job `85131314417`, `release-proof` lane, 11m31s) on branch
+`jess/release-v0.1.14`; the tag/publish step that produces the GitHub Release,
+updates the public Homebrew tap, and republishes deb/rpm assets runs once the
+release PR (#441) merges to `main`. Do not treat any install lane as resolved
+to `0.1.14` until `docs/install-beta-matrix.md` shows that lane re-verified,
+not merely pending.
+Prior release `v0.1.12` carried Codex 0.132 resume authority parity for
+`logs_2.sqlite*` / `CODEX_SQLITE_HOME`, the #176 capture-review
+`--require-proxy-meta` gate, and PR #295's provider-namespace resume picker
+fix; release workflow `26469045026` published that GitHub Release
+non-draft/non-prerelease with 23 assets, the public Homebrew tap updated to
+`0.1.12`, and Lab PR #507 pinned the Home Manager source lane to that release
+commit with `codexShim` disabled. Release `v0.1.13` (`4a7d02b`) followed with
+the TIN-1851 home-is-store default and the fixes listed in the Current
+Snapshot block above.
 Negative Codex cassettes, broader adapter proof, and daemon beta truth remain
 follow-up work.
 Windows managed-`codex` parity is unassigned since the npm wrapper lane was
@@ -190,7 +222,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Harness session authority bridge | TIN-979 / TIN-1624 / TIN-1851 | #191 / #288 / #367 | Original canonical bridge work is historical. Current main defaults to home-is-store / route-local persistent Codex authority; `shared_canonical` remains explicit opt-in. Future cross-harness authority work stays under #67/#68. |
 | Codex session-store portability | TIN-936 / TIN-1851 | #161 / #367 | Policy is explicit: default muxed sessions live in route-local persistent account homes; canonical bridge is opt-in; silent session-store copy/import is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
-| Package parity and install lanes | TIN-1255 | #252 | `0.1.12` is published and verified across GitHub Release, Homebrew, curl installer assets, deb/rpm release assets, user-local dogfood, and lab Home Manager source pin; npm as of 2026-05-26 remains at `0.1.9` — verify before recommending. |
+| Package parity and install lanes | TIN-1255 | #252 | `v0.1.14` is the current release line (GF release-proof job `85131314417` passed on `jess/release-v0.1.14`); re-verify each lane in `docs/install-beta-matrix.md` once release PR #441 publishes GitHub Release, Homebrew, curl installer, and deb/rpm assets. npm retired (TIN-2042): the registry package stays stale at `0.1.9` by design, with `npm-deprecate.yml` keeping it dead. |
 | Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude next; other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
