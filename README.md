@@ -1,94 +1,66 @@
 # oauth-mux
 
-`oauth-mux` is OAuth/account multiplexing for professional AI harnesses and
-autonomous agents.
+OAuth and account multiplexing for professional AI harnesses and autonomous agents.
 
-Developers and agents now operate across personal, work, team, subscription,
-API-key, and service identities. Most CLIs still expose a brittle single-account
-path: one local auth store, one active subscription, one opaque 401/429 failure
-surface. `oauth-mux` puts a broker in front of that path so a harness session can
-stay usable when auth, quota, tier, or local runtime state changes.
+Developers and agents now work across personal, work, team, subscription, API-key,
+and service identities, but most CLIs expose one auth store, one active
+subscription, and one opaque 401/429 failure. `oauth-mux` puts a broker in front of
+that path so a harness session stays usable when auth, quota, tier, or local
+runtime state changes.
 
-The product bar is intentionally narrow and hard:
+The product bar is narrow and hard:
 
-> The user runs `oauth-mux <harness>` such as `oauth-mux codex`. The harness
-> behaves like the real one. The active subscription account exhausts quota.
-> Another credited account is substituted in place. The harness process is not
-> restarted. The user is not prompted.
+> The user runs `oauth-mux <harness>` (e.g. `oauth-mux codex`). The harness behaves
+> like the real one. The active account exhausts quota. Another credited account is
+> substituted in place. The process is not restarted. The user is not prompted.
 
-Restart, supervised relaunch, route warming, and `prepared_fallback` are
-diagnostic infrastructure. They are not product success.
+Restart, supervised relaunch, route warming, and `prepared_fallback` are diagnostic
+infrastructure — not product success.
 
-## Current Truth
+## Current release
 
-Public install lanes are versioned by channel. `0.1.14` is the current public
-release for GitHub Release, curl installer, deb/rpm assets, and the Homebrew
-tap. It is the first release carrying **credential keepalive**: the
-`oauth-mux keepalive` warm loop (proactive per-account refresh at ~75% token
-lifetime, consent-gated per account, off by default), its safety rails
-(shared-identity exclusion, identity dedupe before election, the in-process
-refresh actor gate), operator-explicit launchd/systemd service unit templates,
-and isolated-browser login helpers for multi-account Claude enrollment. See
-`CHANGELOG.md` for the full list and the evidence each claim is bound to.
-Prior release `0.1.13` (2026-06-12) carried the home-is-store managed-Codex
-session-authority default, the flock unlink-on-release race fix, the native
-resume chooser, and corrected Claude OAuth endpoints — it pre-dates the
-`keepalive` command. The npm lane is retired as of 2026-06-12 (the published
-package remains stale at `0.1.9`); install via Homebrew, the curl installer, or
-system packages. Homebrew remains binary-only by default:
-`brew install jesssullivan/omux/oauth-mux` installs `oauth-mux` and must not
-install or link a managed `codex` shim.
+`0.1.14` ("keepalive") is the current public release across the GitHub Release,
+curl installer, deb/rpm, and Homebrew lanes. It adds **credential keepalive**:
+`oauth-mux keepalive` proactively refreshes enrolled accounts at ~75% of token
+lifetime, consent-gated per account (`allow_proactive_refresh`, default `false`) and
+off by default, with shared-identity exclusion, identity dedupe before election, an
+in-process refresh lock, launchd/systemd service-unit templates, and isolated-browser
+Claude login helpers. `CHANGELOG.md` lists every change and the committed evidence
+each claim is bound to. The npm lane is retired (registry frozen at `0.1.9`).
 
-What works today:
+Homebrew is binary-only: `brew install jesssullivan/omux/oauth-mux` installs
+`oauth-mux` and does not link a managed `codex` shim.
 
-- Managed Codex launch and resume through `oauth-mux codex` and
-  `oauth-mux codex resume`, including the native resume chooser against the
-  selected account's route-local persistent home in the default mode.
-- Current source/user-local dogfood can include a managed `codex` shim, so a
-  bare `codex` command is managed only when PATH
-  resolves that shim. Admin commands such as `codex login` and
-  `codex --version` must pass through to native Codex. Direct native Codex
-  binaries and already-running native sessions are not globally protected.
-- Route-local persistent Codex session authority for managed muxed runs. Current
-  managed Codex uses the selected account home as `CODEX_HOME`, keeps muxed
-  `state_5.sqlite*` / `logs_2.sqlite*` out of canonical `~/.codex` by default,
-  and preserves Codex's built-in `openai` provider namespace for proxy routing.
-  Legacy canonical bridge behavior is explicit opt-in via `shared_canonical`.
-- Managed Codex config is written fresh per launch in the default mode (proxy
-  override plus managed feature defaults) and scrubbed on exit; root-partitioned
-  user-config passthrough (`[features]`, legacy `experimental_*`, MCP servers,
-  approval/sandbox policy, profiles, model defaults, non-managed provider
-  definitions) currently applies on the legacy `shared_canonical` bridge path
-  only.
-- Proactive credential keepalive via `oauth-mux keepalive [--once]`: enrolled,
-  explicitly opted-in accounts (`allow_proactive_refresh`, default `false`) are
-  refreshed at ~75% of token lifetime under the per-account and identity locks.
-  Accounts sharing one OAuth identity are refused (refresh-token family
-  protection). Proven by committed evidence: a refused-safely tick, a 5-account
-  isolated Claude fleet admission + stability soak, and proactive rotation
-  firing inside the running loop (`docs/evidence/keepalive-*`). Service
-  residency is operator-explicit via `just keepalive-service-install`
-  (launchd/systemd-user templates; nothing auto-enables) — live residency proof
-  is still open. Credential keepalive does not create capacity: quota windows
-  reset on the provider's clock; model/quota-class keepalive is design-only
+### What works today
+
+- **Managed Codex** launch and resume (`oauth-mux codex`, `oauth-mux codex resume`)
+  with a native resume chooser against the account's route-local persistent home.
+  Management applies only when PATH resolves the oauth-mux shim; direct native
+  `codex` binaries and already-running native sessions are not protected.
+- **Route-local Codex session authority**: managed runs use the selected account
+  home as `CODEX_HOME` and keep muxed state out of canonical `~/.codex`. Config is
+  written fresh per launch and scrubbed on exit. Legacy canonical-bridge behavior is
+  explicit opt-in (`shared_canonical`).
+- **Credential keepalive** (`oauth-mux keepalive [--once]`) for opted-in accounts;
+  accounts sharing an OAuth identity are refused (refresh-token-family protection).
+  Service residency is operator-explicit (`just keepalive-service-install`; nothing
+  auto-enables). Proven by committed `docs/evidence/keepalive-*` (refused-safely
+  tick, 5-account admission/stability soak, rotation-under-loop for two accounts).
+  Keepalive does not create capacity — quota windows reset on the provider's clock;
+  model/quota-class keepalive is design-only
   (`docs/spec/model-quota-granularity-2026-07-03.md`).
-- Lazy account refresh at credential materialization or explicit repair time;
-  managed launch reports `pre_spawn_network_refresh:false`.
-- Managed Codex launch/resume auto-revalidates expired Codex quota/rate windows
-  under the Codex stay-afloat policy before route election. Interactive login
-  remains user-mediated.
-- Live managed Codex quota handoff for installed `oauth-mux codex resume`, with
-  the strongest preserved proof in
+- **Live Codex quota handoff** for `oauth-mux codex resume`; managed launch/resume
+  auto-revalidates expired Codex quota/rate windows before route election.
+  Interactive login stays user-mediated. Headline proof:
   `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- Redacted JSON diagnostics and opt-in trace JSONL for agents and operators.
+- **Redacted diagnostics**: JSON surfaces and opt-in trace JSONL for agents and
+  operators, no token bytes or raw account/session ids.
 
-Still research or open:
+### Still open
 
-- Same-thread provider semantic continuity across account boundaries.
-- Mid-turn streaming recovery.
-- Unmanaged bare-`codex` daemon hot-swap.
-- Non-Codex provider stay-afloat proof.
-- Long-window soak and negative permutation cassette coverage.
+Non-Codex provider stay-afloat proof; live keepalive service-residency proof; the
+2×Claude + 2×Codex golden-metric soak; same-thread cross-account continuity;
+mid-turn streaming recovery; long-window soak and negative-permutation cassettes.
 
 ## Lifecycle
 
@@ -107,127 +79,38 @@ flowchart LR
     repair --> diagnose
 ```
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Mux as oauth-mux
-    participant Codex
-    participant Proxy
-    participant Provider
-
-    User->>Mux: oauth-mux codex resume
-    Mux->>Mux: select route
-    Mux->>Mux: build auth/config overlay
-    Mux->>Mux: bridge canonical session authority
-    Mux->>Codex: spawn managed Codex
-    Codex->>Proxy: responses request
-    Proxy->>Provider: selected account request
-    Provider-->>Proxy: 200 / 401 / 429 usage_limit_reached / tier or rate error
-    Proxy->>Mux: classify signal
-    Mux-->>Proxy: retry fallback when eligible
-    Proxy-->>Codex: successful response or typed terminal result
-    Mux->>Mux: write redacted evidence
-```
-
-Route-state labels are stable public vocabulary:
-`available`, `quota_exhausted`, `rate_limited`, `tier_insufficient`,
-`auth_permanently_failed`, `credential_unavailable`, `revalidation_needed`, and
-`not_afloat`.
-
-See `docs/lifecycle.md` for the deeper lifecycle, agent control-plane, and claim
-ladder diagrams.
+Route-state labels are stable public vocabulary: `available`, `quota_exhausted`,
+`rate_limited`, `tier_insufficient`, `auth_permanently_failed`,
+`credential_unavailable`, `revalidation_needed`, `not_afloat`. See
+`docs/lifecycle.md` for the full lifecycle, agent control-plane, and claim ladder.
 
 ## Install
 
-Public install lanes:
-
 ```bash
-brew install jesssullivan/omux/oauth-mux
+brew install jesssullivan/omux/oauth-mux     # binary-only; no managed codex shim
+nix build .#oauth-mux                         # or .#withCodexShim for the managed shim
 ```
 
-The Homebrew formula is intentionally binary-only. It should not change
-`command -v codex`; use the explicit local, Nix, or future opt-in package
-shim lanes when testing managed bare-`codex` behavior.
+Home Manager: import `inputs.oauth-mux.homeManagerModules.default` (installs
+`oauth-mux` only; set `programs.oauth-mux.codexShim.enable = true` for the shim). See
+`docs/home-manager.md`.
 
-Nix users can choose the binary-only package or the managed-shim package:
-
-```bash
-nix build .#oauth-mux
-nix build .#withCodexShim
-```
-
-Home Manager users should import `inputs.oauth-mux.homeManagerModules.default`.
-The module installs only `oauth-mux` by default; set
-`programs.oauth-mux.codexShim.enable = true` to intentionally put the managed
-`codex` shim on PATH. See `docs/home-manager.md`.
-
-Unreleased source dogfood should keep provenance explicit:
+Unreleased source dogfood:
 
 ```bash
 just install-local-dogfood
-which -a oauth-mux
-which -a codex
-oauth-mux version
-oauth-mux version --json
-oauth-mux codex preflight --profile codex-max --capability codex-max --json
+oauth-mux version --json     # active path, SHA-256, and build_id under runtime_identity
 ```
 
-If `which -a oauth-mux` resolves Homebrew before the user-local dogfood binary,
-adjust PATH or invoke `./zig-out/bin/oauth-mux` directly for source-tree proof.
-
-`version --json` prints the active executable path classification, SHA-256, and
-compiled `build_id` under `runtime_identity`. Use it when public packages and
-local dogfood have nearby version strings and you need machine-readable proof of
-the exact binary that will run.
-
-`codex preflight` prints the active `oauth-mux` path, all visible `oauth-mux`
-and `codex` PATH candidates, whether active `codex` is the managed oauth-mux
-shim, the first native Codex binary, and the `OMUX_CODEX_BIN` escape hatch. Use
-that before debugging stale package or managed-versus-unmanaged Codex behavior.
-It also reports redacted shell context, including whether `CODEX_HOME` is set,
-whether it is an oauth-mux managed overlay, and whether inherited `OMUX_*`
-managed-session variables are present.
-If a shell refresh changes the result, start a fresh shell or use the shell's
-native reload path. For example, fish cannot safely `source ~/.bashrc`; bash
-syntax can fail partway through and leave a misleading mixed environment.
-Its JSON separates `agent_safe_next_actions` from
-`spend_confirmed_next_actions`; text output uses matching diagnostics
-and spend-confirmed repair sections. The same JSON includes `repair_summary`,
-a compact blocked-route rollup for agents that need to distinguish expired
-quota-window revalidation, auth handoff, runtime repair, and wait-only states
-without scraping per-route diagnostics.
-
-On macOS, do not overwrite the old Mach-O in place. A direct `cp` over the
-installed binary can leave stale taskgated/code-signing state on the old vnode
-and produce an immediate `SIGKILL` / status `137`.
-
-`just install-local-dogfood` stages the new binary in the install directory,
-renames it into place, verifies the installed hash against
-`./zig-out/bin/oauth-mux`, prints the installed version, and leaves the native
-`codex` command unshadowed by default. Before replacing the binary, it refuses
-when active managed `oauth-mux codex` sessions are visible and prints a redacted
-parent/child PID and listener-port report. Re-run with
-`OMUX_DOGFOOD_ALLOW_ACTIVE_SESSIONS=1` only after explicitly accepting that
-already-running sessions keep their current process image.
-
-Use `just install-local-dogfood-shim` or set
-`OMUX_DOGFOOD_INSTALL_CODEX_SHIM=1` only when you intentionally want
-`~/.local/bin/codex` to enter managed Codex sessions through oauth-mux. The shim
-resolves the native upstream Codex executable, passes native admin commands
-through, and enters `oauth-mux codex` for managed session commands. It refuses
-to replace a non-oauth-mux `codex` already in that directory unless
-`OMUX_DOGFOOD_REPLACE_CODEX=1` is set. Use `just uninstall-local-dogfood` to
-remove the local dogfood binary and any oauth-mux-marked `codex` shim without
-touching a native Codex executable. Public packages may carry a managed `codex`
-shim, but installed behavior must still be proven with `version --json`,
-`which -a codex`, and `codex preflight` when you need to distinguish a package
-binary from a worktree dogfood binary.
-The installer warns if the copied user-local binary is still shadowed by a
-Homebrew or other PATH entry.
+`version --json` gives machine-readable proof of the exact binary that will run, and
+`oauth-mux codex preflight --json` reports PATH candidates and managed-vs-native
+Codex resolution. Provenance rules, PATH-shadow handling, the macOS
+in-place-overwrite hazard, and the shim contract live in
+`docs/release-install-lanes.md`.
 
 ## Usage
 
-Human first run:
+First run:
 
 ```bash
 oauth-mux init --codex-max
@@ -236,19 +119,12 @@ oauth-mux route explain --profile codex-max --capability codex-max
 oauth-mux codex resume
 ```
 
-Managed `oauth-mux codex` launch/resume reads `defaults.profile` and
-`defaults.capability` when they are configured. Existing Codex Max configs also
-fall back to the conventional `codex-max` profile, so explicit profile flags are
-needed only for diagnostics, alternate profiles, or scripted proof.
+`oauth-mux codex` reads `defaults.profile`/`defaults.capability` and falls back to
+the `codex-max` profile, so explicit flags are needed only for diagnostics or
+scripted proof. If a route needs upstream auth, run the labeled handoff from
+`route explain` (e.g. `oauth-mux codex login-device max-3`).
 
-If a route needs upstream auth, run the labeled handoff reported by
-`route explain`, for example:
-
-```bash
-oauth-mux codex login-device max-3
-```
-
-Agent-safe inspection:
+Agent-safe inspection (no provider spend):
 
 ```bash
 oauth-mux doctor runtime --profile codex-max --capability codex-max --json
@@ -256,87 +132,37 @@ oauth-mux accounts list --provider codex --json
 oauth-mux route explain --profile codex-max --capability codex-max --json
 oauth-mux repair-plan --profile codex-max --capability codex-max --json
 oauth-mux codex preflight --profile codex-max --capability codex-max --json
-oauth-mux codex status-latest --json
 ```
 
 When shell, install, auth, and route-health state disagree, enable the redacted
-trace sink:
+trace sink (`OMUX_TRACE=1 OMUX_TRACE_FILE=…`; schema in `docs/tracing.md`). In the
+current release, only managed Codex launch/resume and admitted stay-afloat execution
+may spend provider calls — to revalidate expired Codex quota/rate windows before
+route election. Inspection commands never spend.
 
-```bash
-OMUX_TRACE=1 \
-OMUX_TRACE_FILE=/tmp/oauth-mux-trace.ndjson \
-oauth-mux codex preflight --profile codex-max --capability codex-max --json
-```
+## UX / DX / AX contract
 
-See `docs/tracing.md` for the trace schema and redaction contract.
-
-Those inspection commands do not spend provider calls. In the current release,
-managed Codex launch/resume and admitted stay-afloat execution may spend
-provider calls only to revalidate expired Codex quota/rate windows before route
-election. Live probes, broad revalidation, and non-Codex provider-spend paths
-remain explicit.
-
-## UX / DX / AX Contract
-
-UX:
-
-- The managed harness should feel native.
-- There is no hidden daemon dependency for the current Codex path.
-- Handoffs are labeled and user-mediated when upstream login is required.
-
-DX:
-
-```bash
-just build
-just test
-just check
-just e2e
-```
-
-The explicit aliases remain available:
-
-```bash
-just remote-build
-just remote-test
-just remote-check
-just remote-e2e
-```
-
-Use `just release-proof <version> [ref]` or
-`just remote-release-proof <ref> <version>` before any registry mutation. Local
-`zig build`, `just build-local`, `just test-local`, `just check-local`, and
-`just e2e-local` are debugging tools only; they are not the proof path for PR,
-release, or dogfood readiness on low-power developer machines.
-
-AX:
-
-- JSON surfaces are redacted and account-label based.
-- Trace events are opt-in and must not print token bytes, raw provider account
-  ids, raw Codex session ids, or local auth/config file paths.
-- Agents do not need token files or raw provider stores to choose a next action.
-- Provider-spend behavior is policy-labeled; diagnostic inspection surfaces stay
-  separate from managed Codex auto-revalidation and live probes.
-- Diagnostic output should include exact next-action commands.
+- **UX** — the managed harness feels native; no hidden daemon dependency on the
+  Codex path; handoffs are labeled and user-mediated when upstream login is needed.
+- **AX** — JSON surfaces are redacted and account-label based; agents choose a next
+  action without token files or raw stores; provider-spend behavior is
+  policy-labeled and separated from diagnostic inspection; output includes exact
+  next-action commands.
+- **DX** — `just build | test | check | e2e` run on the remote proof runner
+  (explicit `just remote-*` aliases exist). Local `*-local` recipes are debugging
+  tools only, never the proof path. Run `just release-proof <version> [ref]` before
+  any registry mutation.
 
 ## Proof
 
-Keep the claim ladder tied to evidence:
+Claims stay tied to evidence:
 
-- `docs/qa-handoff-matrix.md`: route states, handoff patterns, and current Codex
-  truth.
-- `docs/productionization-ledger.md`: UX/DX/AX stance, feature ledger,
-  adapter strategy, daemon beta boundary, release posture, and tracker map.
-- `docs/release-install-lanes.md`: public package lanes versus local dogfood
-  lanes.
-- `docs/dogfood-process-fanout.md`: diagnostic agent process topology snapshots
-  and cleanup rules for suspected helper fanout or RSS growth.
-- `docs/lifecycle.md`: application lifecycle, managed Codex flow, agent-safe
-  control plane, and claim levels.
-- `docs/spec/in-agent-reauth-handoff-contract-2026-05-14.md`: agent/MCP
-  contract for user-mediated reauth prompts, consent, and redaction.
-- `docs/tracing.md`: opt-in trace schema, sink selection, and redaction rules.
-- `docs/evidence/codex-engineered-quota-handoff-20260509/`: current headline
-  managed Codex quota-handoff proof.
-
-The product anchor is `docs/spec/broker-mcp-contract-2026-05-03.md`. The Codex
-adapter contract is `docs/spec/codex-adapter-contract-2026-05-03.md`.
+- `CHANGELOG.md` — per-release changes and the evidence each claim is bound to.
+- `docs/spec/broker-mcp-contract-2026-05-03.md` — the product anchor;
+  `docs/spec/codex-adapter-contract-2026-05-03.md` — the Codex adapter contract.
+- `docs/lifecycle.md` — lifecycle, managed Codex flow, agent control plane, claim levels.
+- `docs/qa-handoff-matrix.md` — route states, handoff patterns, current Codex truth.
+- `docs/release-install-lanes.md` — public package lanes vs local dogfood provenance.
+- `docs/productionization-ledger.md` — UX/DX/AX stance, feature ledger, release posture.
+- `docs/tracing.md` — opt-in trace schema and redaction rules.
+- `docs/evidence/` — committed proof runs (Codex quota handoff; keepalive tick, soak, rotation).
