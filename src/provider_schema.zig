@@ -322,10 +322,13 @@ pub const UnifiedRateLimit = struct {
 };
 
 // Pure, total, allocation-free fold of a response's headers into a
-// UnifiedRateLimit. Never panics: a malformed numeric value (bad int/float)
-// yields null for that field, and unrecognized headers (e.g. the account-
-// conditional `-fallback` / `-*-surpassed-threshold` extras) are ignored.
-// Header names are matched ASCII case-insensitively.
+// UnifiedRateLimit. Never panics: a malformed numeric value yields null for
+// that field — this covers a bad int/float, a NON-FINITE float ("NaN"/"inf"/
+// "Infinity"/an overflowing "1e999", all of which std.fmt.parseFloat otherwise
+// accepts), an out-of-range fraction (outside 0..1), and a negative epoch. And
+// unrecognized headers (e.g. the account-conditional `-fallback` /
+// `-*-surpassed-threshold` extras) are ignored. Header names are matched ASCII
+// case-insensitively.
 //
 // BOUNDARY (TIN-2722): this is the future Observed-event source for the quota
 // bucket algebra. It is deliberately NOT consumed by health/routing in this
@@ -384,11 +387,25 @@ fn stripDelimitedPrefix(name: []const u8, prefix: []const u8) ?[]const u8 {
 }
 
 fn parseEpochSecondsOrNull(value: []const u8) ?i64 {
-    return std.fmt.parseInt(i64, value, 10) catch null;
+    const parsed = std.fmt.parseInt(i64, value, 10) catch return null;
+    // Contract: an ABSOLUTE epoch-seconds instant. A negative epoch is nonsense
+    // for a reset time, so treat it as malformed → null rather than store a
+    // bogus pre-1970 instant a later quota consumer could mis-route on.
+    if (parsed < 0) return null;
+    return parsed;
 }
 
 fn parseFractionOrNull(value: []const u8) ?f64 {
-    return std.fmt.parseFloat(f64, value) catch null;
+    const parsed = std.fmt.parseFloat(f64, value) catch return null;
+    // Contract: a fraction in 0.0..1.0. std.fmt.parseFloat also ACCEPTS the
+    // non-finite spellings "NaN"/"inf"/"-inf"/"Infinity" and overflows like
+    // "1e999" → +inf; those (and any out-of-range magnitude) are malformed for
+    // a utilization/percentage and must yield null, never leak past as a bogus
+    // fraction. The range test also rejects the non-finite cases (every
+    // comparison with NaN is false; ±inf falls outside 0..1).
+    if (!std.math.isFinite(parsed)) return null;
+    if (parsed < 0.0 or parsed > 1.0) return null;
+    return parsed;
 }
 
 pub const RateLimitConfig = struct {
@@ -402,9 +419,10 @@ pub const RateLimitConfig = struct {
     // TIN-2722: the Anthropic unified header-family scheme (see
     // UnifiedRateLimitScheme). A provider sets EITHER remaining_header/
     // reset_header above OR this — never both meaningfully. null = the provider
-    // uses the legacy pair. Reset values in the family are epoch SECONDS and
-    // utilization is a 0..1 fraction; foldUnifiedRateLimit parses them with the
-    // tolerance the fixture shows (malformed value → null, never a panic).
+    // uses the legacy pair. Reset values in the family are epoch SECONDS
+    // (non-negative) and utilization is a 0..1 fraction; foldUnifiedRateLimit
+    // parses them with the tolerance the fixture shows — any malformed value
+    // (bad/non-finite/out-of-range number, negative epoch) → null, never a panic.
     unified: ?UnifiedRateLimitScheme = null,
 };
 
@@ -2936,6 +2954,55 @@ test "foldUnifiedRateLimit yields null on malformed numerics without panicking (
     try std.testing.expect(parsed.overage_status == null);
     try std.testing.expect(parsed.seven_d.status == null);
     try std.testing.expect(parsed.representative == null);
+}
+
+test "foldUnifiedRateLimit rejects non-finite/out-of-range floats and negative epochs (TIN-2722)" {
+    // (d2) std.fmt.parseFloat ACCEPTS "NaN"/"inf"/"Infinity"/"1e999"(→+inf) and
+    // parseInt accepts "-1"; none are a valid utilization fraction or an
+    // absolute epoch, so each must fold to null (contract: malformed → null).
+    // A NaN/inf utilization (NaN compares false everywhere) or a negative reset
+    // could silently mis-route a future quota consumer — this pins them out.
+    const nonfinite = [_][]const u8{ "NaN", "inf", "-inf", "Infinity", "1e999", "-1e999" };
+    for (nonfinite) |bad| {
+        const headers = [_]std.http.Header{
+            .{ .name = "anthropic-ratelimit-unified-5h-utilization", .value = bad },
+            .{ .name = "anthropic-ratelimit-unified-fallback-percentage", .value = bad },
+        };
+        const parsed = foldUnifiedRateLimit(.{}, &headers);
+        try std.testing.expect(parsed.five_h.utilization == null);
+        try std.testing.expect(parsed.fallback_percentage == null);
+    }
+
+    // Out-of-range finite fractions (>1 or <0) are malformed for a 0..1 field.
+    const out_of_range = [_][]const u8{ "1.5", "-0.1", "2", "100" };
+    for (out_of_range) |bad| {
+        const headers = [_]std.http.Header{
+            .{ .name = "anthropic-ratelimit-unified-7d-utilization", .value = bad },
+        };
+        const parsed = foldUnifiedRateLimit(.{}, &headers);
+        try std.testing.expect(parsed.seven_d.utilization == null);
+    }
+
+    // Negative epochs are nonsense reset instants → null (both per-window and
+    // the representative reset).
+    const neg_headers = [_]std.http.Header{
+        .{ .name = "anthropic-ratelimit-unified-5h-reset", .value = "-1" },
+        .{ .name = "anthropic-ratelimit-unified-reset", .value = "-1783652400" },
+    };
+    const neg = foldUnifiedRateLimit(.{}, &neg_headers);
+    try std.testing.expect(neg.five_h.reset_s == null);
+    try std.testing.expect(neg.representative_reset_s == null);
+
+    // Boundary sanity: the documented endpoints 0.0/1.0 and epoch 0 still parse.
+    const ok_headers = [_]std.http.Header{
+        .{ .name = "anthropic-ratelimit-unified-5h-utilization", .value = "1.0" },
+        .{ .name = "anthropic-ratelimit-unified-7d-utilization", .value = "0.0" },
+        .{ .name = "anthropic-ratelimit-unified-5h-reset", .value = "0" },
+    };
+    const ok = foldUnifiedRateLimit(.{}, &ok_headers);
+    try std.testing.expectEqual(@as(f64, 1.0), ok.five_h.utilization.?);
+    try std.testing.expectEqual(@as(f64, 0.0), ok.seven_d.utilization.?);
+    try std.testing.expectEqual(@as(i64, 0), ok.five_h.reset_s.?);
 }
 
 test "claude model-class capabilities match real ids and reject the unknown-model probe (TIN-2722)" {
