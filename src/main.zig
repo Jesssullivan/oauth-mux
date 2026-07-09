@@ -20149,6 +20149,7 @@ comptime {
     _ = @import("keepalive/warm_runner_tests.zig");
     _ = @import("keepalive/refresh_race_tests.zig"); // TIN-2059 in-process actor-gate race
     _ = @import("quota/bucket_tests.zig"); // TIN-2407 P0: pure quota-bucket algebra
+    _ = @import("quota/advise_tests.zig"); // TIN-2719 M0 PR1: pure valet advisor core
 
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
