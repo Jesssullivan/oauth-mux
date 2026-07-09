@@ -38,9 +38,17 @@ fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
     return null;
 }
 
-test "test fixtures contain no obvious OAuth secrets" {
-    var root = std.fs.cwd().openDir("test/fixtures", .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound => return error.FixtureDirectoryMissing,
+/// Walks `root_path` and asserts every file is free of forbidden secret
+/// markers. Returns the number of files scanned. A missing directory is
+/// only tolerated when `require_present` is false — `test/evidence/`
+/// (TIN-2722) is a second walk root that may be empty or absent until a
+/// capture is reviewed and promoted into it.
+fn scanRootForSecrets(root_path: []const u8, require_present: bool) !usize {
+    var root = std.fs.cwd().openDir(root_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            if (require_present) return error.FixtureDirectoryMissing;
+            return 0;
+        },
         else => return err,
     };
     defer root.close();
@@ -59,5 +67,18 @@ test "test fixtures contain no obvious OAuth secrets" {
         try assertRedactedFixture(entry.path, bytes);
     }
 
+    return scanned;
+}
+
+test "test fixtures contain no obvious OAuth secrets" {
+    const scanned = try scanRootForSecrets("test/fixtures", true);
     try std.testing.expect(scanned > 0);
+}
+
+test "evidence captures contain no obvious OAuth secrets" {
+    // test/evidence/ (TIN-2722) is the committed, redacted quota-observation
+    // fixture root. It may be empty or absent until a capture is promoted
+    // into it, so only an unredacted secret marker fails this test — not
+    // an empty or missing directory.
+    _ = try scanRootForSecrets("test/evidence", false);
 }
