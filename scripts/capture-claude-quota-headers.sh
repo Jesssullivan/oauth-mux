@@ -65,8 +65,8 @@ CANONICAL_ACCOUNT_NAME="personal"
 # treats "fable" as an open, discovered-not-declared #capability slug); the
 # id below is a best guess and is expected to be wrong.
 # ---------------------------------------------------------------------------
-MODEL_ID_FABLE="claude-opus-4-5-20260101"   # UNCONFIRMED placeholder
-MODEL_ID_OPUS="claude-opus-4-1-20250805"
+MODEL_ID_FABLE="claude-fable-5"             # corrected at capture time (authoritative current id)
+MODEL_ID_OPUS="claude-opus-4-8"
 MODEL_ID_HAIKU="claude-haiku-4-5-20251001"
 UNKNOWN_MODEL_ID="claude-omux-e2-unknown-model-probe"
 
@@ -505,12 +505,24 @@ process_account_live() {
   chmod 600 "$hdr_file"
   CURRENT_HDR_FILE="$hdr_file"
 
-  local token
-  if ! token="$(security find-generic-password -s "$service" -a "$keychain_account" -w 2>/dev/null)"; then
+  local blob
+  if ! blob="$(security find-generic-password -s "$service" -a "$keychain_account" -w 2>/dev/null)"; then
     echo "warning: could not read keychain item for account '$acct_name' (service=$service, account=$keychain_account); skipping" >&2
     cleanup_current_hdr_file
     return 0
   fi
+  # The keychain item stores a JSON blob {"claudeAiOauth":{"accessToken":...}};
+  # the bearer credential is the accessToken field, NOT the whole blob. A raw
+  # blob yields 401 "Invalid bearer token"; only the extracted sk-ant-oat token
+  # authenticates. Extract it without ever echoing the token.
+  local token
+  if ! token="$(printf '%s' "$blob" | python3 -c 'import sys,json; d=json.load(sys.stdin); o=d.get("claudeAiOauth", d); print(o["accessToken"])' 2>/dev/null)"; then
+    echo "warning: could not extract accessToken from keychain blob for account '$acct_name'; skipping" >&2
+    blob=""
+    cleanup_current_hdr_file
+    return 0
+  fi
+  blob=""
   printf 'Authorization: Bearer %s\n' "$token" >"$hdr_file"
   token=""
 

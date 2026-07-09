@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "Error",
+    "type": "rate_limit_error"
+  },
+  "request_id": "<cc1c5a0a0f4b>",
+  "type": "error"
+}

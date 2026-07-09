@@ -1,0 +1,22 @@
+{
+  "body": {
+    "max_tokens": 1,
+    "messages": [
+      {
+        "content": "omux-e2 quota-header capture probe (TIN-2722)",
+        "role": "user"
+      }
+    ],
+    "model": "claude-omux-e2-unknown-model-probe"
+  },
+  "header_names": [
+    "anthropic-version",
+    "content-type",
+    "authorization",
+    "anthropic-beta"
+  ],
+  "max_tokens": 1,
+  "method": "POST",
+  "model": "claude-omux-e2-unknown-model-probe",
+  "url": "https://api.anthropic.com/v1/messages"
+}
