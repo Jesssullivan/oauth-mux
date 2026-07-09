@@ -83,6 +83,17 @@ implement against; never cite as shipped. Each links a durable tracker.
   (adapter-maturation) scope; only P0 (pure-core clock inversion) is July-safe; does
   not block the credential-keepalive dogfood.
 
+- **Stay-afloat singleton valet + browser evidence lane** — Linear TIN-2719
+  (M0 advisor, in progress) / TIN-2720 (browser evidence lane, open) /
+  TIN-2721 (E1 managed hot-swap experiment, gate for TIN-2077) / TIN-2722
+  (E2 Anthropic quota-signal fixture, gate for any model-quota claim) ·
+  GitHub #445. Working theory: a singleton valet advises the operator on
+  stay-afloat account choices before any managed switch is claimed; the
+  browser evidence lane captures redacted proof of quota/rate-limit state
+  outside the CLI proof path. Ladder stance: M0 advisor → M1 managed switch
+  (gated E1) → M2 auto → M3 request-path mux possibly-never — TIN-2040 stays
+  open as a Codex wire-proxy perf lane, parked as golden path.
+
 ## Build And Validation
 
 Remote-first rule: proof builds, test gates, release checks, and agent validation
