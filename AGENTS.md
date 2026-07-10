@@ -82,17 +82,22 @@ implement against; never cite as shipped. Each links a durable tracker.
   `test/evidence/quota-observation/` proves the provider's real signals. August
   (adapter-maturation) scope; only P0 (pure-core clock inversion) is July-safe; does
   not block the credential-keepalive dogfood.
-
-- **Stay-afloat singleton valet + browser evidence lane** — Linear TIN-2719
-  (M0 advisor, in progress) / TIN-2720 (browser evidence lane, open) /
+- **Stay-afloat singleton valet + browser evidence lane** —
+  `docs/spec/stay-afloat-valet-and-browser-evidence-2026-07-09.md` · Linear
+  TIN-2719 (M0 advisor, in progress) / TIN-2720 (browser evidence lane, open) /
   TIN-2721 (E1 managed hot-swap experiment, gate for TIN-2077) / TIN-2722
-  (E2 Anthropic quota-signal fixture, gate for any model-quota claim) ·
-  GitHub #445. Working theory: a singleton valet advises the operator on
-  stay-afloat account choices before any managed switch is claimed; the
-  browser evidence lane captures redacted proof of quota/rate-limit state
-  outside the CLI proof path. Ladder stance: M0 advisor → M1 managed switch
-  (gated E1) → M2 auto → M3 request-path mux possibly-never — TIN-2040 stays
-  open as a Codex wire-proxy perf lane, parked as golden path.
+  (E2 Anthropic quota-signal fixture, gate for any model-quota claim), tied back
+  to TIN-2057/TIN-2400/TIN-2071 · GitHub #445. Working theory: the near-term MVP
+  is not more daemon substrate, but an account-juggling valet that observes the
+  current singleton, declared model demand, model/entitlement evidence, and
+  enrolled account health, then recommends or plans an explicit operator-approved
+  switch before running work hits a quota wall. Ladder stance: M0 advisor → M1
+  managed switch (gated E1) → M2 auto → M3 request-path mux possibly-never —
+  TIN-2040 stays open as a Codex wire-proxy perf lane, parked as golden path.
+  Browser/cookie-picker tooling may be used to test and cassette the current
+  headed path of least resistance, but only as an evidence/operator-assist lane:
+  never commit cookies, tokens, raw account ids, raw emails, or PII screenshots,
+  and never cite browser-observed state as a provider API contract.
 
 ## Build And Validation
 

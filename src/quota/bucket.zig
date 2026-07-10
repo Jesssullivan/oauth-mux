@@ -10,10 +10,10 @@
 //! plain `i64` parameter, exactly like `keepalive/warm_scheduler.zig`. That makes
 //! the fold deterministic, replayable, and property-testable.
 //!
-//! STATUS: tested-but-not-yet-consumed by production — the same posture
-//! `warm_scheduler.zig` held before its binding landed. P1 wires it to the
-//! classification path; P0 only extracts and proves the algebra. Nothing here
-//! changes a produced route decision or refresh timing.
+//! STATUS: first production consumer landed — `quota/advise.zig` (TIN-2719 M0
+//! PR1) folds these buckets into the pure valet advisor. Still no route-decision
+//! or refresh-timing effect: the advisor is itself a pure recommendation
+//! transform. P1 wires the reducer to the live classification path.
 //!
 //! North star (honesty boundary, design §3.0): credential-alive and
 //! model-quota-alive are two disjoint folds over one log. This module folds only
