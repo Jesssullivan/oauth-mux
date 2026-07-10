@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const env = @import("env.zig");
 const paths = @import("paths.zig");
 const types = @import("types.zig");
+const lock_wait = @import("lock_wait.zig");
 
 pub const RepairEvent = struct {
     ts: i64 = 0,
@@ -555,12 +556,22 @@ fn eventFieldValueStart(line: []const u8, field: []const u8) ?usize {
     return null;
 }
 
+/// Tuning + sink for a BLOCKING acquire's wait announcements (TIN-2049). The
+/// blocking acquire is otherwise identical; this only controls how a cross-
+/// process wait is surfaced and bounded. `log` = null routes wait lines to
+/// stderr (a daemon's stderr is its log, so daemon/non-interactive use stays
+/// safe by construction).
+pub const BlockingWaitConfig = struct {
+    log: ?std.fs.File = null,
+    opts: lock_wait.WaitOptions = .{},
+};
+
 pub fn acquireRepairLock(
     allocator: std.mem.Allocator,
     provider: []const u8,
     account: []const u8,
 ) !RepairLock {
-    return acquireRepairLockWithMode(allocator, provider, account, true);
+    return acquireRepairLockWithMode(allocator, provider, account, true, null);
 }
 
 pub fn acquireRepairLockBlocking(
@@ -568,31 +579,69 @@ pub fn acquireRepairLockBlocking(
     provider: []const u8,
     account: []const u8,
 ) !RepairLock {
-    return acquireRepairLockWithMode(allocator, provider, account, false);
+    // null cfg → BlockingWaitConfig{} defaults (stderr, 120s bound): every
+    // blocking acquire announces + bounds its cross-process wait; a genuinely
+    // long-held lock fails with error.LockWaitTimeout rather than hanging.
+    return acquireRepairLockWithMode(allocator, provider, account, false, null);
+}
+
+/// Blocking acquire with caller-tuned wait announcements (TIN-2049) — same lock,
+/// same semantics, explicit sink/timeout. Operator-facing sites use this to
+/// route wait lines and, on timeout, name the lock in their structured output.
+pub fn acquireRepairLockBlockingAnnounced(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+    cfg: BlockingWaitConfig,
+) !RepairLock {
+    return acquireRepairLockWithMode(allocator, provider, account, false, cfg);
 }
 
 const RealRepairLock = struct { file: std.fs.File, path: []const u8 };
+
+/// Best-effort holder description for a wait line, derived from the lock file's
+/// own `started_at` metadata (the convention stores no pid; do NOT platform-dig
+/// for one). Returns null when the file is empty/mid-write or unreadable.
+fn holderHint(file: std.fs.File, buf: []u8) ?[]const u8 {
+    file.seekTo(0) catch return null;
+    var raw: [256]u8 = undefined;
+    const n = file.read(&raw) catch return null;
+    const started = parseStartedAt(raw[0..n]) orelse return null;
+    return std.fmt.bufPrint(buf, "another process since epoch {d}", .{started}) catch null;
+}
 
 fn acquireRealRepairLock(
     allocator: std.mem.Allocator,
     provider: []const u8,
     account: []const u8,
     nonblocking: bool,
+    wait_cfg: ?BlockingWaitConfig,
 ) !RealRepairLock {
     const path = try lockPath(allocator, provider, account);
     errdefer allocator.free(path);
     try ensureParentDir(path);
 
-    const file = std.fs.createFileAbsolute(path, .{
+    // Open WITHOUT taking the lock at open time so the blocking path can poll a
+    // non-blocking flock and announce (TIN-2049); the persisted inode is reused
+    // (truncate=false), preserving TIN-2041 handoff semantics.
+    const file = try std.fs.createFileAbsolute(path, .{
         .truncate = false,
+        .read = true,
         .mode = 0o600,
-        .lock = .exclusive,
-        .lock_nonblocking = nonblocking,
-    }) catch |e| switch (e) {
-        error.WouldBlock => if (nonblocking) return error.RepairInProgress else return e,
-        else => return e,
-    };
+    });
     errdefer file.close();
+
+    if (nonblocking) {
+        if (!(try lock_wait.tryLockFile(file))) return error.RepairInProgress;
+    } else if (try lock_wait.tryLockFile(file)) {
+        // Uncontended blocking acquire: fast path, no holder lookup, no output.
+    } else {
+        const cfg = wait_cfg orelse BlockingWaitConfig{};
+        var hint_buf: [96]u8 = undefined;
+        const hint = holderHint(file, &hint_buf);
+        const sink = cfg.log orelse std.io.getStdErr();
+        try lock_wait.waitForLock(file, path, sink.writer(), hint, cfg.opts);
+    }
 
     const now = std.time.timestamp();
     try file.setEndPos(0);
@@ -612,6 +661,7 @@ fn acquireRepairLockWithMode(
     provider: []const u8,
     account: []const u8,
     nonblocking: bool,
+    wait_cfg: ?BlockingWaitConfig,
 ) !RepairLock {
     const key = try sanitizedLockFileName(allocator, provider, account);
     errdefer allocator.free(key);
@@ -687,7 +737,7 @@ fn acquireRepairLockWithMode(
     };
     held_mutex.unlock();
 
-    const real = acquireRealRepairLock(allocator, provider, account, nonblocking) catch |e| {
+    const real = acquireRealRepairLock(allocator, provider, account, nonblocking, wait_cfg) catch |e| {
         held_mutex.lock();
         if (held_locks.fetchRemove(key)) |kv| held_gpa.free(kv.key);
         held_cond.broadcast();
@@ -1128,14 +1178,14 @@ test "release hands the SAME inode to the next acquirer under kernel flock confl
     // B: a second, distinct open-file-description on the same path. flock is
     // per-OFD, so this conflicts even within one process; the public API would
     // refcount-share, so go below it to create a real kernel conflict.
-    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true));
+    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true, null));
 
     lock_a.release();
 
     // B now acquires — and must get the SAME inode A held. The old
     // unlink-on-release orphaned A's inode under any blocked waiter and a
     // fresh acquire created a new inode at the path: two concurrent holders.
-    const lock_b = try acquireRealRepairLock(a, provider, account, true);
+    const lock_b = try acquireRealRepairLock(a, provider, account, true, null);
     defer {
         lock_b.file.close();
         a.free(lock_b.path);
@@ -1144,12 +1194,70 @@ test "release hands the SAME inode to the next acquirer under kernel flock confl
 
     // Mutual exclusion holds while B owns the lock: a third distinct-OFD
     // try-acquire fails.
-    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true));
+    try std.testing.expectError(error.RepairInProgress, acquireRealRepairLock(a, provider, account, true, null));
 }
 
 test "parseStartedAt reads lock metadata timestamp" {
     try std.testing.expectEqual(@as(?i64, 42), parseStartedAt("{\"started_at\":42}\n"));
     try std.testing.expectEqual(@as(?i64, null), parseStartedAt("{\"started_at\":\"42\"}\n"));
+}
+
+test "announced blocking acquire announces to its sink, times out naming the lock, and recovers (TIN-2049)" {
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+    const a = std.testing.allocator;
+    var scope = try TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    const provider = "codex";
+    const account = "tin2049-announce-timeout";
+    const path = try lockPath(a, provider, account);
+    defer a.free(path);
+    if (std.fs.path.dirname(path)) |dir| try std.fs.cwd().makePath(dir);
+    std.fs.deleteFileAbsolute(path) catch {};
+
+    // A FOREIGN holder: a raw exclusive flock on the lock path via a distinct
+    // open-file-description (flock is per-OFD, so this is the cross-process
+    // second-launch shape even within the test process).
+    var holder = try std.fs.createFileAbsolute(path, .{
+        .truncate = false,
+        .mode = 0o600,
+        .lock = .exclusive,
+        .lock_nonblocking = true,
+    });
+
+    // Route wait lines to a temp-file sink — the daemon-to-log path — so the
+    // announcement is asserted without stderr noise.
+    var log_tmp = std.testing.tmpDir(.{});
+    defer log_tmp.cleanup();
+    const log_file = try log_tmp.dir.createFile("wait.log", .{ .read = true, .truncate = true, .mode = 0o600 });
+    defer log_file.close();
+
+    const cfg: BlockingWaitConfig = .{
+        .log = log_file,
+        .opts = .{
+            .poll_interval_ns = 2 * std.time.ns_per_ms,
+            .heartbeat_ns = 1 * std.time.ns_per_hour,
+            .timeout_ns = 40 * std.time.ns_per_ms,
+        },
+    };
+    // Bounded, not an unbounded silent hang: fails typed while the lock is held.
+    try std.testing.expectError(
+        error.LockWaitTimeout,
+        acquireRepairLockBlockingAnnounced(a, provider, account, cfg),
+    );
+
+    try log_file.seekTo(0);
+    const logged = try log_file.readToEndAlloc(a, 8 * 1024);
+    defer a.free(logged);
+    try std.testing.expect(std.mem.indexOf(u8, logged, "waiting on lock") != null);
+    try std.testing.expect(std.mem.indexOf(u8, logged, path) != null); // names the lock
+
+    // The typed failure did not leak the in-process registry key: with the
+    // foreign flock dropped, a fresh acquire succeeds on the fast path.
+    holder.close();
+    var recovered = try acquireRepairLockBlocking(a, provider, account);
+    recovered.release();
 }
 
 test "repair event json is redacted and structured" {
