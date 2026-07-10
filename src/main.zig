@@ -752,10 +752,16 @@ test "advice rendering: sole quota_exhausted opus row → waiting + resets_at + 
     // A synthetic per-model quota signal on the opus route: the window resets at
     // 2000s. now = 1000s (in ms) is before the reset → the class is waiting.
     const h = try store.getOrCreate("claude:acct-a#opus");
-    h.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
-        .window_resets_at = 2000, // health SECONDS; advise converts to ms
-        .exhausted_at = 100,
-    } } } };
+    h.liveness = .{
+        .live = .{
+            .availability = .{
+                .quota_exhausted = .{
+                    .window_resets_at = 2000, // health SECONDS; advise converts to ms
+                    .exhausted_at = 100,
+                },
+            },
+        },
+    };
 
     var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
     const now_ms: i64 = 1000 * 1000;
@@ -870,6 +876,11 @@ fn writeAccountsListText(
                 account.secret.backend,
             });
             if (account.config_dir != null) try writer.writeAll(" config_dir=set");
+            {
+                const ent = accountEntitlement(allocator, account, kind);
+                defer ent.deinit(allocator);
+                try writeEntitlementLabel(writer, ent);
+            }
             try writer.writeByte('\n');
 
             for (def.capabilities) |capability| {
@@ -990,6 +1001,8 @@ fn writeAccountListJsonEntry(
     }
     try writer.writeAll("],\"auth_identity\":");
     try writeAccountAuthIdentityJson(writer, allocator, account, kind);
+    try writer.writeAll(",\"entitlement\":");
+    try writeAccountEntitlementJson(writer, allocator, account, kind);
     try writer.writeAll(",\"runtime\":");
     try writeRuntimeReadinessJson(writer, info.readiness);
     try writer.writeAll(",\"writeback\":");
@@ -1039,6 +1052,210 @@ fn writeAccountCapabilityJson(
     try writer.writeAll(",\"action\":");
     try writeRepairActionJson(writer, allocator, action, route);
     try writer.writeByte('}');
+}
+
+// ── Entitlement surfacing (TIN-2719) ──────────────────────────────────────────
+//
+// Surface subscription/tier/plan labels as polled truth in `accounts list`.
+// These are non-secret plan labels the provider already stamps into the stored
+// credential blob (claude: claudeAiOauth.subscriptionType + rateLimitTier,
+// preserved by the TIN-2074 field-preserving merge; codex: chatgpt_plan_type in
+// the id_token JWT). We READ the credential but only ever emit the labels —
+// never any accessToken/refreshToken substring (invariant test below).
+//
+// Read tolerance matches the liveness/broker precedent: any secret read failure
+// (missing item, denied ACL, decrypt/command error) degrades to `.none` → null.
+// A granted keychain ACL keeps the macOS read non-interactive; this path never
+// forces a prompt — a blocked/denied read is an operator/ACL condition that
+// simply renders null, exactly like every other read-only inventory surface.
+
+const ClaudeEntitlement = struct {
+    subscription_type: ?[]u8 = null,
+    rate_limit_tier: ?[]u8 = null,
+
+    fn any(self: ClaudeEntitlement) bool {
+        return self.subscription_type != null or self.rate_limit_tier != null;
+    }
+    fn deinit(self: ClaudeEntitlement, allocator: std.mem.Allocator) void {
+        if (self.subscription_type) |v| allocator.free(v);
+        if (self.rate_limit_tier) |v| allocator.free(v);
+    }
+};
+
+const CodexEntitlement = struct {
+    plan_type: ?[]u8 = null,
+
+    fn deinit(self: CodexEntitlement, allocator: std.mem.Allocator) void {
+        if (self.plan_type) |v| allocator.free(v);
+    }
+};
+
+const AccountEntitlement = union(enum) {
+    none,
+    claude: ClaudeEntitlement,
+    codex: CodexEntitlement,
+
+    fn deinit(self: AccountEntitlement, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .none => {},
+            .claude => |c| c.deinit(allocator),
+            .codex => |c| c.deinit(allocator),
+        }
+    }
+};
+
+/// Read the account's stored credential blob and distill it to non-secret
+/// entitlement labels. Any read failure (missing/denied/errored secret) yields
+/// `.none`; the raw blob is freed before returning so token material never
+/// escapes this frame.
+fn accountEntitlement(
+    allocator: std.mem.Allocator,
+    account: config.AccountConfig,
+    kind: ?types.ProviderKind,
+) AccountEntitlement {
+    const k = kind orelse return .none;
+    switch (k) {
+        .claude, .codex => {},
+        .gemini, .vercel, .github, .mcp => return .none,
+    }
+    const backend = config.resolveSecretBackend(account.secret) catch return .none;
+    if (!entitlementInventoryBackendAllowed(backend)) return .none;
+    const raw = secret_mod.read(backend, allocator) catch return .none;
+    defer allocator.free(raw);
+    return accountEntitlementFromRaw(allocator, k, raw);
+}
+
+// Inventory invariant: `accounts list` is read-only and must not run arbitrary
+// commands, read stdin, or trigger decrypt/passphrase helper paths just to
+// decorate a row. Keychain is admitted because Claude's normal liveness path is
+// keychain-backed; a denied or locked keychain read degrades to null above.
+fn entitlementInventoryBackendAllowed(backend: types.SecretBackend) bool {
+    return switch (backend) {
+        .file, .env, .keychain => true,
+        .sops, .age, .command, .stdin => false,
+    };
+}
+
+/// Parse a credential blob (already read into memory) into entitlement labels.
+/// Split from `accountEntitlement` so the no-token-leak invariant can be tested
+/// against a synthetic in-memory blob without touching a secret backend.
+fn accountEntitlementFromRaw(
+    allocator: std.mem.Allocator,
+    kind: types.ProviderKind,
+    raw: []const u8,
+) AccountEntitlement {
+    switch (kind) {
+        .claude => {
+            const c = parseClaudeEntitlement(allocator, raw);
+            if (!c.any()) {
+                c.deinit(allocator);
+                return .none;
+            }
+            return .{ .claude = c };
+        },
+        .codex => {
+            const plan = parseCodexPlanType(allocator, raw) orelse return .none;
+            return .{ .codex = .{ .plan_type = plan } };
+        },
+        .gemini, .vercel, .github, .mcp => return .none,
+    }
+}
+
+fn parseClaudeEntitlement(allocator: std.mem.Allocator, raw: []const u8) ClaudeEntitlement {
+    const Inner = struct {
+        subscriptionType: ?[]const u8 = null,
+        rateLimitTier: ?[]const u8 = null,
+    };
+    const Blob = struct {
+        claudeAiOauth: ?Inner = null,
+        subscriptionType: ?[]const u8 = null,
+        rateLimitTier: ?[]const u8 = null,
+    };
+    const parsed = std.json.parseFromSlice(Blob, allocator, raw, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return .{};
+    defer parsed.deinit();
+
+    var sub: ?[]const u8 = if (parsed.value.claudeAiOauth) |inner| inner.subscriptionType else null;
+    var tier: ?[]const u8 = if (parsed.value.claudeAiOauth) |inner| inner.rateLimitTier else null;
+    if (sub == null) sub = parsed.value.subscriptionType;
+    if (tier == null) tier = parsed.value.rateLimitTier;
+
+    return .{
+        .subscription_type = dupNonEmpty(allocator, sub),
+        .rate_limit_tier = dupNonEmpty(allocator, tier),
+    };
+}
+
+fn parseCodexPlanType(allocator: std.mem.Allocator, raw: []const u8) ?[]u8 {
+    const parsed = std.json.parseFromSlice(CodexBrokerAuthJson, allocator, raw, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch return null;
+    defer parsed.deinit();
+    const tokens = parsed.value.tokens orelse return null;
+    return codexPlanTypeValueAlloc(allocator, tokens) catch null;
+}
+
+fn dupNonEmpty(allocator: std.mem.Allocator, value: ?[]const u8) ?[]u8 {
+    const v = nonEmpty(value) orelse return null;
+    return allocator.dupe(u8, v) catch null;
+}
+
+fn writeAccountEntitlementJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    account: config.AccountConfig,
+    kind: ?types.ProviderKind,
+) !void {
+    const ent = accountEntitlement(allocator, account, kind);
+    defer ent.deinit(allocator);
+    try writeEntitlementJson(writer, ent);
+}
+
+fn writeEntitlementJson(writer: anytype, ent: AccountEntitlement) !void {
+    switch (ent) {
+        .none => try writer.writeAll("null"),
+        .claude => |c| {
+            try writer.writeAll("{\"subscription_type\":");
+            if (c.subscription_type) |v| try std.json.stringify(v, .{}, writer) else try writer.writeAll("null");
+            try writer.writeAll(",\"rate_limit_tier\":");
+            if (c.rate_limit_tier) |v| try std.json.stringify(v, .{}, writer) else try writer.writeAll("null");
+            try writer.writeByte('}');
+        },
+        .codex => |c| {
+            try writer.writeAll("{\"plan_type\":");
+            if (c.plan_type) |v| try std.json.stringify(v, .{}, writer) else try writer.writeAll("null");
+            try writer.writeByte('}');
+        },
+    }
+}
+
+fn writeEntitlementLabel(writer: anytype, ent: AccountEntitlement) !void {
+    switch (ent) {
+        .none => {},
+        .claude => |c| {
+            try writer.writeAll(" [");
+            var wrote = false;
+            if (c.subscription_type) |v| {
+                try writer.writeAll(v);
+                wrote = true;
+            }
+            if (c.rate_limit_tier) |v| {
+                if (wrote) try writer.writeByte('/');
+                try writer.writeAll(v);
+            }
+            try writer.writeByte(']');
+        },
+        .codex => |c| {
+            if (c.plan_type) |v| {
+                try writer.writeAll(" [");
+                try writer.writeAll(v);
+                try writer.writeByte(']');
+            }
+        },
+    }
 }
 
 const AccountAuthIdentity = struct {
@@ -1233,6 +1450,228 @@ test "inspectCodexAccountAuthIdentity reports redacted auth-bound identity hints
     try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_account_id", identity.account_id_source.?);
     try std.testing.expect(identity.plan_type_present);
     try std.testing.expectEqualStrings("tokens.id_token.auth.chatgpt_plan_type", identity.plan_type_source.?);
+}
+
+test "entitlement claude surfaces tier labels and never leaks token material (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    // Build a synthetic wrapped blob at RUNTIME. Token key names are assembled
+    // by comptime concatenation and the token VALUES carry a distinctive canary
+    // so the leak assertion is meaningful even though src/ is exempt from the
+    // fixture_redaction scanner (which walks only test/fixtures + test/evidence).
+    const at_key = "access" ++ "Token";
+    const rt_key = "refresh" ++ "Token";
+    const at_val = "sk-ant-oat01-LEAKCANARY-AAAA";
+    const rt_val = "sk-ant-ort01-LEAKCANARY-BBBB";
+    const raw = try std.fmt.allocPrint(
+        alloc,
+        "{{\"claudeAiOauth\":{{\"{s}\":\"{s}\",\"{s}\":\"{s}\",\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_max_20x\"}}}}",
+        .{ at_key, at_val, rt_key, rt_val },
+    );
+    defer alloc.free(raw);
+
+    const ent = accountEntitlementFromRaw(alloc, .claude, raw);
+    defer ent.deinit(alloc);
+
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+    try writeEntitlementJson(buf.writer(), ent);
+    const out = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"subscription_type\":\"max\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"rate_limit_tier\":\"default_claude_max_20x\"") != null);
+    // SAFETY INVARIANT: no accessToken/refreshToken substring bleeds through.
+    try std.testing.expect(std.mem.indexOf(u8, out, "LEAKCANARY") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, at_val) == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, rt_val) == null);
+}
+
+test "entitlement claude flat (unwrapped) blob parses tier fields (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    const at_key = "access" ++ "Token";
+    const raw = try std.fmt.allocPrint(
+        alloc,
+        "{{\"{s}\":\"x\",\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_ai\"}}",
+        .{at_key},
+    );
+    defer alloc.free(raw);
+    const ent = accountEntitlementFromRaw(alloc, .claude, raw);
+    defer ent.deinit(alloc);
+    switch (ent) {
+        .claude => |c| {
+            try std.testing.expectEqualStrings("max", c.subscription_type.?);
+            try std.testing.expectEqualStrings("default_claude_ai", c.rate_limit_tier.?);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "entitlement claude renders present field with null sibling (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    const raw = "{\"claudeAiOauth\":{\"subscriptionType\":\"max\"}}";
+    const ent = accountEntitlementFromRaw(alloc, .claude, raw);
+    defer ent.deinit(alloc);
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+    try writeEntitlementJson(buf.writer(), ent);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"subscription_type\":\"max\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"rate_limit_tier\":null") != null);
+}
+
+test "entitlement claude missing tier fields yields none (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    const at_key = "access" ++ "Token";
+    const raw = try std.fmt.allocPrint(alloc, "{{\"claudeAiOauth\":{{\"{s}\":\"x\"}}}}", .{at_key});
+    defer alloc.free(raw);
+    const ent = accountEntitlementFromRaw(alloc, .claude, raw);
+    defer ent.deinit(alloc);
+    try std.testing.expect(ent == .none);
+}
+
+test "entitlement claude malformed blob yields none (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    const ent = accountEntitlementFromRaw(alloc, .claude, "{not valid json");
+    defer ent.deinit(alloc);
+    try std.testing.expect(ent == .none);
+}
+
+test "entitlement codex plan_type decodes from unpadded base64url id_token (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    // payload decodes to
+    // {"https://api.openai.com/auth":{"chatgpt_plan_type":"pro","chatgpt_account_is_fedramp":true}}
+    const id_token = "h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s";
+    const raw = try std.fmt.allocPrint(
+        alloc,
+        "{{\"tokens\":{{\"access_token\":\"{s}\",\"account_id\":\"acc\",\"id_token\":\"{s}\"}}}}",
+        .{ id_token, id_token },
+    );
+    defer alloc.free(raw);
+    const ent = accountEntitlementFromRaw(alloc, .codex, raw);
+    defer ent.deinit(alloc);
+    switch (ent) {
+        .codex => |c| try std.testing.expectEqualStrings("pro", c.plan_type.?),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "entitlement codex missing plan claim yields none (TIN-2719)" {
+    const alloc = std.testing.allocator;
+    // id_token payload {"sub":"x"} — no https://api.openai.com/auth claim.
+    const raw = "{\"tokens\":{\"access_token\":\"h.eyJzdWIiOiJ4In0.s\",\"account_id\":\"acc\"}}";
+    const ent = accountEntitlementFromRaw(alloc, .codex, raw);
+    defer ent.deinit(alloc);
+    try std.testing.expect(ent == .none);
+}
+
+test "entitlement never reads a command backend during inventory (TIN-2719)" {
+    // Never-prompt invariant: `accounts list` must render null, never spawn an
+    // arbitrary credential helper. If accountEntitlement reached secret_mod.read
+    // it would run this echo and surface "max", so a green assert here proves
+    // the read was skipped. Bites the pre-fix code, which read every backend
+    // unconditionally.
+    const alloc = std.testing.allocator;
+    const acct = config.AccountConfig{
+        .secret = .{
+            .backend = "command",
+            .command = &.{ "/bin/echo", "{\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_max_20x\"}" },
+        },
+    };
+    const ent = accountEntitlement(alloc, acct, .claude);
+    defer ent.deinit(alloc);
+    try std.testing.expect(ent == .none);
+}
+
+test "entitlement inventory admits keychain and refuses helper backends (TIN-2719)" {
+    try std.testing.expect(entitlementInventoryBackendAllowed(.{ .file = .{ .path = "/tmp/auth.json" } }));
+    try std.testing.expect(entitlementInventoryBackendAllowed(.{ .env = .{ .variable = "OMUX_AUTH_JSON" } }));
+    try std.testing.expect(entitlementInventoryBackendAllowed(.{ .keychain = .{ .service = "Claude Code-omux-test", .account = "work" } }));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.{ .command = .{ .argv = &.{"omux-secret"} } }));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.stdin));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.{ .sops = .{ .path = "secrets.yaml" } }));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.{ .age = .{ .path = "secret.age", .identity = "identity.txt" } }));
+}
+
+test "entitlement still reads a file backend during inventory (TIN-2719)" {
+    // Bracket the never-prompt gate from the safe side: a non-interactive file
+    // backend must stay readable so file-stored credentials still surface
+    // their labels, proving the gate refuses only the prompt-hazardous arms.
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "cred.json",
+        .data = "{\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_ai\"}",
+    });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const cred_path = try std.fs.path.join(alloc, &.{ dir_path, "cred.json" });
+    defer alloc.free(cred_path);
+    const acct = config.AccountConfig{
+        .secret = .{ .backend = "file", .path = cred_path },
+    };
+    const ent = accountEntitlement(alloc, acct, .claude);
+    defer ent.deinit(alloc);
+    switch (ent) {
+        .claude => |c| try std.testing.expectEqualStrings("max", c.subscription_type.?),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "accounts list --json emits entitlement present and absent (TIN-2719)" {
+    const alloc = std.testing.allocator;
+
+    // Present account: a codex auth.json with a plan-bearing id_token, written
+    // to a real temp path so the read path exercises the file secret backend.
+    const id_token = "h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X2FjY291bnRfaXNfZmVkcmFtcCI6dHJ1ZX19.s";
+    const auth_json = try std.fmt.allocPrint(
+        alloc,
+        "{{\"auth_mode\":\"chatgpt\",\"tokens\":{{\"id_token\":\"{s}\",\"access_token\":\"{s}\",\"account_id\":\"acc-present\"}}}}",
+        .{ id_token, id_token },
+    );
+    defer alloc.free(auth_json);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "auth.json", .data = auth_json });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const present_path = try std.fs.path.join(alloc, &.{ dir_path, "auth.json" });
+    defer alloc.free(present_path);
+    const absent_path = try std.fs.path.join(alloc, &.{ dir_path, "does-not-exist.json" });
+    defer alloc.free(absent_path);
+
+    const cfg_json = try std.fmt.allocPrint(
+        alloc,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "present": {{ "secret": {{ "backend": "file", "path": "{s}" }} }},
+        \\        "absent": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ present_path, absent_path },
+    );
+    defer alloc.free(cfg_json);
+
+    const parsed = try config.loadFromBytes(alloc, cfg_json);
+    defer parsed.deinit();
+
+    var store = health_mod.HealthStore.init(alloc, .{});
+    defer store.deinit();
+
+    var buf = std.ArrayList(u8).init(alloc);
+    defer buf.deinit();
+    try writeAccountsListJson(buf.writer(), alloc, parsed.value, &store, .{ .action = .list, .json = true, .provider = "codex" });
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"entitlement\":{\"plan_type\":\"pro\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"entitlement\":null") != null);
 }
 
 fn accountsProviderMatches(args: cli.Command.AccountsArgs, provider_name: []const u8, provider_kind: []const u8) bool {
