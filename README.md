@@ -19,7 +19,7 @@ infrastructure — not product success.
 
 ## Current release
 
-`0.1.14` ("keepalive") is the current public release across the GitHub Release,
+`0.1.15` ("valet") is the current public release across the GitHub Release,
 curl installer, deb/rpm, and Homebrew lanes. It adds **credential keepalive**:
 `oauth-mux keepalive` proactively refreshes enrolled accounts at ~75% of token
 lifetime, consent-gated per account (`allow_proactive_refresh`, default `false`) and
