@@ -53,6 +53,28 @@ fn scheduler(clk: *FakeClock, ref: *FakeRefresher, policy: ws.Policy) ws.Schedul
     };
 }
 
+// TIN-2061: recording notify seam — counts the transitions the scheduler
+// reports, so the wiring can be asserted without any real desktop delivery.
+const RecordingNotifier = struct {
+    refresh_failed: u32 = 0,
+    credential_dead: u32 = 0,
+    last_key: [64]u8 = undefined,
+    last_key_len: usize = 0,
+
+    fn onEvent(ctx: *anyopaque, reason: ws.NotifyReason, key: []const u8) void {
+        const self: *RecordingNotifier = @ptrCast(@alignCast(ctx));
+        switch (reason) {
+            .refresh_failed => self.refresh_failed += 1,
+            .credential_dead => self.credential_dead += 1,
+        }
+        self.last_key_len = @min(key.len, self.last_key.len);
+        @memcpy(self.last_key[0..self.last_key_len], key[0..self.last_key_len]);
+    }
+    fn seam(self: *RecordingNotifier) ws.NotifySeam {
+        return .{ .func = onEvent, .ctx = self };
+    }
+};
+
 // ── Pure scheduling math ───────────────────────────────────────────────────
 
 test "refreshDueAtMs: 75% of lifetime" {
@@ -296,4 +318,85 @@ test "nextWakeMs: a live account's backoff gate is reflected; dead peer ignored"
         .{ .key = "gated", .last_refresh_ms = 0, .expires_at_ms = 1_000_000, .next_attempt_ms = 900_000 },
     };
     try std.testing.expectEqual(@as(?i64, 900_000), ws.nextWakeMs(&accounts, policy));
+}
+
+// ── Notification seam wiring (TIN-2061) ──────────────────────────────────────
+
+test "notify seam: a refused refresh tick fires exactly one refresh_failed" {
+    var clk = FakeClock{ .now = 1_000 };
+    var ref = FakeRefresher{ .fail = true }; // grant-gate refusal → RefreshFailed
+    var notifier = RecordingNotifier{};
+    var sched = scheduler(&clk, &ref, .{});
+    sched.notify = notifier.seam();
+
+    // Due now: expires <= last_refresh → refreshDueAtMs clamps to last_refresh(0).
+    var accounts = [_]ws.Account{.{ .key = "claude:work", .last_refresh_ms = 0, .expires_at_ms = 1 }};
+    const report = sched.tick(&accounts);
+
+    try std.testing.expectEqual(@as(u32, 1), report.failed);
+    try std.testing.expectEqual(@as(u32, 1), notifier.refresh_failed);
+    try std.testing.expectEqual(@as(u32, 0), notifier.credential_dead);
+    try std.testing.expectEqualStrings("claude:work", notifier.last_key[0..notifier.last_key_len]);
+}
+
+test "notify seam: a successful refresh tick fires nothing" {
+    var clk = FakeClock{ .now = 1_000 };
+    var ref = FakeRefresher{ .fail = false, .new_last = 1_000, .new_expires = 1_000_000 };
+    var notifier = RecordingNotifier{};
+    var sched = scheduler(&clk, &ref, .{});
+    sched.notify = notifier.seam();
+
+    var accounts = [_]ws.Account{.{ .key = "claude:work", .last_refresh_ms = 0, .expires_at_ms = 1 }};
+    const report = sched.tick(&accounts);
+
+    try std.testing.expectEqual(@as(u32, 1), report.refreshed);
+    try std.testing.expectEqual(@as(u32, 0), notifier.refresh_failed);
+    try std.testing.expectEqual(@as(u32, 0), notifier.credential_dead);
+}
+
+test "notify seam: crossing the death budget fires credential_dead exactly once" {
+    var clk = FakeClock{ .now = 0 };
+    var ref = FakeRefresher{ .fail = true };
+    var notifier = RecordingNotifier{};
+    var sched = scheduler(&clk, &ref, .{ .max_failures = 3 });
+    sched.notify = notifier.seam();
+
+    var accounts = [_]ws.Account{.{ .key = "codex:home", .last_refresh_ms = 0, .expires_at_ms = 1 }};
+
+    // Tick repeatedly, advancing the clock past each backoff gate so the account
+    // is due every time. Failures 1 and 2 fire refresh_failed; failure 3 crosses
+    // max_failures → dead → credential_dead; the 4th tick skips the dead account.
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        clk.now += 10_000_000;
+        _ = sched.tick(&accounts);
+    }
+
+    try std.testing.expect(accounts[0].dead);
+    try std.testing.expectEqual(@as(u32, 2), notifier.refresh_failed);
+    try std.testing.expectEqual(@as(u32, 1), notifier.credential_dead);
+}
+
+test "notify seam: a transient (OOM) tick fires nothing" {
+    var clk = FakeClock{ .now = 1_000 };
+    var ref = FakeRefresher{ .oom = true }; // host pressure, not the account's fault
+    var notifier = RecordingNotifier{};
+    var sched = scheduler(&clk, &ref, .{});
+    sched.notify = notifier.seam();
+
+    var accounts = [_]ws.Account{.{ .key = "claude:work", .last_refresh_ms = 0, .expires_at_ms = 1 }};
+    const report = sched.tick(&accounts);
+
+    try std.testing.expectEqual(@as(u32, 1), report.transient);
+    try std.testing.expectEqual(@as(u32, 0), notifier.refresh_failed);
+    try std.testing.expectEqual(@as(u32, 0), notifier.credential_dead);
+}
+
+test "notify seam: null seam (default) leaves behavior unchanged" {
+    var clk = FakeClock{ .now = 1_000 };
+    var ref = FakeRefresher{ .fail = true };
+    const sched = scheduler(&clk, &ref, .{}); // no .notify set → null
+    var accounts = [_]ws.Account{.{ .key = "claude:work", .last_refresh_ms = 0, .expires_at_ms = 1 }};
+    const report = sched.tick(&accounts);
+    try std.testing.expectEqual(@as(u32, 1), report.failed); // still fails, just no notify
 }
