@@ -1113,6 +1113,20 @@ fn accountEntitlement(
         .gemini, .vercel, .github, .mcp => return .none,
     }
     const backend = config.resolveSecretBackend(account.secret) catch return .none;
+    // Inventory invariant (never-prompt): `accounts list` is a read-only
+    // command and must NEVER spawn an interactive credential helper just to
+    // decorate a row with a label. Only backends that resolve a blob without a
+    // subprocess or stdin read are safe here. A locked macOS keychain
+    // (`security find-generic-password -w`), a sops/age passphrase (pinentry),
+    // an arbitrary `command`, or `stdin` can each block on a GUI/terminal
+    // prompt (see the writeKeychain note in secret.zig) — so for those the
+    // entitlement stays null rather than risk wedging the caller. The sibling
+    // inventory path accountAuthIdentity() refuses non-file backends for the
+    // same reason; `file`/`env` are the only provably non-interactive reads.
+    switch (backend) {
+        .file, .env => {},
+        .keychain, .sops, .age, .command, .stdin => return .none,
+    }
     const raw = secret_mod.read(backend, allocator) catch return .none;
     defer allocator.free(raw);
     return accountEntitlementFromRaw(allocator, k, raw);
@@ -1542,6 +1556,51 @@ test "entitlement codex missing plan claim yields none (TIN-2719)" {
     const ent = accountEntitlementFromRaw(alloc, .codex, raw);
     defer ent.deinit(alloc);
     try std.testing.expect(ent == .none);
+}
+
+test "entitlement never reads a prompt-hazardous backend during inventory (TIN-2719)" {
+    // Never-prompt invariant: `accounts list` must render null, never spawn an
+    // interactive credential helper. A `command` backend stands in for the
+    // macOS keychain hazard (`security -w` can raise a blocking GUI unlock
+    // dialog): if accountEntitlement reached secret_mod.read it would run this
+    // echo and surface "max", so a green assert here proves the read was
+    // skipped. Bites the pre-fix code, which read every backend unconditionally.
+    const alloc = std.testing.allocator;
+    const acct = config.AccountConfig{
+        .secret = .{
+            .backend = "command",
+            .command = &.{ "/bin/echo", "{\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_max_20x\"}" },
+        },
+    };
+    const ent = accountEntitlement(alloc, acct, .claude);
+    defer ent.deinit(alloc);
+    try std.testing.expect(ent == .none);
+}
+
+test "entitlement still reads a file backend during inventory (TIN-2719)" {
+    // Bracket the never-prompt gate from the safe side: a non-interactive file
+    // backend must stay readable so file-stored credentials still surface
+    // their labels, proving the gate refuses only the prompt-hazardous arms.
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "cred.json",
+        .data = "{\"subscriptionType\":\"max\",\"rateLimitTier\":\"default_claude_ai\"}",
+    });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp.dir.realpath(".", &path_buf);
+    const cred_path = try std.fs.path.join(alloc, &.{ dir_path, "cred.json" });
+    defer alloc.free(cred_path);
+    const acct = config.AccountConfig{
+        .secret = .{ .backend = "file", .path = cred_path },
+    };
+    const ent = accountEntitlement(alloc, acct, .claude);
+    defer ent.deinit(alloc);
+    switch (ent) {
+        .claude => |c| try std.testing.expectEqualStrings("max", c.subscription_type.?),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "accounts list --json emits entitlement present and absent (TIN-2719)" {
