@@ -23,6 +23,7 @@ const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
 const identity_hash = @import("identity_hash.zig");
 const advise = @import("quota/advise.zig");
+const doctor_binaries = @import("doctor_binaries.zig");
 
 comptime {
     // Pull broker + adapter modules into the test build.
@@ -7339,10 +7340,18 @@ fn runDoctor(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Do
     defer store.deinit();
     stats.health_entries = store.accounts.count();
 
+    // TIN-2723: resident-service + PATH binary truth. Gathered into an arena so
+    // the many small owned strings free in one shot; any failure degrades to a
+    // null report (rendered "unavailable") without failing the doctor.
+    var bin_arena = std.heap.ArenaAllocator.init(allocator);
+    defer bin_arena.deinit();
+    const binaries: ?doctor_binaries.BinariesReport =
+        doctor_binaries.gather(bin_arena.allocator(), cli.version, .{}) catch null;
+
     if (args.json) {
-        try writeDoctorJson(writer, stats, config_path, state_dir, health_path, validation_messages.items);
+        try writeDoctorJson(writer, stats, config_path, state_dir, health_path, validation_messages.items, binaries);
     } else {
-        try writeDoctorText(writer, stats, config_path, state_dir, health_path, validation_messages.items);
+        try writeDoctorText(writer, stats, config_path, state_dir, health_path, validation_messages.items, binaries);
     }
 }
 
@@ -7353,6 +7362,7 @@ fn writeDoctorText(
     state_dir: []const u8,
     health_path: []const u8,
     validation_messages: []const u8,
+    binaries: ?doctor_binaries.BinariesReport,
 ) !void {
     try writer.writeAll("oauth-mux doctor\n\n");
     try writer.print("  config: {s}\n", .{config_path});
@@ -7386,6 +7396,8 @@ fn writeDoctorText(
         }
     }
 
+    try doctor_binaries.writeText(binaries, writer);
+
     try writer.writeAll("\n  next:\n");
     try writeDoctorNextCommandsText(writer, stats);
 }
@@ -7397,6 +7409,7 @@ fn writeDoctorJson(
     state_dir: []const u8,
     health_path: []const u8,
     validation_messages: []const u8,
+    binaries: ?doctor_binaries.BinariesReport,
 ) !void {
     try writer.writeByte('{');
     try writer.writeAll("\"version\":");
@@ -7432,6 +7445,8 @@ fn writeDoctorJson(
             if (stats.codex_max_configured) "true" else "false",
         },
     );
+    try writer.writeByte(',');
+    try doctor_binaries.writeJson(binaries, writer);
     try writer.writeAll(",\"checks\":[");
     try writeDoctorChecksJson(writer, stats, validation_messages);
     try writer.writeAll("],\"next_commands\":[");
@@ -18081,8 +18096,9 @@ test "doctor json recommends Codex Max candidate for single-account drift" {
     var buf = std.ArrayList(u8).init(std.testing.allocator);
     defer buf.deinit();
 
-    try writeDoctorJson(buf.writer(), stats, "/tmp/config.json", "/tmp/state", "/tmp/health.json", "");
+    try writeDoctorJson(buf.writer(), stats, "/tmp/config.json", "/tmp/state", "/tmp/health.json", "", null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"codex_configured\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"binaries\":{\"available\":false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"codex_max_configured\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"codex_max_configured\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"severity\":\"warning\"") != null);
@@ -20461,6 +20477,7 @@ comptime {
     _ = @import("keepalive/refresh_race_tests.zig"); // TIN-2059 in-process actor-gate race
     _ = @import("quota/bucket_tests.zig"); // TIN-2407 P0: pure quota-bucket algebra
     _ = @import("quota/advise_tests.zig"); // TIN-2719 M0 PR1: pure valet advisor core
+    _ = @import("doctor_binaries.zig"); // TIN-2723: resident-service + PATH binary truth
 
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
