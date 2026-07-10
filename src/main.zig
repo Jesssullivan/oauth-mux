@@ -752,10 +752,16 @@ test "advice rendering: sole quota_exhausted opus row → waiting + resets_at + 
     // A synthetic per-model quota signal on the opus route: the window resets at
     // 2000s. now = 1000s (in ms) is before the reset → the class is waiting.
     const h = try store.getOrCreate("claude:acct-a#opus");
-    h.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
-        .window_resets_at = 2000, // health SECONDS; advise converts to ms
-        .exhausted_at = 100,
-    } } } };
+    h.liveness = .{
+        .live = .{
+            .availability = .{
+                .quota_exhausted = .{
+                    .window_resets_at = 2000, // health SECONDS; advise converts to ms
+                    .exhausted_at = 100,
+                },
+            },
+        },
+    };
 
     var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
     const now_ms: i64 = 1000 * 1000;
@@ -1113,23 +1119,21 @@ fn accountEntitlement(
         .gemini, .vercel, .github, .mcp => return .none,
     }
     const backend = config.resolveSecretBackend(account.secret) catch return .none;
-    // Inventory invariant (never-prompt): `accounts list` is a read-only
-    // command and must NEVER spawn an interactive credential helper just to
-    // decorate a row with a label. Only backends that resolve a blob without a
-    // subprocess or stdin read are safe here. A locked macOS keychain
-    // (`security find-generic-password -w`), a sops/age passphrase (pinentry),
-    // an arbitrary `command`, or `stdin` can each block on a GUI/terminal
-    // prompt (see the writeKeychain note in secret.zig) — so for those the
-    // entitlement stays null rather than risk wedging the caller. The sibling
-    // inventory path accountAuthIdentity() refuses non-file backends for the
-    // same reason; `file`/`env` are the only provably non-interactive reads.
-    switch (backend) {
-        .file, .env => {},
-        .keychain, .sops, .age, .command, .stdin => return .none,
-    }
+    if (!entitlementInventoryBackendAllowed(backend)) return .none;
     const raw = secret_mod.read(backend, allocator) catch return .none;
     defer allocator.free(raw);
     return accountEntitlementFromRaw(allocator, k, raw);
+}
+
+// Inventory invariant: `accounts list` is read-only and must not run arbitrary
+// commands, read stdin, or trigger decrypt/passphrase helper paths just to
+// decorate a row. Keychain is admitted because Claude's normal liveness path is
+// keychain-backed; a denied or locked keychain read degrades to null above.
+fn entitlementInventoryBackendAllowed(backend: types.SecretBackend) bool {
+    return switch (backend) {
+        .file, .env, .keychain => true,
+        .sops, .age, .command, .stdin => false,
+    };
 }
 
 /// Parse a credential blob (already read into memory) into entitlement labels.
@@ -1558,13 +1562,12 @@ test "entitlement codex missing plan claim yields none (TIN-2719)" {
     try std.testing.expect(ent == .none);
 }
 
-test "entitlement never reads a prompt-hazardous backend during inventory (TIN-2719)" {
+test "entitlement never reads a command backend during inventory (TIN-2719)" {
     // Never-prompt invariant: `accounts list` must render null, never spawn an
-    // interactive credential helper. A `command` backend stands in for the
-    // macOS keychain hazard (`security -w` can raise a blocking GUI unlock
-    // dialog): if accountEntitlement reached secret_mod.read it would run this
-    // echo and surface "max", so a green assert here proves the read was
-    // skipped. Bites the pre-fix code, which read every backend unconditionally.
+    // arbitrary credential helper. If accountEntitlement reached secret_mod.read
+    // it would run this echo and surface "max", so a green assert here proves
+    // the read was skipped. Bites the pre-fix code, which read every backend
+    // unconditionally.
     const alloc = std.testing.allocator;
     const acct = config.AccountConfig{
         .secret = .{
@@ -1575,6 +1578,16 @@ test "entitlement never reads a prompt-hazardous backend during inventory (TIN-2
     const ent = accountEntitlement(alloc, acct, .claude);
     defer ent.deinit(alloc);
     try std.testing.expect(ent == .none);
+}
+
+test "entitlement inventory admits keychain and refuses helper backends (TIN-2719)" {
+    try std.testing.expect(entitlementInventoryBackendAllowed(.{ .file = .{ .path = "/tmp/auth.json" } }));
+    try std.testing.expect(entitlementInventoryBackendAllowed(.{ .env = .{ .variable = "OMUX_AUTH_JSON" } }));
+    try std.testing.expect(entitlementInventoryBackendAllowed(.{ .keychain = .{ .service = "Claude Code-omux-test", .account = "work" } }));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.{ .command = .{ .argv = &.{"omux-secret"} } }));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.stdin));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.{ .sops = .{ .path = "secrets.yaml" } }));
+    try std.testing.expect(!entitlementInventoryBackendAllowed(.{ .age = .{ .path = "secret.age", .identity = "identity.txt" } }));
 }
 
 test "entitlement still reads a file backend during inventory (TIN-2719)" {
