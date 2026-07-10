@@ -254,6 +254,7 @@ fn runProcess(allocator: std.mem.Allocator, argv: []const []const u8) !ProcessRe
 /// therefore never stall the keepalive tick — indefinitely.
 fn runProcessTimed(allocator: std.mem.Allocator, argv: []const []const u8, timeout_ns: u64) !ProcessResult {
     var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
 
@@ -277,8 +278,8 @@ fn runProcessTimed(allocator: std.mem.Allocator, argv: []const []const u8, timeo
     const term = try child.wait();
 
     return .{
-        .stdout = stdout_buf.toOwnedSlice(allocator) catch &.{},
-        .stderr = stderr_buf.toOwnedSlice(allocator) catch &.{},
+        .stdout = try stdout_buf.toOwnedSlice(allocator),
+        .stderr = try stderr_buf.toOwnedSlice(allocator),
         .term = term,
     };
 }
@@ -288,9 +289,9 @@ fn runProcessTimed(allocator: std.mem.Allocator, argv: []const []const u8, timeo
 // The same secret-marker vocabulary the fixture-redaction scanner forbids; a
 // rendered notification must never contain any of these.
 const forbidden_markers = [_][]const u8{
-    "access_token", "refresh_token", "id_token",     "client_secret",
-    "authorization:", "authorization=", "bearer ",   "bearer%20",
-    "set-cookie:",  "cookie:",        "sk-",          "sess-",
+    "access_token",   "refresh_token",  "id_token", "client_secret",
+    "authorization:", "authorization=", "bearer ",  "bearer%20",
+    "set-cookie:",    "cookie:",        "sk-",      "sess-",
 };
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -457,7 +458,9 @@ test "runProcessTimed: a fast child completes normally, watchdog never fires" {
     // `true` exits 0 immediately; a generous deadline must NOT kill it — the
     // fast path still reports the real exit status (so the adapter's record/
     // retry contract is preserved).
-    const res = try runProcessTimed(std.testing.allocator, &.{ "true", }, 10 * std.time.ns_per_s);
+    const res = try runProcessTimed(std.testing.allocator, &.{
+        "true",
+    }, 10 * std.time.ns_per_s);
     defer std.testing.allocator.free(res.stdout);
     defer if (res.stderr.len > 0) std.testing.allocator.free(res.stderr);
 
