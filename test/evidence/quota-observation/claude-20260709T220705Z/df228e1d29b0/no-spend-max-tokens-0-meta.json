@@ -1,0 +1,13 @@
+{
+  "account": "lmux",
+  "channel": "no-spend-max-tokens-0",
+  "http_status": "429",
+  "kind": "no-spend",
+  "max_tokens_requested": 0,
+  "model_requested": "claude-opus-4-8",
+  "ratelimit_header_names": [],
+  "ratelimit_headers_present": false,
+  "request_started_utc": "2026-07-09T22:02:48Z",
+  "time_total_s": "1.289021",
+  "usage_tokens": null
+}

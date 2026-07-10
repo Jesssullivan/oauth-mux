@@ -1,0 +1,28 @@
+HTTP/2 200 
+date: Thu, 09 Jul 2026 22:03:13 GMT
+content-type: application/json
+anthropic-ratelimit-unified-status: allowed_warning
+anthropic-ratelimit-unified-5h-status: allowed_warning
+anthropic-ratelimit-unified-5h-reset: 1783642200
+anthropic-ratelimit-unified-5h-utilization: 0.98
+anthropic-ratelimit-unified-5h-surpassed-threshold: 0.9
+anthropic-ratelimit-unified-7d-status: allowed
+anthropic-ratelimit-unified-7d-reset: 1784044800
+anthropic-ratelimit-unified-7d-utilization: 0.19
+anthropic-ratelimit-unified-representative-claim: five_hour
+anthropic-ratelimit-unified-fallback-percentage: 0.5
+anthropic-ratelimit-unified-fallback: available
+anthropic-ratelimit-unified-reset: 1783642200
+anthropic-ratelimit-unified-overage-disabled-reason: out_of_credits
+anthropic-ratelimit-unified-overage-status: rejected
+request-id: <b308a1210d23>
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+anthropic-organization-id: <f7ef00e84b20>
+traceresponse: 00-bb287347c098ef7c78db03a1c6d6383c-53a0dd6f61d6d3eb-01
+server: cloudflare
+content-security-policy: default-src 'none'; frame-ancestors 'none'
+vary: Accept-Encoding
+cf-cache-status: DYNAMIC
+x-robots-tag: none
+cf-ray: <93705fcfd287>
+
