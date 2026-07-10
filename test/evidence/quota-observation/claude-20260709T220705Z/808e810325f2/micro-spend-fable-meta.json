@@ -1,0 +1,13 @@
+{
+  "account": "xoxd",
+  "channel": "micro-spend-fable",
+  "http_status": "429",
+  "kind": "micro-spend",
+  "max_tokens_requested": 1,
+  "model_requested": "claude-fable-5",
+  "ratelimit_header_names": [],
+  "ratelimit_headers_present": false,
+  "request_started_utc": "2026-07-09T22:03:19Z",
+  "time_total_s": "0.479541",
+  "usage_tokens": null
+}

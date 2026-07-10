@@ -1,0 +1,13 @@
+{
+  "account": "sulliwood",
+  "channel": "micro-spend-opus",
+  "http_status": "429",
+  "kind": "micro-spend",
+  "max_tokens_requested": 1,
+  "model_requested": "claude-opus-4-8",
+  "ratelimit_header_names": [],
+  "ratelimit_headers_present": false,
+  "request_started_utc": "2026-07-09T22:03:10Z",
+  "time_total_s": "0.598327",
+  "usage_tokens": null
+}

@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "model: claude-omux-e2-unknown-model-probe",
+    "type": "not_found_error"
+  },
+  "request_id": "<25208664dc86>",
+  "type": "error"
+}
