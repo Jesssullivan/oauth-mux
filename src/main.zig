@@ -22,6 +22,7 @@ const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
 const identity_hash = @import("identity_hash.zig");
+const advise = @import("quota/advise.zig");
 
 comptime {
     // Pull broker + adapter modules into the test build.
@@ -452,6 +453,13 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
     defer parsed.deinit();
     const cfg = parsed.value;
 
+    // Load the persisted liveness rows read-only, exactly as runAccounts does, so
+    // the valet advisor can fold them into a model-class quota view. `now` is read
+    // ONCE here at the effect boundary (Unix ms — advise.zig never reads a clock).
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+    const now_ms = std.time.milliTimestamp();
+
     if (args.json) {
         try writer.writeAll("{\n");
         try writer.print("  \"version\": \"{s}\",\n", .{cli.version});
@@ -467,7 +475,9 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
                 entry.value_ptr.accounts.map.count(),
             });
         }
-        try writer.writeAll("\n  }\n}\n");
+        try writer.writeAll("\n  },\n");
+        try writeAdviceJson(writer, allocator, &store, now_ms);
+        try writer.writeAll("\n}\n");
     } else {
         try writer.print("oauth-mux v{s}\n\n", .{cli.version});
         var it = cfg.providers.map.iterator();
@@ -484,7 +494,308 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
                 });
             }
         }
+        try writer.writeByte('\n');
+        try writeAdviceText(writer, allocator, &store, now_ms);
     }
+}
+
+// ── valet advice rendering (TIN-2719 M0 PR2) ──────────────────────────────────
+//
+// The status surface is the first product consumer of the pure advisor core
+// (`advise.zig`, PR #449). We fold every persisted HealthStore liveness row into
+// the advisor and render its honest, provenance-tagged model-class view.
+
+// The declared model-class set the advisor summarizes. Hardcoded HERE at the call
+// site because advise.zig correctly refuses to own the list, and provider_schema
+// does not yet declare per-model classes (claude's only capability today is
+// "auth-status", NOT a model class — see provider_schema.claude_capabilities).
+// TIN-2722 follow-up: move this list into provider_schema so the advisor consumes
+// provider-owned declarations instead of this call-site const.
+const advice_declared_classes = [_]advise.DeclaredClass{
+    .{ .provider = "claude", .class = "opus" },
+    .{ .provider = "claude", .class = "fable" },
+    .{ .provider = "claude", .class = "sonnet" },
+    .{ .provider = "claude", .class = "haiku" },
+};
+
+/// Adapt one persisted `CredentialLiveness` into the flat `advise.Row` quota/
+/// credential fields. The credential `state` and the quota `availability` are
+/// DISJOINT dimensions (advise.zig honesty boundary); timestamps stay in health
+/// SECONDS — advise's boundary converts them to ms. `provider`/`account`/`class`
+/// are the parsed route key (class = the capability slug, or "" when the row is
+/// account-scoped — either way it never matches a declared model class today).
+fn adviceRowFromHealth(
+    provider_name: []const u8,
+    account: []const u8,
+    class: []const u8,
+    liveness: types.CredentialLiveness,
+) advise.Row {
+    var row = advise.Row{ .provider = provider_name, .account = account, .class = class };
+    switch (liveness) {
+        .live => |live| {
+            row.state = "live";
+            switch (live.availability) {
+                .available => row.availability = "available",
+                .rate_limited => |rl| {
+                    row.availability = "rate_limited";
+                    row.retry_after_s = rl.retry_after_s;
+                    row.limited_at = rl.limited_at;
+                },
+                .quota_exhausted => |q| {
+                    row.availability = "quota_exhausted";
+                    row.window_resets_at = q.window_resets_at;
+                    row.usage_pct = q.usage_pct;
+                    row.exhausted_at = q.exhausted_at;
+                },
+                .cooldown => |c| {
+                    row.availability = "cooldown";
+                    row.cooldown_until = c.until;
+                },
+            }
+        },
+        .degraded => |d| {
+            row.state = "degraded";
+            row.since = d.since;
+        },
+        .dead => |d| {
+            row.state = "dead";
+            row.since = d.since;
+        },
+    }
+    return row;
+}
+
+/// Fold every persisted liveness row into the advisor. Row slices borrow the
+/// store's key strings and static literals, so they stay valid for the returned
+/// `Advice`; the suggestion copies its own slices out of the winning row (which
+/// point into the store, not `rows`), so freeing `rows` after this returns is safe.
+/// `out_classes` is caller-owned and must outlive the returned `Advice`.
+fn computeAdvice(
+    allocator: std.mem.Allocator,
+    store: *health_mod.HealthStore,
+    now_ms: i64,
+    out_classes: []advise.ClassSummary,
+) !advise.Advice {
+    var rows = std.ArrayList(advise.Row).init(allocator);
+    defer rows.deinit();
+    var it = store.accounts.iterator();
+    while (it.next()) |entry| {
+        const parts = health_mod.parseHealthKey(entry.key_ptr.*) orelse continue;
+        try rows.append(adviceRowFromHealth(
+            parts.provider,
+            parts.account,
+            parts.capability orelse "",
+            entry.value_ptr.liveness,
+        ));
+    }
+    // demand = unconstrained (M0); excluded_accounts = empty for now — identity-
+    // dedupe exclusion wiring is a follow-up.
+    return advise.advise(rows.items, &advice_declared_classes, .{}, &.{}, now_ms, out_classes);
+}
+
+fn effectiveStatusName(status: @import("quota/bucket.zig").EffectiveStatus) []const u8 {
+    return switch (status) {
+        .available => "available",
+        .waiting => "waiting",
+        .tier_blocked => "tier_blocked",
+        .plan_gated => "plan_gated",
+    };
+}
+
+fn provenanceName(p: advise.Provenance) []const u8 {
+    return switch (p) {
+        .unobserved => "unobserved",
+        .assumed => "assumed",
+        .inferred => "inferred",
+        .proven => "proven",
+    };
+}
+
+fn writeAdviceJson(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    store: *health_mod.HealthStore,
+    now_ms: i64,
+) !void {
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const adv = try computeAdvice(allocator, store, now_ms, &class_buf);
+
+    try writer.writeAll("  \"advice\": {\n");
+    try writer.print("    \"generated_at_ms\": {d},\n", .{now_ms});
+    try writer.writeAll("    \"model_classes\": [");
+    for (adv.classes, 0..) |cs, i| {
+        if (i != 0) try writer.writeByte(',');
+        try writer.writeAll("\n      {\"provider\": ");
+        try std.json.stringify(cs.provider, .{}, writer);
+        try writer.writeAll(", \"class\": ");
+        try std.json.stringify(cs.class, .{}, writer);
+        try writer.writeAll(", \"status\": ");
+        try std.json.stringify(effectiveStatusName(cs.status), .{}, writer);
+        try writer.writeAll(", \"usage_pct\": ");
+        if (cs.usage_pct) |u| try writer.print("{d}", .{u}) else try writer.writeAll("null");
+        try writer.writeAll(", \"resets_at_ms\": ");
+        if (cs.resets_at) |r| try writer.print("{d}", .{r}) else try writer.writeAll("null");
+        try writer.writeAll(", \"provenance\": ");
+        try std.json.stringify(provenanceName(cs.provenance), .{}, writer);
+        try writer.writeByte('}');
+    }
+    try writer.writeAll("\n    ],\n");
+
+    try writer.writeAll("    \"next_account\": ");
+    if (adv.suggestion) |s| {
+        try writer.writeAll("{\"provider\": ");
+        try std.json.stringify(s.provider, .{}, writer);
+        try writer.writeAll(", \"account\": ");
+        try std.json.stringify(s.account, .{}, writer);
+        try writer.writeAll(", \"class\": ");
+        try std.json.stringify(s.class, .{}, writer);
+        try writer.writeAll(", \"reason\": ");
+        try std.json.stringify(s.reason, .{}, writer);
+        try writer.writeAll(", \"provenance\": ");
+        try std.json.stringify(provenanceName(s.provenance), .{}, writer);
+        try writer.writeByte('}');
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\n");
+
+    try writer.writeAll("    \"wait_until_ms\": ");
+    if (adv.wait_until) |w| try writer.print("{d}", .{w}) else try writer.writeAll("null");
+    try writer.writeAll("\n  }");
+}
+
+fn writeAdviceText(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    store: *health_mod.HealthStore,
+    now_ms: i64,
+) !void {
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const adv = try computeAdvice(allocator, store, now_ms, &class_buf);
+
+    // One summary line per distinct provider present in the declared class set.
+    for (advice_declared_classes, 0..) |dc, i| {
+        var seen_before = false;
+        for (advice_declared_classes[0..i]) |prev| {
+            if (std.mem.eql(u8, prev.provider, dc.provider)) seen_before = true;
+        }
+        if (seen_before) continue;
+
+        var total: usize = 0;
+        var unobserved: usize = 0;
+        for (adv.classes) |cs| {
+            if (!std.mem.eql(u8, cs.provider, dc.provider)) continue;
+            total += 1;
+            if (cs.provenance == .unobserved) unobserved += 1;
+        }
+
+        if (unobserved == total) {
+            try writer.print("  advice: {s} — all classes unobserved (no quota signal recorded)\n", .{dc.provider});
+        } else if (adv.suggestion) |s| {
+            if (std.mem.eql(u8, s.provider, dc.provider)) {
+                try writer.print("  advice: {s} — suggest {s} for {s} ({s})\n", .{
+                    dc.provider, s.account, s.class, provenanceName(s.provenance),
+                });
+            } else {
+                try writer.print("  advice: {s} — {d}/{d} classes observed\n", .{ dc.provider, total - unobserved, total });
+            }
+        } else {
+            try writer.print("  advice: {s} — {d}/{d} classes observed\n", .{ dc.provider, total - unobserved, total });
+        }
+    }
+}
+
+test "advice rendering: empty store → all four claude classes unobserved, no suggestion" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const adv = try computeAdvice(std.testing.allocator, &store, 1_000_000, &class_buf);
+    try std.testing.expectEqual(advice_declared_classes.len, adv.classes.len);
+    for (adv.classes) |cs| {
+        try std.testing.expectEqual(advise.Provenance.unobserved, cs.provenance);
+    }
+    try std.testing.expect(adv.suggestion == null);
+    try std.testing.expect(adv.wait_until == null);
+}
+
+test "advice rendering honesty: auth-status-only claude rows → all four model classes unobserved" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // Today's HealthStore records only the "auth-status" capability for claude — a
+    // credential-liveness row, NOT a per-model quota signal (provider_schema
+    // declares no per-model classes yet). Both accounts are credential-live.
+    const h1 = try store.getOrCreate("claude:acct-a#auth-status");
+    h1.liveness = .{ .live = .{ .availability = .available } };
+    const h2 = try store.getOrCreate("claude:acct-b#auth-status");
+    h2.liveness = .{ .live = .{ .availability = .available } };
+
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const adv = try computeAdvice(std.testing.allocator, &store, 1_000_000, &class_buf);
+
+    // The honesty invariant: no persisted row proves a per-model quota, so every
+    // declared model class MUST render `unobserved`.
+    try std.testing.expectEqual(@as(usize, 4), adv.classes.len);
+    for (adv.classes) |cs| {
+        try std.testing.expectEqual(advise.Provenance.unobserved, cs.provenance);
+    }
+    // next_account is null-or-inferred-only: an auth-status row can lift an account
+    // to `inferred` (credential-ready, no quota signal against it) but never higher.
+    if (adv.suggestion) |s| {
+        try std.testing.expectEqual(advise.Provenance.inferred, s.provenance);
+    }
+}
+
+test "advice rendering: sole quota_exhausted opus row → waiting + resets_at + wait_until" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // A synthetic per-model quota signal on the opus route: the window resets at
+    // 2000s. now = 1000s (in ms) is before the reset → the class is waiting.
+    const h = try store.getOrCreate("claude:acct-a#opus");
+    h.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .window_resets_at = 2000, // health SECONDS; advise converts to ms
+        .exhausted_at = 100,
+    } } } };
+
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const now_ms: i64 = 1000 * 1000;
+    const adv = try computeAdvice(std.testing.allocator, &store, now_ms, &class_buf);
+
+    var opus: ?advise.ClassSummary = null;
+    for (adv.classes) |cs| {
+        if (std.mem.eql(u8, cs.class, "opus")) opus = cs;
+    }
+    try std.testing.expect(opus != null);
+    try std.testing.expectEqual(@import("quota/bucket.zig").EffectiveStatus.waiting, opus.?.status);
+    try std.testing.expectEqual(@as(?i64, 2000 * 1000), opus.?.resets_at); // reset in ms
+    try std.testing.expectEqual(advise.Provenance.inferred, opus.?.provenance);
+
+    // It is the sole candidate and it is waiting → no suggestion, wait_until = reset.
+    try std.testing.expect(adv.suggestion == null);
+    try std.testing.expectEqual(@as(?i64, 2000 * 1000), adv.wait_until);
+
+    // The other three declared classes remain unobserved.
+    for (adv.classes) |cs| {
+        if (!std.mem.eql(u8, cs.class, "opus")) {
+            try std.testing.expectEqual(advise.Provenance.unobserved, cs.provenance);
+        }
+    }
+}
+
+test "advice JSON shape: unobserved-first block renders expected keys" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeAdviceJson(buf.writer(), std.testing.allocator, &store, 4242);
+    const s = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"advice\": {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"generated_at_ms\": 4242") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"model_classes\": [") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"class\": \"opus\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"status\": \"available\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"provenance\": \"unobserved\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"next_account\": null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"wait_until_ms\": null") != null);
 }
 
 fn runAccounts(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.AccountsArgs) !void {
