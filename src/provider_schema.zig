@@ -7,6 +7,18 @@ pub const proof_live = "live_proven";
 pub const proof_local_live = "local_live_proven";
 pub const proof_public_live = "public_live_proven";
 
+// TIN-2722: the committed, redacted live-capture evidence dir behind the Claude
+// model-class capabilities below. Used verbatim as their proof_status — rendered
+// exactly like the marker constants above (a []const u8 the operator resolves to
+// on-disk evidence; there is no semantic comparison of proof_status anywhere, it
+// is only surfaced as JSON). Presence proves the ROUTE ID was observed live on
+// the wire in this capture: haiku served an HTTP 200 carrying the
+// anthropic-ratelimit-unified-* headers, while fable/opus were gated with a 429 —
+// a DIRECT-PROBE artifact, NOT harness quota, per the dir's README §3. It does
+// NOT license any per-model serving or quota claim; that needs the harness-traffic
+// or browser channel (TIN-2720).
+pub const claude_quota_fixture_dir = "test/evidence/quota-observation/claude-20260709T220705Z";
+
 // ── Declarative Provider Definition ──
 //
 // A provider is fully described by data — no code required.
@@ -252,6 +264,150 @@ pub const ProbePlan = struct {
     budget: types.ActionBudget,
 };
 
+// ── Unified rate-limit header family (TIN-2722) ──
+//
+// Some providers (Anthropic/Claude) express quota not as a single
+// remaining/reset pair but as a family of prefixed headers describing two
+// independent, ACCOUNT-WIDE windows — a 5-hour rolling window plus a 7-day
+// weekly window — each carrying a status, an ABSOLUTE reset (epoch SECONDS, a
+// wall-clock instant, NOT a delta), and a utilization fraction in 0.0..1.0.
+// Captured live off a 200 in `claude_quota_fixture_dir`; the exact 12-header
+// block is asserted verbatim in the tests below. A provider declares EITHER the
+// legacy remaining_header/reset_header pair OR this unified scheme.
+//
+// This is a DECLARATIVE description of the header grammar; the pure fold that
+// reads a response's headers against it is `foldUnifiedRateLimit`. The signal
+// is account-unified (there is NO per-model dimension in any header name), so
+// per-model quota MUST NOT be inferred from it.
+pub const UnifiedRateLimitScheme = struct {
+    // Shared prefix of every header in the family. Concrete names are
+    // "<prefix>-<suffix>" (account-wide fields) and
+    // "<prefix>-<window-segment>-<suffix>" (per-window fields). Header-name
+    // matching is ASCII case-insensitive (HTTP header names are case-insensitive).
+    prefix: []const u8 = "anthropic-ratelimit-unified",
+    status_suffix: []const u8 = "status",
+    reset_suffix: []const u8 = "reset",
+    utilization_suffix: []const u8 = "utilization",
+    representative_suffix: []const u8 = "representative-claim",
+    overage_status_suffix: []const u8 = "overage-status",
+    overage_disabled_reason_suffix: []const u8 = "overage-disabled-reason",
+    fallback_percentage_suffix: []const u8 = "fallback-percentage",
+    // Header segment for each observed window (inserted between prefix and the
+    // per-window suffix), e.g. "5h" → anthropic-ratelimit-unified-5h-status.
+    five_hour_segment: []const u8 = "5h",
+    seven_day_segment: []const u8 = "7d",
+};
+
+// The parsed result of folding a response's headers against a
+// UnifiedRateLimitScheme. EVERY field is optional — absence is data: a header
+// the server did not send stays null, never a fabricated default. String fields
+// BORROW the header value slices passed to foldUnifiedRateLimit (no allocation);
+// they are valid only while those headers are. reset_s / representative_reset_s
+// are epoch seconds; utilization / fallback_percentage are 0..1 fractions.
+pub const UnifiedRateLimit = struct {
+    pub const Window = struct {
+        status: ?[]const u8 = null,
+        reset_s: ?i64 = null,
+        utilization: ?f64 = null,
+    };
+
+    overall_status: ?[]const u8 = null,
+    five_h: Window = .{},
+    seven_d: Window = .{},
+    representative: ?[]const u8 = null,
+    representative_reset_s: ?i64 = null,
+    fallback_percentage: ?f64 = null,
+    overage_status: ?[]const u8 = null,
+    overage_disabled_reason: ?[]const u8 = null,
+};
+
+// Pure, total, allocation-free fold of a response's headers into a
+// UnifiedRateLimit. Never panics: a malformed numeric value yields null for
+// that field — this covers a bad int/float, a NON-FINITE float ("NaN"/"inf"/
+// "Infinity"/an overflowing "1e999", all of which std.fmt.parseFloat otherwise
+// accepts), an out-of-range fraction (outside 0..1), and a negative epoch. And
+// unrecognized headers (e.g. the account-conditional `-fallback` /
+// `-*-surpassed-threshold` extras) are ignored. Header names are matched ASCII
+// case-insensitively.
+//
+// BOUNDARY (TIN-2722): this is the future Observed-event source for the quota
+// bucket algebra. It is deliberately NOT consumed by health/routing in this
+// increment — it ships as a tested pure fold that a later increment wires in.
+pub fn foldUnifiedRateLimit(
+    scheme: UnifiedRateLimitScheme,
+    headers: []const std.http.Header,
+) UnifiedRateLimit {
+    var out = UnifiedRateLimit{};
+    for (headers) |header| {
+        const rest = stripDelimitedPrefix(header.name, scheme.prefix) orelse continue;
+        const value = std.mem.trim(u8, header.value, " \t\r\n");
+        if (std.ascii.eqlIgnoreCase(rest, scheme.status_suffix)) {
+            out.overall_status = value;
+        } else if (std.ascii.eqlIgnoreCase(rest, scheme.reset_suffix)) {
+            out.representative_reset_s = parseEpochSecondsOrNull(value);
+        } else if (std.ascii.eqlIgnoreCase(rest, scheme.representative_suffix)) {
+            out.representative = value;
+        } else if (std.ascii.eqlIgnoreCase(rest, scheme.overage_status_suffix)) {
+            out.overage_status = value;
+        } else if (std.ascii.eqlIgnoreCase(rest, scheme.overage_disabled_reason_suffix)) {
+            out.overage_disabled_reason = value;
+        } else if (std.ascii.eqlIgnoreCase(rest, scheme.fallback_percentage_suffix)) {
+            out.fallback_percentage = parseFractionOrNull(value);
+        } else if (stripDelimitedPrefix(rest, scheme.five_hour_segment)) |suffix| {
+            applyUnifiedWindowField(&out.five_h, scheme, suffix, value);
+        } else if (stripDelimitedPrefix(rest, scheme.seven_day_segment)) |suffix| {
+            applyUnifiedWindowField(&out.seven_d, scheme, suffix, value);
+        }
+    }
+    return out;
+}
+
+fn applyUnifiedWindowField(
+    window: *UnifiedRateLimit.Window,
+    scheme: UnifiedRateLimitScheme,
+    suffix: []const u8,
+    value: []const u8,
+) void {
+    if (std.ascii.eqlIgnoreCase(suffix, scheme.status_suffix)) {
+        window.status = value;
+    } else if (std.ascii.eqlIgnoreCase(suffix, scheme.reset_suffix)) {
+        window.reset_s = parseEpochSecondsOrNull(value);
+    } else if (std.ascii.eqlIgnoreCase(suffix, scheme.utilization_suffix)) {
+        window.utilization = parseFractionOrNull(value);
+    }
+}
+
+// Returns the part of `name` after "<prefix>-", or null if `name` is not of the
+// form "<prefix>-…". Case-insensitive, allocation-free.
+fn stripDelimitedPrefix(name: []const u8, prefix: []const u8) ?[]const u8 {
+    if (name.len <= prefix.len) return null;
+    if (!std.ascii.startsWithIgnoreCase(name, prefix)) return null;
+    if (name[prefix.len] != '-') return null;
+    return name[prefix.len + 1 ..];
+}
+
+fn parseEpochSecondsOrNull(value: []const u8) ?i64 {
+    const parsed = std.fmt.parseInt(i64, value, 10) catch return null;
+    // Contract: an ABSOLUTE epoch-seconds instant. A negative epoch is nonsense
+    // for a reset time, so treat it as malformed → null rather than store a
+    // bogus pre-1970 instant a later quota consumer could mis-route on.
+    if (parsed < 0) return null;
+    return parsed;
+}
+
+fn parseFractionOrNull(value: []const u8) ?f64 {
+    const parsed = std.fmt.parseFloat(f64, value) catch return null;
+    // Contract: a fraction in 0.0..1.0. std.fmt.parseFloat also ACCEPTS the
+    // non-finite spellings "NaN"/"inf"/"-inf"/"Infinity" and overflows like
+    // "1e999" → +inf; those (and any out-of-range magnitude) are malformed for
+    // a utilization/percentage and must yield null, never leak past as a bogus
+    // fraction. The range test also rejects the non-finite cases (every
+    // comparison with NaN is false; ±inf falls outside 0..1).
+    if (!std.math.isFinite(parsed)) return null;
+    if (parsed < 0.0 or parsed > 1.0) return null;
+    return parsed;
+}
+
 pub const RateLimitConfig = struct {
     // HTTP header names for rate limit info
     retry_after_header: []const u8 = "retry-after",
@@ -260,6 +416,14 @@ pub const RateLimitConfig = struct {
     limit_header: ?[]const u8 = null,
     // Threshold: retry_after above this (seconds) = quota exhaustion, below = rate limit
     quota_threshold_seconds: u32 = 3600,
+    // TIN-2722: the Anthropic unified header-family scheme (see
+    // UnifiedRateLimitScheme). A provider sets EITHER remaining_header/
+    // reset_header above OR this — never both meaningfully. null = the provider
+    // uses the legacy pair. Reset values in the family are epoch SECONDS
+    // (non-negative) and utilization is a 0..1 fraction; foldUnifiedRateLimit
+    // parses them with the tolerance the fixture shows — any malformed value
+    // (bad/non-finite/out-of-range number, negative epoch) → null, never a panic.
+    unified: ?UnifiedRateLimitScheme = null,
 };
 
 pub const FailureRule = struct {
@@ -341,6 +505,50 @@ const claude_capabilities = [_]CapabilityDefinition{
             .timeout_ms = 30_000,
             .command = &.{ "claude", "auth", "status", "--json" },
             .budget = .free_command,
+        },
+    },
+    // ── Model-class routes (TIN-2722) ──
+    // Passive-only declarations: probe = null. There is deliberately NO spend
+    // path here — a synthetic direct probe is not the operator's own harness
+    // traffic and cannot observe model-quota state (per claude_quota_fixture_dir
+    // README §3). `aliases` are the real model ids seen on the wire. proof_status
+    // points at the committed capture for the three ids observed there; sonnet
+    // carries the lower needs-operator marker (its id was not in the capture).
+    .{
+        .name = "haiku",
+        .aliases = &.{"claude-haiku-4-5-20251001"},
+        .proof_status = claude_quota_fixture_dir,
+        .proof_requirements = &.{
+            "test/evidence/quota-observation/claude-20260709T220705Z",
+            "served HTTP 200 with the anthropic-ratelimit-unified-* headers on every enrolled account",
+        },
+    },
+    .{
+        .name = "fable",
+        .aliases = &.{"claude-fable-5"},
+        .proof_status = claude_quota_fixture_dir,
+        .proof_requirements = &.{
+            "test/evidence/quota-observation/claude-20260709T220705Z",
+            "model id observed live but GATED (429) on the direct-probe path — a probe-path artifact, NOT harness quota; serving/quota unproven on this channel (TIN-2720)",
+        },
+    },
+    .{
+        .name = "opus",
+        .aliases = &.{"claude-opus-4-8"},
+        .proof_status = claude_quota_fixture_dir,
+        .proof_requirements = &.{
+            "test/evidence/quota-observation/claude-20260709T220705Z",
+            "model id observed live but GATED (429) on the direct-probe path — a probe-path artifact, NOT harness quota; serving/quota unproven on this channel (TIN-2720)",
+        },
+    },
+    .{
+        // The current Sonnet id (claude-sonnet-5) was NOT present in the E2
+        // capture — declared prior, not fixture-observed. Lower proof marker.
+        .name = "sonnet",
+        .aliases = &.{"claude-sonnet-5"},
+        .proof_status = proof_needs_operator,
+        .proof_requirements = &.{
+            "claude-sonnet-5 id declared prior; NOT observed in any committed capture — needs a live capture to graduate",
         },
     },
 };
@@ -802,9 +1010,14 @@ pub const claude_def = ProviderDefinition{
     },
     .capabilities = &claude_capabilities,
     .failure_rules = &claude_failure_rules,
+    // TIN-2722: corrected to the observed truth. The x-ratelimit-remaining /
+    // x-ratelimit-reset placeholders here were never emitted by Anthropic on
+    // this path; the real signal is the anthropic-ratelimit-unified-* family
+    // (5h + 7d account-wide windows), captured live in `claude_quota_fixture_dir`
+    // and parsed by foldUnifiedRateLimit. Declaring the unified scheme (and no
+    // legacy remaining/reset pair) is the "either/or" invariant in RateLimitConfig.
     .rate_limits = .{
-        .remaining_header = "x-ratelimit-remaining",
-        .reset_header = "x-ratelimit-reset",
+        .unified = .{},
     },
 };
 
@@ -2632,4 +2845,205 @@ test "claude/codex builtins declare the proactive_refresh grant but still requir
     // is covered by the writebackPlan tests in secret.zig.)
     try std.testing.expect(claude_def.repair.owner == .upstream_cli_login);
     try std.testing.expect(codex_def.repair.owner == .upstream_cli_login);
+}
+
+test "claude_def declares the unified rate-limit family, not the x-ratelimit placeholders (TIN-2722)" {
+    // Point 1: the observed truth replaces the bogus x-ratelimit-* placeholders.
+    try std.testing.expect(claude_def.rate_limits.unified != null);
+    try std.testing.expectEqualStrings("anthropic-ratelimit-unified", claude_def.rate_limits.unified.?.prefix);
+    try std.testing.expectEqualStrings("5h", claude_def.rate_limits.unified.?.five_hour_segment);
+    try std.testing.expectEqualStrings("7d", claude_def.rate_limits.unified.?.seven_day_segment);
+    // The either/or invariant: unified providers carry no legacy remaining/reset pair.
+    try std.testing.expect(claude_def.rate_limits.remaining_header == null);
+    try std.testing.expect(claude_def.rate_limits.reset_header == null);
+    // Codex still rides the legacy pair — the unified change must not touch it.
+    try std.testing.expect(codex_def.rate_limits.unified == null);
+    try std.testing.expect(codex_def.rate_limits.remaining_header != null);
+}
+
+test "foldUnifiedRateLimit parses the E2 haiku 200 header block verbatim (TIN-2722)" {
+    // (a) Copied verbatim from test/evidence/quota-observation/
+    //   claude-20260709T220705Z/808e810325f2/micro-spend-haiku-response-headers.txt
+    // (the canonical 12-header 200). Folded with the scheme claude_def actually
+    // ships, so this proves the wired config field is load-bearing.
+    const headers = [_]std.http.Header{
+        .{ .name = "anthropic-ratelimit-unified-status", .value = "allowed" },
+        .{ .name = "anthropic-ratelimit-unified-5h-status", .value = "allowed" },
+        .{ .name = "anthropic-ratelimit-unified-5h-reset", .value = "1783652400" },
+        .{ .name = "anthropic-ratelimit-unified-5h-utilization", .value = "0.0" },
+        .{ .name = "anthropic-ratelimit-unified-7d-status", .value = "allowed" },
+        .{ .name = "anthropic-ratelimit-unified-7d-reset", .value = "1783879200" },
+        .{ .name = "anthropic-ratelimit-unified-7d-utilization", .value = "0.0" },
+        .{ .name = "anthropic-ratelimit-unified-representative-claim", .value = "five_hour" },
+        .{ .name = "anthropic-ratelimit-unified-fallback-percentage", .value = "0.5" },
+        .{ .name = "anthropic-ratelimit-unified-reset", .value = "1783652400" },
+        .{ .name = "anthropic-ratelimit-unified-overage-disabled-reason", .value = "out_of_credits" },
+        .{ .name = "anthropic-ratelimit-unified-overage-status", .value = "rejected" },
+    };
+    const parsed = foldUnifiedRateLimit(claude_def.rate_limits.unified.?, &headers);
+
+    try std.testing.expectEqualStrings("allowed", parsed.overall_status.?);
+    try std.testing.expectEqualStrings("allowed", parsed.five_h.status.?);
+    try std.testing.expectEqual(@as(i64, 1783652400), parsed.five_h.reset_s.?);
+    try std.testing.expectEqual(@as(f64, 0.0), parsed.five_h.utilization.?);
+    try std.testing.expectEqualStrings("allowed", parsed.seven_d.status.?);
+    try std.testing.expectEqual(@as(i64, 1783879200), parsed.seven_d.reset_s.?);
+    try std.testing.expectEqual(@as(f64, 0.0), parsed.seven_d.utilization.?);
+    try std.testing.expectEqualStrings("five_hour", parsed.representative.?);
+    try std.testing.expectEqual(@as(i64, 1783652400), parsed.representative_reset_s.?);
+    try std.testing.expectEqual(@as(f64, 0.5), parsed.fallback_percentage.?);
+    try std.testing.expectEqualStrings("out_of_credits", parsed.overage_disabled_reason.?);
+    try std.testing.expectEqualStrings("rejected", parsed.overage_status.?);
+}
+
+test "claude 429 with only x-should-retry classifies as the weak rate_limited class (TIN-2722)" {
+    // (b) The E2 fable/opus 429 carried x-should-retry:true and NO ratelimit
+    // headers, NO retry-after. The generic 429 arm defaults to a 30s burst
+    // window → the weaker rate_limited class (DOR under-claim rule), never
+    // quota_exhausted. No provider rule is needed; this pins that behaviour.
+    const classification = classifyHttp(
+        claude_def,
+        429,
+        null,
+        "{\"error\":{\"message\":\"Error\",\"type\":\"rate_limit_error\"}}",
+    );
+    switch (classification) {
+        .rate_limited => |rl| {
+            try std.testing.expectEqual(@as(u32, 30), rl.retry_after_s);
+            try std.testing.expectEqual(types.RateLimitWindow.per_minute, rl.window);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "claude 404 model-not-found is a non-quota classification (TIN-2722)" {
+    // (c) The E2 unknown-model 404 body names the model with type
+    // not_found_error. It must NOT read as a quota/rate-limit state — the
+    // generic 4xx arm yields degraded:unknown_4xx (non-quota), cleanly distinct
+    // from the 429 path by status alone. Landing on any other arm (incl. a
+    // quota arm) fails the switch.
+    const classification = classifyHttp(
+        claude_def,
+        404,
+        null,
+        "{\"error\":{\"message\":\"model: claude-omux-e2-unknown-model-probe\",\"type\":\"not_found_error\"}}",
+    );
+    switch (classification) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.unknown_4xx, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "foldUnifiedRateLimit yields null on malformed numerics without panicking (TIN-2722)" {
+    // (d) Bad float/int → null for that field; present strings still captured;
+    // untouched fields stay null (absence is data). Nothing panics.
+    const headers = [_]std.http.Header{
+        .{ .name = "anthropic-ratelimit-unified-status", .value = "allowed_warning" },
+        .{ .name = "anthropic-ratelimit-unified-5h-utilization", .value = "not-a-float" },
+        .{ .name = "anthropic-ratelimit-unified-5h-reset", .value = "" },
+        .{ .name = "anthropic-ratelimit-unified-7d-reset", .value = "12x34" },
+        .{ .name = "anthropic-ratelimit-unified-fallback-percentage", .value = "NaNaN" },
+    };
+    const parsed = foldUnifiedRateLimit(.{}, &headers);
+    try std.testing.expectEqualStrings("allowed_warning", parsed.overall_status.?);
+    try std.testing.expect(parsed.five_h.utilization == null);
+    try std.testing.expect(parsed.five_h.reset_s == null);
+    try std.testing.expect(parsed.seven_d.reset_s == null);
+    try std.testing.expect(parsed.fallback_percentage == null);
+    // Never-sent fields are null, not fabricated.
+    try std.testing.expect(parsed.overage_status == null);
+    try std.testing.expect(parsed.seven_d.status == null);
+    try std.testing.expect(parsed.representative == null);
+}
+
+test "foldUnifiedRateLimit rejects non-finite/out-of-range floats and negative epochs (TIN-2722)" {
+    // (d2) std.fmt.parseFloat ACCEPTS "NaN"/"inf"/"Infinity"/"1e999"(→+inf) and
+    // parseInt accepts "-1"; none are a valid utilization fraction or an
+    // absolute epoch, so each must fold to null (contract: malformed → null).
+    // A NaN/inf utilization (NaN compares false everywhere) or a negative reset
+    // could silently mis-route a future quota consumer — this pins them out.
+    const nonfinite = [_][]const u8{ "NaN", "inf", "-inf", "Infinity", "1e999", "-1e999" };
+    for (nonfinite) |bad| {
+        const headers = [_]std.http.Header{
+            .{ .name = "anthropic-ratelimit-unified-5h-utilization", .value = bad },
+            .{ .name = "anthropic-ratelimit-unified-fallback-percentage", .value = bad },
+        };
+        const parsed = foldUnifiedRateLimit(.{}, &headers);
+        try std.testing.expect(parsed.five_h.utilization == null);
+        try std.testing.expect(parsed.fallback_percentage == null);
+    }
+
+    // Out-of-range finite fractions (>1 or <0) are malformed for a 0..1 field.
+    const out_of_range = [_][]const u8{ "1.5", "-0.1", "2", "100" };
+    for (out_of_range) |bad| {
+        const headers = [_]std.http.Header{
+            .{ .name = "anthropic-ratelimit-unified-7d-utilization", .value = bad },
+        };
+        const parsed = foldUnifiedRateLimit(.{}, &headers);
+        try std.testing.expect(parsed.seven_d.utilization == null);
+    }
+
+    // Negative epochs are nonsense reset instants → null (both per-window and
+    // the representative reset).
+    const neg_headers = [_]std.http.Header{
+        .{ .name = "anthropic-ratelimit-unified-5h-reset", .value = "-1" },
+        .{ .name = "anthropic-ratelimit-unified-reset", .value = "-1783652400" },
+    };
+    const neg = foldUnifiedRateLimit(.{}, &neg_headers);
+    try std.testing.expect(neg.five_h.reset_s == null);
+    try std.testing.expect(neg.representative_reset_s == null);
+
+    // Boundary sanity: the documented endpoints 0.0/1.0 and epoch 0 still parse.
+    const ok_headers = [_]std.http.Header{
+        .{ .name = "anthropic-ratelimit-unified-5h-utilization", .value = "1.0" },
+        .{ .name = "anthropic-ratelimit-unified-7d-utilization", .value = "0.0" },
+        .{ .name = "anthropic-ratelimit-unified-5h-reset", .value = "0" },
+    };
+    const ok = foldUnifiedRateLimit(.{}, &ok_headers);
+    try std.testing.expectEqual(@as(f64, 1.0), ok.five_h.utilization.?);
+    try std.testing.expectEqual(@as(f64, 0.0), ok.seven_d.utilization.?);
+    try std.testing.expectEqual(@as(i64, 0), ok.five_h.reset_s.?);
+}
+
+test "claude model-class capabilities match real ids and reject the unknown-model probe (TIN-2722)" {
+    // (e) alias matching: the observed ids resolve to their class; the fabricated
+    // probe id used for the 404 capture matches nothing.
+    const Case = struct { model: []const u8, class: ?[]const u8 };
+    const cases = [_]Case{
+        .{ .model = "claude-fable-5", .class = "fable" },
+        .{ .model = "claude-opus-4-8", .class = "opus" },
+        .{ .model = "claude-haiku-4-5-20251001", .class = "haiku" },
+        .{ .model = "claude-sonnet-5", .class = "sonnet" },
+        .{ .model = "claude-omux-e2-unknown-model-probe", .class = null },
+    };
+    for (cases) |case| {
+        var matched: ?CapabilityDefinition = null;
+        for (claude_capabilities) |cap| {
+            if (capabilityMatches(cap, case.model)) {
+                matched = cap;
+                break;
+            }
+        }
+        if (case.class) |expected| {
+            try std.testing.expect(matched != null);
+            try std.testing.expectEqualStrings(expected, matched.?.name);
+        } else {
+            try std.testing.expect(matched == null);
+        }
+    }
+
+    // The three observed classes point proof_status at the committed capture;
+    // sonnet (declared-not-observed) carries the lower needs-operator marker.
+    for (claude_capabilities) |cap| {
+        if (std.mem.eql(u8, cap.name, "haiku") or
+            std.mem.eql(u8, cap.name, "fable") or
+            std.mem.eql(u8, cap.name, "opus"))
+        {
+            try std.testing.expectEqualStrings(claude_quota_fixture_dir, cap.proof_status);
+            try std.testing.expect(cap.probe == null);
+        } else if (std.mem.eql(u8, cap.name, "sonnet")) {
+            try std.testing.expectEqualStrings(proof_needs_operator, cap.proof_status);
+            try std.testing.expect(cap.probe == null);
+        }
+    }
 }
