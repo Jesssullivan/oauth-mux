@@ -141,6 +141,24 @@ pub const RefreshResult = struct {
 /// Perform one account's refresh (broker `credential/refresh` under the flock).
 pub const RefreshFn = *const fn (ctx: *anyopaque, account_key: []const u8) RefreshError!RefreshResult;
 
+// ── Notification seam (TIN-2061) ─────────────────────────────────────────────
+
+/// The two operator-relevant transitions the scheduler REPORTS (it never
+/// delivers): a single proactive refresh failed, or an account exhausted its
+/// failure budget and was marked dead. The live glue
+/// (`keepalive/notify_adapter.zig`) turns these into a desktop notification
+/// under the opt-in + dedupe policy. Keeping the seam opaque (`account_key` +
+/// this enum, no `notify.zig` import) preserves the pure core's std-only,
+/// I/O-free contract.
+pub const NotifyReason = enum { refresh_failed, credential_dead };
+
+/// Injected notification callback. Called at most once per transition, from the
+/// tick's failure path only — never on a successful refresh, never on a skipped
+/// dead account, never on a transient (OOM). `account_key` is borrowed.
+pub const NotifyFn = *const fn (ctx: *anyopaque, reason: NotifyReason, account_key: []const u8) void;
+
+pub const NotifySeam = struct { func: NotifyFn, ctx: *anyopaque };
+
 /// Per-tick outcome counters (for logging / the operator UI).
 pub const TickReport = struct {
     refreshed: u32 = 0,
@@ -161,6 +179,10 @@ pub const Scheduler = struct {
     clock_ctx: *anyopaque,
     refresh: RefreshFn,
     refresh_ctx: *anyopaque,
+    /// Optional desktop-notification seam (TIN-2061). null (default) = today's
+    /// behavior byte-for-byte: no notifications, and the pure core stays fully
+    /// deterministic (the seam is the only effect, and it is injected).
+    notify: ?NotifySeam = null,
 
     /// Record a refresh failure on `a`: increment the failure count, arm the
     /// backoff gate, and mark the account `dead` exactly once when it exhausts the
@@ -172,9 +194,13 @@ pub const Scheduler = struct {
         if (a.failures >= self.policy.max_failures) {
             a.dead = true;
             report.died += 1;
+            // Fires exactly once: the next tick skips the now-dead account, so
+            // this death transition is reported to the operator a single time.
+            if (self.notify) |n| n.func(n.ctx, .credential_dead, a.key);
         } else {
             a.next_attempt_ms = now +| backoffDelayMs(a.failures, self.policy);
             report.failed += 1;
+            if (self.notify) |n| n.func(n.ctx, .refresh_failed, a.key);
         }
     }
 

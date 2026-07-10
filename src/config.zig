@@ -10,10 +10,22 @@ pub const Config = struct {
     version: u32 = 1,
     defaults: Defaults = .{},
     policy: PolicyConfig = .{},
+    // TIN-2061: opt-in desktop alerting. Additive and defaulted, so every
+    // existing config (which omits it) parses unchanged with notifications off.
+    notifications: NotificationConfig = .{},
     provider_definitions: std.json.ArrayHashMap(provider_schema.ProviderDefinition) = .{},
     providers: std.json.ArrayHashMap(ProviderConfig) = .{},
     profiles: std.json.ArrayHashMap(ProfileConfig) = .{},
     strategies: std.json.ArrayHashMap(StrategyConfig) = .{},
+};
+
+// TIN-2061: global desktop-notification policy. DEFAULTS OFF — the keepalive
+// daemon delivers nothing unless the operator opts in. `min_interval_ms` is a
+// simple per-target dedupe floor so a class stuck in refusal fires at most one
+// notification per interval, not one per tick.
+pub const NotificationConfig = struct {
+    enabled: bool = false,
+    min_interval_ms: u64 = 60_000,
 };
 
 pub const Defaults = struct {
@@ -1979,6 +1991,39 @@ test "loadFromPath accepts relative config paths" {
     defer parsed.deinit();
 
     try std.testing.expectEqual(@as(u32, 1), parsed.value.version);
+}
+
+test "config without notifications field parses; defaults applied (TIN-2061 back-compat)" {
+    // A pre-TIN-2061 config carries no `notifications` block at all. It must
+    // parse unchanged, defaulting to OFF.
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "providers": {},
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    try std.testing.expectEqual(false, parsed.value.notifications.enabled);
+    try std.testing.expectEqual(@as(u64, 60_000), parsed.value.notifications.min_interval_ms);
+}
+
+test "config with notifications field parses and overrides defaults (TIN-2061)" {
+    const json =
+        \\{
+        \\  "version": 1,
+        \\  "notifications": { "enabled": true, "min_interval_ms": 5000 },
+        \\  "providers": {},
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const parsed = try loadFromBytes(std.testing.allocator, json);
+    defer parsed.deinit();
+    try std.testing.expectEqual(true, parsed.value.notifications.enabled);
+    try std.testing.expectEqual(@as(u64, 5000), parsed.value.notifications.min_interval_ms);
 }
 
 test "resolveSecretBackend keychain" {

@@ -12,6 +12,8 @@ const provider = @import("provider.zig");
 const warm_scheduler = @import("keepalive/warm_scheduler.zig");
 const warm_binding = @import("keepalive/warm_binding.zig");
 const warm_runner = @import("keepalive/warm_runner.zig");
+const notify = @import("notify.zig");
+const notify_adapter_mod = @import("keepalive/notify_adapter.zig");
 const provider_schema = @import("provider_schema.zig");
 const daemon = @import("daemon.zig");
 const repair_state = @import("repair_state.zig");
@@ -394,12 +396,24 @@ fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
     // Bind the scheduler to the live refresh path (proactive; refuses ungranted).
     var wr = warm_runner.WarmRunner{ .allocator = allocator, .cfg = cfg, .health = &health };
     var binding = warm_binding.RefreshBinding{ .do_refresh = warm_runner.WarmRunner.doRefresh, .do_refresh_ctx = &wr };
-    const sched = warm_scheduler.Scheduler{
+    var sched = warm_scheduler.Scheduler{
         .clock = warm_runner.WarmRunner.clock,
         .clock_ctx = &wr,
         .refresh = warm_binding.RefreshBinding.refresh,
         .refresh_ctx = &binding,
     };
+
+    // TIN-2061: opt-in desktop alerting on refresh-failure / credential-dead
+    // transitions. The adapter is always attached; `shouldNotify` short-circuits
+    // (delivers nothing, spawns no subprocess) unless the operator opted in via
+    // `notifications.enabled`. Keyed per (reason, account) with a min-interval
+    // dedupe so a stuck class fires at most once per interval, never per tick.
+    var notify_adapter = notify_adapter_mod.NotifyAdapter.init(allocator, notify.Policy{
+        .enabled = cfg.notifications.enabled,
+        .min_interval_ms = cfg.notifications.min_interval_ms,
+    });
+    defer notify_adapter.deinit();
+    sched.notify = notify_adapter.seam();
 
     var wait_ctx = KeepaliveWait{ .remaining = args.iterations -| 1, .cap_ms = args.interval_ms };
     const report = warm_binding.runLoop(&sched, accounts, KeepaliveWait.wait, &wait_ctx);
@@ -20914,6 +20928,8 @@ comptime {
     _ = @import("keepalive/warm_scheduler_tests.zig");
     _ = @import("keepalive/warm_binding_tests.zig");
     _ = @import("keepalive/warm_runner_tests.zig");
+    _ = @import("notify.zig"); // TIN-2061: desktop alerting seam (pure + escaper tests)
+    _ = @import("keepalive/notify_adapter.zig"); // TIN-2061: keepalive→notify glue + dedupe tests
     _ = @import("keepalive/refresh_race_tests.zig"); // TIN-2059 in-process actor-gate race
     _ = @import("quota/bucket_tests.zig"); // TIN-2407 P0: pure quota-bucket algebra
     _ = @import("quota/advise_tests.zig"); // TIN-2719 M0 PR1: pure valet advisor core
