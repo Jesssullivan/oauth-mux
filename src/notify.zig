@@ -208,16 +208,65 @@ const ProcessResult = struct {
     term: std.process.Child.Term,
 };
 
-/// Spawn `argv`, pipe stdout/stderr, wait. Mirrors `secret.zig`'s `runProcess`
-/// exactly (std-only, no shell). A missing binary surfaces as the spawn error
-/// (`error.FileNotFound`) so callers can distinguish "not installed" from "ran
-/// and failed".
+/// Upper bound on how long we wait for a notification subprocess. A best-effort
+/// desktop alert must NEVER stall the keepalive tick: the seam is invoked inline
+/// on the scheduler's failure path, and under launchd with no active Aqua
+/// session (or a wedged NotificationCenter) `osascript display notification` can
+/// block indefinitely. The watchdog SIGKILLs the child at this deadline so
+/// `wait()` always returns. Generous (10s) so a merely slow-but-live backend is
+/// not false-killed — normal delivery is sub-second.
+const default_notify_timeout_ns: u64 = 10 * std.time.ns_per_s;
+
+/// SIGKILL the notification child so a hung subprocess cannot pin the caller's
+/// `wait()` open. SIGKILL is uncatchable, so the time bound always holds. Total
+/// over `builtin.os.tag` (the off-posix prong is never analyzed there) — notify
+/// only ever spawns on macOS/Linux, but the file cross-compiles for all targets.
+fn killNotifyChild(child: *std.process.Child) void {
+    switch (builtin.os.tag) {
+        .macos, .linux => std.posix.kill(child.id, std.posix.SIG.KILL) catch {},
+        else => {},
+    }
+}
+
+/// Watchdog thread: block until the caller signals completion via `done`, or
+/// SIGKILL the child once `timeout_ns` elapses first. The caller reaps either
+/// way (a normal exit, or the kill it just triggered).
+const NotifyWatchdog = struct {
+    child: *std.process.Child,
+    timeout_ns: u64,
+    done: std.Thread.ResetEvent = .{},
+
+    fn run(self: *NotifyWatchdog) void {
+        self.done.timedWait(self.timeout_ns) catch killNotifyChild(self.child);
+    }
+};
+
+/// Spawn `argv`, pipe stdout/stderr, wait — bounded by `default_notify_timeout_ns`.
+/// Mirrors `secret.zig`'s `runProcess` (std-only, no shell); a missing binary
+/// surfaces as the spawn error (`error.FileNotFound`) so callers can distinguish
+/// "not installed" from "ran and failed".
 fn runProcess(allocator: std.mem.Allocator, argv: []const []const u8) !ProcessResult {
+    return runProcessTimed(allocator, argv, default_notify_timeout_ns);
+}
+
+/// Bounded variant of `runProcess`: a watchdog thread SIGKILLs the child if it
+/// outlives `timeout_ns`, so a hung subprocess can never block the wait — and
+/// therefore never stall the keepalive tick — indefinitely.
+fn runProcessTimed(allocator: std.mem.Allocator, argv: []const []const u8, timeout_ns: u64) !ProcessResult {
     var child = std.process.Child.init(argv, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
 
     try child.spawn();
+
+    // Arm the deadline. If the watchdog thread cannot spawn (resource
+    // exhaustion), degrade to an unbounded wait rather than failing delivery.
+    var wd = NotifyWatchdog{ .child = &child, .timeout_ns = timeout_ns };
+    const wd_thread: ?std.Thread = std.Thread.spawn(.{}, NotifyWatchdog.run, .{&wd}) catch null;
+    defer if (wd_thread) |t| {
+        wd.done.set(); // release the watchdog (idempotent if it already fired)
+        t.join();
+    };
 
     var stdout_buf = std.ArrayListUnmanaged(u8){};
     var stderr_buf = std.ArrayListUnmanaged(u8){};
@@ -379,4 +428,42 @@ test "post: unsupported platform is a typed error, not a panic" {
     if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
         try std.testing.expectError(error.UnsupportedPlatform, post(std.testing.allocator, "t", "b"));
     }
+}
+
+test "runProcessTimed: a hung child is SIGKILLed at the deadline, never blocks forever" {
+    // POSIX only — the watchdog kills via std.posix.kill.
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return;
+
+    const start = std.time.milliTimestamp();
+    // `sleep 60` asks for 60s (PATH-resolved, no slash); we bound it to 200ms.
+    // The BUG (un-timed wait) would pin this test open for ~60_000ms; the fix
+    // returns at the deadline with the child SIGKILLed.
+    const res = try runProcessTimed(std.testing.allocator, &.{ "sleep", "60" }, 200 * std.time.ns_per_ms);
+    defer std.testing.allocator.free(res.stdout);
+    defer if (res.stderr.len > 0) std.testing.allocator.free(res.stderr);
+
+    const elapsed = std.time.milliTimestamp() - start;
+    try std.testing.expect(elapsed < 5_000); // nowhere near the 60s the child asked for
+    const killed = switch (res.term) {
+        .Signal => true, // SIGKILL from the watchdog, not a clean exit
+        else => false,
+    };
+    try std.testing.expect(killed);
+}
+
+test "runProcessTimed: a fast child completes normally, watchdog never fires" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) return;
+
+    // `true` exits 0 immediately; a generous deadline must NOT kill it — the
+    // fast path still reports the real exit status (so the adapter's record/
+    // retry contract is preserved).
+    const res = try runProcessTimed(std.testing.allocator, &.{ "true", }, 10 * std.time.ns_per_s);
+    defer std.testing.allocator.free(res.stdout);
+    defer if (res.stderr.len > 0) std.testing.allocator.free(res.stderr);
+
+    const exited_zero = switch (res.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    try std.testing.expect(exited_zero);
 }
