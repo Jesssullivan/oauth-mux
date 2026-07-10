@@ -1,0 +1,30 @@
+TIN-2722 Claude quota-header capture -- spend ledger
+run_started_utc=2026-07-09T22:02:10Z
+config_path=/Users/jess/.config/oauth-mux/config.json
+
+account    channel                  model                                    http_status max_tokens usage_tokens     ratelimit_hdrs
+columbari  no-spend-max-tokens-0    claude-opus-4-8                          429    0    null             false   
+columbari  no-spend-unknown-model   claude-omux-e2-unknown-model-probe       404    1    null             false   
+columbari  micro-spend-fable        claude-fable-5                           429    1    null             false   
+columbari  micro-spend-opus         claude-opus-4-8                          429    1    null             false   
+columbari  micro-spend-haiku        claude-haiku-4-5-20251001                200    1    25+1             true    
+coye       no-spend-max-tokens-0    claude-opus-4-8                          429    0    null             false   
+coye       no-spend-unknown-model   claude-omux-e2-unknown-model-probe       404    1    null             false   
+coye       micro-spend-fable        claude-fable-5                           429    1    null             false   
+coye       micro-spend-opus         claude-opus-4-8                          429    1    null             false   
+coye       micro-spend-haiku        claude-haiku-4-5-20251001                200    1    25+1             true    
+lmux       no-spend-max-tokens-0    claude-opus-4-8                          429    0    null             false   
+lmux       no-spend-unknown-model   claude-omux-e2-unknown-model-probe       404    1    null             false   
+lmux       micro-spend-fable        claude-fable-5                           429    1    null             false   
+lmux       micro-spend-opus         claude-opus-4-8                          429    1    null             false   
+lmux       micro-spend-haiku        claude-haiku-4-5-20251001                200    1    25+1             true    
+sulliwood  no-spend-max-tokens-0    claude-opus-4-8                          429    0    null             false   
+sulliwood  no-spend-unknown-model   claude-omux-e2-unknown-model-probe       404    1    null             false   
+sulliwood  micro-spend-fable        claude-fable-5                           429    1    null             false   
+sulliwood  micro-spend-opus         claude-opus-4-8                          429    1    null             false   
+sulliwood  micro-spend-haiku        claude-haiku-4-5-20251001                200    1    25+1             true    
+xoxd       no-spend-max-tokens-0    claude-opus-4-8                          429    0    null             false   
+xoxd       no-spend-unknown-model   claude-omux-e2-unknown-model-probe       404    1    null             false   
+xoxd       micro-spend-fable        claude-fable-5                           429    1    null             false   
+xoxd       micro-spend-opus         claude-opus-4-8                          429    1    null             false   
+xoxd       micro-spend-haiku        claude-haiku-4-5-20251001                200    1    25+1             true    

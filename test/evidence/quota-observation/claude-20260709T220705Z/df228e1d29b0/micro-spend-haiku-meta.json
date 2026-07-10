@@ -1,0 +1,28 @@
+{
+  "account": "lmux",
+  "channel": "micro-spend-haiku",
+  "http_status": "200",
+  "kind": "micro-spend",
+  "max_tokens_requested": 1,
+  "model_requested": "claude-haiku-4-5-20251001",
+  "ratelimit_header_names": [
+    "anthropic-ratelimit-unified-status",
+    "anthropic-ratelimit-unified-5h-status",
+    "anthropic-ratelimit-unified-5h-reset",
+    "anthropic-ratelimit-unified-5h-utilization",
+    "anthropic-ratelimit-unified-5h-surpassed-threshold",
+    "anthropic-ratelimit-unified-7d-status",
+    "anthropic-ratelimit-unified-7d-reset",
+    "anthropic-ratelimit-unified-7d-utilization",
+    "anthropic-ratelimit-unified-representative-claim",
+    "anthropic-ratelimit-unified-fallback-percentage",
+    "anthropic-ratelimit-unified-fallback",
+    "anthropic-ratelimit-unified-reset",
+    "anthropic-ratelimit-unified-overage-disabled-reason",
+    "anthropic-ratelimit-unified-overage-status"
+  ],
+  "ratelimit_headers_present": true,
+  "request_started_utc": "2026-07-09T22:02:57Z",
+  "time_total_s": "1.212436",
+  "usage_tokens": "25+1"
+}
