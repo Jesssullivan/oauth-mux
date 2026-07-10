@@ -455,7 +455,7 @@ fn runVersionJsonBounded(allocator: std.mem.Allocator, path: []const u8, timeout
 }
 
 const WatchCtx = struct {
-    pid: if (builtin.os.tag == .windows) void else std.posix.pid_t,
+    pid: if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.pid_t,
     timeout_ms: u64,
     done: std.atomic.Value(bool),
 };
