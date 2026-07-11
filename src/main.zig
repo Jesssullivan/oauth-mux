@@ -155,6 +155,13 @@ pub fn main() !void {
             try runStatus(allocator, stdout, status_args);
         },
 
+        .recommend => {
+            runRecommend(allocator, stdout) catch |e| {
+                log.err("recommend: {s}", .{@errorName(e)});
+                std.process.exit(types.ExitCode.general_error.int());
+            };
+        },
+
         .env => |env_args| {
             runEnv(allocator, stdout, env_args) catch |e| {
                 log.err("env: {s}", .{@errorName(e)});
@@ -457,6 +464,18 @@ fn exitCodeFromPipelineError(e: anyerror) u8 {
 }
 
 fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.StatusArgs) !void {
+    // TIN-2719 M0: the compact statusline path is config-independent and cheap —
+    // it folds only the local HealthStore (no network, no config requirement) so a
+    // Claude Code statusLine tick never errors on a missing config. `now` is read
+    // ONCE here at the effect boundary (Unix ms — advise.zig never reads a clock).
+    if (args.statusline) {
+        var store = health_mod.HealthStore.load(allocator, .{});
+        defer store.deinit();
+        const now_ms = std.time.milliTimestamp();
+        try writeStatusline(writer, allocator, &store, now_ms, args.class orelse "fable");
+        return;
+    }
+
     const parsed = config.load(allocator) catch |e| {
         if (args.json) {
             try writer.writeAll("{\"error\":\"config not found\"}\n");
@@ -718,6 +737,215 @@ fn writeAdviceText(
             try writer.print("  advice: {s} — {d}/{d} classes observed\n", .{ dc.provider, total - unobserved, total });
         }
     }
+}
+
+// ── compact statusline renderer (TIN-2719 M0) ─────────────────────────────────
+//
+// `oauth-mux status --statusline [--class <class>]` — one line, no trailing JSON,
+// over the SAME advisor the JSON/text paths use. Output contract (from
+// docs/runbooks/statusline-advice-consumer-2026-07-09.md § "Reserved: a future
+// compact status --statusline renderer"):
+//   <provider>: <status> → <account|none> (<provenance>)
+// The status + provenance are the SELECTED class's summary; the account is the
+// advisor's global suggestion (or "none") — exactly the runbook jq one-liner's
+// semantics, so dashboards built against that bridge keep working after cutover.
+
+/// Emit exactly one statusline line for a resolved class summary. Pure formatter
+/// (no store, no clock) so every EffectiveStatus line format is directly testable.
+/// The arrow is a real U+2192 passed as an argument so it can never collide with a
+/// format placeholder.
+fn renderStatuslineLine(writer: anytype, cs: advise.ClassSummary, account: []const u8) !void {
+    try writer.print("{s}: {s} {s} {s} ({s})\n", .{
+        cs.provider,
+        effectiveStatusName(cs.status),
+        "\u{2192}",
+        account,
+        provenanceName(cs.provenance),
+    });
+}
+
+fn writeStatusline(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    store: *health_mod.HealthStore,
+    now_ms: i64,
+    class_filter: []const u8,
+) !void {
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const adv = try computeAdvice(allocator, store, now_ms, &class_buf);
+
+    // The account is the advisor's global (unconstrained) suggestion, or "none".
+    const account: []const u8 = if (adv.suggestion) |s| s.account else "none";
+
+    for (adv.classes) |cs| {
+        if (std.mem.eql(u8, cs.class, class_filter)) {
+            try renderStatuslineLine(writer, cs, account);
+            return;
+        }
+    }
+
+    // Requested class is not among the declared classes — stay honest (no
+    // fabricated status/provenance) and still emit exactly one line.
+    try writer.print("claude: no such class \"{s}\" (declared: opus, fable, sonnet, haiku)\n", .{class_filter});
+}
+
+// ── on-demand human-readable advisor rendering (TIN-2719 M0) ───────────────────
+//
+// `oauth-mux recommend` — a small aligned table (one row per declared class) plus
+// a `suggested:` line. Reuses the same `computeAdvice` fold; no network, no config
+// dependency (advice is a pure function of the local HealthStore + declared set).
+
+fn runRecommend(allocator: std.mem.Allocator, writer: anytype) !void {
+    var store = health_mod.HealthStore.load(allocator, .{});
+    defer store.deinit();
+    const now_ms = std.time.milliTimestamp();
+    try writeRecommend(writer, allocator, &store, now_ms);
+}
+
+fn writeRecommend(
+    writer: anytype,
+    allocator: std.mem.Allocator,
+    store: *health_mod.HealthStore,
+    now_ms: i64,
+) !void {
+    var class_buf: [advice_declared_classes.len]advise.ClassSummary = undefined;
+    const adv = try computeAdvice(allocator, store, now_ms, &class_buf);
+
+    try writer.print("{s:<10}{s:<8}{s:<14}{s:<7}{s}\n", .{
+        "PROVIDER", "CLASS", "STATUS", "USAGE", "PROVENANCE",
+    });
+    for (adv.classes) |cs| {
+        var usage_buf: [8]u8 = undefined;
+        const usage: []const u8 = if (cs.usage_pct) |u|
+            try std.fmt.bufPrint(&usage_buf, "{d}%", .{u})
+        else
+            "-";
+        try writer.print("{s:<10}{s:<8}{s:<14}{s:<7}{s}\n", .{
+            cs.provider,
+            cs.class,
+            effectiveStatusName(cs.status),
+            usage,
+            provenanceName(cs.provenance),
+        });
+    }
+    try writer.writeByte('\n');
+
+    if (adv.suggestion) |s| {
+        // An account-scoped credential-liveness row (today's only Claude signal)
+        // carries no model class; render that honestly rather than an empty token.
+        const sclass: []const u8 = if (s.class.len == 0) "(account-scoped)" else s.class;
+        try writer.print("suggested: {s} for {s} ({s}) — {s}\n", .{
+            s.account, sclass, provenanceName(s.provenance), s.reason,
+        });
+    } else if (adv.wait_until) |w| {
+        try writer.print("suggested: none (waiting until {d} epoch-ms)\n", .{w});
+    } else {
+        try writer.writeAll("suggested: none (no recoverable candidate observed)\n");
+    }
+}
+
+test "statusline: fresh/empty store → available, none, unobserved (honesty when no row)" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeStatusline(buf.writer(), std.testing.allocator, &store, 1_000_000, "fable");
+    try std.testing.expectEqualStrings("claude: available \u{2192} none (unobserved)\n", buf.items);
+}
+
+test "statusline: line format for each EffectiveStatus (pure formatter)" {
+    const bucket = @import("quota/bucket.zig");
+    const cases = [_]struct { status: bucket.EffectiveStatus, name: []const u8 }{
+        .{ .status = .available, .name = "available" },
+        .{ .status = .waiting, .name = "waiting" },
+        .{ .status = .tier_blocked, .name = "tier_blocked" },
+        .{ .status = .plan_gated, .name = "plan_gated" },
+    };
+    inline for (cases) |c| {
+        var buf = std.ArrayList(u8).init(std.testing.allocator);
+        defer buf.deinit();
+        const cs = advise.ClassSummary{
+            .provider = "claude",
+            .class = "fable",
+            .status = c.status,
+            .usage_pct = null,
+            .resets_at = null,
+            .provenance = .inferred,
+        };
+        try renderStatuslineLine(buf.writer(), cs, "sulliwood");
+        var expect_buf: [64]u8 = undefined;
+        const expect = try std.fmt.bufPrint(&expect_buf, "claude: {s} \u{2192} sulliwood (inferred)\n", .{c.name});
+        try std.testing.expectEqualStrings(expect, buf.items);
+    }
+}
+
+test "statusline: --class selection picks the requested class summary" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    // A per-model quota signal on opus only: window resets at 2000s, now = 1000s.
+    const h = try store.getOrCreate("claude:acct-a#opus");
+    h.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .window_resets_at = 2000,
+        .exhausted_at = 100,
+    } } } };
+    const now_ms: i64 = 1000 * 1000;
+
+    // --class opus → the observed waiting row (inferred), sole candidate is waiting
+    // so the suggested account is "none".
+    var opus_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer opus_buf.deinit();
+    try writeStatusline(opus_buf.writer(), std.testing.allocator, &store, now_ms, "opus");
+    try std.testing.expectEqualStrings("claude: waiting \u{2192} none (inferred)\n", opus_buf.items);
+
+    // --class fable → no row for fable → unobserved/available, still account "none".
+    var fable_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer fable_buf.deinit();
+    try writeStatusline(fable_buf.writer(), std.testing.allocator, &store, now_ms, "fable");
+    try std.testing.expectEqualStrings("claude: available \u{2192} none (unobserved)\n", fable_buf.items);
+}
+
+test "statusline: unknown class stays honest (no fabricated status)" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeStatusline(buf.writer(), std.testing.allocator, &store, 1_000_000, "gpt");
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "no such class \"gpt\"") != null);
+    // Exactly one line, no fabricated available/waiting verdict.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, buf.items, "\n"));
+}
+
+test "recommend: empty store → four unobserved rows, suggested none" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRecommend(buf.writer(), std.testing.allocator, &store, 1_000_000);
+    const s = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "PROVIDER") != null);
+    // All four declared classes present and unobserved.
+    try std.testing.expectEqual(@as(usize, 4), std.mem.count(u8, s, "unobserved"));
+    try std.testing.expect(std.mem.indexOf(u8, s, "claude") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "opus") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "suggested: none (no recoverable candidate observed)") != null);
+}
+
+test "recommend: sole waiting candidate → suggested none, waiting-until surfaced" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    const h = try store.getOrCreate("claude:acct-a#opus");
+    h.liveness = .{ .live = .{ .availability = .{ .quota_exhausted = .{
+        .window_resets_at = 2000,
+        .exhausted_at = 100,
+    } } } };
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writeRecommend(buf.writer(), std.testing.allocator, &store, 1000 * 1000);
+    const s = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, s, "opus") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "waiting") != null);
+    // suggestion null (sole candidate is waiting) → wait_until (2000s in ms) shown.
+    try std.testing.expect(std.mem.indexOf(u8, s, "suggested: none (waiting until 2000000 epoch-ms)") != null);
 }
 
 test "advice rendering: empty store → all four claude classes unobserved, no suggestion" {
