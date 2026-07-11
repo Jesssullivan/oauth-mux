@@ -362,6 +362,11 @@ pub const Command = union(enum) {
 
     pub const VersionArgs = struct {
         json: bool = false,
+        /// TIN-2463: opt-in, offline-default binary staleness check.
+        check: bool = false,
+        /// TIN-2463: consult the GitHub Releases latest tag. ONLY reachable
+        /// under this explicit flag — never implicit, never from the daemon.
+        online: bool = false,
     };
 };
 
@@ -434,7 +439,15 @@ fn parseExec(args: []const []const u8) Command {
 fn parseVersion(args: []const []const u8) Command {
     var result = Command.VersionArgs{};
     for (args) |arg| {
-        if (eql(arg, "--json")) result.json = true;
+        if (eql(arg, "--json")) {
+            result.json = true;
+        } else if (eql(arg, "--check")) {
+            result.check = true;
+        } else if (eql(arg, "--online")) {
+            // --online implies --check (an online consult is a staleness check).
+            result.online = true;
+            result.check = true;
+        }
     }
     return .{ .version_cmd = result };
 }

@@ -26,6 +26,7 @@ const codex_adapter = @import("adapters/codex/main.zig");
 const identity_hash = @import("identity_hash.zig");
 const advise = @import("quota/advise.zig");
 const doctor_binaries = @import("doctor_binaries.zig");
+const version_check = @import("version_check.zig");
 
 comptime {
     // Pull broker + adapter modules into the test build.
@@ -54,7 +55,19 @@ pub fn main() !void {
 
     switch (cmd) {
         .version_cmd => |version_args| {
-            if (version_args.json) {
+            if (version_args.check) {
+                // TIN-2463: offline-default binary staleness check. Non-zero
+                // exit ONLY when the running binary is stale (scriptable). The
+                // --online consult is reachable exclusively via the flag.
+                const code = version_check.run(allocator, stdout, .{
+                    .json = version_args.json,
+                    .online = version_args.online,
+                }) catch |e| {
+                    log.err("version --check: {s}", .{@errorName(e)});
+                    std.process.exit(types.ExitCode.general_error.int());
+                };
+                if (code != 0) std.process.exit(code);
+            } else if (version_args.json) {
                 try writeVersionJson(allocator, stdout);
             } else {
                 try stdout.print("oauth-mux {s}\n", .{cli.version});
@@ -21162,6 +21175,7 @@ comptime {
     _ = @import("quota/bucket_tests.zig"); // TIN-2407 P0: pure quota-bucket algebra
     _ = @import("quota/advise_tests.zig"); // TIN-2719 M0 PR1: pure valet advisor core
     _ = @import("doctor_binaries.zig"); // TIN-2723: resident-service + PATH binary truth
+    _ = @import("version_check.zig"); // TIN-2463: version --check offline staleness compare
 
     _ = @import("identity/identity_graph_tests.zig");
     _ = @import("identity/claude_identity_tests.zig");
