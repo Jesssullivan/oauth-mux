@@ -9,7 +9,6 @@ version="${version#v}"
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
-npm_tgz_dir="$out_dir/npm-tarballs"
 homebrew_formula="$out_dir/homebrew/oauth-mux.rb"
 
 required_artifacts=(
@@ -26,16 +25,6 @@ required_artifacts=(
   "install.sh"
 )
 
-required_npm_tarballs=(
-  "oauth-mux-${version}.tgz"
-  "oauth-mux-darwin-arm64-${version}.tgz"
-  "oauth-mux-darwin-x64-${version}.tgz"
-  "oauth-mux-linux-arm64-${version}.tgz"
-  "oauth-mux-linux-x64-${version}.tgz"
-  "oauth-mux-windows-arm64-${version}.tgz"
-  "oauth-mux-windows-x64-${version}.tgz"
-)
-
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{ print $1 }'
@@ -47,13 +36,6 @@ hash_file() {
 require_file() {
   if [ ! -f "$1" ]; then
     printf 'missing required release file: %s\n' "$1" >&2
-    exit 1
-  fi
-}
-
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    printf 'missing required command for release smoke: %s\n' "$1" >&2
     exit 1
   fi
 }
@@ -78,6 +60,7 @@ if [ ! -d "$out_dir" ]; then
   printf 'release output does not exist: %s\n' "$out_dir" >&2
   exit 1
 fi
+"$repo_root/scripts/check-retired-npm.sh" "$out_dir"
 
 for artifact in "${required_artifacts[@]}"; do
   require_file "$artifacts_dir/$artifact"
@@ -151,60 +134,27 @@ if command -v ruby >/dev/null 2>&1; then
   ruby -c "$homebrew_formula" >/dev/null
 fi
 
-printf 'checking npm tarballs...\n'
-require_command npm
-for tarball in "${required_npm_tarballs[@]}"; do
-  require_file "$npm_tgz_dir/$tarball"
-done
-
-os="$(uname -s)"
-arch="$(uname -m)"
-case "$os:$arch" in
-  Darwin:arm64|Darwin:aarch64) platform_tgz="oauth-mux-darwin-arm64-${version}.tgz" ;;
-  Darwin:x86_64|Darwin:amd64) platform_tgz="oauth-mux-darwin-x64-${version}.tgz" ;;
-  Linux:arm64|Linux:aarch64) platform_tgz="oauth-mux-linux-arm64-${version}.tgz" ;;
-  Linux:x86_64|Linux:amd64) platform_tgz="oauth-mux-linux-x64-${version}.tgz" ;;
-  *)
-    printf 'skipping local npm install smoke for unsupported host platform: %s/%s\n' "$os" "$arch"
-    platform_tgz=""
-    ;;
-esac
-
-if [ -n "${platform_tgz:-}" ]; then
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-
-  export npm_config_cache="$tmp/npm-cache"
-  export npm_config_update_notifier=false
-  npm install \
-    --prefix "$tmp/app" \
-    "$npm_tgz_dir/$platform_tgz" \
-    "$npm_tgz_dir/oauth-mux-${version}.tgz" \
-    --ignore-scripts=false \
-    --no-audit \
-    --no-fund >/dev/null
-  "$tmp/app/node_modules/.bin/oauth-mux" version | grep -qx "oauth-mux ${version}"
-  native_codex="$tmp/native-codex"
-  cat >"$native_codex" <<'EOF'
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+native_codex="$tmp/native-codex"
+cat >"$native_codex" <<'EOF'
 #!/bin/sh
 case "$1" in
   --version) echo "native-codex-stub 0.0.0" ;;
   *) echo "native-codex-stub" ;;
 esac
 EOF
-  chmod 0755 "$native_codex"
-  OMUX_CODEX_BIN="$native_codex" "$tmp/app/node_modules/.bin/codex" --version | grep -qx "native-codex-stub 0.0.0"
+chmod 0755 "$native_codex"
 
-  printf 'checking curl installer...\n'
-  install_dir="$tmp/install-bin"
-  VERSION="$version" \
-    OMUX_RELEASE_BASE_URL="file://$artifacts_dir" \
-    INSTALL_DIR="$install_dir" \
-    sh "$artifacts_dir/install.sh" >/dev/null
-  "$install_dir/oauth-mux" version | grep -qx "oauth-mux ${version}"
-  test -x "$install_dir/codex"
-  grep -q OMUX_CODEX_SHIM "$install_dir/codex"
-  OMUX_CODEX_BIN="$native_codex" "$install_dir/codex" --version | grep -qx "native-codex-stub 0.0.0"
-fi
+printf 'checking curl installer...\n'
+install_dir="$tmp/install-bin"
+VERSION="$version" \
+  OMUX_RELEASE_BASE_URL="file://$artifacts_dir" \
+  INSTALL_DIR="$install_dir" \
+  sh "$artifacts_dir/install.sh" >/dev/null
+"$install_dir/oauth-mux" version | grep -qx "oauth-mux ${version}"
+test -x "$install_dir/codex"
+grep -q OMUX_CODEX_SHIM "$install_dir/codex"
+OMUX_CODEX_BIN="$native_codex" "$install_dir/codex" --version | grep -qx "native-codex-stub 0.0.0"
 
 printf 'release smoke passed for v%s\n' "$version"

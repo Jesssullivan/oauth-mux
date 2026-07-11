@@ -4,15 +4,12 @@ Registry publication is intentionally separate from release artifact proof.
 `just remote-release-proof <ref> <version>` proves the release tree and handoff
 without publication credentials on the remote runner. Authenticated registry
 dry-runs are CI/operator gates and non-publishing.
-For the DRY lane map across worktree, Nix, GitHub Release, npm, Homebrew,
+For the DRY lane map across worktree, Nix, GitHub Release, Homebrew,
 curl, deb, and rpm installers, see `docs/release-install-lanes.md`.
 
-npm publication is retired (operator decision 2026-06-12, TIN-2042). Do not run
-`npm publish` from a workstation and do not dispatch
-`.github/workflows/npm-publish.yml`; it exists only as a dead-letter. The
-`npm Publish` section below is retained as historical procedure record, not a
-live operator path. `.github/workflows/npm-deprecate.yml` remains live only to
-keep the stale published `0.1.9` package deprecated.
+npm publication is retired (operator decision 2026-06-12, TIN-2042). Release
+staging and registry dry-runs exclude npm. `.github/workflows/npm-deprecate.yml`
+remains as a manual deprecation-only keeper for already-published versions.
 
 ## Dry-Run
 
@@ -38,21 +35,10 @@ Run authenticated lanes:
 ```bash
 version="$(scripts/project-version.sh)"
 OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run \
-OMUX_REGISTRY_LANES=github,npm,homebrew,system \
-NPM_TOKEN_FILE=/path/to/npm-token \
+OMUX_REGISTRY_LANES=github,homebrew,system \
 OMUX_HOMEBREW_TAP_DIR=/path/to/homebrew-tap \
 just registry-dry-run "$version"
 ```
-
-The npm dry-run lane resolves auth in this order: `NPM_TOKEN`,
-`NODE_AUTH_TOKEN`, `NPM_TOKEN_FILE`, `NODE_AUTH_TOKEN_FILE`, then
-`OMUX_NPM_TOKEN_SOPS_FILE` with `OMUX_NPM_TOKEN_SOPS_KEY`. The default SOPS key
-candidate is `.api.npm_token`.
-
-Before publication, the npm lane expects `npm publish --dry-run` to succeed for
-each staged tarball. After publication, npm rejects dry-runs for an existing
-`package@version`; the lane treats that as OK only when `npm view` confirms the
-exact published version.
 
 The script writes `dist/out/v<version>/handoff/registry-dry-run.md`.
 
@@ -64,11 +50,6 @@ The script writes `dist/out/v<version>/handoff/registry-dry-run.md`.
 
 Required secret and variable surfaces:
 
-- `NPM_TOKEN` for the npm lane, or SOPS inputs:
-  `OMUX_GLOBAL_SOPS_B64` plus `SOPS_AGE_KEY`, or
-  `OMUX_GLOBAL_SOPS_REPOSITORY` plus `OMUX_GLOBAL_SOPS_FILE` and `SOPS_AGE_KEY`.
-- `OMUX_NPM_TOKEN_SOPS_KEY` repository variable when the npm token is not at
-  `.api.npm_token`.
 - `OMUX_HOMEBREW_TAP_DIR` repository variable for the Homebrew lane when a tap
   checkout is available in the runner environment.
 - `OMUX_HOMEBREW_TAP_REPOSITORY` plus optional `OMUX_HOMEBREW_TAP_REF` when
@@ -82,33 +63,6 @@ Required secret and variable surfaces:
   publicly reachable. Pre-release dry-runs use strict offline audit because the
   release artifacts are intentionally not published yet.
 - The default workflow `GITHUB_TOKEN` for the GitHub lane.
-
-## npm Publish (RETIRED 2026-06-12, TIN-2042 — historical procedure record)
-
-`.github/workflows/npm-publish.yml` was the npm mutation path before the npm
-lane was retired; do not dispatch it. It required `confirm=publish-npm`,
-staged `just release-proof-local <version>`, and then published the generated
-tarballs in this order:
-
-1. `oauth-mux-linux-x64`
-2. `oauth-mux-linux-arm64`
-3. `oauth-mux-darwin-x64`
-4. `oauth-mux-darwin-arm64`
-5. `oauth-mux-windows-x64`
-6. `oauth-mux-windows-arm64`
-7. `oauth-mux`
-
-The workflow requests `id-token: write` so
-`npm publish --provenance --access public` can attach GitHub Actions
-provenance. npm only accepts GitHub Actions provenance from public source
-repositories. If the repository is still private at publication time, either
-make the source repository public before publishing or set `provenance=false`
-after explicitly accepting a no-provenance npm release. Keep `dry_run=true` for
-the first authenticated execution. Set `dry_run=false` only for the actual
-release publication.
-
-The publish script is idempotent by default: if `package@version` already exists
-on npm, it records a skip instead of overwriting or republishing.
 
 ## npm Deprecation
 
@@ -130,9 +84,9 @@ Run the plan locally or in CI before mutating npm:
 just npm-deprecate-plan 0.1.1
 ```
 
-The workflow resolves npm auth through the same SOPS/token surfaces as the
-publish workflow. Set `plan_only=false` only after the uploaded
-`npm-ci-deprecate.md` plan names exactly the versions to deprecate.
+The workflow resolves npm auth through its SOPS/token inputs. Set
+`plan_only=false` only after the uploaded `npm-ci-deprecate.md` plan names
+exactly the versions to deprecate.
 
 Evidence for the `0.1.1` cleanup:
 

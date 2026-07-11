@@ -1,4 +1,4 @@
-name: NPM Deprecate
+name: NPM Deprecation Keeper
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ env:
 
 jobs:
   npm-deprecate:
-    name: npm deprecate package versions
+    name: deprecate already-published npm versions
     if: inputs.confirm == 'deprecate-npm'
     runs-on: ubuntu-latest
     environment: npm-production

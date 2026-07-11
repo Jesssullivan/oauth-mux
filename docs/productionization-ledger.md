@@ -223,7 +223,7 @@ browser is needed; local Playwright is not part of this CLI proof path.
 | Codex session-store portability | TIN-936 / TIN-1851 | #161 / #367 | Policy is explicit: default muxed sessions live in route-local persistent account homes; canonical bridge is opt-in; silent session-store copy/import is rejected until a separate confirmed import command exists. |
 | OTEL-friendly tracing | TIN-1148 | PR #225/#226 lineage | Implemented trace schema should become the standard support-bundle path. |
 | Package parity and install lanes | TIN-1255 | #252 | `v0.1.14` is the current release line (GF release-proof job `85131314417` passed on `jess/release-v0.1.14`); re-verify each lane in `docs/install-beta-matrix.md` once release PR #441 publishes GitHub Release, Homebrew, curl installer, and deb/rpm assets. npm retired (TIN-2042): the registry package stays stale at `0.1.9` by design, with `npm-deprecate.yml` keeping it dead. |
-| Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only and npm is the managed-shim lane. |
+| Home Manager and Windows shim parity | not assigned | #257 | Home Manager source lane is implemented with opt-in shim; Windows raw tarballs stay binary-only, and managed `codex` parity on Windows remains unimplemented after npm retirement. |
 | Provider proof beyond Codex | TIN-736 | #68 | Claude credential keepalive is proven (`v0.1.14`); managed swap and quota-signal remain non-claims pending TIN-2721 and TIN-2722. Other agents stay adapter-candidate only. |
 | Website truth refresh | TIN-734 / TIN-925 | external site repo | `omux.xoxd.ai` source lives outside this repo and must be refreshed from the ledger, QA matrix, and install-lane docs. |
 | Model-class quota granularity | TIN-2400 / TIN-2407 / TIN-2722 | #436 | P0 landed (#439, unconsumed by design); design of record `docs/spec/model-quota-granularity-2026-07-03.md`; no model-quota claim until a committed `test/evidence/quota-observation/` proves the provider's real signals (TIN-2722). |
@@ -242,8 +242,8 @@ browser is needed; local Playwright is not part of this CLI proof path.
 - Dogfood process/memory concerns are backed by at least two redacted
   `dogfood-process-snapshot` artifacts before being called leaks.
 - Public release validation passes: `just remote-release-proof <ref> <version>`,
-  release proof workflow, npm dry run/publish workflow as appropriate, Homebrew
-  QA, and system package QA.
+  release proof workflow, Homebrew QA, and system package QA. Release staging
+  rejects retired npm workspaces and tarballs.
 - Homebrew release validation proves both installed binary output and
   `brew info --json=v2` stable version semantics for the public tap formula.
 - Public copy does not claim same-thread continuity, mid-turn recovery,

@@ -14,7 +14,7 @@ registry dry-run is disabled.
 This command may contact authenticated registry endpoints, but should not publish.
 Re-run with:
 
-  OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run OMUX_REGISTRY_LANES=plan,npm,github,homebrew,system just registry-dry-run ${version}
+  OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run OMUX_REGISTRY_LANES=plan,github,homebrew,system just registry-dry-run ${version}
 EOF
   exit 2
 fi
@@ -23,15 +23,11 @@ out_dir="$repo_root/dist/out/v${version}"
 handoff_dir="$out_dir/handoff"
 report="$handoff_dir/registry-dry-run.md"
 tmp_files=()
-tmp_dirs=()
 tmp_taps=()
 
 cleanup() {
   for file in "${tmp_files[@]}"; do
     rm -f "$file"
-  done
-  for dir in "${tmp_dirs[@]}"; do
-    rm -rf "$dir"
   done
   if command -v brew >/dev/null 2>&1; then
     for tap in "${tmp_taps[@]}"; do
@@ -97,38 +93,6 @@ for lane in "${lanes[@]}"; do
         append "- authenticated gh session OK"
         append "- release v${version} does not exist yet; tag release workflow remains publication path"
       fi
-      append
-      ;;
-
-    npm)
-      require_command npm
-      npmrc="$(mktemp)"
-      npm_cache="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-npm-cache.XXXXXX")"
-      tmp_files+=("$npmrc")
-      tmp_dirs+=("$npm_cache")
-      "$repo_root/scripts/resolve-npm-token.sh" --npmrc "$npmrc" >/dev/null
-      append "## npm"
-      append
-      npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm whoami --registry=https://registry.npmjs.org/ >/dev/null
-      for tarball in "$out_dir"/npm-tarballs/*.tgz; do
-        name="$(basename "$tarball")"
-        publish_log="$(mktemp)"
-        tmp_files+=("$publish_log")
-        if npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm publish "$tarball" --dry-run --access public ${OMUX_NPM_EXTRA_ARGS:-} >"$publish_log" 2>&1; then
-          append "- dry-run OK: \`npm-tarballs/${name}\`"
-          continue
-        fi
-
-        package_name="${name%-${version}.tgz}"
-        if grep -qi 'previously published versions' "$publish_log" &&
-          npm_config_cache="$npm_cache" NPM_CONFIG_USERCONFIG="$npmrc" npm view "${package_name}@${version}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
-          append "- already published OK: \`${package_name}@${version}\`"
-          continue
-        fi
-
-        cat "$publish_log" >&2
-        exit 1
-      done
       append
       ;;
 

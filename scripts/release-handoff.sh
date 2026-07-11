@@ -9,7 +9,6 @@ version="${version#v}"
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
-npm_tgz_dir="$out_dir/npm-tarballs"
 homebrew_formula="$out_dir/homebrew/oauth-mux.rb"
 handoff_dir="$out_dir/handoff"
 handoff_file="$handoff_dir/release-handoff.md"
@@ -31,17 +30,6 @@ system_packages=(
   "oauth-mux-${version}-1.x86_64.rpm"
   "oauth-mux-${version}-1.aarch64.rpm"
 )
-
-npm_platform_tarballs=(
-  "oauth-mux-darwin-arm64-${version}.tgz"
-  "oauth-mux-darwin-x64-${version}.tgz"
-  "oauth-mux-linux-arm64-${version}.tgz"
-  "oauth-mux-linux-x64-${version}.tgz"
-  "oauth-mux-windows-arm64-${version}.tgz"
-  "oauth-mux-windows-x64-${version}.tgz"
-)
-
-npm_root_tarball="oauth-mux-${version}.tgz"
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -74,6 +62,7 @@ if [ ! -d "$out_dir" ]; then
   printf 'run: just release-local %s\n' "$version" >&2
   exit 1
 fi
+"$repo_root/scripts/check-retired-npm.sh" "$out_dir"
 
 require_file "$artifacts_dir/SHA256SUMS"
 require_file "$artifacts_dir/install.sh"
@@ -85,25 +74,11 @@ for artifact in "${binary_tarballs[@]}" "${system_packages[@]}"; do
   require_file "$artifacts_dir/$artifact"
 done
 
-for tarball in "${npm_platform_tarballs[@]}" "$npm_root_tarball"; do
-  require_file "$npm_tgz_dir/$tarball"
-done
-
-actual_npm_count="$(find "$npm_tgz_dir" -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')"
-expected_npm_count="$((${#npm_platform_tarballs[@]} + 1))"
-if [ "$actual_npm_count" != "$expected_npm_count" ]; then
-  printf 'expected %s npm tarballs, found %s in %s\n' "$expected_npm_count" "$actual_npm_count" "$npm_tgz_dir" >&2
-  exit 1
-fi
-
 mkdir -p "$handoff_dir"
 
 : >"$publish_files"
 for artifact in "${binary_tarballs[@]}" "${system_packages[@]}" "SHA256SUMS" "install.sh"; do
   printf '%s\n' "artifacts/$artifact" >>"$publish_files"
-done
-for tarball in "${npm_platform_tarballs[@]}" "$npm_root_tarball"; do
-  printf '%s\n' "npm-tarballs/$tarball" >>"$publish_files"
 done
 printf '%s\n' "homebrew/oauth-mux.rb" >>"$publish_files"
 
@@ -152,25 +127,6 @@ done
 
 cat >>"$handoff_file" <<EOF
 
-## npm Publish Order
-
-Publish platform packages first, then the root shim:
-
-\`\`\`bash
-EOF
-
-for tarball in "${npm_platform_tarballs[@]}"; do
-  printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance --access public\n' "$version" "$tarball" >>"$handoff_file"
-done
-printf 'npm publish dist/out/v%s/npm-tarballs/%s --provenance --access public\n' "$version" "$npm_root_tarball" >>"$handoff_file"
-
-cat >>"$handoff_file" <<EOF
-\`\`\`
-
-npm provenance requires a public GitHub source repository. If the repository is
-still private at publication time, use the CI-only npm workflow with
-\`provenance=false\` after explicitly accepting a no-provenance npm release.
-
 ## Homebrew Tap
 
 Copy the rendered formula into the public tap
@@ -206,30 +162,17 @@ done
 
 cat >>"$handoff_file" <<EOF
 
-## npm Tarballs
-
-| File | SHA256 |
-| --- | --- |
-EOF
-
-for tarball in "${npm_platform_tarballs[@]}" "$npm_root_tarball"; do
-  table_row "$npm_tgz_dir/$tarball"
-done
-
-cat >>"$handoff_file" <<EOF
-
 ## Generated Files
 
 - \`handoff/release-handoff.md\`: this operator handoff
 - \`handoff/publish-files.txt\`: relative file list for publishing scripts
-- \`handoff/SHA256SUMS.full\`: checksums for GitHub, npm, Homebrew, deb, and rpm handoff files
+- \`handoff/SHA256SUMS.full\`: checksums for GitHub, Homebrew, deb, and rpm handoff files
 
 ## Boundary
 
-This step does not use npm, Homebrew, package-repository, or GitHub release
-write credentials. npm publication is CI-only via \`.github/workflows/npm-publish.yml\`
-and must publish the tarballs listed above, never locally rebuilt or hand-edited
-package contents.
+This step does not use Homebrew, package-repository, or GitHub release write
+credentials. npm publication is retired and npm artifacts are forbidden from
+the staged release tree.
 EOF
 
 printf 'release handoff written:\n'

@@ -15,8 +15,6 @@ fi
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
-npm_dir="$out_dir/npm"
-npm_tgz_dir="$out_dir/npm-tarballs"
 homebrew_dir="$out_dir/homebrew"
 nfpm_dir="$out_dir/nfpm"
 work_dir="$out_dir/work"
@@ -74,7 +72,8 @@ if [ "${OMUX_RELEASE_PREFLIGHT_ONLY:-0}" = "1" ]; then
 fi
 
 rm -rf "$out_dir"
-mkdir -p "$artifacts_dir" "$npm_dir" "$npm_tgz_dir" "$homebrew_dir" "$nfpm_dir" "$work_dir"
+mkdir -p "$artifacts_dir" "$homebrew_dir" "$nfpm_dir" "$work_dir"
+"$repo_root/scripts/check-retired-npm.sh" "$out_dir"
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -96,10 +95,8 @@ write_artifact_checksums() {
 package_binary() {
   local build_dir="$1"
   local artifact="$2"
-  local npm_pkg="$3"
-  local npm_os="$4"
-  local npm_cpu="$5"
-  local binary_name="$6"
+  local platform="$3"
+  local binary_name="$4"
   local src="zig-out/${build_dir}/${binary_name}"
 
   if [ ! -f "$src" ]; then
@@ -111,7 +108,7 @@ package_binary() {
   mkdir -p "$stage"
   cp "$src" "$stage/${binary_name}"
   chmod 0755 "$stage/${binary_name}"
-  if [ "$npm_os" = "darwin" ] || [ "$npm_os" = "linux" ]; then
+  if [ "$platform" = "darwin" ] || [ "$platform" = "linux" ]; then
     cp "$repo_root/dist/codex-shim.sh" "$stage/codex"
     chmod 0755 "$stage/codex"
     tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name" codex
@@ -119,23 +116,6 @@ package_binary() {
     tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name"
   fi
 
-  local pkg_dir="$npm_dir/${npm_pkg}"
-  mkdir -p "$pkg_dir/bin"
-  cp "$src" "$pkg_dir/bin/${binary_name}"
-  chmod 0755 "$pkg_dir/bin/${binary_name}"
-  cat >"$pkg_dir/package.json" <<EOF
-{
-  "name": "${npm_pkg}",
-  "version": "${version}",
-  "description": "Platform binary for oauth-mux",
-  "license": "MIT",
-  "repository": "Jesssullivan/oauth-mux",
-  "homepage": "https://omux.xoxd.ai",
-  "os": ["${npm_os}"],
-  "cpu": ["${npm_cpu}"],
-  "files": ["bin"]
-}
-EOF
 }
 
 printf 'building release binaries...\n'
@@ -146,12 +126,12 @@ fi
 printf 'running: zig %s\n' "${zig_release_args[*]}"
 zig "${zig_release_args[@]}"
 
-package_binary "x86_64-linux" "oauth-mux-x86_64-linux" "oauth-mux-linux-x64" "linux" "x64" "oauth-mux"
-package_binary "aarch64-linux" "oauth-mux-aarch64-linux" "oauth-mux-linux-arm64" "linux" "arm64" "oauth-mux"
-package_binary "x86_64-macos" "oauth-mux-x86_64-macos" "oauth-mux-darwin-x64" "darwin" "x64" "oauth-mux"
-package_binary "aarch64-macos" "oauth-mux-aarch64-macos" "oauth-mux-darwin-arm64" "darwin" "arm64" "oauth-mux"
-package_binary "x86_64-windows" "oauth-mux-x86_64-windows" "oauth-mux-windows-x64" "win32" "x64" "oauth-mux.exe"
-package_binary "aarch64-windows" "oauth-mux-aarch64-windows" "oauth-mux-windows-arm64" "win32" "arm64" "oauth-mux.exe"
+package_binary "x86_64-linux" "oauth-mux-x86_64-linux" "linux" "oauth-mux"
+package_binary "aarch64-linux" "oauth-mux-aarch64-linux" "linux" "oauth-mux"
+package_binary "x86_64-macos" "oauth-mux-x86_64-macos" "darwin" "oauth-mux"
+package_binary "aarch64-macos" "oauth-mux-aarch64-macos" "darwin" "oauth-mux"
+package_binary "x86_64-windows" "oauth-mux-x86_64-windows" "windows" "oauth-mux.exe"
+package_binary "aarch64-windows" "oauth-mux-aarch64-windows" "windows" "oauth-mux.exe"
 
 printf 'writing SHA256SUMS...\n'
 write_artifact_checksums
@@ -169,32 +149,6 @@ sed \
   -e "s|\${SHA_MACOS_X64}|${sha_macos_x64}|g" \
   -e "s|\${SHA_MACOS_ARM64}|${sha_macos_arm64}|g" \
   dist/homebrew/oauth-mux.rb >"$homebrew_dir/oauth-mux.rb"
-
-printf 'rendering npm package workspace...\n'
-root_pkg_dir="$npm_dir/oauth-mux"
-mkdir -p "$root_pkg_dir/bin"
-sed -E \
-  -e "s|(\"version\": \")[^\"]+(\")|\\1${version}\\2|" \
-  -e "s|(\"oauth-mux-[^\"]+\": \")[^\"]+(\")|\\1${version}\\2|" \
-  dist/npm/package.json >"$root_pkg_dir/package.json"
-cp dist/npm/install.js "$root_pkg_dir/install.js"
-cp dist/npm/bin/oauth-mux.js "$root_pkg_dir/bin/oauth-mux.js"
-cp dist/npm/bin/codex.js "$root_pkg_dir/bin/codex.js"
-chmod 0755 "$root_pkg_dir/bin/oauth-mux.js"
-chmod 0755 "$root_pkg_dir/bin/codex.js"
-
-if command -v npm >/dev/null 2>&1; then
-  printf 'packing npm tarballs...\n'
-  export npm_config_cache="${npm_config_cache:-$work_dir/npm-cache}"
-  export npm_config_update_notifier=false
-  mkdir -p "$npm_config_cache"
-  for pkg_json in "$npm_dir"/oauth-mux-{darwin,linux,windows}-*/package.json; do
-    npm pack "$(dirname "$pkg_json")" --pack-destination "$npm_tgz_dir" >/dev/null
-  done
-  npm pack "$root_pkg_dir" --pack-destination "$npm_tgz_dir" >/dev/null
-else
-  printf 'warning: npm not found; package directories rendered but npm tarballs skipped\n' >&2
-fi
 
 write_nfpm_config() {
   local arch="$1"
@@ -243,6 +197,4 @@ write_artifact_checksums
 
 printf '\nrelease output: %s\n' "$out_dir"
 printf 'artifacts:      %s\n' "$artifacts_dir"
-printf 'npm workspace:  %s\n' "$npm_dir"
-printf 'npm tarballs:   %s\n' "$npm_tgz_dir"
 printf 'homebrew:       %s\n' "$homebrew_dir/oauth-mux.rb"
