@@ -1,4 +1,11 @@
 # Supervised Harness Restart Contract — OBSOLETE
+
+> **SUPERSEDED 2026-07-11; DO NOT EXECUTE.** This file is historical input,
+> not active design authority. Binding invariants moved to
+> `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and
+> `docs/security/omux-v0.2-threat-model-2026-07-11.md`. It is pending deletion
+> under the v0.2 deletion ledger; Git is the archive. Preserve cited immutable
+> evidence and shipped release history.
 Date: 2026-05-02 (original); demoted 2026-05-03.
 Status: **OBSOLETE**. Restart is not a product behavior. Do not use this
 file as a contract, milestone, or fallback path.
