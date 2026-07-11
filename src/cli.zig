@@ -15,6 +15,7 @@ pub const Command = union(enum) {
     accounts: AccountsArgs,
     enroll: EnrollArgs,
     status: StatusArgs,
+    recommend,
     health: HealthArgs,
     discover: DiscoverArgs,
     repair_plan: RepairPlanArgs,
@@ -170,6 +171,12 @@ pub const Command = union(enum) {
     pub const StatusArgs = struct {
         json: bool = false,
         provider: ?[]const u8 = null,
+        /// TIN-2719 M0: compact one-line valet renderer over the same advisor the
+        /// JSON path uses. Cheap (local config + HealthStore only, no network).
+        statusline: bool = false,
+        /// Model class the `--statusline` line summarizes (fable|opus|sonnet|haiku);
+        /// null defaults to "fable" at the render site (matches the runbook example).
+        class: ?[]const u8 = null,
     };
 
     pub const HealthArgs = struct {
@@ -378,6 +385,7 @@ pub fn parse(args: []const []const u8) Command {
     if (eql(cmd, "accounts")) return parseAccounts(rest);
     if (eql(cmd, "enroll")) return parseEnroll(rest);
     if (eql(cmd, "status")) return parseStatus(rest);
+    if (eql(cmd, "recommend")) return .recommend;
     if (eql(cmd, "health")) return parseHealth(rest);
     if (eql(cmd, "discover")) return parseDiscover(rest);
     if (eql(cmd, "repair")) return parseRepair(rest);
@@ -736,8 +744,19 @@ fn parseEnroll(args: []const []const u8) Command {
 
 fn parseStatus(args: []const []const u8) Command {
     var result = Command.StatusArgs{};
-    for (args) |arg| {
-        if (eql(arg, "--json")) result.json = true;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--json")) {
+            result.json = true;
+        } else if (eql(args[i], "--statusline")) {
+            result.statusline = true;
+        } else if (eql(args[i], "--class")) {
+            i += 1;
+            if (i < args.len) result.class = args[i];
+        } else if (eql(args[i], "--provider")) {
+            i += 1;
+            if (i < args.len) result.provider = args[i];
+        }
     }
     return .{ .status = result };
 }
@@ -1404,6 +1423,13 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  status [--json] [--provider <name>]
         \\      Show active accounts, health scores, and circuit states.
+        \\
+        \\  status --statusline [--class fable|opus|sonnet|haiku]
+        \\      Emit one compact valet line ("claude: <status> -> <account|none> (<provenance>)")
+        \\      over the same advisor; local config + HealthStore only, no network. Default class: fable.
+        \\
+        \\  recommend
+        \\      Human-readable per-class advisor ranking plus the suggested account/class (or wait_until).
         \\
         \\  health [--json] [--reset <account>] [--provider <name>]
         \\      Show or reset redacted health and liveness tracking data.
@@ -2685,6 +2711,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n __fish_use_subcommand -a accounts -d 'List configured accounts'
             \\complete -c oauth-mux -n __fish_use_subcommand -a enroll -d 'Plan account enrollment'
             \\complete -c oauth-mux -n __fish_use_subcommand -a status -d 'Show status'
+            \\complete -c oauth-mux -n __fish_use_subcommand -a recommend -d 'Human-readable valet advice'
             \\complete -c oauth-mux -n __fish_use_subcommand -a health -d 'Show health data'
             \\complete -c oauth-mux -n __fish_use_subcommand -a discover -d 'Show agent-safe inventory'
             \\complete -c oauth-mux -n __fish_use_subcommand -a repair-plan -d 'Show non-mutating repair plan'
@@ -2804,6 +2831,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    'accounts:List configured accounts'
             \\    'enroll:Plan account enrollment'
             \\    'status:Show status'
+            \\    'recommend:Human-readable valet advice'
             \\    'health:Show health data'
             \\    'discover:Show agent-safe inventory'
             \\    'repair-plan:Show non-mutating repair plan'
@@ -2828,7 +2856,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         try writer.writeAll(
             \\_oauth_mux_completions() {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
-            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts enroll status health discover repair-plan repair route stay-afloat config init setup codex daemon mcp version completions" -- "$cur"))
+            \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts enroll status recommend health discover repair-plan repair route stay-afloat config init setup codex daemon mcp version completions" -- "$cur"))
             \\}
             \\complete -F _oauth_mux_completions oauth-mux
             \\
