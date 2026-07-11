@@ -1,0 +1,4 @@
+{"event":"cookie_picker_opened","domains_visible":["anthropic.com","claude.ai"],"cookie_values_visible":false}
+{"event":"accounts_distinguishable","account_refs":["acct-a","acct-b"],"identity_hash_algo":"sha256_12hex","raw_email_committed":false}
+{"event":"usage_surface_classified","account_ref":"acct-b","model_class":"opus","source":"browser_usage_ui","confidence":"dry_run_schema_only","raw_text_committed":false}
+{"event":"singleton_switch","attempted":false,"outcome":"not_attempted_dry_run"}

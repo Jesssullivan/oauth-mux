@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "browser_account_juggling",
+  "tracker": "TIN-2720",
+  "captured_at": "2026-07-11T05:05:43Z",
+  "provenance": {
+    "capture_mode": "operator_selected_cookie_picker_dry_run",
+    "operator_assisted": true,
+    "browser_tooling": [
+      "setup-browser-cookies",
+      "browse"
+    ],
+    "cookie_values_observed": false,
+    "provider_api_contract_claimed": false,
+    "spend_budget": "none"
+  },
+  "accounts_observed": [
+    {
+      "account_ref": "acct-a",
+      "identity_hash": "0f41a6c2d9be",
+      "identity_hash_algo": "sha256_12hex",
+      "raw_email_present": false,
+      "cookie_value_present": false
+    },
+    {
+      "account_ref": "acct-b",
+      "identity_hash": "8c77d1e5a042",
+      "identity_hash_algo": "sha256_12hex",
+      "raw_email_present": false,
+      "cookie_value_present": false
+    }
+  ],
+  "observations": [
+    {
+      "source": "browser_account_picker",
+      "account_ref": "acct-a",
+      "model_class": "fable",
+      "classification": "signed_in_distinguishable",
+      "confidence": "dry_run_schema_only",
+      "raw_text_committed": false
+    },
+    {
+      "source": "browser_usage_ui",
+      "account_ref": "acct-b",
+      "model_class": "opus",
+      "classification": "model_surface_observable",
+      "confidence": "dry_run_schema_only",
+      "raw_text_committed": false
+    }
+  ],
+  "singleton_switch": {
+    "attempted": false,
+    "method": "none",
+    "before_identity_hash": null,
+    "after_identity_hash": null,
+    "active_harness_outcome": "not_attempted_dry_run"
+  },
+  "redaction": {
+    "cookie_values": false,
+    "tokens": false,
+    "raw_emails": false,
+    "raw_account_ids": false,
+    "pii_screenshots": false,
+    "raw_page_dumps": false
+  },
+  "claim_boundary": "schema_and_redaction_fixture_only_not_live_browser_evidence"
+}
