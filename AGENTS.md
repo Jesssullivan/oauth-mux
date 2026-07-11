@@ -17,18 +17,33 @@ commit message, or PR description frames any of those as "the success" or
 "the fallback if seamless mux is hard," it is wrong by construction;
 delete and re-anchor on the broker contract.
 
+## Active v0.2 Design Authority (unshipped)
+
+Immediately after the immutable product anchor, the active design authority is
+`docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` (GitHub #463;
+Linear TIN-2057). Its sequenced removal contract is
+`docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md`; the complete authority
+order is `docs/authority-map.md`, and the managed-boundary security contract is
+`docs/security/omux-v0.2-threat-model-2026-07-11.md`.
+
+v0.2 is a full-broker hard contract reset, beginning with a managed Claude
+request proxy. It is future/unshipped direction until its golden proof passes;
+v0.1.15 remains stable and shipped claims remain bounded by the changelog and
+committed evidence.
+
 ## Product Guardrail
 
 oauth-mux is a harness continuity layer, not a general auth diagnostics
 toolkit. The product is:
 
-> Install oauth-mux, enroll the engineer's agent accounts, run
-> `oauth-mux <harness>`, and keep that harness usable when auth, quota, tier,
+> Install omux, enroll the engineer's agent accounts, run `omux <harness>`,
+> and keep that harness usable when auth, quota, tier,
 > or local runtime state changes, with little to no extra user interaction.
 
 Treat work as core only when it directly improves one of these surfaces:
 
-- `oauth-mux codex` as the reference managed harness flow.
+- `omux claude` as the v0.2 golden managed request-broker flow.
+- Codex as the shipped reference adapter and OpenCode as the conformance proof.
 - Account enrollment and route-health truth across multiple engineer identities.
 - Managed in-session quota/rate/auth/tier handoff.
 - Native-feeling UX for install, preflight, login/pass-through, resume, status,
@@ -45,59 +60,47 @@ to repair, safer for agents, or easier to generalize into the next real harness
 adapter.
 
 Defer or contain work that primarily chases universal provider support, hidden
-daemon dependency, unmanaged harness hot-swap, same-thread provider continuity,
+daemon dependency, unmanaged harness hot-swap, same-thread cross-provider continuity,
 mid-turn streaming recovery, or broad adapter claims without live proof.
 
-Feature-creep test: if a change does not make `oauth-mux codex` more reliable,
-easier to install, easier to repair, easier for agents to inspect safely, or
-easier to generalize into the next harness adapter, it is probably out of scope.
+Feature-creep test: if a change does not make `omux claude` more reliable,
+preserve the Codex reference contract, improve setup/repair/agent inspection, or
+prove the OpenCode conformance boundary, it is probably out of scope.
 
 ## Source of Truth Hierarchy
 
 1. This file (AGENTS.md)
 2. `docs/spec/broker-mcp-contract-2026-05-03.md` — the product anchor
-3. `docs/spec/codex-adapter-contract-2026-05-03.md` — Codex adapter spec
-4. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
+3. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` — active,
+   unshipped v0.2 design authority
+4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` — v0.2 removal order
+5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` — managed broker threats
+6. `docs/spec/codex-adapter-contract-2026-05-03.md` — shipped Codex adapter spec
+7. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
    overlays must not hide or fork harness session authority
-5. `justfile` — operator entrypoint for all build/test/release tasks
-6. `README.md` — public-facing current-state summary; subordinate to specs
-7. `flake.nix` — Nix devShell and package definitions
-8. `build.zig` / `build.zig.zon` — Zig build system
-9. `src/` — implementation
+8. `CHANGELOG.md` and committed evidence — shipped claim truth
+9. `justfile` — operator entrypoint for all build/test/release tasks
+10. `README.md` — public-facing current-state summary; subordinate to specs
+11. `flake.nix` — Nix devShell and package definitions
+12. `build.zig.zon` plus the Zig release graph — version and release semantics;
+    they emit/check the v0.2 manifest consumed by packaging and Bazel/GF
+13. `src/` — implementation
 
-## Active Design Notes (working theories — traceable, not yet implemented)
+## Superseded Design Inputs (pending deletion)
 
-Design of record that is agreed but **not yet built**. Treat as the plan to
-implement against; never cite as shipped. Each links a durable tracker.
+These notes are no longer design authority. They are historical inputs to the
+v0.2 program and are pending safe deletion under its deletion ledger. Do not
+implement against them or cite them as current direction; preserve their shipped
+evidence references and v0.1.15 history until replacement proof exists.
 
-- **Model-class quota granularity across n accounts** —
-  `docs/spec/model-quota-granularity-2026-07-03.md` · Linear TIN-2400 (parent) /
-  TIN-2407 (P0 enabler, July-safe) · GitHub #436. Working theory: model-class quota
-  (Fable/Opus/Sonnet cadence) rides the existing `provider:account#capability` route
-  key + HealthStore v2 per-capability rows; a pure quota-bucket algebra folds an
-  event log, availability is a query (`now ≥ resets_at`), spread = least-recently-
-  selected per capability ring. **Hard boundary: credential keepalive ≠ model-quota
-  keepalive** — a credential is per-account (one refresh warms all model classes);
-  only routing is per-model. No model-quota claim until a committed
-  `test/evidence/quota-observation/` proves the provider's real signals. August
-  (adapter-maturation) scope; only P0 (pure-core clock inversion) is July-safe; does
-  not block the credential-keepalive dogfood.
-- **Stay-afloat singleton valet + browser evidence lane** —
-  `docs/spec/stay-afloat-valet-and-browser-evidence-2026-07-09.md` · Linear
-  TIN-2719 (M0 advisor, in progress) / TIN-2720 (browser evidence lane, open) /
-  TIN-2721 (E1 managed hot-swap experiment, gate for TIN-2077) / TIN-2722
-  (E2 Anthropic quota-signal fixture, gate for any model-quota claim), tied back
-  to TIN-2057/TIN-2400/TIN-2071 · GitHub #445. Working theory: the near-term MVP
-  is not more daemon substrate, but an account-juggling valet that observes the
-  current singleton, declared model demand, model/entitlement evidence, and
-  enrolled account health, then recommends or plans an explicit operator-approved
-  switch before running work hits a quota wall. Ladder stance: M0 advisor → M1
-  managed switch (gated E1) → M2 auto → M3 request-path mux possibly-never —
-  TIN-2040 stays open as a Codex wire-proxy perf lane, parked as golden path.
-  Browser/cookie-picker tooling may be used to test and cassette the current
-  headed path of least resistance, but only as an evidence/operator-assist lane:
-  never commit cookies, tokens, raw account ids, raw emails, or PII screenshots,
-  and never cite browser-observed state as a provider API contract.
+- `docs/spec/model-quota-granularity-2026-07-03.md` is superseded by the exact-model
+  route-readiness and evidence rules in the v0.2 program (TIN-2400 / GitHub #436).
+  Its pure quota algebra and committed evidence remain reusable until migrated.
+- `docs/spec/stay-afloat-valet-and-browser-evidence-2026-07-09.md` and
+  `docs/spec/claude-managed-hotswap-experiment-2026-07-14.md` are superseded.
+  The per-session request proxy is the product mechanism; E1 canonical-keychain
+  mutation is canceled. Browser/cookie-picker tooling remains evidence-only and
+  may never commit cookies, tokens, raw account ids, raw emails, or PII screenshots.
 
 ## Build And Validation
 
@@ -144,9 +147,10 @@ Validate Token → Refresh if Needed → Inject Env → Exec
 
 ### Provider Adapters
 
-Each AI harness (Claude, Codex, Gemini, Vercel, GitHub, MCP) has an adapter in
-`src/providers/` that knows how to parse its token format, build refresh requests,
-and inject the correct environment variables.
+`src/providers/` contains shipped and legacy provider implementations. The v0.2
+product surface is managed Claude plus the Codex reference adapter and OpenCode
+conformance. Other built-ins are pending deletion under the v0.2 ledger and may
+not be presented as managed-continuity support.
 
 ### Secret Backends
 
@@ -176,9 +180,9 @@ provider token format samples. `just test` is a remote proof lane. Local
 `just test-local` and `just test-verbose` are debugging tools only; do not use
 them as completion proof.
 
-## Distribution
+## Current v0.1.15 Distribution
 
-Binary name: `oauth-mux`. Distributed as static binaries for 6 targets:
+Current binary name: `oauth-mux`. Distributed as static binaries for 6 targets:
 - x86_64-linux-musl, aarch64-linux-musl
 - x86_64-macos, aarch64-macos
 - x86_64-windows, aarch64-windows

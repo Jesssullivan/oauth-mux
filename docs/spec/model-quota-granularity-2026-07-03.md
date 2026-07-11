@@ -1,4 +1,11 @@
 # Model-Class Quota-Granularity Keepalive across n accounts × m model-classes
+
+> **SUPERSEDED 2026-07-11; DO NOT EXECUTE.** This file is historical input,
+> not active design authority. Binding invariants moved to
+> `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and
+> `docs/security/omux-v0.2-threat-model-2026-07-11.md`. It is pending deletion
+> under the v0.2 deletion ledger; Git is the archive. Preserve cited immutable
+> evidence and shipped release history.
 ## TIN-2400 — synthesized architecture (judge + synthesizer output)
 
 > **Status: design of record — NOT YET IMPLEMENTED.** Tracking: Linear TIN-2400 (parent) ·

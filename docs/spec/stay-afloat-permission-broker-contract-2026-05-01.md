@@ -1,4 +1,11 @@
 # Stay-Afloat Permission Broker Contract
+
+> **SUPERSEDED 2026-07-11; DO NOT EXECUTE.** This file is historical input,
+> not active design authority. Binding invariants moved to
+> `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and
+> `docs/security/omux-v0.2-threat-model-2026-07-11.md`. It is pending deletion
+> under the v0.2 deletion ledger; Git is the archive. Preserve cited immutable
+> evidence and shipped release history.
 Date: 2026-05-01
 
 Issue context: Linear `TIN-891`, child of `TIN-738`; GitHub

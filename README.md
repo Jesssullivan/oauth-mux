@@ -20,13 +20,13 @@ infrastructure — not product success.
 ## Current release
 
 `0.1.15` ("valet") is the current public release across the GitHub Release,
-curl installer, deb/rpm, and Homebrew lanes. It adds **credential keepalive**:
-`oauth-mux keepalive` proactively refreshes enrolled accounts at ~75% of token
-lifetime, consent-gated per account (`allow_proactive_refresh`, default `false`) and
-off by default, with shared-identity exclusion, identity dedupe before election, an
-in-process refresh lock, launchd/systemd service-unit templates, and isolated-browser
-Claude login helpers. `CHANGELOG.md` lists every change and the committed evidence
-each claim is bound to. The npm lane is retired (registry frozen at `0.1.9`).
+curl installer, deb/rpm, and Homebrew lanes. It retains the consent-gated
+credential keepalive shipped in 0.1.14 and adds an honesty-first account advisor,
+live Claude quota-header schema evidence, entitlement/version diagnostics,
+opt-in transition alerts, and bounded lock-wait UX. Managed hot-swap and a Claude
+request proxy are not shipped. `CHANGELOG.md` lists every change and the committed
+evidence each claim is bound to. The npm lane is retired (registry frozen at
+`0.1.9`).
 
 Homebrew is binary-only: `brew install jesssullivan/omux/oauth-mux` installs
 `oauth-mux` and does not link a managed `codex` shim.
@@ -44,11 +44,11 @@ Homebrew is binary-only: `brew install jesssullivan/omux/oauth-mux` installs
 - **Credential keepalive** (`oauth-mux keepalive [--once]`) for opted-in accounts;
   accounts sharing an OAuth identity are refused (refresh-token-family protection).
   Service residency is operator-explicit (`just keepalive-service-install`; nothing
-  auto-enables). Proven by committed `docs/evidence/keepalive-*` (refused-safely
-  tick, 5-account admission/stability soak, rotation-under-loop for two accounts).
+  auto-enables). Committed evidence covers refused-safely ticks, 5-account
+  admission/stability, rotation-under-loop, and a live macOS launchd install with
+  kill/respawn recovery. The Linux systemd-user unit remains lint-level only.
   Keepalive does not create capacity — quota windows reset on the provider's clock;
-  model/quota-class keepalive is design-only
-  (`docs/spec/model-quota-granularity-2026-07-03.md`).
+  model/quota-class keepalive is not a shipped capability.
 - **Live Codex quota handoff** for `oauth-mux codex resume`; managed launch/resume
   auto-revalidates expired Codex quota/rate windows before route election.
   Interactive login stays user-mediated. Headline proof:
@@ -58,11 +58,31 @@ Homebrew is binary-only: `brew install jesssullivan/omux/oauth-mux` installs
 
 ### Still open
 
-Non-Codex provider stay-afloat proof; live keepalive service-residency proof; the
-2×Claude + 2×Codex golden-metric soak; same-thread cross-account continuity;
-mid-turn streaming recovery; long-window soak and negative-permutation cassettes.
+Request-boundary managed Claude continuity; Linux systemd-user service-residency
+proof; the 2×Claude + 2×Codex golden-metric soak; exact-model cross-account
+handoff; long-window soak and negative-permutation cassettes. Mid-stream replay
+and recovery are explicit non-goals.
 
-## Lifecycle
+## v0.2 direction (future, unshipped)
+
+The active v0.2 program is a hard reset toward full broker ownership, starting
+with managed Claude traffic through a per-session authenticated loopback sidecar.
+`omux setup` is the guided enrollment, consent, service, and readiness front
+door; normal operation stays inside the native harness with a compact statusline,
+transition notifications, and a precise repair flow rather than a dashboard.
+It specifies exact-model routing, sticky least-loaded leases, and at most one
+alternate for explicit pre-body 401/403/429 responses; ambiguous failures and
+started responses are never replayed. The resident service remains a refresh,
+observation, alert, and snapshot plane - not the session proxy. See
+`docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and
+`docs/authority-map.md`. v0.1.15 remains stable until signed prereleases pass the
+golden proof and three clean non-maintainer beta users, including one Linux user,
+complete the six-week beta gate.
+
+## Current v0.1.15 Lifecycle
+
+This diagram describes the shipped valet/fallback-materialization lifecycle, not
+the future v0.2 per-session request proxy.
 
 ```mermaid
 flowchart LR

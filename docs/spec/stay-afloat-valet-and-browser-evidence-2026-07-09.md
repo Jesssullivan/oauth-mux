@@ -1,4 +1,11 @@
 # Stay-Afloat Valet and Browser Evidence Lane
+
+> **SUPERSEDED 2026-07-11; DO NOT EXECUTE.** This file is historical input,
+> not active design authority. Binding invariants moved to
+> `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and
+> `docs/security/omux-v0.2-threat-model-2026-07-11.md`. It is pending deletion
+> under the v0.2 deletion ledger; Git is the archive. Preserve cited immutable
+> evidence and shipped release history.
 Date: 2026-07-09
 Status: DESIGN NOTE. Traceable, not yet implemented.
 Trackers: Linear TIN-2057, TIN-2400, TIN-2071, TIN-2077, TIN-2719,
