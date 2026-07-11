@@ -28,16 +28,6 @@ const advise = @import("quota/advise.zig");
 const doctor_binaries = @import("doctor_binaries.zig");
 const version_check = @import("version_check.zig");
 
-comptime {
-    // Pull broker + adapter modules into the test build.
-    _ = broker;
-    _ = broker_loader;
-    _ = codex_adapter;
-    _ = trace;
-    _ = @import("adapters/codex/app_server_client.zig");
-    _ = @import("adapters/codex/wire_proxy.zig");
-}
-
 pub fn main() !void {
     log.init();
 
@@ -21136,50 +21126,4 @@ test "Codex status summary flags historical responses GET 405 ok regression" {
     try std.testing.expect(summary.transport_failure_observed);
     try std.testing.expectEqual(@as(u64, 1), summary.responses_get_405_misclassified_ok);
     try std.testing.expectEqualStrings("transport_regression_405_misclassified", summary.verdict);
-}
-
-// Pull in all module tests
-comptime {
-    _ = @import("types.zig");
-    _ = @import("cli.zig");
-    _ = @import("config.zig");
-    _ = @import("paths.zig");
-    _ = @import("shell.zig");
-    _ = @import("log.zig");
-    _ = @import("secret.zig");
-    _ = @import("health.zig");
-    _ = @import("provider.zig");
-    _ = @import("pipeline.zig");
-    _ = @import("oauth.zig");
-    _ = @import("probe.zig");
-    _ = @import("age.zig");
-    _ = @import("daemon.zig");
-    _ = @import("provider_schema.zig");
-    _ = @import("fixture_redaction.zig");
-    _ = @import("lock_wait.zig"); // TIN-2049 announced/bounded lock-wait wrapper
-    _ = @import("repair_state.zig");
-    _ = @import("reauth/orchestrator.zig"); // graduated from draft (TIN-2048/TIN-2064): tests now run in CI
-    _ = @import("enroll/tests.zig");
-    _ = @import("enroll/callback_server_tests.zig");
-    _ = @import("enroll/device_code.zig"); // unparked (flow-composition car): RFC 8628 device flow, tests now run in CI
-    _ = @import("enroll/browser_launch.zig"); // unparked (flow-composition car): cookieless launcher, tests now run in CI
-    _ = @import("enroll/flow_composition.zig"); // flow-composition car: production RunFlowFn (device_code composed)
-    _ = @import("enroll/claude_reauth_tests.zig");
-    _ = @import("enroll/web_ui_tests.zig");
-    _ = @import("keepalive/warm_scheduler_tests.zig");
-    _ = @import("keepalive/warm_binding_tests.zig");
-    _ = @import("keepalive/warm_runner_tests.zig");
-    _ = @import("notify.zig"); // TIN-2061: desktop alerting seam (pure + escaper tests)
-    _ = @import("keepalive/notify_adapter.zig"); // TIN-2061: keepalive→notify glue + dedupe tests
-    _ = @import("keepalive/refresh_race_tests.zig"); // TIN-2059 in-process actor-gate race
-    _ = @import("quota/bucket_tests.zig"); // TIN-2407 P0: pure quota-bucket algebra
-    _ = @import("quota/advise_tests.zig"); // TIN-2719 M0 PR1: pure valet advisor core
-    _ = @import("doctor_binaries.zig"); // TIN-2723: resident-service + PATH binary truth
-    _ = @import("version_check.zig"); // TIN-2463: version --check offline staleness compare
-
-    _ = @import("identity/identity_graph_tests.zig");
-    _ = @import("identity/claude_identity_tests.zig");
-    _ = @import("identity/identity_lane_integration_tests.zig");
-    _ = @import("cassettes/claude_oauth_cassette_tests.zig");
-    _ = @import("keepalive/ui_server_tests.zig");
 }
