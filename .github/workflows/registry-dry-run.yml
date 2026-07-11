@@ -13,7 +13,7 @@ on:
         default: "0.1.13"
         type: string
       lanes:
-        description: "Comma-separated lanes: plan,github,npm,homebrew,system"
+        description: "Comma-separated lanes: plan,github,homebrew,system"
         required: false
         default: "plan"
         type: string
@@ -30,8 +30,6 @@ jobs:
     if: inputs.confirm == 'registry-dry-run'
     runs-on: ubuntu-latest
     env:
-      OMUX_GLOBAL_SOPS_B64_PRESENT: ${{ secrets.OMUX_GLOBAL_SOPS_B64 != '' }}
-      OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT: ${{ vars.OMUX_GLOBAL_SOPS_REPOSITORY != '' }}
       OMUX_HOMEBREW_TAP_REPOSITORY_PRESENT: ${{ vars.OMUX_HOMEBREW_TAP_REPOSITORY != '' }}
       OMUX_HOMEBREW_TAP_DIR_PRESENT: ${{ vars.OMUX_HOMEBREW_TAP_DIR != '' }}
     steps:
@@ -40,37 +38,6 @@ jobs:
       - uses: cachix/install-nix-action@v30
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Decode global SOPS file
-        if: env.OMUX_GLOBAL_SOPS_B64_PRESENT == 'true'
-        shell: bash
-        env:
-          OMUX_GLOBAL_SOPS_B64: ${{ secrets.OMUX_GLOBAL_SOPS_B64 }}
-        run: |
-          set -euo pipefail
-          global_sops="$RUNNER_TEMP/omux-global.sops.yaml"
-          printf '%s' "$OMUX_GLOBAL_SOPS_B64" | base64 -d > "$global_sops"
-          chmod 0600 "$global_sops"
-          echo "OMUX_NPM_TOKEN_SOPS_FILE=$global_sops" >> "$GITHUB_ENV"
-
-      - name: Checkout global SOPS repo
-        if: env.OMUX_GLOBAL_SOPS_B64_PRESENT != 'true' && env.OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT == 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ vars.OMUX_GLOBAL_SOPS_REPOSITORY }}
-          ref: ${{ vars.OMUX_GLOBAL_SOPS_REF || 'main' }}
-          path: .global-sops
-          token: ${{ secrets.GF_ACTIONS_TOKEN || github.token }}
-          persist-credentials: false
-
-      - name: Configure checked-out SOPS file
-        if: env.OMUX_GLOBAL_SOPS_B64_PRESENT != 'true' && env.OMUX_GLOBAL_SOPS_REPOSITORY_PRESENT == 'true'
-        shell: bash
-        env:
-          OMUX_GLOBAL_SOPS_FILE: ${{ vars.OMUX_GLOBAL_SOPS_FILE || 'nix/secrets/common.yaml' }}
-        run: |
-          set -euo pipefail
-          echo "OMUX_NPM_TOKEN_SOPS_FILE=$PWD/.global-sops/$OMUX_GLOBAL_SOPS_FILE" >> "$GITHUB_ENV"
 
       - name: Checkout Homebrew tap
         if: contains(inputs.lanes, 'homebrew') && env.OMUX_HOMEBREW_TAP_REPOSITORY_PRESENT == 'true'
@@ -109,7 +76,7 @@ jobs:
             NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
             brew_path="/home/linuxbrew/.linuxbrew/bin/brew"
           fi
-          echo "$(dirname "$brew_path")" >> "$GITHUB_PATH"
+          dirname "$brew_path" >> "$GITHUB_PATH"
           echo "OMUX_BREW_BIN=$brew_path" >> "$GITHUB_ENV"
 
       - name: Stage release proof
@@ -120,10 +87,6 @@ jobs:
         env:
           OMUX_REGISTRY_DRY_RUN_CONFIRM: registry-dry-run
           OMUX_REGISTRY_LANES: ${{ inputs.lanes }}
-          OMUX_NPM_TOKEN_SOPS_KEY: ${{ vars.OMUX_NPM_TOKEN_SOPS_KEY || '.api.npm_token' }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN || '' }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || '' }}
-          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY || '' }}
           GITHUB_TOKEN: ${{ github.token }}
           OMUX_HOMEBREW_TAP_NAME: ${{ vars.OMUX_HOMEBREW_TAP_NAME || '' }}
           HOMEBREW_NO_AUTO_UPDATE: "1"

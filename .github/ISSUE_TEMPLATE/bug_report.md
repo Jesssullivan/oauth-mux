@@ -13,7 +13,7 @@ Describe the command, expected behavior, and actual behavior.
 ## Environment
 
 - oauth-mux version:
-- install lane: npm / Homebrew / GitHub Release / Nix / worktree / other
+- install lane: Homebrew / GitHub Release / curl installer / deb/rpm / Nix / worktree / other
 - OS and shell:
 - harness/provider: Codex / Claude / Figma / GitHub / Linear / other
 

@@ -1,6 +1,6 @@
 # Release And Install Lanes
 
-Updated: 2026-07-04
+Updated: 2026-07-11
 
 This is the DRY map for installer, package, CI, and dogfood lanes.
 Detailed historical evidence stays in `docs/install-beta-matrix.md` and
@@ -38,12 +38,10 @@ Every install lane that puts `codex` on PATH must preserve this behavior:
 - Homebrew is intentionally binary-only for PATH ownership: the formula installs
   `oauth-mux` but must not install or link `codex`. A managed Codex shim for
   Homebrew users must be an explicit opt-in lane, not the default formula.
-- npm uses `dist/npm/bin/codex.js`, which must match the same admin
-  pass-through contract even though it is a JS wrapper.
 - Windows raw tarballs currently ship only `oauth-mux.exe`. The 2026-05-18
-  decision is that managed `codex` command parity on Windows is covered by the
-  npm JS wrapper, not by a standalone raw-tarball `.cmd` or PowerShell shim,
-  until a native Windows operator need is proven.
+  decision not to add a standalone raw-tarball `.cmd` or PowerShell shim still
+  applies. With npm retired, managed `codex` command parity on Windows remains
+  unimplemented until a native Windows operator need is proven.
 
 ## Home Manager
 
@@ -71,9 +69,8 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 | --- | --- | --- | --- |
 | PR/push CI | `.github/workflows/ci.yml` | no | unit tests, example validation, local E2E, cross-compile, Nix build/check, optional GloriousFlywheel cache-first proof |
 | Release staging | `just remote-release-proof <ref> <version>` / `.github/workflows/release-proof.yml` | no | build the release tree, smoke installers/packages, generate handoff on the remote runner |
-| GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged tarballs, npm tarballs, formula, checksums, installer, handoff |
+| GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged binary tarballs, formula, checksums, installer, deb/rpm packages, and handoff |
 | Registry dry run | `.github/workflows/registry-dry-run.yml` | no | contact configured registries/taps with explicit non-publishing confirmation |
-| npm publish (RETIRED 2026-06-12, TIN-2042) | `.github/workflows/npm-publish.yml` | dead-letter; do not dispatch | npm publication is retired; this workflow exists only as a dead-letter, not a live lane |
 | npm deprecate (RETIRED lane, keeper-only) | `.github/workflows/npm-deprecate.yml` | yes when `plan_only=false` | npm publication is retired; this workflow's only remaining job is keeping the stale `0.1.9` registry package deprecated |
 | System package QA | `.github/workflows/system-package-install-qa.yml` | no | install published `.deb` and `.rpm` assets in clean containers; `expect_codex_shim` gates new shim-bearing releases |
 | Live provider QA | `.github/workflows/live-provider-qa.yml` | provider calls only with confirmation | produce redacted live/cassette evidence; never a default CI gate |
@@ -87,12 +84,10 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 - `nix flake check` is a local package debugging smoke, not release proof.
   Remote release proof must prove the package runs, reports the source version,
   and validates no-secret examples.
-- npm publication is retired (operator decision 2026-06-12, TIN-2042). Do not
-  dispatch `.github/workflows/npm-publish.yml`; it exists only as a
-  dead-letter. `.github/workflows/npm-deprecate.yml` remains live only to keep
-  the stale published `0.1.9` package deprecated.
-- Release and registry scripts must use an isolated npm cache so root-owned or
-  stale workstation `~/.npm` state cannot affect release proof.
+- npm publication is retired (operator decision 2026-06-12, TIN-2042).
+  Release staging must reject npm workspaces and tarballs.
+  `.github/workflows/npm-deprecate.yml` is the only keeper and can only
+  deprecate already-published versions after explicit confirmation.
 - Registry dry-runs are non-publishing gates. Use
   `OMUX_REGISTRY_DRY_RUN_CONFIRM=registry-dry-run`.
 - Homebrew and system package checks are package-lane QA. They do not prove

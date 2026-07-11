@@ -1,6 +1,6 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-07-04
+Updated: 2026-07-11
 
 Release discipline (2026-07-04): cuts are evidence-bound per `CHANGELOG.md`;
 cadence + tag-drift warning tracked in TIN-2462.
@@ -73,16 +73,12 @@ Expected output:
 - `artifacts/SHA256SUMS`
 - `artifacts/install.sh`
 - `homebrew/oauth-mux.rb`
-- `npm/` package workspace (inert artifacts — staged but never published;
-  retained until TIN-2046/TIN-2050 reshape the derivation)
-- `npm-tarballs/*.tgz` (inert artifacts — staged but never published; retained
-  until TIN-2046/TIN-2050 reshape the derivation)
 - `nfpm/oauth-mux-{amd64,arm64}.yaml`
 - deb/rpm artifacts
 
-The Nix dev shell supplies Zig, Just, Node/npm, and nfpm, so `just release-local`
-is the reproducible proof path. Running `scripts/release-local.sh` directly will
-still skip npm or deb/rpm output if those host tools are absent.
+The Nix dev shell supplies Zig, Just, and nfpm, so `just release-local` is the
+reproducible proof path. Running `scripts/release-local.sh` directly will still
+skip deb/rpm output if nfpm is absent.
 
 `release-local` performs a host-resource preflight before deleting or staging
 `dist/out/v<version>`. By default it requires at least 12 GiB free on the repo
@@ -110,22 +106,17 @@ just remote-release-proof "$ref" "$version"
 
 This runs `release-local` and then checks:
 
-- required binary tarballs, debs, rpms, npm tarballs (inert artifacts — staged
-  but never published; retained until TIN-2046/TIN-2050 reshape the
-  derivation), and Homebrew formula
+- required binary tarballs, debs, rpms, and Homebrew formula
+- absence of retired npm workspaces and tarballs
 - `SHA256SUMS` against the artifact directory
 - tarball payload names for Unix and Windows targets
 - rendered Homebrew formula placeholders and Ruby syntax when Ruby is present
 - rendered Homebrew formula explicit version metadata
-- local npm install of the matching platform package plus root shim (inert
-  artifacts — staged but never published; retained until TIN-2046/TIN-2050
-  reshape the derivation)
 - local installer execution against the staged artifact directory
 - non-publishing release handoff generation
 
-The release scripts set an isolated npm cache for packing and dry-run
-operations (publish/deprecate lanes retired). A broken workstation `~/.npm`
-cache must not change release proof results.
+Release proof does not invoke npm. The deprecation-only keeper workflow is
+separate from release staging.
 
 Generate only the handoff for an already staged tree:
 
@@ -140,16 +131,13 @@ This validates the staged publication inputs and writes:
 - `dist/out/v<version>/handoff/publish-files.txt`
 - `dist/out/v<version>/handoff/SHA256SUMS.full`
 
-The handoff lists GitHub Release attachments, npm publish order, Homebrew tap
-input, deb/rpm files, and full checksums. It does not use registry credentials
-or publish anything.
+The handoff lists GitHub Release attachments, Homebrew tap input, deb/rpm files,
+and full checksums. It does not use registry credentials or publish anything.
 
 The npm lane is RETIRED (operator decision 2026-06-12, TIN-2042). The release
-graph still stages npm tarballs as inert artifacts until the Bazel SSOT work
-(TIN-2046/TIN-2050) reshapes the derivation; do NOT dispatch
-`.github/workflows/npm-publish.yml`. The stale public `0.1.9` npm package is
-abandoned in place (deprecation requires a registry token that no longer
-exists). Future derived lanes are Homebrew, deb/rpm, and a darwin pkg.
+graph rejects npm workspaces and tarballs. There is no publication workflow.
+The manual `.github/workflows/npm-deprecate.yml` keeper remains only for
+deprecating already-published versions; it cannot publish a package.
 
 ## Release Workflow
 
@@ -165,13 +153,11 @@ The release job only uploads the staged `dist/out/` tree after the smoke proof
 and handoff generation pass. It then attaches these files to the GitHub release:
 
 - `v*/artifacts/*`
-- `v*/npm-tarballs/*.tgz`
 - `v*/homebrew/oauth-mux.rb`
 - `v*/handoff/*`
 
-This tag workflow does not publish npm packages. npm publication is retired
-(TIN-2042). `.github/workflows/npm-publish.yml` exists only as a dead-letter;
-do not dispatch it. `npm-deprecate.yml` keeps the registry package deprecated.
+This tag workflow cannot publish npm packages. npm publication is retired
+(TIN-2042); `npm-deprecate.yml` is a manual deprecation-only keeper.
 
 The staged `install.sh` verifies the selected tarball against `SHA256SUMS`
 before installing. For local proof, `OMUX_RELEASE_BASE_URL=file://...` points it
