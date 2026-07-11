@@ -12,9 +12,12 @@ First rungs of the stay-afloat valet ladder: a pure advisor core that ranks
 which enrolled account should carry the next unit of work, wired into
 `status --json` as an honesty-first advice block, plus the live Claude
 capture that corrects the repo's quota-header schema from placeholder to
-provider-proven truth. Keepalive itself (credential refresh) is unchanged
-from v0.1.14 — this release is about *advising* on top of it, not replacing
-it.
+provider-proven truth. Alongside the advisor, this cut lands a batch of
+operator-visibility and safety work: entitlement labels on `accounts list`,
+binary version-truth in `doctor`, opt-in keepalive desktop alerts, and
+announced/bounded lock waits. Keepalive itself (credential refresh) is
+unchanged from v0.1.14 — this release advises and surfaces on top of it, it
+does not replace it.
 
 ### Added
 
@@ -47,6 +50,24 @@ it.
   (TIN-2061/TIN-2719, #451).
 - Tracker/ledger truth batch: valet ladder rows, TIN-1830 close/split,
   #176 reconcile (#446).
+- `oauth-mux accounts list` entitlement labels (TIN-2719, #456) — each Claude
+  row surfaces its `subscription_type` / `rate_limit_tier`, each Codex row its
+  `plan_type`, distilled from the stored credential blob. Read-only inventory:
+  keychain is admitted (Claude's normal liveness path is keychain-backed) but a
+  denied or locked read degrades to `null` rather than prompting, and
+  sops/age/command/stdin backends are never invoked just to decorate a row. A
+  no-token-leak invariant is test-enforced against a synthetic blob.
+- `oauth-mux doctor` binary version-truth (TIN-2723, #455) — surfaces the
+  resident-service binary's version/SHA against the PATH-winner, warns on a
+  stale binary, and detects a shadowed install, so the operator can see which
+  build is actually running the keepalive service.
+- Keepalive desktop alerts, opt-in (TIN-2061, #458) — a notification seam
+  (`osascript` on macOS / `notify-send` on Linux, a subprocess mirroring the
+  `security(1)` pattern) that fires on refresh-failure / credential-dead only.
+  Disabled by default; a min-interval dedupe throttles repeats; a watchdog
+  SIGKILLs a hung notifier so it can never stall the keepalive tick.
+- Lock-wait UX (TIN-2049, #457) — lock acquisition now announces the wait,
+  bounds it, and names the contended lock on timeout, replacing silent blocks.
 
 ### Housekeeping
 
