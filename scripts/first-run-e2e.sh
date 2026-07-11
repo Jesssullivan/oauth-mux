@@ -27,6 +27,15 @@ xdg_data="$tmp/xdg-data"
 xdg_runtime="$tmp/xdg-runtime"
 operator_home="${HOME:-}"
 
+case "$(uname -s)" in
+  Darwin) expected_claude_secret_backend="keychain" ;;
+  Linux) expected_claude_secret_backend="file" ;;
+  *)
+    printf 'unsupported first-run e2e platform: %s\n' "$(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
 mkdir -p "$home" "$xdg_config" "$xdg_state" "$xdg_data" "$xdg_runtime"
 chmod 0700 "$xdg_runtime"
 
@@ -600,19 +609,24 @@ jq -e '
   and (.next_commands | index("oauth-mux doctor runtime --provider claude --account work --capability auth-status --json") != null)
 ' "$enroll_claude_confirmed_json" >/dev/null
 test -d "$claude_config_root/work"
-jq -e '
+jq -e --arg backend "$expected_claude_secret_backend" '
   (.providers.claude.kind == "claude")
   and (.providers.claude.config_dir_env == "CLAUDE_CONFIG_DIR")
-  and (.providers.claude.accounts.work.secret.backend == "file")
-  and (.providers.claude.accounts.work.secret.path | contains(".credentials.json"))
+  and (.providers.claude.accounts.work.secret.backend == $backend)
+  and (
+    if $backend == "keychain"
+    then (.providers.claude.accounts.work.secret.path == null)
+    else (.providers.claude.accounts.work.secret.path | contains(".credentials.json"))
+    end
+  )
   and (.providers.claude.accounts.work.config_dir | contains("work"))
   and (.profiles.claude.providers | index("claude:work#auth-status") != null)
 ' "$config_path" >/dev/null
 accounts_after_claude_json="$tmp/accounts-after-claude.json"
 run_json "$accounts_after_claude_json" accounts list --provider claude --json
-jq -e '
+jq -e --arg backend "$expected_claude_secret_backend" '
   (.accounts | length) == 1
-  and any(.accounts[]; .account == "work" and .secret_backend == "file")
+  and any(.accounts[]; .account == "work" and .secret_backend == $backend)
 ' "$accounts_after_claude_json" >/dev/null
 
 printf 'first-run e2e: enroll figma requires explicit confirmation and mode truth\n'
