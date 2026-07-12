@@ -78,6 +78,10 @@ memory; they must never be persisted or emitted in diagnostics.
 
 ### Availability and bounded failure
 
+- The Claude usage reader is default-on but advisory only. Required-field or
+  schema/version drift disables that reader, emits a typed redacted event, and
+  leaves the sidecar on reactive request-path routing. Advisory failure may
+  never stop the harness or become guessed capacity/model parity.
 - When no route is ready, wait once only if the best trusted reset is within 30
   seconds and the request deadline. Otherwise, or after expiry, return typed 429
   plus the best trusted `Retry-After`; never loop, restart, or invent capacity.

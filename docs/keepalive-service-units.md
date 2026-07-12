@@ -1,10 +1,11 @@
 # Keepalive service units (launchd / systemd user)
 
-Status: unit files lint-clean, install path implemented. **Not yet
-live-proven** — the start → warm → restart evidence run is a separate,
-operator-gated step and no "service proven" or "keepalive works" claim is
-made by this document. Service units are substrate, per
-`docs/plans/keepalive-push-2026-07-02.md` (W2-5 copy constraint).
+Status: the macOS launchd path is live-proven on released v0.1.14: start,
+five-account Claude refresh, kill/respawn, and throttle behavior are recorded in
+`docs/evidence/keepalive-service-residency-20260704T161515Z/` (#444). The Linux
+systemd-user path remains lint-level only. Service units are refresh/observation
+support substrate, not the v0.2 per-session broker proxy; see the current
+six-week plan and authority map.
 
 These units wrap the shipped foreground tick engine:
 

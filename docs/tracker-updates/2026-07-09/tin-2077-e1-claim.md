@@ -1,5 +1,9 @@
 # TIN-2077 — E1 managed hot-swap experiment filed as TIN-2721
 
+Status: SUPERSEDED 2026-07-11. Historical tracker mirror only. TIN-2721 is
+canceled as a product mechanism; the managed per-session proxy proof replaces
+canonical-keychain mutation.
+
 Posted 2026-07-09. TIN-2077 (Claude concurrency gate) gets a new child
 ticket, TIN-2721: the E1 managed hot-swap experiment. This is the gate for
 any M1 "managed switch" claim on the stay-afloat valet ladder — credential

@@ -83,9 +83,13 @@ does not change what v0.1.15 has shipped or what its evidence proves.
 
 ### 2.3 Usage and health truth
 
-- The OAuth usage endpoint is advisory by default. Every observation records
+- The OAuth usage reader is enabled by default for managed Claude sessions but
+  remains advisory only. Every observation records
   source, capture time, account, exact model or account-wide scope, window, and
   whether it is observed or inferred.
+- Schema or version drift disables only that advisory reader and records a
+  typed, redacted reason. It never stops the sidecar or managed harness;
+  request-path evidence and reactive routing continue.
 - Advisory data may avoid a predictably bad first route, but it cannot justify
   replay or override direct request-path evidence.
 - Missing, stale, malformed, or contradictory advisory data falls back to

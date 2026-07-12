@@ -1,12 +1,14 @@
 # Keepalive Push Plan — 2026-07-02
 
-Status: ACTIVE PLAN (dated snapshot). Authored 2026-07-02 against HEAD `ba7cdd2`.
+Status: SUPERSEDED 2026-07-11 - DO NOT EXECUTE. Historical snapshot only.
+Current authority: `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md`,
+`docs/authority-map.md`, and GitHub #463. Authored 2026-07-02 against HEAD `ba7cdd2`.
 Provenance: 21-agent orientation (full ingest of the prompts-enqueue omux corpus
 26/39–46/45 + house context; Linear initiative/issue sweep; repo gap map with
 file:line anchors) followed by a three-lens plan panel (critical-path /
 throughput-max / product-first) adversarially judged and merged.
 
-Authority order: (1) `../prompts-enqueue/context/decision-ledger-2026-07.md`
+Historical authority order at capture time: (1) `../prompts-enqueue/context/decision-ledger-2026-07.md`
 numbered items (item 12 governs sequencing; a dated correction note mapping its
 May TIN ids to live successors accompanies this plan); (2) repo HEAD;
 (3) Linear; (4) the prompts themselves (drafts).

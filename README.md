@@ -183,6 +183,9 @@ Claims stay tied to evidence:
 - `docs/lifecycle.md` — lifecycle, managed Codex flow, agent control plane, claim levels.
 - `docs/qa-handoff-matrix.md` — route states, handoff patterns, current Codex truth.
 - `docs/release-install-lanes.md` — public package lanes vs local dogfood provenance.
-- `docs/productionization-ledger.md` — UX/DX/AX stance, feature ledger, release posture.
+- `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` — current
+  six-week product and delivery program.
+- `docs/authority-map.md` — current decision, implementation, proof, and
+  release authority boundaries.
 - `docs/tracing.md` — opt-in trace schema and redaction rules.
 - `docs/evidence/` — committed proof runs (Codex quota handoff; keepalive tick, soak, rotation).
