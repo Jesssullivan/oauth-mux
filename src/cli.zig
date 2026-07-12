@@ -1380,9 +1380,9 @@ fn hasHelpFlag(args: []const []const u8) bool {
 
 pub fn printUsage(writer: anytype) !void {
     try writer.writeAll(
-        \\oauth-mux — OAuth fallback muxing for AI harness subscriptions
+        \\omux — OAuth fallback muxing for AI harness subscriptions
         \\
-        \\Usage: oauth-mux <command> [options]
+        \\Usage: omux <command> [options]
         \\
         \\Commands:
         \\  exec [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] -- <cmd> [args...]
@@ -1413,7 +1413,7 @@ pub fn printUsage(writer: anytype) !void {
         \\      Show provider-specific enrollment steps without mutating auth state.
         \\
         \\  enroll codex --account <name> [--store-root <path>] [--confirm-enroll] [--json]
-        \\      Add a Codex account to oauth-mux config; does not run Codex login.
+        \\      Add a Codex account to omux config; does not run Codex login.
         \\
         \\  enroll claude --account <name> [--config-root <path>] [--confirm-enroll] [--json]
         \\      Add a Claude account config dir; does not run Claude login.
@@ -1591,38 +1591,38 @@ pub fn printUsage(writer: anytype) !void {
 
 pub fn printCodexUsage(writer: anytype) !void {
     try writer.writeAll(
-        \\oauth-mux codex — broker-mediated Codex sessions, setup, and probes
+        \\omux codex — broker-mediated Codex sessions, setup, and probes
         \\
         \\Usage:
-        \\  oauth-mux codex [--profile name] [--capability c] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
-        \\  oauth-mux codex resume [id|--last]
-        \\  oauth-mux codex run [adapter options] -- [codex-args...]
-        \\  oauth-mux setup codex [--accounts a,b,c] [--device|--status-only] [--live]
-        \\  oauth-mux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
-        \\  oauth-mux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
-        \\  oauth-mux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
-        \\  oauth-mux codex revalidate-exhausted [--profile name] [--capability c] [--account a] --confirm-spend [--json]
-        \\  oauth-mux codex probe-all [--accounts a,b,c] [--capability c] [--json]
-        \\  oauth-mux codex preflight [--profile name] [--capability c] [--account a] [--json]
-        \\  oauth-mux codex managed-plan [--profile name] [--capability c] [--json]
-        \\  oauth-mux codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
-        \\  oauth-mux codex status-latest [--status-file path] [--json]
-        \\  oauth-mux codex broker-plan [--profile name] [--capability c] [--json]
-        \\  oauth-mux codex broker-session-plan [--profile name] [--capability c] [--json]
-        \\  oauth-mux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--continue-on-failure] [--json]
-        \\  oauth-mux codex broker-fallback-drill [--profile name] [--capability c] --from-account name --confirm-drill [--json]
-        \\  oauth-mux codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex broker-refresh-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex broker-401-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex broker-quota-smoke [--profile name] [--capability c] --confirm-broker [--json]
-        \\  oauth-mux codex config-candidate [--output path] [--store-root path] [--json]
-        \\  oauth-mux codex config-merge [--candidate path] [--backup path] [--json]
-        \\  oauth-mux codex bootstrap-dirs [--accounts a,b,c] [--store-root path]
-        \\  oauth-mux codex login <account> [--store-root path]
-        \\  oauth-mux codex login-device <account> [--store-root path]
-        \\  oauth-mux codex login-status [account] [--store-root path]
-        \\  oauth-mux codex login-status-all [--accounts a,b,c] [--store-root path]
+        \\  omux codex [--profile name] [--capability c] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
+        \\  omux codex resume [id|--last]
+        \\  omux codex run [adapter options] -- [codex-args...]
+        \\  omux setup codex [--accounts a,b,c] [--device|--status-only] [--live]
+        \\  omux codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
+        \\  omux codex canary [--accounts a,b,c] [--capabilities c1,c2] [--live]
+        \\  omux codex live-qa [--accounts a,b,c] [--capabilities c1,c2] [--confirm-spend] [--json]
+        \\  omux codex revalidate-exhausted [--profile name] [--capability c] [--account a] --confirm-spend [--json]
+        \\  omux codex probe-all [--accounts a,b,c] [--capability c] [--json]
+        \\  omux codex preflight [--profile name] [--capability c] [--account a] [--json]
+        \\  omux codex managed-plan [--profile name] [--capability c] [--json]
+        \\  omux codex managed [--profile name] [--capability c] [--resume id|--resume-last] [--include-non-interactive] [-- codex-args...]
+        \\  omux codex status-latest [--status-file path] [--json]
+        \\  omux codex broker-plan [--profile name] [--capability c] [--json]
+        \\  omux codex broker-session-plan [--profile name] [--capability c] [--json]
+        \\  omux codex broker-session-smoke [--profile name] [--capability c] --confirm-broker [--json]
+        \\  omux codex broker-run [--profile name] [--capability c] (--prompt text|--stdin) --confirm-spend [--model m] [--continue-on-failure] [--json]
+        \\  omux codex broker-fallback-drill [--profile name] [--capability c] --from-account name --confirm-drill [--json]
+        \\  omux codex broker-smoke [--profile name] [--capability c] --confirm-broker [--json]
+        \\  omux codex broker-refresh-smoke [--profile name] [--capability c] --confirm-broker [--json]
+        \\  omux codex broker-401-smoke [--profile name] [--capability c] --confirm-broker [--json]
+        \\  omux codex broker-quota-smoke [--profile name] [--capability c] --confirm-broker [--json]
+        \\  omux codex config-candidate [--output path] [--store-root path] [--json]
+        \\  omux codex config-merge [--candidate path] [--backup path] [--json]
+        \\  omux codex bootstrap-dirs [--accounts a,b,c] [--store-root path]
+        \\  omux codex login <account> [--store-root path]
+        \\  omux codex login-device <account> [--store-root path]
+        \\  omux codex login-status [account] [--store-root path]
+        \\  omux codex login-status-all [--accounts a,b,c] [--store-root path]
         \\
         \\Safety:
         \\  canary reads local readiness by default; --live contacts provider endpoints.
@@ -1630,7 +1630,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  managed-plan only inspects route-local launch readiness. managed launches
         \\  native Codex under the selected route-local CODEX_HOME, so provider calls
         \\  depend on the Codex child process and are not made during planning.
-        \\  For canonical Codex resume authority, use oauth-mux codex resume.
+        \\  For canonical Codex resume authority, use omux codex resume.
         \\  broker-smoke, broker-refresh-smoke, broker-401-smoke,
         \\  broker-quota-smoke, broker-session-smoke, and broker-run read a
         \\  selected Codex route secret and send it only to a broker-owned
@@ -1639,7 +1639,7 @@ pub fn printCodexUsage(writer: anytype) !void {
         \\  broker-run may persist live quota/rate-limit evidence to route health
         \\  and, with --continue-on-failure, start a fresh broker-owned session on
         \\  the next selected route.
-        \\  broker-fallback-drill mutates only oauth-mux route health; it does
+        \\  broker-fallback-drill mutates only omux route health; it does
         \\  not contact provider endpoints or print secrets.
         \\  live-qa, revalidate-exhausted, and broker-run require --confirm-spend or
         \\  OMUX_LIVE_QA_CONFIRM=spend-real-calls.
@@ -2701,6 +2701,7 @@ test "parse codex run property: unknown pre-separator args are never dropped" {
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
+            \\complete -c omux -w oauth-mux
             \\complete -c oauth-mux -f
             \\complete -c oauth-mux -n __fish_use_subcommand -a exec -d 'Execute with muxed credentials'
             \\complete -c oauth-mux -n __fish_use_subcommand -a env -d 'Print shell exports'
@@ -2818,7 +2819,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
         );
     } else if (eql(shell_name, "zsh")) {
         try writer.writeAll(
-            \\#compdef oauth-mux
+            \\#compdef omux oauth-mux
             \\_oauth-mux() {
             \\  local -a commands
             \\  commands=(
@@ -2849,7 +2850,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\  )
             \\  _describe 'command' commands
             \\}
-            \\compdef _oauth-mux oauth-mux
+            \\compdef _oauth-mux omux oauth-mux
             \\
         );
     } else if (eql(shell_name, "bash")) {
@@ -2858,7 +2859,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\  local cur="${COMP_WORDS[COMP_CWORD]}"
             \\  COMPREPLY=($(compgen -W "exec env probe doctor report providers accounts enroll status recommend health discover repair-plan repair route stay-afloat config init setup codex daemon mcp version completions" -- "$cur"))
             \\}
-            \\complete -F _oauth_mux_completions oauth-mux
+            \\complete -F _oauth_mux_completions omux oauth-mux
             \\
         );
     }

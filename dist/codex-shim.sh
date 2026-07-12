@@ -3,7 +3,11 @@
 set -eu
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" 2>/dev/null && pwd -P)
-oauth_mux_bin="$script_dir/oauth-mux"
+omux_bin="$script_dir/omux"
+if [ ! -x "$omux_bin" ]; then
+    # v0.1 release archives contain only the compatibility spelling.
+    omux_bin="$script_dir/oauth-mux"
+fi
 
 real_path() {
     if command -v realpath >/dev/null 2>&1; then
@@ -117,4 +121,4 @@ if should_pass_native "${1:-}"; then
 fi
 
 trace_shim_event "${1:-none}" "codex.shim.managed_entry"
-OMUX_CODEX_BIN="$native_codex" OMUX_CODEX_SHIM=1 OMUX_COMMAND_SPELLING=codex exec "$oauth_mux_bin" codex "$@"
+OMUX_CODEX_BIN="$native_codex" OMUX_CODEX_SHIM=1 OMUX_COMMAND_SPELLING=codex exec "$omux_bin" codex "$@"

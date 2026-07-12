@@ -6,6 +6,7 @@ set -eu
 zig build test
 zig build
 ./zig-out/bin/oauth-mux version --json | jq -e '.version and .runtime_identity.binary_path and .runtime_identity.binary_sha256 and .runtime_identity.path_printed == true' >/dev/null
+./scripts/test-executable-compat.sh
 bash -n ./scripts/install-local-dogfood.sh
 bash -n ./scripts/uninstall-local-dogfood.sh
 bash -n ./scripts/release-local.sh
@@ -23,6 +24,7 @@ python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 python3 -m py_compile ./scripts/test-refresh-exactly-once.py
 sh -n ./dist/codex-shim.sh
 sh -n ./dist/install.sh
+sh -n ./scripts/test-executable-compat.sh
 
 ./scripts/endpoint-free-check.sh
 ./scripts/secrets-scan-dir.sh

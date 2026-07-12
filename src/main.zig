@@ -27,6 +27,7 @@ const identity_hash = @import("identity_hash.zig");
 const advise = @import("quota/advise.zig");
 const doctor_binaries = @import("doctor_binaries.zig");
 const version_check = @import("version_check.zig");
+const product_identity = @import("product_identity.zig");
 
 pub fn main() !void {
     log.init();
@@ -38,6 +39,10 @@ pub fn main() !void {
     const all_args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, all_args);
 
+    const invocation_name = if (all_args.len != 0)
+        product_identity.invocationName(all_args[0])
+    else
+        product_identity.primary_executable_name;
     const args = if (all_args.len > 1) all_args[1..] else &[_][]const u8{};
     const cmd = cli.parse(args);
 
@@ -60,7 +65,7 @@ pub fn main() !void {
             } else if (version_args.json) {
                 try writeVersionJson(allocator, stdout);
             } else {
-                try stdout.print("oauth-mux {s}\n", .{cli.version});
+                try stdout.print("{s} {s}\n", .{ invocation_name, cli.version });
             }
         },
         .help => try cli.printUsage(stdout),

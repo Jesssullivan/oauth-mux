@@ -1,4 +1,4 @@
-# oauth-mux — OAuth fallback muxing for AI harness subscriptions
+# omux — OAuth fallback muxing for AI harness subscriptions
 
 zig := "nix develop --command zig"
 release_version := `./scripts/project-version.sh`
@@ -40,7 +40,10 @@ run *ARGS:
     {{zig}} build run -- {{ARGS}}
 
 version: build-local
-    ./zig-out/bin/oauth-mux version
+    ./zig-out/bin/omux version
+
+executable-compat-local: build-local
+    ./scripts/test-executable-compat.sh
 
 install-local-dogfood:
     nix develop --command ./scripts/install-local-dogfood.sh
@@ -455,13 +458,13 @@ daemon-loop-smoke PROFILE="codex-max" CAPABILITY="codex-max" ITERATIONS="3" INTE
 # ── Shell integration ──
 
 completions-fish: build-local
-    ./zig-out/bin/oauth-mux completions fish
+    ./zig-out/bin/omux completions fish
 
 completions-zsh: build-local
-    ./zig-out/bin/oauth-mux completions zsh
+    ./zig-out/bin/omux completions zsh
 
 completions-bash: build-local
-    ./zig-out/bin/oauth-mux completions bash
+    ./zig-out/bin/omux completions bash
 
 # ── Utilities ──
 
@@ -469,7 +472,7 @@ clean:
     rm -rf zig-out .zig-cache
 
 size: build-release-local
-    @ls -lh zig-out/bin/oauth-mux
+    @ls -lh zig-out/bin/omux zig-out/bin/oauth-mux
 
 # ── E2E smoke test ──
 
@@ -477,13 +480,13 @@ smoke: build-local
     #!/usr/bin/env bash
     set -euo pipefail
     echo "=== version ==="
-    ./zig-out/bin/oauth-mux version
+    ./zig-out/bin/omux version
     echo "=== config path ==="
-    ./zig-out/bin/oauth-mux config path
+    ./zig-out/bin/omux config path
     echo "=== status ==="
-    ./zig-out/bin/oauth-mux status --json 2>/dev/null || echo "(no config)"
+    ./zig-out/bin/omux status --json 2>/dev/null || echo "(no config)"
     echo "=== health ==="
-    ./zig-out/bin/oauth-mux health 2>/dev/null || echo "(no health data)"
+    ./zig-out/bin/omux health 2>/dev/null || echo "(no health data)"
     echo "=== daemon status ==="
-    ./zig-out/bin/oauth-mux daemon status 2>/dev/null
+    ./zig-out/bin/omux daemon status 2>/dev/null
     echo "=== smoke passed ==="

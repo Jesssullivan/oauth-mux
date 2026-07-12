@@ -2,6 +2,7 @@
 set -euo pipefail
 
 install_dir="${INSTALL_DIR:-$HOME/.local/bin}"
+omux_target="$install_dir/omux"
 oauth_mux_target="$install_dir/oauth-mux"
 codex_target="$install_dir/codex"
 
@@ -11,9 +12,15 @@ is_omux_codex_shim() {
 
 removed_any=0
 
-if [ -e "$oauth_mux_target" ]; then
+if [ -e "$oauth_mux_target" ] || [ -L "$oauth_mux_target" ]; then
   rm -f "$oauth_mux_target"
-  printf 'removed oauth-mux dogfood binary: %s\n' "$oauth_mux_target"
+  printf 'removed oauth-mux compatibility entrypoint: %s\n' "$oauth_mux_target"
+  removed_any=1
+fi
+
+if [ -e "$omux_target" ]; then
+  rm -f "$omux_target"
+  printf 'removed omux dogfood binary: %s\n' "$omux_target"
   removed_any=1
 fi
 
@@ -28,8 +35,9 @@ if [ -e "$codex_target" ]; then
 fi
 
 if [ "$removed_any" = "0" ]; then
-  printf 'no oauth-mux dogfood files found in %s\n' "$install_dir"
+  printf 'no omux dogfood files found in %s\n' "$install_dir"
 fi
 
+printf 'PATH omux: %s\n' "$(command -v omux || true)"
 printf 'PATH oauth-mux: %s\n' "$(command -v oauth-mux || true)"
 printf 'PATH codex: %s\n' "$(command -v codex || true)"
