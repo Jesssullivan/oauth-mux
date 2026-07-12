@@ -4,6 +4,7 @@ const config = @import("config.zig");
 const env = @import("env.zig");
 const paths = @import("paths.zig");
 const provider_schema = @import("provider_schema.zig");
+const product_identity = @import("product_identity.zig");
 const repair_state = @import("repair_state.zig");
 const types = @import("types.zig");
 
@@ -66,11 +67,12 @@ pub fn oauthMuxRuntimeIdentity(allocator: std.mem.Allocator, version: []const u8
 }
 
 pub fn classifyOauthMuxBinarySource(path_value: []const u8) []const u8 {
-    if (std.mem.indexOf(u8, path_value, "/zig-out/bin/oauth-mux") != null) return "repo_local";
-    if (std.mem.indexOf(u8, path_value, "/.local/bin/oauth-mux") != null) return "user_local";
-    if (std.mem.indexOf(u8, path_value, "/Cellar/oauth-mux/") != null) return "homebrew";
-    if (std.mem.indexOf(u8, path_value, "/opt/homebrew/bin/oauth-mux") != null) return "homebrew";
-    if (std.mem.indexOf(u8, path_value, "/usr/local/bin/oauth-mux") != null) return "homebrew";
+    const known_executable = product_identity.isExecutableName(path_value);
+    if (known_executable and std.mem.indexOf(u8, path_value, "/zig-out/bin/") != null) return "repo_local";
+    if (known_executable and std.mem.indexOf(u8, path_value, "/.local/bin/") != null) return "user_local";
+    if (known_executable and std.mem.indexOf(u8, path_value, "/Cellar/oauth-mux/") != null) return "homebrew";
+    if (known_executable and std.mem.indexOf(u8, path_value, "/opt/homebrew/bin/") != null) return "homebrew";
+    if (known_executable and std.mem.indexOf(u8, path_value, "/usr/local/bin/") != null) return "homebrew";
     if (std.mem.startsWith(u8, path_value, "/nix/store/")) return "nix_store";
     if (std.mem.indexOf(u8, path_value, "/node_modules/") != null) return "npm";
     return "path_or_installed";
@@ -452,8 +454,11 @@ fn pathDelimiter() u8 {
 
 test "classify oauth mux binary source" {
     try std.testing.expectEqualStrings("repo_local", classifyOauthMuxBinarySource("/repo/zig-out/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("repo_local", classifyOauthMuxBinarySource("/repo/zig-out/bin/omux"));
     try std.testing.expectEqualStrings("user_local", classifyOauthMuxBinarySource("/Users/me/.local/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("user_local", classifyOauthMuxBinarySource("/Users/me/.local/bin/omux"));
     try std.testing.expectEqualStrings("homebrew", classifyOauthMuxBinarySource("/opt/homebrew/Cellar/oauth-mux/0.1.7/bin/oauth-mux"));
+    try std.testing.expectEqualStrings("homebrew", classifyOauthMuxBinarySource("/opt/homebrew/Cellar/oauth-mux/0.2.0/bin/omux"));
     try std.testing.expectEqualStrings("nix_store", classifyOauthMuxBinarySource("/nix/store/abc-oauth-mux-0.1.7/bin/oauth-mux"));
     try std.testing.expectEqualStrings("npm", classifyOauthMuxBinarySource("/tmp/app/node_modules/.bin/oauth-mux"));
     try std.testing.expectEqualStrings("path_or_installed", classifyOauthMuxBinarySource("/usr/bin/oauth-mux"));

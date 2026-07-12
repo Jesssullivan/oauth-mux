@@ -1,8 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const env = @import("env.zig");
+const product_identity = @import("product_identity.zig");
 
-pub const app_name = "oauth-mux";
+pub const app_name = product_identity.storage_namespace;
 const unix_socket_path_soft_limit = 100;
 
 pub fn configDir(allocator: std.mem.Allocator) ![]const u8 {

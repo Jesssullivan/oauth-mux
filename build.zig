@@ -1,4 +1,5 @@
 const std = @import("std");
+const product_identity = @import("src/product_identity.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -13,7 +14,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "build_id", project_build_id);
 
     const exe = b.addExecutable(.{
-        .name = "oauth-mux",
+        .name = product_identity.primary_executable_name,
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -21,11 +22,18 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addOptions("build_options", build_options);
     b.installArtifact(exe);
+    for (product_identity.compatibility_executable_names) |name| {
+        const compatibility_install = b.addInstallBinFile(
+            exe.getEmittedBin(),
+            executableFileName(b, name, target.result.os.tag),
+        );
+        b.getInstallStep().dependOn(&compatibility_install.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
-    const run_step = b.step("run", "Run oauth-mux");
+    const run_step = b.step("run", "Run omux");
     run_step.dependOn(&run_cmd.step);
 
     const unit_tests = b.addTest(.{
@@ -50,25 +58,38 @@ pub fn build(b: *std.Build) void {
 
     for (release_targets) |t| {
         const rel_exe = b.addExecutable(.{
-            .name = "oauth-mux",
+            .name = product_identity.primary_executable_name,
             .root_source_file = b.path("src/main.zig"),
             .target = b.resolveTargetQuery(t),
             .optimize = .ReleaseSafe,
             .strip = true,
         });
         rel_exe.root_module.addOptions("build_options", build_options);
+        const release_dir: std.Build.InstallDir = .{
+            .custom = b.fmt("{s}-{s}", .{
+                @tagName(t.cpu_arch orelse .x86_64),
+                @tagName(t.os_tag orelse .linux),
+            }),
+        };
         const install = b.addInstallArtifact(rel_exe, .{
             .dest_dir = .{
-                .override = .{
-                    .custom = b.fmt("{s}-{s}", .{
-                        @tagName(t.cpu_arch orelse .x86_64),
-                        @tagName(t.os_tag orelse .linux),
-                    }),
-                },
+                .override = release_dir,
             },
         });
         release_step.dependOn(&install.step);
+        for (product_identity.compatibility_executable_names) |name| {
+            const compatibility_install = b.addInstallFileWithDir(
+                rel_exe.getEmittedBin(),
+                release_dir,
+                executableFileName(b, name, t.os_tag orelse .linux),
+            );
+            release_step.dependOn(&compatibility_install.step);
+        }
     }
+}
+
+fn executableFileName(b: *std.Build, stem: []const u8, os_tag: std.Target.Os.Tag) []const u8 {
+    return if (os_tag == .windows) b.fmt("{s}.exe", .{stem}) else stem;
 }
 
 fn readProjectVersion(b: *std.Build) ![]const u8 {
