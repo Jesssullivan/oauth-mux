@@ -17,6 +17,8 @@ sh -n ./scripts/smoke-retired-npm-boundary.sh
 sh -n ./scripts/check-authority-drift.sh
 sh -n ./scripts/endpoint-free-check.sh
 sh -n ./scripts/secrets-scan-dir.sh
+bash -n ./scripts/check-zig-test-root.sh
+sh -n ./scripts/check-v0.1.15-characterization.sh
 python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 python3 -m py_compile ./scripts/test-refresh-exactly-once.py
 sh -n ./dist/codex-shim.sh
@@ -26,6 +28,8 @@ sh -n ./dist/install.sh
 ./scripts/secrets-scan-dir.sh
 ./scripts/smoke-retired-npm-boundary.sh
 ./scripts/check-authority-drift.sh
+./scripts/check-zig-test-root.sh
+./scripts/check-v0.1.15-characterization.sh
 
 for cfg in examples/*.config.json; do
   OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate

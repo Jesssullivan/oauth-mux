@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "tag": "v0.1.15",
+    "commit": "874a296dda66a6f8f9ac7b94d08996a94a32bd71"
+  },
+  "claim": "characterization_only",
+  "surfaces": [
+    {
+      "id": "release_and_install",
+      "disposition": "preserve_until_v0.2_golden",
+      "proofs": [
+        {
+          "path": "scripts/release-smoke.sh",
+          "ref": "v0.1.15",
+          "kind": "test"
+        },
+        {
+          "path": "docs/release-runbook.md",
+          "ref": "v0.1.15",
+          "kind": "contract"
+        }
+      ]
+    },
+    {
+      "id": "account_enrollment",
+      "disposition": "migrate_to_v0.2",
+      "proofs": [
+        {
+          "path": "scripts/first-run-e2e.sh",
+          "ref": "v0.1.15",
+          "kind": "test"
+        }
+      ]
+    },
+    {
+      "id": "credential_keepalive",
+      "disposition": "migrate_to_v0.2",
+      "proofs": [
+        {
+          "path": "scripts/keepalive-service.sh",
+          "ref": "v0.1.15",
+          "kind": "test"
+        },
+        {
+          "path": "docs/evidence/keepalive-service-residency-20260704T161515Z",
+          "ref": "v0.1.15",
+          "kind": "evidence"
+        }
+      ]
+    },
+    {
+      "id": "status_and_doctor_json",
+      "disposition": "migrate_to_v0.2",
+      "proofs": [
+        {
+          "path": "scripts/e2e-local.sh",
+          "ref": "v0.1.15",
+          "kind": "test"
+        }
+      ]
+    },
+    {
+      "id": "managed_codex",
+      "disposition": "preserve_until_adapter_parity",
+      "proofs": [
+        {
+          "path": "scripts/smoke-codex-acceptance.sh",
+          "ref": "v0.1.15",
+          "kind": "test"
+        },
+        {
+          "path": "docs/spec/codex-adapter-contract-2026-05-03.md",
+          "ref": "v0.1.15",
+          "kind": "contract"
+        }
+      ]
+    },
+    {
+      "id": "socket_daemon_and_prepared_fallback",
+      "disposition": "remove_after_replacement",
+      "proofs": [
+        {
+          "path": "scripts/e2e-local.sh",
+          "ref": "v0.1.15",
+          "kind": "test"
+        },
+        {
+          "path": "docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md",
+          "ref": "current_authority",
+          "kind": "authority"
+        }
+      ]
+    }
+  ]
+}
