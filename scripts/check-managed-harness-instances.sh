@@ -17,7 +17,10 @@ if ! command -v check-jsonschema >/dev/null 2>&1; then
 fi
 
 for fixture in "$FIXTURES"/valid/*.json "$FIXTURES"/invalid-semantic/*.json; do
-  check-jsonschema --schemafile "$SCHEMA" "$fixture" >/dev/null
+  if ! check-jsonschema --schemafile "$SCHEMA" "$fixture" >/dev/null; then
+    printf 'check-managed-harness-instances: schema rejected expected-valid fixture %s\n' "${fixture#"$ROOT"/}" >&2
+    exit 1
+  fi
 done
 
 for fixture in "$FIXTURES"/invalid-schema/*.json; do
