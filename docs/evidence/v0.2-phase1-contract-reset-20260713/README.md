@@ -128,6 +128,18 @@ then failed before build/test because actionlint did not know the repository's
 repo-local actionlint runner-label declaration and a smoke assertion. The
 failed run is diagnostic evidence, not a passing gate.
 
+Public Source run 29292602949 at exact head
+`77f1cbf099ae6e470cec76af1a0ec85a0ce1db96` then cleared actionlint and reached
+the full first-run E2E. It exposed a portability false positive: GitHub's
+`TMPDIR` is nested beneath `/home/runner`, so every isolated fixture path
+contained the operator-home prefix that the leak assertion correctly forbids in
+generated output. The follow-up selects `/tmp` whenever the test scratch parent
+is inside the invoking user's home. The operator-home assertion remains in
+place; this does not weaken the redaction or config-isolation invariant.
+The focused local regression passed with `TMPDIR` deliberately nested beneath
+`HOME` and both leak assertions active. It used the installed v0.1.15 binary as
+local debugging and is not completion proof.
+
 ## Phase-1 definition-of-done proof table
 
 | Gate | Required evidence | Current state |
@@ -174,6 +186,8 @@ A subsequent final-candidate review found and the amendment now addresses:
     clean-tree assertion.
 11. actionlint rejecting the repository's established `tinyland-nix` runner
     class because no repo-local runner-label declaration existed.
+12. the first-run test placing isolated fixtures under the hosted runner's home,
+    causing the operator-home leak assertion to reject safe generated paths.
 
 That verdict applied to old head `66572c3` and is invalidated by the amended
 contract. The amended local check routes Python bytecode into a disposable
