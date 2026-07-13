@@ -13,40 +13,29 @@ env:
 
 jobs:
   generate:
-    name: Generate managed-harness schema on GloriousFlywheel
-    runs-on: tinyland-nix
+    name: Generate managed-harness schema from public Nix inputs
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
+      - uses: cachix/install-nix-action@v30
         with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+          nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Generate and check contract artifacts
-        uses: ./.gloriousflywheel/.github/actions/nix-job
-        env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: "false"
-          command: |
+        run: |
+          set -euxo pipefail
+          nix develop --command bash -lc '
             set -euxo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
-            nix develop --command bash -lc '
-              set -euxo pipefail
-              zig fmt src/managed_harness_contract.zig
-              zig build update-managed-harness-schema
-              zig test src/managed_harness_contract.zig
-              zig build check-managed-harness-schema
-              ./scripts/check-managed-harness-instances.sh
-            '
+            zig fmt src/managed_harness_contract.zig
+            zig build update-managed-harness-schema
+            zig test src/managed_harness_contract.zig
+            zig build check-managed-harness-schema
+            ./scripts/check-managed-harness-instances.sh
+          '
 
       - name: Upload deterministic outputs
         uses: actions/upload-artifact@v4
