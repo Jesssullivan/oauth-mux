@@ -23,31 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect GloriousFlywheel action access
-        id: gf
-        shell: bash
-        env:
-          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
-        run: |
-          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::GF_ACTIONS_TOKEN is unset; skipping private GloriousFlywheel action checkout"
-          fi
-
       - name: Checkout GloriousFlywheel action
-        if: steps.gf.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: ./.github/actions/checkout-gloriousflywheel
         with:
-          repository: tinyland-inc/GloriousFlywheel
-          ref: main
-          path: .gloriousflywheel
-          token: ${{ secrets.GF_ACTIONS_TOKEN }}
-          persist-credentials: false
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
 
       - name: Run cache-first release proof
-        if: steps.gf.outputs.enabled == 'true'
         uses: ./.gloriousflywheel/.github/actions/nix-job
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
@@ -84,9 +66,3 @@ jobs:
             }
 
             run_with_timeout "GloriousFlywheel release proof" "${OMUX_GF_RELEASE_PROOF_TIMEOUT:-40m}" nix develop --command just release-proof-local "${{ inputs.version }}"
-
-      - name: Record skipped release proof
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GloriousFlywheel release proof skipped because GF_ACTIONS_TOKEN is unset." >> "$GITHUB_STEP_SUMMARY"

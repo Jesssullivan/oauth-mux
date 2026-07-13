@@ -14,6 +14,9 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+permissions:
+  contents: read
+
 jobs:
   cache-first:
     name: GloriousFlywheel cache-first check
@@ -25,38 +28,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect GloriousFlywheel action access
-        id: gf
-        shell: bash
-        env:
-          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
-        run: |
-          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require remote runner substrate
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
-          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: Checkout GloriousFlywheel action
-        if: steps.gf.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: ./.github/actions/checkout-gloriousflywheel
         with:
-          repository: tinyland-inc/GloriousFlywheel
-          ref: main
-          path: .gloriousflywheel
-          token: ${{ secrets.GF_ACTIONS_TOKEN }}
-          persist-credentials: false
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
 
       - name: Run cache-first validation
-        if: steps.gf.outputs.enabled == 'true'
         uses: ./.gloriousflywheel/.github/actions/nix-job
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
@@ -95,40 +73,17 @@ jobs:
             run_with_timeout "GloriousFlywheel cache-first validation" "${OMUX_GF_CHECK_TIMEOUT:-25m}" nix develop --command just check-local
 
   test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: tinyland-nix
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect GloriousFlywheel action access
-        id: gf
-        shell: bash
-        env:
-          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
-        run: |
-          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require remote runner substrate
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
-          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: Checkout GloriousFlywheel action
-        if: steps.gf.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: ./.github/actions/checkout-gloriousflywheel
         with:
-          repository: tinyland-inc/GloriousFlywheel
-          ref: main
-          path: .gloriousflywheel
-          token: ${{ secrets.GF_ACTIONS_TOKEN }}
-          persist-credentials: false
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
 
       - name: Run test lane on GloriousFlywheel
         uses: ./.gloriousflywheel/.github/actions/nix-job
@@ -179,6 +134,7 @@ jobs:
             '
 
   cross-compile:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: tinyland-nix
     timeout-minutes: 30
     strategy:
@@ -193,35 +149,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect GloriousFlywheel action access
-        id: gf
-        shell: bash
-        env:
-          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
-        run: |
-          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require remote runner substrate
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
-          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: Checkout GloriousFlywheel action
-        if: steps.gf.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: ./.github/actions/checkout-gloriousflywheel
         with:
-          repository: tinyland-inc/GloriousFlywheel
-          ref: main
-          path: .gloriousflywheel
-          token: ${{ secrets.GF_ACTIONS_TOKEN }}
-          persist-credentials: false
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
 
       - name: Build ${{ matrix.target }} on GloriousFlywheel
         uses: ./.gloriousflywheel/.github/actions/nix-job
@@ -274,40 +206,17 @@ jobs:
             zig-out/bin/oauth-mux*
 
   nix:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: tinyland-nix
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect GloriousFlywheel action access
-        id: gf
-        shell: bash
-        env:
-          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
-        run: |
-          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require remote runner substrate
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GF_ACTIONS_TOKEN is required for CI validation." >> "$GITHUB_STEP_SUMMARY"
-          echo "This workflow is remote-first and has no GitHub-hosted local fallback." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: Checkout GloriousFlywheel action
-        if: steps.gf.outputs.enabled == 'true'
-        uses: actions/checkout@v4
+        uses: ./.github/actions/checkout-gloriousflywheel
         with:
-          repository: tinyland-inc/GloriousFlywheel
-          ref: main
-          path: .gloriousflywheel
-          token: ${{ secrets.GF_ACTIONS_TOKEN }}
-          persist-credentials: false
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
 
       - name: Run Nix lane on GloriousFlywheel
         uses: ./.gloriousflywheel/.github/actions/nix-job

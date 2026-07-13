@@ -67,7 +67,7 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 
 | Surface | Workflow or command | Mutates registries? | Purpose |
 | --- | --- | --- | --- |
-| PR/push CI | `.github/workflows/ci.yml` | no | unit tests, example validation, local E2E, cross-compile, Nix build/check, optional GloriousFlywheel cache-first proof |
+| PR/push CI | `.github/workflows/ci.yml` | no | required GloriousFlywheel unit, E2E, cross-compile, Nix, and cache-first proof on trusted branches; fork PRs require maintainer promotion |
 | Release staging | `just remote-release-proof <ref> <version>` / `.github/workflows/release-proof.yml` | no | build the release tree, smoke installers/packages, generate handoff on the remote runner |
 | GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged binary tarballs, formula, checksums, installer, deb/rpm packages, and handoff |
 | Registry dry run | `.github/workflows/registry-dry-run.yml` | no | contact configured registries/taps with explicit non-publishing confirmation |

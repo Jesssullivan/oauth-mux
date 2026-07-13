@@ -107,7 +107,8 @@ Implemented:
   and `exec` target injection without contacting live OAuth providers.
 - Manual GloriousFlywheel release proof: `.github/workflows/release-proof.yml`
   runs the same proof through the private cache-first `nix-job` action on
-  `tinyland-nix` when runner capacity and `GF_ACTIONS_TOKEN` are available.
+  `tinyland-nix` when runner capacity and scoped GitHub App checkout authority
+  are available.
 - Tag release publication now runs the same Nix-backed release proof before
   uploading staged artifacts to GitHub Releases.
 - Root README and release runbook covering local validation, release staging,
@@ -191,11 +192,11 @@ Decision record:
   not universal remote execution or Bazel remote-cache behavior. `oauth-mux`
   remains Zig-only, so Bazel should stay out until there is a real target graph.
 - `GloriousFlywheel` is a private repo, so the cache-first CI lane requires
-  `GF_ACTIONS_TOKEN` to check out the composite action locally. This is now
-  configured for `oauth-mux`; PR run `25009779392`, job `73266579091`, checked
-  out the private action and ran `nix develop --command just check-local` on
-  `tinyland-nix`. Without that secret, CI records the skipped proof instead of
-  claiming substrate execution.
+  a short-lived GitHub App token restricted to the repository and
+  `contents: read` to check out the composite action locally. PR run
+  `25009779392`, job `73266579091`, is the original substrate proof; current
+  workflows fail closed when the App checkout authority is unavailable rather
+  than claiming substrate execution.
 - The live Codex route probes intentionally spend small subscription calls and
   should remain explicit operator actions or bounded fallback checks, not a
   background polling loop.

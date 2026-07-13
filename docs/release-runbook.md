@@ -189,7 +189,8 @@ published packages can be installed and execute from the system path.
 
 `.github/workflows/release-proof.yml` is a manual cache-first proof surface for
 the release path. It runs on `tinyland-nix`, checks out the private
-GloriousFlywheel action when `GF_ACTIONS_TOKEN` is available, and executes:
+GloriousFlywheel action with a short-lived, repository-scoped GitHub App token,
+and executes:
 
 ```bash
 nix develop --command just release-proof-local <version>
@@ -204,11 +205,15 @@ can dispatch it only after the workflow file exists on `main`.
 
 The normal CI workflow has a GloriousFlywheel cache-first lane on
 `tinyland-nix`. Because `GloriousFlywheel` is private, that lane needs
-`GF_ACTIONS_TOKEN` to check out the private composite action.
+`GF_ACTIONS_APP_ID` and `GF_ACTIONS_APP_PRIVATE_KEY`. The shared local action
+uses the dedicated `omux-gf-checkout` App to mint a token restricted to
+`tinyland-inc/GloriousFlywheel` with
+`contents: read`, checks out the composite action with credential persistence
+disabled, and lets the token expire or revoke after the job.
 
-If `GF_ACTIONS_TOKEN` is absent, CI fails closed instead of silently falling
-back to local or GitHub-hosted validation. A token-gated skip is not a
-GloriousFlywheel proof.
+If either GitHub App secret is absent or token minting fails, CI fails closed
+instead of silently falling back to local or GitHub-hosted validation. A failed
+or skipped private checkout is not a GloriousFlywheel proof.
 
 oauth-mux wraps the private action command with an inner timeout so runner or
 cache stalls fail with an explicit step diagnostic before the outer workflow

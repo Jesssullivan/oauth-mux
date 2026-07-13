@@ -47,34 +47,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect GloriousFlywheel action access
-        id: gf
-        shell: bash
-        env:
-          GF_ACTIONS_TOKEN: ${{ secrets.GF_ACTIONS_TOKEN || '' }}
-        run: |
-          if [ -n "${GF_ACTIONS_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require remote runner substrate
-        if: steps.gf.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "GF_ACTIONS_TOKEN is required for remote validation." >> "$GITHUB_STEP_SUMMARY"
-          echo "This workflow is a remote-first validation lane, not a silent local fallback." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: Checkout GloriousFlywheel action
-        uses: actions/checkout@v4
+        uses: ./.github/actions/checkout-gloriousflywheel
         with:
-          repository: tinyland-inc/GloriousFlywheel
-          ref: main
-          path: .gloriousflywheel
-          token: ${{ secrets.GF_ACTIONS_TOKEN }}
-          persist-credentials: false
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
 
       - name: Run selected target
         uses: ./.gloriousflywheel/.github/actions/nix-job
