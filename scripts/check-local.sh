@@ -14,7 +14,10 @@ bash -n ./scripts/release-manifest-current.sh
 bash -n ./scripts/release-smoke.sh
 bash -n ./scripts/release-handoff.sh
 bash -n ./scripts/smoke-release-manifest-current.sh
+bash -n ./scripts/system-package-install-qa.sh
 bash -n ./scripts/remote-validate.sh
+sh -n ./scripts/resolve-release-version.sh
+sh -n ./scripts/smoke-release-workflow-version-authority.sh
 sh -n ./scripts/check-retired-npm.sh
 sh -n ./scripts/smoke-retired-npm-boundary.sh
 sh -n ./scripts/check-authority-drift.sh
@@ -37,6 +40,7 @@ sh -n ./scripts/test-executable-compat.sh
 ./scripts/check-zig-test-root.sh
 ./scripts/check-v0.1.15-characterization.sh
 ./scripts/smoke-release-manifest-current.sh
+./scripts/smoke-release-workflow-version-authority.sh
 
 for cfg in examples/*.config.json; do
   OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate

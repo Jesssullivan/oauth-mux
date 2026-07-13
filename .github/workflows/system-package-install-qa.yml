@@ -1,19 +1,11 @@
 name: System Package Install QA
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/system-package-install-qa.yml"
-      - "scripts/system-package-install-qa.sh"
-      - "docs/install-beta-matrix.md"
-      - "docs/release-runbook.md"
-      - "justfile"
   workflow_dispatch:
     inputs:
       version:
         description: "Published version to install from GitHub Release assets"
-        required: false
-        default: "0.1.9"
+        required: true
         type: string
       expect_codex_shim:
         description: "Require published deb/rpm packages to include /usr/bin/codex"
@@ -36,13 +28,12 @@ jobs:
 
       - name: Install published deb/rpm packages in Linux containers
         shell: bash
+        env:
+          OMUX_PUBLISHED_RELEASE_VERSION: ${{ inputs.version }}
+          OMUX_EXPECT_CODEX_SHIM_INPUT: ${{ inputs.expect_codex_shim }}
         run: |
           set -euo pipefail
-          version="${{ github.event.inputs.version }}"
-          if [ -z "$version" ]; then
-            version="0.1.9"
-          fi
-          if [ "${{ github.event.inputs.expect_codex_shim }}" = "true" ]; then
+          if [ "$OMUX_EXPECT_CODEX_SHIM_INPUT" = "true" ]; then
             export OMUX_EXPECT_CODEX_SHIM=1
           fi
-          ./scripts/system-package-install-qa.sh "$version"
+          ./scripts/system-package-install-qa.sh "$OMUX_PUBLISHED_RELEASE_VERSION"

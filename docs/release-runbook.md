@@ -174,6 +174,8 @@ gh workflow run system-package-install-qa.yml -f version=<version>
 This workflow downloads the published `.deb` and `.rpm` release assets, verifies
 them against the published `SHA256SUMS`, installs them in clean Debian and Rocky
 Linux containers on `ubuntu-latest`, and runs `/usr/bin/oauth-mux version`.
+It is manual-only and requires the published version explicitly; pull requests
+validate its workflow contract without silently selecting an older release.
 
 For local reproduction on a healthy Docker-compatible host:
 

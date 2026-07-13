@@ -28,6 +28,11 @@ if [ -z "$version" ]; then
   usage
   exit 2
 fi
+version="${version#v}"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+  printf 'invalid published release version: %s\n' "$version" >&2
+  exit 2
+fi
 
 repo="${OMUX_RELEASE_REPO:-Jesssullivan/oauth-mux}"
 docker_bin="${DOCKER:-docker}"

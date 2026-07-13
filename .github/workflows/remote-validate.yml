@@ -25,7 +25,6 @@ on:
       version:
         description: "Release version for release-proof"
         required: false
-        default: "0.1.13"
         type: string
       request_id:
         description: "Unique caller request id for dispatch/run correlation"
@@ -59,7 +58,7 @@ jobs:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
           OMUX_REMOTE_REQUEST_ID: ${{ inputs.request_id || github.run_id }}
           OMUX_REMOTE_TARGET: ${{ inputs.target || 'e2e' }}
-          OMUX_REMOTE_RELEASE_VERSION: ${{ inputs.version }}
+          OMUX_REQUESTED_RELEASE_VERSION: ${{ inputs.version || '' }}
         with:
           attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
           push-cache: "false"
@@ -122,8 +121,9 @@ jobs:
                   nix develop --command just first-run-e2e-local
                 ;;
               release-proof)
+                release_version="$(./scripts/resolve-release-version.sh "${OMUX_REQUESTED_RELEASE_VERSION}")"
                 run_with_timeout "remote release proof" "${OMUX_REMOTE_RELEASE_PROOF_TIMEOUT:-40m}" \
-                  nix develop --command just release-proof-local "${OMUX_REMOTE_RELEASE_VERSION}"
+                  nix develop --command just release-proof-local "${release_version}"
                 ;;
               *)
                 echo "::error::unsupported remote validation target: ${OMUX_REMOTE_TARGET}"
