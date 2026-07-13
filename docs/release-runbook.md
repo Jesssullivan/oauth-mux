@@ -245,6 +245,18 @@ the private action and completes.
 
 Current release evidence:
 
+### v0.1.15 (2026-07-11)
+
+Signed tag `v0.1.15` points to `874a296`. Remote Release Proof run
+`29141487280` passed on that exact commit, and release workflow run
+`29141726979` published the GitHub Release assets. The release keeps credential
+refresh behavior bounded to v0.1.14 claims; its advisor, quota-schema, and
+operator-visibility additions do not prove managed swap or model-quota
+continuity. This immutable release predates the Phase-1 npm subtraction and
+therefore still contains legacy wrapper `.tgz` assets; they are historical,
+unsupported residue, and the current release graph rejects their
+reintroduction. See `CHANGELOG.md` for the evidence-bound feature list.
+
 ### v0.1.14 (2026-07-04)
 
 Remote release proof GF job `85131314417` (`release-proof` on

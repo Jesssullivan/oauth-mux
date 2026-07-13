@@ -196,6 +196,8 @@ A subsequent final-candidate review found and the amendment now addresses:
     causing the operator-home leak assertion to reject safe generated paths.
 13. provenance text claiming `build.zig.zon` was unchanged even though the
     contract correctly adds `schemas` to the source-package paths.
+14. the release runbook's current-evidence section stopping at v0.1.14 after
+    signed v0.1.15 publication and exact-commit Release Proof succeeded.
 
 That verdict applied to old head `66572c3` and is invalidated by the amended
 contract. The amended local check routes Python bytecode into a disposable
