@@ -16,6 +16,7 @@ const AllModules = struct {
     pub const identity_hash = @import("identity_hash.zig");
     pub const lock_wait = @import("lock_wait.zig");
     pub const log = @import("log.zig");
+    pub const managed_harness_contract = @import("managed_harness_contract.zig");
     pub const notify = @import("notify.zig");
     pub const oauth = @import("oauth.zig");
     pub const paths = @import("paths.zig");

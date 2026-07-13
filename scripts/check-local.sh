@@ -5,6 +5,7 @@ set -eu
 
 zig build test
 zig build
+zig build check-managed-harness-schema
 ./zig-out/bin/oauth-mux version --json | jq -e '.version and .runtime_identity.binary_path and .runtime_identity.binary_sha256 and .runtime_identity.path_printed == true' >/dev/null
 ./scripts/test-executable-compat.sh
 bash -n ./scripts/install-local-dogfood.sh

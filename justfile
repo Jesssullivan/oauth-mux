@@ -167,6 +167,12 @@ release-manifest-update:
 release-manifest-check-local:
     {{zig}} build check-release-manifest
 
+managed-harness-schema-update:
+    {{zig}} build update-managed-harness-schema
+
+managed-harness-schema-check-local:
+    {{zig}} build check-managed-harness-schema
+
 release-local VERSION=release_version:
     nix develop --command ./scripts/release-local.sh {{VERSION}}
 

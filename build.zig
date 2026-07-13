@@ -1,4 +1,5 @@
 const std = @import("std");
+const managed_harness_contract = @import("src/managed_harness_contract.zig");
 const product_identity = @import("src/product_identity.zig");
 const release_manifest = @import("src/release_manifest.zig");
 
@@ -14,6 +15,9 @@ pub fn build(b: *std.Build) void {
         b.allocator,
         project_version,
     ) catch @panic("failed to render source release manifest");
+    const managed_harness_schema = managed_harness_contract.renderSchema(
+        b.allocator,
+    ) catch @panic("failed to render managed-harness JSON-RPC schema");
 
     const update_manifest_files = b.addUpdateSourceFiles();
     update_manifest_files.addBytesToSource(source_manifest, "release-manifest.json");
@@ -38,6 +42,35 @@ pub fn build(b: *std.Build) void {
         );
         check_manifest_step.dependOn(&fail.step);
     }
+
+    const update_managed_schema_files = b.addUpdateSourceFiles();
+    update_managed_schema_files.addBytesToSource(
+        managed_harness_schema,
+        "schemas/managed-harness-jsonrpc-v2.schema.json",
+    );
+    const update_managed_schema_step = b.step(
+        "update-managed-harness-schema",
+        "Regenerate the checked managed-harness JSON-RPC v2 schema",
+    );
+    update_managed_schema_step.dependOn(&update_managed_schema_files.step);
+
+    const check_managed_schema_step = b.step(
+        "check-managed-harness-schema",
+        "Check that the managed-harness JSON-RPC v2 schema matches Zig authority",
+    );
+    const committed_managed_schema = std.fs.cwd().readFileAlloc(
+        b.allocator,
+        "schemas/managed-harness-jsonrpc-v2.schema.json",
+        1024 * 1024,
+    ) catch null;
+    if (committed_managed_schema == null or
+        !std.mem.eql(u8, committed_managed_schema.?, managed_harness_schema))
+    {
+        const fail = b.addFail(
+            "managed-harness schema is stale; run `just managed-harness-schema-update` and commit the result",
+        );
+        check_managed_schema_step.dependOn(&fail.step);
+    }
     for (release_manifest.service_assets) |asset| {
         std.fs.cwd().access(asset.source, .{}) catch {
             const fail = b.addFail(b.fmt(
@@ -48,6 +81,7 @@ pub fn build(b: *std.Build) void {
         };
     }
     b.getInstallStep().dependOn(check_manifest_step);
+    b.getInstallStep().dependOn(check_managed_schema_step);
 
     const manifest_files = b.addWriteFiles();
     const emitted_manifest_path = manifest_files.add("release-manifest.json", source_manifest);
@@ -94,9 +128,11 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(check_manifest_step);
+    test_step.dependOn(check_managed_schema_step);
 
     const release_step = b.step("release", "Build release binaries for all platforms");
     release_step.dependOn(check_manifest_step);
+    release_step.dependOn(check_managed_schema_step);
     release_step.dependOn(&install_manifest.step);
 
     for (release_manifest.release_targets) |release_target| {

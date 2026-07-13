@@ -1,0 +1,1217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omux.dev/schemas/managed-harness-jsonrpc-v2.schema.json",
+  "title": "omux managed-harness JSON-RPC surface v2",
+  "description": "Declaration-only compatibility contract. Every listed method is unimplemented until adapter proof lands.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request_surface_info"
+    },
+    {
+      "$ref": "#/$defs/request_harness_preflight"
+    },
+    {
+      "$ref": "#/$defs/request_session_launch"
+    },
+    {
+      "$ref": "#/$defs/request_route_lease_snapshot"
+    },
+    {
+      "$ref": "#/$defs/request_session_transition"
+    },
+    {
+      "$ref": "#/$defs/request_repair_handoff"
+    },
+    {
+      "$ref": "#/$defs/request_session_teardown"
+    },
+    {
+      "$ref": "#/$defs/success_response"
+    },
+    {
+      "$ref": "#/$defs/not_implemented_response"
+    },
+    {
+      "$ref": "#/$defs/unknown_method_response"
+    }
+  ],
+  "x-omux-surface": {
+    "surface_version": 2,
+    "protocol_name": "managed-harness-jsonrpc",
+    "status": "planned_unshipped",
+    "exact_model_required": true,
+    "max_upstream_attempts": 2,
+    "methods": [
+      {
+        "name": "surface/info",
+        "lifecycle_phase": "discovery",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_surface_info",
+        "result_schema": "#/$defs/result_surface_info",
+        "required_params": [],
+        "required_result_fields": [
+          "surface_version",
+          "status",
+          "methods"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      },
+      {
+        "name": "harness/preflight",
+        "lifecycle_phase": "preflight",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_harness_preflight",
+        "result_schema": "#/$defs/result_harness_preflight",
+        "required_params": [
+          "harness",
+          "model_demand"
+        ],
+        "required_result_fields": [
+          "ready",
+          "harness_handle",
+          "reasons"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      },
+      {
+        "name": "session/launch",
+        "lifecycle_phase": "launch",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_session_launch",
+        "result_schema": "#/$defs/result_session_launch",
+        "required_params": [
+          "harness_handle",
+          "model_demand"
+        ],
+        "required_result_fields": [
+          "session_handle",
+          "route_handle",
+          "state"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      },
+      {
+        "name": "route/lease_snapshot",
+        "lifecycle_phase": "observe",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_route_lease_snapshot",
+        "result_schema": "#/$defs/result_route_lease_snapshot",
+        "required_params": [
+          "session_handle"
+        ],
+        "required_result_fields": [
+          "session_handle",
+          "leases",
+          "observed_at_ms"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      },
+      {
+        "name": "session/transition",
+        "lifecycle_phase": "transition",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_session_transition",
+        "result_schema": "#/$defs/result_session_transition",
+        "required_params": [
+          "session_handle",
+          "model_demand",
+          "proxy_attempts"
+        ],
+        "required_result_fields": [
+          "state",
+          "selected_route_handle",
+          "action_required"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      },
+      {
+        "name": "repair/handoff",
+        "lifecycle_phase": "repair",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_repair_handoff",
+        "result_schema": "#/$defs/result_repair_handoff",
+        "required_params": [
+          "session_handle",
+          "reason"
+        ],
+        "required_result_fields": [
+          "handoff_handle",
+          "action"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      },
+      {
+        "name": "session/teardown",
+        "lifecycle_phase": "teardown",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_session_teardown",
+        "result_schema": "#/$defs/result_session_teardown",
+        "required_params": [
+          "session_handle"
+        ],
+        "required_result_fields": [
+          "complete"
+        ],
+        "unknown_fields": "tolerated_except_sensitive_names"
+      }
+    ]
+  },
+  "$defs": {
+    "safe_extension_value": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/safe_extension_value"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          }
+        }
+      ]
+    },
+    "opaque_handle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "handle_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "redacted_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "boolean": {
+      "type": "boolean"
+    },
+    "nonnegative_integer": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "string_array": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 1024
+      }
+    },
+    "open_object": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      }
+    },
+    "open_object_array": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/$defs/safe_extension_value"
+        },
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "not": {
+            "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+          }
+        }
+      }
+    },
+    "transition_state": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "running",
+        "retained",
+        "switched",
+        "refused",
+        "action_required",
+        "teardown_complete"
+      ]
+    },
+    "model_demand": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "model",
+        "preservation"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "preservation": {
+          "type": "string",
+          "const": "exact"
+        }
+      }
+    },
+    "proxy_attempt": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "ordinal",
+        "account_handle",
+        "route_handle",
+        "model_demand",
+        "outcome",
+        "response_started"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "account_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "model_demand": {
+          "$ref": "#/$defs/model_demand"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "retained",
+            "switched",
+            "refused",
+            "unproven"
+          ]
+        },
+        "response_started": {
+          "type": "boolean"
+        }
+      }
+    },
+    "proxy_attempts": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/proxy_attempt"
+      }
+    },
+    "method_statuses": {
+      "type": "array",
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/$defs/safe_extension_value"
+        },
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "not": {
+            "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+          }
+        },
+        "required": [
+          "name",
+          "implementation_status"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "surface/info",
+              "harness/preflight",
+              "session/launch",
+              "route/lease_snapshot",
+              "session/transition",
+              "repair/handoff",
+              "session/teardown"
+            ]
+          },
+          "implementation_status": {
+            "type": "string",
+            "const": "not_implemented"
+          }
+        }
+      },
+      "minItems": 7,
+      "uniqueItems": true
+    },
+    "surface_version_const": {
+      "type": "integer",
+      "const": 2
+    },
+    "protocol_status_const": {
+      "type": "string",
+      "const": "planned_unshipped"
+    },
+    "request_surface_info": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "surface/info"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [],
+          "properties": {}
+        }
+      }
+    },
+    "result_surface_info": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "surface_version",
+        "status",
+        "methods"
+      ],
+      "properties": {
+        "surface_version": {
+          "$ref": "#/$defs/surface_version_const"
+        },
+        "status": {
+          "$ref": "#/$defs/protocol_status_const"
+        },
+        "methods": {
+          "$ref": "#/$defs/method_statuses"
+        }
+      }
+    },
+    "request_harness_preflight": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "harness/preflight"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [
+            "harness",
+            "model_demand"
+          ],
+          "properties": {
+            "harness": {
+              "$ref": "#/$defs/label"
+            },
+            "model_demand": {
+              "$ref": "#/$defs/model_demand"
+            }
+          }
+        }
+      }
+    },
+    "result_harness_preflight": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "ready",
+        "harness_handle",
+        "reasons"
+      ],
+      "properties": {
+        "ready": {
+          "$ref": "#/$defs/boolean"
+        },
+        "harness_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "reasons": {
+          "$ref": "#/$defs/string_array"
+        }
+      }
+    },
+    "request_session_launch": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "session/launch"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [
+            "harness_handle",
+            "model_demand"
+          ],
+          "properties": {
+            "harness_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            },
+            "model_demand": {
+              "$ref": "#/$defs/model_demand"
+            }
+          }
+        }
+      }
+    },
+    "result_session_launch": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "session_handle",
+        "route_handle",
+        "state"
+      ],
+      "properties": {
+        "session_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "state": {
+          "$ref": "#/$defs/transition_state"
+        }
+      }
+    },
+    "request_route_lease_snapshot": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "route/lease_snapshot"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [
+            "session_handle"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            }
+          }
+        }
+      }
+    },
+    "result_route_lease_snapshot": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "session_handle",
+        "leases",
+        "observed_at_ms"
+      ],
+      "properties": {
+        "session_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "leases": {
+          "$ref": "#/$defs/open_object_array"
+        },
+        "observed_at_ms": {
+          "$ref": "#/$defs/nonnegative_integer"
+        }
+      }
+    },
+    "request_session_transition": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "session/transition"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [
+            "session_handle",
+            "model_demand",
+            "proxy_attempts"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            },
+            "model_demand": {
+              "$ref": "#/$defs/model_demand"
+            },
+            "proxy_attempts": {
+              "$ref": "#/$defs/proxy_attempts"
+            }
+          }
+        }
+      }
+    },
+    "result_session_transition": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "state",
+        "selected_route_handle",
+        "action_required"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/transition_state"
+        },
+        "selected_route_handle": {
+          "$ref": "#/$defs/handle_or_null"
+        },
+        "action_required": {
+          "$ref": "#/$defs/open_object"
+        }
+      }
+    },
+    "request_repair_handoff": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "repair/handoff"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [
+            "session_handle",
+            "reason"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            },
+            "reason": {
+              "$ref": "#/$defs/redacted_reason"
+            }
+          }
+        }
+      }
+    },
+    "result_repair_handoff": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "handoff_handle",
+        "action"
+      ],
+      "properties": {
+        "handoff_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "action": {
+          "$ref": "#/$defs/open_object"
+        }
+      }
+    },
+    "request_session_teardown": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "session/teardown"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          },
+          "required": [
+            "session_handle"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            }
+          }
+        }
+      }
+    },
+    "result_session_teardown": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "complete"
+      ],
+      "properties": {
+        "complete": {
+          "$ref": "#/$defs/boolean"
+        }
+      }
+    },
+    "success_response": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/result_surface_info"
+            },
+            {
+              "$ref": "#/$defs/result_harness_preflight"
+            },
+            {
+              "$ref": "#/$defs/result_session_launch"
+            },
+            {
+              "$ref": "#/$defs/result_route_lease_snapshot"
+            },
+            {
+              "$ref": "#/$defs/result_session_transition"
+            },
+            {
+              "$ref": "#/$defs/result_repair_handoff"
+            },
+            {
+              "$ref": "#/$defs/result_session_teardown"
+            }
+          ]
+        }
+      }
+    },
+    "not_implemented_error": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "const": -32099
+        },
+        "message": {
+          "type": "string",
+          "const": "method not implemented"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          }
+        }
+      }
+    },
+    "unknown_method_error": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "const": -32601
+        },
+        "message": {
+          "type": "string",
+          "const": "method not found"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/safe_extension_value"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+            }
+          }
+        }
+      }
+    },
+    "not_implemented_response": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/not_implemented_error"
+        }
+      }
+    },
+    "unknown_method_response": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/safe_extension_value"
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response_body|raw_account)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/unknown_method_error"
+        }
+      }
+    }
+  }
+}
