@@ -9,6 +9,23 @@
 
   outputs = { self, nixpkgs, flake-utils, zig-overlay }:
     let
+      releaseManifest =
+        let
+          manifest = builtins.fromJSON (builtins.readFile ./release-manifest.json);
+        in
+        assert manifest.schema_version == 1;
+        assert manifest.phase == "declaration";
+        manifest;
+      version = releaseManifest.release.version;
+      packageName = releaseManifest.product.package_name;
+      primaryExecutable = releaseManifest.product.primary_executable;
+      compatibilityLink =
+        assert builtins.length releaseManifest.product.compatibility_links == 1;
+        builtins.head releaseManifest.product.compatibility_links;
+      compatibilityExecutable =
+        assert compatibilityLink.target == primaryExecutable;
+        assert compatibilityLink.materialization == "same_bytes";
+        compatibilityLink.name;
       homeModule = { config, lib, pkgs, ... }:
         let
           cfg = config.programs.oauth-mux;
@@ -61,16 +78,16 @@
           overlays = [ zig-overlay.overlays.default ];
         };
         zig = pkgs.zigpkgs."0.14.1";
-        version =
-          let
-            lines = pkgs.lib.splitString "\n" (builtins.readFile ./build.zig.zon);
-            matches = builtins.filter (match: match != null)
-              (map (line: builtins.match ".*\\.version[[:space:]]*=[[:space:]]*\"([^\"]+)\".*" line) lines);
-          in
-          builtins.head (builtins.head matches);
+        manifestContract =
+          assert builtins.isString version && version != "";
+          assert builtins.isString packageName && packageName != "";
+          assert builtins.isString primaryExecutable && primaryExecutable != "";
+          assert builtins.isString compatibilityExecutable && compatibilityExecutable != "";
+          true;
         mkPackage = { installCodexShim }:
+          assert manifestContract;
           pkgs.stdenvNoCC.mkDerivation {
-            pname = if installCodexShim then "oauth-mux-with-codex-shim" else "oauth-mux";
+            pname = if installCodexShim then "${packageName}-with-codex-shim" else packageName;
             inherit version;
             src = ./.;
 
@@ -98,13 +115,14 @@
               description = "OAuth fallback muxing for AI harness subscriptions";
               license = licenses.mit;
               platforms = platforms.unix;
-              mainProgram = "oauth-mux";
+              mainProgram = primaryExecutable;
             };
           };
       in
       {
         packages = rec {
-          oauth-mux = mkPackage { installCodexShim = false; };
+          omux = mkPackage { installCodexShim = false; };
+          oauth-mux = omux;
           withCodexShim = mkPackage { installCodexShim = true; };
           default = withCodexShim;
         };
@@ -119,24 +137,39 @@
 
         checks = {
           build = self.packages.${system}.default;
-          binary-only = pkgs.runCommand "oauth-mux-binary-only-smoke-${version}" { } ''
+          binary-only = pkgs.runCommand "${packageName}-binary-only-smoke-${version}" {
+            nativeBuildInputs = [ pkgs.diffutils ];
+          } ''
             set -eu
 
-            binary="${self.packages.${system}.oauth-mux}/bin/oauth-mux"
-            test "$($binary version)" = "oauth-mux ${version}"
-            test ! -e "${self.packages.${system}.oauth-mux}/bin/codex"
+            package="${self.packages.${system}.omux}"
+            primary="$package/bin/${primaryExecutable}"
+            compatibility="$package/bin/${compatibilityExecutable}"
+            test "${self.packages.${system}.oauth-mux}" = "$package"
+            test -x "$primary"
+            test -x "$compatibility"
+            cmp -s "$primary" "$compatibility"
+            test "$("$primary" version)" = "${primaryExecutable} ${version}"
+            test "$("$compatibility" version)" = "${compatibilityExecutable} ${version}"
+            test ! -e "$package/bin/codex"
 
             touch "$out"
           '';
-          smoke = pkgs.runCommand "oauth-mux-smoke-${version}" {
+          smoke = pkgs.runCommand "${packageName}-smoke-${version}" {
             nativeBuildInputs = [ pkgs.jq ];
           } ''
             set -eu
 
-            binary="${self.packages.${system}.default}/bin/oauth-mux"
-            codex_shim="${self.packages.${system}.default}/bin/codex"
-            test "$($binary version)" = "oauth-mux ${version}"
-            $binary version --json \
+            package="${self.packages.${system}.default}"
+            primary="$package/bin/${primaryExecutable}"
+            compatibility="$package/bin/${compatibilityExecutable}"
+            codex_shim="$package/bin/codex"
+            test "${self.packages.${system}.withCodexShim}" = "$package"
+            test -x "$primary"
+            test -x "$compatibility"
+            test "$("$primary" version)" = "${primaryExecutable} ${version}"
+            test "$("$compatibility" version)" = "${compatibilityExecutable} ${version}"
+            "$primary" version --json \
               | jq -e \
                 '.version == "${version}"
                  and .runtime_identity.binary_path
@@ -157,7 +190,7 @@ EOF
             test "$(OMUX_CODEX_BIN="$native_codex" "$codex_shim" --version)" = "native-codex-stub 0.0.0"
 
             for cfg in ${./examples}/*.config.json; do
-              OMUX_CONFIG="$cfg" $binary config validate
+              OMUX_CONFIG="$cfg" "$primary" config validate
             done
 
             touch "$out"
