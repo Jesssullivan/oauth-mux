@@ -1431,7 +1431,6 @@ test "managed harness schema excludes sensitive names and bounds typed extension
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "credential") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "token") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "secret") != null);
-    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "api_key") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "account[_-]id") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "email") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "api[_-]key") != null);
