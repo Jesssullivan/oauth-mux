@@ -6,7 +6,6 @@ on:
       version:
         description: "Release version to stage and smoke-test"
         required: false
-        default: "0.1.13"
         type: string
 
 permissions:
@@ -33,6 +32,7 @@ jobs:
         uses: ./.gloriousflywheel/.github/actions/nix-job
         env:
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+          OMUX_REQUESTED_RELEASE_VERSION: ${{ inputs.version || '' }}
         with:
           attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
           push-cache: "false"
@@ -65,4 +65,5 @@ jobs:
               return "${status}"
             }
 
-            run_with_timeout "GloriousFlywheel release proof" "${OMUX_GF_RELEASE_PROOF_TIMEOUT:-40m}" nix develop --command just release-proof-local "${{ inputs.version }}"
+            release_version="$(./scripts/resolve-release-version.sh "${OMUX_REQUESTED_RELEASE_VERSION}")"
+            run_with_timeout "GloriousFlywheel release proof" "${OMUX_GF_RELEASE_PROOF_TIMEOUT:-40m}" nix develop --command just release-proof-local "${release_version}"

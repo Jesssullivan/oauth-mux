@@ -72,7 +72,7 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 | GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged binary tarballs, formula, checksums, installer, deb/rpm packages, and handoff |
 | Registry dry run | `.github/workflows/registry-dry-run.yml` | no | contact configured registries/taps with explicit non-publishing confirmation |
 | npm deprecate (RETIRED lane, keeper-only) | `.github/workflows/npm-deprecate.yml` | yes when `plan_only=false` | npm publication is retired; this workflow's only remaining job is keeping the stale `0.1.9` registry package deprecated |
-| System package QA | `.github/workflows/system-package-install-qa.yml` | no | install published `.deb` and `.rpm` assets in clean containers; `expect_codex_shim` gates new shim-bearing releases |
+| System package QA | `.github/workflows/system-package-install-qa.yml` | no | manual, explicitly versioned install of published `.deb` and `.rpm` assets in clean containers; `expect_codex_shim` gates new shim-bearing releases |
 | Live provider QA | `.github/workflows/live-provider-qa.yml` | provider calls only with confirmation | produce redacted live/cassette evidence; never a default CI gate |
 
 ## Operator Rules

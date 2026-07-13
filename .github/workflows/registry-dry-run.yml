@@ -10,7 +10,6 @@ on:
       version:
         description: "Version to stage and dry-run"
         required: false
-        default: "0.1.13"
         type: string
       lanes:
         description: "Comma-separated lanes: plan,github,homebrew,system"
@@ -34,6 +33,16 @@ jobs:
       OMUX_HOMEBREW_TAP_DIR_PRESENT: ${{ vars.OMUX_HOMEBREW_TAP_DIR != '' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: release_version
+        shell: bash
+        env:
+          OMUX_REQUESTED_RELEASE_VERSION: ${{ inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          version="$(./scripts/resolve-release-version.sh "$OMUX_REQUESTED_RELEASE_VERSION")"
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
       - uses: cachix/install-nix-action@v30
         with:
@@ -80,22 +89,25 @@ jobs:
           echo "OMUX_BREW_BIN=$brew_path" >> "$GITHUB_ENV"
 
       - name: Stage release proof
-        run: nix develop --command just release-proof-local "${{ inputs.version }}"
+        env:
+          OMUX_RELEASE_VERSION: ${{ steps.release_version.outputs.value }}
+        run: nix develop --command just release-proof-local "$OMUX_RELEASE_VERSION"
 
       - name: Run registry dry-run
         shell: bash
         env:
           OMUX_REGISTRY_DRY_RUN_CONFIRM: registry-dry-run
           OMUX_REGISTRY_LANES: ${{ inputs.lanes }}
+          OMUX_RELEASE_VERSION: ${{ steps.release_version.outputs.value }}
           GITHUB_TOKEN: ${{ github.token }}
           OMUX_HOMEBREW_TAP_NAME: ${{ vars.OMUX_HOMEBREW_TAP_NAME || '' }}
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_ENV_HINTS: "1"
-        run: nix develop --command ./scripts/registry-dry-run.sh "${{ inputs.version }}"
+        run: nix develop --command ./scripts/registry-dry-run.sh "$OMUX_RELEASE_VERSION"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: registry-dry-run-${{ inputs.version }}
+          name: registry-dry-run-${{ steps.release_version.outputs.value }}
           path: dist/out/**/handoff/
           if-no-files-found: ignore
