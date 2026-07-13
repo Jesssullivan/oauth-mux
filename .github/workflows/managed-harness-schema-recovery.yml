@@ -6,7 +6,7 @@ on:
       - jess/tin-1798-schema-generation-recovery-20260713
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -26,8 +26,9 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Generate and check contract artifacts
+        id: contract
         run: |
-          set -euxo pipefail
+          set +e
           nix develop --command bash -lc '
             set -euxo pipefail
             zig fmt src/managed_harness_contract.zig
@@ -35,9 +36,29 @@ jobs:
             zig test src/managed_harness_contract.zig
             zig build check-managed-harness-schema
             ./scripts/check-managed-harness-instances.sh
-          '
+          ' >managed-harness-recovery.log 2>&1
+          status=$?
+          set -e
+          printf 'status=%s\n' "$status" >>"$GITHUB_OUTPUT"
+
+      - name: Commit recovery outputs to the throwaway branch
+        run: |
+          set -euxo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/managed_harness_contract.zig schemas/managed-harness-jsonrpc-v2.schema.json managed-harness-recovery.log
+          if ! git diff --cached --quiet; then
+            git commit -m 'ci: capture schema recovery output [skip ci]'
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+
+      - name: Preserve contract command result
+        env:
+          CONTRACT_STATUS: ${{ steps.contract.outputs.status }}
+        run: exit "$CONTRACT_STATUS"
 
       - name: Upload deterministic outputs
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: managed-harness-schema-recovery
