@@ -4,26 +4,35 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# shellcheck source=scripts/release-manifest-current.sh
+source "$repo_root/scripts/release-manifest-current.sh"
+
 version="${1:-${VERSION:-$("$repo_root/scripts/project-version.sh")}}"
 version="${version#v}"
+release_manifest_require_current_v0_1_15 "$version"
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
-homebrew_formula="$out_dir/homebrew/oauth-mux.rb"
+homebrew_formula="$out_dir/$(release_manifest_formula_staged_path)"
+installer="$out_dir/$(release_manifest_installer_staged_path)"
+checksums="$out_dir/$(release_manifest_checksums_staged_path)"
+attachment_paths="$(release_manifest_github_attachment_paths)"
+archive_rows="$(release_manifest_archive_rows)"
+if [ -z "$attachment_paths" ] || [ -z "$archive_rows" ]; then
+  printf 'release manifest produced an empty current smoke projection\n' >&2
+  exit 1
+fi
 
-required_artifacts=(
-  "oauth-mux-x86_64-linux.tar.gz"
-  "oauth-mux-aarch64-linux.tar.gz"
-  "oauth-mux-x86_64-macos.tar.gz"
-  "oauth-mux-aarch64-macos.tar.gz"
-  "oauth-mux-x86_64-windows.tar.gz"
-  "oauth-mux-aarch64-windows.tar.gz"
-  "oauth-mux_${version}_amd64.deb"
-  "oauth-mux_${version}_arm64.deb"
-  "oauth-mux-${version}-1.x86_64.rpm"
-  "oauth-mux-${version}-1.aarch64.rpm"
-  "install.sh"
-)
+required_artifacts=()
+while IFS= read -r staged_path; do
+  case "$staged_path" in
+    artifacts/*) required_artifacts+=("${staged_path#artifacts/}") ;;
+    *)
+      printf 'current GitHub attachment is outside artifacts/: %s\n' "$staged_path" >&2
+      exit 1
+      ;;
+  esac
+done <<<"$attachment_paths"
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -40,21 +49,6 @@ require_file() {
   fi
 }
 
-archive_contains() {
-  local archive="$1"
-  local expected="$2"
-  tar -tzf "$archive" | awk -v expected="$expected" '$0 == expected { found = 1 } END { exit found ? 0 : 1 }'
-}
-
-archive_not_contains() {
-  local archive="$1"
-  local unexpected="$2"
-  if tar -tzf "$archive" | awk -v unexpected="$unexpected" '$0 == unexpected { found = 1 } END { exit found ? 0 : 1 }'; then
-    printf 'unexpected file in archive %s: %s\n' "$archive" "$unexpected" >&2
-    exit 1
-  fi
-}
-
 printf 'checking release tree: %s\n' "$out_dir"
 if [ ! -d "$out_dir" ]; then
   printf 'release output does not exist: %s\n' "$out_dir" >&2
@@ -66,37 +60,61 @@ for artifact in "${required_artifacts[@]}"; do
   require_file "$artifacts_dir/$artifact"
 done
 
-require_file "$artifacts_dir/SHA256SUMS"
+require_file "$checksums"
 require_file "$homebrew_formula"
 
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+printf '%s\n' "${required_artifacts[@]}" | LC_ALL=C sort >"$tmp/expected-artifacts"
+: >"$tmp/actual-artifacts"
+for artifact in "$artifacts_dir"/*; do
+  [ -f "$artifact" ] || continue
+  basename "$artifact" >>"$tmp/actual-artifacts"
+done
+LC_ALL=C sort -o "$tmp/actual-artifacts" "$tmp/actual-artifacts"
+if ! diff -u "$tmp/expected-artifacts" "$tmp/actual-artifacts"; then
+  printf 'release artifact set differs from the current manifest declaration\n' >&2
+  exit 1
+fi
+
 printf 'checking checksums...\n'
-while read -r expected filename; do
+while read -r expected filename extra; do
   [ -n "${expected:-}" ] || continue
+  if [ -n "${extra:-}" ]; then
+    printf 'malformed checksum row for %s\n' "$filename" >&2
+    exit 1
+  fi
   require_file "$artifacts_dir/$filename"
   actual="$(hash_file "$artifacts_dir/$filename")"
   if [ "$actual" != "$expected" ]; then
     printf 'checksum mismatch for %s: expected %s got %s\n' "$filename" "$expected" "$actual" >&2
     exit 1
   fi
-done <"$artifacts_dir/SHA256SUMS"
+done <"$checksums"
+
+: >"$tmp/expected-checksum-members"
+for artifact in "${required_artifacts[@]}"; do
+  [ "$artifact" = "$(basename "$checksums")" ] && continue
+  printf '%s\n' "$artifact" >>"$tmp/expected-checksum-members"
+done
+LC_ALL=C sort -o "$tmp/expected-checksum-members" "$tmp/expected-checksum-members"
+awk 'NF { print $2 }' "$checksums" | LC_ALL=C sort >"$tmp/actual-checksum-members"
+if ! diff -u "$tmp/expected-checksum-members" "$tmp/actual-checksum-members"; then
+  printf 'checksum membership differs from the current manifest declaration\n' >&2
+  exit 1
+fi
 
 printf 'checking archive contents...\n'
-for archive in \
-  oauth-mux-x86_64-linux.tar.gz \
-  oauth-mux-aarch64-linux.tar.gz \
-  oauth-mux-x86_64-macos.tar.gz \
-  oauth-mux-aarch64-macos.tar.gz; do
-  archive_contains "$artifacts_dir/$archive" 'oauth-mux'
-  archive_contains "$artifacts_dir/$archive" 'codex'
-done
-for archive in \
-  oauth-mux-x86_64-windows.tar.gz \
-  oauth-mux-aarch64-windows.tar.gz; do
-  archive_contains "$artifacts_dir/$archive" 'oauth-mux.exe'
-  archive_not_contains "$artifacts_dir/$archive" 'codex'
-  archive_not_contains "$artifacts_dir/$archive" 'codex.cmd'
-  archive_not_contains "$artifacts_dir/$archive" 'codex.ps1'
-done
+while IFS=$'\t' read -r target_id _build_dir _target_os staged_path _release_name members_csv; do
+  IFS=',' read -r -a expected_members <<<"$members_csv"
+  printf '%s\n' "${expected_members[@]}" | LC_ALL=C sort >"$tmp/expected-archive-members"
+  tar -tzf "$out_dir/$staged_path" | LC_ALL=C sort >"$tmp/actual-archive-members"
+  if ! diff -u "$tmp/expected-archive-members" "$tmp/actual-archive-members"; then
+    printf 'archive members differ from manifest for %s\n' "$target_id" >&2
+    exit 1
+  fi
+done <<<"$archive_rows"
 
 printf 'checking Homebrew formula...\n'
 if grep -q -E '\$\{(VERSION|SHA_[A-Z0-9_]+)\}' "$homebrew_formula"; then
@@ -134,8 +152,6 @@ if command -v ruby >/dev/null 2>&1; then
   ruby -c "$homebrew_formula" >/dev/null
 fi
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 native_codex="$tmp/native-codex"
 cat >"$native_codex" <<'EOF'
 #!/bin/sh
@@ -151,7 +167,7 @@ install_dir="$tmp/install-bin"
 VERSION="$version" \
   OMUX_RELEASE_BASE_URL="file://$artifacts_dir" \
   INSTALL_DIR="$install_dir" \
-  sh "$artifacts_dir/install.sh" >/dev/null
+  sh "$installer" >/dev/null
 "$install_dir/oauth-mux" version | grep -qx "oauth-mux ${version}"
 test -x "$install_dir/codex"
 grep -q OMUX_CODEX_SHIM "$install_dir/codex"

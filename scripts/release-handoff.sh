@@ -4,32 +4,51 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# shellcheck source=scripts/release-manifest-current.sh
+source "$repo_root/scripts/release-manifest-current.sh"
+
 version="${1:-${VERSION:-$("$repo_root/scripts/project-version.sh")}}"
 version="${version#v}"
+release_manifest_require_current_v0_1_15 "$version"
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
-homebrew_formula="$out_dir/homebrew/oauth-mux.rb"
+homebrew_formula="$out_dir/$(release_manifest_formula_staged_path)"
 handoff_dir="$out_dir/handoff"
 handoff_file="$handoff_dir/release-handoff.md"
 publish_files="$handoff_dir/publish-files.txt"
 full_checksums="$handoff_dir/SHA256SUMS.full"
+installer_name="$(basename "$(release_manifest_installer_staged_path)")"
+checksums_name="$(basename "$(release_manifest_checksums_staged_path)")"
+archive_rows="$(release_manifest_archive_rows)"
+package_rows="$(release_manifest_package_rows)"
+attachment_paths="$(release_manifest_github_attachment_paths)"
+if [ -z "$archive_rows" ] || [ -z "$package_rows" ] || [ -z "$attachment_paths" ]; then
+  printf 'release manifest produced an empty current handoff projection\n' >&2
+  exit 1
+fi
 
-binary_tarballs=(
-  "oauth-mux-x86_64-linux.tar.gz"
-  "oauth-mux-aarch64-linux.tar.gz"
-  "oauth-mux-x86_64-macos.tar.gz"
-  "oauth-mux-aarch64-macos.tar.gz"
-  "oauth-mux-x86_64-windows.tar.gz"
-  "oauth-mux-aarch64-windows.tar.gz"
-)
+binary_tarballs=()
+while IFS=$'\t' read -r _target_id _build_dir _target_os _staged_path release_name _members_csv; do
+  binary_tarballs+=("$release_name")
+done <<<"$archive_rows"
 
-system_packages=(
-  "oauth-mux_${version}_amd64.deb"
-  "oauth-mux_${version}_arm64.deb"
-  "oauth-mux-${version}-1.x86_64.rpm"
-  "oauth-mux-${version}-1.aarch64.rpm"
-)
+system_packages=()
+nfpm_configs=()
+while IFS=$'\t' read -r _kind _target_id _build_dir cpu_arch _staged_path release_name _members_csv; do
+  system_packages+=("$release_name")
+  case "$cpu_arch" in
+    x86_64) nfpm_config="nfpm/oauth-mux-amd64.yaml" ;;
+    aarch64) nfpm_config="nfpm/oauth-mux-arm64.yaml" ;;
+    *)
+      printf 'unsupported nfpm cpu architecture in release manifest: %s\n' "$cpu_arch" >&2
+      exit 1
+      ;;
+  esac
+  if [[ " ${nfpm_configs[*]} " != *" ${nfpm_config} "* ]]; then
+    nfpm_configs+=("$nfpm_config")
+  fi
+done <<<"$package_rows"
 
 hash_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -64,23 +83,19 @@ if [ ! -d "$out_dir" ]; then
 fi
 "$repo_root/scripts/check-retired-npm.sh" "$out_dir"
 
-require_file "$artifacts_dir/SHA256SUMS"
-require_file "$artifacts_dir/install.sh"
+while IFS= read -r staged_path; do
+  require_file "$out_dir/$staged_path"
+done <<<"$attachment_paths"
 require_file "$homebrew_formula"
-require_file "$out_dir/nfpm/oauth-mux-amd64.yaml"
-require_file "$out_dir/nfpm/oauth-mux-arm64.yaml"
-
-for artifact in "${binary_tarballs[@]}" "${system_packages[@]}"; do
-  require_file "$artifacts_dir/$artifact"
+for nfpm_config in "${nfpm_configs[@]}"; do
+  require_file "$out_dir/$nfpm_config"
 done
 
 mkdir -p "$handoff_dir"
 
 : >"$publish_files"
-for artifact in "${binary_tarballs[@]}" "${system_packages[@]}" "SHA256SUMS" "install.sh"; do
-  printf '%s\n' "artifacts/$artifact" >>"$publish_files"
-done
-printf '%s\n' "homebrew/oauth-mux.rb" >>"$publish_files"
+printf '%s\n' "$attachment_paths" >"$publish_files"
+release_manifest_formula_staged_path >>"$publish_files"
 
 : >"$full_checksums"
 while read -r rel; do
@@ -121,7 +136,7 @@ Attach these files from \`dist/out/v${version}\`:
 | --- | --- |
 EOF
 
-for artifact in "${binary_tarballs[@]}" "${system_packages[@]}" "install.sh" "SHA256SUMS"; do
+for artifact in "${binary_tarballs[@]}" "${system_packages[@]}" "$installer_name" "$checksums_name"; do
   table_row "$artifacts_dir/$artifact"
 done
 

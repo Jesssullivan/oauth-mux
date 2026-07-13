@@ -10,8 +10,10 @@ zig build
 bash -n ./scripts/install-local-dogfood.sh
 bash -n ./scripts/uninstall-local-dogfood.sh
 bash -n ./scripts/release-local.sh
+bash -n ./scripts/release-manifest-current.sh
 bash -n ./scripts/release-smoke.sh
 bash -n ./scripts/release-handoff.sh
+bash -n ./scripts/smoke-release-manifest-current.sh
 bash -n ./scripts/remote-validate.sh
 sh -n ./scripts/check-retired-npm.sh
 sh -n ./scripts/smoke-retired-npm-boundary.sh
@@ -34,6 +36,7 @@ sh -n ./scripts/test-executable-compat.sh
 ./scripts/smoke-gf-checkout-auth-contract.sh
 ./scripts/check-zig-test-root.sh
 ./scripts/check-v0.1.15-characterization.sh
+./scripts/smoke-release-manifest-current.sh
 
 for cfg in examples/*.config.json; do
   OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
