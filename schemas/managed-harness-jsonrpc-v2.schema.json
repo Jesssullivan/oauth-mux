@@ -242,7 +242,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       }
     },
@@ -280,7 +280,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -322,7 +322,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -356,7 +356,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -492,7 +492,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -629,7 +629,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -700,7 +700,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -776,7 +776,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -834,7 +834,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -919,7 +919,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1002,7 +1002,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1052,7 +1052,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1103,7 +1103,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1176,7 +1176,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1196,7 +1196,73 @@
             "replay_reservation_release_failed"
           ]
         }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "sidecar_shutdown_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "sidecar_terminated": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "capability_disposal_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "capability_disposed": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "lease_release_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "leases_released": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "replay_reservation_release_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "replay_reservations_released": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "proxy_attempt_initial": {
       "type": "object",
@@ -1221,7 +1287,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1351,7 +1417,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1472,7 +1538,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1593,7 +1659,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1719,7 +1785,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -1916,7 +1982,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -1957,7 +2023,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -1998,7 +2064,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2039,7 +2105,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2080,7 +2146,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2121,7 +2187,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2162,7 +2228,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2214,7 +2280,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2270,7 +2336,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [],
@@ -2301,7 +2367,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2348,7 +2414,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2404,7 +2470,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2445,7 +2511,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2488,7 +2554,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2544,7 +2610,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2585,7 +2651,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2628,7 +2694,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2684,7 +2750,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2721,7 +2787,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2764,7 +2830,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2820,7 +2886,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -2865,7 +2931,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -2957,7 +3023,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3013,7 +3079,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -3054,7 +3120,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3093,7 +3159,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3149,7 +3215,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           },
           "required": [
@@ -3186,7 +3252,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3221,7 +3287,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3299,7 +3365,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3339,7 +3405,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           }
         }
@@ -3368,7 +3434,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3413,7 +3479,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3453,7 +3519,7 @@
             "pattern": "^[a-z][a-z0-9_-]*$",
             "maxLength": 128,
             "not": {
-              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
             }
           }
         }
@@ -3482,7 +3548,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3538,7 +3604,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
@@ -3594,7 +3660,7 @@
         "pattern": "^[a-z][a-z0-9_-]*$",
         "maxLength": 128,
         "not": {
-          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"
         }
       },
       "required": [
