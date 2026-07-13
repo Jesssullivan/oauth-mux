@@ -696,9 +696,25 @@ fn teardownIncompleteDataSchema(allocator: std.mem.Allocator) !Value {
     try put(&properties, "cleanup", try refSchema(allocator, "#/$defs/teardown_incomplete_cleanup"));
     try put(&properties, "reason_code", try enumSchema(allocator, &teardown_incomplete_reason_codes));
 
+    var reason_consistency = array(allocator);
+    inline for (teardown_incomplete_reason_codes, teardown_cleanup_fields) |reason_code, failed_field| {
+        var cleanup_properties = object(allocator);
+        try put(&cleanup_properties, failed_field, try constBooleanSchema(allocator, false));
+        var cleanup_constraint = object(allocator);
+        try put(&cleanup_constraint, "properties", cleanup_properties);
+
+        var variant_properties = object(allocator);
+        try put(&variant_properties, "reason_code", try constStringSchema(allocator, reason_code));
+        try put(&variant_properties, "cleanup", cleanup_constraint);
+        var variant = object(allocator);
+        try put(&variant, "properties", variant_properties);
+        try append(&reason_consistency, variant);
+    }
+
     var schema = try objectSchemaBase(allocator);
     try put(&schema, "required", try stringArray(allocator, &teardown_incomplete_data_fields));
     try put(&schema, "properties", properties);
+    try put(&schema, "oneOf", reason_consistency);
     return schema;
 }
 
@@ -969,7 +985,7 @@ fn openObjectSchema(allocator: std.mem.Allocator) !Value {
 
 fn propertyNamesSchema(allocator: std.mem.Allocator) !Value {
     var forbidden = object(allocator);
-    try put(&forbidden, "pattern", string("(credential|token|authorization|cookie|env|argv|prompt|response[_-]body|raw[_-]account|secret|password|api[_-]key|bearer|oauth|account[_-]id|user[_-]id|email|org[_-]id|organization[_-]id|identity)"));
+    try put(&forbidden, "pattern", string("(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"));
     var schema = object(allocator);
     try put(&schema, "pattern", string("^[a-z][a-z0-9_-]*$"));
     try put(&schema, "maxLength", integer(128));
@@ -1370,6 +1386,20 @@ test "managed harness schema types leases actions and the only legal followup at
     const teardown_error_data = defs.get("teardown_incomplete_error").?.object.get("properties").?.object
         .get("data").?.object;
     try std.testing.expectEqualStrings("#/$defs/teardown_incomplete_data", teardown_error_data.get("$ref").?.string);
+    const teardown_reason_variants = defs.get("teardown_incomplete_data").?.object.get("oneOf").?.array.items;
+    try std.testing.expectEqual(@as(usize, teardown_incomplete_reason_codes.len), teardown_reason_variants.len);
+    inline for (teardown_incomplete_reason_codes, teardown_cleanup_fields, 0..) |reason_code, failed_field, index| {
+        const variant_properties = teardown_reason_variants[index].object.get("properties").?.object;
+        try std.testing.expectEqualStrings(
+            reason_code,
+            variant_properties.get("reason_code").?.object.get("const").?.string,
+        );
+        try std.testing.expectEqual(
+            false,
+            variant_properties.get("cleanup").?.object.get("properties").?.object
+                .get(failed_field).?.object.get("const").?.bool,
+        );
+    }
 
     const lease_record = defs.get("lease_record").?.object;
     try std.testing.expectEqual(@as(usize, lease_required.len), lease_record.get("required").?.array.items.len);
@@ -1431,9 +1461,9 @@ test "managed harness schema excludes sensitive names and bounds typed extension
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "credential") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "token") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "secret") != null);
-    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "account[_-]id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "account[_-]?id") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "email") != null);
-    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "api[_-]key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "api[_-]?key") != null);
     try std.testing.expectEqual(@as(i64, 128), names.get("maxLength").?.integer);
     try std.testing.expectEqual(false, params.get("additionalProperties").?.bool);
     const extensions = params.get("patternProperties").?.object;
