@@ -985,7 +985,7 @@ fn openObjectSchema(allocator: std.mem.Allocator) !Value {
 
 fn propertyNamesSchema(allocator: std.mem.Allocator) !Value {
     var forbidden = object(allocator);
-    try put(&forbidden, "pattern", string("(credential|token|authorization|cookie|env|argv|prompt|response[_-]?body|raw[_-]?account|secret|password|api[_-]?key|bearer|oauth|account[_-]?id|user[_-]?id|email|org[_-]?id|organization[_-]?id|identity)"));
+    try put(&forbidden, "pattern", string("(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"));
     var schema = object(allocator);
     try put(&schema, "pattern", string("^[a-z][a-z0-9_-]*$"));
     try put(&schema, "maxLength", integer(128));
@@ -1461,9 +1461,9 @@ test "managed harness schema excludes sensitive names and bounds typed extension
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "credential") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "token") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "secret") != null);
-    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "account[_-]?id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "account[_-]*id") != null);
     try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "email") != null);
-    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "api[_-]?key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, names.get("not").?.object.get("pattern").?.string, "api[_-]*key") != null);
     try std.testing.expectEqual(@as(i64, 128), names.get("maxLength").?.integer);
     try std.testing.expectEqual(false, params.get("additionalProperties").?.bool);
     const extensions = params.get("patternProperties").?.object;

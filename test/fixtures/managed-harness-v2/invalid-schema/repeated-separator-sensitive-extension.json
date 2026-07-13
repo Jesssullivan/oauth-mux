@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "repeated-separator-sensitive-extension",
+  "method": "surface/info",
+  "params": {
+    "x_count_account__id": 123456789
+  }
+}
