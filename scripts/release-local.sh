@@ -4,6 +4,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# shellcheck source=scripts/release-manifest-current.sh
+source "$repo_root/scripts/release-manifest-current.sh"
+
 project_version="$("$repo_root/scripts/project-version.sh")"
 version="${1:-${VERSION:-$project_version}}"
 version="${version#v}"
@@ -12,12 +15,21 @@ if [ "$version" != "$project_version" ]; then
   printf 'bump build.zig.zon before staging a differently versioned release\n' >&2
   exit 2
 fi
+release_manifest_require_current_v0_1_15 "$version"
 
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
 homebrew_dir="$out_dir/homebrew"
 nfpm_dir="$out_dir/nfpm"
 work_dir="$out_dir/work"
+checksums_path="$out_dir/$(release_manifest_checksums_staged_path)"
+installer_path="$out_dir/$(release_manifest_installer_staged_path)"
+archive_rows="$(release_manifest_archive_rows)"
+package_rows="$(release_manifest_package_rows)"
+if [ -z "$archive_rows" ] || [ -z "$package_rows" ]; then
+  printf 'release manifest produced an empty current packaging projection\n' >&2
+  exit 1
+fi
 
 format_kib_as_gib() {
   awk "BEGIN { printf \"%.1f\", $1 / 1048576 }"
@@ -84,38 +96,47 @@ hash_file() {
 }
 
 write_artifact_checksums() {
-  : >"$artifacts_dir/SHA256SUMS"
+  : >"$checksums_path"
   for artifact in "$artifacts_dir"/*; do
     [ -f "$artifact" ] || continue
-    [ "$(basename "$artifact")" = "SHA256SUMS" ] && continue
-    printf '%s  %s\n' "$(hash_file "$artifact")" "$(basename "$artifact")" >>"$artifacts_dir/SHA256SUMS"
+    [ "$artifact" = "$checksums_path" ] && continue
+    printf '%s  %s\n' "$(hash_file "$artifact")" "$(basename "$artifact")" >>"$checksums_path"
   done
 }
 
-package_binary() {
-  local build_dir="$1"
-  local artifact="$2"
-  local platform="$3"
-  local binary_name="$4"
-  local src="zig-out/${build_dir}/${binary_name}"
+package_archive() {
+  local target_id="$1"
+  local build_dir="$2"
+  local staged_path="$3"
+  local members_csv="$4"
+  local stage="$work_dir/archive-${target_id}"
+  local members=()
+  local member src
 
-  if [ ! -f "$src" ]; then
-    printf 'missing release binary: %s\n' "$src" >&2
-    exit 1
-  fi
-
-  local stage="$work_dir/${artifact}"
+  IFS=',' read -r -a members <<<"$members_csv"
   mkdir -p "$stage"
-  cp "$src" "$stage/${binary_name}"
-  chmod 0755 "$stage/${binary_name}"
-  if [ "$platform" = "darwin" ] || [ "$platform" = "linux" ]; then
-    cp "$repo_root/dist/codex-shim.sh" "$stage/codex"
-    chmod 0755 "$stage/codex"
-    tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name" codex
-  else
-    tar -czf "$artifacts_dir/${artifact}.tar.gz" -C "$stage" "$binary_name"
-  fi
+  for member in "${members[@]}"; do
+    case "$member" in
+      oauth-mux|oauth-mux.exe)
+        src="$repo_root/zig-out/${build_dir}/${member}"
+        ;;
+      codex)
+        src="$repo_root/dist/codex-shim.sh"
+        ;;
+      *)
+        printf 'unsupported current archive member for %s: %s\n' "$target_id" "$member" >&2
+        exit 1
+        ;;
+    esac
+    if [ ! -f "$src" ]; then
+      printf 'missing release archive input: %s\n' "$src" >&2
+      exit 1
+    fi
+    cp "$src" "$stage/$member"
+    chmod 0755 "$stage/$member"
+  done
 
+  tar -czf "$out_dir/$staged_path" -C "$stage" "${members[@]}"
 }
 
 printf 'building release binaries...\n'
@@ -126,20 +147,18 @@ fi
 printf 'running: zig %s\n' "${zig_release_args[*]}"
 zig "${zig_release_args[@]}"
 
-package_binary "x86_64-linux" "oauth-mux-x86_64-linux" "linux" "oauth-mux"
-package_binary "aarch64-linux" "oauth-mux-aarch64-linux" "linux" "oauth-mux"
-package_binary "x86_64-macos" "oauth-mux-x86_64-macos" "darwin" "oauth-mux"
-package_binary "aarch64-macos" "oauth-mux-aarch64-macos" "darwin" "oauth-mux"
-package_binary "x86_64-windows" "oauth-mux-x86_64-windows" "windows" "oauth-mux.exe"
-package_binary "aarch64-windows" "oauth-mux-aarch64-windows" "windows" "oauth-mux.exe"
+while IFS=$'\t' read -r target_id build_dir _target_os staged_path _release_name members_csv; do
+  package_archive "$target_id" "$build_dir" "$staged_path" "$members_csv"
+done <<<"$archive_rows"
 
 printf 'writing SHA256SUMS...\n'
 write_artifact_checksums
 
-sha_linux_x64="$(hash_file "$artifacts_dir/oauth-mux-x86_64-linux.tar.gz")"
-sha_linux_arm64="$(hash_file "$artifacts_dir/oauth-mux-aarch64-linux.tar.gz")"
-sha_macos_x64="$(hash_file "$artifacts_dir/oauth-mux-x86_64-macos.tar.gz")"
-sha_macos_arm64="$(hash_file "$artifacts_dir/oauth-mux-aarch64-macos.tar.gz")"
+sha_linux_x64="$(hash_file "$out_dir/$(release_manifest_archive_staged_path x86_64-linux)")"
+sha_linux_arm64="$(hash_file "$out_dir/$(release_manifest_archive_staged_path aarch64-linux)")"
+sha_macos_x64="$(hash_file "$out_dir/$(release_manifest_archive_staged_path x86_64-macos)")"
+sha_macos_arm64="$(hash_file "$out_dir/$(release_manifest_archive_staged_path aarch64-macos)")"
+homebrew_formula="$out_dir/$(release_manifest_formula_staged_path)"
 
 printf 'rendering Homebrew formula...\n'
 sed \
@@ -148,53 +167,94 @@ sed \
   -e "s|\${SHA_LINUX_ARM64}|${sha_linux_arm64}|g" \
   -e "s|\${SHA_MACOS_X64}|${sha_macos_x64}|g" \
   -e "s|\${SHA_MACOS_ARM64}|${sha_macos_arm64}|g" \
-  dist/homebrew/oauth-mux.rb >"$homebrew_dir/oauth-mux.rb"
+  dist/homebrew/oauth-mux.rb >"$homebrew_formula"
 
 write_nfpm_config() {
-  local arch="$1"
-  local src="$2"
-  local config="$nfpm_dir/oauth-mux-${arch}.yaml"
-  local codex_shim="$work_dir/nfpm-codex-shim"
-  cp "$repo_root/dist/codex-shim.sh" "$codex_shim"
-  chmod 0755 "$codex_shim"
+  local build_dir="$1"
+  local cpu_arch="$2"
+  local members_csv="$3"
+  local nfpm_arch member src
+  local members=()
+
+  case "$cpu_arch" in
+    x86_64) nfpm_arch="amd64" ;;
+    aarch64) nfpm_arch="arm64" ;;
+    *)
+      printf 'unsupported nfpm cpu architecture: %s\n' "$cpu_arch" >&2
+      exit 1
+      ;;
+  esac
+  local config="$nfpm_dir/oauth-mux-${nfpm_arch}.yaml"
+  [ -f "$config" ] && return
+
   cat >"$config" <<EOF
 name: oauth-mux
-arch: "${arch}"
+arch: "${nfpm_arch}"
 version: "${version}"
 maintainer: "Jess Sullivan <jess@sulliwood.org>"
 description: "OAuth fallback muxing for AI harness subscriptions"
 homepage: "https://omux.xoxd.ai"
 license: MIT
 contents:
+EOF
+
+  IFS=',' read -r -a members <<<"$members_csv"
+  for member in "${members[@]}"; do
+    case "$member" in
+      /usr/bin/oauth-mux)
+        src="$repo_root/zig-out/${build_dir}/oauth-mux"
+        ;;
+      /usr/bin/codex)
+        src="$work_dir/nfpm-codex-shim"
+        if [ ! -f "$src" ]; then
+          cp "$repo_root/dist/codex-shim.sh" "$src"
+          chmod 0755 "$src"
+        fi
+        ;;
+      *)
+        printf 'unsupported current system-package member: %s\n' "$member" >&2
+        exit 1
+        ;;
+    esac
+    if [ ! -f "$src" ]; then
+      printf 'missing nfpm input: %s\n' "$src" >&2
+      exit 1
+    fi
+    cat >>"$config" <<EOF
   - src: ${src}
-    dst: /usr/bin/oauth-mux
-    file_info:
-      mode: 0755
-  - src: ${codex_shim}
-    dst: /usr/bin/codex
+    dst: ${member}
     file_info:
       mode: 0755
 EOF
+  done
 }
 
-write_nfpm_config "amd64" "$repo_root/zig-out/x86_64-linux/oauth-mux"
-write_nfpm_config "arm64" "$repo_root/zig-out/aarch64-linux/oauth-mux"
+while IFS=$'\t' read -r _kind _target_id build_dir cpu_arch _staged_path _release_name members_csv; do
+  write_nfpm_config "$build_dir" "$cpu_arch" "$members_csv"
+done <<<"$package_rows"
 
 if command -v nfpm >/dev/null 2>&1; then
   printf 'building nfpm deb/rpm packages...\n'
-  for arch in amd64 arm64; do
-    nfpm package -f "$nfpm_dir/oauth-mux-${arch}.yaml" -p deb -t "$artifacts_dir" >/dev/null
-    nfpm package -f "$nfpm_dir/oauth-mux-${arch}.yaml" -p rpm -t "$artifacts_dir" >/dev/null
-  done
+  while IFS=$'\t' read -r kind _target_id _build_dir cpu_arch staged_path release_name _members_csv; do
+    case "$cpu_arch" in
+      x86_64) nfpm_arch="amd64" ;;
+      aarch64) nfpm_arch="arm64" ;;
+    esac
+    nfpm package -f "$nfpm_dir/oauth-mux-${nfpm_arch}.yaml" -p "$kind" -t "$artifacts_dir" >/dev/null
+    if [ ! -f "$out_dir/$staged_path" ]; then
+      printf 'nfpm did not emit manifest-declared artifact %s (%s)\n' "$release_name" "$staged_path" >&2
+      exit 1
+    fi
+  done <<<"$package_rows"
 else
   printf 'warning: nfpm not found; deb/rpm artifacts skipped, configs written to %s\n' "$nfpm_dir" >&2
 fi
 
 printf 'staging curl installer...\n'
-cp dist/install.sh "$artifacts_dir/install.sh"
-chmod 0755 "$artifacts_dir/install.sh"
+cp dist/install.sh "$installer_path"
+chmod 0755 "$installer_path"
 write_artifact_checksums
 
 printf '\nrelease output: %s\n' "$out_dir"
 printf 'artifacts:      %s\n' "$artifacts_dir"
-printf 'homebrew:       %s\n' "$homebrew_dir/oauth-mux.rb"
+printf 'homebrew:       %s\n' "$homebrew_formula"
