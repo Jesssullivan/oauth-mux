@@ -4,6 +4,7 @@ const std = @import("std");
 /// this mapping rather than defining a second package or version authority.
 pub const primary_executable_name = "omux";
 pub const compatibility_executable_names = &[_][]const u8{"oauth-mux"};
+pub const package_name = "oauth-mux";
 
 /// Renaming the executable must not fork existing config, state, or runtime
 /// directories. Both entrypoints continue to use the shipped namespace.
@@ -40,6 +41,7 @@ test "executable naming keeps one persistent namespace" {
     try std.testing.expectEqualStrings("omux", primary_executable_name);
     try std.testing.expectEqual(@as(usize, 1), compatibility_executable_names.len);
     try std.testing.expectEqualStrings("oauth-mux", compatibility_executable_names[0]);
+    try std.testing.expectEqualStrings("oauth-mux", package_name);
     try std.testing.expectEqualStrings(compatibility_executable_names[0], storage_namespace);
 }
 

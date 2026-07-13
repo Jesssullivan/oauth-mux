@@ -161,6 +161,12 @@ release-all-local:
     {{zig}} build release
     @echo "all release builds complete"
 
+release-manifest-update:
+    {{zig}} build update-release-manifest
+
+release-manifest-check-local:
+    {{zig}} build check-release-manifest
+
 release-local VERSION=release_version:
     nix develop --command ./scripts/release-local.sh {{VERSION}}
 

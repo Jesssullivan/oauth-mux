@@ -68,7 +68,7 @@ fn notImpl(msg: []const u8) DispatchOutcome {
 
 fn surfaceInfo(ctx: *Context) DispatchOutcome {
     var obj = std.json.ObjectMap.init(ctx.allocator);
-    obj.put("surface_version", .{ .integer = 1 }) catch return oom();
+    obj.put("surface_version", .{ .integer = types.surface_version }) catch return oom();
     obj.put("build", .{ .string = @import("mod.zig").BUILD_TAG }) catch return oom();
 
     var transports = std.json.Array.init(ctx.allocator);

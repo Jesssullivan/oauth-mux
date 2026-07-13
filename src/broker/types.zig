@@ -3,6 +3,8 @@
 
 const std = @import("std");
 
+pub const surface_version: u32 = 1;
+
 /// The claim ladder. Lower = weaker; the product target is `next_turn_seamless`.
 /// `mid_turn_seamless` is a stretch; `cross_session_thread_continuity` is
 /// honestly labelled as may-not-exist.
