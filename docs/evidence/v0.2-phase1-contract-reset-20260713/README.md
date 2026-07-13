@@ -194,6 +194,8 @@ A subsequent final-candidate review found and the amendment now addresses:
     class because no repo-local runner-label declaration existed.
 12. the first-run test placing isolated fixtures under the hosted runner's home,
     causing the operator-home leak assertion to reject safe generated paths.
+13. provenance text claiming `build.zig.zon` was unchanged even though the
+    contract correctly adds `schemas` to the source-package paths.
 
 That verdict applied to old head `66572c3` and is invalidated by the amended
 contract. The amended local check routes Python bytecode into a disposable

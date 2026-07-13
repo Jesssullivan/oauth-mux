@@ -34,7 +34,8 @@ nix eval --json --impure --expr \
   '(builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.aarch64-darwin.actionlint.meta'
 ```
 
-`build.zig.zon` is unchanged by this addition. The product remains pure Zig
-with no external runtime dependency. The checked Python helper uses only the
-standard library to enforce cross-element handle relationships that Draft
+`build.zig.zon` adds only the `schemas` package path so source archives contain
+the checked contract. It adds no package dependency. The product remains pure
+Zig with no external runtime dependency. The checked Python helper uses only
+the standard library to enforce cross-element handle relationships that Draft
 2020-12 cannot express by value.
