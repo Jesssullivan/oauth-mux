@@ -2,13 +2,13 @@
 
 - Date: 2026-07-13
 - Program: GitHub #463 / Linear TIN-2057
-- Packet status: **draft; not landed**
-- Claim class: source-only contract draft pending final-head proof
+- Packet role: immutable Phase-1 proof contract; landing is recorded externally
+- Claim class: source-only contract; external final-head proof required
 - Live broker claim: none
 - Superseded pushed PR head at packet review: `66572c3`
-- Candidate amendment: the commit containing this packet
-- Final proof-subject SHA and run set: pending candidate push
-- Final packet identity: the landed Git commit containing this file
+- Proof subject: the Git commit containing this packet
+- Exact-head run set and merge containment: recorded on PR #475, GitHub #463,
+  Linear TIN-1798/TIN-2057, and Prompt 78 after proof
 
 ## Result
 
@@ -16,8 +16,10 @@ Landed PRs #464-#474 establish one v0.2 authority, remove retired npm
 publication staging, make `omux` the primary future executable identity, and
 introduce the Zig-owned declaration manifest. Open PR #475 prepares a
 managed-harness JSON-RPC surface v2 that declares seven lifecycle methods as
-explicitly `not_implemented`. This packet remains draft until that declaration
-and every Phase-1 proof gate below are landed and recorded.
+explicitly `not_implemented`. This packet deliberately does not embed proof runs
+created after its commit or assert its own landing: doing so would change the
+proof subject. Phase-1 closure requires every gate below on the packet-containing
+commit, followed by external merge-containment and management records.
 
 This packet does not prove a Claude sidecar, managed launch, account switch,
 exact-model continuity under live exhaustion, OpenCode conformance, installed
@@ -42,7 +44,7 @@ history only and receives no managed-transition or golden-proof credit.
 | #472 | `c43a529` | stable archive/package layout consumes declaration | CI 29233911192; Release Proof 29235234075 |
 | #473 | `57844fb` | repository-scoped GF App checkout | CI 29231628581 |
 | #474 | `bb3e5ff` | workflow versions derive from Zig authority | CI 29248993672; Release Proof 29250121003 |
-| #475 | candidate amendment after `66572c3` | managed-harness surface-v2 declaration, instances, public-source gate, and reproducible exact-ref proof checkout | final-head CI, Public Source, Remote Check, and Release Proof pending |
+| #475 | packet-containing candidate after `66572c3` | managed-harness surface-v2 declaration, instances, public-source gate, and reproducible exact-ref proof checkout | exact-head CI, Public Source, Remote Check, Release Proof, and merge containment are recorded externally |
 
 The post-TIN-2808 no-spend Remote Validate E2E on current pre-#475 main passed
 as run 29277105818 at exact head `bb3e5ff`. This proves the remote v0.1.15
@@ -140,9 +142,9 @@ The focused local regression passed with `TMPDIR` deliberately nested beneath
 `HOME` and both leak assertions active. It used the installed v0.1.15 binary as
 local debugging and is not completion proof.
 
-## Phase-1 definition-of-done proof table
+## Phase-1 definition-of-done proof contract
 
-| Gate | Required evidence | Current state |
+| Gate | Required evidence | State when this packet was committed |
 | --- | --- | --- |
 | Authority reconciliation | `AGENTS.md`, plan, authority map, threat model, #463, and TIN-2057 agree; superseded designs guarded | landed in #464/#467; final consistency audit pending |
 | Retired npm red/green boundary | guard fixture and #465 final CI/Release Proof | landed; packet must cite guard artifact and command exactly |
@@ -160,6 +162,10 @@ local debugging and is not completion proof.
 | Release proof | exact amended branch through `release-proof` | pending; 29281192288 canceled before execution |
 | Management and operator reconciliation | #463, TIN-1798/TIN-2057, initiative status, Prompt 78, release runbook, migration ledger, and claim matrix agree | pending final links and stale-update correction |
 | Prohibited-claim audit | no beta, live broker, installed prerelease, full provider, FFI/federation, or Zig-REAPI claim without named proof | draft packet is bounded; final repo/tracker audit pending |
+
+Run IDs produced for this exact tree are intentionally not written back into
+this file. PR and tracker records bind those runs to the packet-containing SHA;
+the merge-containment check then proves that the reviewed tree landed unchanged.
 
 GF runner execution is not Bazel REAPI proof; TIN-2105 remains parallel and
 nonblocking.
