@@ -45,6 +45,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Checkout GloriousFlywheel action
         uses: ./.github/actions/checkout-gloriousflywheel
