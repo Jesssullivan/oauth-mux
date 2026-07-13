@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "id": "teardown_incomplete",
+  "error": {
+    "code": -32010,
+    "message": "session teardown incomplete",
+    "data": {
+      "cleanup": {
+        "sidecar_terminated": true,
+        "capability_disposed": true,
+        "leases_released": false,
+        "replay_reservations_released": true
+      },
+      "reason_code": "lease_release_failed"
+    }
+  }
+}

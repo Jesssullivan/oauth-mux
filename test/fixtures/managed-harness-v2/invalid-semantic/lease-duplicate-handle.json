@@ -1,0 +1,32 @@
+{
+  "jsonrpc": "2.0",
+  "id": "lease_duplicate_handle",
+  "result": {
+    "session_handle": "session_a",
+    "observed_at_ms": 1783965500000,
+    "leases": [
+      {
+        "lease_handle": "lease_a",
+        "session_handle": "session_a",
+        "account_handle": "account_a",
+        "route_handle": "route_a",
+        "model_demand": {"model": "claude-opus-4-1", "preservation": "exact"},
+        "owner_pid": 42001,
+        "heartbeat_at_ms": 1783965499000,
+        "expires_at_ms": 1783965560000,
+        "owner_state": "active"
+      },
+      {
+        "lease_handle": "lease_a",
+        "session_handle": "session_a",
+        "account_handle": "account_b",
+        "route_handle": "route_b",
+        "model_demand": {"model": "claude-opus-4-1", "preservation": "exact"},
+        "owner_pid": 42002,
+        "heartbeat_at_ms": 1783965498000,
+        "expires_at_ms": 1783965560000,
+        "owner_state": "active"
+      }
+    ]
+  }
+}

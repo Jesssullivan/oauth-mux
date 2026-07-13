@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "raw-account-id-extension",
+  "method": "surface/info",
+  "params": {
+    "account_id": 123456789
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "jsonrpc": "2.0",
+  "id": "surface-info",
+  "result": {
+    "surface_version": 2,
+    "status": "planned_unshipped",
+    "x_flag_forward_compatible": true,
+    "methods": [
+      {"name": "surface/info", "implementation_status": "not_implemented"},
+      {"name": "harness/preflight", "implementation_status": "not_implemented"},
+      {"name": "session/launch", "implementation_status": "not_implemented"},
+      {"name": "route/lease_snapshot", "implementation_status": "not_implemented"},
+      {"name": "session/transition", "implementation_status": "not_implemented"},
+      {"name": "repair/handoff", "implementation_status": "not_implemented"},
+      {"name": "session/teardown", "implementation_status": "not_implemented"}
+    ],
+    "policy": {
+      "carrier": {
+        "capability_bits": 256,
+        "capability_encoding": "base64url_no_padding",
+        "capability_storage": "memory_only",
+        "capability_compare": "constant_time",
+        "capability_generation": "operating_system_csprng",
+        "capability_lifetime": "session_only",
+        "capability_child_binding": "managed_child_only",
+        "capability_log_behavior": "never_emit_dispose_at_teardown",
+        "inbound_carrier": "ANTHROPIC_AUTH_TOKEN",
+        "base_url_carrier": "ANTHROPIC_BASE_URL",
+        "loopback_bind": "127.0.0.1:0",
+        "bad_capability_behavior": "local_401_zero_upstream",
+        "inbound_auth_header_behavior": "strip_authorization_and_api_key",
+        "upstream_auth_injection": "elected_oauth_bearer_only",
+        "request_target_form": "origin_form_only",
+        "connect_behavior": "reject",
+        "absolute_form_behavior": "reject",
+        "caller_selected_upstream_behavior": "reject",
+        "upstream_origin": "https://api.anthropic.com",
+        "tls_verification": "system_roots_required",
+        "redirect_behavior": "reject_auth_carrying_redirects"
+      },
+      "replay": {
+        "max_upstream_attempts": 2,
+        "max_cross_account_alternates": 1,
+        "max_same_route_transport_retries": 1,
+        "alternate_statuses": [401, 403, 429],
+        "request_limit_bytes": 33554432,
+        "sidecar_limit_bytes": 67108864,
+        "host_limit_bytes": 268435456,
+        "reservation_storage": "atomic_cross_process",
+        "reservation_owner": "pid_heartbeat_expiry",
+        "reservation_stale_behavior": "ignore_and_reclaim",
+        "reservation_release_behavior": "hold_until_replay_ineligible_or_cancellation_overflow_teardown",
+        "overflow_behavior": "stream_once_release_reservation",
+        "chunked_unknown_length_behavior": "buffer_to_request_limit_then_stream_once_with_backpressure",
+        "cancellation_behavior": "propagate_no_cross_account_release_reservation",
+        "spool_behavior": "forbidden",
+        "ambiguous_transport_behavior": "propagate_original_no_cross_account",
+        "started_response_behavior": "propagate_original_no_cross_account",
+        "provider_5xx_behavior": "pass_through_native_retry"
+      },
+      "wait": {
+        "max_pre_attempt_waits": 1,
+        "max_wait_seconds": 30,
+        "trusted_reset_required": true,
+        "must_fit_request_deadline": true,
+        "reelect_after_wait": true,
+        "otherwise_status": 429,
+        "retry_after_source": "best_trusted_reset",
+        "loop_behavior": "forbidden"
+      },
+      "leases": {
+        "storage": "atomic_redacted_cross_process",
+        "selection": "sticky_least_loaded_then_least_recent",
+        "heartbeat_required": true,
+        "expiry_required": true,
+        "stale_owner_behavior": "ignore_and_reclaim",
+        "unavailable_state_behavior": "advisory_never_blocks_reactive_routing",
+        "exhaustion_trust": "through_reset",
+        "availability_freshness": "deadline_required",
+        "unknown_rank": "below_known_good_above_dead"
+      },
+      "redaction": {
+        "wire_material": "opaque_handles_and_redacted_labels_only",
+        "recursive_sensitive_name_rejection": true,
+        "local_evidence": "typed_redacted_only",
+        "body_persistence": "forbidden",
+        "extension_limits": "typed_x_flag_x_count_x_ratio_scalars_only"
+      }
+    }
+  }
+}

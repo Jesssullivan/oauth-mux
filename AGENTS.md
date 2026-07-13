@@ -87,7 +87,9 @@ prove the OpenCode conformance boundary, it is probably out of scope.
 11. `README.md` — public-facing current-state summary; subordinate to specs
 12. `flake.nix` — Nix devShell and package definitions
 13. `build.zig.zon` plus the Zig release graph — version and release semantics;
-    they emit/check the v0.2 manifest consumed by packaging and Bazel/GF
+    they emit/check the v0.2 manifest contract and currently migrated consumers.
+    Remaining packaging and Bazel/GF consumers stay sequenced under TIN-2050,
+    TIN-2046, and TIN-2105 until their own proof lands.
 14. `src/` — implementation
 
 ## Superseded Design Inputs (pending deletion)
@@ -130,6 +132,11 @@ laptop. Local build commands remain available only for narrow debugging of a
 local toolchain, generated binary, or installer issue. If a local build is used
 for debugging, state that it is not validation and follow with the remote lane
 before making a completion or merge claim.
+
+The independent FOSS gate is the unprivileged `Public Source` workflow. It runs
+`nix develop --command just public-source-check-local` on a GitHub-hosted runner
+with Tinyland/GF credentials and endpoints absent. This proves the public
+Just/Nix source path; it complements and never replaces required GF proof.
 
 Private GloriousFlywheel action checkout is authenticated by
 `.github/actions/checkout-gloriousflywheel`, which mints a short-lived token

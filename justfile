@@ -173,6 +173,9 @@ managed-harness-schema-update:
 managed-harness-schema-check-local:
     {{zig}} build check-managed-harness-schema
 
+managed-harness-contract-check-local:
+    nix develop --command ./scripts/check-managed-harness-instances.sh
+
 release-local VERSION=release_version:
     nix develop --command ./scripts/release-local.sh {{VERSION}}
 
@@ -239,6 +242,11 @@ check REF="":
 check-local:
     ./scripts/check-local.sh
     @echo "all checks passed"
+
+# Unprivileged FOSS source path. Authoritative proof is the Public Source
+# workflow on a GitHub-hosted runner; this recipe is its checked implementation.
+public-source-check-local:
+    ./scripts/public-source-check.sh
 
 e2e REF="":
     ./scripts/remote-validate.sh e2e {{REF}}

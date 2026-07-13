@@ -1,24 +1,35 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-07-11
+Updated: 2026-07-13
 
 Release discipline (2026-07-04): cuts are evidence-bound per `CHANGELOG.md`;
 cadence + tag-drift warning tracked in TIN-2462.
 
-## Local Quality Gates
+## Remote And Public Quality Gates
 
-Run the canonical repo check:
+Run the canonical repository proof on GloriousFlywheel:
 
 ```bash
 just check
 ```
 
-This enters the Nix dev shell and runs:
+`just check` dispatches the current ref to the remote `tinyland-nix` lane; it is
+not a local check. The remote lane enters the Nix dev shell and runs:
 
 - Zig unit tests
 - binary build
 - every `examples/*.config.json` through `config validate`
 - synthetic local E2E via `scripts/e2e-local.sh`
+
+For narrow laptop debugging only, run `nix develop --command just check-local`.
+That result is not completion proof. The independent FOSS source path is:
+
+```bash
+nix develop --command just public-source-check-local
+```
+
+The authoritative `Public Source` workflow runs that recipe on an unprivileged
+GitHub-hosted runner with no Tinyland/GF credential or endpoint input.
 
 Run the flake package smoke separately when changing packaging or release
 surfaces:
@@ -303,5 +314,6 @@ GloriousFlywheel, 11m31s, pass) on branch `jess/release-v0.1.14`; see
   release changes deb/rpm packaging.
 - Homebrew QA proves both binary output and parsed formula stable version.
 - Hosted PR CI passes.
-- GF lane either passes or is explicitly deferred because of runner/token state.
-- Release notes mention any skipped GF proof.
+- The unprivileged `Public Source` workflow passes from a clean checkout.
+- Required GF proof passes. Runner or token unavailability leaves the PR
+  unproven and not ready; it is never converted into a release-note waiver.

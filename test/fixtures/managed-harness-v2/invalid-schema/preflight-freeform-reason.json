@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": "preflight_freeform_reason",
+  "result": {
+    "ready": false,
+    "harness_handle": "harness_a",
+    "reasons": ["freeform diagnostic text"]
+  }
+}

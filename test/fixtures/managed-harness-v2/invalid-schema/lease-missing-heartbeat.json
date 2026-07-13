@@ -1,0 +1,20 @@
+{
+  "jsonrpc": "2.0",
+  "id": "lease-missing-heartbeat",
+  "result": {
+    "session_handle": "session_a",
+    "observed_at_ms": 1783965500000,
+    "leases": [
+      {
+        "lease_handle": "lease_a",
+        "session_handle": "session_a",
+        "account_handle": "account_a",
+        "route_handle": "route_a",
+        "model_demand": {"model": "claude-opus-4-1", "preservation": "exact"},
+        "owner_pid": 42001,
+        "expires_at_ms": 1783965560000,
+        "owner_state": "active"
+      }
+    ]
+  }
+}
