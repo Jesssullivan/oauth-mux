@@ -15,7 +15,7 @@
       "reset_at_ms": 1783965600000,
       "waited_ms": 30000,
       "evidence": "trusted_exhaustion_reset",
-      "reason": "all exact-model routes remain exhausted"
+      "reason": "all_exact_model_routes_exhausted"
     }
   }
 }
