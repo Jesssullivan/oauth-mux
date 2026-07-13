@@ -121,6 +121,13 @@ runs establish that the checked source and generated projection agree; they do
 not replace final #475 CI, Public Source, GF Remote Check, or Release Proof on
 one exact commit.
 
+Public Source run 29291727251 reached the public Nix shell on exact head
+`c89beaa8afa7aad04448e25f0cbcc2f6d9554737` and emitted `actionlint 1.7.12`,
+then failed before build/test because actionlint did not know the repository's
+`tinyland-nix` self-hosted runner label. The follow-up adds only the standard
+repo-local actionlint runner-label declaration and a smoke assertion. The
+failed run is diagnostic evidence, not a passing gate.
+
 ## Phase-1 definition-of-done proof table
 
 | Gate | Required evidence | Current state |
@@ -165,6 +172,8 @@ A subsequent final-candidate review found and the amendment now addresses:
    refusal list.
 10. `py_compile` writing bytecode into the source tree before the Public Source
     clean-tree assertion.
+11. actionlint rejecting the repository's established `tinyland-nix` runner
+    class because no repo-local runner-label declaration existed.
 
 That verdict applied to old head `66572c3` and is invalidated by the amended
 contract. The amended local check routes Python bytecode into a disposable

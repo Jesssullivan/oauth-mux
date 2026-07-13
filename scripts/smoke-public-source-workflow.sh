@@ -4,6 +4,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 WORKFLOW="$ROOT/.github/workflows/public-source.yml"
+ACTIONLINT_CONFIG="$ROOT/.github/actionlint.yaml"
 SCRIPT="$ROOT/scripts/public-source-check.sh"
 CHECK_LOCAL="$ROOT/scripts/check-local.sh"
 JUSTFILE="$ROOT/justfile"
@@ -14,6 +15,7 @@ fail() {
 }
 
 [ -f "$WORKFLOW" ] || fail 'public source workflow is missing'
+[ -f "$ACTIONLINT_CONFIG" ] || fail 'actionlint configuration is missing'
 [ -x "$SCRIPT" ] || fail 'public source check is not executable'
 
 grep -F 'runs-on: ubuntu-latest' "$WORKFLOW" >/dev/null || fail 'workflow must use a public hosted runner'
@@ -31,6 +33,7 @@ for required in 'actionlint' 'git diff --check' 'git status --porcelain --untrac
 done
 
 grep -F 'GF_ACTIONS_TOKEN' "$SCRIPT" >/dev/null || fail 'retired static GF token must be rejected'
+grep -F 'tinyland-nix' "$ACTIONLINT_CONFIG" >/dev/null || fail 'actionlint must recognize the repository self-hosted runner class'
 grep -F 'PYTHONPYCACHEPREFIX' "$CHECK_LOCAL" >/dev/null || fail 'local checks must keep Python bytecode outside the source tree'
 
 printf '%s\n' 'public source workflow contract: ok'

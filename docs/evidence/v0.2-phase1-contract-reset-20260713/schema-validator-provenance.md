@@ -18,7 +18,7 @@ runtime.
 
 | Field | Value |
 | --- | --- |
-| Package | `actionlint` from the locked `nixpkgs` input; exact version is emitted by the Public Source run |
+| Package | `actionlint 1.7.12` |
 | Source | `https://github.com/rhysd/actionlint` through the existing locked `nixpkgs` input |
 | License | MIT; free and redistributable in nixpkgs metadata |
 | Purpose | Static validation of every checked GitHub Actions workflow |
