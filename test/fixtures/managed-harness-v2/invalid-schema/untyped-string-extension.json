@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "untyped-string-extension",
+  "method": "surface/info",
+  "params": {
+    "note": "synthetic-untyped-string-value"
+  }
+}

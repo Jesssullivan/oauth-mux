@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": "action-required",
+  "result": {
+    "state": "action_required",
+    "selected_route_handle": null,
+    "action_required": {
+      "kind": "all_exact_model_routes_exhausted",
+      "model_demand": {
+        "model": "claude-opus-4-1",
+        "preservation": "exact"
+      },
+      "http_status": 429,
+      "retry_after_seconds": 120,
+      "reset_at_ms": 1783965600000,
+      "waited_ms": 30000,
+      "evidence": "trusted_exhaustion_reset",
+      "reason": "all exact-model routes remain exhausted"
+    }
+  }
+}

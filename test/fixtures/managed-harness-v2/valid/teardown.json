@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "teardown",
+  "result": {
+    "cleanup": {
+      "sidecar_terminated": true,
+      "capability_disposed": true,
+      "leases_released": true,
+      "replay_reservations_released": true
+    }
+  }
+}

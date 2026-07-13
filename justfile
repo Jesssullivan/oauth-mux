@@ -173,6 +173,9 @@ managed-harness-schema-update:
 managed-harness-schema-check-local:
     {{zig}} build check-managed-harness-schema
 
+managed-harness-contract-check-local:
+    nix develop --command ./scripts/check-managed-harness-instances.sh
+
 release-local VERSION=release_version:
     nix develop --command ./scripts/release-local.sh {{VERSION}}
 

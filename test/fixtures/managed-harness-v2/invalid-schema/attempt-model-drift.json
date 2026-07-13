@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": "attempt-model-drift",
+  "method": "session/transition",
+  "params": {
+    "session_handle": "session_a",
+    "model_demand": {"model": "claude-opus-4-1", "preservation": "exact"},
+    "proxy_attempts": [
+      {
+        "ordinal": 1,
+        "account_handle": "account_a",
+        "route_handle": "route_a",
+        "model_demand": {"model": "claude-haiku-3-5", "preservation": "exact"},
+        "outcome": "retained",
+        "retry_trigger": "initial",
+        "route_relation": "initial",
+        "transport_state": "downstream_started",
+        "response_started": true,
+        "cross_account_replay": false
+      }
+    ]
+  }
+}

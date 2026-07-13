@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": "third-attempt",
+  "method": "session/transition",
+  "params": {
+    "session_handle": "session_a",
+    "model_demand": {"model": "claude-opus-4-1", "preservation": "exact"},
+    "proxy_attempts": [
+      {"ordinal": 1, "account_handle": "account_a", "route_handle": "route_a", "outcome": "unproven", "retry_trigger": "initial", "route_relation": "initial", "transport_state": "not_sent", "response_started": false, "cross_account_replay": false},
+      {"ordinal": 2, "outcome": "unproven", "retry_trigger": "confirmed_pre_send_transport_failure", "route_relation": "same_route", "transport_state": "not_sent", "response_started": false, "cross_account_replay": false},
+      {"ordinal": 3, "outcome": "retained", "retry_trigger": "confirmed_pre_send_transport_failure", "route_relation": "same_route", "transport_state": "downstream_started", "response_started": true, "cross_account_replay": false}
+    ]
+  }
+}

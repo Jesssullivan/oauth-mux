@@ -27,6 +27,8 @@ sh -n ./scripts/endpoint-free-check.sh
 sh -n ./scripts/secrets-scan-dir.sh
 bash -n ./scripts/check-zig-test-root.sh
 sh -n ./scripts/check-v0.1.15-characterization.sh
+sh -n ./scripts/check-managed-harness-instances.sh
+python3 -m py_compile ./scripts/validate-managed-harness-instance.py
 python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 python3 -m py_compile ./scripts/test-refresh-exactly-once.py
 sh -n ./dist/codex-shim.sh
@@ -40,6 +42,7 @@ sh -n ./scripts/test-executable-compat.sh
 ./scripts/smoke-gf-checkout-auth-contract.sh
 ./scripts/check-zig-test-root.sh
 ./scripts/check-v0.1.15-characterization.sh
+./scripts/check-managed-harness-instances.sh
 ./scripts/smoke-release-manifest-current.sh
 ./scripts/smoke-release-workflow-version-authority.sh
 

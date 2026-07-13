@@ -1,0 +1,36 @@
+{
+  "jsonrpc": "2.0",
+  "id": "transition-alternate",
+  "method": "session/transition",
+  "params": {
+    "session_handle": "session_a",
+    "model_demand": {
+      "model": "claude-opus-4-1",
+      "preservation": "exact"
+    },
+    "proxy_attempts": [
+      {
+        "ordinal": 1,
+        "account_handle": "account_a",
+        "route_handle": "route_a",
+        "outcome": "refused",
+        "retry_trigger": "initial",
+        "route_relation": "initial",
+        "transport_state": "response_buffered_before_downstream",
+        "response_started": false,
+        "cross_account_replay": false
+      },
+      {
+        "ordinal": 2,
+        "alternate_account_handle": "account_b",
+        "alternate_route_handle": "route_b",
+        "outcome": "switched",
+        "retry_trigger": "pre_body_429",
+        "route_relation": "alternate_account",
+        "transport_state": "downstream_started",
+        "response_started": true,
+        "cross_account_replay": true
+      }
+    ]
+  }
+}

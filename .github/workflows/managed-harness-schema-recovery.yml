@@ -1,0 +1,58 @@
+name: Managed Harness Schema Recovery
+
+on:
+  push:
+    branches:
+      - jess/tin-1798-schema-generation-recovery-20260713
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  generate:
+    name: Generate managed-harness schema on GloriousFlywheel
+    runs-on: tinyland-nix
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout GloriousFlywheel action
+        uses: ./.github/actions/checkout-gloriousflywheel
+        with:
+          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
+          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+
+      - name: Generate and check contract artifacts
+        uses: ./.gloriousflywheel/.github/actions/nix-job
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
+        with:
+          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
+          push-cache: "false"
+          command: |
+            set -euxo pipefail
+            test -n "${ATTIC_SERVER:-}"
+            test -n "${ATTIC_CACHE:-}"
+            test -n "${NIX_CONFIG:-}"
+            nix develop --command bash -lc '
+              set -euxo pipefail
+              zig fmt src/managed_harness_contract.zig
+              zig build update-managed-harness-schema
+              zig test src/managed_harness_contract.zig
+              zig build check-managed-harness-schema
+              ./scripts/check-managed-harness-instances.sh
+            '
+
+      - name: Upload deterministic outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: managed-harness-schema-recovery
+          if-no-files-found: error
+          path: |
+            src/managed_harness_contract.zig
+            schemas/managed-harness-jsonrpc-v2.schema.json
