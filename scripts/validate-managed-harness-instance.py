@@ -50,6 +50,38 @@ def validate_transition(params: dict[str, Any]) -> None:
         raise ContractError("alternate attempt must change both account and route")
 
 
+def validate_lease_snapshot(result: dict[str, Any]) -> None:
+    leases = result.get("leases")
+    observed_at = result.get("observed_at_ms")
+    snapshot_session = result.get("session_handle")
+    if not isinstance(leases, list) or type(observed_at) is not int or not isinstance(snapshot_session, str):
+        raise ContractError("lease snapshot must contain typed leases, session, and observation time")
+
+    seen_handles: set[str] = set()
+    for lease in leases:
+        if not isinstance(lease, dict):
+            raise ContractError("lease must be an object")
+        lease_handle = lease.get("lease_handle")
+        heartbeat = lease.get("heartbeat_at_ms")
+        expires = lease.get("expires_at_ms")
+        owner_state = lease.get("owner_state")
+        if not isinstance(lease_handle, str) or type(heartbeat) is not int or type(expires) is not int:
+            raise ContractError("lease identity and timestamps must be typed")
+        if lease_handle in seen_handles:
+            raise ContractError("lease handles must be unique within a snapshot")
+        seen_handles.add(lease_handle)
+        if lease.get("session_handle") != snapshot_session:
+            raise ContractError("lease session must match its snapshot session")
+        if heartbeat > observed_at or heartbeat > expires:
+            raise ContractError("lease heartbeat must not follow observation or expiry")
+        if owner_state == "active" and not observed_at < expires:
+            raise ContractError("active lease must expire after observation")
+        if owner_state == "stale" and not expires <= observed_at:
+            raise ContractError("stale lease must be expired at observation")
+        if owner_state not in {"active", "stale", "exited"}:
+            raise ContractError("lease owner state is invalid")
+
+
 def validate(document: Any) -> None:
     if not isinstance(document, dict):
         raise ContractError("wire instance must be an object")
@@ -58,6 +90,9 @@ def validate(document: Any) -> None:
         if not isinstance(params, dict):
             raise ContractError("session/transition params must be an object")
         validate_transition(params)
+    result = document.get("result")
+    if isinstance(result, dict) and "leases" in result:
+        validate_lease_snapshot(result)
 
 
 def main() -> int:

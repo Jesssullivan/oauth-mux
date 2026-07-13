@@ -38,8 +38,9 @@ status. Its status remains `planned_unshipped`.
 
 ## Envelope and compatibility
 
-Requests use JSON-RPC 2.0 with a string or integer `id`, one declared method,
-and an object `params` (empty for `surface/info`). Objects tolerate only a
+Requests use JSON-RPC 2.0 with a JSON-safe integer or bounded opaque-safe string
+`id`, one declared method, and an object `params` (empty for `surface/info`).
+Objects tolerate only a
 bounded extension namespace: `x_flag_*` booleans, nonnegative `x_count_*`
 integers, and `x_ratio_*` numbers from zero through one. Arbitrary keys,
 strings, arrays, objects, unbounded collections, and values outside the
@@ -54,8 +55,10 @@ or relaunch method. It carries no credential, token, environment, argument, or
 prompt fields.
 
 Unsupported declared methods return JSON-RPC error `-32099` (`method not
-implemented`). Unknown methods return `-32601` (`method not found`). A method
-cannot advertise support while returning the declared unsupported result.
+implemented`). Unknown methods return `-32601` (`method not found`). Incomplete
+teardown returns typed server error `-32010` with the partial cleanup state and
+a closed reason code. A method cannot advertise support while returning the
+declared unsupported result.
 
 ## Lifecycle methods
 
@@ -83,11 +86,13 @@ A same-route retry inherits the initial account and route handles and cannot
 carry replacements. The checked semantic validator rejects an alternate that
 reuses either initial handle.
 
-A follow-up can never represent a provider 5xx, ambiguous transport result, or
-started downstream response. Provider 5xx passes through to the harness's
-native retry behavior. Attempt outcomes are `retained`, `switched`, `refused`,
-or `unproven`. These records are redacted observations; they are not credentials
-and do not themselves authorize replay.
+The initial attempt that authorizes a follow-up can never represent a provider
+5xx, ambiguous transport result, or started downstream response. A terminal
+second attempt may itself start a response, but it cannot authorize a third
+attempt. Provider 5xx passes through to the harness's native retry behavior.
+Attempt outcomes are `retained`, `switched`, `refused`, or `unproven`. These
+records are redacted observations; they are not credentials and do not
+themselves authorize replay.
 
 ## Frozen managed policy
 
@@ -98,7 +103,7 @@ exposing a session capability or account secret:
 | --- | --- |
 | Carrier | 256 bits from the operating-system CSPRNG; base64url without padding; memory-only and bound to the managed child; constant-time comparison; never logged and disposed at teardown; `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`; bind `127.0.0.1:0`; bad capability is local 401 with zero upstream calls |
 | Origin | Strip inbound auth/API-key headers and inject only the elected OAuth bearer; origin-form requests only; reject `CONNECT`, absolute-form, and caller-selected upstreams; fixed `https://api.anthropic.com` with system-root TLS; auth-carrying redirects rejected |
-| Replay | At most two upstream attempts and one cross-account alternate; 401/403/429 only; 32 MiB/request, 64 MiB/sidecar, 256 MiB/host; reservations are atomic cross-process state owned by PID/heartbeat/expiry and stale owners are reclaimed; disk spooling forbidden |
+| Replay | At most two upstream attempts and one cross-account alternate; 401/403/429 only; 32 MiB/request, 64 MiB/sidecar, 256 MiB/host; reservations are atomic cross-process state owned by PID/heartbeat/expiry and stale owners are reclaimed; retained bytes stay reserved until replay becomes ineligible, cancellation/overflow, or teardown; disk spooling forbidden |
 | Overflow | Chunked or unknown-length bodies buffer only to the request limit, then stream once with backpressure and release the reservation; cancellation also releases reservations and cannot cross accounts |
 | Exclusions | Ambiguous transport and started responses propagate the original failure or response unchanged without cross-account replay; provider 5xx passes through to native retry |
 | Wait | At most one pre-attempt wait, no more than 30 seconds, only for a trusted reset that fits the request deadline; then re-elect; otherwise typed 429 using the best trusted `Retry-After`; loops forbidden |
@@ -115,8 +120,11 @@ is a typed provider-owned re-enrollment action and freezes automatic stale
 backup restoration as false.
 `session/teardown.cleanup` succeeds only after the sidecar terminates, the
 session capability is disposed, leases are released, and replay reservations
-are released. Partial cleanup returns an error rather than a misleading
-`complete` boolean.
+are released. Partial cleanup returns typed error `-32010` with four cleanup
+booleans and one closed failure code rather than a misleading `complete`
+boolean. Preflight and repair reasons are also closed codes, not free-form log
+or provider text. Lease snapshots require unique lease handles, snapshot/session
+agreement, and heartbeat/expiry ordering in the checked semantic validator.
 
 The v0.2 plan and threat model continue to own implementation mechanics and
 proof gates. The observable constants and outcomes above are frozen in surface

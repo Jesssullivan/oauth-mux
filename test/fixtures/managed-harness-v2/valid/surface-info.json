@@ -49,7 +49,7 @@
         "reservation_storage": "atomic_cross_process",
         "reservation_owner": "pid_heartbeat_expiry",
         "reservation_stale_behavior": "ignore_and_reclaim",
-        "reservation_release_behavior": "release_on_send_completion_cancellation_or_teardown",
+        "reservation_release_behavior": "hold_until_replay_ineligible_or_cancellation_overflow_teardown",
         "overflow_behavior": "stream_once_release_reservation",
         "chunked_unknown_length_behavior": "buffer_to_request_limit_then_stream_once_with_backpressure",
         "cancellation_behavior": "propagate_no_cross_account_release_reservation",

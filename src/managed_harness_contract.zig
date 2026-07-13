@@ -12,6 +12,7 @@ pub const protocol_name = "managed-harness-jsonrpc";
 pub const protocol_status = "planned_unshipped";
 pub const method_status = "not_implemented";
 pub const not_implemented_error_code: i32 = -32099;
+pub const teardown_incomplete_error_code: i32 = -32010;
 pub const unknown_method_error_code: i32 = -32601;
 pub const max_upstream_attempts: u8 = 2;
 pub const max_cross_account_alternates: u8 = 1;
@@ -114,6 +115,29 @@ const transport_states = [_][]const u8{ "not_sent", "response_buffered_before_do
 const alternate_retry_triggers = [_][]const u8{ "pre_body_401", "pre_body_403", "pre_body_429" };
 const transition_states = [_][]const u8{ "ready", "running", "retained", "switched", "refused", "action_required" };
 const lease_states = [_][]const u8{ "active", "stale", "exited" };
+const preflight_reason_codes = [_][]const u8{
+    "harness_unavailable",
+    "managed_config_missing",
+    "no_eligible_account",
+    "model_parity_unproven",
+    "credential_unavailable",
+    "identity_conflict",
+    "sidecar_unavailable",
+    "policy_refused",
+};
+const repair_reason_codes = [_][]const u8{
+    "hard_auth_failure",
+    "credential_missing",
+    "identity_conflict",
+    "refresh_lineage_quarantined",
+    "provider_reenroll_required",
+};
+const teardown_incomplete_reason_codes = [_][]const u8{
+    "sidecar_shutdown_failed",
+    "capability_disposal_failed",
+    "lease_release_failed",
+    "replay_reservation_release_failed",
+};
 const lease_required = [_][]const u8{
     "lease_handle",
     "session_handle",
@@ -131,6 +155,7 @@ const teardown_cleanup_fields = [_][]const u8{
     "leases_released",
     "replay_reservations_released",
 };
+const teardown_incomplete_data_fields = [_][]const u8{ "cleanup", "reason_code" };
 const action_required_fields = [_][]const u8{
     "kind",
     "model_demand",
@@ -250,6 +275,7 @@ pub fn renderSchema(allocator: std.mem.Allocator) ![]u8 {
     }
     try append(&wire_variants, try refSchema(scratch, "#/$defs/success_response"));
     try append(&wire_variants, try refSchema(scratch, "#/$defs/not_implemented_response"));
+    try append(&wire_variants, try refSchema(scratch, "#/$defs/teardown_incomplete_response"));
     try append(&wire_variants, try refSchema(scratch, "#/$defs/unknown_method_response"));
     try put(&root, "oneOf", wire_variants);
     try put(&root, "x-omux-surface", try surfaceMetadata(scratch));
@@ -258,10 +284,10 @@ pub fn renderSchema(allocator: std.mem.Allocator) ![]u8 {
     try put(&definitions, "opaque_handle", try opaqueHandleSchema(scratch));
     try put(&definitions, "handle_or_null", try handleOrNullSchema(scratch));
     try put(&definitions, "label", try boundedStringSchema(scratch, 1, 256));
-    try put(&definitions, "redacted_reason", try boundedStringSchema(scratch, 1, 1024));
     try put(&definitions, "boolean", try typeSchema(scratch, "boolean"));
     try put(&definitions, "nonnegative_integer", try boundedIntegerSchema(scratch, 0, max_json_safe_integer));
-    try put(&definitions, "string_array", try arrayOf(scratch, try boundedStringSchema(scratch, 0, 1024), max_extension_items));
+    try put(&definitions, "preflight_reasons", try preflightReasonsSchema(scratch));
+    try put(&definitions, "repair_reason_code", try enumSchema(scratch, &repair_reason_codes));
     try put(&definitions, "open_object", try openObjectSchema(scratch));
     try put(&definitions, "transition_state", try enumSchema(scratch, &transition_states));
     try put(&definitions, "model_demand", try modelDemandSchema(scratch));
@@ -272,6 +298,8 @@ pub fn renderSchema(allocator: std.mem.Allocator) ![]u8 {
     try put(&definitions, "transition_action_required_or_null", try refOrNullSchema(scratch, "#/$defs/transition_action_required"));
     try put(&definitions, "repair_action", try repairActionSchema(scratch));
     try put(&definitions, "teardown_cleanup", try teardownCleanupSchema(scratch));
+    try put(&definitions, "teardown_incomplete_cleanup", try teardownIncompleteCleanupSchema(scratch));
+    try put(&definitions, "teardown_incomplete_data", try teardownIncompleteDataSchema(scratch));
     try put(&definitions, "proxy_attempt_initial", try initialProxyAttemptSchema(scratch));
     try put(&definitions, "proxy_attempt_initial_pre_send_failure", try constrainedInitialProxyAttemptSchema(scratch, "not_sent", "unproven"));
     try put(&definitions, "proxy_attempt_initial_pre_body_failure", try constrainedInitialProxyAttemptSchema(scratch, "response_buffered_before_downstream", "refused"));
@@ -294,8 +322,10 @@ pub fn renderSchema(allocator: std.mem.Allocator) ![]u8 {
 
     try put(&definitions, "success_response", try successResponseSchema(scratch, result_refs));
     try put(&definitions, "not_implemented_error", try errorSchema(scratch, not_implemented_error_code, "method not implemented"));
+    try put(&definitions, "teardown_incomplete_error", try teardownIncompleteErrorSchema(scratch));
     try put(&definitions, "unknown_method_error", try errorSchema(scratch, unknown_method_error_code, "method not found"));
     try put(&definitions, "not_implemented_response", try errorResponseSchema(scratch, "#/$defs/not_implemented_error"));
+    try put(&definitions, "teardown_incomplete_response", try errorResponseSchema(scratch, "#/$defs/teardown_incomplete_error"));
     try put(&definitions, "unknown_method_response", try errorResponseSchema(scratch, "#/$defs/unknown_method_error"));
     try put(&root, "$defs", definitions);
 
@@ -325,7 +355,7 @@ fn surfaceMetadata(allocator: std.mem.Allocator) !Value {
         try put(&method_value, "result_schema", string(try schemaRef(allocator, "result", entry.schema_key)));
         try put(&method_value, "required_params", try stringArray(allocator, entry.required_params));
         try put(&method_value, "required_result_fields", try stringArray(allocator, entry.required_result_fields));
-        try put(&method_value, "unknown_fields", string("tolerated_except_sensitive_names"));
+        try put(&method_value, "unknown_fields", string("typed_scalar_extensions_except_sensitive_names"));
         try append(&method_values, method_value);
     }
     try put(&metadata, "methods", method_values);
@@ -375,7 +405,7 @@ fn fieldSchema(allocator: std.mem.Allocator, field: []const u8, is_result: bool)
     if (std.mem.eql(u8, field, "selected_route_handle")) return refSchema(allocator, "#/$defs/handle_or_null");
     if (std.mem.endsWith(u8, field, "_handle")) return refSchema(allocator, "#/$defs/opaque_handle");
     if (std.mem.eql(u8, field, "harness")) return refSchema(allocator, "#/$defs/label");
-    if (std.mem.eql(u8, field, "reason")) return refSchema(allocator, "#/$defs/redacted_reason");
+    if (std.mem.eql(u8, field, "reason")) return refSchema(allocator, "#/$defs/repair_reason_code");
     if (!is_result) return error.UnknownManagedHarnessParam;
 
     if (std.mem.eql(u8, field, "surface_version")) return refSchema(allocator, "#/$defs/surface_version_const");
@@ -383,7 +413,7 @@ fn fieldSchema(allocator: std.mem.Allocator, field: []const u8, is_result: bool)
     if (std.mem.eql(u8, field, "methods")) return refSchema(allocator, "#/$defs/method_statuses");
     if (std.mem.eql(u8, field, "policy")) return refSchema(allocator, "#/$defs/broker_policy");
     if (std.mem.eql(u8, field, "ready")) return refSchema(allocator, "#/$defs/boolean");
-    if (std.mem.eql(u8, field, "reasons")) return refSchema(allocator, "#/$defs/string_array");
+    if (std.mem.eql(u8, field, "reasons")) return refSchema(allocator, "#/$defs/preflight_reasons");
     if (std.mem.eql(u8, field, "state")) return refSchema(allocator, "#/$defs/transition_state");
     if (std.mem.eql(u8, field, "leases")) return refSchema(allocator, "#/$defs/lease_records");
     if (std.mem.eql(u8, field, "observed_at_ms")) return refSchema(allocator, "#/$defs/nonnegative_integer");
@@ -429,6 +459,24 @@ fn errorSchema(allocator: std.mem.Allocator, code: i32, message: []const u8) !Va
     var schema = try objectSchemaBase(allocator);
     try put(&schema, "required", try stringArray(allocator, &error_required));
     try put(&schema, "properties", properties);
+    return schema;
+}
+
+fn teardownIncompleteErrorSchema(allocator: std.mem.Allocator) !Value {
+    var properties = object(allocator);
+    try put(&properties, "code", try constIntegerSchema(allocator, teardown_incomplete_error_code));
+    try put(&properties, "message", try constStringSchema(allocator, "session teardown incomplete"));
+    try put(&properties, "data", try refSchema(allocator, "#/$defs/teardown_incomplete_data"));
+
+    var schema = try objectSchemaBase(allocator);
+    try put(&schema, "required", try stringArray(allocator, &error_required));
+    try put(&schema, "properties", properties);
+    return schema;
+}
+
+fn preflightReasonsSchema(allocator: std.mem.Allocator) !Value {
+    var schema = try arrayOf(allocator, try enumSchema(allocator, &preflight_reason_codes), preflight_reason_codes.len);
+    try put(&schema, "uniqueItems", boolean(true));
     return schema;
 }
 
@@ -500,7 +548,7 @@ fn replayPolicySchema(allocator: std.mem.Allocator) !Value {
     try put(&properties, "reservation_storage", try constStringSchema(allocator, "atomic_cross_process"));
     try put(&properties, "reservation_owner", try constStringSchema(allocator, "pid_heartbeat_expiry"));
     try put(&properties, "reservation_stale_behavior", try constStringSchema(allocator, "ignore_and_reclaim"));
-    try put(&properties, "reservation_release_behavior", try constStringSchema(allocator, "release_on_send_completion_cancellation_or_teardown"));
+    try put(&properties, "reservation_release_behavior", try constStringSchema(allocator, "hold_until_replay_ineligible_or_cancellation_overflow_teardown"));
     try put(&properties, "overflow_behavior", try constStringSchema(allocator, "stream_once_release_reservation"));
     try put(&properties, "chunked_unknown_length_behavior", try constStringSchema(allocator, "buffer_to_request_limit_then_stream_once_with_backpressure"));
     try put(&properties, "cancellation_behavior", try constStringSchema(allocator, "propagate_no_cross_account_release_reservation"));
@@ -591,7 +639,7 @@ fn transitionActionRequiredSchema(allocator: std.mem.Allocator) !Value {
     try put(&properties, "reset_at_ms", try boundedIntegerSchema(allocator, 0, max_json_safe_integer));
     try put(&properties, "waited_ms", try boundedIntegerSchema(allocator, 0, @as(i64, max_pre_attempt_wait_seconds) * 1000));
     try put(&properties, "evidence", try constStringSchema(allocator, "trusted_exhaustion_reset"));
-    try put(&properties, "reason", try refSchema(allocator, "#/$defs/redacted_reason"));
+    try put(&properties, "reason", try constStringSchema(allocator, "all_exact_model_routes_exhausted"));
 
     var schema = try objectSchemaBase(allocator);
     try put(&schema, "required", try stringArray(allocator, &action_required_fields));
@@ -604,7 +652,7 @@ fn repairActionSchema(allocator: std.mem.Allocator) !Value {
     try put(&properties, "kind", try constStringSchema(allocator, "provider_reenroll"));
     try put(&properties, "provider_owned", try constBooleanSchema(allocator, true));
     try put(&properties, "automatic_restore", try constBooleanSchema(allocator, false));
-    try put(&properties, "reason", try refSchema(allocator, "#/$defs/redacted_reason"));
+    try put(&properties, "reason", try refSchema(allocator, "#/$defs/repair_reason_code"));
 
     var schema = try objectSchemaBase(allocator);
     try put(&schema, "required", try stringArray(allocator, &repair_action_fields));
@@ -620,6 +668,36 @@ fn teardownCleanupSchema(allocator: std.mem.Allocator) !Value {
 
     var schema = try objectSchemaBase(allocator);
     try put(&schema, "required", try stringArray(allocator, &teardown_cleanup_fields));
+    try put(&schema, "properties", properties);
+    return schema;
+}
+
+fn teardownIncompleteCleanupSchema(allocator: std.mem.Allocator) !Value {
+    var properties = object(allocator);
+    var all_true_properties = object(allocator);
+    inline for (teardown_cleanup_fields) |field| {
+        try put(&properties, field, try typeSchema(allocator, "boolean"));
+        try put(&all_true_properties, field, try constBooleanSchema(allocator, true));
+    }
+
+    var all_true = object(allocator);
+    try put(&all_true, "required", try stringArray(allocator, &teardown_cleanup_fields));
+    try put(&all_true, "properties", all_true_properties);
+
+    var schema = try objectSchemaBase(allocator);
+    try put(&schema, "required", try stringArray(allocator, &teardown_cleanup_fields));
+    try put(&schema, "properties", properties);
+    try put(&schema, "not", all_true);
+    return schema;
+}
+
+fn teardownIncompleteDataSchema(allocator: std.mem.Allocator) !Value {
+    var properties = object(allocator);
+    try put(&properties, "cleanup", try refSchema(allocator, "#/$defs/teardown_incomplete_cleanup"));
+    try put(&properties, "reason_code", try enumSchema(allocator, &teardown_incomplete_reason_codes));
+
+    var schema = try objectSchemaBase(allocator);
+    try put(&schema, "required", try stringArray(allocator, &teardown_incomplete_data_fields));
     try put(&schema, "properties", properties);
     return schema;
 }
@@ -928,7 +1006,9 @@ fn refOrNullSchema(allocator: std.mem.Allocator, reference: []const u8) !Value {
 
 fn idSchema(allocator: std.mem.Allocator) !Value {
     var options = array(allocator);
-    try append(&options, try boundedStringSchema(allocator, 1, 256));
+    var opaque_string = try boundedStringSchema(allocator, 1, 128);
+    try put(&opaque_string, "pattern", string("^[A-Za-z0-9_-]+$"));
+    try append(&options, opaque_string);
     try append(&options, try boundedIntegerSchema(allocator, -max_json_safe_integer, max_json_safe_integer));
     var schema = object(allocator);
     try put(&schema, "oneOf", options);
@@ -1057,6 +1137,7 @@ fn append(target: *Value, value: Value) !void {
 
 pub fn validateStatic() !void {
     if (methods.len != 7 or
+        teardown_incomplete_error_code != -32010 or
         max_upstream_attempts != 2 or
         max_cross_account_alternates != 1 or
         max_same_route_transport_retries != 1 or
@@ -1118,7 +1199,7 @@ test "managed harness schema binds request results and bounded attempts" {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, first, .{});
     defer parsed.deinit();
     const root = parsed.value.object;
-    try std.testing.expectEqual(@as(usize, methods.len + 3), root.get("oneOf").?.array.items.len);
+    try std.testing.expectEqual(@as(usize, methods.len + 4), root.get("oneOf").?.array.items.len);
 
     const metadata = root.get("x-omux-surface").?.object;
     try std.testing.expectEqual(@as(i64, surface_version), metadata.get("surface_version").?.integer);
@@ -1174,6 +1255,10 @@ test "managed harness schema binds request results and bounded attempts" {
         defs.get("not_implemented_response").?.object.get("properties").?.object.get("error").?.object.get("$ref").?.string,
     );
     try std.testing.expectEqualStrings(
+        "#/$defs/teardown_incomplete_error",
+        defs.get("teardown_incomplete_response").?.object.get("properties").?.object.get("error").?.object.get("$ref").?.string,
+    );
+    try std.testing.expectEqualStrings(
         "#/$defs/unknown_method_error",
         defs.get("unknown_method_response").?.object.get("properties").?.object.get("error").?.object.get("$ref").?.string,
     );
@@ -1212,6 +1297,10 @@ test "managed harness schema freezes carrier replay wait lease and redaction pol
     try std.testing.expectEqual(@as(i64, replay_host_limit_bytes), replay.get("host_limit_bytes").?.object.get("const").?.integer);
     try std.testing.expectEqualStrings("atomic_cross_process", replay.get("reservation_storage").?.object.get("const").?.string);
     try std.testing.expectEqualStrings("pid_heartbeat_expiry", replay.get("reservation_owner").?.object.get("const").?.string);
+    try std.testing.expectEqualStrings(
+        "hold_until_replay_ineligible_or_cancellation_overflow_teardown",
+        replay.get("reservation_release_behavior").?.object.get("const").?.string,
+    );
     try std.testing.expectEqualStrings("propagate_no_cross_account_release_reservation", replay.get("cancellation_behavior").?.object.get("const").?.string);
     try std.testing.expectEqualStrings("pass_through_native_retry", replay.get("provider_5xx_behavior").?.object.get("const").?.string);
     const statuses = replay.get("alternate_statuses").?.object.get("prefixItems").?.array.items;
@@ -1278,6 +1367,9 @@ test "managed harness schema types leases actions and the only legal followup at
     try std.testing.expectEqualStrings("#/$defs/repair_action", repair_result_schema.get("action").?.object.get("$ref").?.string);
     const teardown_result_schema = defs.get("result_session_teardown").?.object.get("properties").?.object;
     try std.testing.expectEqualStrings("#/$defs/teardown_cleanup", teardown_result_schema.get("cleanup").?.object.get("$ref").?.string);
+    const teardown_error_data = defs.get("teardown_incomplete_error").?.object.get("properties").?.object
+        .get("data").?.object;
+    try std.testing.expectEqualStrings("#/$defs/teardown_incomplete_data", teardown_error_data.get("$ref").?.string);
 
     const lease_record = defs.get("lease_record").?.object;
     try std.testing.expectEqual(@as(usize, lease_required.len), lease_record.get("required").?.array.items.len);
@@ -1349,4 +1441,9 @@ test "managed harness schema excludes sensitive names and bounds typed extension
     try std.testing.expectEqualStrings("boolean", extensions.get("^x_flag_[a-z0-9_]{1,64}$").?.object.get("type").?.string);
     try std.testing.expectEqualStrings("integer", extensions.get("^x_count_[a-z0-9_]{1,64}$").?.object.get("type").?.string);
     try std.testing.expectEqualStrings("number", extensions.get("^x_ratio_[a-z0-9_]{1,64}$").?.object.get("type").?.string);
+    const request_id = request.get("properties").?.object.get("id").?.object.get("oneOf").?.array.items[0].object;
+    try std.testing.expectEqualStrings("^[A-Za-z0-9_-]+$", request_id.get("pattern").?.string);
+    const preflight_reasons = defs.get("preflight_reasons").?.object;
+    try std.testing.expectEqual(true, preflight_reasons.get("uniqueItems").?.bool);
+    try std.testing.expectEqual(@as(i64, preflight_reason_codes.len), preflight_reasons.get("maxItems").?.integer);
 }
