@@ -127,6 +127,15 @@ local toolchain, generated binary, or installer issue. If a local build is used
 for debugging, state that it is not validation and follow with the remote lane
 before making a completion or merge claim.
 
+Private GloriousFlywheel action checkout is authenticated by
+`.github/actions/checkout-gloriousflywheel`, which mints a short-lived token
+from the dedicated `omux-gf-checkout` App, restricted to
+`tinyland-inc/GloriousFlywheel` with `contents: read`. Do not restore the static
+`GF_ACTIONS_TOKEN` path for GloriousFlywheel checkout, substitute a broad PAT,
+or weaken the fail-closed proof behavior when App custody is unavailable.
+Separate legacy checkout uses in registry-keeper workflows are not GF proof
+authority and must migrate under their own repository-scoped credential names.
+
 ## Architecture
 
 Pure Zig, zero external dependencies. All capabilities from `std`:

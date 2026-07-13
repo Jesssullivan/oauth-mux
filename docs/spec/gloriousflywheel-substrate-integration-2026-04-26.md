@@ -47,16 +47,18 @@ The CI workflow now has a cache-first lane:
 
 Because `GloriousFlywheel` is private, `oauth-mux` does not reference the
 cross-repo composite action directly. The workflow checks out the substrate repo
-into `.gloriousflywheel` with `GF_ACTIONS_TOKEN` and then uses the local
-composite action path.
+into `.gloriousflywheel` with a short-lived GitHub App token restricted to that
+repository and `contents: read`, then uses the local composite action path. The
+credential belongs to the dedicated `omux-gf-checkout` App; it is not the broad
+ARC control-plane App.
 
 Update, 2026-06-13: CI has no GitHub-hosted build/test fallback. The stable check
 names remain (`test`, `cross-compile`, `nix`, and `GloriousFlywheel cache-first
 check`) so branch protection and operator muscle memory do not churn, but every
 build/test/check body now runs on `tinyland-nix` through the GloriousFlywheel
-`nix-job` action. If `GF_ACTIONS_TOKEN` or the Attic/Nix runtime evidence is
-missing, the job fails rather than silently proving the repo on a local hosted
-runner.
+`nix-job` action. If the GitHub App checkout authority or the Attic/Nix runtime
+evidence is missing, the job fails rather than silently proving the repo on a
+local hosted runner.
 
 ## Remote-First Operator Dispatch
 
@@ -74,8 +76,9 @@ full repo locally. The repo now exposes an explicit remote validation lane:
 These commands dispatch a `workflow_dispatch` run on `tinyland-nix` and, by
 default, watch the resulting GitHub Actions run. The workflow uses the same
 private GloriousFlywheel `nix-job` composite action as the cache-first CI lane,
-requires `GF_ACTIONS_TOKEN`, requires the Nix/Attic environment variables, and
-then runs the existing Just/Zig validation bodies inside `nix develop`.
+requires the scoped GitHub App checkout authority, requires the Nix/Attic
+environment variables, and then runs the existing Just/Zig validation bodies
+inside `nix develop`.
 Because GitHub exposes manual dispatch workflows from the default branch, the
 remote validation workflow must land on `main` before branch/SHA validation can
 be requested through `just remote-*`.
@@ -120,9 +123,9 @@ PR CI rather than by manually dispatching the not-yet-landed input shape.
 
 ## What This Proves
 
-When `GF_ACTIONS_TOKEN` and the Attic settings are present, this proves that
-`oauth-mux` can build and test on the shared GloriousFlywheel Nix runner
-substrate with Attic cache attachment.
+When the scoped GitHub App checkout authority and Attic settings are present,
+this proves that `oauth-mux` can build and test on the shared GloriousFlywheel
+Nix runner substrate with Attic cache attachment.
 
 Current evidence: PR run `25009779392`, job `73266579091`, checked out
 `tinyland-inc/GloriousFlywheel`, ran the private `nix-job` action on
