@@ -1,0 +1,511 @@
+{
+  "schema_version": 1,
+  "phase": "declaration",
+  "release": {
+    "version": "0.1.15",
+    "build_id": {
+      "value": null,
+      "source_order": [
+        "zig-option:build-id",
+        "env:OMUX_BUILD_ID",
+        "git-describe",
+        "release.version"
+      ]
+    },
+    "source_commit": null
+  },
+  "product": {
+    "package_name": "oauth-mux",
+    "primary_executable": "omux",
+    "compatibility_links": [
+      {
+        "name": "oauth-mux",
+        "target": "omux",
+        "materialization": "same_bytes"
+      }
+    ],
+    "storage_namespace": "oauth-mux"
+  },
+  "adapter_protocols": [
+    {
+      "name": "broker-jsonrpc",
+      "surface_version": 1,
+      "status": "shipped"
+    },
+    {
+      "name": "managed-harness-jsonrpc",
+      "surface_version": 2,
+      "status": "planned_unshipped"
+    }
+  ],
+  "targets": [
+    {
+      "id": "x86_64-linux",
+      "zig_target": "x86_64-linux-musl",
+      "cpu_arch": "x86_64",
+      "os": "linux",
+      "abi": "musl",
+      "release_directory": "x86_64-linux",
+      "artifact": {
+        "buildable": true,
+        "published": true,
+        "policy": "release",
+        "legacy_preservation": null
+      },
+      "managed_broker": {
+        "state": "unshipped",
+        "v0_2_target": "beta"
+      }
+    },
+    {
+      "id": "aarch64-linux",
+      "zig_target": "aarch64-linux-musl",
+      "cpu_arch": "aarch64",
+      "os": "linux",
+      "abi": "musl",
+      "release_directory": "aarch64-linux",
+      "artifact": {
+        "buildable": true,
+        "published": true,
+        "policy": "release",
+        "legacy_preservation": null
+      },
+      "managed_broker": {
+        "state": "unshipped",
+        "v0_2_target": "beta"
+      }
+    },
+    {
+      "id": "x86_64-macos",
+      "zig_target": "x86_64-macos",
+      "cpu_arch": "x86_64",
+      "os": "macos",
+      "abi": null,
+      "release_directory": "x86_64-macos",
+      "artifact": {
+        "buildable": true,
+        "published": true,
+        "policy": "release",
+        "legacy_preservation": null
+      },
+      "managed_broker": {
+        "state": "unshipped",
+        "v0_2_target": "ga"
+      }
+    },
+    {
+      "id": "aarch64-macos",
+      "zig_target": "aarch64-macos",
+      "cpu_arch": "aarch64",
+      "os": "macos",
+      "abi": null,
+      "release_directory": "aarch64-macos",
+      "artifact": {
+        "buildable": true,
+        "published": true,
+        "policy": "release",
+        "legacy_preservation": null
+      },
+      "managed_broker": {
+        "state": "unshipped",
+        "v0_2_target": "ga"
+      }
+    },
+    {
+      "id": "x86_64-windows",
+      "zig_target": "x86_64-windows",
+      "cpu_arch": "x86_64",
+      "os": "windows",
+      "abi": null,
+      "release_directory": "x86_64-windows",
+      "artifact": {
+        "buildable": true,
+        "published": true,
+        "policy": "compatibility_only",
+        "legacy_preservation": "v0.1.15_stable_only"
+      },
+      "managed_broker": {
+        "state": "unsupported",
+        "v0_2_target": "unsupported"
+      }
+    },
+    {
+      "id": "aarch64-windows",
+      "zig_target": "aarch64-windows",
+      "cpu_arch": "aarch64",
+      "os": "windows",
+      "abi": null,
+      "release_directory": "aarch64-windows",
+      "artifact": {
+        "buildable": true,
+        "published": true,
+        "policy": "compatibility_only",
+        "legacy_preservation": "v0.1.15_stable_only"
+      },
+      "managed_broker": {
+        "state": "unsupported",
+        "v0_2_target": "unsupported"
+      }
+    }
+  ],
+  "release_assets": [
+    {
+      "id": "archive-x86_64-linux",
+      "kind": "archive",
+      "target_id": "x86_64-linux",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-x86_64-linux.tar.gz",
+      "release_name": "oauth-mux-x86_64-linux.tar.gz",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "oauth-mux",
+        "codex"
+      ],
+      "declared_v0_2_members": [
+        "omux",
+        "oauth-mux",
+        "codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "archive-aarch64-linux",
+      "kind": "archive",
+      "target_id": "aarch64-linux",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-aarch64-linux.tar.gz",
+      "release_name": "oauth-mux-aarch64-linux.tar.gz",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "oauth-mux",
+        "codex"
+      ],
+      "declared_v0_2_members": [
+        "omux",
+        "oauth-mux",
+        "codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "archive-x86_64-macos",
+      "kind": "archive",
+      "target_id": "x86_64-macos",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-x86_64-macos.tar.gz",
+      "release_name": "oauth-mux-x86_64-macos.tar.gz",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "oauth-mux",
+        "codex"
+      ],
+      "declared_v0_2_members": [
+        "omux",
+        "oauth-mux",
+        "codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "archive-aarch64-macos",
+      "kind": "archive",
+      "target_id": "aarch64-macos",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-aarch64-macos.tar.gz",
+      "release_name": "oauth-mux-aarch64-macos.tar.gz",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "oauth-mux",
+        "codex"
+      ],
+      "declared_v0_2_members": [
+        "omux",
+        "oauth-mux",
+        "codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "archive-x86_64-windows",
+      "kind": "archive",
+      "target_id": "x86_64-windows",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-x86_64-windows.tar.gz",
+      "release_name": "oauth-mux-x86_64-windows.tar.gz",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "oauth-mux.exe"
+      ],
+      "declared_v0_2_members": [
+        "omux.exe",
+        "oauth-mux.exe"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "archive-aarch64-windows",
+      "kind": "archive",
+      "target_id": "aarch64-windows",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-aarch64-windows.tar.gz",
+      "release_name": "oauth-mux-aarch64-windows.tar.gz",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "oauth-mux.exe"
+      ],
+      "declared_v0_2_members": [
+        "omux.exe",
+        "oauth-mux.exe"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "deb-x86_64-linux",
+      "kind": "deb",
+      "target_id": "x86_64-linux",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux_0.1.15_amd64.deb",
+      "release_name": "oauth-mux_0.1.15_amd64.deb",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "declared_v0_2_members": [
+        "/usr/bin/omux",
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "deb-aarch64-linux",
+      "kind": "deb",
+      "target_id": "aarch64-linux",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux_0.1.15_arm64.deb",
+      "release_name": "oauth-mux_0.1.15_arm64.deb",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "declared_v0_2_members": [
+        "/usr/bin/omux",
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "rpm-x86_64-linux",
+      "kind": "rpm",
+      "target_id": "x86_64-linux",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-0.1.15-1.x86_64.rpm",
+      "release_name": "oauth-mux-0.1.15-1.x86_64.rpm",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "declared_v0_2_members": [
+        "/usr/bin/omux",
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "rpm-aarch64-linux",
+      "kind": "rpm",
+      "target_id": "aarch64-linux",
+      "source_path": null,
+      "staged_path": "artifacts/oauth-mux-0.1.15-1.aarch64.rpm",
+      "release_name": "oauth-mux-0.1.15-1.aarch64.rpm",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "declared_v0_2_members": [
+        "/usr/bin/omux",
+        "/usr/bin/oauth-mux",
+        "/usr/bin/codex"
+      ],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "curl-installer",
+      "kind": "installer",
+      "target_id": null,
+      "source_path": "dist/install.sh",
+      "staged_path": "artifacts/install.sh",
+      "release_name": "install.sh",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [],
+      "declared_v0_2_members": [],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "checksums",
+      "kind": "checksums",
+      "target_id": null,
+      "source_path": null,
+      "staged_path": "artifacts/SHA256SUMS",
+      "release_name": "SHA256SUMS",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [],
+      "declared_v0_2_members": [],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "homebrew-formula",
+      "kind": "formula",
+      "target_id": null,
+      "source_path": "dist/homebrew/oauth-mux.rb",
+      "staged_path": "homebrew/oauth-mux.rb",
+      "release_name": "oauth-mux.rb",
+      "materialization_state": "v0_1_15_present_v0_2_pending_tin_2050",
+      "current_v0_1_15_members": [],
+      "declared_v0_2_members": [],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    },
+    {
+      "id": "release-manifest",
+      "kind": "manifest",
+      "target_id": null,
+      "source_path": "release-manifest.json",
+      "staged_path": "artifacts/release-manifest.json",
+      "release_name": "release-manifest.json",
+      "materialization_state": "emitted_not_published_pending_tin_2050",
+      "current_v0_1_15_members": [],
+      "declared_v0_2_members": [],
+      "sha256": null,
+      "signature_ref": null,
+      "sbom_ref": null,
+      "provenance_ref": null
+    }
+  ],
+  "service_assets": [
+    {
+      "id": "launchd-keepalive-template",
+      "platform": "macos",
+      "source": "dist/launchd/dev.xoxd.omux.keepalive.plist.tmpl",
+      "release_name": "dev.xoxd.omux.keepalive.plist",
+      "status": "unshipped_substrate"
+    },
+    {
+      "id": "systemd-keepalive-template",
+      "platform": "linux",
+      "source": "dist/systemd/oauth-mux-keepalive.service.tmpl",
+      "release_name": "oauth-mux-keepalive.service",
+      "status": "unshipped_substrate"
+    }
+  ],
+  "integrity": {
+    "hash_algorithm": "sha256",
+    "checksum_asset": "SHA256SUMS",
+    "signing_inputs": [
+      "release-manifest.json",
+      "SHA256SUMS"
+    ],
+    "sbom": {
+      "status": "not_emitted",
+      "reference": null
+    },
+    "provenance": {
+      "status": "not_emitted",
+      "reference": null
+    }
+  },
+  "intended_consumers": [
+    {
+      "name": "github-release",
+      "state": "pending",
+      "owner_ticket": "TIN-2050",
+      "prerelease_blocking": true
+    },
+    {
+      "name": "curl",
+      "state": "pending",
+      "owner_ticket": "TIN-2050",
+      "prerelease_blocking": true
+    },
+    {
+      "name": "homebrew",
+      "state": "pending",
+      "owner_ticket": "TIN-2050",
+      "prerelease_blocking": true
+    },
+    {
+      "name": "deb",
+      "state": "pending",
+      "owner_ticket": "TIN-2050",
+      "prerelease_blocking": true
+    },
+    {
+      "name": "rpm",
+      "state": "pending",
+      "owner_ticket": "TIN-2050",
+      "prerelease_blocking": true
+    },
+    {
+      "name": "nix-source",
+      "state": "pending",
+      "owner_ticket": "TIN-2050",
+      "prerelease_blocking": true
+    },
+    {
+      "name": "bazel",
+      "state": "pending",
+      "owner_ticket": "TIN-2105",
+      "prerelease_blocking": false
+    },
+    {
+      "name": "gloriousflywheel",
+      "state": "pending",
+      "owner_ticket": "TIN-2105",
+      "prerelease_blocking": false
+    }
+  ]
+}

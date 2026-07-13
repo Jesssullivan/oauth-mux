@@ -24,7 +24,7 @@ pub const methods = @import("methods.zig");
 pub const session_mod = @import("session.zig");
 pub const account_pool_mod = @import("account_pool.zig");
 
-pub const SURFACE_VERSION: u32 = 1;
+pub const SURFACE_VERSION: u32 = types.surface_version;
 pub const BUILD_TAG: []const u8 = "oauth-mux 0.2.0+broker";
 
 pub const Server = server.Server;
