@@ -7,7 +7,8 @@ or managed harness launch.
 
 Program authority remains:
 
-1. `docs/spec/broker-mcp-contract-2026-05-03.md` for the product outcome;
+1. Section 0 of `docs/spec/broker-mcp-contract-2026-05-03.md` for the product
+   outcome only;
 2. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` for v0.2;
 3. `docs/security/omux-v0.2-threat-model-2026-07-11.md` for the managed boundary.
 

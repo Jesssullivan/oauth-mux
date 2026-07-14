@@ -96,6 +96,11 @@ does not change what v0.1.15 has shipped or what its evidence proves.
   remains advisory only. Every observation records
   source, capture time, account, exact model or account-wide scope, window, and
   whether it is observed or inferred.
+- The resident service owns scheduled usage polling, coalescing, and the
+  normalized cache. A session sidecar consumes that redacted snapshot; it does
+  not create a second proactive polling loop. When the service or a fresh
+  snapshot is unavailable, the sidecar stays correct through reactive
+  request-path evidence.
 - The reader calls only `GET /api/oauth/usage` at the fixed Anthropic origin and
   coalesces one in-flight read per account. Its normalized per-account cache is
   fresh for five minutes; raw provider payloads remain memory-only. Unknown JSON
@@ -128,8 +133,9 @@ The resident service owns only account refresh, advisory usage observation,
 transition alerts, and redacted snapshots. It is optional for one-shot managed
 launch correctness and is never a hidden session proxy.
 
-Request-boundary refresh and resident keepalive serialize through the existing
-per-account flock. Hard rotating-refresh-token failure quarantines that lineage
+The sidecar may invoke bounded request-boundary refresh; proactive refresh stays
+with resident keepalive. Both serialize through the existing per-account flock.
+Hard rotating-refresh-token failure quarantines that lineage
 and requires provider-owned re-enrollment; stale token backups are never
 restored automatically.
 

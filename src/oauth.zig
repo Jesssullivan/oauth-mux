@@ -16,7 +16,7 @@ pub const RefreshResult = struct {
     expires_in: ?i64 = null,
 };
 
-pub const RefreshFailureClass = enum {
+const RefreshFailureClass = enum {
     transient_lock,
     transient_network,
     transient_store,
@@ -24,20 +24,23 @@ pub const RefreshFailureClass = enum {
     invalid_rotating_lineage,
 };
 
-pub const RefreshLineageProof = enum {
+// Intentionally module-private until the flock-held refresh path can derive
+// this proof from immutable attempt evidence. No caller may assert a hard
+// rotating-lineage failure from endpoint bytes alone.
+const RefreshLineageProof = enum {
     unproven,
     /// While holding the per-account flock, the canonical fingerprint matched
     /// the submitted refresh token and remained unchanged after the failure.
     current_rotating,
 };
 
-pub const RefreshEndpointFailure = struct {
+const RefreshEndpointFailure = struct {
     status_code: ?u16,
     response_body: []const u8,
     lineage_proof: RefreshLineageProof,
 };
 
-pub const RefreshFailureInput = union(enum) {
+const RefreshFailureInput = union(enum) {
     transient_lock,
     transient_network,
     transient_store,
@@ -55,7 +58,7 @@ const refresh_error_parse_scratch_bytes = 512;
 /// Pure reducer for a failed refresh attempt. Endpoint bytes are parsed in
 /// bounded scratch memory and the returned classification retains no response
 /// data.
-pub fn classifyRefreshFailure(input: RefreshFailureInput) RefreshFailureClass {
+fn classifyRefreshFailure(input: RefreshFailureInput) RefreshFailureClass {
     return switch (input) {
         .transient_lock => .transient_lock,
         .transient_network => .transient_network,

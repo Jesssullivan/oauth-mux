@@ -3,10 +3,13 @@
 //! main.zig so it can import both `config.zig` and `broker/mod.zig`
 //! without leaking either side across module boundaries.
 //!
-//! Anchor: docs/spec/broker-mcp-contract-2026-05-03.md §2.2 / §2.3.
+//! Shipped Codex reference: docs/spec/broker-mcp-contract-2026-05-03.md.
+//! Managed Claude authority: docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md
+//! §2.1-2.3 and docs/spec/managed-harness-jsonrpc-v2.md.
 //! Adapter consumer: src/broker/account_pool.zig + Server.materializer.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const config_mod = @import("config.zig");
 const broker = @import("broker/mod.zig");
 const broker_types = @import("broker/types.zig");
@@ -110,6 +113,7 @@ const RouteHealthMatch = struct {
 pub const ManagedClaudeIdentityError = error{
     ManagedClaudeRouteMissing,
     ManagedClaudeIdentityClarityRequired,
+    OutOfMemory,
 };
 
 /// Fail-closed admission gate for the managed Claude sidecar. The shared pool
@@ -132,6 +136,14 @@ pub fn requireManagedClaudeIdentityClarity(
         const kind = config_mod.resolveProviderKind(cfg, provider_name) orelse continue;
         if (kind != .claude) continue;
         saw_claude = true;
+        const account_name = route_id[colon + 1 ..];
+        const provider_cfg = cfg.providers.map.get(provider_name) orelse
+            return error.ManagedClaudeIdentityClarityRequired;
+        const account_cfg = provider_cfg.accounts.map.get(account_name) orelse
+            return error.ManagedClaudeIdentityClarityRequired;
+        if (!try managedClaudeCredentialAuthorityIsBound(pool.allocator, account_cfg)) {
+            return error.ManagedClaudeIdentityClarityRequired;
+        }
 
         var found = false;
         for (pool.accounts.items) |entry| {
@@ -145,6 +157,62 @@ pub fn requireManagedClaudeIdentityClarity(
         if (!found) return error.ManagedClaudeIdentityClarityRequired;
     }
     if (!saw_claude) return error.ManagedClaudeRouteMissing;
+}
+
+/// Claude's profile identity is separate from its credential JSON. Managed
+/// admission therefore binds both to the same config-dir-derived keychain
+/// service. Arbitrary/custom locators remain available to legacy diagnostics,
+/// but cannot present unproven capacity to the managed sidecar.
+fn managedClaudeCredentialAuthorityIsBound(
+    allocator: std.mem.Allocator,
+    account_cfg: config_mod.AccountConfig,
+) error{OutOfMemory}!bool {
+    if (comptime builtin.os.tag != .macos) return false;
+    if (!std.mem.eql(u8, account_cfg.secret.backend, "keychain")) return false;
+    const raw_config_dir = account_cfg.config_dir orelse return false;
+    const configured_service = account_cfg.secret.service orelse return false;
+    const configured_account = account_cfg.secret.account orelse return false;
+    const local_account = (try env.get(allocator, "USER")) orelse return false;
+    defer allocator.free(local_account);
+    if (local_account.len == 0 or !std.mem.eql(u8, configured_account, local_account)) return false;
+
+    const config_dir = try paths.expandTilde(allocator, raw_config_dir);
+    defer allocator.free(config_dir);
+    const expected_service = try provider_schema.claudeKeychainService(allocator, config_dir);
+    defer allocator.free(expected_service);
+    return std.mem.eql(u8, configured_service, expected_service);
+}
+
+test "managed Claude authority requires the complete macOS keychain locator" {
+    const allocator = std.testing.allocator;
+    const config_dir = "/tmp/omux-managed-claude-authority";
+    const service = try provider_schema.claudeKeychainService(allocator, config_dir);
+    defer allocator.free(service);
+
+    var overrides = std.process.EnvMap.init(allocator);
+    defer overrides.deinit();
+    try overrides.put("USER", "test-user");
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
+
+    const bound = config_mod.AccountConfig{
+        .secret = .{
+            .backend = "keychain",
+            .service = service,
+            .account = "test-user",
+        },
+        .config_dir = config_dir,
+    };
+    const bound_on_this_platform = try managedClaudeCredentialAuthorityIsBound(allocator, bound);
+    try std.testing.expectEqual(builtin.os.tag == .macos, bound_on_this_platform);
+
+    var wrong_account = bound;
+    wrong_account.secret.account = "different-user";
+    try std.testing.expect(!try managedClaudeCredentialAuthorityIsBound(allocator, wrong_account));
+
+    var wrong_service = bound;
+    wrong_service.secret.service = provider_schema.claude_keychain_service_base;
+    try std.testing.expect(!try managedClaudeCredentialAuthorityIsBound(allocator, wrong_service));
 }
 
 // ── identity dedupe before election (TIN-1822 / GH #338) ─────────────
@@ -1997,35 +2065,15 @@ fn writeTestClaudeRawProfile(dir: std.fs.Dir, bytes: []const u8) !void {
 }
 
 fn testClaudeSingleConfigJson(allocator: std.mem.Allocator, config_dir: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        \\{{
-        \\  "version": 1,
-        \\  "providers": {{
-        \\    "claude": {{
-        \\      "kind": "claude",
-        \\      "accounts": {{
-        \\        "a": {{
-        \\          "priority": 20,
-        \\          "secret": {{ "backend": "env", "variable": "OMUX_TEST_CLAUDE_SECRET_A" }},
-        \\          "config_dir": "{s}"
-        \\        }}
-        \\      }}
-        \\    }}
-        \\  }},
-        \\  "profiles": {{
-        \\    "claude-managed": {{ "providers": ["claude:a#claude-managed"] }}
-        \\  }}
-        \\}}
-    ,
-        .{config_dir},
-    );
+    const service = try provider_schema.claudeKeychainService(allocator, config_dir);
+    defer allocator.free(service);
+    return testClaudeSingleConfigJsonWithService(allocator, config_dir, service);
 }
 
-fn testClaudePairConfigJson(
+fn testClaudeSingleConfigJsonWithService(
     allocator: std.mem.Allocator,
-    config_dir_a: []const u8,
-    config_dir_b: []const u8,
+    config_dir: []const u8,
+    service: []const u8,
 ) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
@@ -2037,12 +2085,46 @@ fn testClaudePairConfigJson(
         \\      "accounts": {{
         \\        "a": {{
         \\          "priority": 20,
-        \\          "secret": {{ "backend": "env", "variable": "OMUX_TEST_CLAUDE_SECRET_A" }},
+        \\          "secret": {{ "backend": "keychain", "service": "{s}" }},
+        \\          "config_dir": "{s}"
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "claude-managed": {{ "providers": ["claude:a#claude-managed"] }}
+        \\  }}
+        \\}}
+    ,
+        .{ service, config_dir },
+    );
+}
+
+fn testClaudePairConfigJson(
+    allocator: std.mem.Allocator,
+    config_dir_a: []const u8,
+    config_dir_b: []const u8,
+) ![]u8 {
+    const service_a = try provider_schema.claudeKeychainService(allocator, config_dir_a);
+    defer allocator.free(service_a);
+    const service_b = try provider_schema.claudeKeychainService(allocator, config_dir_b);
+    defer allocator.free(service_b);
+    return std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "claude": {{
+        \\      "kind": "claude",
+        \\      "accounts": {{
+        \\        "a": {{
+        \\          "priority": 20,
+        \\          "secret": {{ "backend": "keychain", "service": "{s}" }},
         \\          "config_dir": "{s}"
         \\        }},
         \\        "b": {{
         \\          "priority": 10,
-        \\          "secret": {{ "backend": "env", "variable": "OMUX_TEST_CLAUDE_SECRET_B" }},
+        \\          "secret": {{ "backend": "keychain", "service": "{s}" }},
         \\          "config_dir": "{s}"
         \\        }}
         \\      }}
@@ -2055,7 +2137,7 @@ fn testClaudePairConfigJson(
         \\  }}
         \\}}
     ,
-        .{ config_dir_a, config_dir_b },
+        .{ service_a, config_dir_a, service_b, config_dir_b },
     );
 }
 
@@ -2100,6 +2182,20 @@ fn expectManagedClaudeIdentityClarityError(
         error.ManagedClaudeIdentityClarityRequired,
         requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed"),
     );
+}
+
+fn expectManagedClaudeIdentityClarityForPlatform(
+    pool: *const broker.AccountPool,
+    cfg: config_mod.Config,
+) !void {
+    if (comptime builtin.os.tag == .macos) {
+        try requireManagedClaudeIdentityClarity(pool, cfg, "claude-managed");
+    } else {
+        try std.testing.expectError(
+            error.ManagedClaudeIdentityClarityRequired,
+            requireManagedClaudeIdentityClarity(pool, cfg, "claude-managed"),
+        );
+    }
 }
 
 test "identity dedupe: duplicate slot is never failover capacity (GH #338 / TIN-1822)" {
@@ -2569,7 +2665,42 @@ test "Claude identity admission hashes a one-account managed pool" {
     try std.testing.expectEqualStrings("660d25a9d7ee", admitted.account_id_hash.?);
     try std.testing.expect(admitted.selectable);
     try std.testing.expect(admitted.duplicate_of == null);
-    try requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed");
+    try expectManagedClaudeIdentityClarityForPlatform(&pool, parsed.value);
+}
+
+test "managed Claude admission binds profile identity to its derived keychain authority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestClaudeIdentityProfile(tmp.dir, "known-account");
+    const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(config_dir);
+
+    const cfg_json = try testClaudeSingleConfigJsonWithService(
+        std.testing.allocator,
+        config_dir,
+        provider_schema.claude_keychain_service_base,
+    );
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "claude:a#claude-managed", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(
+        &pool,
+        parsed.value,
+        "claude-managed",
+        "claude-managed",
+        &store,
+    );
+    try std.testing.expect(pool.accounts.items[0].account_id_hash != null);
+    try std.testing.expectError(
+        error.ManagedClaudeIdentityClarityRequired,
+        requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed"),
+    );
 }
 
 test "Claude identity dedupe keeps one alias for duplicate config dirs" {
@@ -2639,7 +2770,7 @@ test "Claude identity dedupe keeps one alias for duplicate config dirs" {
         broker_types.BrokerError.NoAccountSelectable,
         pool.elect("claude-managed", "claude-managed", &exclude),
     );
-    try requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed");
+    try expectManagedClaudeIdentityClarityForPlatform(&pool, parsed.value);
 }
 
 test "Claude identity dedupe preserves distinct config-dir identities" {
@@ -2693,7 +2824,7 @@ test "Claude identity dedupe preserves distinct config-dir identities" {
     const exclude = [_][]const u8{first.id};
     const second = try pool.elect("claude-managed", "claude-managed", &exclude);
     try std.testing.expect(!std.mem.eql(u8, first.id, second.id));
-    try requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed");
+    try expectManagedClaudeIdentityClarityForPlatform(&pool, parsed.value);
 }
 
 test "managed Claude identity admission rejects hashless profile routes" {

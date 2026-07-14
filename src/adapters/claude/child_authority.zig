@@ -1,8 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const config_mod = @import("../../config.zig");
 
 const capability_encoded_len = 43;
 const loopback_proxy_bypass = "127.0.0.1,localhost";
 const test_capability = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const test_managed_config_dir = "/tmp/omux-claude-neutral-session";
 
 /// Owns the managed child environment, including its capability copy. The
 /// caller retains the sidecar's canonical capability and must zero that at
@@ -23,13 +26,23 @@ pub const ManagedChildEnv = struct {
 pub fn buildChildEnv(
     allocator: std.mem.Allocator,
     inherited: *const std.process.EnvMap,
+    active_config: config_mod.Config,
+    managed_config_dir: []const u8,
     loopback_url: []const u8,
     capability: []const u8,
 ) !ManagedChildEnv {
     const home = inherited.get("HOME") orelse return error.MissingHome;
     if (home.len == 0) return error.EmptyHome;
+    if (!std.fs.path.isAbsolute(home)) return error.HomeMustBeAbsolute;
     try validateLoopbackUrl(loopback_url);
     if (!isCanonicalCapability(capability)) return error.InvalidCapability;
+    const managed_config_dir_absolute = try validateManagedConfigDir(
+        allocator,
+        home,
+        active_config,
+        managed_config_dir,
+    );
+    defer allocator.free(managed_config_dir_absolute);
 
     var child = std.process.EnvMap.init(allocator);
     errdefer child.deinit();
@@ -42,6 +55,7 @@ pub fn buildChildEnv(
     }
 
     try child.put("ANTHROPIC_BASE_URL", loopback_url);
+    try child.put("CLAUDE_CONFIG_DIR", managed_config_dir_absolute);
     try child.put("NO_PROXY", loopback_proxy_bypass);
     try child.put("no_proxy", loopback_proxy_bypass);
     // Install an explicitly owned secret copy last. EnvMap.put can allocate,
@@ -56,6 +70,180 @@ pub fn buildChildEnv(
     }
     try child.putMove(capability_key, capability_copy);
     return .{ .map = child };
+}
+
+fn validateManagedConfigDir(
+    allocator: std.mem.Allocator,
+    home: []const u8,
+    active_config: config_mod.Config,
+    raw_managed_config_dir: []const u8,
+) ![]u8 {
+    const managed = try absoluteConfigDir(allocator, raw_managed_config_dir, home);
+    errdefer allocator.free(managed);
+
+    const canonical = try std.fs.path.join(allocator, &.{ home, ".claude" });
+    defer allocator.free(canonical);
+    try refuseConfigDirOverlap(allocator, managed, canonical);
+
+    var provider_it = active_config.providers.map.iterator();
+    while (provider_it.next()) |provider_entry| {
+        const provider_name = provider_entry.key_ptr.*;
+        if (config_mod.resolveProviderKind(active_config, provider_name) != .claude) continue;
+        var account_it = provider_entry.value_ptr.accounts.map.iterator();
+        while (account_it.next()) |account_entry| {
+            const raw_forbidden = account_entry.value_ptr.config_dir orelse continue;
+            const forbidden = try absoluteConfigDir(allocator, raw_forbidden, home);
+            defer allocator.free(forbidden);
+            try refuseConfigDirOverlap(allocator, managed, forbidden);
+        }
+    }
+    return managed;
+}
+
+fn absoluteConfigDir(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    home: []const u8,
+) ![]u8 {
+    if (raw.len == 0) return error.EmptyManagedConfigDir;
+    if (!std.fs.path.isAbsolute(home)) return error.HomeMustBeAbsolute;
+
+    const candidate = if (std.mem.eql(u8, raw, "~"))
+        try allocator.dupe(u8, home)
+    else if (std.mem.startsWith(u8, raw, "~/"))
+        try std.fs.path.join(allocator, &.{ home, raw[2..] })
+    else if (std.fs.path.isAbsolute(raw))
+        try allocator.dupe(u8, raw)
+    else
+        return error.ManagedConfigDirMustBeAbsolute;
+    defer allocator.free(candidate);
+
+    if (!std.fs.path.isAbsolute(candidate)) return error.ManagedConfigDirMustBeAbsolute;
+    const normalized = try std.fs.path.resolve(allocator, &.{candidate});
+    errdefer allocator.free(normalized);
+    if (!std.fs.path.isAbsolute(normalized)) return error.ManagedConfigDirMustBeAbsolute;
+    return normalized;
+}
+
+fn refuseConfigDirOverlap(
+    allocator: std.mem.Allocator,
+    managed: []const u8,
+    forbidden: []const u8,
+) !void {
+    if (configDirPathsOverlap(managed, forbidden)) {
+        return error.ManagedConfigDirOverlap;
+    }
+
+    const managed_real = (try realpathLongestExisting(allocator, managed)) orelse
+        return error.ManagedConfigDirUncheckable;
+    defer allocator.free(managed_real);
+    const forbidden_real = (try realpathLongestExisting(allocator, forbidden)) orelse
+        return error.ManagedConfigDirUncheckable;
+    defer allocator.free(forbidden_real);
+    if (configDirPathsOverlap(managed_real, forbidden_real)) {
+        return error.ManagedConfigDirOverlap;
+    }
+}
+
+fn configDirPathsOverlap(a_in: []const u8, b_in: []const u8) bool {
+    const a = a_in;
+    const b = b_in;
+    if (!std.fs.path.isAbsolute(a) or !std.fs.path.isAbsolute(b)) return true;
+    if (caseInsensitivePathPlatform() and (!isAsciiPath(a) or !isAsciiPath(b))) {
+        // std has no Unicode filesystem case-folding primitive. APFS can map
+        // distinct UTF-8 spellings to one inode while preserving each spelling
+        // through realpath, so the foundation fails closed instead of guessing.
+        return true;
+    }
+    if (pathBytesEqual(a, b)) return true;
+    if (isFilesystemRoot(a) or isFilesystemRoot(b)) {
+        return pathBytesEqual(
+            std.fs.path.diskDesignator(a),
+            std.fs.path.diskDesignator(b),
+        );
+    }
+    if (a.len > b.len and pathStartsWith(a, b) and std.fs.path.isSep(a[b.len])) return true;
+    if (b.len > a.len and pathStartsWith(b, a) and std.fs.path.isSep(b[a.len])) return true;
+    return false;
+}
+
+fn pathBytesEqual(a: []const u8, b: []const u8) bool {
+    if (comptime caseInsensitivePathPlatform()) {
+        // Managed authority must be safe on the common case-insensitive
+        // filesystems. Over-rejecting a case-sensitive volume is preferable to
+        // admitting two spellings of one credential store.
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+    return std.mem.eql(u8, a, b);
+}
+
+fn pathStartsWith(haystack: []const u8, prefix: []const u8) bool {
+    if (comptime caseInsensitivePathPlatform()) {
+        return std.ascii.startsWithIgnoreCase(haystack, prefix);
+    }
+    return std.mem.startsWith(u8, haystack, prefix);
+}
+
+fn caseInsensitivePathPlatform() bool {
+    return builtin.os.tag == .macos or builtin.os.tag == .windows;
+}
+
+fn isAsciiPath(path: []const u8) bool {
+    for (path) |byte| {
+        if (byte >= 0x80) return false;
+    }
+    return true;
+}
+
+fn isFilesystemRoot(path: []const u8) bool {
+    return std.fs.path.isAbsolute(path) and std.fs.path.dirname(path) == null;
+}
+
+/// Resolve the longest existing prefix so symlink aliases cannot bypass the
+/// overlap guard while still permitting a launcher-created final component.
+fn realpathLongestExisting(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+    if (std.fs.realpathAlloc(allocator, path)) |resolved| {
+        if (!std.fs.path.isAbsolute(resolved)) {
+            allocator.free(resolved);
+            return null;
+        }
+        return resolved;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    }
+    const parent = std.fs.path.dirname(path) orelse return null;
+    const tail = path[parent.len..];
+    if (std.fs.realpathAlloc(allocator, parent)) |resolved_parent| {
+        defer allocator.free(resolved_parent);
+        const reconstructed = try std.fmt.allocPrint(allocator, "{s}{s}", .{ resolved_parent, tail });
+        if (!std.fs.path.isAbsolute(reconstructed)) {
+            allocator.free(reconstructed);
+            return null;
+        }
+        return reconstructed;
+    } else |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    }
+    return null;
+}
+
+fn buildTestChildEnv(
+    allocator: std.mem.Allocator,
+    inherited: *const std.process.EnvMap,
+    loopback_url: []const u8,
+    capability: []const u8,
+) !ManagedChildEnv {
+    return buildChildEnv(
+        allocator,
+        inherited,
+        .{},
+        test_managed_config_dir,
+        loopback_url,
+        capability,
+    );
 }
 
 fn isClaudeAuthoritySelector(name: []const u8) bool {
@@ -101,11 +289,11 @@ test "buildChildEnv preserves HOME and unrelated inherited entries" {
     const allocator = std.testing.allocator;
     var inherited = std.process.EnvMap.init(allocator);
     defer inherited.deinit();
-    try inherited.put("HOME", "/tmp/managed-home");
+    try inherited.put("HOME", "/tmp");
     try inherited.put("PATH", "/usr/bin");
     try inherited.put("UNRELATED_SENTINEL", "inherited-value");
 
-    var child = try buildChildEnv(
+    var child = try buildTestChildEnv(
         allocator,
         &inherited,
         "http://127.0.0.1:43123",
@@ -113,7 +301,7 @@ test "buildChildEnv preserves HOME and unrelated inherited entries" {
     );
     defer child.deinit();
 
-    try std.testing.expectEqualStrings("/tmp/managed-home", child.map.get("HOME").?);
+    try std.testing.expectEqualStrings("/tmp", child.map.get("HOME").?);
     try std.testing.expectEqualStrings("/usr/bin", child.map.get("PATH").?);
     try std.testing.expectEqualStrings("inherited-value", child.map.get("UNRELATED_SENTINEL").?);
 
@@ -125,7 +313,7 @@ test "buildChildEnv scrubs every inherited Claude authority prefix" {
     const allocator = std.testing.allocator;
     var inherited = std.process.EnvMap.init(allocator);
     defer inherited.deinit();
-    try inherited.put("HOME", "/tmp/managed-home");
+    try inherited.put("HOME", "/tmp");
     try inherited.put("UNRELATED_SENTINEL", "preserved");
     try inherited.put("CLAUDE_CONFIG_DIR", "/tmp/account-config");
     try inherited.put("ANTHROPIC_API_KEY", "inherited-api-key");
@@ -142,7 +330,7 @@ test "buildChildEnv scrubs every inherited Claude authority prefix" {
     try inherited.put("ALL_PROXY", "socks5://proxy.invalid:1080");
     try inherited.put("NO_PROXY", "inherited.invalid");
 
-    var child = try buildChildEnv(
+    var child = try buildTestChildEnv(
         allocator,
         &inherited,
         "http://127.0.0.1:43123",
@@ -150,7 +338,10 @@ test "buildChildEnv scrubs every inherited Claude authority prefix" {
     );
     defer child.deinit();
 
-    try std.testing.expect(child.map.get("CLAUDE_CONFIG_DIR") == null);
+    try std.testing.expectEqualStrings(
+        test_managed_config_dir,
+        child.map.get("CLAUDE_CONFIG_DIR").?,
+    );
     try std.testing.expect(child.map.get("ANTHROPIC_API_KEY") == null);
     try std.testing.expect(child.map.get("ANTHROPIC_CUSTOM_HEADERS") == null);
     try std.testing.expect(child.map.get("CLAUDE_CODE_USE_BEDROCK") == null);
@@ -167,7 +358,9 @@ test "buildChildEnv scrubs every inherited Claude authority prefix" {
     var entries = child.map.iterator();
     while (entries.next()) |entry| {
         const name = entry.key_ptr.*;
-        try std.testing.expect(!std.ascii.eqlIgnoreCase(name, "CLAUDE_CONFIG_DIR"));
+        if (std.ascii.eqlIgnoreCase(name, "CLAUDE_CONFIG_DIR")) {
+            try std.testing.expect(std.mem.eql(u8, name, "CLAUDE_CONFIG_DIR"));
+        }
         try std.testing.expect(!std.ascii.startsWithIgnoreCase(name, "CLAUDE_CODE_"));
         if (std.ascii.startsWithIgnoreCase(name, "ANTHROPIC_")) {
             try std.testing.expect(
@@ -182,11 +375,11 @@ test "buildChildEnv installs only managed Anthropic carriers" {
     const allocator = std.testing.allocator;
     var inherited = std.process.EnvMap.init(allocator);
     defer inherited.deinit();
-    try inherited.put("HOME", "/tmp/managed-home");
+    try inherited.put("HOME", "/tmp");
     try inherited.put("ANTHROPIC_BASE_URL", "https://inherited.invalid");
     try inherited.put("ANTHROPIC_AUTH_TOKEN", "inherited-token");
 
-    var child = try buildChildEnv(
+    var child = try buildTestChildEnv(
         allocator,
         &inherited,
         "http://127.0.0.1:43123",
@@ -211,13 +404,19 @@ test "buildChildEnv rejects missing and empty HOME" {
 
     try std.testing.expectError(
         error.MissingHome,
-        buildChildEnv(allocator, &inherited, "http://127.0.0.1:43123", test_capability),
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1:43123", test_capability),
     );
 
     try inherited.put("HOME", "");
     try std.testing.expectError(
         error.EmptyHome,
-        buildChildEnv(allocator, &inherited, "http://127.0.0.1:43123", test_capability),
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1:43123", test_capability),
+    );
+
+    try inherited.put("HOME", "relative/home");
+    try std.testing.expectError(
+        error.HomeMustBeAbsolute,
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1:43123", test_capability),
     );
 }
 
@@ -225,43 +424,178 @@ test "buildChildEnv rejects non-loopback URLs and invalid capabilities" {
     const allocator = std.testing.allocator;
     var inherited = std.process.EnvMap.init(allocator);
     defer inherited.deinit();
-    try inherited.put("HOME", "/tmp/managed-home");
+    try inherited.put("HOME", "/tmp");
 
     try std.testing.expectError(
         error.EmptyLoopbackUrl,
-        buildChildEnv(allocator, &inherited, "", test_capability),
+        buildTestChildEnv(allocator, &inherited, "", test_capability),
     );
     try std.testing.expectError(
         error.InvalidLoopbackUrl,
-        buildChildEnv(allocator, &inherited, "https://127.0.0.1:43123", test_capability),
+        buildTestChildEnv(allocator, &inherited, "https://127.0.0.1:43123", test_capability),
     );
     try std.testing.expectError(
         error.InvalidLoopbackUrl,
-        buildChildEnv(allocator, &inherited, "http://localhost:43123", test_capability),
+        buildTestChildEnv(allocator, &inherited, "http://localhost:43123", test_capability),
     );
     try std.testing.expectError(
         error.InvalidLoopbackUrl,
-        buildChildEnv(allocator, &inherited, "http://127.0.0.1", test_capability),
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1", test_capability),
     );
     try std.testing.expectError(
         error.InvalidLoopbackUrl,
-        buildChildEnv(allocator, &inherited, "http://127.0.0.1:43123/path", test_capability),
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1:43123/path", test_capability),
     );
     try std.testing.expectError(
         error.InvalidCapability,
-        buildChildEnv(allocator, &inherited, "http://127.0.0.1:43123", ""),
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1:43123", ""),
     );
     try std.testing.expectError(
         error.InvalidCapability,
-        buildChildEnv(allocator, &inherited, "http://127.0.0.1:43123", "too-short"),
+        buildTestChildEnv(allocator, &inherited, "http://127.0.0.1:43123", "too-short"),
     );
     try std.testing.expectError(
         error.InvalidCapability,
-        buildChildEnv(
+        buildTestChildEnv(
             allocator,
             &inherited,
             "http://127.0.0.1:43123",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        ),
+    );
+}
+
+test "buildChildEnv requires a neutral config dir outside canonical and enrolled stores" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makePath("home/.claude");
+    try tmp.dir.makeDir("managed");
+    try tmp.dir.makeDir("enrolled");
+
+    const home = try tmp.dir.realpathAlloc(allocator, "home");
+    defer allocator.free(home);
+    const canonical = try tmp.dir.realpathAlloc(allocator, "home/.claude");
+    defer allocator.free(canonical);
+    const managed = try tmp.dir.realpathAlloc(allocator, "managed");
+    defer allocator.free(managed);
+    const enrolled = try tmp.dir.realpathAlloc(allocator, "enrolled");
+    defer allocator.free(enrolled);
+
+    var inherited = std.process.EnvMap.init(allocator);
+    defer inherited.deinit();
+    try inherited.put("HOME", home);
+    const cfg_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{"version":1,"providers":{{"claude":{{"kind":"claude","accounts":{{"enrolled":{{"secret":{{"backend":"env","variable":"TEST_CLAUDE_TOKEN"}},"config_dir":"{s}"}}}}}}}}}}
+    ,
+        .{enrolled},
+    );
+    defer allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(allocator, cfg_json);
+    defer parsed.deinit();
+
+    var child = try buildChildEnv(
+        allocator,
+        &inherited,
+        parsed.value,
+        managed,
+        "http://127.0.0.1:43123",
+        test_capability,
+    );
+    defer child.deinit();
+    try std.testing.expectEqualStrings(managed, child.map.get("CLAUDE_CONFIG_DIR").?);
+
+    try std.testing.expectError(
+        error.ManagedConfigDirOverlap,
+        buildChildEnv(
+            allocator,
+            &inherited,
+            parsed.value,
+            canonical,
+            "http://127.0.0.1:43123",
+            test_capability,
+        ),
+    );
+    try std.testing.expectError(
+        error.ManagedConfigDirOverlap,
+        buildChildEnv(
+            allocator,
+            &inherited,
+            parsed.value,
+            enrolled,
+            "http://127.0.0.1:43123",
+            test_capability,
+        ),
+    );
+    if (comptime builtin.os.tag != .windows) {
+        const root = try tmp.dir.realpathAlloc(allocator, ".");
+        defer allocator.free(root);
+        const alias = try std.fs.path.join(allocator, &.{ root, "managed-alias" });
+        defer allocator.free(alias);
+        try std.fs.symLinkAbsolute(enrolled, alias, .{ .is_directory = true });
+        try std.testing.expectError(
+            error.ManagedConfigDirOverlap,
+            buildChildEnv(
+                allocator,
+                &inherited,
+                parsed.value,
+                alias,
+                "http://127.0.0.1:43123",
+                test_capability,
+            ),
+        );
+    }
+    if (comptime builtin.os.tag == .macos) {
+        const case_alias = try std.ascii.allocUpperString(allocator, enrolled);
+        defer allocator.free(case_alias);
+        try std.testing.expectError(
+            error.ManagedConfigDirOverlap,
+            buildChildEnv(
+                allocator,
+                &inherited,
+                parsed.value,
+                case_alias,
+                "http://127.0.0.1:43123",
+                test_capability,
+            ),
+        );
+        try std.testing.expect(configDirPathsOverlap(
+            "/tmp/\xc3\xa9",
+            "/tmp/\xc3\x89",
+        ));
+    }
+    try std.testing.expectError(
+        error.EmptyManagedConfigDir,
+        buildChildEnv(
+            allocator,
+            &inherited,
+            parsed.value,
+            "",
+            "http://127.0.0.1:43123",
+            test_capability,
+        ),
+    );
+    try std.testing.expectError(
+        error.ManagedConfigDirMustBeAbsolute,
+        buildChildEnv(
+            allocator,
+            &inherited,
+            parsed.value,
+            "relative/session",
+            "http://127.0.0.1:43123",
+            test_capability,
+        ),
+    );
+    try std.testing.expectError(
+        error.ManagedConfigDirOverlap,
+        buildChildEnv(
+            allocator,
+            &inherited,
+            parsed.value,
+            std.fs.path.sep_str,
+            "http://127.0.0.1:43123",
+            test_capability,
         ),
     );
 }
