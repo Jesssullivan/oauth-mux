@@ -42,6 +42,9 @@ memory; they must never be persisted or emitted in diagnostics.
   before injecting only the elected account's upstream OAuth credential.
 - A fake-upstream launch test must prove Claude Code carries the token as the
   expected bearer credential. Until then, no authenticated-sidecar claim exists.
+- Missing/empty proxy configuration, sidecar bind/start failure, or an invalid
+  managed child environment aborts before Claude is spawned. Direct fallback
+  requires explicit operator policy and is never silent.
 
 ### Confused deputy, SSRF, and redirects
 
@@ -54,9 +57,11 @@ memory; they must never be persisted or emitted in diagnostics.
 
 ### Exact-once and memory exhaustion
 
-- Preserve the exact requested model. Permit one cross-account alternate only
-  after an explicit pre-body 401/403/429; pass 5xx through and never replay an
-  ambiguous transport result or a started response.
+- Preserve the exact requested model and cap the request at two upstream
+  attempts total. The one retry slot is either a same-route retry after a
+  confirmed-not-sent failure or one cross-account alternate after an explicit
+  pre-body 401/403/429, never both. Ambiguous send state and partial writes never
+  replay, transport failures never cross accounts, and 5xx passes through.
 - Hold at most 32 MiB per replayable request, 64 MiB per sidecar, and 256 MiB per
   host. Shared atomic reservations use PID/heartbeat expiry and stale-owner
   cleanup. Budget exhaustion degrades to stream-once, never disk spooling.
@@ -78,10 +83,16 @@ memory; they must never be persisted or emitted in diagnostics.
 
 ### Availability and bounded failure
 
-- The Claude usage reader is default-on but advisory only. Required-field or
-  schema/version drift disables that reader, emits a typed redacted event, and
-  leaves the sidecar on reactive request-path routing. Advisory failure may
-  never stop the harness or become guessed capacity/model parity.
+- The Claude usage reader is default-on but advisory only. It calls only
+  `GET /api/oauth/usage` at the fixed origin, coalesces reads per account, and
+  retains only normalized observations for a five-minute freshness window.
+  Raw responses are memory-only. Invalid rows are ignored; zero valid rows
+  creates a five-minute negative cache entry. Missing required top-level
+  structure or an unsupported schema/version activates a per-account,
+  process-lifetime advisory kill switch and emits one typed redacted event per
+  schema fingerprint. The sidecar remains on reactive request-path routing;
+  advisory failure may never stop the harness or become guessed capacity/model
+  parity.
 - When no route is ready, wait once only if the best trusted reset is within 30
   seconds and the request deadline. Otherwise, or after expiry, return typed 429
   plus the best trusted `Retry-After`; never loop, restart, or invent capacity.
