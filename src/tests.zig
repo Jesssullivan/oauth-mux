@@ -37,6 +37,7 @@ const AllModules = struct {
     pub const claude_child_authority = @import("adapters/claude/child_authority.zig");
     pub const claude_fake_upstream = @import("adapters/claude/fake_upstream.zig");
     pub const claude_session_capability = @import("adapters/claude/session_capability.zig");
+    pub const claude_wire_proxy = @import("adapters/claude/wire_proxy.zig");
     pub const codex_adapter = @import("adapters/codex/main.zig");
     pub const codex_app_server_client = @import("adapters/codex/app_server_client.zig");
     pub const codex_wire_proxy = @import("adapters/codex/wire_proxy.zig");
