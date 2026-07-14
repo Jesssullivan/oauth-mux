@@ -16,6 +16,84 @@ pub const RefreshResult = struct {
     expires_in: ?i64 = null,
 };
 
+pub const RefreshFailureClass = enum {
+    transient_lock,
+    transient_network,
+    transient_store,
+    transient_endpoint,
+    invalid_rotating_lineage,
+};
+
+pub const RefreshLineageProof = enum {
+    unproven,
+    /// While holding the per-account flock, the canonical fingerprint matched
+    /// the submitted refresh token and remained unchanged after the failure.
+    current_rotating,
+};
+
+pub const RefreshEndpointFailure = struct {
+    status_code: ?u16,
+    response_body: []const u8,
+    lineage_proof: RefreshLineageProof,
+};
+
+pub const RefreshFailureInput = union(enum) {
+    transient_lock,
+    transient_network,
+    transient_store,
+    endpoint: RefreshEndpointFailure,
+};
+
+const OAuthErrorResponse = struct {
+    @"error": ?[]const u8 = null,
+};
+
+const max_refresh_error_body_bytes = 16 * 1024;
+const max_refresh_error_value_bytes = 256;
+const refresh_error_parse_scratch_bytes = 512;
+
+/// Pure reducer for a failed refresh attempt. Endpoint bytes are parsed in
+/// bounded scratch memory and the returned classification retains no response
+/// data.
+pub fn classifyRefreshFailure(input: RefreshFailureInput) RefreshFailureClass {
+    return switch (input) {
+        .transient_lock => .transient_lock,
+        .transient_network => .transient_network,
+        .transient_store => .transient_store,
+        .endpoint => |failure| classifyRefreshEndpointFailure(failure),
+    };
+}
+
+fn classifyRefreshEndpointFailure(failure: RefreshEndpointFailure) RefreshFailureClass {
+    if (failure.status_code != 400 or failure.lineage_proof != .current_rotating) {
+        return .transient_endpoint;
+    }
+    return if (isInvalidGrantOAuthError(failure.response_body))
+        .invalid_rotating_lineage
+    else
+        .transient_endpoint;
+}
+
+fn isInvalidGrantOAuthError(response_body: []const u8) bool {
+    if (response_body.len > max_refresh_error_body_bytes) return false;
+
+    var scratch: [refresh_error_parse_scratch_bytes]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const parsed = std.json.parseFromSliceLeaky(
+        OAuthErrorResponse,
+        fixed.allocator(),
+        response_body,
+        .{
+            .ignore_unknown_fields = true,
+            .allocate = .alloc_if_needed,
+            .max_value_len = max_refresh_error_value_bytes,
+        },
+    ) catch return false;
+
+    const error_code = parsed.@"error" orelse return false;
+    return std.mem.eql(u8, error_code, "invalid_grant");
+}
+
 // Best-effort SO_RCVTIMEO/SO_SNDTIMEO on a connected socket. winsock takes
 // a DWORD of milliseconds; posix takes a timeval. Both platforms get a
 // real bound; any failure is swallowed (a missing timeout must never fail
@@ -160,6 +238,77 @@ fn writeUrlEncoded(writer: anytype, s: []const u8) !void {
 }
 
 // ── Tests ──
+
+test "refresh failure classifier covers every class" {
+    const cases = [_]struct {
+        input: RefreshFailureInput,
+        expected: RefreshFailureClass,
+    }{
+        .{ .input = .transient_lock, .expected = .transient_lock },
+        .{ .input = .transient_network, .expected = .transient_network },
+        .{ .input = .transient_store, .expected = .transient_store },
+        .{
+            .input = .{ .endpoint = .{
+                .status_code = 503,
+                .response_body = "Service Unavailable",
+                .lineage_proof = .unproven,
+            } },
+            .expected = .transient_endpoint,
+        },
+        .{
+            .input = .{ .endpoint = .{
+                .status_code = 400,
+                .response_body = "{\"error\":\"invalid_\\u0067rant\",\"error_description\":\"expired\",\"extension\":{\"ignored\":true}}",
+                .lineage_proof = .current_rotating,
+            } },
+            .expected = .invalid_rotating_lineage,
+        },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, classifyRefreshFailure(case.input));
+    }
+}
+
+test "refresh failure classifier identifies only proven invalid grant lineage" {
+    const cases = [_]RefreshEndpointFailure{
+        // Body substring and status text are not structured OAuth errors.
+        .{ .status_code = 400, .response_body = "400 Bad Request: invalid_grant", .lineage_proof = .current_rotating },
+        .{ .status_code = 400, .response_body = "{\"error_description\":\"invalid_grant\"}", .lineage_proof = .current_rotating },
+        // Malformed and unknown endpoint responses remain transient.
+        .{ .status_code = 400, .response_body = "{\"error\":\"invalid_grant\"", .lineage_proof = .current_rotating },
+        .{ .status_code = 400, .response_body = "{\"error\":\"temporarily_unavailable\"}", .lineage_proof = .current_rotating },
+        .{ .status_code = 400, .response_body = "{\"error\":{\"code\":\"invalid_grant\"}}", .lineage_proof = .current_rotating },
+        // Exact invalid_grant is insufficient without both remaining proofs.
+        .{ .status_code = 401, .response_body = "{\"error\":\"invalid_grant\"}", .lineage_proof = .current_rotating },
+        .{ .status_code = 500, .response_body = "{\"error\":\"invalid_grant\"}", .lineage_proof = .current_rotating },
+        .{ .status_code = null, .response_body = "{\"error\":\"invalid_grant\"}", .lineage_proof = .current_rotating },
+        .{ .status_code = 400, .response_body = "{\"error\":\"invalid_grant\"}", .lineage_proof = .unproven },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            RefreshFailureClass.transient_endpoint,
+            classifyRefreshFailure(.{ .endpoint = case }),
+        );
+    }
+}
+
+test "refresh failure classifier bounds endpoint parsing" {
+    var oversized: [max_refresh_error_body_bytes + 1]u8 = undefined;
+    @memset(&oversized, ' ');
+    const prefix = "{\"error\":\"invalid_grant\"}";
+    @memcpy(oversized[0..prefix.len], prefix);
+
+    try std.testing.expectEqual(
+        RefreshFailureClass.transient_endpoint,
+        classifyRefreshFailure(.{ .endpoint = .{
+            .status_code = 400,
+            .response_body = &oversized,
+            .lineage_proof = .current_rotating,
+        } }),
+    );
+}
 
 test "generatePkce produces valid challenge" {
     const pkce = generatePkce();
