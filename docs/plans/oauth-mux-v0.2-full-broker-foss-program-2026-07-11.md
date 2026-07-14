@@ -29,6 +29,11 @@ does not change what v0.1.15 has shipped or what its evidence proves.
 
 - `omux` is the primary v0.2 CLI. `oauth-mux` remains a compatibility link.
 - Broker guarantees apply only to a harness launched by `omux <harness>`.
+- Managed launch preflight must prove a non-empty proxy configuration, a bound
+  authenticated sidecar, fixed-upstream policy, and the child environment/state
+  map before spawning Claude. Any failure aborts before child launch. Direct or
+  unmanaged fallback is allowed only by explicit operator policy and is never
+  silent.
 - Every managed Claude launch creates one sidecar bound to loopback and one
   256-bit random capability token. The token is memory-only, passed to the
   child without logging, compared in constant time, and dies with the session.
@@ -52,9 +57,11 @@ does not change what v0.1.15 has shipped or what its evidence proves.
   remains stable for the session unless explicit reactive evidence makes the
   route unavailable. Load is the count of active leases, with deterministic
   tie-breaking.
-- A request may try at most one alternate account, and only when the first
-  upstream returns an explicit 401, 403, or 429 before any response body byte
-  has been sent to the harness.
+- A request has at most two upstream attempts total. After the initial attempt,
+  its one retry slot is consumed by either one same-route retry after a confirmed
+  pre-send transport failure or one distinct-account alternate after an explicit
+  401, 403, or 429 before any response body byte reaches the harness. It can
+  never receive both.
 - Retry requires a replayable request body held wholly in memory. The hard cap
   is 32 MiB. Requests above the cap stream once and cannot use an alternate.
 - Replay reservations are capped at 64 MiB per sidecar and 256 MiB across
@@ -64,9 +71,11 @@ does not change what v0.1.15 has shipped or what its evidence proves.
   32 MiB; on the next byte it releases replay eligibility and streams the held
   prefix plus the remainder once with backpressure.
 - Never spool prompts or request bodies to disk.
-- Never replay connection resets, timeouts, TLS errors, partial writes, other
-  ambiguous transport failures, or any response whose headers/body have begun
-  downstream. Return the original failure and record redacted local evidence.
+- A transport failure may consume the one same-route retry only when the proxy
+  proves that no request byte was sent. Ambiguous send state, any partial write,
+  or any response whose headers/body have begun downstream is never replayed.
+  Transport failures never authorize a cross-account attempt. Return the
+  original failure and record redacted local evidence.
 - Provider 5xx responses pass through to Claude Code's native retry behavior;
   they never trigger a cross-account attempt.
 - No third route, retry loop, mid-response failover, or cross-model downgrade.
@@ -87,9 +96,19 @@ does not change what v0.1.15 has shipped or what its evidence proves.
   remains advisory only. Every observation records
   source, capture time, account, exact model or account-wide scope, window, and
   whether it is observed or inferred.
-- Schema or version drift disables only that advisory reader and records a
-  typed, redacted reason. It never stops the sidecar or managed harness;
-  request-path evidence and reactive routing continue.
+- The reader calls only `GET /api/oauth/usage` at the fixed Anthropic origin and
+  coalesces one in-flight read per account. Its normalized per-account cache is
+  fresh for five minutes; raw provider payloads remain memory-only. Unknown JSON
+  fields are tolerated, but a consumed row must provide a scope, quota window,
+  bounded utilization or remaining value, and absolute reset time. A model-scoped
+  row must also carry an exact model identifier. Invalid rows are ignored; zero
+  valid rows disables that advisory observation and emits one typed redacted
+  schema-validation event and a five-minute negative cache entry.
+- Missing required top-level structure or an unsupported schema/version
+  activates a per-account kill switch for that process lifetime and records one
+  typed, redacted event per schema fingerprint. It disables only that advisory
+  reader; it never stops the sidecar or managed harness. Request-path evidence
+  and reactive routing continue.
 - Advisory data may avoid a predictably bad first route, but it cannot justify
   replay or override direct request-path evidence.
 - Missing, stale, malformed, or contradictory advisory data falls back to

@@ -7,8 +7,10 @@ v0.2 program; trackers coordinate work but do not override repository authority.
 ## Authority Order
 
 1. `AGENTS.md` - repository operating rules and authority order.
-2. `docs/spec/broker-mcp-contract-2026-05-03.md` - immutable product anchor: a
-   managed harness stays in the same process and hands off without prompting.
+2. Section 0 of `docs/spec/broker-mcp-contract-2026-05-03.md` - immutable
+   product anchor: a managed harness stays in the same process and hands off
+   without prompting. The document's later daemon, MCP surface-v1, adapter, and
+   phase-plan sections are historical design inputs, not v0.2 authority.
 3. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` - active
    v0.2 design authority. It is future/unshipped until golden proof.
 4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` - normative removal
@@ -53,6 +55,7 @@ authority and are pending sequenced deletion under the ledger:
 - runtime-daemon, supervisor/restart, prepared-fallback, federation, and FFI
   plans that conflict with the full-broker program.
 
-When sources disagree, preserve shipped evidence, follow the immutable product
-anchor, then apply the v0.2 program. Do not resolve conflict by claiming planned
+When sources disagree, preserve shipped evidence, follow the immutable Section
+0 product metric, then apply the v0.2 program. Do not revive the anchor's
+historical implementation sections or resolve conflict by claiming planned
 behavior has shipped.

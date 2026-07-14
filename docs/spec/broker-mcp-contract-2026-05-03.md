@@ -1,8 +1,15 @@
 # Broker MCP Contract — The oauth-mux Product Reframe
 Date: 2026-05-03
-Status: ANCHOR. This document is the truth source for the oauth-mux product.
-Replaces, in priority: any spec or doc that frames restart, supervised
-relaunch, route-warming, or `prepared_fallback` as the success metric.
+Status: PRODUCT ANCHOR FOR SECTION 0 ONLY. Section 0 is the truth source for the
+oauth-mux success metric and replaces any framing of restart, supervised
+relaunch, route-warming, or `prepared_fallback` as success.
+
+Authority correction (2026-07-13): Sections 1 and later are historical May 2026
+design inputs. Their broker-daemon diagram, MCP `surface_version: 1`, adapter
+catalog, and phase plan are superseded by
+`docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and must not
+be implemented as current direction. Shipped evidence and history remain
+unchanged.
 
 Linear: TIN-491 (root muxing architecture), TIN-738 (daemon RFC parent),
 TIN-913 (in-place broker proof). Supersedes the framing of TIN-911 (now

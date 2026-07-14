@@ -9,6 +9,11 @@ The product success metric is in `docs/spec/broker-mcp-contract-2026-05-03.md`:
 > quota. Another credited account is **seamlessly substituted in place**.
 > The harness process is not restarted. The user is not prompted.
 
+Only Section 0 of that document is the immutable product anchor. Its later
+daemon, MCP surface-v1, adapter, and phase-plan sections are May 2026 design
+history and do not define v0.2 implementation. Where those sections disagree
+with the active v0.2 plan, the v0.2 plan wins.
+
 The Codex implementation of that bar is in
 `docs/spec/codex-adapter-contract-2026-05-03.md`. Restart, supervised
 relaunch, and `prepared_fallback` are NOT the product — they are
@@ -72,7 +77,8 @@ prove the OpenCode conformance boundary, it is probably out of scope.
 ## Source of Truth Hierarchy
 
 1. This file (AGENTS.md)
-2. `docs/spec/broker-mcp-contract-2026-05-03.md` — the product anchor
+2. Section 0 of `docs/spec/broker-mcp-contract-2026-05-03.md` — the immutable
+   product success metric; later sections are historical design input
 3. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` — active,
    unshipped v0.2 design authority
 4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` — v0.2 removal order
