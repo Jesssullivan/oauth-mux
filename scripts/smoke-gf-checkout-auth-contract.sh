@@ -62,6 +62,8 @@ grep -A1 '^permissions:' "$CI" | grep -F 'contents: read' >/dev/null ||
   fail "CI must declare read-only GITHUB_TOKEN permissions"
 [ "$(grep -Fc 'uses: ./.github/actions/checkout-gloriousflywheel' "$REMOTE")" -eq 1 ] ||
   fail "remote validation must use exactly one scoped checkout action"
+grep -A2 'uses: actions/checkout@v4' "$REMOTE" | grep -F 'fetch-depth: 0' >/dev/null ||
+  fail "remote validation must fetch full history for baseline characterization"
 [ "$(grep -Fc 'uses: ./.github/actions/checkout-gloriousflywheel' "$RELEASE")" -eq 1 ] ||
   fail "release proof must use exactly one scoped checkout action"
 

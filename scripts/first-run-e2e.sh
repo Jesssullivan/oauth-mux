@@ -17,7 +17,12 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-first-run.XXXXXX")"
+operator_home="${HOME:-}"
+tmp_parent="${TMPDIR:-/tmp}"
+if [ -n "$operator_home" ] && { [ "$tmp_parent" = "$operator_home" ] || [[ "$tmp_parent" == "$operator_home/"* ]]; }; then
+  tmp_parent="/tmp"
+fi
+tmp="$(mktemp -d "$tmp_parent/oauth-mux-first-run.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 home="$tmp/home"
@@ -25,7 +30,6 @@ xdg_config="$tmp/xdg-config"
 xdg_state="$tmp/xdg-state"
 xdg_data="$tmp/xdg-data"
 xdg_runtime="$tmp/xdg-runtime"
-operator_home="${HOME:-}"
 
 case "$(uname -s)" in
   Darwin) expected_claude_secret_backend="keychain" ;;

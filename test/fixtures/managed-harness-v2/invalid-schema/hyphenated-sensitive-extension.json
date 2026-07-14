@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "hyphenated-sensitive-extension",
+  "method": "surface/info",
+  "params": {
+    "api-key": 1
+  }
+}

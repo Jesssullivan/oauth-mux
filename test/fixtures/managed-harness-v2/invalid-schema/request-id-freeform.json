@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "not an opaque request id",
+  "method": "session/teardown",
+  "params": {
+    "session_handle": "session_a"
+  }
+}

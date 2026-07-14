@@ -1,5 +1,6 @@
 const std = @import("std");
 const broker_types = @import("broker/types.zig");
+const managed_harness_contract = @import("managed_harness_contract.zig");
 const product_identity = @import("product_identity.zig");
 
 pub const schema_version: u32 = 1;
@@ -411,7 +412,11 @@ pub fn renderDeclaration(allocator: std.mem.Allocator, version: []const u8) ![]u
 
     const protocols = [_]Protocol{
         .{ .name = "broker-jsonrpc", .surface_version = broker_types.surface_version, .status = "shipped" },
-        .{ .name = "managed-harness-jsonrpc", .surface_version = 2, .status = "planned_unshipped" },
+        .{
+            .name = managed_harness_contract.protocol_name,
+            .surface_version = managed_harness_contract.surface_version,
+            .status = managed_harness_contract.protocol_status,
+        },
     };
     const build_id_sources = [_][]const u8{
         "zig-option:build-id",
@@ -535,9 +540,9 @@ fn validateDeclaration(manifest: Manifest) !void {
             std.mem.eql(u8, protocol.status, "shipped"))
         {
             shipped_broker_protocol = true;
-        } else if (std.mem.eql(u8, protocol.name, "managed-harness-jsonrpc") and
-            protocol.surface_version == 2 and
-            std.mem.eql(u8, protocol.status, "planned_unshipped"))
+        } else if (std.mem.eql(u8, protocol.name, managed_harness_contract.protocol_name) and
+            protocol.surface_version == managed_harness_contract.surface_version and
+            std.mem.eql(u8, protocol.status, managed_harness_contract.protocol_status))
         {
             planned_managed_protocol = true;
         } else {

@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": "compact-sensitive-extension",
+  "method": "surface/info",
+  "params": {
+    "x_count_accountid": 123456789
+  }
+}

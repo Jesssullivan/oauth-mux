@@ -15,19 +15,21 @@ v0.2 program; trackers coordinate work but do not override repository authority.
    order and preservation gates for the v0.2 reset.
 5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` - managed sidecar,
    credential, memory, local-state, evidence, and supply-chain boundaries.
-6. `docs/spec/codex-adapter-contract-2026-05-03.md` and
+6. `docs/spec/managed-harness-jsonrpc-v2.md` - generated, declaration-only
+   process-adapter compatibility contract. Its methods remain unimplemented.
+7. `docs/spec/codex-adapter-contract-2026-05-03.md` and
    `docs/spec/harness-session-authority-bridge-2026-05-05.md` - shipped Codex
    adapter/session constraints where they do not conflict with the v0.2 program.
-7. `CHANGELOG.md`, release tags, and committed evidence - shipped claim truth.
+8. `CHANGELOG.md`, release tags, and committed evidence - shipped claim truth.
    A plan can supersede direction but cannot retroactively broaden or erase it.
-8. `justfile` - operator entrypoint and remote-proof authority.
-9. `README.md` - public summary, subordinate to contracts and shipped evidence.
-10. `build.zig.zon` plus the Zig release graph - the human-edited version and
+9. `justfile` - operator entrypoint and remote-proof authority.
+10. `README.md` - public summary, subordinate to contracts and shipped evidence.
+11. `build.zig.zon` plus the Zig release graph - the human-edited version and
    product/release-semantics authority.
-11. Generated, checked `release-manifest.json`, once introduced - the projection
+12. Generated, checked `release-manifest.json` - the projection
     consumed by packaging, installers, Nix, Homebrew, Bazel, and
     GloriousFlywheel. Consumers may not duplicate its version or target graph.
-12. `flake.nix`, packaging scripts, and `src/` - implementation subordinate to
+13. `flake.nix`, packaging scripts, and `src/` - implementation subordinate to
     the release graph and shipped evidence.
 
 ## Evidence Rules

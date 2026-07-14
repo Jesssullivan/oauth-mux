@@ -1,0 +1,3697 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omux.dev/schemas/managed-harness-jsonrpc-v2.schema.json",
+  "title": "omux managed-harness JSON-RPC surface v2",
+  "description": "Declaration-only compatibility contract. Every listed method is unimplemented until adapter proof lands.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request_surface_info"
+    },
+    {
+      "$ref": "#/$defs/request_harness_preflight"
+    },
+    {
+      "$ref": "#/$defs/request_session_launch"
+    },
+    {
+      "$ref": "#/$defs/request_route_lease_snapshot"
+    },
+    {
+      "$ref": "#/$defs/request_session_transition"
+    },
+    {
+      "$ref": "#/$defs/request_repair_handoff"
+    },
+    {
+      "$ref": "#/$defs/request_session_teardown"
+    },
+    {
+      "$ref": "#/$defs/success_response"
+    },
+    {
+      "$ref": "#/$defs/not_implemented_response"
+    },
+    {
+      "$ref": "#/$defs/teardown_incomplete_response"
+    },
+    {
+      "$ref": "#/$defs/unknown_method_response"
+    }
+  ],
+  "x-omux-surface": {
+    "surface_version": 2,
+    "protocol_name": "managed-harness-jsonrpc",
+    "status": "planned_unshipped",
+    "exact_model_required": true,
+    "max_upstream_attempts": 2,
+    "policy_schema": "#/$defs/broker_policy",
+    "methods": [
+      {
+        "name": "surface/info",
+        "lifecycle_phase": "discovery",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_surface_info",
+        "result_schema": "#/$defs/result_surface_info",
+        "required_params": [],
+        "required_result_fields": [
+          "surface_version",
+          "status",
+          "methods",
+          "policy"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      },
+      {
+        "name": "harness/preflight",
+        "lifecycle_phase": "preflight",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_harness_preflight",
+        "result_schema": "#/$defs/result_harness_preflight",
+        "required_params": [
+          "harness",
+          "model_demand"
+        ],
+        "required_result_fields": [
+          "ready",
+          "harness_handle",
+          "reasons"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      },
+      {
+        "name": "session/launch",
+        "lifecycle_phase": "launch",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_session_launch",
+        "result_schema": "#/$defs/result_session_launch",
+        "required_params": [
+          "harness_handle",
+          "model_demand"
+        ],
+        "required_result_fields": [
+          "session_handle",
+          "route_handle",
+          "state"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      },
+      {
+        "name": "route/lease_snapshot",
+        "lifecycle_phase": "observe",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_route_lease_snapshot",
+        "result_schema": "#/$defs/result_route_lease_snapshot",
+        "required_params": [
+          "session_handle"
+        ],
+        "required_result_fields": [
+          "session_handle",
+          "leases",
+          "observed_at_ms"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      },
+      {
+        "name": "session/transition",
+        "lifecycle_phase": "transition",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_session_transition",
+        "result_schema": "#/$defs/result_session_transition",
+        "required_params": [
+          "session_handle",
+          "model_demand",
+          "proxy_attempts"
+        ],
+        "required_result_fields": [
+          "state",
+          "selected_route_handle",
+          "action_required"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      },
+      {
+        "name": "repair/handoff",
+        "lifecycle_phase": "repair",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_repair_handoff",
+        "result_schema": "#/$defs/result_repair_handoff",
+        "required_params": [
+          "session_handle",
+          "reason"
+        ],
+        "required_result_fields": [
+          "handoff_handle",
+          "action"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      },
+      {
+        "name": "session/teardown",
+        "lifecycle_phase": "teardown",
+        "implementation_status": "not_implemented",
+        "request_schema": "#/$defs/request_session_teardown",
+        "result_schema": "#/$defs/result_session_teardown",
+        "required_params": [
+          "session_handle"
+        ],
+        "required_result_fields": [
+          "cleanup"
+        ],
+        "unknown_fields": "typed_scalar_extensions_except_sensitive_names"
+      }
+    ]
+  },
+  "$defs": {
+    "opaque_handle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "handle_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "boolean": {
+      "type": "boolean"
+    },
+    "nonnegative_integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "preflight_reasons": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "enum": [
+          "harness_unavailable",
+          "managed_config_missing",
+          "no_eligible_account",
+          "model_parity_unproven",
+          "credential_unavailable",
+          "identity_conflict",
+          "sidecar_unavailable",
+          "policy_refused"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "repair_reason_code": {
+      "type": "string",
+      "enum": [
+        "hard_auth_failure",
+        "credential_missing",
+        "identity_conflict",
+        "refresh_lineage_quarantined",
+        "provider_reenroll_required"
+      ]
+    },
+    "open_object": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      }
+    },
+    "transition_state": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "running",
+        "retained",
+        "switched",
+        "refused",
+        "action_required"
+      ]
+    },
+    "model_demand": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "model",
+        "preservation"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "preservation": {
+          "type": "string",
+          "const": "exact"
+        }
+      }
+    },
+    "broker_policy": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "carrier",
+        "replay",
+        "wait",
+        "leases",
+        "redaction"
+      ],
+      "properties": {
+        "carrier": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "capability_bits",
+            "capability_encoding",
+            "capability_storage",
+            "capability_compare",
+            "capability_generation",
+            "capability_lifetime",
+            "capability_child_binding",
+            "capability_log_behavior",
+            "inbound_carrier",
+            "base_url_carrier",
+            "loopback_bind",
+            "bad_capability_behavior",
+            "inbound_auth_header_behavior",
+            "upstream_auth_injection",
+            "request_target_form",
+            "connect_behavior",
+            "absolute_form_behavior",
+            "caller_selected_upstream_behavior",
+            "upstream_origin",
+            "tls_verification",
+            "redirect_behavior"
+          ],
+          "properties": {
+            "capability_bits": {
+              "type": "integer",
+              "const": 256
+            },
+            "capability_encoding": {
+              "type": "string",
+              "const": "base64url_no_padding"
+            },
+            "capability_storage": {
+              "type": "string",
+              "const": "memory_only"
+            },
+            "capability_compare": {
+              "type": "string",
+              "const": "constant_time"
+            },
+            "capability_generation": {
+              "type": "string",
+              "const": "operating_system_csprng"
+            },
+            "capability_lifetime": {
+              "type": "string",
+              "const": "session_only"
+            },
+            "capability_child_binding": {
+              "type": "string",
+              "const": "managed_child_only"
+            },
+            "capability_log_behavior": {
+              "type": "string",
+              "const": "never_emit_dispose_at_teardown"
+            },
+            "inbound_carrier": {
+              "type": "string",
+              "const": "ANTHROPIC_AUTH_TOKEN"
+            },
+            "base_url_carrier": {
+              "type": "string",
+              "const": "ANTHROPIC_BASE_URL"
+            },
+            "loopback_bind": {
+              "type": "string",
+              "const": "127.0.0.1:0"
+            },
+            "bad_capability_behavior": {
+              "type": "string",
+              "const": "local_401_zero_upstream"
+            },
+            "inbound_auth_header_behavior": {
+              "type": "string",
+              "const": "strip_authorization_and_api_key"
+            },
+            "upstream_auth_injection": {
+              "type": "string",
+              "const": "elected_oauth_bearer_only"
+            },
+            "request_target_form": {
+              "type": "string",
+              "const": "origin_form_only"
+            },
+            "connect_behavior": {
+              "type": "string",
+              "const": "reject"
+            },
+            "absolute_form_behavior": {
+              "type": "string",
+              "const": "reject"
+            },
+            "caller_selected_upstream_behavior": {
+              "type": "string",
+              "const": "reject"
+            },
+            "upstream_origin": {
+              "type": "string",
+              "const": "https://api.anthropic.com"
+            },
+            "tls_verification": {
+              "type": "string",
+              "const": "system_roots_required"
+            },
+            "redirect_behavior": {
+              "type": "string",
+              "const": "reject_auth_carrying_redirects"
+            }
+          }
+        },
+        "replay": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "max_upstream_attempts",
+            "max_cross_account_alternates",
+            "max_same_route_transport_retries",
+            "alternate_statuses",
+            "request_limit_bytes",
+            "sidecar_limit_bytes",
+            "host_limit_bytes",
+            "reservation_storage",
+            "reservation_owner",
+            "reservation_stale_behavior",
+            "reservation_release_behavior",
+            "overflow_behavior",
+            "chunked_unknown_length_behavior",
+            "cancellation_behavior",
+            "spool_behavior",
+            "ambiguous_transport_behavior",
+            "started_response_behavior",
+            "provider_5xx_behavior"
+          ],
+          "properties": {
+            "max_upstream_attempts": {
+              "type": "integer",
+              "const": 2
+            },
+            "max_cross_account_alternates": {
+              "type": "integer",
+              "const": 1
+            },
+            "max_same_route_transport_retries": {
+              "type": "integer",
+              "const": 1
+            },
+            "alternate_statuses": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "prefixItems": [
+                {
+                  "type": "integer",
+                  "const": 401
+                },
+                {
+                  "type": "integer",
+                  "const": 403
+                },
+                {
+                  "type": "integer",
+                  "const": 429
+                }
+              ],
+              "items": false
+            },
+            "request_limit_bytes": {
+              "type": "integer",
+              "const": 33554432
+            },
+            "sidecar_limit_bytes": {
+              "type": "integer",
+              "const": 67108864
+            },
+            "host_limit_bytes": {
+              "type": "integer",
+              "const": 268435456
+            },
+            "reservation_storage": {
+              "type": "string",
+              "const": "atomic_cross_process"
+            },
+            "reservation_owner": {
+              "type": "string",
+              "const": "pid_heartbeat_expiry"
+            },
+            "reservation_stale_behavior": {
+              "type": "string",
+              "const": "ignore_and_reclaim"
+            },
+            "reservation_release_behavior": {
+              "type": "string",
+              "const": "hold_until_replay_ineligible_or_cancellation_overflow_teardown"
+            },
+            "overflow_behavior": {
+              "type": "string",
+              "const": "stream_once_release_reservation"
+            },
+            "chunked_unknown_length_behavior": {
+              "type": "string",
+              "const": "buffer_to_request_limit_then_stream_once_with_backpressure"
+            },
+            "cancellation_behavior": {
+              "type": "string",
+              "const": "propagate_no_cross_account_release_reservation"
+            },
+            "spool_behavior": {
+              "type": "string",
+              "const": "forbidden"
+            },
+            "ambiguous_transport_behavior": {
+              "type": "string",
+              "const": "propagate_original_no_cross_account"
+            },
+            "started_response_behavior": {
+              "type": "string",
+              "const": "propagate_original_no_cross_account"
+            },
+            "provider_5xx_behavior": {
+              "type": "string",
+              "const": "pass_through_native_retry"
+            }
+          }
+        },
+        "wait": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "max_pre_attempt_waits",
+            "max_wait_seconds",
+            "trusted_reset_required",
+            "must_fit_request_deadline",
+            "reelect_after_wait",
+            "otherwise_status",
+            "retry_after_source",
+            "loop_behavior"
+          ],
+          "properties": {
+            "max_pre_attempt_waits": {
+              "type": "integer",
+              "const": 1
+            },
+            "max_wait_seconds": {
+              "type": "integer",
+              "const": 30
+            },
+            "trusted_reset_required": {
+              "type": "boolean",
+              "const": true
+            },
+            "must_fit_request_deadline": {
+              "type": "boolean",
+              "const": true
+            },
+            "reelect_after_wait": {
+              "type": "boolean",
+              "const": true
+            },
+            "otherwise_status": {
+              "type": "integer",
+              "const": 429
+            },
+            "retry_after_source": {
+              "type": "string",
+              "const": "best_trusted_reset"
+            },
+            "loop_behavior": {
+              "type": "string",
+              "const": "forbidden"
+            }
+          }
+        },
+        "leases": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "storage",
+            "selection",
+            "heartbeat_required",
+            "expiry_required",
+            "stale_owner_behavior",
+            "unavailable_state_behavior",
+            "exhaustion_trust",
+            "availability_freshness",
+            "unknown_rank"
+          ],
+          "properties": {
+            "storage": {
+              "type": "string",
+              "const": "atomic_redacted_cross_process"
+            },
+            "selection": {
+              "type": "string",
+              "const": "sticky_least_loaded_then_least_recent"
+            },
+            "heartbeat_required": {
+              "type": "boolean",
+              "const": true
+            },
+            "expiry_required": {
+              "type": "boolean",
+              "const": true
+            },
+            "stale_owner_behavior": {
+              "type": "string",
+              "const": "ignore_and_reclaim"
+            },
+            "unavailable_state_behavior": {
+              "type": "string",
+              "const": "advisory_never_blocks_reactive_routing"
+            },
+            "exhaustion_trust": {
+              "type": "string",
+              "const": "through_reset"
+            },
+            "availability_freshness": {
+              "type": "string",
+              "const": "deadline_required"
+            },
+            "unknown_rank": {
+              "type": "string",
+              "const": "below_known_good_above_dead"
+            }
+          }
+        },
+        "redaction": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "wire_material",
+            "recursive_sensitive_name_rejection",
+            "local_evidence",
+            "body_persistence",
+            "extension_limits"
+          ],
+          "properties": {
+            "wire_material": {
+              "type": "string",
+              "const": "opaque_handles_and_redacted_labels_only"
+            },
+            "recursive_sensitive_name_rejection": {
+              "type": "boolean",
+              "const": true
+            },
+            "local_evidence": {
+              "type": "string",
+              "const": "typed_redacted_only"
+            },
+            "body_persistence": {
+              "type": "string",
+              "const": "forbidden"
+            },
+            "extension_limits": {
+              "type": "string",
+              "const": "typed_x_flag_x_count_x_ratio_scalars_only"
+            }
+          }
+        }
+      }
+    },
+    "lease_record": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "lease_handle",
+        "session_handle",
+        "account_handle",
+        "route_handle",
+        "model_demand",
+        "owner_pid",
+        "heartbeat_at_ms",
+        "expires_at_ms",
+        "owner_state"
+      ],
+      "properties": {
+        "lease_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "session_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "account_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "model_demand": {
+          "$ref": "#/$defs/model_demand"
+        },
+        "owner_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "heartbeat_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expires_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "owner_state": {
+          "type": "string",
+          "enum": [
+            "active",
+            "stale",
+            "exited"
+          ]
+        }
+      }
+    },
+    "lease_records": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/lease_record"
+      }
+    },
+    "transition_action_required": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "kind",
+        "model_demand",
+        "http_status",
+        "retry_after_seconds",
+        "reset_at_ms",
+        "waited_ms",
+        "evidence",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "all_exact_model_routes_exhausted"
+        },
+        "model_demand": {
+          "$ref": "#/$defs/model_demand"
+        },
+        "http_status": {
+          "type": "integer",
+          "const": 429
+        },
+        "retry_after_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reset_at_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "waited_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "evidence": {
+          "type": "string",
+          "const": "trusted_exhaustion_reset"
+        },
+        "reason": {
+          "type": "string",
+          "const": "all_exact_model_routes_exhausted"
+        }
+      }
+    },
+    "transition_action_required_or_null": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/transition_action_required"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "repair_action": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "kind",
+        "provider_owned",
+        "automatic_restore",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "provider_reenroll"
+        },
+        "provider_owned": {
+          "type": "boolean",
+          "const": true
+        },
+        "automatic_restore": {
+          "type": "boolean",
+          "const": false
+        },
+        "reason": {
+          "$ref": "#/$defs/repair_reason_code"
+        }
+      }
+    },
+    "teardown_cleanup": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "sidecar_terminated",
+        "capability_disposed",
+        "leases_released",
+        "replay_reservations_released"
+      ],
+      "properties": {
+        "sidecar_terminated": {
+          "type": "boolean",
+          "const": true
+        },
+        "capability_disposed": {
+          "type": "boolean",
+          "const": true
+        },
+        "leases_released": {
+          "type": "boolean",
+          "const": true
+        },
+        "replay_reservations_released": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "teardown_incomplete_cleanup": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "sidecar_terminated",
+        "capability_disposed",
+        "leases_released",
+        "replay_reservations_released"
+      ],
+      "properties": {
+        "sidecar_terminated": {
+          "type": "boolean"
+        },
+        "capability_disposed": {
+          "type": "boolean"
+        },
+        "leases_released": {
+          "type": "boolean"
+        },
+        "replay_reservations_released": {
+          "type": "boolean"
+        }
+      },
+      "not": {
+        "required": [
+          "sidecar_terminated",
+          "capability_disposed",
+          "leases_released",
+          "replay_reservations_released"
+        ],
+        "properties": {
+          "sidecar_terminated": {
+            "type": "boolean",
+            "const": true
+          },
+          "capability_disposed": {
+            "type": "boolean",
+            "const": true
+          },
+          "leases_released": {
+            "type": "boolean",
+            "const": true
+          },
+          "replay_reservations_released": {
+            "type": "boolean",
+            "const": true
+          }
+        }
+      }
+    },
+    "teardown_incomplete_data": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "cleanup",
+        "reason_code"
+      ],
+      "properties": {
+        "cleanup": {
+          "$ref": "#/$defs/teardown_incomplete_cleanup"
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "sidecar_shutdown_failed",
+            "capability_disposal_failed",
+            "lease_release_failed",
+            "replay_reservation_release_failed"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "sidecar_shutdown_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "sidecar_terminated": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "capability_disposal_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "capability_disposed": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "lease_release_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "leases_released": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "reason_code": {
+              "type": "string",
+              "const": "replay_reservation_release_failed"
+            },
+            "cleanup": {
+              "properties": {
+                "replay_reservations_released": {
+                  "type": "boolean",
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxy_attempt_initial": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "ordinal",
+        "outcome",
+        "retry_trigger",
+        "route_relation",
+        "transport_state",
+        "response_started",
+        "cross_account_replay",
+        "account_handle",
+        "route_handle"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "const": 1
+        },
+        "model_demand": false,
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "retained",
+            "switched",
+            "refused",
+            "unproven"
+          ]
+        },
+        "retry_trigger": {
+          "type": "string",
+          "const": "initial"
+        },
+        "route_relation": {
+          "type": "string",
+          "const": "initial"
+        },
+        "transport_state": {
+          "type": "string",
+          "enum": [
+            "not_sent",
+            "response_buffered_before_downstream",
+            "downstream_started",
+            "ambiguous"
+          ]
+        },
+        "response_started": {
+          "type": "boolean"
+        },
+        "cross_account_replay": {
+          "type": "boolean",
+          "const": false
+        },
+        "account_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxy_attempt_initial_pre_send_failure": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "ordinal",
+        "outcome",
+        "retry_trigger",
+        "route_relation",
+        "transport_state",
+        "response_started",
+        "cross_account_replay",
+        "account_handle",
+        "route_handle"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "const": 1
+        },
+        "model_demand": false,
+        "outcome": {
+          "type": "string",
+          "const": "unproven"
+        },
+        "retry_trigger": {
+          "type": "string",
+          "const": "initial"
+        },
+        "route_relation": {
+          "type": "string",
+          "const": "initial"
+        },
+        "transport_state": {
+          "type": "string",
+          "const": "not_sent"
+        },
+        "response_started": {
+          "type": "boolean",
+          "const": false
+        },
+        "cross_account_replay": {
+          "type": "boolean",
+          "const": false
+        },
+        "account_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxy_attempt_initial_pre_body_failure": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "ordinal",
+        "outcome",
+        "retry_trigger",
+        "route_relation",
+        "transport_state",
+        "response_started",
+        "cross_account_replay",
+        "account_handle",
+        "route_handle"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "const": 1
+        },
+        "model_demand": false,
+        "outcome": {
+          "type": "string",
+          "const": "refused"
+        },
+        "retry_trigger": {
+          "type": "string",
+          "const": "initial"
+        },
+        "route_relation": {
+          "type": "string",
+          "const": "initial"
+        },
+        "transport_state": {
+          "type": "string",
+          "const": "response_buffered_before_downstream"
+        },
+        "response_started": {
+          "type": "boolean",
+          "const": false
+        },
+        "cross_account_replay": {
+          "type": "boolean",
+          "const": false
+        },
+        "account_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxy_attempt_same_route_retry": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "ordinal",
+        "outcome",
+        "retry_trigger",
+        "route_relation",
+        "transport_state",
+        "response_started",
+        "cross_account_replay"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "const": 2
+        },
+        "model_demand": false,
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "retained",
+            "switched",
+            "refused",
+            "unproven"
+          ]
+        },
+        "retry_trigger": {
+          "type": "string",
+          "const": "confirmed_pre_send_transport_failure"
+        },
+        "route_relation": {
+          "type": "string",
+          "const": "same_route"
+        },
+        "transport_state": {
+          "type": "string",
+          "enum": [
+            "not_sent",
+            "response_buffered_before_downstream",
+            "downstream_started",
+            "ambiguous"
+          ]
+        },
+        "response_started": {
+          "type": "boolean"
+        },
+        "cross_account_replay": {
+          "type": "boolean",
+          "const": false
+        },
+        "account_handle": false,
+        "route_handle": false,
+        "alternate_account_handle": false,
+        "alternate_route_handle": false
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxy_attempt_alternate": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "ordinal",
+        "outcome",
+        "retry_trigger",
+        "route_relation",
+        "transport_state",
+        "response_started",
+        "cross_account_replay",
+        "alternate_account_handle",
+        "alternate_route_handle"
+      ],
+      "properties": {
+        "ordinal": {
+          "type": "integer",
+          "const": 2
+        },
+        "model_demand": false,
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "switched",
+            "refused",
+            "unproven"
+          ]
+        },
+        "retry_trigger": {
+          "type": "string",
+          "enum": [
+            "pre_body_401",
+            "pre_body_403",
+            "pre_body_429"
+          ]
+        },
+        "route_relation": {
+          "type": "string",
+          "const": "alternate_account"
+        },
+        "transport_state": {
+          "type": "string",
+          "enum": [
+            "not_sent",
+            "response_buffered_before_downstream",
+            "downstream_started",
+            "ambiguous"
+          ]
+        },
+        "response_started": {
+          "type": "boolean"
+        },
+        "cross_account_replay": {
+          "type": "boolean",
+          "const": true
+        },
+        "account_handle": false,
+        "route_handle": false,
+        "alternate_account_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "alternate_route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "response_started": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transport_state": {
+                "type": "string",
+                "const": "downstream_started"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "proxy_attempt_followup": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/proxy_attempt_same_route_retry"
+        },
+        {
+          "$ref": "#/$defs/proxy_attempt_alternate"
+        }
+      ]
+    },
+    "proxy_attempts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/proxy_attempt_initial"
+        },
+        {
+          "$ref": "#/$defs/proxy_attempt_followup"
+        }
+      ],
+      "items": false,
+      "oneOf": [
+        {
+          "maxItems": 1
+        },
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/proxy_attempt_initial_pre_send_failure"
+            },
+            {
+              "$ref": "#/$defs/proxy_attempt_same_route_retry"
+            }
+          ],
+          "items": false
+        },
+        {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/proxy_attempt_initial_pre_body_failure"
+            },
+            {
+              "$ref": "#/$defs/proxy_attempt_alternate"
+            }
+          ],
+          "items": false
+        }
+      ]
+    },
+    "method_statuses": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "surface/info"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "harness/preflight"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "session/launch"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "route/lease_snapshot"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "session/transition"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "repair/handoff"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "name",
+            "implementation_status"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "const": "session/teardown"
+            },
+            "implementation_status": {
+              "type": "string",
+              "const": "not_implemented"
+            }
+          }
+        }
+      ],
+      "items": false
+    },
+    "surface_version_const": {
+      "type": "integer",
+      "const": 2
+    },
+    "protocol_status_const": {
+      "type": "string",
+      "const": "planned_unshipped"
+    },
+    "request_surface_info": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "surface/info"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [],
+          "properties": {}
+        }
+      }
+    },
+    "result_surface_info": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "surface_version",
+        "status",
+        "methods",
+        "policy"
+      ],
+      "properties": {
+        "surface_version": {
+          "$ref": "#/$defs/surface_version_const"
+        },
+        "status": {
+          "$ref": "#/$defs/protocol_status_const"
+        },
+        "methods": {
+          "$ref": "#/$defs/method_statuses"
+        },
+        "policy": {
+          "$ref": "#/$defs/broker_policy"
+        }
+      }
+    },
+    "request_harness_preflight": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "harness/preflight"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "harness",
+            "model_demand"
+          ],
+          "properties": {
+            "harness": {
+              "$ref": "#/$defs/label"
+            },
+            "model_demand": {
+              "$ref": "#/$defs/model_demand"
+            }
+          }
+        }
+      }
+    },
+    "result_harness_preflight": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "ready",
+        "harness_handle",
+        "reasons"
+      ],
+      "properties": {
+        "ready": {
+          "$ref": "#/$defs/boolean"
+        },
+        "harness_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "reasons": {
+          "$ref": "#/$defs/preflight_reasons"
+        }
+      }
+    },
+    "request_session_launch": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "session/launch"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "harness_handle",
+            "model_demand"
+          ],
+          "properties": {
+            "harness_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            },
+            "model_demand": {
+              "$ref": "#/$defs/model_demand"
+            }
+          }
+        }
+      }
+    },
+    "result_session_launch": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "session_handle",
+        "route_handle",
+        "state"
+      ],
+      "properties": {
+        "session_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "route_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "state": {
+          "$ref": "#/$defs/transition_state"
+        }
+      }
+    },
+    "request_route_lease_snapshot": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "route/lease_snapshot"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "session_handle"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            }
+          }
+        }
+      }
+    },
+    "result_route_lease_snapshot": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "session_handle",
+        "leases",
+        "observed_at_ms"
+      ],
+      "properties": {
+        "session_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "leases": {
+          "$ref": "#/$defs/lease_records"
+        },
+        "observed_at_ms": {
+          "$ref": "#/$defs/nonnegative_integer"
+        }
+      }
+    },
+    "request_session_transition": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "session/transition"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "session_handle",
+            "model_demand",
+            "proxy_attempts"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            },
+            "model_demand": {
+              "$ref": "#/$defs/model_demand"
+            },
+            "proxy_attempts": {
+              "$ref": "#/$defs/proxy_attempts"
+            }
+          }
+        }
+      }
+    },
+    "result_session_transition": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "state",
+        "selected_route_handle",
+        "action_required"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/transition_state"
+        },
+        "selected_route_handle": {
+          "$ref": "#/$defs/handle_or_null"
+        },
+        "action_required": {
+          "$ref": "#/$defs/transition_action_required_or_null"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "const": "action_required"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "action_required": {
+                "$ref": "#/$defs/transition_action_required"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "action_required": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "const": "switched"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "selected_route_handle": {
+                "$ref": "#/$defs/opaque_handle"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "request_repair_handoff": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "repair/handoff"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "session_handle",
+            "reason"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            },
+            "reason": {
+              "$ref": "#/$defs/repair_reason_code"
+            }
+          }
+        }
+      }
+    },
+    "result_repair_handoff": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "handoff_handle",
+        "action"
+      ],
+      "properties": {
+        "handoff_handle": {
+          "$ref": "#/$defs/opaque_handle"
+        },
+        "action": {
+          "$ref": "#/$defs/repair_action"
+        }
+      }
+    },
+    "request_session_teardown": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "method": {
+          "type": "string",
+          "const": "session/teardown"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          },
+          "required": [
+            "session_handle"
+          ],
+          "properties": {
+            "session_handle": {
+              "$ref": "#/$defs/opaque_handle"
+            }
+          }
+        }
+      }
+    },
+    "result_session_teardown": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "cleanup"
+      ],
+      "properties": {
+        "cleanup": {
+          "$ref": "#/$defs/teardown_cleanup"
+        }
+      }
+    },
+    "success_response": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/result_surface_info"
+            },
+            {
+              "$ref": "#/$defs/result_harness_preflight"
+            },
+            {
+              "$ref": "#/$defs/result_session_launch"
+            },
+            {
+              "$ref": "#/$defs/result_route_lease_snapshot"
+            },
+            {
+              "$ref": "#/$defs/result_session_transition"
+            },
+            {
+              "$ref": "#/$defs/result_repair_handoff"
+            },
+            {
+              "$ref": "#/$defs/result_session_teardown"
+            }
+          ]
+        }
+      }
+    },
+    "not_implemented_error": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "const": -32099
+        },
+        "message": {
+          "type": "string",
+          "const": "method not implemented"
+        },
+        "data": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          }
+        }
+      }
+    },
+    "teardown_incomplete_error": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "const": -32010
+        },
+        "message": {
+          "type": "string",
+          "const": "session teardown incomplete"
+        },
+        "data": {
+          "$ref": "#/$defs/teardown_incomplete_data"
+        }
+      }
+    },
+    "unknown_method_error": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer",
+          "const": -32601
+        },
+        "message": {
+          "type": "string",
+          "const": "method not found"
+        },
+        "data": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^x_flag_[a-z0-9_]{1,64}$": {
+              "type": "boolean"
+            },
+            "^x_count_[a-z0-9_]{1,64}$": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "^x_ratio_[a-z0-9_]{1,64}$": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+            }
+          }
+        }
+      }
+    },
+    "not_implemented_response": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/not_implemented_error"
+        }
+      }
+    },
+    "teardown_incomplete_response": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/teardown_incomplete_error"
+        }
+      }
+    },
+    "unknown_method_response": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x_flag_[a-z0-9_]{1,64}$": {
+          "type": "boolean"
+        },
+        "^x_count_[a-z0-9_]{1,64}$": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "^x_ratio_[a-z0-9_]{1,64}$": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]*$",
+        "maxLength": 128,
+        "not": {
+          "pattern": "(credential|token|authorization|cookie|env|argv|prompt|response[_-]*body|raw[_-]*account|secret|password|api[_-]*key|bearer|oauth|account[_-]*id|user[_-]*id|email|org[_-]*id|organization[_-]*id|identity)"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "type": "string",
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/unknown_method_error"
+        }
+      }
+    }
+  }
+}

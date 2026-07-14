@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": "sensitive-extension",
+  "method": "harness/preflight",
+  "params": {
+    "harness": "claude",
+    "model_demand": {"model": "claude-opus-4-1", "preservation": "exact"},
+    "metadata": {
+      "secret": 1
+    }
+  }
+}

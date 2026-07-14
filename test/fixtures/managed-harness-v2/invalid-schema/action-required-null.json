@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": "action-required-null",
+  "result": {
+    "state": "action_required",
+    "selected_route_handle": null,
+    "action_required": null
+  }
+}

@@ -24,7 +24,9 @@ Immediately after the immutable product anchor, the active design authority is
 Linear TIN-2057). Its sequenced removal contract is
 `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md`; the complete authority
 order is `docs/authority-map.md`, and the managed-boundary security contract is
-`docs/security/omux-v0.2-threat-model-2026-07-11.md`.
+`docs/security/omux-v0.2-threat-model-2026-07-11.md`. The declaration-only
+process compatibility contract is `docs/spec/managed-harness-jsonrpc-v2.md`;
+its methods remain unimplemented until adapter proof lands.
 
 v0.2 is a full-broker hard contract reset, beginning with a managed Claude
 request proxy. It is future/unshipped direction until its golden proof passes;
@@ -75,16 +77,20 @@ prove the OpenCode conformance boundary, it is probably out of scope.
    unshipped v0.2 design authority
 4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` — v0.2 removal order
 5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` — managed broker threats
-6. `docs/spec/codex-adapter-contract-2026-05-03.md` — shipped Codex adapter spec
-7. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
+6. `docs/spec/managed-harness-jsonrpc-v2.md` — declaration-only process adapter
+   compatibility contract; explicitly unshipped
+7. `docs/spec/codex-adapter-contract-2026-05-03.md` — shipped Codex adapter spec
+8. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
    overlays must not hide or fork harness session authority
-8. `CHANGELOG.md` and committed evidence — shipped claim truth
-9. `justfile` — operator entrypoint for all build/test/release tasks
-10. `README.md` — public-facing current-state summary; subordinate to specs
-11. `flake.nix` — Nix devShell and package definitions
-12. `build.zig.zon` plus the Zig release graph — version and release semantics;
-    they emit/check the v0.2 manifest consumed by packaging and Bazel/GF
-13. `src/` — implementation
+9. `CHANGELOG.md` and committed evidence — shipped claim truth
+10. `justfile` — operator entrypoint for all build/test/release tasks
+11. `README.md` — public-facing current-state summary; subordinate to specs
+12. `flake.nix` — Nix devShell and package definitions
+13. `build.zig.zon` plus the Zig release graph — version and release semantics;
+    they emit/check the v0.2 manifest contract and currently migrated consumers.
+    Remaining packaging and Bazel/GF consumers stay sequenced under TIN-2050,
+    TIN-2046, and TIN-2105 until their own proof lands.
+14. `src/` — implementation
 
 ## Superseded Design Inputs (pending deletion)
 
@@ -126,6 +132,11 @@ laptop. Local build commands remain available only for narrow debugging of a
 local toolchain, generated binary, or installer issue. If a local build is used
 for debugging, state that it is not validation and follow with the remote lane
 before making a completion or merge claim.
+
+The independent FOSS gate is the unprivileged `Public Source` workflow. It runs
+`nix develop --command just public-source-check-local` on a GitHub-hosted runner
+with Tinyland/GF credentials and endpoints absent. This proves the public
+Just/Nix source path; it complements and never replaces required GF proof.
 
 Private GloriousFlywheel action checkout is authenticated by
 `.github/actions/checkout-gloriousflywheel`, which mints a short-lived token

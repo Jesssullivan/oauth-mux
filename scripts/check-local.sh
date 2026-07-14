@@ -3,8 +3,13 @@
 
 set -eu
 
+PYTHON_CACHE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/oauth-mux-pycache.XXXXXX")
+trap 'rm -rf "$PYTHON_CACHE_ROOT"' EXIT HUP INT TERM
+export PYTHONPYCACHEPREFIX="$PYTHON_CACHE_ROOT"
+
 zig build test
 zig build
+zig build check-managed-harness-schema
 ./zig-out/bin/oauth-mux version --json | jq -e '.version and .runtime_identity.binary_path and .runtime_identity.binary_sha256 and .runtime_identity.path_printed == true' >/dev/null
 ./scripts/test-executable-compat.sh
 bash -n ./scripts/install-local-dogfood.sh
@@ -26,6 +31,10 @@ sh -n ./scripts/endpoint-free-check.sh
 sh -n ./scripts/secrets-scan-dir.sh
 bash -n ./scripts/check-zig-test-root.sh
 sh -n ./scripts/check-v0.1.15-characterization.sh
+sh -n ./scripts/check-managed-harness-instances.sh
+bash -n ./scripts/public-source-check.sh
+sh -n ./scripts/smoke-public-source-workflow.sh
+python3 -m py_compile ./scripts/validate-managed-harness-instance.py
 python3 -m py_compile ./scripts/dogfood-process-snapshot.py
 python3 -m py_compile ./scripts/test-refresh-exactly-once.py
 sh -n ./dist/codex-shim.sh
@@ -39,6 +48,8 @@ sh -n ./scripts/test-executable-compat.sh
 ./scripts/smoke-gf-checkout-auth-contract.sh
 ./scripts/check-zig-test-root.sh
 ./scripts/check-v0.1.15-characterization.sh
+./scripts/check-managed-harness-instances.sh
+./scripts/smoke-public-source-workflow.sh
 ./scripts/smoke-release-manifest-current.sh
 ./scripts/smoke-release-workflow-version-authority.sh
 
