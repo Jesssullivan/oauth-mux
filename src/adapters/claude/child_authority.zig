@@ -50,7 +50,7 @@ pub fn buildChildEnv(
     var entries = inherited.iterator();
     while (entries.next()) |entry| {
         const name = entry.key_ptr.*;
-        if (isClaudeAuthoritySelector(name)) continue;
+        if (isClaudeAuthoritySelector(name) or isConfiguredEnvSecret(active_config, name)) continue;
         try child.put(name, entry.value_ptr.*);
     }
 
@@ -72,7 +72,7 @@ pub fn buildChildEnv(
     return .{ .map = child };
 }
 
-fn validateManagedConfigDir(
+pub fn validateManagedConfigDir(
     allocator: std.mem.Allocator,
     home: []const u8,
     active_config: config_mod.Config,
@@ -214,20 +214,16 @@ fn realpathLongestExisting(allocator: std.mem.Allocator, path: []const u8) !?[]u
         else => return null,
     }
     const parent = std.fs.path.dirname(path) orelse return null;
+    if (parent.len == path.len) return null;
     const tail = path[parent.len..];
-    if (std.fs.realpathAlloc(allocator, parent)) |resolved_parent| {
-        defer allocator.free(resolved_parent);
-        const reconstructed = try std.fmt.allocPrint(allocator, "{s}{s}", .{ resolved_parent, tail });
-        if (!std.fs.path.isAbsolute(reconstructed)) {
-            allocator.free(reconstructed);
-            return null;
-        }
-        return reconstructed;
-    } else |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
+    const resolved_parent = (try realpathLongestExisting(allocator, parent)) orelse return null;
+    defer allocator.free(resolved_parent);
+    const reconstructed = try std.fmt.allocPrint(allocator, "{s}{s}", .{ resolved_parent, tail });
+    if (!std.fs.path.isAbsolute(reconstructed)) {
+        allocator.free(reconstructed);
+        return null;
     }
-    return null;
+    return reconstructed;
 }
 
 fn buildTestChildEnv(
@@ -254,6 +250,27 @@ fn isClaudeAuthoritySelector(name: []const u8) bool {
         std.ascii.eqlIgnoreCase(name, "HTTPS_PROXY") or
         std.ascii.eqlIgnoreCase(name, "ALL_PROXY") or
         std.ascii.eqlIgnoreCase(name, "NO_PROXY");
+}
+
+fn isConfiguredEnvSecret(active_config: config_mod.Config, name: []const u8) bool {
+    var provider_it = active_config.providers.map.iterator();
+    while (provider_it.next()) |provider_entry| {
+        var account_it = provider_entry.value_ptr.accounts.map.iterator();
+        while (account_it.next()) |account_entry| {
+            const secret = account_entry.value_ptr.secret;
+            if (!std.mem.eql(u8, secret.backend, "env")) continue;
+            const variable = secret.variable orelse continue;
+            if (envNameEqual(name, variable)) return true;
+        }
+    }
+    return false;
+}
+
+fn envNameEqual(a: []const u8, b: []const u8) bool {
+    return if (comptime builtin.os.tag == .windows)
+        std.ascii.eqlIgnoreCase(a, b)
+    else
+        std.mem.eql(u8, a, b);
 }
 
 fn validateLoopbackUrl(url: []const u8) !void {
@@ -307,6 +324,35 @@ test "buildChildEnv preserves HOME and unrelated inherited entries" {
 
     try inherited.put("UNRELATED_SENTINEL", "changed-after-build");
     try std.testing.expectEqualStrings("inherited-value", child.map.get("UNRELATED_SENTINEL").?);
+}
+
+test "buildChildEnv scrubs env secrets referenced by every active account" {
+    const allocator = std.testing.allocator;
+    var inherited = std.process.EnvMap.init(allocator);
+    defer inherited.deinit();
+    try inherited.put("HOME", "/tmp");
+    try inherited.put("CLAUDE_ACCOUNT_SECRET", "must-not-reach-child");
+    try inherited.put("CODEX_ACCOUNT_SECRET", "must-not-reach-child");
+    try inherited.put("UNRELATED_SENTINEL", "preserved");
+
+    var parsed = try config_mod.loadFromBytes(allocator,
+        \\{"version":1,"providers":{"claude":{"kind":"claude","accounts":{"a":{"secret":{"backend":"env","variable":"CLAUDE_ACCOUNT_SECRET"}}}},"codex":{"kind":"codex","accounts":{"b":{"secret":{"backend":"env","variable":"CODEX_ACCOUNT_SECRET"}}}}}}
+    );
+    defer parsed.deinit();
+
+    var child = try buildChildEnv(
+        allocator,
+        &inherited,
+        parsed.value,
+        test_managed_config_dir,
+        "http://127.0.0.1:43123",
+        test_capability,
+    );
+    defer child.deinit();
+
+    try std.testing.expect(child.map.get("CLAUDE_ACCOUNT_SECRET") == null);
+    try std.testing.expect(child.map.get("CODEX_ACCOUNT_SECRET") == null);
+    try std.testing.expectEqualStrings("preserved", child.map.get("UNRELATED_SENTINEL").?);
 }
 
 test "buildChildEnv scrubs every inherited Claude authority prefix" {
@@ -541,6 +587,19 @@ test "buildChildEnv requires a neutral config dir outside canonical and enrolled
                 &inherited,
                 parsed.value,
                 alias,
+                "http://127.0.0.1:43123",
+                test_capability,
+            ),
+        );
+        const nested_alias = try std.fs.path.join(allocator, &.{ alias, "missing", "nested" });
+        defer allocator.free(nested_alias);
+        try std.testing.expectError(
+            error.ManagedConfigDirOverlap,
+            buildChildEnv(
+                allocator,
+                &inherited,
+                parsed.value,
+                nested_alias,
                 "http://127.0.0.1:43123",
                 test_capability,
             ),
