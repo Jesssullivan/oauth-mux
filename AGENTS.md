@@ -38,6 +38,9 @@ request proxy. It is future/unshipped direction until its golden proof passes;
 v0.1.15 remains stable and shipped claims remain bounded by the changelog and
 committed evidence.
 
+The durable v0.2 evaluation, dogfood, and evidence-promotion contract is
+`docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md`.
+
 ## Product Guardrail
 
 oauth-mux is a harness continuity layer, not a general auth diagnostics
