@@ -3,10 +3,13 @@
 //! main.zig so it can import both `config.zig` and `broker/mod.zig`
 //! without leaking either side across module boundaries.
 //!
-//! Anchor: docs/spec/broker-mcp-contract-2026-05-03.md §2.2 / §2.3.
+//! Shipped Codex reference: docs/spec/broker-mcp-contract-2026-05-03.md.
+//! Managed Claude authority: docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md
+//! §2.1-2.3 and docs/spec/managed-harness-jsonrpc-v2.md.
 //! Adapter consumer: src/broker/account_pool.zig + Server.materializer.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const config_mod = @import("config.zig");
 const broker = @import("broker/mod.zig");
 const broker_types = @import("broker/types.zig");
@@ -20,6 +23,7 @@ const provider_schema = @import("provider_schema.zig");
 const identity_hash = @import("identity_hash.zig");
 const types = @import("types.zig");
 const pipeline = @import("pipeline.zig");
+const claude_identity_source = @import("identity/claude_identity_source.zig");
 const ig = @import("identity/identity_graph.zig");
 const log = @import("log.zig");
 
@@ -106,6 +110,111 @@ const RouteHealthMatch = struct {
     capability: ?[]const u8 = null,
 };
 
+pub const ManagedClaudeIdentityError = error{
+    ManagedClaudeRouteMissing,
+    ManagedClaudeIdentityClarityRequired,
+    OutOfMemory,
+};
+
+/// Fail-closed admission gate for the managed Claude sidecar. The shared pool
+/// deliberately keeps unknown identities opaque for legacy introspection; a
+/// managed session must call this after identity dedupe and before election.
+/// Known duplicate hashes are already collapsed to one keeper and remain clear.
+pub fn requireManagedClaudeIdentityClarity(
+    pool: *const broker.AccountPool,
+    cfg: config_mod.Config,
+    profile_name: []const u8,
+) ManagedClaudeIdentityError!void {
+    const profile = cfg.profiles.map.get(profile_name) orelse
+        return error.ManagedClaudeRouteMissing;
+
+    var saw_claude = false;
+    for (profile.providers) |route| {
+        const route_id = if (std.mem.indexOfScalar(u8, route, '#')) |idx| route[0..idx] else route;
+        const colon = std.mem.indexOfScalar(u8, route_id, ':') orelse continue;
+        const provider_name = route_id[0..colon];
+        const kind = config_mod.resolveProviderKind(cfg, provider_name) orelse continue;
+        if (kind != .claude) continue;
+        saw_claude = true;
+        const account_name = route_id[colon + 1 ..];
+        const provider_cfg = cfg.providers.map.get(provider_name) orelse
+            return error.ManagedClaudeIdentityClarityRequired;
+        const account_cfg = provider_cfg.accounts.map.get(account_name) orelse
+            return error.ManagedClaudeIdentityClarityRequired;
+        if (!try managedClaudeCredentialAuthorityIsBound(pool.allocator, account_cfg)) {
+            return error.ManagedClaudeIdentityClarityRequired;
+        }
+
+        var found = false;
+        for (pool.accounts.items) |entry| {
+            if (!std.mem.eql(u8, entry.id, route_id)) continue;
+            found = true;
+            if (entry.account_id_hash == null) {
+                return error.ManagedClaudeIdentityClarityRequired;
+            }
+            break;
+        }
+        if (!found) return error.ManagedClaudeIdentityClarityRequired;
+    }
+    if (!saw_claude) return error.ManagedClaudeRouteMissing;
+}
+
+/// Claude's profile identity is separate from its credential JSON. Managed
+/// admission therefore binds both to the same config-dir-derived keychain
+/// service. Arbitrary/custom locators remain available to legacy diagnostics,
+/// but cannot present unproven capacity to the managed sidecar.
+fn managedClaudeCredentialAuthorityIsBound(
+    allocator: std.mem.Allocator,
+    account_cfg: config_mod.AccountConfig,
+) error{OutOfMemory}!bool {
+    if (comptime builtin.os.tag != .macos) return false;
+    if (!std.mem.eql(u8, account_cfg.secret.backend, "keychain")) return false;
+    const raw_config_dir = account_cfg.config_dir orelse return false;
+    const configured_service = account_cfg.secret.service orelse return false;
+    const configured_account = account_cfg.secret.account orelse return false;
+    const local_account = (try env.get(allocator, "USER")) orelse return false;
+    defer allocator.free(local_account);
+    if (local_account.len == 0 or !std.mem.eql(u8, configured_account, local_account)) return false;
+
+    const config_dir = try paths.expandTilde(allocator, raw_config_dir);
+    defer allocator.free(config_dir);
+    const expected_service = try provider_schema.claudeKeychainService(allocator, config_dir);
+    defer allocator.free(expected_service);
+    return std.mem.eql(u8, configured_service, expected_service);
+}
+
+test "managed Claude authority requires the complete macOS keychain locator" {
+    const allocator = std.testing.allocator;
+    const config_dir = "/tmp/omux-managed-claude-authority";
+    const service = try provider_schema.claudeKeychainService(allocator, config_dir);
+    defer allocator.free(service);
+
+    var overrides = std.process.EnvMap.init(allocator);
+    defer overrides.deinit();
+    try overrides.put("USER", "test-user");
+    env.test_overrides = &overrides;
+    defer env.test_overrides = null;
+
+    const bound = config_mod.AccountConfig{
+        .secret = .{
+            .backend = "keychain",
+            .service = service,
+            .account = "test-user",
+        },
+        .config_dir = config_dir,
+    };
+    const bound_on_this_platform = try managedClaudeCredentialAuthorityIsBound(allocator, bound);
+    try std.testing.expectEqual(builtin.os.tag == .macos, bound_on_this_platform);
+
+    var wrong_account = bound;
+    wrong_account.secret.account = "different-user";
+    try std.testing.expect(!try managedClaudeCredentialAuthorityIsBound(allocator, wrong_account));
+
+    var wrong_service = bound;
+    wrong_service.secret.service = provider_schema.claude_keychain_service_base;
+    try std.testing.expect(!try managedClaudeCredentialAuthorityIsBound(allocator, wrong_service));
+}
+
 // ── identity dedupe before election (TIN-1822 / GH #338) ─────────────
 //
 // Two config slots enrolled on ONE upstream OAuth identity (the live
@@ -146,43 +255,55 @@ const RouteHealthMatch = struct {
 //     the keeper so refreshTimeBased (and any later broker-MCP mark) can
 //     never resurrect a duplicate as second capacity.
 //
-// A slot whose identity cannot be read (missing credential, or a
-// provider with no identity claim — claude's identity lives in
-// .claude.json, not the credential) keeps a null hash; the graph keys it
+// A slot whose identity cannot be read (missing credential or a missing /
+// unusable Claude `.claude.json`) keeps a null hash; the graph keys it
 // opaquely and never coalesces two unknowns. Grouping is hash-only (like
 // the warm pool): hashes live in one shared sha256_12hex space, and a
-// cross-provider 48-bit collision is negligible (claude hashes are not
-// plumbed to pool entries yet anyway).
+// cross-provider 48-bit collision is negligible.
 fn applyIdentityDedupe(
     pool: *broker.AccountPool,
     cfg: config_mod.Config,
     store: *health_mod.HealthStore,
 ) !void {
-    if (pool.accounts.items.len < 2) return;
-
-    // Pass 1: resolve each entry's stable identity hash from its
-    // credential. Failures leave the hash null (opaque key, no grouping).
+    // Pass 1: resolve every entry's stable identity hash, even in a one-account
+    // pool. Credential-backed providers use their declared identity claim;
+    // Claude reads only its account-scoped `.claude.json` profile. Failures
+    // leave the hash null (opaque key, no grouping).
     for (pool.accounts.items) |*entry| {
         if (entry.account_id_hash != null) continue;
         const colon = std.mem.indexOfScalar(u8, entry.id, ':') orelse continue;
         const provider_name = entry.id[0..colon];
-        // A provider with no identity claim in its credential (claude — its
-        // identity lives in .claude.json, not the credential) can never
-        // contribute a hash, so skip BEFORE touching the secret backend:
-        // populate must not spawn `security find-generic-password`
-        // subprocesses (keychain prompt / wedge risk, TIN-2060) or log
-        // secret-read errors for accounts that cannot group anyway.
+        const account_name = entry.id[colon + 1 ..];
+        if (config_mod.resolveProviderKind(cfg, provider_name)) |kind| {
+            if (kind == .claude) {
+                // Claude's canonical account UUID is profile metadata, not a
+                // credential claim. Resolve it before the generic credential
+                // path so pool admission never reads or prompts for a secret.
+                const provider_cfg = cfg.providers.map.get(provider_name) orelse continue;
+                const account_cfg = provider_cfg.accounts.map.get(account_name) orelse continue;
+                entry.account_id_hash = try claude_identity_source.readAccountIdentityHash(
+                    pool.allocator,
+                    account_cfg.config_dir,
+                );
+                continue;
+            }
+        }
+
         const def = config_mod.resolveProviderDefinition(cfg, provider_name);
         if (def.credential.identity_claim_path == null) continue;
         var pctx = pipeline.Context.init(pool.allocator, cfg, store);
         defer pctx.deinit();
         pctx.provider_name = provider_name;
-        pctx.account_name = entry.id[colon + 1 ..];
+        pctx.account_name = account_name;
         if (pipeline.readAccountIdentityHash(&pctx) catch null) |hash| {
             // Owned by pool.allocator already; pool.deinit frees it.
             entry.account_id_hash = hash;
         }
     }
+
+    // Identity admission is useful for one-account introspection; only actual
+    // duplicate resolution needs at least two slots.
+    if (pool.accounts.items.len < 2) return;
 
     // Pass 2: group by identity via the landed graph primitive. Slot
     // account = pool id ("provider:account") so collisions name routes
@@ -1927,6 +2048,156 @@ fn markTestCapabilityLive(store: *health_mod.HealthStore, key: []const u8, obser
     health.last_probe_observed_at = observed_at;
 }
 
+fn writeTestClaudeIdentityProfile(dir: std.fs.Dir, account_uuid: []const u8) !void {
+    var buf: [256]u8 = undefined;
+    const bytes = try std.fmt.bufPrint(
+        &buf,
+        "{{\"oauthAccount\":{{\"accountUuid\":\"{s}\"}}}}",
+        .{account_uuid},
+    );
+    try writeTestClaudeRawProfile(dir, bytes);
+}
+
+fn writeTestClaudeRawProfile(dir: std.fs.Dir, bytes: []const u8) !void {
+    const file = try dir.createFile(".claude.json", .{ .mode = 0o600, .truncate = true });
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
+fn testClaudeSingleConfigJson(allocator: std.mem.Allocator, config_dir: []const u8) ![]u8 {
+    const service = try provider_schema.claudeKeychainService(allocator, config_dir);
+    defer allocator.free(service);
+    return testClaudeSingleConfigJsonWithService(allocator, config_dir, service);
+}
+
+fn testClaudeSingleConfigJsonWithService(
+    allocator: std.mem.Allocator,
+    config_dir: []const u8,
+    service: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "claude": {{
+        \\      "kind": "claude",
+        \\      "accounts": {{
+        \\        "a": {{
+        \\          "priority": 20,
+        \\          "secret": {{ "backend": "keychain", "service": "{s}" }},
+        \\          "config_dir": "{s}"
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "claude-managed": {{ "providers": ["claude:a#claude-managed"] }}
+        \\  }}
+        \\}}
+    ,
+        .{ service, config_dir },
+    );
+}
+
+fn testClaudePairConfigJson(
+    allocator: std.mem.Allocator,
+    config_dir_a: []const u8,
+    config_dir_b: []const u8,
+) ![]u8 {
+    const service_a = try provider_schema.claudeKeychainService(allocator, config_dir_a);
+    defer allocator.free(service_a);
+    const service_b = try provider_schema.claudeKeychainService(allocator, config_dir_b);
+    defer allocator.free(service_b);
+    return std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "claude": {{
+        \\      "kind": "claude",
+        \\      "accounts": {{
+        \\        "a": {{
+        \\          "priority": 20,
+        \\          "secret": {{ "backend": "keychain", "service": "{s}" }},
+        \\          "config_dir": "{s}"
+        \\        }},
+        \\        "b": {{
+        \\          "priority": 10,
+        \\          "secret": {{ "backend": "keychain", "service": "{s}" }},
+        \\          "config_dir": "{s}"
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "profiles": {{
+        \\    "claude-managed": {{
+        \\      "providers": ["claude:a#claude-managed", "claude:b#claude-managed"]
+        \\    }}
+        \\  }}
+        \\}}
+    ,
+        .{ service_a, config_dir_a, service_b, config_dir_b },
+    );
+}
+
+fn expectManagedClaudeIdentityClarityError(
+    raw_a: ?[]const u8,
+    raw_b: ?[]const u8,
+) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("a");
+    try tmp.dir.makeDir("b");
+    var profile_dir_a = try tmp.dir.openDir("a", .{});
+    defer profile_dir_a.close();
+    var profile_dir_b = try tmp.dir.openDir("b", .{});
+    defer profile_dir_b.close();
+    if (raw_a) |raw| try writeTestClaudeRawProfile(profile_dir_a, raw);
+    if (raw_b) |raw| try writeTestClaudeRawProfile(profile_dir_b, raw);
+    const dir_a = try tmp.dir.realpathAlloc(std.testing.allocator, "a");
+    defer std.testing.allocator.free(dir_a);
+    const dir_b = try tmp.dir.realpathAlloc(std.testing.allocator, "b");
+    defer std.testing.allocator.free(dir_b);
+
+    const cfg_json = try testClaudePairConfigJson(std.testing.allocator, dir_a, dir_b);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "claude:a#claude-managed", null);
+    try markTestCapabilityLive(&store, "claude:b#claude-managed", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(
+        &pool,
+        parsed.value,
+        "claude-managed",
+        "claude-managed",
+        &store,
+    );
+    try std.testing.expectError(
+        error.ManagedClaudeIdentityClarityRequired,
+        requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed"),
+    );
+}
+
+fn expectManagedClaudeIdentityClarityForPlatform(
+    pool: *const broker.AccountPool,
+    cfg: config_mod.Config,
+) !void {
+    if (comptime builtin.os.tag == .macos) {
+        try requireManagedClaudeIdentityClarity(pool, cfg, "claude-managed");
+    } else {
+        try std.testing.expectError(
+            error.ManagedClaudeIdentityClarityRequired,
+            requireManagedClaudeIdentityClarity(pool, cfg, "claude-managed"),
+        );
+    }
+}
+
 test "identity dedupe: duplicate slot is never failover capacity (GH #338 / TIN-1822)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2358,6 +2629,211 @@ test "identity dedupe: untimestamped death evidence is never laundered by stale 
             try std.testing.expectEqualStrings("codex:max-1", entry.duplicate_of.?);
         }
     }
+}
+
+test "Claude identity admission hashes a one-account managed pool" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("a");
+    var profile_dir = try tmp.dir.openDir("a", .{});
+    defer profile_dir.close();
+    try writeTestClaudeIdentityProfile(profile_dir, "acct-test");
+    const dir_a = try tmp.dir.realpathAlloc(std.testing.allocator, "a");
+    defer std.testing.allocator.free(dir_a);
+
+    const cfg_json = try testClaudeSingleConfigJson(std.testing.allocator, dir_a);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "claude:a#claude-managed", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(
+        &pool,
+        parsed.value,
+        "claude-managed",
+        "claude-managed",
+        &store,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), pool.accounts.items.len);
+    const admitted = pool.accounts.items[0];
+    try std.testing.expectEqualStrings("claude:a", admitted.id);
+    try std.testing.expectEqualStrings("660d25a9d7ee", admitted.account_id_hash.?);
+    try std.testing.expect(admitted.selectable);
+    try std.testing.expect(admitted.duplicate_of == null);
+    try expectManagedClaudeIdentityClarityForPlatform(&pool, parsed.value);
+}
+
+test "managed Claude admission binds profile identity to its derived keychain authority" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeTestClaudeIdentityProfile(tmp.dir, "known-account");
+    const config_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(config_dir);
+
+    const cfg_json = try testClaudeSingleConfigJsonWithService(
+        std.testing.allocator,
+        config_dir,
+        provider_schema.claude_keychain_service_base,
+    );
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "claude:a#claude-managed", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(
+        &pool,
+        parsed.value,
+        "claude-managed",
+        "claude-managed",
+        &store,
+    );
+    try std.testing.expect(pool.accounts.items[0].account_id_hash != null);
+    try std.testing.expectError(
+        error.ManagedClaudeIdentityClarityRequired,
+        requireManagedClaudeIdentityClarity(&pool, parsed.value, "claude-managed"),
+    );
+}
+
+test "Claude identity dedupe keeps one alias for duplicate config dirs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("a");
+    try tmp.dir.makeDir("b");
+    var profile_dir_a = try tmp.dir.openDir("a", .{});
+    defer profile_dir_a.close();
+    var profile_dir_b = try tmp.dir.openDir("b", .{});
+    defer profile_dir_b.close();
+    try writeTestClaudeIdentityProfile(profile_dir_a, "same-claude-account");
+    try writeTestClaudeIdentityProfile(profile_dir_b, "same-claude-account");
+    const dir_a = try tmp.dir.realpathAlloc(std.testing.allocator, "a");
+    defer std.testing.allocator.free(dir_a);
+    const dir_b = try tmp.dir.realpathAlloc(std.testing.allocator, "b");
+    defer std.testing.allocator.free(dir_b);
+
+    const cfg_json = try testClaudePairConfigJson(std.testing.allocator, dir_a, dir_b);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "claude:a#claude-managed", null);
+    try markTestCapabilityLive(&store, "claude:b#claude-managed", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(
+        &pool,
+        parsed.value,
+        "claude-managed",
+        "claude-managed",
+        &store,
+    );
+
+    var keeper_id: ?[]const u8 = null;
+    var alias_of: ?[]const u8 = null;
+    var selectable_count: usize = 0;
+    var alias_count: usize = 0;
+    var shared_hash: ?[]const u8 = null;
+    for (pool.accounts.items) |entry| {
+        const hash = entry.account_id_hash.?;
+        if (shared_hash) |expected| {
+            try std.testing.expectEqualStrings(expected, hash);
+        } else {
+            shared_hash = hash;
+        }
+        if (entry.selectable) {
+            selectable_count += 1;
+            keeper_id = entry.id;
+        }
+        if (entry.duplicate_of) |keeper| {
+            alias_count += 1;
+            alias_of = keeper;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), selectable_count);
+    try std.testing.expectEqual(@as(usize, 1), alias_count);
+    try std.testing.expectEqualStrings(keeper_id.?, alias_of.?);
+
+    const elected = try pool.elect("claude-managed", "claude-managed", &.{});
+    try std.testing.expectEqualStrings(keeper_id.?, elected.id);
+    const exclude = [_][]const u8{keeper_id.?};
+    try std.testing.expectError(
+        broker_types.BrokerError.NoAccountSelectable,
+        pool.elect("claude-managed", "claude-managed", &exclude),
+    );
+    try expectManagedClaudeIdentityClarityForPlatform(&pool, parsed.value);
+}
+
+test "Claude identity dedupe preserves distinct config-dir identities" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("a");
+    try tmp.dir.makeDir("b");
+    var profile_dir_a = try tmp.dir.openDir("a", .{});
+    defer profile_dir_a.close();
+    var profile_dir_b = try tmp.dir.openDir("b", .{});
+    defer profile_dir_b.close();
+    try writeTestClaudeIdentityProfile(profile_dir_a, "claude-account-a");
+    try writeTestClaudeIdentityProfile(profile_dir_b, "claude-account-b");
+    const dir_a = try tmp.dir.realpathAlloc(std.testing.allocator, "a");
+    defer std.testing.allocator.free(dir_a);
+    const dir_b = try tmp.dir.realpathAlloc(std.testing.allocator, "b");
+    defer std.testing.allocator.free(dir_b);
+
+    const cfg_json = try testClaudePairConfigJson(std.testing.allocator, dir_a, dir_b);
+    defer std.testing.allocator.free(cfg_json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+    try markTestCapabilityLive(&store, "claude:a#claude-managed", null);
+    try markTestCapabilityLive(&store, "claude:b#claude-managed", null);
+
+    var pool = broker.AccountPool.init(std.testing.allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealthScoped(
+        &pool,
+        parsed.value,
+        "claude-managed",
+        "claude-managed",
+        &store,
+    );
+
+    var hash_a: ?[]const u8 = null;
+    var hash_b: ?[]const u8 = null;
+    var selectable_count: usize = 0;
+    for (pool.accounts.items) |entry| {
+        if (std.mem.eql(u8, entry.id, "claude:a")) hash_a = entry.account_id_hash;
+        if (std.mem.eql(u8, entry.id, "claude:b")) hash_b = entry.account_id_hash;
+        if (entry.selectable) selectable_count += 1;
+        try std.testing.expect(entry.duplicate_of == null);
+    }
+    try std.testing.expectEqual(@as(usize, 2), selectable_count);
+    try std.testing.expect(!std.mem.eql(u8, hash_a.?, hash_b.?));
+
+    const first = try pool.elect("claude-managed", "claude-managed", &.{});
+    const exclude = [_][]const u8{first.id};
+    const second = try pool.elect("claude-managed", "claude-managed", &exclude);
+    try std.testing.expect(!std.mem.eql(u8, first.id, second.id));
+    try expectManagedClaudeIdentityClarityForPlatform(&pool, parsed.value);
+}
+
+test "managed Claude identity admission rejects hashless profile routes" {
+    const valid =
+        \\{"oauthAccount":{"accountUuid":"known-account"}}
+    ;
+    try expectManagedClaudeIdentityClarityError(valid, "{");
+    try expectManagedClaudeIdentityClarityError("{", "{}");
+    try expectManagedClaudeIdentityClarityError(null, null);
 }
 
 test "identity golden: codex claim and claude accountUuid hash into one sha256_12hex space (TIN-1822)" {

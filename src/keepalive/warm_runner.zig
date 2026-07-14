@@ -22,12 +22,11 @@ const std = @import("std");
 const ws = @import("warm_scheduler.zig");
 const bind = @import("warm_binding.zig");
 const ig = @import("../identity/identity_graph.zig");
-const claude_identity = @import("../identity/claude_identity.zig");
+const claude_identity_source = @import("../identity/claude_identity_source.zig");
 const pipeline = @import("../pipeline.zig");
 const config_mod = @import("../config.zig");
 const health_mod = @import("../health.zig");
 const log = @import("../log.zig");
-const paths = @import("../paths.zig");
 
 /// Context the binding's `DoRefreshFn`/`ClockFn` are bound to. Borrows the config
 /// and health store for the loop's lifetime.
@@ -122,7 +121,7 @@ pub fn enumeratePool(
                 id_hash = try a.dupe(u8, h);
             } else if (config_mod.resolveProviderKind(cfg, prov)) |kind| {
                 if (kind == .claude) {
-                    id_hash = try readClaudeConfigIdentityHash(a, ae.value_ptr.*);
+                    id_hash = try claude_identity_source.readAccountIdentityHash(a, ae.value_ptr.config_dir);
                 }
             }
             try candidates.append(.{ .key = key, .expires_at_ms = exp, .id_hash = id_hash });
@@ -156,34 +155,4 @@ pub fn enumeratePool(
         try list.append(.{ .key = c.key, .expires_at_ms = c.expires_at_ms });
     }
     return .{ .observed = try list.toOwnedSlice(), .arena = arena };
-}
-
-fn readClaudeConfigIdentityHash(allocator: std.mem.Allocator, account: config_mod.AccountConfig) std.mem.Allocator.Error!?[]const u8 {
-    const raw_dir = account.config_dir orelse return null;
-    const dir = paths.absolutePath(allocator, raw_dir) catch return null;
-    defer allocator.free(dir);
-    const profile_path = std.fs.path.join(allocator, &.{ dir, ".claude.json" }) catch return error.OutOfMemory;
-    defer allocator.free(profile_path);
-    const raw = readSmallFileMaybe(allocator, profile_path) catch return error.OutOfMemory;
-    defer if (raw) |bytes| allocator.free(bytes);
-    const bytes = raw orelse return null;
-
-    const ident = claude_identity.parseClaudeIdentity(allocator, bytes) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
-    defer ident.deinit(allocator);
-    if (!ident.present) return null;
-    const hash = ident.account_id_hash orelse return null;
-    const dup: []const u8 = try allocator.dupe(u8, hash);
-    return dup;
-}
-
-fn readSmallFileMaybe(allocator: std.mem.Allocator, path: []const u8) std.mem.Allocator.Error!?[]u8 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
-    return file.readToEndAlloc(allocator, 1024 * 1024) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
 }

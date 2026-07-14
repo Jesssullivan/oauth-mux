@@ -71,8 +71,9 @@ memory; they must never be persisted or emitted in diagnostics.
 
 ### Credential lineage and route state
 
-- Request-boundary refresh and resident keepalive share the existing
-  per-account flock. Hard rotating-refresh-token failure quarantines the lineage
+- Sidecars may invoke bounded request-boundary refresh; proactive refresh stays
+  with resident keepalive. Both share the existing per-account flock. Hard
+  rotating-refresh-token failure quarantines the lineage
   and requires provider-owned re-enrollment; never restore a stale token backup.
 - Identity conflicts fail closed. Exhaustion is trusted through reset,
   availability expires, and unknown routes rank below known-good but above dead
@@ -86,6 +87,9 @@ memory; they must never be persisted or emitted in diagnostics.
 - The Claude usage reader is default-on but advisory only. It calls only
   `GET /api/oauth/usage` at the fixed origin, coalesces reads per account, and
   retains only normalized observations for a five-minute freshness window.
+  Scheduled polling and this cache belong to the resident service. Sidecars
+  consume the redacted snapshot and fall back to reactive request-path evidence
+  when it is absent or stale; they do not duplicate the proactive polling loop.
   Raw responses are memory-only. Invalid rows are ignored; zero valid rows
   creates a five-minute negative cache entry. Missing required top-level
   structure or an unsupported schema/version activates a per-account,

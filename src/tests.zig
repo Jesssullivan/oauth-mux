@@ -34,6 +34,7 @@ const AllModules = struct {
     pub const types = @import("types.zig");
     pub const version_check = @import("version_check.zig");
 
+    pub const claude_child_authority = @import("adapters/claude/child_authority.zig");
     pub const codex_adapter = @import("adapters/codex/main.zig");
     pub const codex_app_server_client = @import("adapters/codex/app_server_client.zig");
     pub const codex_wire_proxy = @import("adapters/codex/wire_proxy.zig");
@@ -61,6 +62,7 @@ const AllModules = struct {
     pub const enroll_web_ui_tests = @import("enroll/web_ui_tests.zig");
 
     pub const claude_identity = @import("identity/claude_identity.zig");
+    pub const claude_identity_source = @import("identity/claude_identity_source.zig");
     pub const claude_identity_tests = @import("identity/claude_identity_tests.zig");
     pub const identity_graph = @import("identity/identity_graph.zig");
     pub const identity_graph_tests = @import("identity/identity_graph_tests.zig");
