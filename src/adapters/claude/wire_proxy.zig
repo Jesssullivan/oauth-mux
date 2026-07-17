@@ -1069,7 +1069,7 @@ test "response headers strip fixed and connection-nominated hop headers" {
     try std.testing.expect(!stripResponseHeader(headers[7].name, &headers));
 }
 
-test "accepted request with stripped headers still reaches fake upstream" {
+test "accepted request strips sensitive and hop headers across the wire" {
     const capability = try SessionCapability.generate(std.testing.allocator);
     defer capability.deinit();
     var carrier = try copyCarrier(capability);
@@ -1081,14 +1081,26 @@ test "accepted request with stripped headers still reaches fake upstream" {
 
     const request = try std.fmt.allocPrint(
         std.testing.allocator,
-        "GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nAuthorization: Bearer {s}\r\nX-Api-Key: caller-key\r\nProxy-Authorization: Basic caller\r\nConnection: X-Private-Hop, close\r\nX-Private-Hop: remove\r\nTE: trailers\r\n\r\n",
-        .{ listener.port(), carrier },
+        "GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nAuthorization: Bearer {s}\r\nX-Api-Key: caller-key\r\nCookie: caller-cookie\r\nForwarded: host=caller.invalid\r\nX-Forwarded-For: 192.0.2.1\r\nX-Forwarded-Host: caller.invalid\r\nX-Forwarded-Port: 443\r\nX-Forwarded-Proto: https\r\nX-Real-IP: 192.0.2.2\r\nKeep-Alive: timeout=5\r\nProxy-Authenticate: Basic local\r\nProxy-Authorization: Basic caller\r\nProxy-Connection: keep-alive\r\nConnection: {s}, close\r\n{s}: remove\r\nTE: trailers\r\nTrailer: X-Result\r\nTrailers: X-Result\r\nUpgrade: websocket\r\nAnthropic-Version: 2023-06-01\r\n\r\n",
+        .{
+            listener.port(),
+            carrier,
+            fake_upstream_mod.connection_nominated_canary,
+            fake_upstream_mod.connection_nominated_canary,
+        },
     );
     defer std.testing.allocator.free(request);
     const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
     defer std.testing.allocator.free(response);
     try expectStatus(response, "HTTP/1.1 204 No Content\r\n");
     try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+    try std.testing.expectEqualDeep(
+        fake_upstream_mod.RequestHeaderPresence{
+            .accept_encoding = true,
+            .anthropic_version = true,
+        },
+        upstream.requestHeaderPresenceSnapshot(),
+    );
 }
 
 test "upstream redirect is rejected without a second call" {
