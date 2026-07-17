@@ -18,6 +18,10 @@ const max_request_body_bytes = 32 * 1024 * 1024;
 const max_response_head_bytes = 64 * 1024;
 const max_response_body_bytes = 32 * 1024 * 1024;
 const max_forwarded_response_headers = 25;
+// Exact-model admission (program §2.2, ladder §8.2). The request body is already
+// bounded by `max_request_body_bytes`, so the complete document is validated.
+// This rejects duplicate model keys and trailing JSON before any upstream call.
+const max_model_len = 128;
 
 const Upstream = union(enum) {
     production,
@@ -33,7 +37,54 @@ const State = struct {
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     active: ActiveConnection = .{},
+    upstream_active: ActiveConnection = .{},
+    observation_mutex: std.Thread.Mutex = .{},
+    observation: RequestObservation = .{},
 };
+
+/// The last request's exact-model accounting, exposed to tests through the same
+/// snapshot pattern the fake upstream uses. The model bytes are the public model
+/// identifier only; no credential or body payload is retained.
+const RequestObservation = struct {
+    had_body: bool = false,
+    model_present: bool = false,
+    model_buf: [max_model_len]u8 = undefined,
+    model_len: usize = 0,
+    upstream_attempted: bool = false,
+    upstream_status: u16 = 0,
+    model_admission_rejected: bool = false,
+
+    fn model(self: *const RequestObservation) []const u8 {
+        return self.model_buf[0..self.model_len];
+    }
+};
+
+const ModelObservationInput = struct {
+    had_body: bool = false,
+    model_present: bool = false,
+    model: ?[]const u8 = null,
+    upstream_attempted: bool = false,
+    upstream_status: u16 = 0,
+    model_admission_rejected: bool = false,
+};
+
+fn recordModelObservation(state: *State, input: ModelObservationInput) void {
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+    var obs = RequestObservation{
+        .had_body = input.had_body,
+        .model_present = input.model_present,
+        .upstream_attempted = input.upstream_attempted,
+        .upstream_status = input.upstream_status,
+        .model_admission_rejected = input.model_admission_rejected,
+    };
+    if (input.model) |m| {
+        const n = @min(m.len, max_model_len);
+        @memcpy(obs.model_buf[0..n], m[0..n]);
+        obs.model_len = n;
+    }
+    state.observation = obs;
+}
 
 /// One authenticated HTTP/1.1 listener bound to an ephemeral IPv4 loopback
 /// port. The concrete state is opaque so callers cannot inject an upstream.
@@ -64,6 +115,7 @@ pub const Listener = opaque {
         const state = statePtr(self);
         state.stopping.store(true, .release);
         state.active.interrupt();
+        state.upstream_active.interrupt();
         if (state.thread) |thread| thread.join();
         state.server.deinit();
         const allocator = state.allocator;
@@ -77,6 +129,14 @@ fn statePtr(listener: *Listener) *State {
 
 fn statePtrConst(listener: *const Listener) *const State {
     return @ptrCast(@alignCast(listener));
+}
+
+/// File-private: capture the last request's exact-model accounting.
+fn observationSnapshot(listener: *Listener) RequestObservation {
+    const state = statePtr(listener);
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+    return state.observation;
 }
 
 fn startWithUpstream(
@@ -277,7 +337,98 @@ fn handleRequest(state: *State, request: *std.http.Server.Request) !void {
     };
     defer body.deinit();
 
-    try forwardOnce(state, request, allocator, forwarded_headers.items, body.slice());
+    const captured_model = peekTopLevelModel(allocator, body.slice()) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            recordModelObservation(state, .{
+                .had_body = body.slice().len != 0,
+                .model_admission_rejected = true,
+            });
+            emitEvent(state, "claude_proxy_model_admission_rejected");
+            try request.respond("model admission rejected", .{
+                .status = .bad_request,
+                .keep_alive = false,
+            });
+            return;
+        },
+    };
+
+    try forwardOnce(state, request, allocator, forwarded_headers.items, body.slice(), captured_model);
+}
+
+const ModelPeekError = error{
+    ModelPeekUnparseable,
+    ModelPeekMissing,
+    ModelPeekDuplicate,
+    ModelPeekNotString,
+    ModelPeekTooLong,
+    OutOfMemory,
+};
+
+fn scanNext(scanner: *std.json.Scanner, alloc: std.mem.Allocator) ModelPeekError!std.json.Token {
+    // The scanner is built over the complete request body, already bounded by
+    // `max_request_body_bytes`; malformed or truncated input refuses locally.
+    return scanner.nextAlloc(alloc, .alloc_if_needed) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.ModelPeekUnparseable,
+    };
+}
+
+fn skipJsonValue(scanner: *std.json.Scanner, alloc: std.mem.Allocator) ModelPeekError!void {
+    var depth: usize = 0;
+    while (true) {
+        switch (try scanNext(scanner, alloc)) {
+            .object_begin, .array_begin => depth += 1,
+            .object_end, .array_end => {
+                if (depth == 0) return error.ModelPeekUnparseable;
+                depth -= 1;
+            },
+            .end_of_document => return error.ModelPeekUnparseable,
+            else => {},
+        }
+        if (depth == 0) return;
+    }
+}
+
+/// Validates the complete bounded JSON document and returns its unique top-level
+/// `model` string (program §2.2, ladder §8.2). Returns null for a bodyless
+/// request. No family inference, alias, or substitution is performed.
+fn peekTopLevelModel(alloc: std.mem.Allocator, body: []const u8) ModelPeekError!?[]const u8 {
+    if (body.len == 0) return null;
+    var scanner = std.json.Scanner.initCompleteInput(alloc, body);
+    defer scanner.deinit();
+
+    switch (try scanNext(&scanner, alloc)) {
+        .object_begin => {},
+        else => return error.ModelPeekUnparseable,
+    }
+    var model: ?[]const u8 = null;
+    while (true) {
+        const key: []const u8 = switch (try scanNext(&scanner, alloc)) {
+            .object_end => {
+                switch (try scanNext(&scanner, alloc)) {
+                    .end_of_document => return model orelse error.ModelPeekMissing,
+                    else => return error.ModelPeekUnparseable,
+                }
+            },
+            .string => |s| s,
+            .allocated_string => |s| s,
+            else => return error.ModelPeekUnparseable,
+        };
+        if (std.mem.eql(u8, key, "model")) {
+            if (model != null) return error.ModelPeekDuplicate;
+            const value: []const u8 = switch (try scanNext(&scanner, alloc)) {
+                .string => |s| s,
+                .allocated_string => |s| s,
+                else => return error.ModelPeekNotString,
+            };
+            if (value.len == 0) return error.ModelPeekNotString;
+            if (value.len > max_model_len) return error.ModelPeekTooLong;
+            model = try alloc.dupe(u8, value);
+            continue;
+        }
+        try skipJsonValue(&scanner, alloc);
+    }
 }
 
 const SensitiveBytes = struct {
@@ -392,6 +543,7 @@ fn appendForwardingHeaders(
 fn stripRequestHeader(name: []const u8, headers: []const std.http.Header) bool {
     const fixed = [_][]const u8{
         "authorization",
+        "accept-encoding",
         "x-api-key",
         "cookie",
         "forwarded",
@@ -439,6 +591,7 @@ fn forwardOnce(
     allocator: std.mem.Allocator,
     headers: []const std.http.Header,
     body: []const u8,
+    captured_model: ?[]const u8,
 ) !void {
     const origin = switch (state.upstream) {
         .production => return error.ProductionCredentialInjectionNotImplemented,
@@ -458,11 +611,19 @@ fn forwardOnce(
         .redirect_behavior = .unhandled,
         .headers = .{
             .authorization = .omit,
+            .accept_encoding = .{ .override = "identity" },
             .connection = .{ .override = "close" },
         },
         .extra_headers = headers,
     });
     defer upstream_request.deinit();
+
+    const upstream_connection = upstream_request.connection orelse return error.UpstreamConnectionMissing;
+    const upstream_handle = upstream_connection.stream.handle;
+    if (!state.upstream_active.begin(upstream_handle, &state.stopping)) {
+        return error.ListenerStopping;
+    }
+    defer state.upstream_active.end(upstream_handle);
 
     if (body.len != 0) upstream_request.transfer_encoding = .{ .content_length = body.len };
     try upstream_request.send();
@@ -471,20 +632,14 @@ fn forwardOnce(
         try upstream_request.finish();
     }
     try upstream_request.wait();
-
-    var upstream_body = try readAllSensitiveAlloc(
-        allocator,
-        upstream_request.reader(),
-        max_response_body_bytes,
-    );
-    defer upstream_body.deinit();
-    if (upstream_request.response.status.class() == .redirect) {
-        try downstream.respond("upstream redirect rejected", .{
-            .status = .bad_gateway,
-            .keep_alive = false,
-        });
-        return;
-    }
+    const upstream_status = upstream_request.response.status;
+    recordModelObservation(state, .{
+        .had_body = body.len != 0,
+        .model_present = captured_model != null,
+        .model = captured_model,
+        .upstream_attempted = true,
+        .upstream_status = @intFromEnum(upstream_status),
+    });
 
     var all_response_headers = std.ArrayListUnmanaged(std.http.Header){};
     var response_iterator = upstream_request.response.iterateHeaders();
@@ -500,11 +655,140 @@ fn forwardOnce(
         response_headers[response_header_count] = header;
         response_header_count += 1;
     }
-    try downstream.respond(upstream_body.slice(), .{
-        .status = upstream_request.response.status,
-        .keep_alive = false,
-        .extra_headers = response_headers[0..response_header_count],
+
+    if (upstream_status.class() == .redirect) {
+        try downstream.respond("upstream redirect rejected", .{
+            .status = .bad_gateway,
+            .keep_alive = false,
+        });
+        return;
+    }
+
+    // Error responses remain buffered because 401/403/429 are future
+    // pre-response decision points. Provider 5xx passes through unchanged to
+    // Claude Code's native retry and never authorizes another account attempt.
+    if (upstream_status.class() == .client_error or upstream_status.class() == .server_error) {
+        var upstream_body = try readAllSensitiveAlloc(
+            allocator,
+            upstream_request.reader(),
+            max_response_body_bytes,
+        );
+        defer upstream_body.deinit();
+        if (upstream_status.class() == .server_error) {
+            emitEvent(state, "claude_proxy_upstream_server_error");
+        }
+        try downstream.respond(upstream_body.slice(), .{
+            .status = upstream_status,
+            .keep_alive = false,
+            .extra_headers = response_headers[0..response_header_count],
+        });
+        return;
+    }
+
+    if (responseHasNoBody(downstream, upstream_status)) {
+        downstream.respond("", .{
+            .status = upstream_status,
+            .keep_alive = false,
+            .extra_headers = response_headers[0..response_header_count],
+            .transfer_encoding = .none,
+        }) catch {
+            emitEvent(state, "claude_proxy_client_disconnected");
+        };
+        return;
+    }
+
+    streamUpstreamResponse(
+        state,
+        downstream,
+        &upstream_request,
+        response_headers[0..response_header_count],
+    );
+}
+
+fn responseHasNoBody(request: *const std.http.Server.Request, status: std.http.Status) bool {
+    return request.head.method == .HEAD or switch (@intFromEnum(status)) {
+        100...199, 204, 205, 304 => true,
+        else => false,
+    };
+}
+
+fn streamUpstreamResponse(
+    state: *State,
+    downstream: *std.http.Server.Request,
+    upstream: *std.http.Client.Request,
+    headers: []const std.http.Header,
+) void {
+    var send_buffer: [max_response_head_bytes]u8 = undefined;
+    defer std.crypto.secureZero(u8, &send_buffer);
+    var response = downstream.respondStreaming(.{
+        .send_buffer = &send_buffer,
+        .content_length = upstream.response.content_length,
+        .respond_options = .{
+            .status = upstream.response.status,
+            .keep_alive = false,
+            .extra_headers = headers,
+        },
     });
+    response.flush() catch {
+        emitEvent(state, "claude_proxy_client_disconnected");
+        return;
+    };
+
+    var body_buffer: [64 * 1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &body_buffer);
+    var body_reader = upstream.reader();
+    var streamed: u64 = 0;
+    while (true) {
+        const count = body_reader.read(&body_buffer) catch |err| {
+            if (err == error.EndOfStream and
+                upstream.response.transfer_encoding == .none and
+                upstream.response.content_length == null)
+            {
+                // Close-delimited upstream framing cannot distinguish a clean
+                // EOF from truncation. The fixed Anthropic path requests
+                // identity encoding and normally receives length or chunked
+                // framing; retain this protocol-compatible fallback without
+                // promoting it as completeness evidence.
+                response.end() catch {
+                    emitEvent(state, "claude_proxy_client_disconnected");
+                };
+                return;
+            }
+            emitEvent(state, "claude_proxy_upstream_interrupted");
+            return;
+        };
+        if (count == 0) {
+            // Zig 0.14.1 normalizes premature EOF while parsing chunked bodies
+            // to a zero-byte read, but leaves the parser in its unfinished
+            // chunk state. Only `.finished` proves the terminal chunk/trailers.
+            if (upstream.response.transfer_encoding == .chunked and
+                upstream.response.parser.state != .finished)
+            {
+                emitEvent(state, "claude_proxy_upstream_interrupted");
+                return;
+            }
+            if (upstream.response.content_length) |expected| {
+                if (streamed != expected) {
+                    emitEvent(state, "claude_proxy_upstream_interrupted");
+                    return;
+                }
+            }
+            response.end() catch {
+                emitEvent(state, "claude_proxy_client_disconnected");
+                return;
+            };
+            return;
+        }
+        response.writeAll(body_buffer[0..count]) catch {
+            emitEvent(state, "claude_proxy_client_disconnected");
+            return;
+        };
+        response.flush() catch {
+            emitEvent(state, "claude_proxy_client_disconnected");
+            return;
+        };
+        streamed += count;
+    }
 }
 
 fn stripResponseHeader(name: []const u8, headers: []const std.http.Header) bool {
@@ -729,6 +1013,7 @@ test "origin form Host CONNECT and absolute form fail before upstream" {
 test "forwarded headers strip credentials framing and connection tokens" {
     const inbound = [_]std.http.Header{
         .{ .name = "Authorization", .value = "Bearer local-capability" },
+        .{ .name = "Accept-Encoding", .value = "gzip, deflate" },
         .{ .name = "X-Api-Key", .value = "caller-key" },
         .{ .name = "Cookie", .value = "caller-cookie" },
         .{ .name = "Forwarded", .value = "host=caller.invalid" },
@@ -820,6 +1105,485 @@ test "upstream redirect is rejected without a second call" {
     defer std.testing.allocator.free(response);
     try expectStatus(response, "HTTP/1.1 502 Bad Gateway\r\n");
     try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.upstream_attempted);
+    try std.testing.expectEqual(@as(u16, 302), obs.upstream_status);
+}
+
+fn postRequestAlloc(
+    allocator: std.mem.Allocator,
+    port: u16,
+    carrier: []const u8,
+    body: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nAuthorization: Bearer {s}\r\n" ++
+            "Content-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ port, carrier, body.len, body },
+    );
+}
+
+fn waitForResponsePrefix(upstream: *FakeUpstream) !void {
+    var timer = try std.time.Timer.start();
+    while (!upstream.responsePrefixWritten()) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.yield() catch {};
+    }
+}
+
+fn waitForListenerIdle(listener: *Listener) !void {
+    var timer = try std.time.Timer.start();
+    while (statePtr(listener).active.isSet()) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.yield() catch {};
+    }
+}
+
+fn readUntilContains(
+    stream: *std.net.Stream,
+    response: *std.ArrayList(u8),
+    needle: []const u8,
+) !void {
+    var timer = try std.time.Timer.start();
+    var buffer: [1024]u8 = undefined;
+    while (std.mem.indexOf(u8, response.items, needle) == null) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        if (try std.posix.poll(&fds, 10) == 0) continue;
+        const count = try stream.read(&buffer);
+        if (count == 0) return error.EndOfStream;
+        try response.appendSlice(buffer[0..count]);
+    }
+}
+
+fn readResponseRemainder(stream: *std.net.Stream, response: *std.ArrayList(u8)) !void {
+    var timer = try std.time.Timer.start();
+    var buffer: [1024]u8 = undefined;
+    while (true) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        var fds = [_]std.posix.pollfd{.{
+            .fd = stream.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        if (try std.posix.poll(&fds, 10) == 0) continue;
+        const count = try stream.read(&buffer);
+        if (count == 0) return;
+        try response.appendSlice(buffer[0..count]);
+    }
+}
+
+test "exact model is captured and forwarded byte-identically to the fake upstream" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "{\"ok\":true}",
+        .headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+    }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const model = "claude-opus-4-20250514";
+    const json = "{\"model\":\"" ++ model ++ "\",\"max_tokens\":16," ++
+        "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\n{\"ok\":true}"));
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_present);
+    try std.testing.expect(obs.upstream_attempted);
+    try std.testing.expectEqual(@as(u16, 200), obs.upstream_status);
+    try std.testing.expectEqualStrings(model, obs.model());
+
+    var captured: [256]u8 = undefined;
+    const captured_len = upstream.capturedRequestBody(&captured);
+    try std.testing.expectEqualStrings(json, captured[0..captured_len]);
+    try std.testing.expectEqualDeep(
+        fake_upstream_mod.RequestCaptureSnapshot{
+            .captured_len = json.len,
+            .total_len = json.len,
+            .truncated = false,
+        },
+        upstream.requestCaptureSnapshot(),
+    );
+}
+
+test "SSE response prefix reaches the client before the upstream completes" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const first = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
+    const rest =
+        "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n" ++
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    const sse = first ++ rest;
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = sse,
+        .headers = &.{.{ .name = "Content-Type", .value = "text/event-stream" }},
+        .chunked = true,
+        .pause_after_bytes = first.len,
+    }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const json = "{\"model\":\"claude-sonnet-4-20250514\",\"stream\":true}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&upstream);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, first);
+
+    try expectStatus(response.items, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response.items, "Content-Type: text/event-stream\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response.items, "transfer-encoding: chunked\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response.items, rest) == null);
+
+    upstream.releasePausedResponse();
+    try readResponseRemainder(&stream, &response);
+    try std.testing.expect(std.mem.indexOf(u8, response.items, first) != null);
+    try std.testing.expect(std.mem.indexOf(u8, response.items, rest) != null);
+    try std.testing.expect(std.mem.endsWith(u8, response.items, "0\r\n\r\n"));
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+test "truncated chunked upstream remains detectably incomplete downstream" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const first = "event: content_block_delta\ndata: {\"delta\":{\"text\":\"partial\"}}\n\n";
+    const rest = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = first ++ rest,
+        .headers = &.{.{ .name = "Content-Type", .value = "text/event-stream" }},
+        .chunked = true,
+        .truncate_after_bytes = first.len,
+    }});
+    defer upstream.deinit();
+    var event_buffer: [512]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try startWithUpstream(
+        std.testing.allocator,
+        capability,
+        event_stream.writer().any(),
+        .{ .fake = &upstream },
+    );
+    defer listener.deinit();
+
+    const json = "{\"model\":\"claude-sonnet-4-20250514\",\"stream\":true}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, "transfer-encoding: chunked\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, first) != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, rest) == null);
+    try std.testing.expect(!std.mem.endsWith(u8, response, "0\r\n\r\n"));
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        event_stream.getWritten(),
+        "claude_proxy_upstream_interrupted",
+    ) != null);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+test "truncated content-length upstream remains shorter than its downstream declaration" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const first = "partial-body";
+    const rest = "-must-not-arrive";
+    const body = first ++ rest;
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = body,
+        .truncate_after_bytes = first.len,
+    }});
+    defer upstream.deinit();
+    var event_buffer: [512]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try startWithUpstream(
+        std.testing.allocator,
+        capability,
+        event_stream.writer().any(),
+        .{ .fake = &upstream },
+    );
+    defer listener.deinit();
+
+    const json = "{\"model\":\"claude-opus-4-20250514\"}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+    const expected_length = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "content-length: {d}\r\n",
+        .{body.len},
+    );
+    defer std.testing.allocator.free(expected_length);
+
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, expected_length) != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, first) != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, rest) == null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        event_stream.getWritten(),
+        "claude_proxy_upstream_interrupted",
+    ) != null);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+test "listener shutdown interrupts a stalled started upstream response" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const response_body = "first chunksecond chunk";
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = response_body,
+        .pause_after_bytes = "first chunk".len,
+    }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const json = "{\"model\":\"claude-opus-4-20250514\"}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&upstream);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, "first chunk");
+
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().attempt_count);
+
+    // The fake remains paused with the upstream response open. Teardown must
+    // interrupt both the downstream socket and the blocked upstream read.
+    var shutdown_timer = try std.time.Timer.start();
+    listener.deinit();
+    listener_live = false;
+    try std.testing.expect(shutdown_timer.read() < std.time.ns_per_s);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+test "client disconnect after a streamed prefix ends the single upstream attempt" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const response_body = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(response_body);
+    @memset(response_body, 'y');
+    const prefix = "streamed-prefix";
+    @memcpy(response_body[0..prefix.len], prefix);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = response_body,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer upstream.deinit();
+    var event_buffer: [512]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try startWithUpstream(
+        std.testing.allocator,
+        capability,
+        event_stream.writer().any(),
+        .{ .fake = &upstream },
+    );
+    defer listener.deinit();
+
+    const json = "{\"model\":\"claude-opus-4-20250514\",\"stream\":true}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    var stream_live = true;
+    defer if (stream_live) stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&upstream);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    std.posix.shutdown(stream.handle, .both) catch {};
+    stream.close();
+    stream_live = false;
+    upstream.releasePausedResponse();
+    try waitForListenerIdle(listener);
+
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        event_stream.getWritten(),
+        "claude_proxy_client_disconnected",
+    ) != null);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().attempt_count);
+}
+
+test "provider 5xx passes through unchanged as a single classified attempt" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const Case = struct { status: std.http.Status, line: []const u8 };
+    const cases = [_]Case{
+        .{ .status = .internal_server_error, .line = "HTTP/1.1 500 Internal Server Error\r\n" },
+        .{ .status = @enumFromInt(529), .line = "HTTP/1.1 529 " },
+    };
+    for (cases) |case| {
+        var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+            .status = case.status,
+            .body = "upstream boom",
+            .headers = &.{.{ .name = "X-Trace", .value = "abc123" }},
+        }});
+        defer upstream.deinit();
+        var event_buffer: [512]u8 = undefined;
+        var event_stream = std.io.fixedBufferStream(&event_buffer);
+        const listener = try startWithUpstream(
+            std.testing.allocator,
+            capability,
+            event_stream.writer().any(),
+            .{ .fake = &upstream },
+        );
+        defer listener.deinit();
+
+        const json = "{\"model\":\"claude-opus-4-20250514\"}";
+        const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+        defer std.testing.allocator.free(request);
+        const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+        defer std.testing.allocator.free(response);
+
+        try expectStatus(response, case.line);
+        try std.testing.expect(std.mem.indexOf(u8, response, "X-Trace: abc123\r\n") != null);
+        try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\nupstream boom"));
+        try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+        try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().attempt_count);
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            event_stream.getWritten(),
+            "claude_proxy_upstream_server_error",
+        ) != null);
+
+        const obs = observationSnapshot(listener);
+        try std.testing.expect(obs.upstream_attempted);
+        try std.testing.expectEqual(@as(u16, @intFromEnum(case.status)), obs.upstream_status);
+    }
+}
+
+test "model after the former peek window is admitted from the complete bounded body" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "accepted",
+    }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const model = "claude-opus-4-20250514";
+    const pad = try std.testing.allocator.alloc(u8, 64 * 1024 + 64);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const json = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"pad\":\"{s}\",\"model\":\"{s}\"}}",
+        .{ pad, model },
+    );
+    defer std.testing.allocator.free(json);
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_present);
+    try std.testing.expect(obs.upstream_attempted);
+    try std.testing.expectEqualStrings(model, obs.model());
+    const capture = upstream.requestCaptureSnapshot();
+    try std.testing.expectEqual(json.len, capture.total_len);
+    try std.testing.expect(capture.truncated);
+    try std.testing.expect(capture.captured_len < capture.total_len);
+}
+
+test "malformed ambiguous and missing model bodies refuse locally with zero upstream calls" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "nope" }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const bodies = [_][]const u8{
+        "not json at all",
+        "{\"messages\":[]}",
+        "{\"model\":5}",
+        "{\"model\":\"\"}",
+        "[]",
+        "{\"model\":\"claude-opus-4-20250514\",\"model\":\"claude-haiku-4-20250514\"}",
+        "{\"model\":\"claude-opus-4-20250514\",\"model\":\"claude-opus-4-20250514\"}",
+        "{\"model\":\"claude-opus-4-20250514\"} trailing",
+        "{\"model\":\"claude-opus-4-20250514\"}{\"model\":\"claude-haiku-4-20250514\"}",
+    };
+    for (bodies) |body| {
+        const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, body);
+        defer std.testing.allocator.free(request);
+        const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+        defer std.testing.allocator.free(response);
+        try expectStatus(response, "HTTP/1.1 400 Bad Request\r\n");
+    }
+
+    try std.testing.expect(upstream.snapshot().isZero());
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_admission_rejected);
+    try std.testing.expect(!obs.upstream_attempted);
 }
 
 test "shutdown interrupts a partial request within a fixed deadline" {
