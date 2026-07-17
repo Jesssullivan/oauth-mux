@@ -29,6 +29,9 @@ const FactId = enum {
     invalid_capability_returns_401,
     invalid_capability_adds_zero_fake_calls,
     invalid_capability_observation_is_fresh,
+    aggregate_accepted_request_count_is_one,
+    aggregate_rejected_request_count_is_one,
+    aggregate_request_counts_reconcile_with_ids,
     caller_auth_headers_absent_upstream,
     forwarding_identity_headers_absent_upstream,
     hop_headers_absent_upstream,
@@ -52,6 +55,9 @@ const fact_ids = [_]FactId{
     .invalid_capability_returns_401,
     .invalid_capability_adds_zero_fake_calls,
     .invalid_capability_observation_is_fresh,
+    .aggregate_accepted_request_count_is_one,
+    .aggregate_rejected_request_count_is_one,
+    .aggregate_request_counts_reconcile_with_ids,
     .caller_auth_headers_absent_upstream,
     .forwarding_identity_headers_absent_upstream,
     .hop_headers_absent_upstream,
@@ -71,6 +77,53 @@ const fact_ids = [_]FactId{
 const Fact = struct {
     id: FactId,
     status: Status,
+};
+
+const RequestCounters = struct {
+    accepted: usize = 0,
+    rejected: usize = 0,
+    observed: usize = 0,
+    request_ids_complete: bool = true,
+    classifications_complete: bool = true,
+
+    fn record(self: *RequestCounters, observation: wire_proxy.RequestObservation) void {
+        const next_observed = std.math.add(usize, self.observed, 1) catch {
+            self.request_ids_complete = false;
+            self.classifications_complete = false;
+            return;
+        };
+        const expected_request_id = std.math.cast(u64, next_observed) orelse {
+            self.request_ids_complete = false;
+            self.classifications_complete = false;
+            return;
+        };
+        if (observation.request_id != expected_request_id) {
+            self.request_ids_complete = false;
+        }
+        self.observed = next_observed;
+
+        if (observation.outcome == .upstream_response and observation.upstream_attempted) {
+            self.accepted = std.math.add(usize, self.accepted, 1) catch {
+                self.classifications_complete = false;
+                return;
+            };
+        } else if (observation.outcome == .capability_rejected and !observation.upstream_attempted) {
+            self.rejected = std.math.add(usize, self.rejected, 1) catch {
+                self.classifications_complete = false;
+                return;
+            };
+        } else {
+            self.classifications_complete = false;
+        }
+    }
+
+    fn reconciles(self: RequestCounters) bool {
+        const classified = std.math.add(usize, self.accepted, self.rejected) catch return false;
+        return self.observed != 0 and
+            self.request_ids_complete and
+            self.classifications_complete and
+            classified == self.observed;
+    }
 };
 
 const Artifact = struct {
@@ -198,6 +251,8 @@ fn runCapabilityScenario(facts: []Fact) !void {
         hasStatus(accepted_response, "204 No Content") and upstream.snapshot().call_count == 1,
     );
     const accepted_observation = wire_proxy.testing.requestObservation(listener);
+    var counters = RequestCounters{};
+    counters.record(accepted_observation);
 
     var wrong = [_]u8{'A'} ** capability_mod.carrier_len;
     defer std.crypto.secureZero(u8, &wrong);
@@ -212,6 +267,7 @@ fn runCapabilityScenario(facts: []Fact) !void {
     const rejected_response = try requestRawAlloc(listener.address(), rejected);
     defer std.testing.allocator.free(rejected_response);
     const rejected_observation = wire_proxy.testing.requestObservation(listener);
+    counters.record(rejected_observation);
     setFact(facts, .invalid_capability_returns_401, hasStatus(rejected_response, "401 Unauthorized"));
     setFact(
         facts,
@@ -225,6 +281,104 @@ fn runCapabilityScenario(facts: []Fact) !void {
             rejected_observation.outcome == .capability_rejected and
             !rejected_observation.upstream_attempted,
     );
+    setFact(facts, .aggregate_accepted_request_count_is_one, counters.accepted == 1);
+    setFact(facts, .aggregate_rejected_request_count_is_one, counters.rejected == 1);
+    setFact(
+        facts,
+        .aggregate_request_counts_reconcile_with_ids,
+        counters.reconciles(),
+    );
+}
+
+test "request counters require a complete fresh-listener id range and classification" {
+    var counters = RequestCounters{};
+    counters.record(.{
+        .request_id = 1,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    counters.record(.{
+        .request_id = 2,
+        .outcome = .capability_rejected,
+        .upstream_attempted = false,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), counters.accepted);
+    try std.testing.expectEqual(@as(usize, 1), counters.rejected);
+    try std.testing.expect(counters.reconciles());
+
+    var offset = RequestCounters{};
+    offset.record(.{
+        .request_id = 41,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    offset.record(.{
+        .request_id = 42,
+        .outcome = .capability_rejected,
+        .upstream_attempted = false,
+    });
+    try std.testing.expect(!offset.reconciles());
+
+    var zero = RequestCounters{};
+    zero.record(.{
+        .request_id = 0,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    try std.testing.expect(!zero.reconciles());
+
+    var skipped = RequestCounters{};
+    skipped.record(.{
+        .request_id = 1,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    skipped.record(.{
+        .request_id = 3,
+        .outcome = .capability_rejected,
+        .upstream_attempted = false,
+    });
+    try std.testing.expect(!skipped.reconciles());
+
+    var duplicate = RequestCounters{};
+    duplicate.record(.{
+        .request_id = 1,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    duplicate.record(.{
+        .request_id = 1,
+        .outcome = .capability_rejected,
+        .upstream_attempted = false,
+    });
+    try std.testing.expect(!duplicate.reconciles());
+
+    var overflow = RequestCounters{
+        .accepted = std.math.maxInt(usize),
+        .rejected = 1,
+        .observed = std.math.maxInt(usize),
+    };
+    try std.testing.expect(!overflow.reconciles());
+    overflow.record(.{
+        .request_id = 0,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    try std.testing.expect(!overflow.reconciles());
+
+    var unclassified = RequestCounters{};
+    unclassified.record(.{
+        .request_id = 1,
+        .outcome = .upstream_response,
+        .upstream_attempted = true,
+    });
+    unclassified.record(.{
+        .request_id = 2,
+        .outcome = .proxy_error,
+        .upstream_attempted = false,
+    });
+    try std.testing.expect(!unclassified.reconciles());
 }
 
 fn runHeaderBoundaryScenario(facts: []Fact) !void {

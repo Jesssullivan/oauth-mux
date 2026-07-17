@@ -153,6 +153,9 @@ valid_capability_reaches_fake_once
 invalid_capability_returns_401
 invalid_capability_adds_zero_fake_calls
 invalid_capability_observation_is_fresh
+aggregate_accepted_request_count_is_one
+aggregate_rejected_request_count_is_one
+aggregate_request_counts_reconcile_with_ids
 caller_auth_headers_absent_upstream
 forwarding_identity_headers_absent_upstream
 hop_headers_absent_upstream
@@ -1166,7 +1169,7 @@ for mode in missing-file extra-file download-error wrong-candidate stale-attempt
   )
 done
 
-# A green run cannot claim Stage 2 while 114 canonical predicates remain missing.
+# A green run cannot claim Stage 2 while 113 canonical predicates remain missing.
 : >"$gh_log"
 (
   FAKE_GH_WATCH_STATUS=0 \
@@ -1174,7 +1177,7 @@ done
     run_fake v02-stage2-conformance refs/heads/proof-ref --candidate-sha "$candidate_sha"
 )
 if grep -F 'verified immutable proof artifacts' "$tmp_dir/false-green.out" >/dev/null; then
-  fail "the 10/124 slice must not produce a completed Stage 2 claim"
+  fail "the 11/124 slice must not produce a completed Stage 2 claim"
 fi
 
 # Stage 1 accepts only exact lowercase local HEAD identity; detachedness is remote-only.
