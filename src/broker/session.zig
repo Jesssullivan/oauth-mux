@@ -48,7 +48,7 @@ pub const SessionTable = struct {
         self.map.deinit();
     }
 
-    /// Generate a fresh opaque session id. Format: `oms-<base36-counter>-<rand-hex>`.
+    /// Generate a fresh opaque session id. Format: `oms-<hex-counter>-<rand-hex>`.
     pub fn newId(self: *SessionTable) ![]const u8 {
         const counter = self.next_id;
         self.next_id += 1;
@@ -56,7 +56,12 @@ pub const SessionTable = struct {
         return std.fmt.allocPrint(self.allocator, "oms-{x}-{x}", .{ counter, r });
     }
 
-    pub fn create(self: *SessionTable, s: Session) !void {
+    pub fn create(self: *SessionTable, s: Session) types.BrokerError!void {
+        _ = types.LegacySessionId.parse(s.id) catch return types.BrokerError.InvalidParams;
+        if (s.current_account) |account| {
+            _ = types.AccountKey.parse(account) catch return types.BrokerError.InvalidParams;
+        }
+
         const owned_id = try self.allocator.dupe(u8, s.id);
         errdefer self.allocator.free(owned_id);
         var owned = s;
@@ -80,7 +85,9 @@ pub const SessionTable = struct {
     }
 
     pub fn setCurrentAccount(self: *SessionTable, id: []const u8, account: []const u8) types.BrokerError!void {
-        const session = self.getPtr(id) orelse return types.BrokerError.SessionNotFound;
+        const legacy_id = types.LegacySessionId.parse(id) catch return types.BrokerError.InvalidParams;
+        const session = self.getPtr(legacy_id.text) orelse return types.BrokerError.SessionNotFound;
+        _ = types.AccountKey.parse(account) catch return types.BrokerError.InvalidParams;
         const owned_account = self.allocator.dupe(u8, account) catch return types.BrokerError.OutOfMemory;
         if (session.current_account) |old| self.allocator.free(old);
         session.current_account = owned_account;
@@ -118,6 +125,7 @@ test "SessionTable.newId property: 1000 ids never collide" {
         try std.testing.expect(id.len > 0);
         // Property: id starts with our prefix.
         try std.testing.expect(std.mem.startsWith(u8, id, "oms-"));
+        try std.testing.expectEqualStrings(id, (try types.LegacySessionId.parse(id)).text);
         // Property: never collides with any prior id.
         const gop = try seen.getOrPut(id);
         if (gop.found_existing) {
@@ -172,8 +180,43 @@ test "SessionTable setCurrentAccount replaces owned account state" {
     try t.setCurrentAccount(id, "codex:max-1");
     try std.testing.expectEqualStrings("codex:max-1", t.get(id).?.current_account.?);
 
-    try t.setCurrentAccount(id, "codex:max-2");
-    try std.testing.expectEqualStrings("codex:max-2", t.get(id).?.current_account.?);
+    try t.setCurrentAccount(id, "codex:team:max-2");
+    try std.testing.expectEqualStrings("codex:team:max-2", t.get(id).?.current_account.?);
 
-    try std.testing.expectError(types.BrokerError.SessionNotFound, t.setCurrentAccount("missing", "codex:max-3"));
+    try std.testing.expectError(types.BrokerError.SessionNotFound, t.setCurrentAccount("oms-dead-beef", "codex:max-3"));
+    try std.testing.expectError(types.BrokerError.InvalidParams, t.setCurrentAccount("missing", "codex:max-3"));
+    try std.testing.expectError(types.BrokerError.InvalidParams, t.setCurrentAccount(id, "codex"));
+    try std.testing.expectEqualStrings("codex:team:max-2", t.get(id).?.current_account.?);
+}
+
+test "SessionTable validates inserts and preserves exact map keys" {
+    var t = SessionTable.init(std.testing.allocator);
+    defer t.deinit();
+
+    const id = "oms-A-bC";
+    try t.create(.{
+        .id = id,
+        .adapter = "codex",
+        .adapter_version = "0.1.0",
+        .harness_target = "codex 0.128.0",
+        .session_pid = 1234,
+        .claim_floor = .broker_owned,
+        .started_at_ms = 0,
+        .current_account = "codex:org:team",
+    });
+
+    try std.testing.expect(t.get(id) != null);
+    try std.testing.expect(t.get("oms-a-bc") == null);
+    try std.testing.expectEqualStrings("codex:org:team", t.get(id).?.current_account.?);
+
+    try std.testing.expectError(types.BrokerError.InvalidParams, t.create(.{
+        .id = "oms-invalid",
+        .adapter = "codex",
+        .adapter_version = "0.1.0",
+        .harness_target = "codex 0.128.0",
+        .session_pid = 1234,
+        .claim_floor = .broker_owned,
+        .started_at_ms = 0,
+    }));
+    try std.testing.expect(t.get("oms-invalid") == null);
 }
