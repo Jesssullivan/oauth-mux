@@ -147,6 +147,12 @@ The independent FOSS gate is the unprivileged `Public Source` workflow. It runs
 with Tinyland/GF credentials and endpoints absent. This proves the public
 Just/Nix source path; it complements and never replaces required GF proof.
 
+Generic GF build/test/check and Public Source prove source predicates only;
+they do not satisfy the v0.2 Stage 2 conformance matrix or G4 benchmark.
+TIN-2989 owns the immutable-candidate dispatch, named Stage 2/G4 recipes,
+predicate manifest, and provenance reconciliation required before either
+claim is available.
+
 Private GloriousFlywheel action checkout is authenticated by
 `.github/actions/checkout-gloriousflywheel`, which mints a short-lived token
 from the dedicated `omux-gf-checkout` App, restricted to

@@ -243,12 +243,23 @@ Promotion is explicit: shadow observation, manual-route proof, automatic beta,
 then default-managed mode. Daily checks are no-spend schema probes; a bounded,
 attended micro-spend adapter matrix runs weekly and at release gates.
 
+TIN-2989 owns making the evaluation ladder executable before any Stage 2 or G4
+claim: its v0.2 proof dispatch will bind an immutable candidate SHA, reconcile
+the checked-out tree and allowlist provenance, and run named fake-upstream
+conformance and benchmark targets. Generic GF test/check and Public Source
+remain required source proof, but neither substitutes for those matrices.
+TIN-2050 owns a separate signed v0.2 prerelease profile. TIN-1759 must close
+before any Stage 4 install, resident mutation, rollback, or attended live
+dogfood surface becomes eligible.
+
 ## 7. Golden Gate
 
 v0.2 can replace v0.1.15 as stable only when committed, redacted evidence proves:
 
-- a managed Claude session keeps the same harness process through an eligible
-  401/403/429 account handoff and succeeds on exactly one alternate;
+- a managed Claude session keeps the same harness process through a
+  provider-originated, pre-body `quota_exhausted` 429 account handoff and
+  succeeds on exactly one alternate; pre-body 401/403 remain required
+  synthetic negative coverage and earn no live continuity credit;
 - no replay occurs for ambiguous transport failure, oversize body, or started
   response; per-request, per-sidecar, and host replay budgets fail to stream-once
   without writing prompt bytes to disk;
