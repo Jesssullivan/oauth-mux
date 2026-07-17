@@ -23,6 +23,7 @@ const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
+const claude_verb = @import("adapters/claude/verb.zig");
 const identity_hash = @import("identity_hash.zig");
 const advise = @import("quota/advise.zig");
 const doctor_binaries = @import("doctor_binaries.zig");
@@ -219,6 +220,21 @@ pub fn main() !void {
             try runInit(allocator, stdout, init_args);
         },
 
+        .claude => |claude_args| {
+            // `omux claude`: managed Claude launch verb (TIN-1829). Production
+            // forwarding is compile-disabled, so this aborts fail-closed in
+            // preflight before any child spawn. Anchor:
+            // docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md §2.1.
+            if (claude_args.invalid_option) |arg| {
+                log.err("omux claude: unknown option \"{s}\". Usage: omux claude [-- <claude-args...>].", .{arg});
+                std.process.exit(types.ExitCode.general_error.int());
+            }
+            runClaude(allocator, stdout, claude_args) catch |e| {
+                log.err("claude: {s}", .{@errorName(e)});
+                std.process.exit(exitCodeFromPipelineError(e));
+            };
+        },
+
         .codex => |codex_args| {
             runCodex(allocator, stdout, codex_args) catch |e| {
                 log.err("codex: {s}", .{@errorName(e)});
@@ -348,6 +364,43 @@ pub fn main() !void {
                 std.process.exit(exitCodeFromPipelineError(e));
             };
         },
+    }
+}
+
+/// `omux claude` managed-launch entry (TIN-1829). Composes the managed-launch
+/// request and hands it to the fail-closed verb boundary. While production
+/// forwarding is compile-disabled the verb refuses in preflight before any child
+/// spawn — printing the operator-facing refusal and exiting nonzero — and never
+/// reads a credential. The RunOptions composition is built here so that, once
+/// forwarding is enabled, the same path launches a real managed child.
+fn runClaude(allocator: std.mem.Allocator, stdout: anytype, args: cli.Command.ClaudeArgs) !void {
+    var env = try std.process.getEnvMap(allocator);
+    defer env.deinit();
+
+    // Managed child argv: the Claude Code executable, then the forwarded args.
+    const argv = try allocator.alloc([]const u8, 1 + args.target_argv.len);
+    defer allocator.free(argv);
+    argv[0] = "claude";
+    @memcpy(argv[1..], args.target_argv);
+
+    // Fail-closed today; a config load belongs to the increment that flips
+    // forwarding on. The refusal must not depend on config presence.
+    var active_config = config.Config{};
+
+    const term = claude_verb.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .inherited_env = &env,
+        .active_config = &active_config,
+    }, stdout.any()) catch |e| switch (e) {
+        error.ManagedLaunchUnshipped => std.process.exit(types.ExitCode.general_error.int()),
+        else => return e,
+    };
+
+    // Reached only once forwarding is compile-enabled and the child exits.
+    switch (term) {
+        .Exited => |code| if (code != 0) std.process.exit(code),
+        else => std.process.exit(types.ExitCode.general_error.int()),
     }
 }
 
