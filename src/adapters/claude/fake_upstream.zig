@@ -16,6 +16,13 @@ pub const ScriptedResponse = struct {
     /// client decodes the framing, so the proxy still observes byte-identical
     /// body bytes. Ignored for bodyless statuses.
     chunked: bool = false,
+    /// Test-only deterministic streaming gate. When set, the fake flushes this
+    /// many body bytes, records that the prefix is visible, and waits for
+    /// `releasePausedResponse` before writing the remainder.
+    pause_after_bytes: ?usize = null,
+    /// Test-only malformed-response seam. Flush this many body bytes, then
+    /// close without completing the declared content length or chunk stream.
+    truncate_after_bytes: ?usize = null,
 };
 
 /// A coherent counter pair. Attempts count accepted non-shutdown TCP
@@ -30,6 +37,12 @@ pub const Snapshot = struct {
     pub fn isZero(self: Snapshot) bool {
         return self.attempt_count == 0 and self.call_count == 0;
     }
+};
+
+pub const RequestCaptureSnapshot = struct {
+    captured_len: usize = 0,
+    total_len: usize = 0,
+    truncated: bool = false,
 };
 
 /// Test-only deterministic HTTP upstream. It has no environment lookup or
@@ -102,6 +115,21 @@ pub const FakeUpstream = struct {
         return n;
     }
 
+    pub fn requestCaptureSnapshot(self: *FakeUpstream) RequestCaptureSnapshot {
+        const shared = self.shared orelse return .{};
+        return shared.request_capture.snapshot();
+    }
+
+    pub fn responsePrefixWritten(self: *FakeUpstream) bool {
+        const shared = self.shared orelse return false;
+        return shared.response_prefix_written.load(.acquire);
+    }
+
+    pub fn releasePausedResponse(self: *FakeUpstream) void {
+        const shared = self.shared orelse return;
+        shared.release_paused_response.store(true, .release);
+    }
+
     pub fn deinit(self: *FakeUpstream) void {
         const shared = self.shared orelse return;
         self.requestStop();
@@ -109,6 +137,7 @@ pub const FakeUpstream = struct {
         if (self.thread) |thread| thread.join();
         shared.server.deinit();
         deinitScript(self.allocator, shared.responses);
+        shared.request_capture.deinit();
         self.allocator.destroy(shared);
         self.allocator.free(self.base_url.?);
 
@@ -169,6 +198,8 @@ const Shared = struct {
     stopping: std.atomic.Value(bool),
     stopped: std.atomic.Value(bool),
     response_write_in_progress: std.atomic.Value(bool),
+    response_prefix_written: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    release_paused_response: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     counters: Counters = .{},
     active: ActiveConnection = .{},
     request_capture: RequestCapture = .{},
@@ -181,15 +212,46 @@ const RequestCapture = struct {
     mutex: std.Thread.Mutex = .{},
     buf: [max_captured_request_bytes]u8 = undefined,
     len: usize = 0,
+    total_len: usize = 0,
     truncated: bool = false,
 
-    fn store(self: *RequestCapture, body: []const u8) void {
+    fn reset(self: *RequestCapture) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        const n = @min(body.len, self.buf.len);
-        @memcpy(self.buf[0..n], body[0..n]);
-        self.len = n;
-        self.truncated = body.len > self.buf.len;
+        std.crypto.secureZero(u8, self.buf[0..self.len]);
+        self.len = 0;
+        self.total_len = 0;
+        self.truncated = false;
+    }
+
+    fn append(self: *RequestCapture, body: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.total_len +|= body.len;
+        const available = self.buf.len - self.len;
+        const n = @min(body.len, available);
+        @memcpy(self.buf[self.len..][0..n], body[0..n]);
+        self.len += n;
+        self.truncated = self.truncated or n != body.len;
+    }
+
+    fn snapshot(self: *RequestCapture) RequestCaptureSnapshot {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return .{
+            .captured_len = self.len,
+            .total_len = self.total_len,
+            .truncated = self.truncated,
+        };
+    }
+
+    fn deinit(self: *RequestCapture) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        std.crypto.secureZero(u8, &self.buf);
+        self.len = 0;
+        self.total_len = 0;
+        self.truncated = false;
     }
 };
 
@@ -230,6 +292,8 @@ const OwnedResponse = struct {
     body: []u8,
     headers: []Header,
     chunked: bool,
+    pause_after_bytes: ?usize,
+    truncate_after_bytes: ?usize,
 
     fn clone(allocator: std.mem.Allocator, response: ScriptedResponse) !OwnedResponse {
         const status_code = @intFromEnum(response.status);
@@ -239,6 +303,19 @@ const OwnedResponse = struct {
         }
         if (response.chunked and responseHasNoBody(response.status)) {
             return error.ResponseBodyNotAllowed;
+        }
+        if (response.pause_after_bytes) |split| {
+            if (responseHasNoBody(response.status) or split == 0 or split >= response.body.len) {
+                return error.InvalidPauseBoundary;
+            }
+        }
+        if (response.truncate_after_bytes) |split| {
+            if (responseHasNoBody(response.status) or split == 0 or split >= response.body.len) {
+                return error.InvalidTruncationBoundary;
+            }
+        }
+        if (response.pause_after_bytes != null and response.truncate_after_bytes != null) {
+            return error.ConflictingResponseControls;
         }
         if (response.headers.len > max_response_headers) return error.TooManyHeaders;
 
@@ -263,6 +340,8 @@ const OwnedResponse = struct {
             .body = body,
             .headers = headers,
             .chunked = response.chunked,
+            .pause_after_bytes = response.pause_after_bytes,
+            .truncate_after_bytes = response.truncate_after_bytes,
         };
     }
 
@@ -390,6 +469,47 @@ fn serveOne(shared: *Shared, connection: std.net.Server.Connection) void {
                 .extra_headers = response.headers,
                 .transfer_encoding = .none,
             }) catch {};
+        } else if (response.pause_after_bytes) |split| {
+            shared.response_prefix_written.store(false, .release);
+            shared.release_paused_response.store(false, .release);
+            var send_buffer: [max_request_head_bytes]u8 = undefined;
+            defer std.crypto.secureZero(u8, &send_buffer);
+            var streamed = request.respondStreaming(.{
+                .send_buffer = &send_buffer,
+                .content_length = if (response.chunked) null else response.body.len,
+                .respond_options = .{
+                    .status = response.status,
+                    .keep_alive = false,
+                    .extra_headers = response.headers,
+                },
+            });
+            streamed.writeAll(response.body[0..split]) catch return;
+            streamed.flush() catch return;
+            shared.response_prefix_written.store(true, .release);
+            defer shared.response_prefix_written.store(false, .release);
+            while (!shared.release_paused_response.load(.acquire)) {
+                if (shared.stopping.load(.acquire)) return;
+                std.Thread.yield() catch {};
+            }
+            streamed.writeAll(response.body[split..]) catch return;
+            streamed.end() catch {};
+        } else if (response.truncate_after_bytes) |split| {
+            var send_buffer: [max_request_head_bytes]u8 = undefined;
+            defer std.crypto.secureZero(u8, &send_buffer);
+            var streamed = request.respondStreaming(.{
+                .send_buffer = &send_buffer,
+                .content_length = if (response.chunked) null else response.body.len,
+                .respond_options = .{
+                    .status = response.status,
+                    .keep_alive = false,
+                    .extra_headers = response.headers,
+                },
+            });
+            streamed.writeAll(response.body[0..split]) catch return;
+            streamed.flush() catch return;
+            // Intentionally omit `end`: connection close is the malformed
+            // truncation that the proxy must classify as interrupted.
+            return;
         } else {
             request.respond(response.body, .{
                 .status = response.status,
@@ -409,9 +529,14 @@ fn serveOne(shared: *Shared, connection: std.net.Server.Connection) void {
 
 fn captureRequestBody(shared: *Shared, request: *std.http.Server.Request) void {
     const reader = request.reader() catch return;
-    var buf: [max_captured_request_bytes]u8 = undefined;
-    const n = reader.readAll(&buf) catch return;
-    shared.request_capture.store(buf[0..n]);
+    shared.request_capture.reset();
+    var buf: [16 * 1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf);
+    while (true) {
+        const n = reader.read(&buf) catch return;
+        if (n == 0) return;
+        shared.request_capture.append(buf[0..n]);
+    }
 }
 
 fn requestAlloc(
@@ -674,6 +799,44 @@ test "received request body is captured for byte-for-byte assertions" {
     var captured: [128]u8 = undefined;
     const n = upstream.capturedRequestBody(&captured);
     try std.testing.expectEqualStrings(payload, captured[0..n]);
+    try std.testing.expectEqualDeep(
+        RequestCaptureSnapshot{
+            .captured_len = payload.len,
+            .total_len = payload.len,
+            .truncated = false,
+        },
+        upstream.requestCaptureSnapshot(),
+    );
+}
+
+test "request capture drains the body and reports bounded truncation" {
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok }});
+    defer upstream.deinit();
+
+    const payload = try std.testing.allocator.alloc(u8, max_captured_request_bytes + 257);
+    defer std.testing.allocator.free(payload);
+    @memset(payload, 'p');
+    const head = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n" ++
+            "Content-Length: {d}\r\nConnection: close\r\n\r\n",
+        .{payload.len},
+    );
+    defer std.testing.allocator.free(head);
+    const request = try std.mem.concat(std.testing.allocator, u8, &.{ head, payload });
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, upstream.address(), request);
+    defer std.testing.allocator.free(response);
+    try std.testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
+
+    try std.testing.expectEqualDeep(
+        RequestCaptureSnapshot{
+            .captured_len = max_captured_request_bytes,
+            .total_len = payload.len,
+            .truncated = true,
+        },
+        upstream.requestCaptureSnapshot(),
+    );
 }
 
 test "deinit interrupts an accepted partial request" {
