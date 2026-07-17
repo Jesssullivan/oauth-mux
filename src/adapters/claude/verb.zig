@@ -25,6 +25,8 @@ pub const unshipped_refusal =
 pub const RunError = error{
     /// Preflight refused because production forwarding is compile-disabled.
     ManagedLaunchUnshipped,
+    /// The fail-closed refusal could not be delivered to the caller.
+    RefusalWriteFailed,
 } || managed_child.RunError;
 
 /// One managed-launch request. Owns nothing; every referenced slice, env map,
@@ -48,6 +50,14 @@ pub fn run(
     message_writer: std.io.AnyWriter,
 ) RunError!std.process.Child.Term {
     return runWithLauncher(request, message_writer, DefaultLauncher{});
+}
+
+/// Refuse a compile-disabled managed launch before the caller loads inherited
+/// environment, configuration, argv, or any other launch authority.
+pub fn requireAvailable(message_writer: std.io.AnyWriter) RunError!void {
+    if (comptime wire_proxy.production_forwarding_enabled) return;
+    message_writer.writeAll(unshipped_refusal) catch return error.RefusalWriteFailed;
+    return error.ManagedLaunchUnshipped;
 }
 
 /// The forwarding composition: build RunOptions from the request and launch the
@@ -81,11 +91,8 @@ fn runWithLauncher(
     message_writer: std.io.AnyWriter,
     launcher: anytype,
 ) RunError!std.process.Child.Term {
-    if (comptime wire_proxy.production_forwarding_enabled) {
-        return launcher.launch(request);
-    }
-    message_writer.writeAll(unshipped_refusal) catch {};
-    return error.ManagedLaunchUnshipped;
+    try requireAvailable(message_writer);
+    return launcher.launch(request);
 }
 
 const CountingLauncher = struct {
@@ -149,4 +156,14 @@ test "public run entry stays fail-closed while forwarding is compile-disabled" {
         message.writer().any(),
     ));
     try std.testing.expectEqualStrings(unshipped_refusal, message.items);
+}
+
+test "fail-closed verb reports refusal delivery failure" {
+    var storage: [0]u8 = .{};
+    var message = std.io.fixedBufferStream(&storage);
+
+    try std.testing.expectError(
+        error.RefusalWriteFailed,
+        requireAvailable(message.writer().any()),
+    );
 }
