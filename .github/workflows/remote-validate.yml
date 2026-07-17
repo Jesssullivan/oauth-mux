@@ -24,6 +24,7 @@ on:
           - release-proof
           - v02-stage2-conformance
           - v02-benchmark
+          - v02-prerelease-readiness
       candidate_sha:
         description: "Exact 40-hex candidate commit for v0.2 proof targets"
         required: false
@@ -67,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${OMUX_REMOTE_TARGET}" in
-            v02-stage2-conformance|v02-benchmark)
+            v02-stage2-conformance|v02-benchmark|v02-prerelease-readiness)
               [[ "${OMUX_V02_CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
                 echo "::error::v0.2 proof target requires an exact 40-hex candidate_sha"
                 exit 2
@@ -98,20 +99,20 @@ jobs:
           esac
 
       - name: Checkout immutable v0.2 candidate
-        if: ${{ inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark' }}
+        if: ${{ inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark' || inputs.target == 'v02-prerelease-readiness' }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           ref: ${{ inputs.candidate_sha }}
 
       - name: Checkout generic validation ref
-        if: ${{ inputs.target != 'v02-stage2-conformance' && inputs.target != 'v02-benchmark' }}
+        if: ${{ inputs.target != 'v02-stage2-conformance' && inputs.target != 'v02-benchmark' && inputs.target != 'v02-prerelease-readiness' }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Verify detached v0.2 candidate checkout
-        if: ${{ inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark' }}
+        if: ${{ inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark' || inputs.target == 'v02-prerelease-readiness' }}
         shell: bash
         env:
           OMUX_V02_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
@@ -280,6 +281,29 @@ jobs:
                     "${OMUX_V02_WORKFLOW_RUN_ATTEMPT}" \
                     "${OMUX_V02_GF_TARGET_CLASS}"
                   ;;
+                v02-prerelease-readiness)
+                  candidate_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+                  readiness_cache_root="$(mktemp -d "${RUNNER_TEMP}/omux-prerelease-zig.XXXXXX")"
+                  readiness_bundle="${RUNNER_TEMP}/v02-prerelease-readiness"
+                  set +e
+                  run_with_timeout \
+                    "v0.2 bounded prerelease readiness" \
+                    "${OMUX_REMOTE_PRERELEASE_TIMEOUT:-20m}" \
+                    nix develop --command env \
+                      ZIG_LOCAL_CACHE_DIR="${readiness_cache_root}/local" \
+                      ZIG_GLOBAL_CACHE_DIR="${readiness_cache_root}/global" \
+                      bash ./scripts/v02-prerelease-readiness-local.sh run \
+                      "${readiness_bundle}" \
+                      "${OMUX_V02_CANDIDATE_SHA}" \
+                      "${candidate_tree}" \
+                      "${OMUX_V02_WORKFLOW_RUN_ID}" \
+                      "${OMUX_V02_WORKFLOW_RUN_ATTEMPT}" \
+                      "${OMUX_V02_GF_TARGET_CLASS}"
+                  readiness_status=$?
+                  set -e
+                  rm -rf "$readiness_cache_root"
+                  return "$readiness_status"
+                  ;;
                 *)
                   echo "::error::unsupported remote validation target: ${OMUX_REMOTE_TARGET}"
                   return 2
@@ -288,7 +312,7 @@ jobs:
             }
 
             case "${OMUX_REMOTE_TARGET}" in
-              v02-stage2-conformance|v02-benchmark)
+              v02-stage2-conformance|v02-benchmark|v02-prerelease-readiness)
                 started_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
                 if run_selected_target; then
                   proof_status=0
@@ -324,7 +348,7 @@ jobs:
             esac
 
       - name: Upload v0.2 proof provenance
-        if: ${{ always() && (inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark') }}
+        if: ${{ always() && (inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark' || inputs.target == 'v02-prerelease-readiness') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: v02-proof-provenance-${{ github.run_attempt }}
@@ -353,4 +377,12 @@ jobs:
         with:
           name: v02-proof-benchmark-metrics-${{ github.run_attempt }}
           path: v02-benchmark-metrics.json
+          if-no-files-found: error
+
+      - name: Upload v0.2 bounded prerelease readiness
+        if: ${{ always() && inputs.target == 'v02-prerelease-readiness' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: v02-prerelease-readiness-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/v02-prerelease-readiness
           if-no-files-found: error

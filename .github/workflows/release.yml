@@ -11,7 +11,21 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  authorize-stable-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the stable v0.1 tag family
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v0\.1\.[0-9]+$ ]]; then
+            echo "release.yml only publishes stable v0.1 patch tags" >&2
+            exit 1
+          fi
+
   build:
+    needs: authorize-stable-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,3 +59,5 @@ jobs:
             v*/homebrew/oauth-mux.rb
             v*/handoff/*
           generate_release_notes: true
+          prerelease: false
+          make_latest: true

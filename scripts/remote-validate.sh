@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -19,6 +20,8 @@ Targets:
   v02-stage2-conformance
                  Run the v0.2 fake-upstream conformance target.
   v02-benchmark  Run the v0.2 G4 benchmark target.
+  v02-prerelease-readiness
+                 Run the candidate-bound bounded prerelease gate.
 
 The workflow file must already exist on the repository default branch. After
 that, generic targets retain branch/SHA [ref] behavior. The v0.2 proof targets
@@ -98,7 +101,7 @@ case "$target" in
   check|test|build|build-release|build-small|e2e|first-run-e2e|release-proof)
     v02_proof=0
     ;;
-  v02-stage2-conformance|v02-benchmark)
+  v02-stage2-conformance|v02-benchmark|v02-prerelease-readiness)
     v02_proof=1
     ;;
   *)
@@ -437,9 +440,8 @@ assert_exact_regular_file() {
 }
 
 provenance_dir="${v02_tmp_dir}/provenance"
-predicate_dir="${v02_tmp_dir}/predicates"
 observation_dir="${v02_tmp_dir}/observations"
-mkdir -p "$provenance_dir" "$predicate_dir" "$observation_dir"
+mkdir -p "$provenance_dir" "$observation_dir"
 
 set +e
 gh run download "$run_id" --repo "$repo" \
@@ -453,17 +455,57 @@ if [ "$download_status" -ne 0 ]; then
 fi
 assert_exact_regular_file "$provenance_dir" v02-proof-provenance.json
 
-set +e
-gh run download "$run_id" --repo "$repo" \
-  --name "v02-proof-predicates-${target}-${workflow_run_attempt}" \
-  --dir "$predicate_dir"
-download_status=$?
-set -e
-if [ "$download_status" -ne 0 ]; then
-  echo "remote-validate: v0.2 proof predicate artifact is unavailable" >&2
-  exit 1
+if [ "$target" != "v02-prerelease-readiness" ]; then
+  predicate_dir="${v02_tmp_dir}/predicates"
+  mkdir -p "$predicate_dir"
+  set +e
+  gh run download "$run_id" --repo "$repo" \
+    --name "v02-proof-predicates-${target}-${workflow_run_attempt}" \
+    --dir "$predicate_dir"
+  download_status=$?
+  set -e
+  if [ "$download_status" -ne 0 ]; then
+    echo "remote-validate: v0.2 proof predicate artifact is unavailable" >&2
+    exit 1
+  fi
+  assert_exact_regular_file "$predicate_dir" v02-proof-predicate-manifest.json
 fi
-assert_exact_regular_file "$predicate_dir" v02-proof-predicate-manifest.json
+
+if [ "$target" = "v02-prerelease-readiness" ]; then
+  readiness_dir="${v02_tmp_dir}/prerelease-readiness"
+  mkdir -p "$readiness_dir"
+  set +e
+  gh run download "$run_id" --repo "$repo" \
+    --name "v02-prerelease-readiness-${workflow_run_attempt}" \
+    --dir "$readiness_dir"
+  download_status=$?
+  set -e
+  if [ "$download_status" -ne 0 ]; then
+    echo "remote-validate: v0.2 prerelease readiness artifact is unavailable" >&2
+    exit 1
+  fi
+
+  if command -v nix >/dev/null 2>&1; then
+    nix develop "$repo_root" --command bash "${script_dir}/v02-prerelease-readiness-local.sh" verify \
+      "$readiness_dir" \
+      "$candidate_sha" \
+      "$candidate_tree" \
+      "$run_id" \
+      "$workflow_run_attempt" \
+      tinyland-nix
+  elif command -v zig >/dev/null 2>&1; then
+    "${script_dir}/v02-prerelease-readiness-local.sh" verify \
+      "$readiness_dir" \
+      "$candidate_sha" \
+      "$candidate_tree" \
+      "$run_id" \
+      "$workflow_run_attempt" \
+      tinyland-nix
+  else
+    echo "remote-validate: nix or a compatible zig is required to verify prerelease readiness artifacts" >&2
+    exit 127
+  fi
+fi
 
 if [ "$target" = "v02-stage2-conformance" ]; then
   set +e
@@ -526,17 +568,19 @@ fi
   "$gf_action_sha" \
   "$expected_result"
 
-"${script_dir}/v02-proof-predicate-manifest-local.sh" verify \
-  "$target" \
-  "$predicate_dir/v02-proof-predicate-manifest.json"
-if [ "$expected_result" = "passed" ]; then
-  "${script_dir}/v02-proof-predicate-manifest-local.sh" require-pass \
+if [ "$target" != "v02-prerelease-readiness" ]; then
+  "${script_dir}/v02-proof-predicate-manifest-local.sh" verify \
     "$target" \
     "$predicate_dir/v02-proof-predicate-manifest.json"
-else
-  "${script_dir}/v02-proof-predicate-manifest-local.sh" require-incomplete \
-    "$target" \
-    "$predicate_dir/v02-proof-predicate-manifest.json"
+  if [ "$expected_result" = "passed" ]; then
+    "${script_dir}/v02-proof-predicate-manifest-local.sh" require-pass \
+      "$target" \
+      "$predicate_dir/v02-proof-predicate-manifest.json"
+  else
+    "${script_dir}/v02-proof-predicate-manifest-local.sh" require-incomplete \
+      "$target" \
+      "$predicate_dir/v02-proof-predicate-manifest.json"
+  fi
 fi
 
 if [ "$target" = "v02-benchmark" ]; then
