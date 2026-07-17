@@ -17,6 +17,14 @@ const max_request_body_bytes = 32 * 1024 * 1024;
 const max_response_head_bytes = 64 * 1024;
 const max_response_body_bytes = 32 * 1024 * 1024;
 const max_forwarded_response_headers = 25;
+// Exact-model admission (program §2.2, ladder §8.2). The top-level request
+// `model` field is derived from the in-memory replay buffer with a bounded
+// peek: at most `max_model_peek_bytes` are scanned so a body larger than the
+// window (or one whose model sits past it) refuses locally instead of guessing.
+// A single-route request forwards its body byte-for-byte, so the model the
+// upstream attempt carries must equal the captured model exactly.
+const max_model_peek_bytes = 64 * 1024;
+const max_model_len = 128;
 
 const Upstream = union(enum) {
     production,
@@ -32,7 +40,65 @@ const State = struct {
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     active: ActiveConnection = .{},
+    observation_mutex: std.Thread.Mutex = .{},
+    observation: RequestObservation = .{},
+    /// File-private test seam. When set, the forwarding path treats these bytes
+    /// as the request the upstream attempt would carry, so a test can inject a
+    /// model divergence from the captured inbound model. Never settable through
+    /// any production entry point.
+    test_attempt_body_override: ?[]const u8 = null,
+
+    fn testAttemptBodyOverride(self: *State) ?[]const u8 {
+        return self.test_attempt_body_override;
+    }
 };
+
+/// The last request's exact-model accounting, exposed to tests through the same
+/// snapshot pattern the fake upstream uses. The model bytes are the public model
+/// identifier only; no credential or body payload is retained.
+const RequestObservation = struct {
+    had_body: bool = false,
+    model_present: bool = false,
+    model_buf: [max_model_len]u8 = undefined,
+    model_len: usize = 0,
+    model_parity_ok: bool = false,
+    upstream_attempted: bool = false,
+    upstream_status: u16 = 0,
+    model_admission_rejected: bool = false,
+
+    fn model(self: *const RequestObservation) []const u8 {
+        return self.model_buf[0..self.model_len];
+    }
+};
+
+const ModelObservationInput = struct {
+    had_body: bool = false,
+    model_present: bool = false,
+    model: ?[]const u8 = null,
+    model_parity_ok: bool = false,
+    upstream_attempted: bool = false,
+    upstream_status: u16 = 0,
+    model_admission_rejected: bool = false,
+};
+
+fn recordModelObservation(state: *State, input: ModelObservationInput) void {
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+    var obs = RequestObservation{
+        .had_body = input.had_body,
+        .model_present = input.model_present,
+        .model_parity_ok = input.model_parity_ok,
+        .upstream_attempted = input.upstream_attempted,
+        .upstream_status = input.upstream_status,
+        .model_admission_rejected = input.model_admission_rejected,
+    };
+    if (input.model) |m| {
+        const n = @min(m.len, max_model_len);
+        @memcpy(obs.model_buf[0..n], m[0..n]);
+        obs.model_len = n;
+    }
+    state.observation = obs;
+}
 
 /// One authenticated HTTP/1.1 listener bound to an ephemeral IPv4 loopback
 /// port. The concrete state is opaque so callers cannot inject an upstream.
@@ -76,6 +142,20 @@ fn statePtr(listener: *Listener) *State {
 
 fn statePtrConst(listener: *const Listener) *const State {
     return @ptrCast(@alignCast(listener));
+}
+
+/// File-private: capture the last request's exact-model accounting.
+fn observationSnapshot(listener: *Listener) RequestObservation {
+    const state = statePtr(listener);
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+    return state.observation;
+}
+
+/// File-private test seam: force the bytes the forwarding path treats as the
+/// upstream attempt body, used only to inject a model-parity divergence.
+fn setTestAttemptBodyOverride(listener: *Listener, override: ?[]const u8) void {
+    statePtr(listener).test_attempt_body_override = override;
 }
 
 fn startWithUpstream(
@@ -257,7 +337,96 @@ fn handleRequest(state: *State, request: *std.http.Server.Request) !void {
     };
     defer body.deinit();
 
-    try forwardOnce(state, request, allocator, forwarded_headers.items, body.slice());
+    const captured_model = peekTopLevelModel(allocator, body.slice()) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            recordModelObservation(state, .{
+                .had_body = body.slice().len != 0,
+                .model_admission_rejected = true,
+            });
+            emitEvent(state, "claude_proxy_model_admission_rejected");
+            try request.respond("model admission rejected", .{
+                .status = .bad_request,
+                .keep_alive = false,
+            });
+            return;
+        },
+    };
+
+    try forwardOnce(state, request, allocator, forwarded_headers.items, body.slice(), captured_model);
+}
+
+const ModelPeekError = error{
+    ModelPeekUnparseable,
+    ModelPeekMissing,
+    ModelPeekNotString,
+    ModelPeekTooLong,
+    OutOfMemory,
+};
+
+fn scanNext(scanner: *std.json.Scanner, alloc: std.mem.Allocator) ModelPeekError!std.json.Token {
+    // The scanner is built over the complete bounded window, so a model that
+    // sits past the window reads as truncated (UnexpectedEndOfInput) and maps to
+    // a local refusal rather than a panic or an upstream call.
+    return scanner.nextAlloc(alloc, .alloc_if_needed) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.ModelPeekUnparseable,
+    };
+}
+
+fn skipJsonValue(scanner: *std.json.Scanner, alloc: std.mem.Allocator) ModelPeekError!void {
+    var depth: usize = 0;
+    while (true) {
+        switch (try scanNext(scanner, alloc)) {
+            .object_begin, .array_begin => depth += 1,
+            .object_end, .array_end => {
+                if (depth == 0) return error.ModelPeekUnparseable;
+                depth -= 1;
+            },
+            .end_of_document => return error.ModelPeekUnparseable,
+            else => {},
+        }
+        if (depth == 0) return;
+    }
+}
+
+/// Bounded peek of the top-level JSON `model` string (program §2.2, ladder
+/// §8.2). Returns null for a bodyless request, which carries no model to admit.
+/// Never consumes or mutates `body`: it scans at most `max_model_peek_bytes` of
+/// the in-memory replay buffer. A body larger than the window, or whose model
+/// sits past it, refuses locally (read as truncated JSON). No family inference,
+/// alias, or substitution is performed; the exact string is returned or the
+/// request is refused.
+fn peekTopLevelModel(alloc: std.mem.Allocator, body: []const u8) ModelPeekError!?[]const u8 {
+    if (body.len == 0) return null;
+    const window = body[0..@min(body.len, max_model_peek_bytes)];
+
+    var scanner = std.json.Scanner.initCompleteInput(alloc, window);
+    defer scanner.deinit();
+
+    switch (try scanNext(&scanner, alloc)) {
+        .object_begin => {},
+        else => return error.ModelPeekUnparseable,
+    }
+    while (true) {
+        const key: []const u8 = switch (try scanNext(&scanner, alloc)) {
+            .object_end => return error.ModelPeekMissing,
+            .string => |s| s,
+            .allocated_string => |s| s,
+            else => return error.ModelPeekUnparseable,
+        };
+        if (std.mem.eql(u8, key, "model")) {
+            const value: []const u8 = switch (try scanNext(&scanner, alloc)) {
+                .string => |s| s,
+                .allocated_string => |s| s,
+                else => return error.ModelPeekNotString,
+            };
+            if (value.len == 0) return error.ModelPeekNotString;
+            if (value.len > max_model_len) return error.ModelPeekTooLong;
+            return try alloc.dupe(u8, value);
+        }
+        try skipJsonValue(&scanner, alloc);
+    }
 }
 
 const SensitiveBytes = struct {
@@ -419,7 +588,33 @@ fn forwardOnce(
     allocator: std.mem.Allocator,
     headers: []const std.http.Header,
     body: []const u8,
+    captured_model: ?[]const u8,
 ) !void {
+    // Single-route only: at most one upstream attempt per request. The exact
+    // model the attempt carries must equal the captured inbound model. Because
+    // the request body is forwarded byte-for-byte, we re-derive the model from
+    // the exact bytes the attempt will send and refuse before any upstream call
+    // if it diverges (program §2.2, ladder §8.2). No alternate or retry exists.
+    const attempt_body = state.testAttemptBodyOverride() orelse body;
+    if (captured_model) |captured| {
+        const attempt_model = peekTopLevelModel(allocator, attempt_body) catch null;
+        const parity_ok = attempt_model != null and std.mem.eql(u8, captured, attempt_model.?);
+        if (!parity_ok) {
+            recordModelObservation(state, .{
+                .had_body = true,
+                .model_present = true,
+                .model = captured,
+                .model_parity_ok = false,
+            });
+            emitEvent(state, "claude_proxy_model_parity_rejected");
+            try downstream.respond("model parity violation", .{
+                .status = .bad_gateway,
+                .keep_alive = false,
+            });
+            return;
+        }
+    }
+
     const origin = switch (state.upstream) {
         .production => return error.ProductionCredentialInjectionNotImplemented,
         .fake => |upstream| upstream.baseUrl(),
@@ -444,10 +639,10 @@ fn forwardOnce(
     });
     defer upstream_request.deinit();
 
-    if (body.len != 0) upstream_request.transfer_encoding = .{ .content_length = body.len };
+    if (attempt_body.len != 0) upstream_request.transfer_encoding = .{ .content_length = attempt_body.len };
     try upstream_request.send();
-    if (body.len != 0) {
-        try upstream_request.writeAll(body);
+    if (attempt_body.len != 0) {
+        try upstream_request.writeAll(attempt_body);
         try upstream_request.finish();
     }
     try upstream_request.wait();
@@ -465,6 +660,22 @@ fn forwardOnce(
         });
         return;
     }
+
+    // Provider 5xx passes through unchanged to the harness's native retry; it
+    // never authorizes a second attempt (program §2.2). Single-route already
+    // guarantees exactly one attempt; the event records the pass-through class.
+    const upstream_status = upstream_request.response.status;
+    if (upstream_status.class() == .server_error) {
+        emitEvent(state, "claude_proxy_upstream_server_error");
+    }
+    recordModelObservation(state, .{
+        .had_body = body.len != 0,
+        .model_present = captured_model != null,
+        .model = captured_model,
+        .model_parity_ok = captured_model != null,
+        .upstream_attempted = true,
+        .upstream_status = @intFromEnum(upstream_status),
+    });
 
     var all_response_headers = std.ArrayListUnmanaged(std.http.Header){};
     var response_iterator = upstream_request.response.iterateHeaders();
@@ -800,6 +1011,270 @@ test "upstream redirect is rejected without a second call" {
     defer std.testing.allocator.free(response);
     try expectStatus(response, "HTTP/1.1 502 Bad Gateway\r\n");
     try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+fn postRequestAlloc(
+    allocator: std.mem.Allocator,
+    port: u16,
+    carrier: []const u8,
+    body: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nAuthorization: Bearer {s}\r\n" ++
+            "Content-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+        .{ port, carrier, body.len, body },
+    );
+}
+
+test "exact model is captured and forwarded byte-identically to the fake upstream" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "{\"ok\":true}",
+        .headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+    }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const model = "claude-opus-4-20250514";
+    const json = "{\"model\":\"" ++ model ++ "\",\"max_tokens\":16," ++
+        "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\n{\"ok\":true}"));
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_present);
+    try std.testing.expect(obs.model_parity_ok);
+    try std.testing.expect(obs.upstream_attempted);
+    try std.testing.expectEqual(@as(u16, 200), obs.upstream_status);
+    try std.testing.expectEqualStrings(model, obs.model());
+
+    var captured: [256]u8 = undefined;
+    const captured_len = upstream.capturedRequestBody(&captured);
+    try std.testing.expectEqualStrings(json, captured[0..captured_len]);
+}
+
+test "SSE-shaped chunked response passes through byte for byte" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const sse =
+        "event: message_start\ndata: {\"type\":\"message_start\"}\n\n" ++
+        "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n" ++
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = sse,
+        .headers = &.{.{ .name = "Content-Type", .value = "text/event-stream" }},
+        .chunked = true,
+    }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const json = "{\"model\":\"claude-sonnet-4-20250514\",\"stream\":true}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, "Content-Type: text/event-stream\r\n") != null);
+    try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\n" ++ sse));
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+test "client cancellation mid response makes no second upstream call and tears down" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const big = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'y');
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = big }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const json = "{\"model\":\"claude-opus-4-20250514\"}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    try stream.writeAll(request);
+    // Disconnect before draining the 4 MiB response: mid-stream cancellation.
+    stream.close();
+
+    var timer = try std.time.Timer.start();
+    while (upstream.snapshot().call_count < 1) {
+        if (timer.read() > std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.yield() catch {};
+    }
+    // Single-route: exactly one attempt total, never a second upstream call.
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().attempt_count);
+
+    // Teardown after client disconnect is clean and bounded.
+    var shutdown_timer = try std.time.Timer.start();
+    listener.deinit();
+    listener_live = false;
+    try std.testing.expect(shutdown_timer.read() < std.time.ns_per_s);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+}
+
+test "provider 5xx passes through unchanged as a single classified attempt" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const Case = struct { status: std.http.Status, line: []const u8 };
+    const cases = [_]Case{
+        .{ .status = .internal_server_error, .line = "HTTP/1.1 500 Internal Server Error\r\n" },
+        .{ .status = @enumFromInt(529), .line = "HTTP/1.1 529 " },
+    };
+    for (cases) |case| {
+        var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+            .status = case.status,
+            .body = "upstream boom",
+            .headers = &.{.{ .name = "X-Trace", .value = "abc123" }},
+        }});
+        defer upstream.deinit();
+        var event_buffer: [512]u8 = undefined;
+        var event_stream = std.io.fixedBufferStream(&event_buffer);
+        const listener = try startWithUpstream(
+            std.testing.allocator,
+            capability,
+            event_stream.writer().any(),
+            .{ .fake = &upstream },
+        );
+        defer listener.deinit();
+
+        const json = "{\"model\":\"claude-opus-4-20250514\"}";
+        const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+        defer std.testing.allocator.free(request);
+        const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+        defer std.testing.allocator.free(response);
+
+        try expectStatus(response, case.line);
+        try std.testing.expect(std.mem.indexOf(u8, response, "X-Trace: abc123\r\n") != null);
+        try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\nupstream boom"));
+        try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
+        try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().attempt_count);
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            event_stream.getWritten(),
+            "claude_proxy_upstream_server_error",
+        ) != null);
+
+        const obs = observationSnapshot(listener);
+        try std.testing.expect(obs.upstream_attempted);
+        try std.testing.expectEqual(@as(u16, @intFromEnum(case.status)), obs.upstream_status);
+    }
+}
+
+test "injected model divergence fails parity with zero upstream calls" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "should-not-be-sent",
+    }});
+    defer upstream.deinit();
+    var event_buffer: [512]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try startWithUpstream(
+        std.testing.allocator,
+        capability,
+        event_stream.writer().any(),
+        .{ .fake = &upstream },
+    );
+    defer listener.deinit();
+
+    // The forwarded attempt would carry a different model than was captured.
+    const divergent = "{\"model\":\"claude-haiku-4-20250514\"}";
+    setTestAttemptBodyOverride(listener, divergent);
+
+    const model = "claude-opus-4-20250514";
+    const json = "{\"model\":\"" ++ model ++ "\"}";
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, json);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 502 Bad Gateway\r\n");
+    try std.testing.expect(upstream.snapshot().isZero());
+
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_present);
+    try std.testing.expect(!obs.model_parity_ok);
+    try std.testing.expect(!obs.upstream_attempted);
+    try std.testing.expectEqualStrings(model, obs.model());
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        event_stream.getWritten(),
+        "claude_proxy_model_parity_rejected",
+    ) != null);
+}
+
+test "unpeekable oversize and missing model bodies refuse locally with zero upstream calls" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "nope" }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const pad = try std.testing.allocator.alloc(u8, max_model_peek_bytes + 64);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const oversize = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"pad\":\"{s}\",\"model\":\"claude-opus-4-20250514\"}}",
+        .{pad},
+    );
+    defer std.testing.allocator.free(oversize);
+
+    const bodies = [_][]const u8{
+        "not json at all",
+        "{\"messages\":[]}",
+        "{\"model\":5}",
+        "{\"model\":\"\"}",
+        "[]",
+        oversize,
+    };
+    for (bodies) |body| {
+        const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, body);
+        defer std.testing.allocator.free(request);
+        const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+        defer std.testing.allocator.free(response);
+        try expectStatus(response, "HTTP/1.1 400 Bad Request\r\n");
+    }
+
+    try std.testing.expect(upstream.snapshot().isZero());
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_admission_rejected);
+    try std.testing.expect(!obs.upstream_attempted);
 }
 
 test "shutdown interrupts a partial request within a fixed deadline" {
