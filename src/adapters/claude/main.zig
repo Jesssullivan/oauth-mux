@@ -9,8 +9,10 @@ const config_mod = @import("../../config.zig");
 const paths = @import("../../paths.zig");
 const child_authority = @import("child_authority.zig");
 const capability_mod = @import("session_capability.zig");
+const fake_upstream_mod = @import("fake_upstream.zig");
 const wire_proxy = @import("wire_proxy.zig");
 
+const FakeUpstream = fake_upstream_mod.FakeUpstream;
 const SessionCapability = capability_mod.SessionCapability;
 const neutral_dir_prefix = "claude-neutral-";
 const neutral_dir_entropy_len = 16;
@@ -714,6 +716,247 @@ const FakeSeams = struct {
     }
 };
 
+const Stage2CapabilityProbeState = if (builtin.is_test) struct {
+    runtime_dir: []const u8,
+    upstream: *FakeUpstream,
+    capability: ?*SessionCapability = null,
+    spawn_count: usize = 0,
+    wait_count: usize = 0,
+    listener_started: bool = false,
+    listener_stopped: bool = false,
+    listener_stopped_after_revoke: bool = false,
+    carrier_cleared: bool = false,
+    child_env_cleared: bool = false,
+    managed_dir_under_runtime: bool = false,
+    missing_rejected: bool = false,
+    wrong_rejected: bool = false,
+    valid_accepted: bool = false,
+} else struct {};
+
+const Stage2CapabilityProbeChild = if (builtin.is_test) struct {
+    state: *Stage2CapabilityProbeState,
+} else struct {};
+
+const Stage2CapabilityProbeSeams = if (builtin.is_test) struct {
+    state: *Stage2CapabilityProbeState,
+
+    fn resolveExecutableAlloc(
+        _: *@This(),
+        allocator: std.mem.Allocator,
+        requested: []const u8,
+        _: *const std.process.EnvMap,
+    ) ![]u8 {
+        return allocator.dupe(u8, requested);
+    }
+
+    fn runtimeDirAlloc(self: *@This(), allocator: std.mem.Allocator) ![]const u8 {
+        return allocator.dupe(u8, self.state.runtime_dir);
+    }
+
+    fn generateCapability(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+    ) !*SessionCapability {
+        const capability = try SessionCapability.generate(allocator);
+        self.state.capability = capability;
+        return capability;
+    }
+
+    fn startListener(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        capability: *SessionCapability,
+        event_writer: std.io.AnyWriter,
+    ) !*wire_proxy.Listener {
+        const listener = try wire_proxy.testing.startWithFake(
+            allocator,
+            capability,
+            self.state.upstream,
+            event_writer,
+        );
+        self.state.listener_started = true;
+        return listener;
+    }
+
+    fn listenerPort(_: *@This(), listener: *wire_proxy.Listener) u16 {
+        return listener.port();
+    }
+
+    fn stopListener(self: *@This(), listener: *wire_proxy.Listener) void {
+        const capability = self.state.capability orelse unreachable;
+        self.state.listener_stopped_after_revoke = capability.isRevoked();
+        listener.deinit();
+        self.state.capability = null;
+        self.state.listener_stopped = true;
+    }
+
+    fn spawn(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        spec: ChildSpec,
+    ) !Stage2CapabilityProbeChild {
+        self.state.spawn_count += 1;
+        const base_url = spec.env_map.get("ANTHROPIC_BASE_URL") orelse
+            return error.MissingManagedBaseUrl;
+        const carrier = spec.env_map.get("ANTHROPIC_AUTH_TOKEN") orelse
+            return error.MissingManagedCarrier;
+        if (carrier.len != capability_mod.carrier_len) return error.InvalidManagedCarrier;
+
+        const config_dir = spec.env_map.get("CLAUDE_CONFIG_DIR") orelse
+            return error.MissingManagedConfigDir;
+        self.state.managed_dir_under_runtime =
+            std.fs.path.isAbsolute(config_dir) and
+            std.mem.startsWith(u8, config_dir, self.state.runtime_dir) and
+            config_dir.len > self.state.runtime_dir.len and
+            std.fs.path.isSep(config_dir[self.state.runtime_dir.len]);
+
+        const missing = try requestManagedBoundaryAlloc(allocator, base_url, null);
+        defer {
+            std.crypto.secureZero(u8, missing);
+            allocator.free(missing);
+        }
+        self.state.missing_rejected = std.mem.startsWith(
+            u8,
+            missing,
+            "HTTP/1.1 401 Unauthorized\r\n",
+        );
+
+        var wrong: [capability_mod.carrier_len]u8 = undefined;
+        defer std.crypto.secureZero(u8, &wrong);
+        @memcpy(&wrong, carrier);
+        wrong[0] = if (wrong[0] == 'A') 'B' else 'A';
+        const wrong_response = try requestManagedBoundaryAlloc(allocator, base_url, &wrong);
+        defer {
+            std.crypto.secureZero(u8, wrong_response);
+            allocator.free(wrong_response);
+        }
+        self.state.wrong_rejected = std.mem.startsWith(
+            u8,
+            wrong_response,
+            "HTTP/1.1 401 Unauthorized\r\n",
+        );
+
+        const accepted = try requestManagedBoundaryAlloc(allocator, base_url, carrier);
+        defer {
+            std.crypto.secureZero(u8, accepted);
+            allocator.free(accepted);
+        }
+        self.state.valid_accepted = std.mem.startsWith(
+            u8,
+            accepted,
+            "HTTP/1.1 204 No Content\r\n",
+        );
+        return .{ .state = self.state };
+    }
+
+    fn wait(_: *@This(), child: *Stage2CapabilityProbeChild) !std.process.Child.Term {
+        child.state.wait_count += 1;
+        return .{ .Exited = 0 };
+    }
+
+    fn deferredSpawnFailure(_: *@This(), _: *const Stage2CapabilityProbeChild) bool {
+        return false;
+    }
+
+    fn abortAndReap(_: *@This(), _: *Stage2CapabilityProbeChild) !void {}
+
+    fn carrierCleared(self: *@This(), carrier: []const u8) void {
+        self.state.carrier_cleared = allZero(carrier);
+    }
+
+    fn childEnvCleared(self: *@This()) void {
+        self.state.child_env_cleared = true;
+    }
+} else struct {};
+
+fn requestManagedBoundaryAlloc(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    carrier: ?[]const u8,
+) ![]u8 {
+    return requestManagedBoundaryAllocWithLimits(allocator, base_url, carrier, .{});
+}
+
+const ManagedBoundaryRequestLimits = struct {
+    max_response_bytes: usize = 16 * 1024,
+    timeout_ms: u32 = 5_000,
+};
+
+fn requestManagedBoundaryAllocWithLimits(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    carrier: ?[]const u8,
+    limits: ManagedBoundaryRequestLimits,
+) ![]u8 {
+    if (!builtin.is_test) @compileError("managed-boundary requests are test-only");
+    if (limits.max_response_bytes == 0 or limits.timeout_ms == 0) {
+        return error.InvalidManagedBoundaryRequestLimits;
+    }
+    const prefix = "http://127.0.0.1:";
+    if (!std.mem.startsWith(u8, base_url, prefix)) return error.InvalidManagedBaseUrl;
+    const port_text = base_url[prefix.len..];
+    if (port_text.len == 0 or std.mem.indexOfScalar(u8, port_text, '/') != null) {
+        return error.InvalidManagedBaseUrl;
+    }
+    const port = std.fmt.parseInt(u16, port_text, 10) catch
+        return error.InvalidManagedBaseUrl;
+    if (port == 0) return error.InvalidManagedBaseUrl;
+
+    const auth_line = if (carrier) |value|
+        try std.fmt.allocPrint(allocator, "Authorization: Bearer {s}\r\n", .{value})
+    else
+        try allocator.dupe(u8, "");
+    defer {
+        std.crypto.secureZero(u8, auth_line);
+        allocator.free(auth_line);
+    }
+
+    const request = try std.fmt.allocPrint(
+        allocator,
+        "GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\n{s}Connection: close\r\n\r\n",
+        .{ port, auth_line },
+    );
+    defer {
+        std.crypto.secureZero(u8, request);
+        allocator.free(request);
+    }
+
+    const address = try std.net.Address.parseIp("127.0.0.1", port);
+    var timer = try std.time.Timer.start();
+    var stream = try std.net.tcpConnectToAddress(address);
+    defer stream.close();
+    try stream.writeAll(request);
+
+    var response = std.ArrayList(u8).init(allocator);
+    errdefer response.deinit();
+    var buffer: [1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buffer);
+    while (true) {
+        const elapsed_ms = timer.read() / std.time.ns_per_ms;
+        if (elapsed_ms >= limits.timeout_ms) return error.ManagedBoundaryRequestTimedOut;
+        const remaining_ms: i32 = @intCast(limits.timeout_ms - elapsed_ms);
+        var poll_fds = [_]std.posix.pollfd{.{
+            .fd = stream.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        if (try std.posix.poll(&poll_fds, remaining_ms) == 0) {
+            return error.ManagedBoundaryRequestTimedOut;
+        }
+        if (poll_fds[0].revents & (std.posix.POLL.ERR | std.posix.POLL.NVAL) != 0) {
+            return error.ManagedBoundaryConnectionFailed;
+        }
+
+        const remaining_bytes = limits.max_response_bytes - response.items.len;
+        const read_len = @min(buffer.len, remaining_bytes +| 1);
+        const count = try stream.read(buffer[0..read_len]);
+        if (count == 0) break;
+        if (count > remaining_bytes) return error.ManagedBoundaryResponseTooLarge;
+        try response.appendSlice(buffer[0..count]);
+    }
+    return response.toOwnedSlice();
+}
+
 fn stringSlicesEqual(a: []const []const u8, b: []const []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |a_value, b_value| {
@@ -832,6 +1075,134 @@ test "managed child preserves argv cwd stdio and scrubbed environment with one s
     try std.testing.expectEqual(@as(usize, 0), state.credential_calls);
     try std.testing.expectEqual(@as(usize, 0), state.upstream_calls);
     try expectCleanLifecycle(&state, true);
+}
+
+test "stage2 synthetic managed capability round trip reconciles accepted and rejected requests" {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try tmp.dir.makeDir("home");
+    const home = try tmp.dir.realpathAlloc(allocator, "home");
+    defer allocator.free(home);
+    const runtime_dir = try std.fs.path.join(allocator, &.{ root, "runtime" });
+    defer allocator.free(runtime_dir);
+
+    var inherited = try testInheritedEnv(allocator, home);
+    defer inherited.deinit();
+    var parsed_config = try config_mod.loadFromBytes(allocator,
+        \\{"version":1,"providers":{"claude":{"kind":"claude","accounts":{"active":{"secret":{"backend":"env","variable":"ACTIVE_ACCOUNT_SECRET"}}}}}}
+    );
+    defer parsed_config.deinit();
+
+    var upstream = try FakeUpstream.start(allocator, &.{.{ .status = .no_content }});
+    defer upstream.deinit();
+    var event_buffer: [512]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    var state = Stage2CapabilityProbeState{
+        .runtime_dir = runtime_dir,
+        .upstream = &upstream,
+    };
+    var seams = Stage2CapabilityProbeSeams{ .state = &state };
+
+    const term = try runWithSeams(.{
+        .allocator = allocator,
+        .argv = &.{"synthetic-claude"},
+        .inherited_env = &inherited,
+        .active_config = &parsed_config.value,
+        .event_writer = event_stream.writer().any(),
+    }, &seams);
+
+    try std.testing.expectEqualDeep(std.process.Child.Term{ .Exited = 0 }, term);
+    try std.testing.expectEqual(@as(usize, 1), state.spawn_count);
+    try std.testing.expectEqual(@as(usize, 1), state.wait_count);
+    try std.testing.expect(state.listener_started);
+    try std.testing.expect(state.listener_stopped);
+    try std.testing.expect(state.listener_stopped_after_revoke);
+    try std.testing.expect(state.carrier_cleared);
+    try std.testing.expect(state.child_env_cleared);
+    try std.testing.expect(state.managed_dir_under_runtime);
+    try std.testing.expect(state.missing_rejected);
+    try std.testing.expect(state.wrong_rejected);
+    try std.testing.expect(state.valid_accepted);
+    try std.testing.expectEqualDeep(fake_upstream_mod.Snapshot{
+        .attempt_count = 1,
+        .call_count = 1,
+    }, upstream.snapshot());
+    const rejected_event = "{\"kind\":\"claude_proxy_capability_rejected\"}\n";
+    try std.testing.expectEqualStrings(
+        rejected_event ++ rejected_event,
+        event_stream.getWritten(),
+    );
+    try std.testing.expect(!wire_proxy.production_forwarding_enabled);
+    try expectRuntimeEmpty(runtime_dir);
+}
+
+test "managed-boundary request rejects an oversized synthetic response" {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    const allocator = std.testing.allocator;
+    var body: [1024]u8 = undefined;
+    @memset(&body, 'x');
+    var upstream = try FakeUpstream.start(allocator, &.{.{
+        .status = .ok,
+        .body = &body,
+    }});
+    defer upstream.deinit();
+
+    try std.testing.expectError(
+        error.ManagedBoundaryResponseTooLarge,
+        requestManagedBoundaryAllocWithLimits(
+            allocator,
+            upstream.baseUrl(),
+            null,
+            .{ .max_response_bytes = 256, .timeout_ms = 1_000 },
+        ),
+    );
+}
+
+test "managed-boundary request times out on a stalled synthetic response" {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    const StallingServer = struct {
+        fn run(server: *std.net.Server) void {
+            const connection = server.accept() catch return;
+            defer connection.stream.close();
+            std.Thread.sleep(200 * std.time.ns_per_ms);
+        }
+    };
+
+    const allocator = std.testing.allocator;
+    const loopback = try std.net.Address.parseIp("127.0.0.1", 0);
+    var server = try loopback.listen(.{ .reuse_address = true });
+    defer server.deinit();
+    const base_url = try std.fmt.allocPrint(
+        allocator,
+        "http://127.0.0.1:{d}",
+        .{server.listen_address.getPort()},
+    );
+    defer allocator.free(base_url);
+    const thread = try std.Thread.spawn(.{}, StallingServer.run, .{&server});
+    defer thread.join();
+
+    try std.testing.expectError(
+        error.ManagedBoundaryRequestTimedOut,
+        requestManagedBoundaryAllocWithLimits(
+            allocator,
+            base_url,
+            null,
+            .{ .max_response_bytes = 16 * 1024, .timeout_ms = 25 },
+        ),
+    );
 }
 
 test "managed config directories are unique absolute private runtime children" {
