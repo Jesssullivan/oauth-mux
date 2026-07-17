@@ -870,6 +870,9 @@ cp "$broker_auth_session_spare" "$broker_session_max3_home/auth.json"
 cat >"$broker_session_max2_home/session_index.jsonl" <<'EOF'
 {"id":"managed-good-session","thread_name":"managed-thread","updated_at":1}
 EOF
+cat >"$broker_session_max3_home/session_index.jsonl" <<'EOF'
+{"id":"managed-spare-session","thread_name":"managed-spare-thread","updated_at":1}
+EOF
 cat >"$broker_session_config" <<EOF
 {
   "version": 1,
@@ -1048,6 +1051,88 @@ managed_resume_launch_out="$tmp/managed-resume-launch.out"
 PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_resume_launch_out" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume managed-good-session -- --no-alt-screen
 managed_resume_launch="$(cat "$managed_resume_launch_out")"
 expect_contains "$managed_resume_launch" 'args=[resume][managed-good-session][--no-alt-screen]' "managed launch forwards route-local explicit resume after positive diagnostic"
+
+printf 'e2e: codex managed binds resume proof to the route it launches\n'
+managed_spare_resume_launch_out="$tmp/managed-spare-resume-launch.out"
+PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_spare_resume_launch_out" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume managed-spare-session -- --no-alt-screen
+managed_spare_resume_launch="$(cat "$managed_spare_resume_launch_out")"
+expect_contains "$managed_spare_resume_launch" 'account=max-3' "managed resume skips a selectable route that does not own the exact session"
+expect_contains "$managed_spare_resume_launch" "codex_home=$broker_session_max3_home" "managed resume launches the route-local store that owns the exact session"
+expect_contains "$managed_spare_resume_launch" 'args=[resume][managed-spare-session][--no-alt-screen]' "managed resume preserves the native exact resume argv on the owning route"
+
+printf 'e2e: codex managed rechecks exact resume evidence after pre-exec route churn\n'
+managed_churn_config="$tmp/broker-session-churn-config.json"
+managed_churn_state="$tmp/broker-session-churn-state"
+managed_churn_missing_auth="$tmp/broker-session-churn-missing-auth.json"
+managed_churn_out="$tmp/managed-churn.out"
+managed_churn_stderr="$tmp/managed-churn.stderr"
+mkdir -p "$managed_churn_state"
+cat >"$broker_session_max1_home/session_index.jsonl" <<'EOF'
+{"id":"managed-churn-session","thread_name":"managed-churn-thread","updated_at":1}
+EOF
+cat >>"$broker_session_max2_home/session_index.jsonl" <<'EOF'
+{"id":"managed-churn-session","thread_name":"managed-churn-thread","updated_at":1}
+EOF
+cat >"$managed_churn_config" <<EOF
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "max-2": {
+          "config_dir": "$broker_session_max2_home",
+          "secret": {
+            "backend": "file",
+            "path": "$managed_churn_missing_auth"
+          }
+        },
+        "max-3": {
+          "config_dir": "$broker_session_max3_home",
+          "secret": {
+            "backend": "file",
+            "path": "$broker_auth_session_spare"
+          }
+        },
+        "max-1": {
+          "config_dir": "$broker_session_max1_home",
+          "secret": {
+            "backend": "file",
+            "path": "$broker_session_max1_home/auth.json"
+          }
+        }
+      }
+    }
+  },
+  "profiles": {
+    "codex-churn": {
+      "providers": ["codex:max-2#codex-max", "codex:max-3#codex-max", "codex:max-1#codex-max"]
+    }
+  },
+  "strategies": {}
+}
+EOF
+cat >"$managed_churn_state/health.json" <<'EOF'
+{
+  "version": 2,
+  "accounts": [
+    {"key":"codex:max-2#codex-max","liveness":{"state":"live","availability":"available"}},
+    {"key":"codex:max-3#codex-max","liveness":{"state":"live","availability":"available"}},
+    {"key":"codex:max-1#codex-max","liveness":{"state":"live","availability":"available"}}
+  ]
+}
+EOF
+PATH="$broker_session_bin:$PATH" NO_COLOR=1 OMUX_DEBUG=1 OMUX_E2E_MANAGED_OUT="$managed_churn_out" OMUX_CONFIG="$managed_churn_config" OMUX_STATE_DIR="$managed_churn_state" "$bin" codex managed --profile codex-churn --capability codex-max --resume managed-churn-session -- --no-alt-screen 2>"$managed_churn_stderr"
+managed_churn="$(cat "$managed_churn_out")"
+managed_churn_trace="$(cat "$managed_churn_stderr")"
+expect_contains "$managed_churn_trace" '[DBG] codex managed: resume preflight codex:max-2 status=found_in_selected_store' "managed resume records positive evidence for max-2 before its pre-exec failure"
+expect_contains "$managed_churn_trace" '[ERR] secret: codex:max-2: NotFound' "managed resume records max-2 pre-exec failure after its positive evidence"
+expect_contains "$managed_churn_trace" '[DBG] codex managed: resume preflight codex:max-3 status=not_found_in_selected_store' "managed resume independently rejects max-3 after route churn"
+expect_contains "$managed_churn_trace" '[DBG] codex managed: resume preflight codex:max-1 status=found_in_selected_store' "managed resume independently proves max-1 before launch"
+expect_contains "$managed_churn" 'account=max-1' "managed resume rejects stale positive evidence from failed route max-2 and rechecks max-3 before launching max-1"
+expect_contains "$managed_churn" "codex_home=$broker_session_max1_home" "managed resume launches only the later route whose store independently owns the exact session"
+expect_not_contains "$managed_churn" 'account=max-3' "managed resume does not carry max-2 resume evidence onto max-3"
+
 managed_refusal_out="$tmp/managed-refusal.out"
 managed_should_not_run="$tmp/managed-should-not-run.out"
 if PATH="$broker_session_bin:$PATH" OMUX_E2E_MANAGED_OUT="$managed_should_not_run" OMUX_CONFIG="$broker_session_config" OMUX_STATE_DIR="$broker_session_state" "$bin" codex managed --profile codex-max --capability codex-max --resume missing-session >"$managed_refusal_out" 2>/dev/null; then

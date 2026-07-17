@@ -22,6 +22,7 @@ const secret_mod = @import("secret.zig");
 const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
+const codex_resume_index = @import("codex_resume_index.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
 const claude_verb = @import("adapters/claude/verb.zig");
 const identity_hash = @import("identity_hash.zig");
@@ -5254,6 +5255,15 @@ fn runStayAfloatNext(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
 }
 
 fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ExecArgs) !void {
+    return runStayAfloatLaunchWithResume(allocator, writer, args, null);
+}
+
+fn runStayAfloatLaunchWithResume(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ExecArgs,
+    required_resume_id: ?[]const u8,
+) !void {
     if (args.target_argv.len == 0) {
         log.err("stay-afloat launch: no target command specified (use -- before the command)", .{});
         return error.ConfigValidationError;
@@ -5285,6 +5295,7 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     defer attempted_routes.deinit();
 
     var last_exec_error: ?anyerror = null;
+    var last_resume_inspection: ?CodexManagedResumeInspection = null;
     // TIN-1811 Phase 2: never-halt launch. Each iteration re-evaluates the
     // requested capability and, only when no UN-ATTEMPTED selectable route
     // remains there, degrades across the profile's chain to an immediately-live
@@ -5311,22 +5322,40 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
         );
         const selected_index = degraded.index;
         if (selected_index == null) {
+            if (last_exec_error) |err| return err;
+            if (last_resume_inspection) |inspection| {
+                try writeCodexManagedResumeRefusalText(writer, inspection);
+                return error.ConfigValidationError;
+            }
             const candidate_index = firstActionableRoute(evaluations.items);
             try writeStayAfloatMediationText(writer, allocator, parsed.value, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
             if (degraded.capability) |cap| try writer.print("  degraded_capability: {s}\n", .{cap});
-            if (last_exec_error) |err| return err;
             return error.AllAccountsExhausted;
         }
 
         const selected = evaluations.items[selected_index.?].route;
         try attempted_routes.append(selected);
+        if (required_resume_id) |resume_id| {
+            const inspection = try inspectCodexManagedResume(allocator, parsed.value, selected, .{
+                .resume_id = resume_id,
+            });
+            log.debug("codex managed: resume preflight {s}:{s} status={s}", .{
+                selected.provider,
+                selected.account,
+                inspection.status,
+            });
+            if (!codexManagedResumeAllowsLaunch(inspection)) {
+                last_resume_inspection = inspection;
+                continue;
+            }
+        }
 
         var exec_args = args;
         exec_args.profile = null;
         exec_args.provider = selected.provider;
         exec_args.account = selected.account;
         exec_args.capability = selected.capability orelse args.capability;
-        runExec(allocator, exec_args) catch |e| {
+        runExecWithConfigSnapshot(allocator, exec_args, parsed.value) catch |e| {
             last_exec_error = e;
             continue;
         };
@@ -9872,10 +9901,18 @@ fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
     };
     defer parsed.deinit();
 
+    return runExecWithConfigSnapshot(allocator, args, parsed.value);
+}
+
+fn runExecWithConfigSnapshot(
+    allocator: std.mem.Allocator,
+    args: cli.Command.ExecArgs,
+    cfg: config.Config,
+) !void {
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
 
-    var ctx = pipeline.Context.init(allocator, parsed.value, &store);
+    var ctx = pipeline.Context.init(allocator, cfg, &store);
     defer ctx.deinit();
 
     ctx.profile_name = args.profile;
@@ -12479,25 +12516,17 @@ fn runCodexManaged(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
         return;
     }
 
-    if (args.resume_id != null) {
-        const resume_inspection = try inspectCodexManagedResumeForArgs(allocator, args);
-        if (!codexManagedResumeAllowsLaunch(resume_inspection)) {
-            try writeCodexManagedResumeRefusalText(writer, resume_inspection);
-            return error.ConfigValidationError;
-        }
-    }
-
     const target_argv = try buildCodexManagedTargetArgv(allocator, args);
     defer allocator.free(target_argv);
 
     const capability = firstCommaValue(args.capabilities);
-    try runStayAfloatLaunch(allocator, writer, .{
+    try runStayAfloatLaunchWithResume(allocator, writer, .{
         .profile = args.profile,
         .provider = if (args.profile == null) "codex" else null,
         .account = args.account,
         .capability = capability,
         .target_argv = target_argv,
-    });
+    }, args.resume_id);
 }
 
 const CodexStatusSummary = struct {
@@ -13159,9 +13188,8 @@ const CodexManagedResumeInspection = struct {
     selected_route_available: bool = false,
     store_available: bool = false,
     session_index_checked: bool = false,
+    session_index_available: bool = false,
     session_index_match: bool = false,
-    rollout_filenames_checked: bool = false,
-    rollout_filename_match: bool = false,
     state_store_checked: bool = false,
     state_store_match: bool = false,
     path_printed: bool = false,
@@ -13169,40 +13197,6 @@ const CodexManagedResumeInspection = struct {
     diagnostic: []const u8 = "no resume id requested",
     canonical_resume_entrypoint: []const u8 = "oauth-mux codex resume",
 };
-
-fn inspectCodexManagedResumeForArgs(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) !CodexManagedResumeInspection {
-    const parsed = try config.load(allocator);
-    defer parsed.deinit();
-
-    var validation_messages = std.ArrayList(u8).init(allocator);
-    defer validation_messages.deinit();
-    try config.validate(parsed.value, validation_messages.writer());
-
-    var store = health_mod.HealthStore.load(allocator, .{});
-    defer store.deinit();
-
-    const capability = firstCommaValue(args.capabilities);
-    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
-        .profile = args.profile,
-        .provider = if (args.profile == null) "codex" else null,
-        .account = args.account,
-        .capability = capability,
-    });
-    defer routes.deinit();
-
-    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
-    defer evaluations.deinit();
-    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
-
-    // TODO(TIN-1811 Phase 2 follow-up): kept capability-scoped on purpose. A
-    // resume binds to a specific session/capability; cross-capability degrade
-    // here would silently rebind a resumed managed Codex session to a different
-    // capability, which intersects the TIN-1631 resume boundary. Wire only with
-    // an explicit session-continuity decision.
-    const selected_index = firstSelectableRoute(evaluations.items);
-    const selected_route = if (selected_index) |idx| evaluations.items[idx].route else null;
-    return try inspectCodexManagedResume(allocator, parsed.value, selected_route, args);
-}
 
 fn inspectCodexManagedResume(
     allocator: std.mem.Allocator,
@@ -13235,15 +13229,26 @@ fn inspectCodexManagedResume(
     };
     result.selected_route_available = true;
 
-    const store_dir = try codexManagedRouteConfigDir(allocator, cfg, route) orelse {
+    const store_dir = codexManagedRouteConfigDir(allocator, cfg, route) catch |err| switch (err) {
+        error.RelativeCodexConfigDir => {
+            result.status = "selected_route_invalid_store";
+            result.diagnostic = "selected Codex route defines a non-absolute CODEX_HOME store; route-local resume evidence is unavailable";
+            return result;
+        },
+        else => return err,
+    } orelse {
         result.status = "selected_route_missing_store";
         result.diagnostic = "selected Codex route does not define a CODEX_HOME store for this route-local resume diagnostic";
         return result;
     };
     defer allocator.free(store_dir);
-    result.store_available = true;
 
     try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &result);
+    if (!result.session_index_available) {
+        result.status = "resume_evidence_unavailable";
+        result.diagnostic = "selected route-local Codex resume evidence is unavailable or unsafe to inspect";
+        return result;
+    }
     if (result.found) {
         result.status = "found_in_selected_store";
         result.diagnostic = "resume id was found in the selected route-local Codex store; canonical resume authority is checked by oauth-mux codex resume";
@@ -13258,7 +13263,12 @@ fn codexManagedRouteConfigDir(allocator: std.mem.Allocator, cfg: config.Config, 
     const provider_cfg = cfg.providers.map.get(route.provider) orelse return null;
     const account = provider_cfg.accounts.map.get(route.account) orelse return null;
     const config_dir = account.config_dir orelse return null;
-    return try paths.expandTilde(allocator, config_dir);
+    const expanded = try paths.expandTilde(allocator, config_dir);
+    if (!std.fs.path.isAbsolute(expanded)) {
+        allocator.free(expanded);
+        return error.RelativeCodexConfigDir;
+    }
+    return expanded;
 }
 
 fn codexManagedOverlayHomeForPlanning(allocator: std.mem.Allocator, path_value: []const u8) !bool {
@@ -13301,255 +13311,35 @@ fn inspectCodexManagedResumeStore(
     resume_id: []const u8,
     result: *CodexManagedResumeInspection,
 ) !void {
-    const index_path = try std.fs.path.join(allocator, &.{ store_dir, "session_index.jsonl" });
-    defer allocator.free(index_path);
     result.session_index_checked = true;
-    result.session_index_match = sessionIndexContainsExactResumeId(allocator, index_path, resume_id) catch false;
+    switch (try codex_resume_index.lookup(allocator, store_dir, resume_id)) {
+        .match => {
+            result.store_available = true;
+            result.session_index_available = true;
+            result.session_index_match = true;
+        },
+        .no_match => {
+            result.store_available = true;
+            result.session_index_available = true;
+            result.session_index_match = false;
+        },
+        .unavailable => {
+            result.store_available = false;
+            result.session_index_available = false;
+            result.session_index_match = false;
+        },
+    }
 
-    const sessions_dir = try std.fs.path.join(allocator, &.{ store_dir, "sessions" });
-    defer allocator.free(sessions_dir);
-    result.rollout_filenames_checked = true;
-    result.rollout_filename_match = directoryHasExactRolloutResumeId(allocator, sessions_dir, resume_id) catch false;
-
-    // Raw SQLite/WAL bytes have no record boundary. Until oauth-mux has a
-    // structured state-store reader, they cannot prove resume identity.
+    // Raw SQLite/WAL bytes and rollout filenames have no parsed record
+    // boundary here, so they cannot prove resume identity.
     result.state_store_checked = false;
     result.state_store_match = false;
-    result.found = result.session_index_match or result.rollout_filename_match;
+    result.found = result.session_index_match;
 }
 
-const codex_resume_index_max_line_bytes = 1024 * 1024;
-
-fn sessionIndexContainsExactResumeId(allocator: std.mem.Allocator, path: []const u8, resume_id: []const u8) !bool {
-    if (resume_id.len == 0) return false;
-    var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
-        else => return err,
-    };
-    defer file.close();
-
-    var line = std.ArrayList(u8).init(allocator);
-    defer line.deinit();
-    var oversized = false;
-    var buffer: [8192]u8 = undefined;
-
-    while (true) {
-        const read_len = try file.read(&buffer);
-        if (read_len == 0) break;
-
-        for (buffer[0..read_len]) |byte| {
-            if (byte == '\n') {
-                if (!oversized and line.items.len != 0 and sessionIndexLineMatchesResumeId(allocator, line.items, resume_id)) {
-                    return true;
-                }
-                line.clearRetainingCapacity();
-                oversized = false;
-                continue;
-            }
-
-            if (oversized) continue;
-            if (line.items.len == codex_resume_index_max_line_bytes) {
-                line.clearRetainingCapacity();
-                oversized = true;
-                continue;
-            }
-            try line.append(byte);
-        }
-    }
-
-    return !oversized and
-        line.items.len != 0 and
-        sessionIndexLineMatchesResumeId(allocator, line.items, resume_id);
-}
-
-fn sessionIndexLineMatchesResumeId(allocator: std.mem.Allocator, line_raw: []const u8, resume_id: []const u8) bool {
-    const line = std.mem.trim(u8, line_raw, " \t\r\n");
-    if (line.len == 0) return false;
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{
-        .allocate = .alloc_always,
-    }) catch return false;
-    defer parsed.deinit();
-
-    const object = switch (parsed.value) {
-        .object => |value| value,
-        else => return false,
-    };
-    const id_value = object.get("id") orelse return false;
-    return switch (id_value) {
-        .string => |value| std.mem.eql(u8, value, resume_id),
-        else => false,
-    };
-}
-
-fn directoryHasExactRolloutResumeId(allocator: std.mem.Allocator, root: []const u8, resume_id: []const u8) !bool {
-    if (resume_id.len == 0) return false;
-    var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
-        else => return err,
-    };
-    defer dir.close();
-
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    var inspected: usize = 0;
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        inspected += 1;
-        if (inspected > 20000) return false;
-        if (rolloutFileNameMatchesResumeId(entry.basename, resume_id)) return true;
-    }
-    return false;
-}
-
-fn rolloutFileNameMatchesResumeId(filename: []const u8, resume_id: []const u8) bool {
-    if (!isCanonicalCodexThreadId(resume_id)) return false;
-    if (!std.mem.startsWith(u8, filename, "rollout-") or !std.mem.endsWith(u8, filename, ".jsonl")) return false;
-
-    const core = filename["rollout-".len .. filename.len - ".jsonl".len];
-    const timestamp_len = "YYYY-MM-DDThh-mm-ss".len;
-    if (core.len <= timestamp_len or core[timestamp_len] != '-') return false;
-    if (!isCodexRolloutTimestamp(core[0..timestamp_len])) return false;
-
-    return std.mem.eql(u8, core[timestamp_len + 1 ..], resume_id);
-}
-
-fn isCodexRolloutTimestamp(value: []const u8) bool {
-    if (value.len != "YYYY-MM-DDThh-mm-ss".len) return false;
-    if (value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != '-' or value[16] != '-') return false;
-
-    const year = std.fmt.parseInt(u16, value[0..4], 10) catch return false;
-    const month = std.fmt.parseInt(u8, value[5..7], 10) catch return false;
-    const day = std.fmt.parseInt(u8, value[8..10], 10) catch return false;
-    const hour = std.fmt.parseInt(u8, value[11..13], 10) catch return false;
-    const minute = std.fmt.parseInt(u8, value[14..16], 10) catch return false;
-    const second = std.fmt.parseInt(u8, value[17..19], 10) catch return false;
-    if (year < std.time.epoch.epoch_year or month < 1 or month > 12 or day < 1 or hour > 23 or minute > 59 or second > 59) {
-        return false;
-    }
-
-    const leap_kind: std.time.epoch.YearLeapKind = if (std.time.epoch.isLeapYear(year)) .leap else .not_leap;
-    const month_enum: std.time.epoch.Month = @enumFromInt(month);
-    return day <= std.time.epoch.getDaysInMonth(leap_kind, month_enum);
-}
-
-fn isCanonicalCodexThreadId(value: []const u8) bool {
-    if (value.len != 36) return false;
-    for (value, 0..) |byte, idx| {
-        switch (idx) {
-            8, 13, 18, 23 => if (byte != '-') return false,
-            else => if (!std.ascii.isHex(byte) or std.ascii.isUpper(byte)) return false,
-        }
-    }
-    return true;
-}
-
-test "Codex resume session index matching is structural and exact" {
+test "Codex managed resume ignores raw database bytes and rollout filenames" {
     const allocator = std.testing.allocator;
-    const resume_id = "short-valid";
-
-    try std.testing.expect(sessionIndexLineMatchesResumeId(
-        allocator,
-        \\{"id":"short-valid","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
-    ,
-        resume_id,
-    ));
-    try std.testing.expect(!sessionIndexLineMatchesResumeId(
-        allocator,
-        \\{"id":"short-valid-longer","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
-    ,
-        resume_id,
-    ));
-    try std.testing.expect(!sessionIndexLineMatchesResumeId(
-        allocator,
-        \\{"id":"different","thread_name":"short-valid","filename":"rollout-short-valid.jsonl"}
-    ,
-        resume_id,
-    ));
-    try std.testing.expect(!sessionIndexLineMatchesResumeId(
-        allocator,
-        \\{"id":42,"thread_name":"short-valid"}
-    ,
-        resume_id,
-    ));
-    try std.testing.expect(!sessionIndexLineMatchesResumeId(
-        allocator,
-        \\{"id":"different","id":"short-valid"}
-    ,
-        resume_id,
-    ));
-    try std.testing.expect(!sessionIndexLineMatchesResumeId(
-        allocator,
-        \\{"id":"short-valid"} trailing
-    ,
-        resume_id,
-    ));
-    try std.testing.expect(!sessionIndexLineMatchesResumeId(allocator, "not-json", resume_id));
-}
-
-test "Codex rollout filename matching requires the exact identity field" {
     const resume_id = "11111111-2222-4333-8444-555555555555";
-
-    try std.testing.expect(rolloutFileNameMatchesResumeId(
-        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
-        resume_id,
-    ));
-    try std.testing.expect(!rolloutFileNameMatchesResumeId(
-        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl.zst",
-        resume_id,
-    ));
-    try std.testing.expect(!rolloutFileNameMatchesResumeId(
-        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555-extra.jsonl",
-        resume_id,
-    ));
-    try std.testing.expect(!rolloutFileNameMatchesResumeId(
-        "rollout-2026-02-30T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
-        resume_id,
-    ));
-    try std.testing.expect(!rolloutFileNameMatchesResumeId(
-        "notes-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
-        resume_id,
-    ));
-    try std.testing.expect(!rolloutFileNameMatchesResumeId(
-        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
-        "short-valid",
-    ));
-    try std.testing.expect(!rolloutFileNameMatchesResumeId(
-        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
-        "11111111-2222-4333-8444-55555555555A",
-    ));
-}
-
-test "Codex resume session index skips oversized records before an exact record" {
-    const allocator = std.testing.allocator;
-    const resume_id = "short-valid";
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const index = try tmp.dir.createFile("session_index.jsonl", .{});
-    defer index.close();
-    var oversized_chunk = [_]u8{'x'} ** 4096;
-    var remaining: usize = codex_resume_index_max_line_bytes + 1;
-    while (remaining != 0) {
-        const write_len = @min(remaining, oversized_chunk.len);
-        try index.writeAll(oversized_chunk[0..write_len]);
-        remaining -= write_len;
-    }
-    try index.writeAll(
-        \\
-        \\{"id":"short-valid","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
-        \\
-    );
-
-    const index_path = try tmp.dir.realpathAlloc(allocator, "session_index.jsonl");
-    defer allocator.free(index_path);
-    try std.testing.expect(try sessionIndexContainsExactResumeId(allocator, index_path, resume_id));
-}
-
-test "Codex managed resume ignores unparsed state database bytes" {
-    const allocator = std.testing.allocator;
-    const resume_id = "short-valid";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -13558,13 +13348,13 @@ test "Codex managed resume ignores unparsed state database bytes" {
         const index = try tmp.dir.createFile("session_index.jsonl", .{});
         defer index.close();
         try index.writeAll(
-            \\{"id":"short-valid-longer","thread_name":"short-valid","updated_at":"2026-07-17T00:00:00Z"}
+            \\{"id":"11111111-2222-4333-8444-555555555556","thread_name":"11111111-2222-4333-8444-555555555555","updated_at":"2026-07-17T00:00:00Z"}
             \\
         );
     }
     {
         const rollout = try tmp.dir.createFile(
-            "sessions/2026/07/17/rollout-2026-07-17T12-34-56-short-valid-longer.jsonl",
+            "sessions/2026/07/17/rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
             .{},
         );
         rollout.close();
@@ -13572,12 +13362,32 @@ test "Codex managed resume ignores unparsed state database bytes" {
     {
         const state = try tmp.dir.createFile("state_5.sqlite", .{});
         defer state.close();
-        try state.writeAll("unparsed database bytes containing short-valid");
+        try state.writeAll("unparsed database bytes containing 11111111-2222-4333-8444-555555555555");
     }
     {
         const wal = try tmp.dir.createFile("state_5.sqlite-wal", .{});
         defer wal.close();
-        try wal.writeAll("unparsed WAL bytes containing short-valid");
+        try wal.writeAll("unparsed WAL bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const shm = try tmp.dir.createFile("state_5.sqlite-shm", .{});
+        defer shm.close();
+        try shm.writeAll("unparsed SHM bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const logs = try tmp.dir.createFile("logs_2.sqlite", .{});
+        defer logs.close();
+        try logs.writeAll("unparsed logs database bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const logs_wal = try tmp.dir.createFile("logs_2.sqlite-wal", .{});
+        defer logs_wal.close();
+        try logs_wal.writeAll("unparsed logs WAL bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const logs_shm = try tmp.dir.createFile("logs_2.sqlite-shm", .{});
+        defer logs_shm.close();
+        try logs_shm.writeAll("unparsed logs SHM bytes containing 11111111-2222-4333-8444-555555555555");
     }
 
     const store_dir = try tmp.dir.realpathAlloc(allocator, ".");
@@ -13586,9 +13396,8 @@ test "Codex managed resume ignores unparsed state database bytes" {
     var inspection = CodexManagedResumeInspection{};
     try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &inspection);
     try std.testing.expect(inspection.session_index_checked);
+    try std.testing.expect(inspection.session_index_available);
     try std.testing.expect(!inspection.session_index_match);
-    try std.testing.expect(inspection.rollout_filenames_checked);
-    try std.testing.expect(!inspection.rollout_filename_match);
     try std.testing.expect(!inspection.state_store_checked);
     try std.testing.expect(!inspection.state_store_match);
     try std.testing.expect(!inspection.found);
@@ -13597,15 +13406,104 @@ test "Codex managed resume ignores unparsed state database bytes" {
         const index = try tmp.dir.createFile("session_index.jsonl", .{ .truncate = true });
         defer index.close();
         try index.writeAll(
-            \\{"id":"short-valid","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
+            \\{"id":"11111111-2222-4333-8444-555555555555","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
             \\
         );
     }
 
     inspection = .{};
     try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &inspection);
+    try std.testing.expect(inspection.session_index_available);
     try std.testing.expect(inspection.session_index_match);
     try std.testing.expect(inspection.found);
+}
+
+test "Codex managed resume proof is bound to the selected route store" {
+    const allocator = std.testing.allocator;
+    const resume_id = "11111111-2222-4333-8444-555555555555";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("route-a");
+    try tmp.dir.makePath("route-b");
+    {
+        const index = try tmp.dir.createFile("route-a/session_index.jsonl", .{});
+        defer index.close();
+        try index.writeAll("{\"id\":\"11111111-2222-4333-8444-555555555555\"}\n");
+    }
+    {
+        const index = try tmp.dir.createFile("route-b/session_index.jsonl", .{});
+        defer index.close();
+        try index.writeAll("{\"id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\"}\n");
+    }
+
+    const route_a_dir = try tmp.dir.realpathAlloc(allocator, "route-a");
+    defer allocator.free(route_a_dir);
+    const route_b_dir = try tmp.dir.realpathAlloc(allocator, "route-b");
+    defer allocator.free(route_b_dir);
+    const config_json = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "route-a": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "env", "variable": "CODEX_A" }}
+        \\        }},
+        \\        "route-b": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "env", "variable": "CODEX_B" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }}
+        \\}}
+    , .{ route_a_dir, route_b_dir });
+    defer allocator.free(config_json);
+    const parsed = try config.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    const route_a = RepairPlanRoute{ .provider = "codex", .account = "route-a" };
+    const route_b = RepairPlanRoute{ .provider = "codex", .account = "route-b" };
+    const args = cli.Command.CodexArgs{ .resume_id = resume_id };
+
+    const route_a_inspection = try inspectCodexManagedResume(allocator, parsed.value, route_a, args);
+    try std.testing.expect(codexManagedResumeAllowsLaunch(route_a_inspection));
+    const route_b_inspection = try inspectCodexManagedResume(allocator, parsed.value, route_b, args);
+    try std.testing.expect(!codexManagedResumeAllowsLaunch(route_b_inspection));
+}
+
+test "Codex managed resume rejects relative route stores as unavailable" {
+    const allocator = std.testing.allocator;
+    const config_json =
+        \\{
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "relative": {
+        \\          "config_dir": "relative/store",
+        \\          "secret": { "backend": "env", "variable": "CODEX_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    const inspection = try inspectCodexManagedResume(
+        allocator,
+        parsed.value,
+        .{ .provider = "codex", .account = "relative" },
+        .{ .resume_id = "11111111-2222-4333-8444-555555555555" },
+    );
+    try std.testing.expectEqualStrings("selected_route_invalid_store", inspection.status);
+    try std.testing.expect(!inspection.store_available);
+    try std.testing.expect(!inspection.session_index_available);
+    try std.testing.expect(!codexManagedResumeAllowsLaunch(inspection));
 }
 
 fn codexManagedResumeAllowsLaunch(inspection: CodexManagedResumeInspection) bool {
@@ -13642,12 +13540,10 @@ fn writeCodexManagedResumeJson(writer: anytype, inspection: CodexManagedResumeIn
     try writer.writeAll(",\"resume_id_printed\":false,\"path_printed\":false,\"unmanaged_cross_route_resume\":false");
     try writer.writeAll(",\"evidence\":{\"session_index_checked\":");
     try writer.writeAll(if (inspection.session_index_checked) "true" else "false");
+    try writer.writeAll(",\"session_index_available\":");
+    try writer.writeAll(if (inspection.session_index_available) "true" else "false");
     try writer.writeAll(",\"session_index_match\":");
     try writer.writeAll(if (inspection.session_index_match) "true" else "false");
-    try writer.writeAll(",\"rollout_filenames_checked\":");
-    try writer.writeAll(if (inspection.rollout_filenames_checked) "true" else "false");
-    try writer.writeAll(",\"rollout_filename_match\":");
-    try writer.writeAll(if (inspection.rollout_filename_match) "true" else "false");
     try writer.writeAll(",\"state_store_checked\":");
     try writer.writeAll(if (inspection.state_store_checked) "true" else "false");
     try writer.writeAll(",\"state_store_match\":");
@@ -13661,6 +13557,7 @@ fn writeCodexManagedResumeRefusalText(writer: anytype, inspection: CodexManagedR
     try writer.writeAll("oauth-mux Codex managed resume diagnostic\n\n");
     try writer.print("  ok: false\n  status: {s}\n", .{inspection.status});
     try writer.print("  selected_route_available: {s}\n", .{if (inspection.selected_route_available) "true" else "false"});
+    try writer.print("  session_index_available: {s}\n", .{if (inspection.session_index_available) "true" else "false"});
     try writer.writeAll("  diagnostic_only: true\n");
     try writer.writeAll("  canonical_resume_authority_checked: false\n");
     try writer.print("  canonical_resume_entrypoint: {s}\n", .{inspection.canonical_resume_entrypoint});
