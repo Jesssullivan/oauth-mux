@@ -3,6 +3,7 @@ const std = @import("std");
 const max_request_head_bytes = 64 * 1024;
 const max_response_headers = 25;
 const max_captured_request_bytes = 64 * 1024;
+const max_captured_auth_bytes = 512;
 const script_exhausted_body = "fake upstream response script exhausted";
 
 pub const Header = std.http.Header;
@@ -144,6 +145,20 @@ pub const FakeUpstream = struct {
         return n;
     }
 
+    /// Copies the most recent received `Authorization` header value into `out`,
+    /// returning the number of bytes copied. Lets a test prove which synthetic
+    /// route credential the proxy injected on the attempt this upstream served.
+    /// The value is a synthetic test-only bearer; no real credential material
+    /// ever reaches the fake because tests construct the routes themselves.
+    pub fn capturedAuthorization(self: *FakeUpstream, out: []u8) usize {
+        const shared = self.shared orelse return 0;
+        shared.auth_capture.mutex.lock();
+        defer shared.auth_capture.mutex.unlock();
+        const n = @min(out.len, shared.auth_capture.len);
+        @memcpy(out[0..n], shared.auth_capture.buf[0..n]);
+        return n;
+    }
+
     pub fn requestCaptureSnapshot(self: *FakeUpstream) RequestCaptureSnapshot {
         const shared = self.shared orelse return .{};
         return shared.request_capture.snapshot();
@@ -172,6 +187,7 @@ pub const FakeUpstream = struct {
         shared.server.deinit();
         deinitScript(self.allocator, shared.responses);
         shared.request_capture.deinit();
+        shared.auth_capture.deinit();
         self.allocator.destroy(shared);
         self.allocator.free(self.base_url.?);
 
@@ -237,6 +253,40 @@ const Shared = struct {
     counters: Counters = .{},
     active: ActiveConnection = .{},
     request_capture: RequestCapture = .{},
+    auth_capture: AuthCapture = .{},
+};
+
+/// Records the `Authorization` header of the most recent request the upstream
+/// served, so a test can prove the proxy injected the expected synthetic route
+/// credential. Test-only bearers only; the proxy never forwards the downstream
+/// capability, so no live credential is ever observable here.
+const AuthCapture = struct {
+    mutex: std.Thread.Mutex = .{},
+    buf: [max_captured_auth_bytes]u8 = undefined,
+    len: usize = 0,
+
+    fn record(self: *AuthCapture, value: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        std.crypto.secureZero(u8, self.buf[0..self.len]);
+        const n = @min(value.len, self.buf.len);
+        @memcpy(self.buf[0..n], value[0..n]);
+        self.len = n;
+    }
+
+    fn reset(self: *AuthCapture) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        std.crypto.secureZero(u8, self.buf[0..self.len]);
+        self.len = 0;
+    }
+
+    fn deinit(self: *AuthCapture) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        std.crypto.secureZero(u8, &self.buf);
+        self.len = 0;
+    }
 };
 
 /// Records the most recent request body the upstream received, so a test can
@@ -550,6 +600,7 @@ fn serveOne(shared: *Shared, connection: std.net.Server.Connection) void {
         }) catch {};
         return;
     }
+    captureAuthorization(shared, &request);
     captureRequestBody(shared, &request);
     const script_index = shared.counters.recordCall();
 
@@ -620,6 +671,17 @@ fn serveOne(shared: *Shared, connection: std.net.Server.Connection) void {
         .status = .internal_server_error,
         .keep_alive = false,
     }) catch {};
+}
+
+fn captureAuthorization(shared: *Shared, request: *std.http.Server.Request) void {
+    shared.auth_capture.reset();
+    var iterator = request.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "authorization")) {
+            shared.auth_capture.record(header.value);
+            return;
+        }
+    }
 }
 
 fn captureRequestBody(shared: *Shared, request: *std.http.Server.Request) void {
