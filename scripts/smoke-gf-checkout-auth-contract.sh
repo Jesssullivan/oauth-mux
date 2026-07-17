@@ -22,6 +22,14 @@ grep -F 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb
   fail "checkout action must pin the audited v3 GitHub App token action"
 grep -F 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' "$ACTION" >/dev/null ||
   fail "private checkout must pin the audited v4 checkout action"
+grep -F 'ref: 2357988536f1f6258291c363e1428962b6cced1b' "$ACTION" >/dev/null ||
+  fail "private checkout must pin the audited GloriousFlywheel commit"
+grep -F 'GF_ACTION_SHA: 2357988536f1f6258291c363e1428962b6cced1b' "$ACTION" >/dev/null ||
+  fail "private checkout verification must bind the audited GloriousFlywheel commit"
+grep -F "rev-parse --verify 'HEAD^{commit}'" "$ACTION" >/dev/null ||
+  fail "private checkout must resolve the checked-out commit"
+grep -F 'if [ "${actual_sha}" != "${GF_ACTION_SHA}" ]; then' "$ACTION" >/dev/null ||
+  fail "private checkout must fail when HEAD differs from the audited commit"
 grep -F 'owner: tinyland-inc' "$ACTION" >/dev/null ||
   fail "checkout token must be restricted to the tinyland-inc owner"
 grep -F 'repositories: GloriousFlywheel' "$ACTION" >/dev/null ||
@@ -62,8 +70,12 @@ grep -A1 '^permissions:' "$CI" | grep -F 'contents: read' >/dev/null ||
   fail "CI must declare read-only GITHUB_TOKEN permissions"
 [ "$(grep -Fc 'uses: ./.github/actions/checkout-gloriousflywheel' "$REMOTE")" -eq 1 ] ||
   fail "remote validation must use exactly one scoped checkout action"
-grep -A2 'uses: actions/checkout@v4' "$REMOTE" | grep -F 'fetch-depth: 0' >/dev/null ||
+grep -A2 'uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' "$REMOTE" | grep -F 'fetch-depth: 0' >/dev/null ||
   fail "remote validation must fetch full history for baseline characterization"
+[ "$(grep -Fc 'uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' "$REMOTE")" -eq 2 ] ||
+  fail "remote validation must pin both official checkout uses"
+[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$REMOTE")" -eq 3 ] ||
+  fail "remote validation must pin all three artifact uploads"
 [ "$(grep -Fc 'uses: ./.github/actions/checkout-gloriousflywheel' "$RELEASE")" -eq 1 ] ||
   fail "release proof must use exactly one scoped checkout action"
 
