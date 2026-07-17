@@ -6,6 +6,53 @@ claims stop at that evidence. The 61 PRs that sat unreleased between v0.1.13
 and v0.1.14 motivated this file; a cut is now owed whenever a flagship evidence
 dir lands.
 
+## Unreleased
+
+Everything below is on `main` but uncut. The v0.2 broker work in this
+section is **future/experimental/unshipped** per the evaluation ladder's
+promotion rule (`docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md`
+§12): TIN-2057's golden scorecard is 0/11, no prerelease exists, and
+v0.1.15 remains the honest stable release. Nothing here changes shipped
+claims.
+
+### Added — stable-lane surfaces (v0.1.16 material)
+
+- `status --statusline` + `recommend` — compact valet render surfaces over
+  the pure advisor core (TIN-2719 M0, #461). Contract:
+  `claude: <status> → <acct|none> (<provenance>)`, unobserved-honest.
+- `version --check [--online]` — offline-default staleness self-audit
+  reusing the doctor binary walk; detects PATH shadowing live
+  (TIN-2463, #462).
+
+### Added — v0.2 broker program (experimental, unshipped, no CLI surface)
+
+- v0.2 authority chain: full-broker program plan, deletion ledger, threat
+  model, authority map, and fail-closed supersedence docs
+  (#464, #467, #476).
+- Zig-owned release declaration manifest and its consumers: Nix identity,
+  stable layout, and workflow versions all derive from the single Zig
+  authority (TIN-2046/TIN-2050, #470–#474); `omux` becomes the primary
+  executable with `oauth-mux` as compatibility alias (TIN-2799, #469).
+- Managed harness JSON-RPC v2 declaration-only schema (TIN-1798, #475) —
+  methods declared, none implemented.
+- Managed-Claude adapter foundations (TIN-1829/TIN-2047, #477, #478, #480,
+  #481): fail-closed child authority + env scrubbing, 256-bit session
+  capability carrier, deterministic fake upstream, authenticated loopback
+  ingress with fixed-origin enforcement, and synthetic managed child
+  lifecycle. **Library-only**: imported solely by the test root, reachable
+  from no CLI verb, and real upstream forwarding is compile-disabled
+  (`production_forwarding_enabled = false`). Earns zero TIN-2057 rows.
+- v0.2 evaluation and dogfood ladder runbook (TIN-2057, #479) — the
+  operator contract for evidence, dogfood, rollback, and claim promotion.
+
+### Changed / fixed
+
+- Zig test root fails closed on unregistered test files (#468).
+- Claude enroll e2e assertion made platform-aware (TIN-2388, #466).
+- Retired npm staging residue removed from release surfaces (#465).
+- CI mints scoped GF checkout tokens via a dedicated GitHub App
+  (TIN-2808, #473).
+
 ## v0.1.15 — 2026-07-10 — "valet"
 
 First rungs of the stay-afloat valet ladder: a pure advisor core that ranks
