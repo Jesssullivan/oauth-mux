@@ -63,6 +63,19 @@ const State = struct {
     reservation: Reservation = .{},
 };
 
+pub const RequestOutcome = enum {
+    none,
+    receiving_head,
+    request_head_rejected,
+    capability_rejected,
+    origin_rejected,
+    expectation_rejected,
+    request_body_rejected,
+    model_admission_rejected,
+    upstream_response,
+    proxy_error,
+};
+
 /// FIRST-ATTEMPT ADMISSION ONLY. Records what model was admitted for the one
 /// upstream attempt of the last request. It is exposed to tests through the same
 /// snapshot pattern the fake upstream uses. The model bytes are the public model
@@ -74,7 +87,9 @@ const State = struct {
 /// the response body for a model, so result-side model evidence does not exist
 /// yet. `admittedModel()` describes only what was admitted for the attempt,
 /// never what the upstream result reported.
-const RequestObservation = struct {
+pub const RequestObservation = struct {
+    request_id: u64 = 0,
+    outcome: RequestOutcome = .none,
     had_body: bool = false,
     /// A top-level request model was present and admitted for the attempt.
     model_present: bool = false,
@@ -119,6 +134,11 @@ fn recordModelObservation(state: *State, input: ModelObservationInput) void {
     state.observation_mutex.lock();
     defer state.observation_mutex.unlock();
     var obs = RequestObservation{
+        .request_id = state.observation.request_id,
+        .outcome = if (input.model_admission_rejected)
+            .model_admission_rejected
+        else
+            .upstream_response,
         .had_body = input.had_body,
         .model_present = input.model_present,
         .upstream_attempted = input.upstream_attempted,
@@ -131,6 +151,23 @@ fn recordModelObservation(state: *State, input: ModelObservationInput) void {
         obs.admitted_model_len = n;
     }
     state.observation = obs;
+}
+
+fn beginRequestObservation(state: *State) void {
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+    var next_id = state.observation.request_id +% 1;
+    if (next_id == 0) next_id = 1;
+    state.observation = .{
+        .request_id = next_id,
+        .outcome = .receiving_head,
+    };
+}
+
+fn markRequestOutcome(state: *State, outcome: RequestOutcome) void {
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+    state.observation.outcome = outcome;
 }
 
 /// One authenticated HTTP/1.1 listener bound to an ephemeral IPv4 loopback
@@ -295,6 +332,10 @@ pub const testing = if (builtin.is_test) struct {
             .{ .synthetic = routing },
         );
     }
+
+    pub fn requestObservation(listener: *Listener) RequestObservation {
+        return observationSnapshot(listener);
+    }
 } else struct {};
 
 /// File-private routed test seam over the deterministic fakes, discarding
@@ -393,14 +434,17 @@ fn run(state: *State) void {
 }
 
 fn serveConnection(state: *State, connection: std.net.Server.Connection) void {
+    beginRequestObservation(state);
     var read_buffer: [max_request_head_bytes]u8 = undefined;
     defer std.crypto.secureZero(u8, &read_buffer);
     var server = std.http.Server.init(connection, &read_buffer);
     var request = server.receiveHead() catch |err| {
+        markRequestOutcome(state, .request_head_rejected);
         writeHeadError(connection.stream, err) catch {};
         return;
     };
     handleRequest(state, &request) catch {
+        markRequestOutcome(state, .proxy_error);
         request.respond("upstream unavailable", .{
             .status = .bad_gateway,
             .keep_alive = false,
@@ -433,6 +477,7 @@ fn handleRequest(state: *State, request: *std.http.Server.Request) !void {
     while (iterator.next()) |header| try inbound.append(allocator, header);
 
     if (!validCapability(state.capability, inbound.items)) {
+        markRequestOutcome(state, .capability_rejected);
         emitEvent(state, "claude_proxy_capability_rejected");
         try request.respond("unauthorized", .{
             .status = .unauthorized,
@@ -442,6 +487,7 @@ fn handleRequest(state: *State, request: *std.http.Server.Request) !void {
     }
 
     if (!validRequestOrigin(request, inbound.items, state.server.listen_address.getPort())) {
+        markRequestOutcome(state, .origin_rejected);
         try request.respond("bad request", .{
             .status = .bad_request,
             .keep_alive = false,
@@ -450,6 +496,7 @@ fn handleRequest(state: *State, request: *std.http.Server.Request) !void {
     }
 
     if (request.head.expect != null) {
+        markRequestOutcome(state, .expectation_rejected);
         try request.respond("expectation failed", .{
             .status = .expectation_failed,
             .keep_alive = false,
@@ -463,6 +510,7 @@ fn handleRequest(state: *State, request: *std.http.Server.Request) !void {
     const body_reader = try request.reader();
     var body = readAllSensitiveAlloc(allocator, body_reader, max_request_body_bytes) catch |err| {
         if (err == error.StreamTooLong) {
+            markRequestOutcome(state, .request_body_rejected);
             try request.respond("request too large", .{
                 .status = .payload_too_large,
                 .keep_alive = false,
@@ -1153,9 +1201,19 @@ fn commitObservation(state: *State, obs: RequestObservation) void {
     std.debug.assert(obs.attempts_total <= 2);
     std.debug.assert(obs.third_attempt_count == 0);
     std.debug.assert(!(obs.same_route_retry_count != 0 and obs.alternate_count != 0));
+    var committed = obs;
     state.observation_mutex.lock();
     defer state.observation_mutex.unlock();
-    state.observation = obs;
+    committed.request_id = state.observation.request_id;
+    if (committed.outcome == .none) {
+        committed.outcome = if (committed.model_admission_rejected)
+            .model_admission_rejected
+        else if (committed.upstream_attempted)
+            .upstream_response
+        else
+            .proxy_error;
+    }
+    state.observation = committed;
 }
 
 /// Delivers a fully buffered response downstream as-is.
@@ -2077,6 +2135,64 @@ test "exact model is captured and forwarded byte-identically to the fake upstrea
         },
         upstream.requestCaptureSnapshot(),
     );
+}
+
+test "a rejected request cannot inherit a prior successful observation" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var upstream = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .no_content }});
+    defer upstream.deinit();
+    const listener = try startForTest(std.testing.allocator, capability, &upstream);
+    defer listener.deinit();
+
+    const body = "{\"model\":\"claude-opus-4-20250514\",\"max_tokens\":1,\"messages\":[]}";
+    const accepted = try postRequestAlloc(
+        std.testing.allocator,
+        listener.port(),
+        &carrier,
+        body,
+    );
+    defer std.testing.allocator.free(accepted);
+    const accepted_response = try requestRawAlloc(
+        std.testing.allocator,
+        listener.address(),
+        accepted,
+    );
+    defer std.testing.allocator.free(accepted_response);
+    try expectStatus(accepted_response, "HTTP/1.1 204 No Content\r\n");
+
+    const first = observationSnapshot(listener);
+    try std.testing.expectEqual(RequestOutcome.upstream_response, first.outcome);
+    try std.testing.expect(first.model_present);
+    try std.testing.expect(first.upstream_attempted);
+
+    var wrong = [_]u8{'A'} ** capability_mod.carrier_len;
+    defer std.crypto.secureZero(u8, &wrong);
+    if (std.mem.eql(u8, &wrong, &carrier)) wrong[0] = 'B';
+    const rejected = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nAuthorization: Bearer {s}\r\nConnection: close\r\n\r\n",
+        .{ listener.port(), wrong },
+    );
+    defer std.testing.allocator.free(rejected);
+    const rejected_response = try requestRawAlloc(
+        std.testing.allocator,
+        listener.address(),
+        rejected,
+    );
+    defer std.testing.allocator.free(rejected_response);
+    try expectStatus(rejected_response, "HTTP/1.1 401 Unauthorized\r\n");
+
+    const second = observationSnapshot(listener);
+    try std.testing.expectEqual(first.request_id + 1, second.request_id);
+    try std.testing.expectEqual(RequestOutcome.capability_rejected, second.outcome);
+    try std.testing.expect(!second.had_body);
+    try std.testing.expect(!second.model_present);
+    try std.testing.expect(!second.upstream_attempted);
+    try std.testing.expectEqual(@as(u16, 0), second.upstream_status);
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
 }
 
 test "SSE response prefix reaches the client before the upstream completes" {
