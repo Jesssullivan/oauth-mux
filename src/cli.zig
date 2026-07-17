@@ -31,6 +31,7 @@ pub const Command = union(enum) {
     config_validate,
     config_path,
     init: InitArgs,
+    claude: ClaudeArgs,
     codex: CodexArgs,
     completions: CompletionsArgs,
     daemon_run: DaemonRunArgs,
@@ -67,6 +68,16 @@ pub const Command = union(enum) {
         invalid_option: ?[]const u8 = null,
         /// Args after `--` forwarded to codex unchanged.
         forward_argv: []const []const u8 = &.{},
+    };
+
+    /// `omux claude [-- <claude-args...>]` — TIN-1829 managed Claude launch verb.
+    /// No managed-launch options are accepted yet, so anything before `--` is an
+    /// unknown option (rejected like `codex run`). Args after `--` are forwarded
+    /// to the managed Claude child unchanged.
+    pub const ClaudeArgs = struct {
+        target_argv: []const []const u8 = &.{},
+        /// First unrecognized pre-separator option, if any. Never dropped.
+        invalid_option: ?[]const u8 = null,
     };
 
     pub const ExecArgs = struct {
@@ -407,6 +418,7 @@ pub fn parse(args: []const []const u8) Command {
         if (!isCodexLegacySubcommand(rest[0])) return parseCodexAdapter(rest, false);
         return parseCodex(rest);
     }
+    if (eql(cmd, "claude")) return parseClaude(rest);
     if (eql(cmd, "mcp")) return parseMcp(rest);
     if (eql(cmd, "version") or eql(cmd, "--version") or eql(cmd, "-v")) return parseVersion(rest);
     if (eql(cmd, "daemon")) {
@@ -500,6 +512,26 @@ fn parseCodexAdapter(args: []const []const u8, strict_run: bool) Command {
         }
     }
     return .{ .codex_adapter = result };
+}
+
+fn parseClaude(args: []const []const u8) Command {
+    var result = Command.ClaudeArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (eql(args[i], "--")) {
+            result.target_argv = args[i + 1 ..];
+            break;
+        } else if (eql(args[i], "help") or eql(args[i], "--help") or eql(args[i], "-h")) {
+            return .help;
+        } else {
+            // No managed-launch options are accepted yet; reject anything before
+            // `--` the way `codex run` rejects unknown adapter options.
+            result.invalid_option = args[i];
+            result.target_argv = &.{};
+            break;
+        }
+    }
+    return .{ .claude = result };
 }
 
 fn isCodexLegacySubcommand(arg: []const u8) bool {
@@ -1492,6 +1524,11 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  mcp [--profile <name>] [--capability <name>]
         \\      Run the broker MCP/JSON-RPC server on stdio for harness adapters.
+        \\
+        \\  claude [-- <claude-args...>]
+        \\      Managed Claude launch (experimental, unshipped; v0.2 evaluation ladder).
+        \\      Forwarding is compile-disabled, so this aborts fail-closed in preflight:
+        \\      no child is launched and no credential is read.
         \\
         \\  codex [--profile name] [--account provider:account] [--session-home path] [--isolated-session-store] [--json-status] [--json-status-file path] [-- codex-args...]
         \\      Run a broker-mediated Codex adapter session with a local wire proxy.
@@ -2604,6 +2641,62 @@ test "parse codex run adapter args" {
         },
         else => return error.Unexpected,
     }
+}
+
+test "parse claude verb without passthrough args" {
+    const cmd = parse(&[_][]const u8{"claude"});
+    switch (cmd) {
+        .claude => |claude_args| {
+            try std.testing.expectEqual(@as(usize, 0), claude_args.target_argv.len);
+            try std.testing.expect(claude_args.invalid_option == null);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse claude verb forwards args after the separator exactly" {
+    const args = [_][]const u8{ "claude", "--", "--print", "hello" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .claude => |claude_args| {
+            try std.testing.expect(claude_args.invalid_option == null);
+            try std.testing.expectEqual(@as(usize, 2), claude_args.target_argv.len);
+            try std.testing.expectEqualStrings("--print", claude_args.target_argv[0]);
+            try std.testing.expectEqualStrings("hello", claude_args.target_argv[1]);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse claude verb rejects unknown pre-separator options" {
+    const args = [_][]const u8{ "claude", "--profile", "work" };
+    const cmd = parse(&args);
+    switch (cmd) {
+        .claude => |claude_args| {
+            try std.testing.expectEqualStrings("--profile", claude_args.invalid_option.?);
+            try std.testing.expectEqual(@as(usize, 0), claude_args.target_argv.len);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse claude verb help routes to non-mutating help" {
+    switch (parse(&[_][]const u8{ "claude", "--help" })) {
+        .help => {},
+        else => return error.Unexpected,
+    }
+    switch (parse(&[_][]const u8{ "claude", "help" })) {
+        .help => {},
+        else => return error.Unexpected,
+    }
+}
+
+test "printUsage lists the claude verb as experimental and unshipped" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try printUsage(buf.writer());
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\n  claude [-- <claude-args...>]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "experimental, unshipped") != null);
 }
 
 test "parse codex top-level resume aliases route to adapter" {

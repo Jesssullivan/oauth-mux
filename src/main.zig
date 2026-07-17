@@ -23,6 +23,7 @@ const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
+const claude_verb = @import("adapters/claude/verb.zig");
 const identity_hash = @import("identity_hash.zig");
 const advise = @import("quota/advise.zig");
 const doctor_binaries = @import("doctor_binaries.zig");
@@ -219,6 +220,24 @@ pub fn main() !void {
             try runInit(allocator, stdout, init_args);
         },
 
+        .claude => |claude_args| {
+            // `omux claude`: managed Claude launch verb (TIN-1829). Production
+            // forwarding is compile-disabled, so this aborts fail-closed in
+            // preflight before any child spawn. Anchor:
+            // docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md §2.1.
+            if (claude_args.invalid_option) |arg| {
+                log.err("omux claude: unknown option \"{s}\". Usage: omux claude [-- <claude-args...>].", .{arg});
+                std.process.exit(types.ExitCode.general_error.int());
+            }
+            runClaude(allocator, stdout, claude_args) catch |e| switch (e) {
+                error.ManagedLaunchUnshipped => std.process.exit(types.ExitCode.general_error.int()),
+                else => {
+                    log.err("claude: {s}", .{@errorName(e)});
+                    std.process.exit(exitCodeFromPipelineError(e));
+                },
+            };
+        },
+
         .codex => |codex_args| {
             runCodex(allocator, stdout, codex_args) catch |e| {
                 log.err("codex: {s}", .{@errorName(e)});
@@ -349,6 +368,86 @@ pub fn main() !void {
             };
         },
     }
+}
+
+/// `omux claude` managed-launch entry (TIN-1829). Composes the managed-launch
+/// request and hands it to the fail-closed verb boundary. While production
+/// forwarding is compile-disabled the verb refuses in preflight before any child
+/// spawn — printing the operator-facing refusal and exiting nonzero — and never
+/// reads a credential. The RunOptions composition is built here so that, once
+/// forwarding is enabled, the same path launches a real managed child.
+fn runClaude(allocator: std.mem.Allocator, stdout: anytype, args: cli.Command.ClaudeArgs) !void {
+    return runClaudeWithEnvLoader(allocator, stdout, args, DefaultClaudeEnvLoader{});
+}
+
+const DefaultClaudeEnvLoader = struct {
+    fn load(_: DefaultClaudeEnvLoader, allocator: std.mem.Allocator) !std.process.EnvMap {
+        return std.process.getEnvMap(allocator);
+    }
+};
+
+fn runClaudeWithEnvLoader(
+    allocator: std.mem.Allocator,
+    stdout: anytype,
+    args: cli.Command.ClaudeArgs,
+    env_loader: anytype,
+) !void {
+    // This must precede inherited-environment loading: the environment can
+    // contain direct credential values even when no provider account is
+    // selected. The disabled surface therefore performs no launch preparation.
+    try claude_verb.requireAvailable(stdout.any());
+
+    var env = try env_loader.load(allocator);
+    defer env.deinit();
+
+    // Managed child argv: the Claude Code executable, then the forwarded args.
+    const argv = try allocator.alloc([]const u8, 1 + args.target_argv.len);
+    defer allocator.free(argv);
+    argv[0] = "claude";
+    @memcpy(argv[1..], args.target_argv);
+
+    // Fail-closed today; a config load belongs to the increment that flips
+    // forwarding on. The refusal must not depend on config presence.
+    var active_config = config.Config{};
+
+    const term = try claude_verb.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .inherited_env = &env,
+        .active_config = &active_config,
+    }, stdout.any());
+
+    // Reached only once forwarding is compile-enabled and the child exits.
+    switch (term) {
+        .Exited => |code| if (code != 0) std.process.exit(code),
+        else => std.process.exit(types.ExitCode.general_error.int()),
+    }
+}
+
+test "compile-disabled claude verb refuses before inherited environment loading" {
+    const CountingClaudeEnvLoader = struct {
+        calls: *usize,
+
+        fn load(self: @This(), allocator: std.mem.Allocator) !std.process.EnvMap {
+            self.calls.* += 1;
+            return std.process.EnvMap.init(allocator);
+        }
+    };
+    var message = std.ArrayList(u8).init(std.testing.allocator);
+    defer message.deinit();
+    var env_loads: usize = 0;
+
+    try std.testing.expectError(
+        error.ManagedLaunchUnshipped,
+        runClaudeWithEnvLoader(
+            std.testing.allocator,
+            message.writer(),
+            .{},
+            CountingClaudeEnvLoader{ .calls = &env_loads },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), env_loads);
+    try std.testing.expectEqualStrings(claude_verb.unshipped_refusal, message.items);
 }
 
 /// Bounded real-sleep wait for the foreground keepalive loop: terminates after

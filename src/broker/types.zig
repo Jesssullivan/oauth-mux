@@ -1,9 +1,23 @@
-//! Broker public types. Stable within `surface_version` major.
+//! Broker public types. Surface-v1 compatibility wrappers remain distinct
+//! from the active managed-harness surface-v2 handle types.
 //! Anchor: docs/spec/broker-mcp-contract-2026-05-03.md §2.
 
 const std = @import("std");
+const identifiers = @import("identifiers.zig");
 
+/// Shipped broker MCP surface-v1 compatibility version. This is not the
+/// separately planned managed-harness surface-v2 version.
 pub const surface_version: u32 = 1;
+
+/// Active managed-harness surface-v2 opaque handle types.
+pub const SessionHandle = identifiers.SessionHandle;
+pub const AccountHandle = identifiers.AccountHandle;
+pub const RouteHandle = identifiers.RouteHandle;
+
+/// Internal and surface-v1 compatibility parser types.
+pub const AccountKey = identifiers.AccountKey;
+pub const LegacySessionId = identifiers.LegacySessionId;
+pub const LegacyCredentialHandle = identifiers.LegacyCredentialHandle;
 
 /// The claim ladder. Lower = weaker; the product target is `next_turn_seamless`.
 /// `mid_turn_seamless` is a stretch; `cross_session_thread_continuity` is
@@ -28,21 +42,39 @@ pub const ClaimLevel = enum {
     }
 };
 
-/// `provider:account` opaque identity. Owned by the broker config.
+/// Surface-v1 compatibility wrapper for a `provider:account` identity.
+/// Owned by the broker config; not an active-v2 `AccountHandle`.
 pub const AccountId = struct {
     text: []const u8, // e.g. "codex:max-1"
+
+    pub fn parse(text: []const u8) identifiers.ParseError!AccountId {
+        const key = try AccountKey.parse(text);
+        return .{ .text = key.text };
+    }
 };
 
-/// Opaque per-broker session id given out at handshake.
+/// Surface-v1 compatibility wrapper for the session id returned by the
+/// broker MCP handshake; not an active-v2 `SessionHandle`.
 pub const SessionId = struct {
     text: []const u8,
+
+    pub fn parse(text: []const u8) identifiers.ParseError!SessionId {
+        const id = try LegacySessionId.parse(text);
+        return .{ .text = id.text };
+    }
 };
 
-/// Opaque credential handle returned by `account/select`. Resolves to
-/// concrete token bytes only via `credential/materialize` (kept local
-/// when possible; never crosses the wire).
+/// Surface-v1 compatibility wrapper returned by `account/select`; not an
+/// active-v2 account or route handle. Resolves to concrete token bytes only
+/// via `credential/materialize` (kept local when possible; never crosses the
+/// wire).
 pub const CredentialHandle = struct {
     text: []const u8,
+
+    pub fn parse(text: []const u8) identifiers.ParseError!CredentialHandle {
+        const handle = try LegacyCredentialHandle.parse(text);
+        return .{ .text = handle.text };
+    }
 };
 
 /// Quota observation kinds. Matches broker spec §2.4 `quota/observe`.

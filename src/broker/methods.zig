@@ -219,6 +219,26 @@ fn accountList(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     return .{ .ok = .{ .object = out } };
 }
 
+const MintLegacyCredentialHandleError = error{ InvalidParams, OutOfMemory };
+
+/// Mint the exact surface-v1 handle shape, then require the public parser to
+/// accept those same bytes before any session starts referring to the account.
+fn mintLegacyCredentialHandle(
+    allocator: std.mem.Allocator,
+    account_key_text: []const u8,
+    timestamp_ms: i64,
+) MintLegacyCredentialHandleError![]const u8 {
+    _ = types.AccountKey.parse(account_key_text) catch return error.InvalidParams;
+    const handle = std.fmt.allocPrint(
+        allocator,
+        "ch:{s}:{x}",
+        .{ account_key_text, timestamp_ms },
+    ) catch return error.OutOfMemory;
+    errdefer allocator.free(handle);
+    _ = types.LegacyCredentialHandle.parse(handle) catch return error.InvalidParams;
+    return handle;
+}
+
 fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
@@ -236,7 +256,11 @@ fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     if (p.object.get("exclude")) |ex_v| {
         if (ex_v == .array) {
             for (ex_v.array.items) |item| {
-                if (item == .string) excl_buf.append(ctx.allocator, item.string) catch return oom();
+                if (item == .string) {
+                    const account = types.AccountKey.parse(item.string) catch
+                        return invalidParams("malformed exclude account");
+                    excl_buf.append(ctx.allocator, account.text) catch return oom();
+                }
             }
         }
     }
@@ -245,8 +269,17 @@ fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
         error.NoAccountSelectable => return noAccountSelectable(ctx, "no selectable account", profile, capability),
         else => return .{ .err = .{ .err = e, .message = "account election failed" } },
     };
-    ctx.sessions.setCurrentAccount(sid, elected.id) catch |e| return .{
-        .err = .{ .err = e, .message = "session update failed" },
+    const handle = mintLegacyCredentialHandle(
+        ctx.allocator,
+        elected.id,
+        std.time.milliTimestamp(),
+    ) catch |err| switch (err) {
+        error.InvalidParams => return invalidParams("elected account cannot form credential_handle"),
+        error.OutOfMemory => return oom(),
+    };
+    ctx.sessions.setCurrentAccount(sid, elected.id) catch |e| {
+        ctx.allocator.free(handle);
+        return .{ .err = .{ .err = e, .message = "session update failed" } };
     };
 
     var out = std.json.ObjectMap.init(ctx.allocator);
@@ -258,11 +291,6 @@ fn accountSelect(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 
     // Phase 1 returns a placeholder credential_handle. Real materialization
     // happens in task #18 (credential/materialize).
-    const handle = std.fmt.allocPrint(
-        ctx.allocator,
-        "ch:{s}:{x}",
-        .{ elected.id, std.time.milliTimestamp() },
-    ) catch return oom();
     out.put("credential_handle", .{ .string = handle }) catch return oom();
 
     var claim_obj = std.json.ObjectMap.init(ctx.allocator);
@@ -308,8 +336,10 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
         .err => |e| return .{ .err = e },
     };
 
-    const current = strField(p.object, "current_account") orelse
+    const current_text = strField(p.object, "current_account") orelse
         return invalidParams("missing current_account");
+    const current = (types.AccountKey.parse(current_text) catch
+        return invalidParams("malformed current_account")).text;
     const profile = strField(p.object, "profile");
     const capability = strField(p.object, "capability");
     const reason_str = strField(p.object, "reason") orelse "quota_exhausted";
@@ -354,8 +384,17 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
         error.NoAccountSelectable => return noAccountSelectable(ctx, "no replacement account selectable", profile, capability),
         else => return .{ .err = .{ .err = e, .message = "replacement election failed" } },
     };
-    ctx.sessions.setCurrentAccount(sid, elected.id) catch |e| return .{
-        .err = .{ .err = e, .message = "session update failed" },
+    const handle = mintLegacyCredentialHandle(
+        ctx.allocator,
+        elected.id,
+        std.time.milliTimestamp(),
+    ) catch |err| switch (err) {
+        error.InvalidParams => return invalidParams("elected account cannot form credential_handle"),
+        error.OutOfMemory => return oom(),
+    };
+    ctx.sessions.setCurrentAccount(sid, elected.id) catch |e| {
+        ctx.allocator.free(handle);
+        return .{ .err = .{ .err = e, .message = "session update failed" } };
     };
 
     // Build response.
@@ -364,11 +403,6 @@ fn accountSwap(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     out.put(
         "capability",
         if (elected.capability) |cap| std.json.Value{ .string = cap } else std.json.Value{ .null = {} },
-    ) catch return oom();
-    const handle = std.fmt.allocPrint(
-        ctx.allocator,
-        "ch:{s}:{x}",
-        .{ elected.id, std.time.milliTimestamp() },
     ) catch return oom();
     out.put("credential_handle", .{ .string = handle }) catch return oom();
 
@@ -418,8 +452,10 @@ fn quotaObserve(ctx: *Context, params: ?std.json.Value, now_s: i64) DispatchOutc
         .err => |e| return .{ .err = e },
     };
 
-    const account = strField(p.object, "account") orelse
+    const account_text = strField(p.object, "account") orelse
         return invalidParams("missing account");
+    const account = (types.AccountKey.parse(account_text) catch
+        return invalidParams("malformed account")).text;
     const kind_str = strField(p.object, "kind") orelse
         return invalidParams("missing kind");
     const kind = parseQuotaKind(kind_str) orelse
@@ -511,17 +547,6 @@ fn quotaStatus(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
 
 // ── credential/* ──────────────────────────────────────────────────────
 
-/// Parse the `ch:<provider>:<account>:<ts>` shape minted by accountSelect.
-/// Returns the `<provider>:<account>` head, or null if the handle format
-/// is unrecognized.
-fn accountIdFromHandle(handle: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, handle, "ch:")) return null;
-    const after = handle[3..];
-    // Find the LAST ':' to strip the timestamp suffix.
-    const last_colon = std.mem.lastIndexOfScalar(u8, after, ':') orelse return null;
-    return after[0..last_colon];
-}
-
 fn credentialMaterialize(ctx: *Context, params: ?std.json.Value) DispatchOutcome {
     const p = params orelse return invalidParams("missing params");
     if (p != .object) return invalidParams("params must be object");
@@ -532,6 +557,8 @@ fn credentialMaterialize(ctx: *Context, params: ?std.json.Value) DispatchOutcome
 
     const handle = strField(p.object, "credential_handle") orelse
         return invalidParams("missing credential_handle");
+    const legacy_handle = types.LegacyCredentialHandle.parse(handle) catch
+        return invalidParams("malformed credential_handle");
     const shape = strField(p.object, "shape") orelse "chatgpt_auth_tokens";
 
     if (!std.mem.eql(u8, shape, "chatgpt_auth_tokens")) {
@@ -541,15 +568,12 @@ fn credentialMaterialize(ctx: *Context, params: ?std.json.Value) DispatchOutcome
         } };
     }
 
-    const account_id = accountIdFromHandle(handle) orelse
-        return invalidParams("malformed credential_handle");
-
     const mat = ctx.materializer orelse return .{ .err = .{
         .err = error.NotImplemented,
         .message = "no credential materializer wired (broker started without one)",
     } };
 
-    const tokens = mat.materialize_chatgpt(mat.ctx, ctx.allocator, account_id) catch |e| return .{
+    const tokens = mat.materialize_chatgpt(mat.ctx, ctx.allocator, legacy_handle.account_key) catch |e| return .{
         .err = .{ .err = e, .message = "materialize failed" },
     };
 
@@ -597,10 +621,13 @@ fn requireSessionId(ctx: *Context, obj: std.json.ObjectMap) SessionLookup {
     const sid = strField(obj, "session_id") orelse return .{
         .err = .{ .err = error.InvalidParams, .message = "missing session_id" },
     };
-    if (ctx.sessions.getPtr(sid) == null) return .{
+    const legacy_id = types.LegacySessionId.parse(sid) catch return .{
+        .err = .{ .err = error.InvalidParams, .message = "malformed session_id" },
+    };
+    if (ctx.sessions.getPtr(legacy_id.text) == null) return .{
         .err = .{ .err = error.SessionNotFound, .message = "unknown session_id" },
     };
-    return .{ .ok = sid };
+    return .{ .ok = legacy_id.text };
 }
 
 fn invalidParams(msg: []const u8) DispatchOutcome {
@@ -702,6 +729,35 @@ fn routeDiagnosticCommand(
         return std.fmt.allocPrint(allocator, "oauth-mux {s} --capability {s} --json", .{ base, c });
     }
     return std.fmt.allocPrint(allocator, "oauth-mux {s} --json", .{base});
+}
+
+test "surface-v1 credential emitter round-trips or fails closed" {
+    const handle = try mintLegacyCredentialHandle(std.testing.allocator, "codex:org:team", 0x123);
+    defer std.testing.allocator.free(handle);
+    try std.testing.expectEqualStrings("ch:codex:org:team:123", handle);
+
+    const parsed = try types.LegacyCredentialHandle.parse(handle);
+    try std.testing.expectEqualStrings(handle, parsed.text);
+    try std.testing.expectEqualStrings("codex:org:team", parsed.account_key);
+
+    try std.testing.expectError(
+        error.InvalidParams,
+        mintLegacyCredentialHandle(std.testing.allocator, "codex:bad account", 0x123),
+    );
+    try std.testing.expectError(
+        error.InvalidParams,
+        mintLegacyCredentialHandle(std.testing.allocator, "codex:bad\x00account", 0x123),
+    );
+
+    var long_account: [248]u8 = [_]u8{'a'} ** 248;
+    const long_key = try std.fmt.allocPrint(std.testing.allocator, "p:{s}", .{long_account[0..]});
+    defer std.testing.allocator.free(long_key);
+    try std.testing.expectEqual(@as(usize, 250), long_key.len);
+    _ = try types.AccountKey.parse(long_key);
+    try std.testing.expectError(
+        error.InvalidParams,
+        mintLegacyCredentialHandle(std.testing.allocator, long_key, std.math.maxInt(i64)),
+    );
 }
 
 test "dispatch surface/info returns object with surface_version=1" {
@@ -828,7 +884,31 @@ test "surface/handshake without adapter returns InvalidParams" {
     }
 }
 
-test "account methods reject unknown session ids" {
+test "valid-shaped unknown sessions remain SessionNotFound" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var sessions = session_mod.SessionTable.init(arena.allocator());
+    var pool = account_pool_mod.AccountPool.init(arena.allocator());
+    var stderr_buf: [0]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(stderr_buf[0..]);
+    var ctx = Context{
+        .allocator = arena.allocator(),
+        .sessions = &sessions,
+        .pool = &pool,
+        .materializer = null,
+        .log_writer = fbs.writer().any(),
+    };
+
+    var obj = std.json.ObjectMap.init(arena.allocator());
+    try obj.put("session_id", .{ .string = "oms-dead-beef" });
+    const out = dispatch(&ctx, "account/list", .{ .object = obj });
+    switch (out) {
+        .err => |e| try std.testing.expectEqual(error.SessionNotFound, e.err),
+        .ok => return error.TestFailed,
+    }
+}
+
+test "malformed legacy session ids are InvalidParams" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var sessions = session_mod.SessionTable.init(arena.allocator());
@@ -847,7 +927,7 @@ test "account methods reject unknown session ids" {
     try obj.put("session_id", .{ .string = "not-real" });
     const out = dispatch(&ctx, "account/list", .{ .object = obj });
     switch (out) {
-        .err => |e| try std.testing.expectEqual(error.SessionNotFound, e.err),
+        .err => |e| try std.testing.expectEqual(error.InvalidParams, e.err),
         .ok => return error.TestFailed,
     }
 }
@@ -891,41 +971,160 @@ test "account/select records current account on the broker session" {
     try std.testing.expectEqualStrings("codex:max-1", sessions.get(sid).?.current_account.?);
 }
 
-test "accountIdFromHandle property: round-trip with 200 random ids" {
-    // PBT: for any provider:account-shaped string, mint a handle of
-    // the documented format `ch:<id>:<ts>`, then assert
-    // accountIdFromHandle recovers exactly the original id. Catches
-    // off-by-one in the last-colon lookup and edge cases like
-    // multi-segment account names (e.g. codex:max-1, codex:org/team).
-    var prng = std.Random.DefaultPrng.init(0xCAFEF00D);
-    const r = prng.random();
-    const providers = [_][]const u8{ "codex", "claude", "anthropic", "cursor", "p" };
-    const accounts = [_][]const u8{ "a", "max-1", "max-99", "personal-2026", "team/work" };
+test "account select and swap reject unmaterializable handles before session mutation" {
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var sessions = session_mod.SessionTable.init(arena.allocator());
+        var pool = account_pool_mod.AccountPool.init(arena.allocator());
 
-    var i: usize = 0;
-    while (i < 200) : (i += 1) {
-        const provider = providers[r.uintLessThan(usize, providers.len)];
-        const account = accounts[r.uintLessThan(usize, accounts.len)];
-        const ts = r.int(u32);
+        var long_account: [254]u8 = [_]u8{'a'} ** 254;
+        const long_key = try std.fmt.allocPrint(arena.allocator(), "p:{s}", .{long_account[0..]});
+        try std.testing.expectEqual(@as(usize, 256), long_key.len);
+        _ = try types.AccountKey.parse(long_key);
+        try pool.add(.{ .id = long_key, .selectable = true, .liveness = .live, .availability = .available });
 
-        const id_only = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ provider, account });
-        defer std.testing.allocator.free(id_only);
-        const handle = try std.fmt.allocPrint(std.testing.allocator, "ch:{s}:{x}", .{ id_only, ts });
-        defer std.testing.allocator.free(handle);
-
-        const recovered = accountIdFromHandle(handle) orelse {
-            std.debug.print("failed to parse handle: {s}\n", .{handle});
-            return error.ParseFailed;
+        var stderr_buf: [0]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(stderr_buf[0..]);
+        var ctx = Context{
+            .allocator = arena.allocator(),
+            .sessions = &sessions,
+            .pool = &pool,
+            .materializer = null,
+            .log_writer = fbs.writer().any(),
         };
-        try std.testing.expectEqualStrings(id_only, recovered);
+
+        const sid = try sessions.newId();
+        try sessions.create(.{
+            .id = sid,
+            .adapter = "smoke",
+            .adapter_version = "0",
+            .harness_target = "codex",
+            .session_pid = 1,
+            .claim_floor = .broker_owned,
+            .started_at_ms = 0,
+        });
+
+        var obj = std.json.ObjectMap.init(arena.allocator());
+        try obj.put("session_id", .{ .string = sid });
+        const out = dispatch(&ctx, "account/select", .{ .object = obj });
+        switch (out) {
+            .err => |e| try std.testing.expectEqual(error.InvalidParams, e.err),
+            .ok => return error.TestFailed,
+        }
+        try std.testing.expect(sessions.get(sid).?.current_account == null);
+    }
+
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var sessions = session_mod.SessionTable.init(arena.allocator());
+        var pool = account_pool_mod.AccountPool.init(arena.allocator());
+        try pool.add(.{ .id = "codex:current", .selectable = true, .liveness = .live, .availability = .available });
+        try pool.add(.{ .id = "codex:bad account", .selectable = true, .liveness = .live, .availability = .available });
+
+        var stderr_buf: [0]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(stderr_buf[0..]);
+        var ctx = Context{
+            .allocator = arena.allocator(),
+            .sessions = &sessions,
+            .pool = &pool,
+            .materializer = null,
+            .log_writer = fbs.writer().any(),
+        };
+
+        const sid = try sessions.newId();
+        try sessions.create(.{
+            .id = sid,
+            .adapter = "smoke",
+            .adapter_version = "0",
+            .harness_target = "codex",
+            .session_pid = 1,
+            .claim_floor = .broker_owned,
+            .started_at_ms = 0,
+            .current_account = "codex:current",
+        });
+
+        var obj = std.json.ObjectMap.init(arena.allocator());
+        try obj.put("session_id", .{ .string = sid });
+        try obj.put("current_account", .{ .string = "codex:current" });
+        try obj.put("reason", .{ .string = "operator_requested" });
+        const out = dispatch(&ctx, "account/swap", .{ .object = obj });
+        switch (out) {
+            .err => |e| try std.testing.expectEqual(error.InvalidParams, e.err),
+            .ok => return error.TestFailed,
+        }
+        try std.testing.expectEqualStrings("codex:current", sessions.get(sid).?.current_account.?);
     }
 }
 
-test "accountIdFromHandle parses ch:provider:account:ts shape" {
-    try std.testing.expectEqualStrings("codex:max-1", accountIdFromHandle("ch:codex:max-1:19def8fe019").?);
-    try std.testing.expect(accountIdFromHandle("nope") == null);
-    try std.testing.expect(accountIdFromHandle("ch:no-second-colon") == null);
-    try std.testing.expect(accountIdFromHandle("") == null);
+test "credential/materialize rejects empty account before materializer" {
+    const State = struct {
+        calls: usize = 0,
+        saw_colon_account: bool = false,
+    };
+    const Stub = struct {
+        fn materialize(
+            raw_state: *anyopaque,
+            allocator: std.mem.Allocator,
+            account_id: []const u8,
+        ) types.BrokerError!types.ChatgptAuthTokens {
+            _ = allocator;
+            const state: *State = @ptrCast(@alignCast(raw_state));
+            state.calls += 1;
+            state.saw_colon_account = std.mem.eql(u8, account_id, "codex:org:team");
+            return error.SecretUnavailable;
+        }
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var sessions = session_mod.SessionTable.init(arena.allocator());
+    var pool = account_pool_mod.AccountPool.init(arena.allocator());
+    var state = State{};
+    var stderr_buf: [0]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(stderr_buf[0..]);
+    var ctx = Context{
+        .allocator = arena.allocator(),
+        .sessions = &sessions,
+        .pool = &pool,
+        .materializer = .{
+            .ctx = &state,
+            .materialize_chatgpt = Stub.materialize,
+        },
+        .log_writer = fbs.writer().any(),
+    };
+
+    const sid = "oms-dead-beef";
+    try sessions.create(.{
+        .id = sid,
+        .adapter = "smoke",
+        .adapter_version = "0",
+        .harness_target = "codex",
+        .session_pid = 1,
+        .claim_floor = .broker_owned,
+        .started_at_ms = 0,
+    });
+
+    var obj = std.json.ObjectMap.init(arena.allocator());
+    try obj.put("session_id", .{ .string = sid });
+    try obj.put("credential_handle", .{ .string = "ch:codex::deadbeef" });
+    const out = dispatch(&ctx, "credential/materialize", .{ .object = obj });
+
+    try std.testing.expectEqual(@as(usize, 0), state.calls);
+    switch (out) {
+        .err => |e| try std.testing.expectEqual(error.InvalidParams, e.err),
+        .ok => return error.TestFailed,
+    }
+
+    try obj.put("credential_handle", .{ .string = "ch:codex:org:team:deadbeef" });
+    const valid_out = dispatch(&ctx, "credential/materialize", .{ .object = obj });
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expect(state.saw_colon_account);
+    switch (valid_out) {
+        .err => |e| try std.testing.expectEqual(error.SecretUnavailable, e.err),
+        .ok => return error.TestFailed,
+    }
 }
 
 test "ErrorCode.fromBrokerError covers all variants" {

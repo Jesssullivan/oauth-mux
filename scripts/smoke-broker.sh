@@ -158,7 +158,7 @@ assert_eq "surface/info.events_append disabled" "false" "$(echo "$r" | jq -r .re
 
 # 1b. session validation rejects unknown ids before handshake.
 r=$(send_rpc '{"jsonrpc":"2.0","id":10,"method":"account/list","params":{"session_id":"not-real"}}')
-assert_eq "account/list unknown session code" "-32012" "$(echo "$r" | jq -r .error.code)"
+assert_eq "account/list malformed session code" "-32602" "$(echo "$r" | jq -r .error.code)"
 
 # 2. surface/handshake
 r=$(send_rpc '{"jsonrpc":"2.0","id":2,"method":"surface/handshake","params":{"adapter":"smoke","adapter_version":"0","harness_target":"codex","session_pid":1}}')

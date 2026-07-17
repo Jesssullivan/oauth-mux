@@ -294,6 +294,20 @@ remote-first-run-e2e REF="":
 remote-release-proof REF="" VERSION=release_version:
     OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
 
+# v0.2 evaluation ladder. Stage 1 is diagnostic only; Stage 2 and G4 remain
+# fail-closed remote targets until their named predicate suites exist.
+v02-stage1-local CANDIDATE_SHA:
+    @echo "v02-stage1-local: local_debug_only"
+    ./scripts/v02-proof-provenance-local.sh assert-local-candidate "{{CANDIDATE_SHA}}"
+    ./scripts/smoke-remote-validate-contract.sh
+    @echo "v02-stage1-local: result=local_debug_only"
+
+v02-stage2-conformance CANDIDATE_SHA REF:
+    ./scripts/remote-validate.sh v02-stage2-conformance "{{REF}}" --candidate-sha "{{CANDIDATE_SHA}}"
+
+v02-benchmark CANDIDATE_SHA REF:
+    ./scripts/remote-validate.sh v02-benchmark "{{REF}}" --candidate-sha "{{CANDIDATE_SHA}}"
+
 # ── Bazel / REAPI candidate (TIN-2105, not proof authority yet) ──
 
 flywheel-zig-info *ARGS:
