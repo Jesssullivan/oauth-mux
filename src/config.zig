@@ -470,6 +470,20 @@ fn validateProviderDefinition(def_key: []const u8, def: provider_schema.Provider
         ok.* = false;
     }
 
+    const mux_refresh_authorized =
+        def.repair.owner == .oauth_mux_refresh or
+        (def.repair.owner == .upstream_cli_login and
+            def.repair.proactive_refresh == .oauth_refresh_token);
+    if (def.repair.refresh_token_response == .reuse_submitted_if_omitted and
+        !mux_refresh_authorized)
+    {
+        try writer.print(
+            "config error: provider_definitions.{s}.repair.refresh_token_response 'reuse_submitted_if_omitted' requires oauth-mux refresh authority\n",
+            .{def_key},
+        );
+        ok.* = false;
+    }
+
     if (def.injection.direct_env) |direct_env| {
         for (direct_env) |mapping| {
             if (mapping[0].len == 0) {
@@ -1198,6 +1212,96 @@ test "validate rejects unsupported direct env token field" {
     defer out.deinit();
     try std.testing.expectError(error.ConfigValidationError, validate(parsed.value, out.writer()));
     try std.testing.expect(std.mem.indexOf(u8, out.items, "unsupported token field 'expires_at'") != null);
+}
+
+test "custom refresh-token reuse policy requires declared mux refresh authority" {
+    const rejected_json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "repair": {
+        \\        "proactive_refresh": "oauth_refresh_token",
+        \\        "refresh_token_response": "reuse_submitted_if_omitted"
+        \\      },
+        \\      "credential": {
+        \\        "access_token_path": "access",
+        \\        "refresh_token_path": "refresh"
+        \\      }
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const rejected = try loadFromBytes(std.testing.allocator, rejected_json);
+    defer rejected.deinit();
+    var rejected_out = std.ArrayList(u8).init(std.testing.allocator);
+    defer rejected_out.deinit();
+    try std.testing.expectError(
+        error.ConfigValidationError,
+        validate(rejected.value, rejected_out.writer()),
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            rejected_out.items,
+            "reuse_submitted_if_omitted' requires oauth-mux refresh authority",
+        ) != null,
+    );
+
+    const admitted_json =
+        \\{
+        \\  "version": 1,
+        \\  "provider_definitions": {
+        \\    "toy": {
+        \\      "name": "toy",
+        \\      "repair": {
+        \\        "owner": "upstream_cli_login",
+        \\        "proactive_refresh": "oauth_refresh_token",
+        \\        "refresh_token_response": "reuse_submitted_if_omitted"
+        \\      },
+        \\      "credential": {
+        \\        "access_token_path": "access",
+        \\        "refresh_token_path": "refresh"
+        \\      }
+        \\    }
+        \\  },
+        \\  "providers": {
+        \\    "toy": {
+        \\      "kind": "toy",
+        \\      "accounts": {
+        \\        "default": {
+        \\          "secret": { "backend": "env", "variable": "TOY_AUTH" }
+        \\        }
+        \\      }
+        \\    }
+        \\  },
+        \\  "profiles": {},
+        \\  "strategies": {}
+        \\}
+    ;
+    const admitted = try loadFromBytes(std.testing.allocator, admitted_json);
+    defer admitted.deinit();
+    var admitted_out = std.ArrayList(u8).init(std.testing.allocator);
+    defer admitted_out.deinit();
+    try validate(admitted.value, admitted_out.writer());
+    try std.testing.expectEqual(@as(usize, 0), admitted_out.items.len);
+    try std.testing.expect(
+        admitted.value.provider_definitions.map.get("toy").?.repair.refresh_token_response ==
+            .reuse_submitted_if_omitted,
+    );
 }
 
 test "validate rejects unsupported capability probe method" {

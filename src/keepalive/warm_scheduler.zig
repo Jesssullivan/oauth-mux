@@ -14,11 +14,11 @@
 //! work. A refresh that fails repeatedly is marked `dead` and SKIPPED — the other
 //! accounts keep being warmed. One live account keeps the fleet afloat.
 //!
-//! Self-contained: `std` only, no `@import` of existing `src`. The daemon wiring
-//! that calls `tick` and the binding of the refresh seam to the broker's
-//! `credential/refresh` (B.2) are coordinated follow-ups (shared files).
+//! The scheduler imports only `std` plus the shared closed `RefreshOutcome`;
+//! credential I/O remains outside this pure core.
 
 const std = @import("std");
+const types = @import("../types.zig");
 
 /// Per-account state the scheduler reads and updates in place. `key` is an
 /// opaque, borrowed identifier (e.g. "claude:org:acct") the refresh seam acts on;
@@ -36,6 +36,10 @@ pub const Account = struct {
     /// Gave up after `max_failures` — skipped by the scheduler so it never blocks
     /// the live accounts. Cleared externally on operator re-login.
     dead: bool = false,
+    /// Hard rotating-lineage death, distinct from a legacy retry-budget death.
+    quarantined: bool = false,
+    /// Last closed refresh result observed for this account.
+    last_refresh_outcome: ?types.RefreshOutcome = null,
 };
 
 /// Tunable scheduling policy. Integer-only (no float) so timing is deterministic.
@@ -129,10 +133,11 @@ pub const RefreshError = error{ OutOfMemory, RefreshFailed };
 /// Seam contract: `new_expires_at_ms` SHOULD be strictly greater than
 /// `new_last_refresh_ms`. A degenerate result (expiry <= issue) would leave the
 /// account perpetually `isDue` → a per-tick busy-loop against the broker. The
-/// pure core defends itself in depth: `tick` treats such a result as a refresh
-/// failure (rate-limited via backoff, escalates to `dead`) rather than committing
-/// the bad instants. The B.2 seam binding should still reject such a provider
-/// response upstream — this guard is the last line, not the first.
+/// pure core defends itself in depth: `tick` treats such a result as a typed
+/// endpoint transient (rate-limited via backoff, never charged to the credential
+/// death budget) rather than committing the bad instants. The B.2 seam binding
+/// should still reject such a provider response upstream — this guard is the
+/// last line, not the first.
 pub const RefreshResult = struct {
     new_last_refresh_ms: i64,
     new_expires_at_ms: i64,
@@ -140,6 +145,8 @@ pub const RefreshResult = struct {
 
 /// Perform one account's refresh (broker `credential/refresh` under the flock).
 pub const RefreshFn = *const fn (ctx: *anyopaque, account_key: []const u8) RefreshError!RefreshResult;
+pub const RefreshOutcomeFn = *const fn (ctx: *anyopaque, account_key: []const u8) ?types.RefreshOutcome;
+pub const RefreshQuarantinedFn = *const fn (ctx: *anyopaque, account_key: []const u8) bool;
 
 // ── Notification seam (TIN-2061) ─────────────────────────────────────────────
 
@@ -154,7 +161,7 @@ pub const NotifyReason = enum { refresh_failed, credential_dead };
 
 /// Injected notification callback. Called at most once per transition, from the
 /// tick's failure path only — never on a successful refresh, never on a skipped
-/// dead account, never on a transient (OOM). `account_key` is borrowed.
+/// dead account, never on a typed transient. `account_key` is borrowed.
 pub const NotifyFn = *const fn (ctx: *anyopaque, reason: NotifyReason, account_key: []const u8) void;
 
 pub const NotifySeam = struct { func: NotifyFn, ctx: *anyopaque };
@@ -166,9 +173,10 @@ pub const TickReport = struct {
     died: u32 = 0,
     not_due: u32 = 0,
     skipped_dead: u32 = 0,
-    /// Transient errors (e.g. OOM) — not counted toward the death budget, but the
+    /// Typed transient errors — not counted toward the death budget, but the
     /// backoff gate IS armed so a sticky transient can't hammer the broker.
     transient: u32 = 0,
+    quarantined: u32 = 0,
 };
 
 // ── The scheduler ──────────────────────────────────────────────────────────
@@ -179,6 +187,12 @@ pub const Scheduler = struct {
     clock_ctx: *anyopaque,
     refresh: RefreshFn,
     refresh_ctx: *anyopaque,
+    /// Optional typed outcome side channel. Legacy injected seams can omit it
+    /// and retain their existing generic RefreshFailed retry-budget behavior.
+    refresh_outcome: ?RefreshOutcomeFn = null,
+    /// Internal disposition side channel. Indeterminate rotating lineage is
+    /// quarantined even though its persisted public outcome remains transient.
+    refresh_quarantined: ?RefreshQuarantinedFn = null,
     /// Optional desktop-notification seam (TIN-2061). null (default) = today's
     /// behavior byte-for-byte: no notifications, and the pure core stays fully
     /// deterministic (the seam is the only effect, and it is injected).
@@ -186,9 +200,8 @@ pub const Scheduler = struct {
 
     /// Record a refresh failure on `a`: increment the failure count, arm the
     /// backoff gate, and mark the account `dead` exactly once when it exhausts the
-    /// failure budget. Shared by the hard-failure path and the degenerate-success
-    /// guard so both escalate identically. `now +| backoff` is saturating so a
-    /// huge clock value can't overflow the gate instant.
+    /// failure budget. `now +| backoff` is saturating so a huge clock value can't
+    /// overflow the gate instant.
     fn recordFailure(self: *const Scheduler, a: *Account, now: i64, report: *TickReport) void {
         a.failures +|= 1;
         if (a.failures >= self.policy.max_failures) {
@@ -202,6 +215,24 @@ pub const Scheduler = struct {
             report.failed += 1;
             if (self.notify) |n| n.func(n.ctx, .refresh_failed, a.key);
         }
+    }
+
+    fn recordTransient(self: *const Scheduler, a: *Account, now: i64, report: *TickReport) void {
+        a.next_attempt_ms = now +| backoffDelayMs(a.failures +| 1, self.policy);
+        report.transient += 1;
+    }
+
+    fn recordTypedTransient(self: *const Scheduler, a: *Account, now: i64, report: *TickReport) void {
+        self.recordTransient(a, now, report);
+    }
+
+    fn quarantine(self: *const Scheduler, a: *Account, report: *TickReport) void {
+        a.dead = true;
+        a.quarantined = true;
+        a.next_attempt_ms = 0;
+        report.died += 1;
+        report.quarantined += 1;
+        if (self.notify) |n| n.func(n.ctx, .credential_dead, a.key);
     }
 
     /// Run one scheduling tick: refresh every account due now (updating its state
@@ -228,10 +259,38 @@ pub const Scheduler = struct {
                         // gate so a sticky OOM can't re-attempt every tick.
                         // failures is untouched, so backoffDelayMs(failures+1)
                         // floors at one backoff_base even on the first OOM.
-                        a.next_attempt_ms = now +| backoffDelayMs(a.failures +| 1, self.policy);
-                        report.transient += 1;
+                        a.last_refresh_outcome = .transient_store;
+                        self.recordTransient(a, now, &report);
                     },
-                    error.RefreshFailed => self.recordFailure(a, now, &report),
+                    error.RefreshFailed => {
+                        const typed = if (self.refresh_outcome) |outcome_fn|
+                            outcome_fn(self.refresh_ctx, a.key)
+                        else
+                            null;
+                        if (typed) |outcome| {
+                            a.last_refresh_outcome = outcome;
+                            const quarantined = if (self.refresh_quarantined) |quarantined_fn|
+                                quarantined_fn(self.refresh_ctx, a.key)
+                            else
+                                false;
+                            if (quarantined or outcome == .hard_lineage_invalidated) {
+                                self.quarantine(a, &report);
+                            } else switch (outcome) {
+                                .transient_lock,
+                                .transient_network,
+                                .transient_store,
+                                .transient_endpoint,
+                                => self.recordTypedTransient(a, now, &report),
+                                .hard_lineage_invalidated => unreachable,
+                                // A seam reporting success through an error is
+                                // inconsistent; preserve the legacy fail-closed
+                                // retry-budget behavior.
+                                .refreshed => self.recordFailure(a, now, &report),
+                            }
+                        } else {
+                            self.recordFailure(a, now, &report);
+                        }
+                    },
                 }
                 continue;
             };
@@ -240,15 +299,210 @@ pub const Scheduler = struct {
             // busy-loop against the broker. Escalate it like a failure instead of
             // committing the bad instants (see RefreshResult's seam contract).
             if (result.new_expires_at_ms <= result.new_last_refresh_ms) {
-                self.recordFailure(a, now, &report);
+                a.last_refresh_outcome = .transient_endpoint;
+                self.recordTypedTransient(a, now, &report);
                 continue;
             }
             a.last_refresh_ms = result.new_last_refresh_ms;
             a.expires_at_ms = result.new_expires_at_ms;
             a.failures = 0;
             a.next_attempt_ms = 0;
+            a.last_refresh_outcome = .refreshed;
             report.refreshed += 1;
         }
         return report;
     }
 };
+
+test "typed keepalive outcomes back off transients and quarantine only hard lineage" {
+    const Fake = struct {
+        outcome: types.RefreshOutcome,
+
+        fn clock(ctx: *anyopaque) i64 {
+            _ = ctx;
+            return 10_000;
+        }
+
+        fn refresh(ctx: *anyopaque, key: []const u8) RefreshError!RefreshResult {
+            _ = ctx;
+            _ = key;
+            return error.RefreshFailed;
+        }
+
+        fn refreshOutcome(ctx: *anyopaque, key: []const u8) ?types.RefreshOutcome {
+            _ = key;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.outcome;
+        }
+    };
+
+    inline for (std.meta.fields(types.RefreshOutcome)) |field| {
+        const outcome: types.RefreshOutcome = @enumFromInt(field.value);
+        var fake = Fake{ .outcome = outcome };
+        const scheduler = Scheduler{
+            .clock = Fake.clock,
+            .clock_ctx = &fake,
+            .refresh = Fake.refresh,
+            .refresh_ctx = &fake,
+            .refresh_outcome = Fake.refreshOutcome,
+        };
+        var accounts = [_]Account{.{
+            .key = "toy:lineage",
+            .last_refresh_ms = 0,
+            .expires_at_ms = 1,
+        }};
+        const report = scheduler.tick(&accounts);
+        try std.testing.expectEqual(outcome, accounts[0].last_refresh_outcome.?);
+        switch (outcome) {
+            .transient_lock, .transient_network, .transient_store, .transient_endpoint => {
+                try std.testing.expectEqual(@as(u32, 1), report.transient);
+                try std.testing.expect(!accounts[0].dead);
+                try std.testing.expectEqual(@as(u32, 0), report.failed);
+                try std.testing.expectEqual(@as(u32, 0), accounts[0].failures);
+                try std.testing.expect(accounts[0].next_attempt_ms > 10_000);
+            },
+            .hard_lineage_invalidated => {
+                try std.testing.expect(accounts[0].dead);
+                try std.testing.expect(accounts[0].quarantined);
+                try std.testing.expectEqual(@as(u32, 1), report.quarantined);
+                try std.testing.expectEqual(@as(u32, 1), report.died);
+            },
+            .refreshed => {
+                // Success reported through an error is inconsistent and keeps
+                // the legacy fail-closed retry-budget behavior.
+                try std.testing.expectEqual(@as(u32, 1), report.failed);
+                try std.testing.expectEqual(@as(u32, 1), accounts[0].failures);
+            },
+        }
+    }
+}
+
+test "private indeterminate disposition quarantines a transient persisted outcome" {
+    const Fake = struct {
+        fn clock(ctx: *anyopaque) i64 {
+            _ = ctx;
+            return 10_000;
+        }
+
+        fn refresh(ctx: *anyopaque, key: []const u8) RefreshError!RefreshResult {
+            _ = ctx;
+            _ = key;
+            return error.RefreshFailed;
+        }
+
+        fn refreshOutcome(ctx: *anyopaque, key: []const u8) ?types.RefreshOutcome {
+            _ = ctx;
+            _ = key;
+            return .transient_store;
+        }
+
+        fn refreshQuarantined(ctx: *anyopaque, key: []const u8) bool {
+            _ = ctx;
+            _ = key;
+            return true;
+        }
+    };
+    var dummy_ctx: u8 = 0;
+    const scheduler = Scheduler{
+        .clock = Fake.clock,
+        .clock_ctx = &dummy_ctx,
+        .refresh = Fake.refresh,
+        .refresh_ctx = &dummy_ctx,
+        .refresh_outcome = Fake.refreshOutcome,
+        .refresh_quarantined = Fake.refreshQuarantined,
+    };
+    var accounts = [_]Account{.{
+        .key = "toy:indeterminate",
+        .last_refresh_ms = 0,
+        .expires_at_ms = 1,
+    }};
+    const report = scheduler.tick(&accounts);
+    try std.testing.expect(accounts[0].dead);
+    try std.testing.expect(accounts[0].quarantined);
+    try std.testing.expectEqual(
+        types.RefreshOutcome.transient_store,
+        accounts[0].last_refresh_outcome.?,
+    );
+    try std.testing.expectEqual(@as(u32, 1), report.quarantined);
+    try std.testing.expectEqual(@as(u32, 0), report.transient);
+}
+
+test "typed transients never consume the legacy death budget after repeated retries" {
+    const Fake = struct {
+        outcome: types.RefreshOutcome,
+        now: i64 = 10_000,
+        refresh_failed_notifications: u32 = 0,
+        credential_dead_notifications: u32 = 0,
+
+        fn clock(ctx: *anyopaque) i64 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.now;
+        }
+
+        fn refresh(ctx: *anyopaque, key: []const u8) RefreshError!RefreshResult {
+            _ = ctx;
+            _ = key;
+            return error.RefreshFailed;
+        }
+
+        fn refreshOutcome(ctx: *anyopaque, key: []const u8) ?types.RefreshOutcome {
+            _ = key;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            return self.outcome;
+        }
+
+        fn notify(ctx: *anyopaque, reason: NotifyReason, key: []const u8) void {
+            _ = key;
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (reason) {
+                .refresh_failed => self.refresh_failed_notifications += 1,
+                .credential_dead => self.credential_dead_notifications += 1,
+            }
+        }
+    };
+
+    const transients = [_]types.RefreshOutcome{
+        .transient_lock,
+        .transient_network,
+        .transient_store,
+        .transient_endpoint,
+    };
+    for (transients) |outcome| {
+        var fake = Fake{ .outcome = outcome };
+        const scheduler = Scheduler{
+            .policy = .{ .max_failures = 8 },
+            .clock = Fake.clock,
+            .clock_ctx = &fake,
+            .refresh = Fake.refresh,
+            .refresh_ctx = &fake,
+            .refresh_outcome = Fake.refreshOutcome,
+            .notify = .{ .func = Fake.notify, .ctx = &fake },
+        };
+        var accounts = [_]Account{.{
+            .key = "toy:transient",
+            .last_refresh_ms = 0,
+            .expires_at_ms = 1,
+            .failures = 7,
+        }};
+
+        var attempts: usize = 0;
+        while (attempts < 16) : (attempts += 1) {
+            accounts[0].next_attempt_ms = 0;
+            const report = scheduler.tick(&accounts);
+            try std.testing.expectEqual(@as(u32, 1), report.transient);
+            try std.testing.expectEqual(@as(u32, 0), report.failed);
+            try std.testing.expectEqual(@as(u32, 0), report.died);
+            try std.testing.expect(!accounts[0].dead);
+            try std.testing.expectEqual(@as(u32, 7), accounts[0].failures);
+            fake.now += 1;
+        }
+        try std.testing.expectEqual(
+            @as(u32, 0),
+            fake.refresh_failed_notifications,
+        );
+        try std.testing.expectEqual(
+            @as(u32, 0),
+            fake.credential_dead_notifications,
+        );
+    }
+}

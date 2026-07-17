@@ -244,20 +244,45 @@ test "refreshDueAtMs: pathological i64-extreme inputs never overflow-panic" {
     try std.testing.expect(!ws.isDue(c, .{}, 0));
 }
 
-test "tick: a degenerate success (expiry <= issue) is escalated, not committed" {
+test "tick: a degenerate success stays endpoint-transient beyond the death budget" {
     var clk = FakeClock{ .now = 1_000_000 };
     // "success" but new_expires == new_last → adopting it would be perpetually due.
     var ref = FakeRefresher{ .new_last = 2_000_000, .new_expires = 2_000_000 };
-    const sched = scheduler(&clk, &ref, due_policy);
+    var notifier = RecordingNotifier{};
+    var sched = scheduler(&clk, &ref, .{
+        .refresh_percent = due_policy.refresh_percent,
+        .min_lead_ms = due_policy.min_lead_ms,
+        .backoff_base_ms = due_policy.backoff_base_ms,
+        .backoff_factor = due_policy.backoff_factor,
+        .backoff_max_ms = due_policy.backoff_max_ms,
+        .max_failures = 8,
+    });
+    sched.notify = notifier.seam();
     var accounts = [_]ws.Account{
-        .{ .key = "k", .last_refresh_ms = 0, .expires_at_ms = 1_000_000 },
+        .{
+            .key = "k",
+            .last_refresh_ms = 0,
+            .expires_at_ms = 1_000_000,
+            .failures = 7,
+        },
     };
-    const r = sched.tick(&accounts);
-    try std.testing.expectEqual(@as(u32, 0), r.refreshed); // NOT adopted
-    try std.testing.expectEqual(@as(u32, 1), r.failed); // escalated like a failure
-    try std.testing.expectEqual(@as(u32, 1), accounts[0].failures);
-    try std.testing.expectEqual(@as(i64, 0), accounts[0].last_refresh_ms); // bad instants not committed
-    try std.testing.expect(accounts[0].next_attempt_ms > clk.now); // backoff gate armed → no busy-loop
+    var attempts: usize = 0;
+    while (attempts < 16) : (attempts += 1) {
+        accounts[0].next_attempt_ms = 0;
+        const r = sched.tick(&accounts);
+        try std.testing.expectEqual(@as(u32, 0), r.refreshed);
+        try std.testing.expectEqual(@as(u32, 0), r.failed);
+        try std.testing.expectEqual(@as(u32, 1), r.transient);
+        try std.testing.expectEqual(@as(u32, 0), r.died);
+        try std.testing.expect(!accounts[0].dead);
+        try std.testing.expectEqual(@as(u32, 7), accounts[0].failures);
+        try std.testing.expect(accounts[0].last_refresh_outcome.? == .transient_endpoint);
+        try std.testing.expectEqual(@as(i64, 0), accounts[0].last_refresh_ms);
+        try std.testing.expect(accounts[0].next_attempt_ms > clk.now);
+        clk.now += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 0), notifier.refresh_failed);
+    try std.testing.expectEqual(@as(u32, 0), notifier.credential_dead);
 }
 
 test "tick: a sticky OOM is rate-limited by the backoff gate across ticks" {

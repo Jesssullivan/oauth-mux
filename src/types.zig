@@ -149,6 +149,32 @@ pub const FailReason = enum {
     network_error,
 };
 
+/// Closed, provider-neutral result of a refresh operation. These tags are safe
+/// to persist and expose through status surfaces: they contain no endpoint
+/// body, token, provider error text, account identity, or store path.
+///
+/// `hard_lineage_invalidated` is an outcome, not a proof primitive. The proof
+/// that permits producing it stays inside the flock-owning refresh operation.
+pub const RefreshOutcome = enum {
+    refreshed,
+    transient_lock,
+    transient_network,
+    transient_store,
+    transient_endpoint,
+    hard_lineage_invalidated,
+
+    pub const ParseError = error{UnknownRefreshOutcome};
+
+    pub fn parse(value: []const u8) ParseError!RefreshOutcome {
+        inline for (std.meta.fields(RefreshOutcome)) |field| {
+            if (std.mem.eql(u8, value, field.name)) {
+                return @enumFromInt(field.value);
+            }
+        }
+        return error.UnknownRefreshOutcome;
+    }
+};
+
 // ── Credential Liveness ──
 //
 // Three distinct layers that the mux pipeline must reason about:
@@ -584,6 +610,12 @@ pub const PipelineError = error{
     TokenParseFailed,
     TokenExpired,
     TokenRefreshFailed,
+    RefreshQuarantinePersistenceFailed,
+    RefreshTransientLock,
+    RefreshTransientNetwork,
+    RefreshTransientStore,
+    RefreshTransientEndpoint,
+    RefreshLineageIndeterminate,
     TokenRevoked,
     RateLimited,
     NetworkError,
@@ -631,6 +663,17 @@ test "ProviderKind.configDirEnv" {
     try testing.expectEqualStrings("CLAUDE_CONFIG_DIR", ProviderKind.claude.configDirEnv().?);
     try testing.expectEqualStrings("CODEX_HOME", ProviderKind.codex.configDirEnv().?);
     try testing.expect(ProviderKind.github.configDirEnv() == null);
+}
+
+test "RefreshOutcome is closed and rejects unknown persisted tags" {
+    inline for (std.meta.fields(RefreshOutcome)) |field| {
+        const outcome: RefreshOutcome = @enumFromInt(field.value);
+        try std.testing.expectEqual(outcome, try RefreshOutcome.parse(field.name));
+    }
+    try std.testing.expectError(
+        error.UnknownRefreshOutcome,
+        RefreshOutcome.parse("endpoint_said_invalid_grant"),
+    );
 }
 
 test "TokenBucket.tryConsume" {

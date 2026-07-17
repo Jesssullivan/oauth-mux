@@ -7,10 +7,12 @@ const std = @import("std");
 const testing = std.testing;
 const ws = @import("warm_scheduler.zig");
 const runner = @import("warm_runner.zig");
+const bind = @import("warm_binding.zig");
 const pipeline = @import("../pipeline.zig");
 const config_mod = @import("../config.zig");
 const health_mod = @import("../health.zig");
 const repair_state = @import("../repair_state.zig");
+const types = @import("../types.zig");
 
 test {
     testing.refAllDeclsRecursive(runner);
@@ -138,6 +140,94 @@ test "doRefresh on an un-admitted (builtin-posture) account is RefreshFailed (gr
 
     var wr = runner.WarmRunner{ .allocator = testing.allocator, .cfg = parsed.value, .health = &store };
     try testing.expectError(ws.RefreshError.RefreshFailed, runner.WarmRunner.doRefresh(&wr, "toy", "a"));
+}
+
+test "pipeline success with typed lock transient stays transient through the scheduler" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(testing.allocator);
+    defer rt_scope.deinit(testing.allocator);
+    rt_scope.activate();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+    const path_a = try std.fmt.allocPrint(testing.allocator, "{s}/a.json", .{root});
+    defer testing.allocator.free(path_a);
+    const path_b = try std.fmt.allocPrint(testing.allocator, "{s}/b.json", .{root});
+    defer testing.allocator.free(path_b);
+    const expires_at = std.time.timestamp() + 29;
+    try writeCred(path_a, "rt-a", expires_at);
+
+    const json = try twoAccountConfig(
+        testing.allocator,
+        "oauth_mux_refresh",
+        path_a,
+        path_b,
+    );
+    defer testing.allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(testing.allocator, json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(testing.allocator, .{});
+    defer store.deinit();
+
+    // A foreign flock makes pipeline.refreshAccount record transient_lock but
+    // return success while the still-valid access token remains usable.
+    const lock_path = try repair_state.lockPath(testing.allocator, "toy", "a");
+    defer testing.allocator.free(lock_path);
+    if (std.fs.path.dirname(lock_path)) |dir| try std.fs.cwd().makePath(dir);
+    const holder = try std.fs.createFileAbsolute(lock_path, .{
+        .truncate = false,
+        .mode = 0o600,
+        .lock = .exclusive,
+        .lock_nonblocking = true,
+    });
+    defer holder.close();
+
+    var wr = runner.WarmRunner{
+        .allocator = testing.allocator,
+        .cfg = parsed.value,
+        .health = &store,
+    };
+    var binding = bind.RefreshBinding{
+        .do_refresh = runner.WarmRunner.doRefresh,
+        .do_refresh_ctx = &wr,
+        .do_refresh_outcome = runner.WarmRunner.refreshOutcome,
+    };
+    const scheduler = ws.Scheduler{
+        .clock = runner.WarmRunner.clock,
+        .clock_ctx = &wr,
+        .refresh = bind.RefreshBinding.refresh,
+        .refresh_ctx = &binding,
+        .refresh_outcome = bind.RefreshBinding.refreshOutcome,
+    };
+    const original_last_refresh_ms: i64 = 0;
+    const original_expires_at_ms = expires_at * std.time.ms_per_s;
+    var accounts = [_]ws.Account{.{
+        .key = "toy:a",
+        .last_refresh_ms = original_last_refresh_ms,
+        .expires_at_ms = original_expires_at_ms,
+        .failures = 3,
+    }};
+
+    const report = scheduler.tick(&accounts);
+    try testing.expectEqual(@as(u32, 0), report.refreshed);
+    try testing.expectEqual(@as(u32, 1), report.transient);
+    try testing.expectEqual(@as(u32, 0), report.failed);
+    try testing.expectEqual(@as(u32, 3), accounts[0].failures);
+    try testing.expectEqual(original_last_refresh_ms, accounts[0].last_refresh_ms);
+    try testing.expectEqual(original_expires_at_ms, accounts[0].expires_at_ms);
+    try testing.expectEqual(
+        types.RefreshOutcome.transient_lock,
+        wr.last_refresh_outcome.?,
+    );
+    try testing.expectEqual(
+        types.RefreshOutcome.transient_lock,
+        binding.last_refresh_outcome.?,
+    );
+    try testing.expectEqual(
+        types.RefreshOutcome.transient_lock,
+        accounts[0].last_refresh_outcome.?,
+    );
 }
 
 // ── TIN-2113: shared-identity exclusion ──────────────────────────────────────

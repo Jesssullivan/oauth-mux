@@ -202,11 +202,20 @@ pub const RepairConfig = struct {
     // ownership (`owner`) is unaffected: interactive re-auth stays with the
     // upstream CLI.
     proactive_refresh: ProactiveRefreshSupport = .unsupported,
+    // OAuth permits a successful token response to omit refresh_token. Keep
+    // rotating-token providers fail-closed by default; a custom provider must
+    // explicitly declare reusable submitted-token semantics.
+    refresh_token_response: RefreshTokenResponsePolicy = .require_rotated,
 };
 
 pub const ProactiveRefreshSupport = enum {
     unsupported,
     oauth_refresh_token,
+};
+
+pub const RefreshTokenResponsePolicy = enum {
+    require_rotated,
+    reuse_submitted_if_omitted,
 };
 
 pub const CapabilityDefinition = struct {
@@ -1007,6 +1016,7 @@ pub const claude_def = ProviderDefinition{
     .repair = .{
         .owner = .upstream_cli_login,
         .proactive_refresh = .oauth_refresh_token,
+        .refresh_token_response = .require_rotated,
     },
     .capabilities = &claude_capabilities,
     .failure_rules = &claude_failure_rules,
@@ -1074,6 +1084,7 @@ pub const codex_def = ProviderDefinition{
     .repair = .{
         .owner = .upstream_cli_login,
         .proactive_refresh = .oauth_refresh_token,
+        .refresh_token_response = .require_rotated,
     },
     .rate_limits = .{
         .remaining_header = "x-ratelimit-remaining-requests",
@@ -2845,6 +2856,14 @@ test "claude/codex builtins declare the proactive_refresh grant but still requir
     // is covered by the writebackPlan tests in secret.zig.)
     try std.testing.expect(claude_def.repair.owner == .upstream_cli_login);
     try std.testing.expect(codex_def.repair.owner == .upstream_cli_login);
+    // Both observed providers rotate single-use refresh tokens. A successful
+    // response without a new token cannot silently reuse the submitted one.
+    try std.testing.expect(
+        claude_def.repair.refresh_token_response == .require_rotated,
+    );
+    try std.testing.expect(
+        codex_def.repair.refresh_token_response == .require_rotated,
+    );
 }
 
 test "claude_def declares the unified rate-limit family, not the x-ratelimit placeholders (TIN-2722)" {
