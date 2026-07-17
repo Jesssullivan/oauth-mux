@@ -229,9 +229,12 @@ pub fn main() !void {
                 log.err("omux claude: unknown option \"{s}\". Usage: omux claude [-- <claude-args...>].", .{arg});
                 std.process.exit(types.ExitCode.general_error.int());
             }
-            runClaude(allocator, stdout, claude_args) catch |e| {
-                log.err("claude: {s}", .{@errorName(e)});
-                std.process.exit(exitCodeFromPipelineError(e));
+            runClaude(allocator, stdout, claude_args) catch |e| switch (e) {
+                error.ManagedLaunchUnshipped => std.process.exit(types.ExitCode.general_error.int()),
+                else => {
+                    log.err("claude: {s}", .{@errorName(e)});
+                    std.process.exit(exitCodeFromPipelineError(e));
+                },
             };
         },
 
@@ -374,7 +377,27 @@ pub fn main() !void {
 /// reads a credential. The RunOptions composition is built here so that, once
 /// forwarding is enabled, the same path launches a real managed child.
 fn runClaude(allocator: std.mem.Allocator, stdout: anytype, args: cli.Command.ClaudeArgs) !void {
-    var env = try std.process.getEnvMap(allocator);
+    return runClaudeWithEnvLoader(allocator, stdout, args, DefaultClaudeEnvLoader{});
+}
+
+const DefaultClaudeEnvLoader = struct {
+    fn load(_: DefaultClaudeEnvLoader, allocator: std.mem.Allocator) !std.process.EnvMap {
+        return std.process.getEnvMap(allocator);
+    }
+};
+
+fn runClaudeWithEnvLoader(
+    allocator: std.mem.Allocator,
+    stdout: anytype,
+    args: cli.Command.ClaudeArgs,
+    env_loader: anytype,
+) !void {
+    // This must precede inherited-environment loading: the environment can
+    // contain direct credential values even when no provider account is
+    // selected. The disabled surface therefore performs no launch preparation.
+    try claude_verb.requireAvailable(stdout.any());
+
+    var env = try env_loader.load(allocator);
     defer env.deinit();
 
     // Managed child argv: the Claude Code executable, then the forwarded args.
@@ -387,21 +410,44 @@ fn runClaude(allocator: std.mem.Allocator, stdout: anytype, args: cli.Command.Cl
     // forwarding on. The refusal must not depend on config presence.
     var active_config = config.Config{};
 
-    const term = claude_verb.run(.{
+    const term = try claude_verb.run(.{
         .allocator = allocator,
         .argv = argv,
         .inherited_env = &env,
         .active_config = &active_config,
-    }, stdout.any()) catch |e| switch (e) {
-        error.ManagedLaunchUnshipped => std.process.exit(types.ExitCode.general_error.int()),
-        else => return e,
-    };
+    }, stdout.any());
 
     // Reached only once forwarding is compile-enabled and the child exits.
     switch (term) {
         .Exited => |code| if (code != 0) std.process.exit(code),
         else => std.process.exit(types.ExitCode.general_error.int()),
     }
+}
+
+test "compile-disabled claude verb refuses before inherited environment loading" {
+    const CountingClaudeEnvLoader = struct {
+        calls: *usize,
+
+        fn load(self: @This(), allocator: std.mem.Allocator) !std.process.EnvMap {
+            self.calls.* += 1;
+            return std.process.EnvMap.init(allocator);
+        }
+    };
+    var message = std.ArrayList(u8).init(std.testing.allocator);
+    defer message.deinit();
+    var env_loads: usize = 0;
+
+    try std.testing.expectError(
+        error.ManagedLaunchUnshipped,
+        runClaudeWithEnvLoader(
+            std.testing.allocator,
+            message.writer(),
+            .{},
+            CountingClaudeEnvLoader{ .calls = &env_loads },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), env_loads);
+    try std.testing.expectEqualStrings(claude_verb.unshipped_refusal, message.items);
 }
 
 /// Bounded real-sleep wait for the foreground keepalive loop: terminates after
