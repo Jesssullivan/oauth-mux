@@ -40,6 +40,35 @@ pub const Snapshot = struct {
     }
 };
 
+pub const connection_nominated_canary = "x-private-hop";
+
+/// Fixed-name, value-free request-header observations. Flags are sticky for
+/// the fake's lifetime so a later clean request cannot erase an earlier leak.
+/// The fake never retains a credential, arbitrary header name, or value.
+pub const RequestHeaderPresence = struct {
+    authorization: bool = false,
+    x_api_key: bool = false,
+    cookie: bool = false,
+    forwarded: bool = false,
+    x_forwarded_for: bool = false,
+    x_forwarded_host: bool = false,
+    x_forwarded_port: bool = false,
+    x_forwarded_proto: bool = false,
+    x_real_ip: bool = false,
+    keep_alive: bool = false,
+    proxy_authenticate: bool = false,
+    proxy_authorization: bool = false,
+    proxy_connection: bool = false,
+    x_private_hop_canary: bool = false,
+    te: bool = false,
+    trailer: bool = false,
+    trailers: bool = false,
+    upgrade: bool = false,
+    expect: bool = false,
+    accept_encoding: bool = false,
+    anthropic_version: bool = false,
+};
+
 pub const RequestCaptureSnapshot = struct {
     captured_len: usize = 0,
     total_len: usize = 0,
@@ -133,6 +162,11 @@ pub const FakeUpstream = struct {
     pub fn requestCaptureSnapshot(self: *FakeUpstream) RequestCaptureSnapshot {
         const shared = self.shared orelse return .{};
         return shared.request_capture.snapshot();
+    }
+
+    pub fn requestHeaderPresenceSnapshot(self: *FakeUpstream) RequestHeaderPresence {
+        const shared = self.shared orelse return .{};
+        return shared.request_capture.headerPresence();
     }
 
     pub fn responsePrefixWritten(self: *FakeUpstream) bool {
@@ -264,14 +298,63 @@ const RequestCapture = struct {
     len: usize = 0,
     total_len: usize = 0,
     truncated: bool = false,
+    headers: RequestHeaderPresence = .{},
 
-    fn reset(self: *RequestCapture) void {
+    fn resetBody(self: *RequestCapture) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         std.crypto.secureZero(u8, self.buf[0..self.len]);
         self.len = 0;
         self.total_len = 0;
         self.truncated = false;
+    }
+
+    fn recordHeader(self: *RequestCapture, name: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (std.ascii.eqlIgnoreCase(name, "authorization")) {
+            self.headers.authorization = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "x-api-key")) {
+            self.headers.x_api_key = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "cookie")) {
+            self.headers.cookie = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "forwarded")) {
+            self.headers.forwarded = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "x-forwarded-for")) {
+            self.headers.x_forwarded_for = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "x-forwarded-host")) {
+            self.headers.x_forwarded_host = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "x-forwarded-port")) {
+            self.headers.x_forwarded_port = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "x-forwarded-proto")) {
+            self.headers.x_forwarded_proto = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "x-real-ip")) {
+            self.headers.x_real_ip = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "keep-alive")) {
+            self.headers.keep_alive = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "proxy-authenticate")) {
+            self.headers.proxy_authenticate = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "proxy-authorization")) {
+            self.headers.proxy_authorization = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "proxy-connection")) {
+            self.headers.proxy_connection = true;
+        } else if (std.ascii.eqlIgnoreCase(name, connection_nominated_canary)) {
+            self.headers.x_private_hop_canary = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "te")) {
+            self.headers.te = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "trailer")) {
+            self.headers.trailer = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "trailers")) {
+            self.headers.trailers = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "upgrade")) {
+            self.headers.upgrade = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "expect")) {
+            self.headers.expect = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "accept-encoding")) {
+            self.headers.accept_encoding = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "anthropic-version")) {
+            self.headers.anthropic_version = true;
+        }
     }
 
     fn append(self: *RequestCapture, body: []const u8) void {
@@ -295,6 +378,12 @@ const RequestCapture = struct {
         };
     }
 
+    fn headerPresence(self: *RequestCapture) RequestHeaderPresence {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.headers;
+    }
+
     fn deinit(self: *RequestCapture) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -302,6 +391,7 @@ const RequestCapture = struct {
         self.len = 0;
         self.total_len = 0;
         self.truncated = false;
+        self.headers = .{};
     }
 };
 
@@ -498,6 +588,11 @@ fn serveOne(shared: *Shared, connection: std.net.Server.Connection) void {
     var read_buffer: [max_request_head_bytes]u8 = undefined;
     var server = std.http.Server.init(connection, &read_buffer);
     var request = server.receiveHead() catch return;
+    shared.request_capture.resetBody();
+    var headers = request.iterateHeaders();
+    while (headers.next()) |header| {
+        shared.request_capture.recordHeader(header.name);
+    }
     if (request.head.expect != null) {
         request.respond("", .{
             .status = .expectation_failed,
@@ -591,7 +686,6 @@ fn captureAuthorization(shared: *Shared, request: *std.http.Server.Request) void
 
 fn captureRequestBody(shared: *Shared, request: *std.http.Server.Request) void {
     const reader = request.reader() catch return;
-    shared.request_capture.reset();
     var buf: [16 * 1024]u8 = undefined;
     defer std.crypto.secureZero(u8, &buf);
     while (true) {
@@ -734,6 +828,115 @@ test "fake upstream owns and serves scripted status body and headers in order" {
     );
 }
 
+test "request header presence is case-insensitive and sticky across requests" {
+    const script = [_]ScriptedResponse{.{ .status = .no_content }} ** 3;
+    var upstream = try FakeUpstream.start(std.testing.allocator, &script);
+    defer upstream.deinit();
+
+    const ordinary = try requestRawAlloc(
+        std.testing.allocator,
+        upstream.address(),
+        "GET /v1/messages HTTP/1.1\r\n" ++
+            "Host: 127.0.0.1\r\n" ++
+            "Authorization2: ignored\r\n" ++
+            "Cookie2: ignored\r\n" ++
+            "X-Forwarded-Format: ignored\r\n" ++
+            "Connection: close\r\n\r\n",
+    );
+    defer std.testing.allocator.free(ordinary);
+    try std.testing.expect(std.mem.startsWith(u8, ordinary, "HTTP/1.1 204 No Content\r\n"));
+    try std.testing.expectEqualDeep(
+        RequestHeaderPresence{},
+        upstream.requestHeaderPresenceSnapshot(),
+    );
+
+    const audited = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "GET /v1/messages HTTP/1.1\r\n" ++
+            "Host: 127.0.0.1\r\n" ++
+            "aUtHoRiZaTiOn: Bearer test-only\r\n" ++
+            "X-Api-Key: test-only\r\n" ++
+            "cOoKiE: test-only\r\n" ++
+            "Forwarded: test-only\r\n" ++
+            "X-Forwarded-For: test-only\r\n" ++
+            "X-Forwarded-Host: test-only\r\n" ++
+            "X-Forwarded-Port: test-only\r\n" ++
+            "X-Forwarded-Proto: test-only\r\n" ++
+            "X-Real-IP: test-only\r\n" ++
+            "Keep-Alive: test-only\r\n" ++
+            "Proxy-Authenticate: test-only\r\n" ++
+            "Proxy-Authorization: test-only\r\n" ++
+            "Proxy-Connection: test-only\r\n" ++
+            "{s}: test-only\r\n" ++
+            "TE: test-only\r\n" ++
+            "Trailer: test-only\r\n" ++
+            "Trailers: test-only\r\n" ++
+            "Upgrade: test-only\r\n" ++
+            "Accept-Encoding: identity\r\n" ++
+            "Anthropic-Version: 2023-06-01\r\n" ++
+            "Connection: close\r\n\r\n",
+        .{connection_nominated_canary},
+    );
+    defer std.testing.allocator.free(audited);
+    const detected = try requestRawAlloc(std.testing.allocator, upstream.address(), audited);
+    defer std.testing.allocator.free(detected);
+    try std.testing.expect(std.mem.startsWith(u8, detected, "HTTP/1.1 204 No Content\r\n"));
+    try std.testing.expectEqualDeep(
+        RequestHeaderPresence{
+            .authorization = true,
+            .x_api_key = true,
+            .cookie = true,
+            .forwarded = true,
+            .x_forwarded_for = true,
+            .x_forwarded_host = true,
+            .x_forwarded_port = true,
+            .x_forwarded_proto = true,
+            .x_real_ip = true,
+            .keep_alive = true,
+            .proxy_authenticate = true,
+            .proxy_authorization = true,
+            .proxy_connection = true,
+            .x_private_hop_canary = true,
+            .te = true,
+            .trailer = true,
+            .trailers = true,
+            .upgrade = true,
+            .accept_encoding = true,
+            .anthropic_version = true,
+        },
+        upstream.requestHeaderPresenceSnapshot(),
+    );
+
+    const second = try requestAlloc(std.testing.allocator, upstream.address());
+    defer std.testing.allocator.free(second);
+    try std.testing.expect(std.mem.startsWith(u8, second, "HTTP/1.1 204 No Content\r\n"));
+    try std.testing.expectEqualDeep(
+        RequestHeaderPresence{
+            .authorization = true,
+            .x_api_key = true,
+            .cookie = true,
+            .forwarded = true,
+            .x_forwarded_for = true,
+            .x_forwarded_host = true,
+            .x_forwarded_port = true,
+            .x_forwarded_proto = true,
+            .x_real_ip = true,
+            .keep_alive = true,
+            .proxy_authenticate = true,
+            .proxy_authorization = true,
+            .proxy_connection = true,
+            .x_private_hop_canary = true,
+            .te = true,
+            .trailer = true,
+            .trailers = true,
+            .upgrade = true,
+            .accept_encoding = true,
+            .anthropic_version = true,
+        },
+        upstream.requestHeaderPresenceSnapshot(),
+    );
+}
+
 test "fake upstream counters remain coherent under concurrent calls" {
     const call_count = 8;
     const script = [_]ScriptedResponse{.{ .status = .ok }} ** call_count;
@@ -778,6 +981,7 @@ test "expect continue is rejected without consuming the response script" {
         upstream.address(),
         "POST /v1/messages HTTP/1.1\r\n" ++
             "Host: 127.0.0.1\r\n" ++
+            "Authorization: Bearer test-only\r\n" ++
             "Content-Length: 1\r\n" ++
             "Expect: 100-continue\r\n" ++
             "Connection: close\r\n\r\n",
@@ -788,6 +992,13 @@ test "expect continue is rejected without consuming the response script" {
         rejected,
         "HTTP/1.1 417 Expectation Failed\r\n",
     ));
+    try std.testing.expectEqualDeep(
+        RequestHeaderPresence{
+            .authorization = true,
+            .expect = true,
+        },
+        upstream.requestHeaderPresenceSnapshot(),
+    );
 
     const first = try requestAlloc(std.testing.allocator, upstream.address());
     defer std.testing.allocator.free(first);
