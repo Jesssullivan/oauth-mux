@@ -294,6 +294,11 @@ pub const RunOptions = struct {
     online: bool = false,
 };
 
+const production_gather_options: doctor_binaries.GatherOptions = .{
+    .exec_versions = true,
+    .version_exec_timeout_ms = 2000,
+};
+
 /// The single gate that permits a network consult. Returns true ONLY when the
 /// operator passed `--online`. `run` calls the network fetch exclusively when
 /// this returns true, so the offline default makes zero network calls by
@@ -487,7 +492,7 @@ pub fn run(gpa: std.mem.Allocator, writer: anytype, opts: RunOptions) !u8 {
 
     // Reuse the doctor's PATH scan + SHA + shadow detection wholesale. No
     // network; the only subprocess is a bounded local `<path> version --json`.
-    const report = doctor_binaries.gather(arena, cli.version, .{}) catch {
+    const report = doctor_binaries.gather(arena, cli.version, production_gather_options) catch {
         try writer.writeAll("oauth-mux version --check\n\n  unavailable: could not gather binary facts\n");
         return 0;
     };
@@ -635,6 +640,11 @@ test "onlineConsultAllowed: false without the flag, true with it" {
     try std.testing.expect(!onlineConsultAllowed(.{}));
     try std.testing.expect(!onlineConsultAllowed(.{ .json = true }));
     try std.testing.expect(onlineConsultAllowed(.{ .online = true }));
+}
+
+test "production version check gathers bounded PATH executable versions" {
+    try std.testing.expect(production_gather_options.exec_versions);
+    try std.testing.expect(production_gather_options.version_exec_timeout_ms > 0);
 }
 
 test "parseSidecar: valid, partial, and malformed" {

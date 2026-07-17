@@ -34,6 +34,9 @@ sh -n ./scripts/secrets-scan-dir.sh
 bash -n ./scripts/check-zig-test-root.sh
 sh -n ./scripts/check-v0.1.15-characterization.sh
 sh -n ./scripts/check-managed-harness-instances.sh
+sh -n ./scripts/keepalive-service.sh
+sh -n ./scripts/smoke-keepalive-service-containment.sh
+sh -n ./scripts/smoke-version-check-stale-path.sh
 bash -n ./scripts/public-source-check.sh
 sh -n ./scripts/smoke-public-source-workflow.sh
 python3 -m py_compile ./scripts/validate-managed-harness-instance.py
@@ -51,6 +54,8 @@ sh -n ./scripts/test-executable-compat.sh
 ./scripts/check-zig-test-root.sh
 ./scripts/check-v0.1.15-characterization.sh
 ./scripts/check-managed-harness-instances.sh
+./scripts/smoke-keepalive-service-containment.sh
+./scripts/smoke-version-check-stale-path.sh
 ./scripts/smoke-public-source-workflow.sh
 ./scripts/smoke-release-manifest-current.sh
 ./scripts/smoke-release-workflow-version-authority.sh

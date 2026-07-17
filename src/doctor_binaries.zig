@@ -3,25 +3,22 @@
 //! PATH-shadow detection. Split from the service-residency proof in TIN-1830.
 //!
 //! Design notes:
-//!  * The PATH scan never *executes* a found binary to enumerate it — it only
-//!    stats + checks the execute bit (access X_OK). Executing a discovered
-//!    `oauth-mux` is confined to the version fallback below.
-//!  * Version is resolved WITHOUT exec whenever possible: for our own binary we
-//!    already know `cli.version`, and for any file whose SHA-256 matches ours we
-//!    reuse it. Only a genuinely-different binary triggers a bounded
-//!    `<path> version --json` subprocess (short watchdog-killed timeout,
-//!    tolerant of old binaries that predate the subcommand → version "unknown").
-//!  * Every gather step is catch-guarded: a missing plist, an unreadable file,
-//!    or an exec failure produces informative nulls — the doctor overall stays
-//!    ok and never errors out of this section.
+//!  * Discovery never establishes execution trust. PATH and plist candidates
+//!    are statted and hashed without running them.
+//!  * A caller may explicitly opt a PATH candidate into the bounded
+//!    `<path> version --json` fallback. Plist-selected resident candidates
+//!    remain metadata-only even under that opt-in.
+//!  * Invalid or unreadable resident containment is an explicit unhealthy,
+//!    stale state. The doctor remains available without treating uncertainty
+//!    as healthy.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const runtime = @import("runtime.zig");
-const env = @import("env.zig");
 
 pub const keepalive_label = "dev.xoxd.omux.keepalive";
 pub const keepalive_plist_rel = "Library/LaunchAgents/dev.xoxd.omux.keepalive.plist";
+const resident_plist_max_bytes = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -38,6 +35,37 @@ pub const BinaryFacts = struct {
     source: []const u8,
 };
 
+pub const ResidentContainment = enum {
+    unsupported,
+    identity_unavailable,
+    absent,
+    plist_unreadable,
+    plist_invalid,
+    legacy_uncontained,
+    binary_unreadable,
+    healthy,
+
+    pub fn label(self: ResidentContainment) []const u8 {
+        return switch (self) {
+            .unsupported => "unsupported",
+            .identity_unavailable => "identity_unavailable",
+            .absent => "absent",
+            .plist_unreadable => "plist_unreadable",
+            .plist_invalid => "plist_invalid",
+            .legacy_uncontained => "legacy_uncontained",
+            .binary_unreadable => "binary_unreadable",
+            .healthy => "healthy",
+        };
+    }
+
+    pub fn unhealthy(self: ResidentContainment) bool {
+        return switch (self) {
+            .identity_unavailable, .plist_unreadable, .plist_invalid, .legacy_uncontained, .binary_unreadable => true,
+            .unsupported, .absent, .healthy => false,
+        };
+    }
+};
+
 pub const ResidentInfo = struct {
     /// launchd is darwin-only; false on other platforms (section still renders).
     supported: bool,
@@ -46,6 +74,18 @@ pub const ResidentInfo = struct {
     plist_present: bool,
     program_path: ?[]const u8,
     binary: ?BinaryFacts,
+    containment: ResidentContainment,
+};
+
+const ResidentIdentity = struct {
+    user: []const u8,
+    home: []const u8,
+};
+
+const ResidentPlistRead = union(enum) {
+    absent,
+    unreadable,
+    contents: []const u8,
 };
 
 pub const ShadowVerdict = struct {
@@ -55,6 +95,7 @@ pub const ShadowVerdict = struct {
 };
 
 pub const StaleInputs = struct {
+    resident_containment: ResidentContainment,
     resident_sha: ?[]const u8,
     resident_version: ?[]const u8,
     /// PATH-winner ("installed") reference.
@@ -66,6 +107,7 @@ pub const StaleInputs = struct {
 
 pub const StaleVerdict = struct {
     stale: bool,
+    containment_unhealthy: bool = false,
     sha_mismatch: bool,
     version_older: bool,
     reason: []const u8,
@@ -82,8 +124,9 @@ pub const BinariesReport = struct {
 };
 
 pub const GatherOptions = struct {
-    /// Allow the `<path> version --json` subprocess fallback. Tests set false.
-    exec_versions: bool = true,
+    /// Explicitly trust PATH candidates for `<path> version --json`.
+    /// Plist-selected candidates never inherit this permission.
+    exec_versions: bool = false,
     version_exec_timeout_ms: u64 = 2000,
 };
 
@@ -183,17 +226,32 @@ fn parseLeadingUint(s: []const u8) ?u64 {
     return std.fmt.parseInt(u64, s[0..end], 10) catch null;
 }
 
-/// Offline staleness verdict for the resident keepalive binary. Stale when its
-/// SHA differs from the installed (PATH-winner) binary, or its version is older
-/// than the installed binary or the running doctor. Absent/unreadable resident
-/// → not stale (informative, never a false alarm).
+/// Offline staleness verdict for the resident keepalive binary. Invalid or
+/// unreadable containment is stale by construction; a valid resident is stale
+/// when its SHA differs or its known version is older.
 pub fn evaluateStaleness(in: StaleInputs) StaleVerdict {
+    if (in.resident_containment.unhealthy()) {
+        return .{
+            .stale = true,
+            .containment_unhealthy = true,
+            .sha_mismatch = false,
+            .version_older = false,
+            .reason = in.resident_containment.label(),
+        };
+    }
+
     if (in.resident_sha == null and in.resident_version == null) {
         return .{
             .stale = false,
+            .containment_unhealthy = false,
             .sha_mismatch = false,
             .version_older = false,
-            .reason = "no_resident_or_unreadable",
+            .reason = switch (in.resident_containment) {
+                .unsupported => "unsupported",
+                .absent => "no_resident",
+                .healthy => "resident_metadata_unavailable",
+                else => unreachable,
+            },
         };
     }
 
@@ -224,6 +282,7 @@ pub fn evaluateStaleness(in: StaleInputs) StaleVerdict {
 
     return .{
         .stale = stale,
+        .containment_unhealthy = false,
         .sha_mismatch = sha_mismatch,
         .version_older = version_older,
         .reason = reason,
@@ -234,19 +293,458 @@ pub fn evaluateStaleness(in: StaleInputs) StaleVerdict {
 // Pure core: LaunchAgent plist parse
 // ---------------------------------------------------------------------------
 
-/// Extract ProgramArguments[0] (the program path) from a LaunchAgent plist.
-/// Tolerant: any missing marker → null (no error). Used only for reporting.
-pub fn parseLaunchAgentProgramPath(allocator: std.mem.Allocator, contents: []const u8) !?[]const u8 {
-    const pa = std.mem.indexOf(u8, contents, "ProgramArguments") orelse return null;
-    const after_pa = contents[pa..];
-    const arr = std.mem.indexOf(u8, after_pa, "<array>") orelse return null;
-    const after_arr = after_pa[arr + "<array>".len ..];
-    const s_open = std.mem.indexOf(u8, after_arr, "<string>") orelse return null;
-    const after_open = after_arr[s_open + "<string>".len ..];
-    const s_close = std.mem.indexOf(u8, after_open, "</string>") orelse return null;
-    const trimmed = std.mem.trim(u8, after_open[0..s_close], " \t\r\n");
-    if (trimmed.len == 0) return null;
-    return try allocator.dupe(u8, trimmed);
+const keepalive_program_tail = [_][]const u8{
+    "keepalive",
+    "--iterations",
+    "100000",
+    "--interval-ms",
+    "60000",
+    "--json",
+};
+
+const LaunchAgentKey = enum {
+    label,
+    program_arguments,
+    run_at_load,
+    keep_alive,
+    throttle_interval,
+    process_type,
+    standard_out_path,
+    standard_error_path,
+    environment_variables,
+};
+
+const launch_agent_key_count = 9;
+const launch_agent_required_key_count = 8;
+const launch_agent_path = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+const ParsedXmlText = struct {
+    value: []const u8,
+    had_entity: bool,
+};
+
+const PlistCursor = struct {
+    contents: []const u8,
+    index: usize = 0,
+
+    fn skipWhitespace(self: *PlistCursor) void {
+        while (self.index < self.contents.len and isXmlWhitespace(self.contents[self.index])) {
+            self.index += 1;
+        }
+    }
+
+    fn startsWith(self: PlistCursor, literal: []const u8) bool {
+        return std.mem.startsWith(u8, self.contents[self.index..], literal);
+    }
+
+    fn consume(self: *PlistCursor, literal: []const u8) bool {
+        if (!self.startsWith(literal)) return false;
+        self.index += literal.len;
+        return true;
+    }
+
+    fn skipThrough(self: *PlistCursor, terminator: []const u8) bool {
+        const relative = std.mem.indexOf(u8, self.contents[self.index..], terminator) orelse return false;
+        self.index += relative + terminator.len;
+        return true;
+    }
+
+    fn skipDocumentPrefix(self: *PlistCursor) bool {
+        self.skipWhitespace();
+        if (self.startsWith("<?")) {
+            if (!self.consume("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")) return false;
+        }
+
+        while (true) {
+            self.skipWhitespace();
+            if (self.consume("<!--")) {
+                if (!self.skipThrough("-->")) return false;
+                continue;
+            }
+            if (self.startsWith("<!DOCTYPE")) {
+                const end = std.mem.indexOfScalar(u8, self.contents[self.index..], '>') orelse return false;
+                const declaration = self.contents[self.index .. self.index + end];
+                // Custom entity declarations would require a full DTD parser.
+                // The installed template uses only the standard external DTD.
+                if (std.mem.indexOfScalar(u8, declaration, '[') != null) return false;
+                self.index += end + 1;
+                continue;
+            }
+            return true;
+        }
+    }
+
+    fn parseTextElement(
+        self: *PlistCursor,
+        allocator: std.mem.Allocator,
+        open: []const u8,
+        close: []const u8,
+    ) !?ParsedXmlText {
+        if (!self.consume(open)) return null;
+        const relative_end = std.mem.indexOf(u8, self.contents[self.index..], close) orelse return null;
+        const raw = self.contents[self.index .. self.index + relative_end];
+        if (std.mem.indexOfScalar(u8, raw, '<') != null) return null;
+        self.index += relative_end + close.len;
+        const decoded = (try decodeXmlText(allocator, raw)) orelse return null;
+        return .{
+            .value = decoded,
+            .had_entity = std.mem.indexOfScalar(u8, raw, '&') != null,
+        };
+    }
+};
+
+const ParsedProgramArguments = union(enum) {
+    contained: struct {
+        home: []const u8,
+        user: []const u8,
+        binary: []const u8,
+    },
+    legacy_uncontained: []const u8,
+};
+
+const ParsedLaunchAgent = union(enum) {
+    contained: []const u8,
+    legacy_uncontained: []const u8,
+};
+
+/// Resolve the resident oauth-mux executable only when the complete effective
+/// top-level LaunchAgent dictionary matches the contained service contract.
+/// The legacy v0.1 shape is deliberately not returned as contained.
+pub fn parseLaunchAgentProgramPath(
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    expected_home: []const u8,
+    expected_user: []const u8,
+) !?[]const u8 {
+    const parsed = (try parseLaunchAgent(
+        allocator,
+        contents,
+        expected_home,
+        expected_user,
+    )) orelse return null;
+    return switch (parsed) {
+        .contained => |binary| binary,
+        .legacy_uncontained => null,
+    };
+}
+
+/// Classify only the exact contained contract or the exact shipped v0.1
+/// direct-exec contract. Missing, duplicate, unknown, or malformed fields are
+/// invalid rather than compatible.
+fn parseLaunchAgent(
+    allocator: std.mem.Allocator,
+    contents: []const u8,
+    expected_home: []const u8,
+    expected_user: []const u8,
+) !?ParsedLaunchAgent {
+    var cursor = PlistCursor{ .contents = contents };
+    if (!cursor.skipDocumentPrefix()) return null;
+    if (!cursor.consume("<plist version=\"1.0\">")) return null;
+    cursor.skipWhitespace();
+    if (!cursor.consume("<dict>")) return null;
+
+    var seen = [_]bool{false} ** launch_agent_key_count;
+    var parsed_program: ?ParsedProgramArguments = null;
+    var standard_out_path: ?[]const u8 = null;
+    var standard_error_path: ?[]const u8 = null;
+
+    while (true) {
+        cursor.skipWhitespace();
+        if (cursor.consume("</dict>")) break;
+
+        const parsed_key = (try cursor.parseTextElement(allocator, "<key>", "</key>")) orelse return null;
+        const key = launchAgentKey(parsed_key.value) orelse return null;
+        const key_index = @intFromEnum(key);
+        if (seen[key_index]) return null;
+        seen[key_index] = true;
+        // Keys in the installed canonical document are literal ASCII. Decoding
+        // before this check makes entity aliases collide with their real key.
+        if (parsed_key.had_entity) return null;
+
+        cursor.skipWhitespace();
+        switch (key) {
+            .label => {
+                const value = (try cursor.parseTextElement(allocator, "<string>", "</string>")) orelse return null;
+                if (!std.mem.eql(u8, value.value, keepalive_label)) return null;
+            },
+            .program_arguments => {
+                parsed_program = (try parseProgramArguments(allocator, &cursor)) orelse return null;
+            },
+            .run_at_load, .keep_alive => {
+                if (!cursor.consume("<true/>")) return null;
+            },
+            .throttle_interval => {
+                const value = (try cursor.parseTextElement(allocator, "<integer>", "</integer>")) orelse return null;
+                if (!std.mem.eql(u8, value.value, "300")) return null;
+            },
+            .process_type => {
+                const value = (try cursor.parseTextElement(allocator, "<string>", "</string>")) orelse return null;
+                if (!std.mem.eql(u8, value.value, "Background")) return null;
+            },
+            .standard_out_path => {
+                const value = (try cursor.parseTextElement(allocator, "<string>", "</string>")) orelse return null;
+                standard_out_path = value.value;
+            },
+            .standard_error_path => {
+                const value = (try cursor.parseTextElement(allocator, "<string>", "</string>")) orelse return null;
+                standard_error_path = value.value;
+            },
+            .environment_variables => {
+                if (!(try parseLegacyEnvironmentVariables(allocator, &cursor))) return null;
+            },
+        }
+    }
+
+    for (seen[0..launch_agent_required_key_count]) |present| {
+        if (!present) return null;
+    }
+    cursor.skipWhitespace();
+    if (!cursor.consume("</plist>")) return null;
+    cursor.skipWhitespace();
+    if (cursor.index != contents.len) return null;
+
+    const program = parsed_program orelse return null;
+    const expected_out = try std.fmt.allocPrint(
+        allocator,
+        "{s}/Library/Logs/oauth-mux/keepalive.out.log",
+        .{expected_home},
+    );
+    const expected_error = try std.fmt.allocPrint(
+        allocator,
+        "{s}/Library/Logs/oauth-mux/keepalive.err.log",
+        .{expected_home},
+    );
+    if (!std.mem.eql(u8, standard_out_path orelse return null, expected_out)) return null;
+    if (!std.mem.eql(u8, standard_error_path orelse return null, expected_error)) return null;
+
+    const has_legacy_environment = seen[@intFromEnum(LaunchAgentKey.environment_variables)];
+    return switch (program) {
+        .contained => |contained| {
+            if (has_legacy_environment) return null;
+            if (!std.mem.eql(u8, contained.home, expected_home)) return null;
+            if (!std.mem.eql(u8, contained.user, expected_user)) return null;
+            return ParsedLaunchAgent{ .contained = contained.binary };
+        },
+        .legacy_uncontained => |binary| {
+            if (!has_legacy_environment) return null;
+            return ParsedLaunchAgent{ .legacy_uncontained = binary };
+        },
+    };
+}
+
+fn isXmlWhitespace(byte: u8) bool {
+    return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n';
+}
+
+fn launchAgentKey(value: []const u8) ?LaunchAgentKey {
+    if (std.mem.eql(u8, value, "Label")) return .label;
+    if (std.mem.eql(u8, value, "ProgramArguments")) return .program_arguments;
+    if (std.mem.eql(u8, value, "RunAtLoad")) return .run_at_load;
+    if (std.mem.eql(u8, value, "KeepAlive")) return .keep_alive;
+    if (std.mem.eql(u8, value, "ThrottleInterval")) return .throttle_interval;
+    if (std.mem.eql(u8, value, "ProcessType")) return .process_type;
+    if (std.mem.eql(u8, value, "StandardOutPath")) return .standard_out_path;
+    if (std.mem.eql(u8, value, "StandardErrorPath")) return .standard_error_path;
+    if (std.mem.eql(u8, value, "EnvironmentVariables")) return .environment_variables;
+    return null;
+}
+
+fn parseProgramArguments(
+    allocator: std.mem.Allocator,
+    cursor: *PlistCursor,
+) !?ParsedProgramArguments {
+    if (!cursor.consume("<array>")) return null;
+    var args = std.ArrayList([]const u8).init(allocator);
+    defer args.deinit();
+    while (true) {
+        cursor.skipWhitespace();
+        if (cursor.consume("</array>")) break;
+        if (args.items.len >= 13) return null;
+        const value = (try cursor.parseTextElement(allocator, "<string>", "</string>")) orelse return null;
+        if (value.value.len == 0) return null;
+        try args.append(value.value);
+    }
+
+    if (args.items.len == 13) {
+        if (!std.mem.eql(u8, args.items[0], "/usr/bin/env")) return null;
+        if (!std.mem.eql(u8, args.items[1], "-i")) return null;
+        if (!std.mem.startsWith(u8, args.items[2], "HOME=")) return null;
+        const home = args.items[2]["HOME=".len..];
+        if (home.len == 0 or home[0] != '/' or !isSafeLaunchAgentValue(home)) return null;
+        if (!std.mem.startsWith(u8, args.items[3], "USER=")) return null;
+        const user = args.items[3]["USER=".len..];
+        if (!isSafeLaunchAgentUser(user)) return null;
+        if (!std.mem.eql(u8, args.items[4], "PATH=" ++ launch_agent_path)) return null;
+        if (!std.mem.eql(u8, args.items[5], "NO_COLOR=1")) return null;
+        if (!isSafeLaunchAgentPath(args.items[6])) return null;
+        if (!hasKeepaliveProgramTail(args.items, 7)) return null;
+        return ParsedProgramArguments{ .contained = .{
+            .home = home,
+            .user = user,
+            .binary = args.items[6],
+        } };
+    }
+
+    if (args.items.len == 7) {
+        if (!isSafeLaunchAgentPath(args.items[0])) return null;
+        if (!hasKeepaliveProgramTail(args.items, 1)) return null;
+        return ParsedProgramArguments{ .legacy_uncontained = args.items[0] };
+    }
+    return null;
+}
+
+fn parseLegacyEnvironmentVariables(
+    allocator: std.mem.Allocator,
+    cursor: *PlistCursor,
+) !bool {
+    if (!cursor.consume("<dict>")) return false;
+    var no_color_seen = false;
+    var path_seen = false;
+
+    while (true) {
+        cursor.skipWhitespace();
+        if (cursor.consume("</dict>")) break;
+
+        const key = (try cursor.parseTextElement(allocator, "<key>", "</key>")) orelse return false;
+        if (key.had_entity) return false;
+        cursor.skipWhitespace();
+        const value = (try cursor.parseTextElement(allocator, "<string>", "</string>")) orelse return false;
+        if (std.mem.eql(u8, key.value, "NO_COLOR")) {
+            if (no_color_seen or !std.mem.eql(u8, value.value, "1")) return false;
+            no_color_seen = true;
+        } else if (std.mem.eql(u8, key.value, "PATH")) {
+            if (path_seen or !std.mem.eql(u8, value.value, launch_agent_path)) return false;
+            path_seen = true;
+        } else {
+            return false;
+        }
+    }
+    return no_color_seen and path_seen;
+}
+
+fn decodeXmlText(allocator: std.mem.Allocator, raw: []const u8) !?[]const u8 {
+    if (!isValidRawXmlText(raw)) return null;
+    var decoded = std.ArrayList(u8).init(allocator);
+    errdefer decoded.deinit();
+
+    var index: usize = 0;
+    while (index < raw.len) {
+        const amp_relative = std.mem.indexOfScalar(u8, raw[index..], '&') orelse {
+            try decoded.appendSlice(raw[index..]);
+            break;
+        };
+        const amp = index + amp_relative;
+        try decoded.appendSlice(raw[index..amp]);
+        const semicolon_relative = std.mem.indexOfScalar(u8, raw[amp + 1 ..], ';') orelse return null;
+        const semicolon = amp + 1 + semicolon_relative;
+        const entity = raw[amp + 1 .. semicolon];
+        if (std.mem.eql(u8, entity, "amp")) {
+            try decoded.append('&');
+        } else if (std.mem.eql(u8, entity, "lt")) {
+            try decoded.append('<');
+        } else if (std.mem.eql(u8, entity, "gt")) {
+            try decoded.append('>');
+        } else if (std.mem.eql(u8, entity, "quot")) {
+            try decoded.append('"');
+        } else if (std.mem.eql(u8, entity, "apos")) {
+            try decoded.append('\'');
+        } else {
+            const digits, const base: u8 = if (std.mem.startsWith(u8, entity, "#x"))
+                .{ entity[2..], 16 }
+            else if (std.mem.startsWith(u8, entity, "#"))
+                .{ entity[1..], 10 }
+            else
+                return null;
+            if (digits.len == 0) return null;
+            for (digits) |digit| {
+                const valid = if (base == 10)
+                    digit >= '0' and digit <= '9'
+                else
+                    (digit >= '0' and digit <= '9') or
+                        (digit >= 'a' and digit <= 'f') or
+                        (digit >= 'A' and digit <= 'F');
+                if (!valid) return null;
+            }
+            const codepoint = std.fmt.parseInt(u21, digits, base) catch return null;
+            if (!isValidXmlCodepoint(codepoint)) return null;
+            var encoded: [4]u8 = undefined;
+            const encoded_len = std.unicode.utf8Encode(codepoint, &encoded) catch return null;
+            try decoded.appendSlice(encoded[0..encoded_len]);
+        }
+        index = semicolon + 1;
+    }
+    return try decoded.toOwnedSlice();
+}
+
+fn isValidRawXmlText(raw: []const u8) bool {
+    const view = std.unicode.Utf8View.init(raw) catch return false;
+    var iterator = view.iterator();
+    while (iterator.nextCodepoint()) |codepoint| {
+        if (!isValidXmlCodepoint(codepoint)) return false;
+    }
+    return true;
+}
+
+fn isValidXmlCodepoint(codepoint: u21) bool {
+    return codepoint == 0x9 or
+        codepoint == 0xA or
+        codepoint == 0xD or
+        (codepoint >= 0x20 and codepoint <= 0xD7FF) or
+        (codepoint >= 0xE000 and codepoint <= 0xFFFD) or
+        (codepoint >= 0x10000 and codepoint <= 0x10FFFF);
+}
+
+fn isSafeLaunchAgentValue(value: []const u8) bool {
+    if (value.len == 0 or
+        std.mem.indexOf(u8, value, "@OMUX_") != null or
+        std.mem.indexOf(u8, value, "--") != null or
+        containsControlCodepoint(value))
+    {
+        return false;
+    }
+    for (value) |byte| {
+        switch (byte) {
+            '&', '<', '>', '|', '\\', '\r', '\n' => return false,
+            else => {},
+        }
+    }
+    return true;
+}
+
+fn containsControlCodepoint(value: []const u8) bool {
+    const view = std.unicode.Utf8View.init(value) catch return true;
+    var iterator = view.iterator();
+    while (iterator.nextCodepoint()) |codepoint| {
+        if (codepoint <= 0x1f or (codepoint >= 0x7f and codepoint <= 0x9f)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn isSafeLaunchAgentUser(user: []const u8) bool {
+    if (!isSafeLaunchAgentValue(user) or user[0] == '-') return false;
+    for (user) |byte| {
+        const alphanumeric =
+            (byte >= 'a' and byte <= 'z') or
+            (byte >= 'A' and byte <= 'Z') or
+            (byte >= '0' and byte <= '9');
+        if (!alphanumeric and byte != '.' and byte != '_' and byte != '-') return false;
+    }
+    return true;
+}
+
+fn isSafeLaunchAgentPath(path: []const u8) bool {
+    return isSafeLaunchAgentValue(path) and path[0] == '/' and
+        std.mem.indexOfScalar(u8, path, '=') == null;
+}
+
+fn hasKeepaliveProgramTail(args: []const []const u8, offset: usize) bool {
+    if (args.len != offset + keepalive_program_tail.len) return false;
+    for (keepalive_program_tail, 0..) |expected, i| {
+        if (!std.mem.eql(u8, args[offset + i], expected)) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +775,14 @@ pub fn gather(arena: std.mem.Allocator, self_version: []const u8, opts: GatherOp
         var scan_ctx: u8 = 0;
         const scan = scanPath(arena, pe, pathDelimiter(), "oauth-mux", &scan_ctx, realExecCheck) catch PathScan{ .paths = &.{} };
         for (scan.paths) |p| {
-            try entries.append(factsFor(arena, p, self_sha, self_version, opts));
+            try entries.append(factsFor(
+                arena,
+                p,
+                self_sha,
+                self_version,
+                if (opts.exec_versions) .trusted_exec else .metadata_only,
+                opts.version_exec_timeout_ms,
+            ));
         }
     }
     const entries_slice = try entries.toOwnedSlice();
@@ -289,11 +794,12 @@ pub fn gather(arena: std.mem.Allocator, self_version: []const u8, opts: GatherOp
     const distinct = distinctShaCount(shas.items);
 
     // Resident service.
-    const resident = gatherResident(arena, self_sha, self_version, opts) catch null;
+    const resident = gatherResident(arena, self_sha, self_version) catch null;
 
     // Staleness.
     const resident_binary: ?BinaryFacts = if (resident) |res| res.binary else null;
     const stale = evaluateStaleness(.{
+        .resident_containment = if (resident) |res| res.containment else .identity_unavailable,
         .resident_sha = if (resident_binary) |b| b.sha256 else null,
         .resident_version = if (resident_binary) |b| b.version else null,
         .installed_sha = if (winner) |w| w.sha256 else null,
@@ -312,7 +818,11 @@ pub fn gather(arena: std.mem.Allocator, self_version: []const u8, opts: GatherOp
     };
 }
 
-fn gatherResident(arena: std.mem.Allocator, self_sha: ?[]const u8, self_version: []const u8, opts: GatherOptions) !?ResidentInfo {
+fn gatherResident(
+    arena: std.mem.Allocator,
+    self_sha: ?[]const u8,
+    self_version: []const u8,
+) !?ResidentInfo {
     if (builtin.os.tag != .macos) {
         return ResidentInfo{
             .supported = false,
@@ -321,44 +831,319 @@ fn gatherResident(arena: std.mem.Allocator, self_sha: ?[]const u8, self_version:
             .plist_present = false,
             .program_path = null,
             .binary = null,
+            .containment = .unsupported,
         };
     }
 
-    const home = (env.get(arena, "HOME") catch null) orelse return ResidentInfo{
+    return try gatherResidentForIdentity(
+        arena,
+        resolveDarwinResidentIdentity(arena),
+        self_sha,
+        self_version,
+    );
+}
+
+fn gatherResidentForIdentity(
+    arena: std.mem.Allocator,
+    identity: ?ResidentIdentity,
+    self_sha: ?[]const u8,
+    self_version: []const u8,
+) !ResidentInfo {
+    const resolved = identity orelse return ResidentInfo{
         .supported = true,
         .label = keepalive_label,
         .plist_path = "",
         .plist_present = false,
         .program_path = null,
         .binary = null,
+        .containment = .identity_unavailable,
     };
 
-    const plist_path = try std.fs.path.join(arena, &.{ home, keepalive_plist_rel });
-    const contents = std.fs.cwd().readFileAlloc(arena, plist_path, 256 * 1024) catch {
-        return ResidentInfo{
+    const plist_path = try std.fs.path.join(arena, &.{ resolved.home, keepalive_plist_rel });
+    const contents = switch (readResidentPlist(arena, plist_path)) {
+        .contents => |value| value,
+        .absent => return ResidentInfo{
             .supported = true,
             .label = keepalive_label,
             .plist_path = plist_path,
             .plist_present = false,
             .program_path = null,
             .binary = null,
-        };
+            .containment = .absent,
+        },
+        .unreadable => return ResidentInfo{
+            .supported = true,
+            .label = keepalive_label,
+            .plist_path = plist_path,
+            .plist_present = true,
+            .program_path = null,
+            .binary = null,
+            .containment = .plist_unreadable,
+        },
     };
 
-    const program = parseLaunchAgentProgramPath(arena, contents) catch null;
-    const binary: ?BinaryFacts = if (program) |p| factsFor(arena, p, self_sha, self_version, opts) else null;
+    const normalized = normalizeDarwinPlist(arena, contents) orelse return ResidentInfo{
+        .supported = true,
+        .label = keepalive_label,
+        .plist_path = plist_path,
+        .plist_present = true,
+        .program_path = null,
+        .binary = null,
+        .containment = .plist_invalid,
+    };
+    const raw_parsed = (try parseLaunchAgent(
+        arena,
+        contents,
+        resolved.home,
+        resolved.user,
+    )) orelse return ResidentInfo{
+        .supported = true,
+        .label = keepalive_label,
+        .plist_path = plist_path,
+        .plist_present = true,
+        .program_path = null,
+        .binary = null,
+        .containment = .plist_invalid,
+    };
+    const normalized_parsed = (try parseLaunchAgent(
+        arena,
+        normalized,
+        resolved.home,
+        resolved.user,
+    )) orelse return ResidentInfo{
+        .supported = true,
+        .label = keepalive_label,
+        .plist_path = plist_path,
+        .plist_present = true,
+        .program_path = null,
+        .binary = null,
+        .containment = .plist_invalid,
+    };
+    if (!sameParsedLaunchAgent(raw_parsed, normalized_parsed)) return ResidentInfo{
+        .supported = true,
+        .label = keepalive_label,
+        .plist_path = plist_path,
+        .plist_present = true,
+        .program_path = null,
+        .binary = null,
+        .containment = .plist_invalid,
+    };
+
+    const program = switch (raw_parsed) {
+        .contained => |path| path,
+        .legacy_uncontained => return ResidentInfo{
+            .supported = true,
+            .label = keepalive_label,
+            .plist_path = plist_path,
+            .plist_present = true,
+            .program_path = null,
+            .binary = null,
+            .containment = .legacy_uncontained,
+        },
+    };
+    const binary = factsForResident(arena, program, self_sha, self_version);
+    const containment: ResidentContainment = if (!binary.exists or binary.sha256 == null)
+        .binary_unreadable
+    else
+        .healthy;
 
     return ResidentInfo{
         .supported = true,
         .label = keepalive_label,
         .plist_path = plist_path,
         .plist_present = true,
-        .program_path = program,
-        .binary = binary,
+        .program_path = if (containment == .healthy) program else null,
+        .binary = if (containment == .healthy) binary else null,
+        .containment = containment,
     };
 }
 
-fn factsFor(arena: std.mem.Allocator, path: []const u8, self_sha: ?[]const u8, self_version: []const u8, opts: GatherOptions) BinaryFacts {
+fn readResidentPlist(arena: std.mem.Allocator, path: []const u8) ResidentPlistRead {
+    if (builtin.os.tag != .macos) return .unreadable;
+
+    // O_NONBLOCK prevents a FIFO reached directly or through a symlink from
+    // blocking open. Final-target classification, size, and bytes all come
+    // from this one descriptor, so a regular-file symlink is accepted without
+    // introducing a stat/read path race.
+    const fd = std.posix.open(path, .{
+        .ACCMODE = .RDONLY,
+        .NONBLOCK = true,
+        .CLOEXEC = true,
+    }, 0) catch |open_err| {
+        return if (open_err == error.FileNotFound) .absent else .unreadable;
+    };
+    var file = std.fs.File{ .handle = fd };
+    defer file.close();
+
+    const stat = file.stat() catch return .unreadable;
+    if (stat.kind != .file or stat.size > resident_plist_max_bytes) return .unreadable;
+
+    const contents = file.readToEndAlloc(arena, resident_plist_max_bytes) catch return .unreadable;
+    return .{ .contents = contents };
+}
+
+fn sameParsedLaunchAgent(left: ParsedLaunchAgent, right: ParsedLaunchAgent) bool {
+    return switch (left) {
+        .contained => |left_path| switch (right) {
+            .contained => |right_path| std.mem.eql(u8, left_path, right_path),
+            .legacy_uncontained => false,
+        },
+        .legacy_uncontained => |left_path| switch (right) {
+            .contained => false,
+            .legacy_uncontained => |right_path| std.mem.eql(u8, left_path, right_path),
+        },
+    };
+}
+
+fn normalizeDarwinPlist(
+    arena: std.mem.Allocator,
+    contents: []const u8,
+) ?[]const u8 {
+    if (builtin.os.tag != .macos) return null;
+
+    var child_env = std.process.EnvMap.init(arena);
+    defer child_env.deinit();
+    child_env.put("LC_ALL", "C") catch return null;
+
+    const argv = [_][]const u8{
+        "/usr/bin/plutil",
+        "-convert",
+        "xml1",
+        "-o",
+        "-",
+        "--",
+        "-",
+    };
+    var child = std.process.Child.init(&argv, arena);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.env_map = &child_env;
+    child.spawn() catch return null;
+
+    var reaped = false;
+    defer if (!reaped) {
+        _ = child.kill() catch {
+            _ = child.wait() catch {};
+        };
+    };
+
+    const stdin_file = child.stdin orelse return null;
+    stdin_file.writeAll(contents) catch return null;
+    stdin_file.close();
+    child.stdin = null;
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    defer stdout.deinit(arena);
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer stderr.deinit(arena);
+    child.collectOutput(arena, &stdout, &stderr, 1024 * 1024) catch return null;
+    const term = child.wait() catch return null;
+    reaped = true;
+    switch (term) {
+        .Exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+    if (stdout.items.len == 0) return null;
+    return stdout.toOwnedSlice(arena) catch null;
+}
+
+fn resolveDarwinResidentIdentity(arena: std.mem.Allocator) ?ResidentIdentity {
+    var child_env = std.process.EnvMap.init(arena);
+    defer child_env.deinit();
+    child_env.put("LC_ALL", "C") catch return null;
+
+    const uid_output = runDarwinId(arena, &child_env, "-u") orelse return null;
+    const uid_text = std.mem.trimRight(u8, uid_output, "\r\n");
+    if (uid_text.len == 0 or
+        std.mem.indexOfScalar(u8, uid_text, '\r') != null or
+        std.mem.indexOfScalar(u8, uid_text, '\n') != null)
+    {
+        return null;
+    }
+    const uid = std.fmt.parseInt(u64, uid_text, 10) catch return null;
+    const account_output = runDarwinId(arena, &child_env, "-P") orelse return null;
+    return parseDarwinAccountRecord(arena, account_output, uid);
+}
+
+fn runDarwinId(
+    arena: std.mem.Allocator,
+    child_env: *const std.process.EnvMap,
+    flag: []const u8,
+) ?[]const u8 {
+    const result = std.process.Child.run(.{
+        .allocator = arena,
+        .argv = &.{ "/usr/bin/id", flag },
+        .env_map = child_env,
+        .max_output_bytes = 16 * 1024,
+    }) catch return null;
+    const clean_exit = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    if (!clean_exit) return null;
+    return result.stdout;
+}
+
+fn parseDarwinAccountRecord(
+    allocator: std.mem.Allocator,
+    output: []const u8,
+    expected_uid: u64,
+) ?ResidentIdentity {
+    const record = std.mem.trimRight(u8, output, "\r\n");
+    if (record.len == 0 or
+        std.mem.indexOfScalar(u8, record, '\r') != null or
+        std.mem.indexOfScalar(u8, record, '\n') != null)
+    {
+        return null;
+    }
+
+    var fields: [10][]const u8 = undefined;
+    var field_it = std.mem.splitScalar(u8, record, ':');
+    for (&fields) |*field| {
+        field.* = field_it.next() orelse return null;
+    }
+    if (field_it.next() != null) return null;
+
+    const uid = std.fmt.parseInt(u64, fields[2], 10) catch return null;
+    if (uid != expected_uid) return null;
+    const user = fields[0];
+    const home = fields[8];
+    if (!isSafeLaunchAgentUser(user) or
+        !isSafeLaunchAgentValue(home) or
+        home[0] != '/')
+    {
+        return null;
+    }
+
+    return .{
+        .user = allocator.dupe(u8, user) catch return null,
+        .home = allocator.dupe(u8, home) catch return null,
+    };
+}
+
+const VersionPolicy = enum {
+    metadata_only,
+    trusted_exec,
+};
+
+fn factsForResident(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    self_sha: ?[]const u8,
+    self_version: []const u8,
+) BinaryFacts {
+    return factsFor(arena, path, self_sha, self_version, .metadata_only, 0);
+}
+
+fn factsFor(
+    arena: std.mem.Allocator,
+    path: []const u8,
+    self_sha: ?[]const u8,
+    self_version: []const u8,
+    version_policy: VersionPolicy,
+    version_exec_timeout_ms: u64,
+) BinaryFacts {
     const exists = isRegularExecutable(path);
     const sha: ?[]const u8 = if (exists) (runtime.hashFileSha256Hex(arena, path) catch null) else null;
 
@@ -369,8 +1154,8 @@ fn factsFor(arena: std.mem.Allocator, path: []const u8, self_sha: ?[]const u8, s
             // Same bytes as us — reuse our own version, no exec.
             version = arena.dupe(u8, self_version) catch null;
             if (version != null) version_source = "sha_match_self";
-        } else if (opts.exec_versions) {
-            version = runVersionJsonBounded(arena, path, opts.version_exec_timeout_ms);
+        } else if (version_policy == .trusted_exec) {
+            version = runVersionJsonBounded(arena, path, version_exec_timeout_ms);
             if (version != null) version_source = "subprocess";
         }
     }
@@ -515,6 +1300,7 @@ pub fn writeJson(report: ?BinariesReport, writer: anytype) !void {
 
     try writer.writeAll(",\"resident\":");
     if (r.resident) |res| {
+        const expose_resident_facts = res.containment == .healthy;
         try writer.writeAll("{\"supported\":");
         try writer.writeAll(if (res.supported) "true" else "false");
         try writer.writeAll(",\"label\":");
@@ -523,17 +1309,28 @@ pub fn writeJson(report: ?BinariesReport, writer: anytype) !void {
         try std.json.stringify(res.plist_path, .{}, writer);
         try writer.writeAll(",\"plist_present\":");
         try writer.writeAll(if (res.plist_present) "true" else "false");
+        try writer.writeAll(",\"containment_state\":");
+        try std.json.stringify(res.containment.label(), .{}, writer);
+        try writer.writeAll(",\"containment_healthy\":");
+        try writer.writeAll(if (res.containment == .healthy) "true" else "false");
         try writer.writeAll(",\"program_path\":");
-        if (res.program_path) |p| try std.json.stringify(p, .{}, writer) else try writer.writeAll("null");
+        if (expose_resident_facts and res.program_path != null)
+            try std.json.stringify(res.program_path.?, .{}, writer)
+        else
+            try writer.writeAll("null");
         try writer.writeAll(",\"binary\":");
-        if (res.binary) |bf| try writeFactsJson(writer, bf) else try writer.writeAll("null");
+        if (expose_resident_facts and res.binary != null)
+            try writeFactsJson(writer, res.binary.?)
+        else
+            try writer.writeAll("null");
         try writer.writeByte('}');
     } else {
         try writer.writeAll("null");
     }
 
-    try writer.print(",\"stale\":{{\"stale\":{s},\"sha_mismatch\":{s},\"version_older\":{s},\"reason\":", .{
+    try writer.print(",\"stale\":{{\"stale\":{s},\"containment_unhealthy\":{s},\"sha_mismatch\":{s},\"version_older\":{s},\"reason\":", .{
         if (r.stale.stale) "true" else "false",
+        if (r.stale.containment_unhealthy) "true" else "false",
         if (r.stale.sha_mismatch) "true" else "false",
         if (r.stale.version_older) "true" else "false",
     });
@@ -588,12 +1385,15 @@ pub fn writeText(report: ?BinariesReport, writer: anytype) !void {
         } else {
             try writer.print("    resident service: {s}\n", .{res.label});
             try writer.print("      plist:   {s} ({s})\n", .{
-                if (res.plist_path.len == 0) "(HOME unset)" else res.plist_path,
+                if (res.plist_path.len == 0) "(OS account identity unavailable)" else res.plist_path,
                 if (res.plist_present) "present" else "absent",
             });
-            if (res.binary) |bf| {
+            try writer.print("      containment: {s}\n", .{res.containment.label()});
+            if (res.containment.unhealthy()) {
+                try writer.writeAll("      program: (withheld because resident containment is unhealthy)\n");
+            } else if (res.containment == .healthy and res.binary != null) {
                 try writer.writeAll("      program: ");
-                try writeFactsLine(writer, bf);
+                try writeFactsLine(writer, res.binary.?);
             } else if (res.plist_present) {
                 try writer.writeAll("      program: (could not parse program path from plist)\n");
             } else {
@@ -602,7 +1402,14 @@ pub fn writeText(report: ?BinariesReport, writer: anytype) !void {
         }
     }
 
-    if (r.stale.stale) {
+    if (r.stale.containment_unhealthy and
+        r.resident != null and
+        r.resident.?.containment == .legacy_uncontained)
+    {
+        try writer.writeAll("    WARN: resident keepalive LaunchAgent is legacy and uncontained; reinstall the service to upgrade containment\n");
+    } else if (r.stale.containment_unhealthy) {
+        try writer.print("    WARN: resident keepalive containment is unhealthy ({s}); inspect and reinstall the service\n", .{r.stale.reason});
+    } else if (r.stale.stale) {
         try writer.print("    WARN: resident keepalive binary is stale ({s}); reload the service after installing a new binary\n", .{r.stale.reason});
     }
     if (r.shadow.shadowed) {
@@ -686,6 +1493,176 @@ test "distinctShaCount counts distinct non-null shas" {
     try std.testing.expectEqual(@as(usize, 1), distinctShaCount(&.{ a, n, a }));
 }
 
+test "resident metadata gathering never executes a plist-selected binary" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    const hostile_path = try std.fs.path.join(a, &.{ root, "hostile-oauth-mux" });
+    const side_effect_path = try std.fs.path.join(a, &.{ root, "executed" });
+    const script = try std.fmt.allocPrint(
+        a,
+        "#!/bin/sh\n: > '{s}'\nprintf '{{\"version\":\"hostile\"}}\\n'\n",
+        .{side_effect_path},
+    );
+    var hostile = try tmp.dir.createFile("hostile-oauth-mux", .{});
+    defer hostile.close();
+    try hostile.writeAll(script);
+    try hostile.chmod(0o755);
+
+    const facts = factsForResident(
+        a,
+        hostile_path,
+        null,
+        "0.0.0-test",
+    );
+    try std.testing.expect(facts.exists);
+    try std.testing.expect(facts.sha256 != null);
+    try std.testing.expect(facts.version == null);
+    try std.testing.expectEqualStrings("unknown", facts.version_source);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("executed", .{}));
+}
+
+test "Darwin account records provide resident identity without environment input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const identity = parseDarwinAccountRecord(
+        a,
+        "alice:********:501:20::0:0:Alice Example:/Users/alice:/bin/sh\n",
+        501,
+    ).?;
+    try std.testing.expectEqualStrings("alice", identity.user);
+    try std.testing.expectEqualStrings("/Users/alice", identity.home);
+
+    const malformed = [_][]const u8{
+        "",
+        "alice:********:501:20::0:0:Alice Example:/Users/alice\n",
+        "alice:********:501:20::0:0:Alice Example:relative:/bin/sh\n",
+        "alice:********:501:20::0:0:Alice Example:/Users/alice:/bin/sh\nextra",
+        "ali\tce:********:501:20::0:0:Alice Example:/Users/alice:/bin/sh\n",
+        "alice:********:501:20::0:0:Alice Example:/Users/ali\x7fce:/bin/sh\n",
+        "alice:********:501:20::0:0:Alice Example:/Users/ali\xc2\x80ce:/bin/sh\n",
+    };
+    for (malformed) |record| {
+        try std.testing.expect(parseDarwinAccountRecord(a, record, 501) == null);
+    }
+    try std.testing.expect(parseDarwinAccountRecord(
+        a,
+        "alice:********:502:20::0:0:Alice Example:/Users/alice:/bin/sh\n",
+        501,
+    ) == null);
+}
+
+test "resident gathering degrades cleanly when OS identity is unavailable" {
+    const info = try gatherResidentForIdentity(
+        std.testing.allocator,
+        null,
+        null,
+        "0.0.0-test",
+    );
+    try std.testing.expectEqual(ResidentContainment.identity_unavailable, info.containment);
+    try std.testing.expectEqualStrings("", info.plist_path);
+    try std.testing.expect(info.program_path == null);
+    try std.testing.expect(info.binary == null);
+}
+
+fn makeTestFifo(arena: std.mem.Allocator, path: []const u8) !void {
+    const result = try std.process.Child.run(.{
+        .allocator = arena,
+        .argv = &.{ "/usr/bin/mkfifo", path },
+        .max_output_bytes = 16 * 1024,
+    });
+    const clean_exit = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    try std.testing.expect(clean_exit);
+}
+
+test "resident plist reader rejects direct and symlinked FIFOs without blocking" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const home = try tmp.dir.realpathAlloc(a, ".");
+    try tmp.dir.makePath("Library/LaunchAgents");
+    const plist_path = try std.fs.path.join(a, &.{ home, keepalive_plist_rel });
+    try makeTestFifo(a, plist_path);
+    switch (readResidentPlist(a, plist_path)) {
+        .unreadable => {},
+        else => return error.TestExpectedEqual,
+    }
+
+    try tmp.dir.deleteFile(keepalive_plist_rel);
+    const fifo_target = try std.fs.path.join(a, &.{ home, "plist-fifo" });
+    try makeTestFifo(a, fifo_target);
+    try tmp.dir.symLink(fifo_target, keepalive_plist_rel, .{});
+    switch (readResidentPlist(a, plist_path)) {
+        .unreadable => {},
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "resident plist reader accepts a symlink resolving to a regular file" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const expected = "regular plist fixture";
+    const home = try tmp.dir.realpathAlloc(a, ".");
+    try tmp.dir.makePath("Library/LaunchAgents");
+    {
+        const target = try tmp.dir.createFile("regular.plist", .{});
+        defer target.close();
+        try target.writeAll(expected);
+    }
+    const target_path = try std.fs.path.join(a, &.{ home, "regular.plist" });
+    try tmp.dir.symLink(target_path, keepalive_plist_rel, .{});
+    const plist_path = try std.fs.path.join(a, &.{ home, keepalive_plist_rel });
+    switch (readResidentPlist(a, plist_path)) {
+        .contents => |contents| try std.testing.expectEqualStrings(expected, contents),
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "resident plist reader rejects an oversized regular file" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const home = try tmp.dir.realpathAlloc(a, ".");
+    try tmp.dir.makePath("Library/LaunchAgents");
+    {
+        const plist = try tmp.dir.createFile(keepalive_plist_rel, .{});
+        defer plist.close();
+        try plist.setEndPos(resident_plist_max_bytes + 1);
+    }
+    const plist_path = try std.fs.path.join(a, &.{ home, keepalive_plist_rel });
+    switch (readResidentPlist(a, plist_path)) {
+        .unreadable => {},
+        else => return error.TestExpectedEqual,
+    }
+}
+
 test "compareSemver ordering table" {
     try std.testing.expectEqual(Ordering.eq, compareSemver("0.1.14", "0.1.14"));
     try std.testing.expectEqual(Ordering.lt, compareSemver("0.1.13", "0.1.14"));
@@ -702,61 +1679,637 @@ test "compareSemver ordering table" {
 }
 
 test "evaluateStaleness table" {
-    // Absent resident → not stale.
-    var v = evaluateStaleness(.{ .resident_sha = null, .resident_version = null, .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    // Absent resident is distinct from unhealthy containment.
+    var v = evaluateStaleness(.{ .resident_containment = .absent, .resident_sha = null, .resident_version = null, .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
     try std.testing.expect(!v.stale);
-    try std.testing.expectEqualStrings("no_resident_or_unreadable", v.reason);
+    try std.testing.expect(!v.containment_unhealthy);
+    try std.testing.expectEqualStrings("no_resident", v.reason);
 
     // In sync.
-    v = evaluateStaleness(.{ .resident_sha = "aaa", .resident_version = "0.1.14", .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.14", .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
     try std.testing.expect(!v.stale);
     try std.testing.expectEqualStrings("in_sync", v.reason);
 
     // SHA mismatch only.
-    v = evaluateStaleness(.{ .resident_sha = "aaa", .resident_version = "0.1.14", .installed_sha = "bbb", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.14", .installed_sha = "bbb", .installed_version = "0.1.14", .self_version = "0.1.14" });
     try std.testing.expect(v.stale and v.sha_mismatch and !v.version_older);
     try std.testing.expectEqualStrings("resident_sha_differs_from_installed", v.reason);
 
     // Version older only (vs installed).
-    v = evaluateStaleness(.{ .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
     try std.testing.expect(v.stale and !v.sha_mismatch and v.version_older);
     try std.testing.expectEqualStrings("resident_version_older", v.reason);
 
     // Both.
-    v = evaluateStaleness(.{ .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = "bbb", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = "bbb", .installed_version = "0.1.14", .self_version = "0.1.14" });
     try std.testing.expect(v.stale and v.sha_mismatch and v.version_older);
     try std.testing.expectEqualStrings("resident_sha_differs_and_version_older", v.reason);
 
     // Older than self even when installed reference is unknown.
-    v = evaluateStaleness(.{ .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = null, .installed_version = null, .self_version = "0.1.14" });
+    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = null, .installed_version = null, .self_version = "0.1.14" });
     try std.testing.expect(v.stale and v.version_older);
+
+    for ([_]ResidentContainment{
+        .identity_unavailable,
+        .plist_unreadable,
+        .plist_invalid,
+        .legacy_uncontained,
+        .binary_unreadable,
+    }) |unhealthy| {
+        v = evaluateStaleness(.{
+            .resident_containment = unhealthy,
+            .resident_sha = null,
+            .resident_version = null,
+            .installed_sha = "aaa",
+            .installed_version = "0.1.14",
+            .self_version = "0.1.14",
+        });
+        try std.testing.expect(v.stale);
+        try std.testing.expect(v.containment_unhealthy);
+        try std.testing.expectEqualStrings(unhealthy.label(), v.reason);
+    }
 }
 
-test "parseLaunchAgentProgramPath extracts first program string" {
+const launch_agent_document_open = "<plist version=\"1.0\"><dict>";
+const launch_agent_label =
+    "<key>Label</key><string>dev.xoxd.omux.keepalive</string>";
+const launch_agent_program_arguments =
+    "<key>ProgramArguments</key><array>" ++
+    "<string>/usr/bin/env</string>" ++
+    "<string>-i</string>" ++
+    "<string>HOME=/Users/x</string>" ++
+    "<string>USER=x</string>" ++
+    "<string>PATH=/usr/bin:/bin:/usr/sbin:/sbin</string>" ++
+    "<string>NO_COLOR=1</string>" ++
+    "<string>/Users/x/.local/bin/oauth-mux</string>" ++
+    "<string>keepalive</string>" ++
+    "<string>--iterations</string>" ++
+    "<string>100000</string>" ++
+    "<string>--interval-ms</string>" ++
+    "<string>60000</string>" ++
+    "<string>--json</string>" ++
+    "</array>";
+const launch_agent_required_fields =
+    "<key>RunAtLoad</key><true/>" ++
+    "<key>KeepAlive</key><true/>" ++
+    "<key>ThrottleInterval</key><integer>300</integer>" ++
+    "<key>ProcessType</key><string>Background</string>" ++
+    "<key>StandardOutPath</key><string>/Users/x/Library/Logs/oauth-mux/keepalive.out.log</string>" ++
+    "<key>StandardErrorPath</key><string>/Users/x/Library/Logs/oauth-mux/keepalive.err.log</string>";
+const launch_agent_document_close = "</dict></plist>";
+const canonical_launch_agent =
+    launch_agent_document_open ++
+    launch_agent_label ++
+    launch_agent_program_arguments ++
+    launch_agent_required_fields ++
+    launch_agent_document_close;
+const legacy_v01_launch_agent =
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    \\  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    \\<plist version="1.0">
+    \\<dict>
+    \\  <key>Label</key>
+    \\  <string>dev.xoxd.omux.keepalive</string>
+    \\  <key>ProgramArguments</key>
+    \\  <array>
+    \\    <string>/Users/x/.local/bin/oauth-mux</string>
+    \\    <string>keepalive</string>
+    \\    <string>--iterations</string>
+    \\    <string>100000</string>
+    \\    <string>--interval-ms</string>
+    \\    <string>60000</string>
+    \\    <string>--json</string>
+    \\  </array>
+    \\  <key>RunAtLoad</key>
+    \\  <true/>
+    \\  <key>KeepAlive</key>
+    \\  <true/>
+    \\  <key>ThrottleInterval</key>
+    \\  <integer>300</integer>
+    \\  <key>ProcessType</key>
+    \\  <string>Background</string>
+    \\  <key>EnvironmentVariables</key>
+    \\  <dict>
+    \\    <key>NO_COLOR</key>
+    \\    <string>1</string>
+    \\    <key>PATH</key>
+    \\    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    \\  </dict>
+    \\  <key>StandardOutPath</key>
+    \\  <string>/Users/x/Library/Logs/oauth-mux/keepalive.out.log</string>
+    \\  <key>StandardErrorPath</key>
+    \\  <string>/Users/x/Library/Logs/oauth-mux/keepalive.err.log</string>
+    \\</dict>
+    \\</plist>
+;
+
+fn launchAgentWithBinary(
+    allocator: std.mem.Allocator,
+    encoded_binary: []const u8,
+) ![]const u8 {
+    const literal_binary = "/Users/x/.local/bin/oauth-mux";
+    const offset = std.mem.indexOf(u8, canonical_launch_agent, literal_binary).?;
+    return std.mem.concat(allocator, u8, &.{
+        canonical_launch_agent[0..offset],
+        encoded_binary,
+        canonical_launch_agent[offset + literal_binary.len ..],
+    });
+}
+
+test "parseLaunchAgentProgramPath validates complete contained LaunchAgent" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+        \\  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<!-- canonical contained LaunchAgent -->
         \\<plist version="1.0"><dict>
-        \\  <key>Label</key>
-        \\  <string>dev.xoxd.omux.keepalive</string>
         \\  <key>ProgramArguments</key>
         \\  <array>
+        \\    <string>/usr/bin/env</string>
+        \\    <string>-i</string>
+        \\    <string>HOME=/Users/x</string>
+        \\    <string>USER=x</string>
+        \\    <string>PATH=/usr/bin:/bin:/usr/sbin:/sbin</string>
+        \\    <string>NO_COLOR=1</string>
         \\    <string>/Users/x/.local/bin/oauth-mux</string>
         \\    <string>keepalive</string>
+        \\    <string>--iterations</string>
+        \\    <string>100000</string>
+        \\    <string>--interval-ms</string>
+        \\    <string>60000</string>
+        \\    <string>--json</string>
         \\  </array>
-        \\</dict></plist>
+        \\  <key>Label</key>
+        \\  <string>dev.xoxd.omux.keepalive</string>
+        \\  <key>RunAtLoad</key><true/>
+        \\  <key>KeepAlive</key><true/>
+        \\  <key>ThrottleInterval</key><integer>300</integer>
+        \\  <key>ProcessType</key><string>Background</string>
+        \\  <key>StandardOutPath</key>
+        \\  <string>/Users/x/Library/Logs/oauth-mux/keepalive.out.log</string>
+        \\  <key>StandardErrorPath</key>
+        \\  <string>/Users/x/Library/Logs/oauth-mux/keepalive.err.log</string>
+        \\</dict>
+        \\</plist>
     ;
-    const p = try parseLaunchAgentProgramPath(arena.allocator(), plist);
+    const p = try parseLaunchAgentProgramPath(arena.allocator(), plist, "/Users/x", "x");
     try std.testing.expectEqualStrings("/Users/x/.local/bin/oauth-mux", p.?);
+
+    const compact = try parseLaunchAgentProgramPath(
+        arena.allocator(),
+        canonical_launch_agent,
+        "/Users/x",
+        "x",
+    );
+    try std.testing.expectEqualStrings("/Users/x/.local/bin/oauth-mux", compact.?);
 }
 
-test "parseLaunchAgentProgramPath tolerates absence and malformed input" {
-    const a = std.testing.allocator;
-    try std.testing.expect((try parseLaunchAgentProgramPath(a, "")) == null);
-    try std.testing.expect((try parseLaunchAgentProgramPath(a, "<plist>no program args here</plist>")) == null);
-    try std.testing.expect((try parseLaunchAgentProgramPath(a, "ProgramArguments but no array element")) == null);
-    // ProgramArguments + array but empty string element → null, no error.
-    try std.testing.expect((try parseLaunchAgentProgramPath(a, "ProgramArguments<array><string></string></array>")) == null);
+test "LaunchAgent parser rejects an incompatible XML encoding declaration" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const plist =
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" ++ canonical_launch_agent;
+    try std.testing.expect(
+        (try parseLaunchAgentProgramPath(
+            arena.allocator(),
+            plist,
+            "/Users/x",
+            "x",
+        )) == null,
+    );
+}
+
+test "LaunchAgent parser classifies the shipped v0.1 shape as legacy uncontained" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const parsed = (try parseLaunchAgent(
+        a,
+        legacy_v01_launch_agent,
+        "/Users/x",
+        "x",
+    )).?;
+    switch (parsed) {
+        .legacy_uncontained => |binary| {
+            try std.testing.expectEqualStrings("/Users/x/.local/bin/oauth-mux", binary);
+        },
+        .contained => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(
+        (try parseLaunchAgentProgramPath(
+            a,
+            legacy_v01_launch_agent,
+            "/Users/x",
+            "x",
+        )) == null,
+    );
+
+    const unsafe_legacy = try std.mem.replaceOwned(
+        u8,
+        a,
+        legacy_v01_launch_agent,
+        "/Users/x/.local/bin/oauth-mux",
+        "/Users/x/.local/bin/oauth\x7fmux",
+    );
+    try std.testing.expect(
+        (try parseLaunchAgent(a, unsafe_legacy, "/Users/x", "x")) == null,
+    );
+    const altered_environment = try std.mem.replaceOwned(
+        u8,
+        a,
+        legacy_v01_launch_agent,
+        "<key>NO_COLOR</key>\n    <string>1</string>",
+        "<key>NO_COLOR</key>\n    <string>0</string>",
+    );
+    try std.testing.expect(
+        (try parseLaunchAgent(a, altered_environment, "/Users/x", "x")) == null,
+    );
+}
+
+test "parseLaunchAgentProgramPath enforces strict XML numeric references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const decimal_slash = try launchAgentWithBinary(
+        a,
+        "&#47;Users/x/.local/bin/oauth-mux",
+    );
+    const parsed = try parseLaunchAgentProgramPath(a, decimal_slash, "/Users/x", "x");
+    try std.testing.expectEqualStrings("/Users/x/.local/bin/oauth-mux", parsed.?);
+
+    const malformed_references = [_][]const u8{
+        "&#+47;Users/x/.local/bin/oauth-mux",
+        "&#x2_F;Users/x/.local/bin/oauth-mux",
+        "&#;Users/x/.local/bin/oauth-mux",
+        "&#x;Users/x/.local/bin/oauth-mux",
+        "&#0;Users/x/.local/bin/oauth-mux",
+        "&#xD800;Users/x/.local/bin/oauth-mux",
+        "&#xFFFE;Users/x/.local/bin/oauth-mux",
+        "&#x110000;Users/x/.local/bin/oauth-mux",
+        "/Users/x/.local/bin/\x01oauth-mux",
+    };
+    for (malformed_references) |encoded_binary| {
+        const plist = try launchAgentWithBinary(a, encoded_binary);
+        try std.testing.expect(
+            (try parseLaunchAgentProgramPath(a, plist, "/Users/x", "x")) == null,
+        );
+    }
+}
+
+test "LaunchAgent executable paths reject every control codepoint" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var codepoint: u21 = 0;
+    while (codepoint <= 0x1f) : (codepoint += 1) {
+        var encoded: [4]u8 = undefined;
+        const encoded_len = try std.unicode.utf8Encode(codepoint, &encoded);
+        const path = try std.mem.concat(a, u8, &.{
+            "/Users/x/.local/bin/oauth",
+            encoded[0..encoded_len],
+            "mux",
+        });
+        try std.testing.expect(!isSafeLaunchAgentPath(path));
+    }
+    codepoint = 0x7f;
+    while (codepoint <= 0x9f) : (codepoint += 1) {
+        var encoded: [4]u8 = undefined;
+        const encoded_len = try std.unicode.utf8Encode(codepoint, &encoded);
+        const path = try std.mem.concat(a, u8, &.{
+            "/Users/x/.local/bin/oauth",
+            encoded[0..encoded_len],
+            "mux",
+        });
+        try std.testing.expect(!isSafeLaunchAgentPath(path));
+    }
+
+    try std.testing.expect(isSafeLaunchAgentPath("/Users/x/.local/bin/oauth-mux"));
+    try std.testing.expect(isSafeLaunchAgentPath("/Users/Jos\xc3\xa9/bin/oauth-mux"));
+}
+
+test "LaunchAgent parser rejects raw TAB DEL and C1 executable paths" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const unsafe_paths = [_][]const u8{
+        "/Users/x/.local/bin/oauth\tmux",
+        "/Users/x/.local/bin/oauth\x7fmux",
+        "/Users/x/.local/bin/oauth\xc2\x80mux",
+        "/Users/x/.local/bin/oauth\xc2\x9fmux",
+    };
+    for (unsafe_paths) |unsafe_path| {
+        const plist = try launchAgentWithBinary(a, unsafe_path);
+        try std.testing.expect(
+            (try parseLaunchAgentProgramPath(a, plist, "/Users/x", "x")) == null,
+        );
+    }
+}
+
+test "parseLaunchAgentProgramPath rejects semantic top-level overrides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const override_argv =
+        "<key>ProgramArguments</key><array><string>/bin/false</string></array>";
+    const semantic_overrides = [_][]const u8{
+        // Program overrides ProgramArguments execution semantics.
+        launch_agent_document_open ++
+            launch_agent_label ++
+            "<key>Program</key><string>/bin/false</string>" ++
+            launch_agent_program_arguments ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        // EnvironmentVariables would bypass the env -i allowlist boundary.
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            "<key>EnvironmentVariables</key><dict><key>FOO</key><string>bar</string></dict>" ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        // Literal duplicates are rejected regardless of indentation or value.
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            "\n    " ++ override_argv ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            "\n\t<key>ProgramArguments</key>\n\t<array><string>/bin/false</string></array>" ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        // Entity aliases decode to ProgramArguments before duplicate detection.
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            "<key>Program&#65;rguments</key><array><string>/bin/false</string></array>" ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        // Duplicate non-argv values cannot override the canonical dictionary.
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            launch_agent_required_fields ++
+            "<key>StandardOutPath</key><string>/tmp/override</string>" ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            "<key>Label</key><string>override</string>" ++
+            launch_agent_program_arguments ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+    };
+    for (semantic_overrides) |plist| {
+        try std.testing.expect((try parseLaunchAgentProgramPath(a, plist, "/Users/x", "x")) == null);
+    }
+}
+
+test "parseLaunchAgentProgramPath rejects incomplete and noncanonical dictionaries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect(
+        (try parseLaunchAgentProgramPath(a, canonical_launch_agent, "/tmp/override", "x")) == null,
+    );
+    try std.testing.expect(
+        (try parseLaunchAgentProgramPath(a, canonical_launch_agent, "/Users/x", "override")) == null,
+    );
+
+    const legacy_program_arguments =
+        "<key>ProgramArguments</key><array>" ++
+        "<string>/Users/x/.local/bin/oauth-mux</string>" ++
+        "<string>keepalive</string>" ++
+        "<string>--iterations</string><string>100000</string>" ++
+        "<string>--interval-ms</string><string>60000</string><string>--json</string>" ++
+        "</array>";
+    const wrong_interval_arguments =
+        "<key>ProgramArguments</key><array>" ++
+        "<string>/usr/bin/env</string><string>-i</string>" ++
+        "<string>HOME=/Users/x</string><string>USER=x</string>" ++
+        "<string>PATH=/usr/bin:/bin:/usr/sbin:/sbin</string><string>NO_COLOR=1</string>" ++
+        "<string>/Users/x/.local/bin/oauth-mux</string>" ++
+        "<string>keepalive</string><string>--iterations</string><string>100000</string>" ++
+        "<string>--interval-ms</string><string>1</string><string>--json</string>" ++
+        "</array>";
+    const malformed = [_][]const u8{
+        "",
+        "<plist>no program args here</plist>",
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            legacy_program_arguments ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            wrong_interval_arguments ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            "<key>Program&#65;rguments</key>" ++
+            launch_agent_program_arguments["<key>ProgramArguments</key>".len..] ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            "<key>Label</key><string>override</string>" ++
+            launch_agent_program_arguments ++
+            launch_agent_required_fields ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            "<key>RunAtLoad</key><false/>" ++
+            "<key>KeepAlive</key><true/>" ++
+            "<key>ThrottleInterval</key><integer>300</integer>" ++
+            "<key>ProcessType</key><string>Background</string>" ++
+            "<key>StandardOutPath</key><string>/Users/x/Library/Logs/oauth-mux/keepalive.out.log</string>" ++
+            "<key>StandardErrorPath</key><string>/Users/x/Library/Logs/oauth-mux/keepalive.err.log</string>" ++
+            launch_agent_document_close,
+        launch_agent_document_open ++
+            launch_agent_label ++
+            launch_agent_program_arguments ++
+            "<key>RunAtLoad</key><true/>" ++
+            "<key>KeepAlive</key><true/>" ++
+            "<key>ThrottleInterval</key><integer>300</integer>" ++
+            "<key>ProcessType</key><string>Background</string>" ++
+            "<key>StandardOutPath</key><string>/tmp/override</string>" ++
+            "<key>StandardErrorPath</key><string>/Users/x/Library/Logs/oauth-mux/keepalive.err.log</string>" ++
+            launch_agent_document_close,
+    };
+    for (malformed) |plist| {
+        try std.testing.expect((try parseLaunchAgentProgramPath(a, plist, "/Users/x", "x")) == null);
+    }
+}
+
+test "binary-unreadable resident gathering retains no plist-selected facts" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const home = try tmp.dir.realpathAlloc(a, ".");
+    try tmp.dir.makePath("Library/LaunchAgents");
+    const plist = try std.mem.replaceOwned(
+        u8,
+        a,
+        canonical_launch_agent,
+        "/Users/x",
+        home,
+    );
+    var plist_file = try tmp.dir.createFile(keepalive_plist_rel, .{});
+    defer plist_file.close();
+    try plist_file.writeAll(plist);
+
+    const info = try gatherResidentForIdentity(
+        a,
+        .{ .user = "x", .home = home },
+        null,
+        "0.0.0-test",
+    );
+    try std.testing.expectEqual(ResidentContainment.binary_unreadable, info.containment);
+    try std.testing.expect(info.program_path == null);
+    try std.testing.expect(info.binary == null);
+}
+
+test "resident gathering fails closed when plutil rejects the XML encoding" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const home = try tmp.dir.realpathAlloc(a, ".");
+    try tmp.dir.makePath("Library/LaunchAgents");
+    try tmp.dir.makePath(".local/bin");
+    {
+        const binary_file = try tmp.dir.createFile(".local/bin/oauth-mux", .{ .mode = 0o755 });
+        defer binary_file.close();
+        try binary_file.writeAll("synthetic executable bytes\n");
+    }
+
+    const contained = try std.mem.replaceOwned(
+        u8,
+        a,
+        canonical_launch_agent,
+        "/Users/x",
+        home,
+    );
+    const malformed = try std.mem.concat(a, u8, &.{
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?>",
+        contained,
+    });
+    try std.testing.expect(normalizeDarwinPlist(a, malformed) == null);
+    {
+        const plist_file = try tmp.dir.createFile(keepalive_plist_rel, .{});
+        defer plist_file.close();
+        try plist_file.writeAll(malformed);
+    }
+
+    const info = try gatherResidentForIdentity(
+        a,
+        .{ .user = "x", .home = home },
+        null,
+        "0.0.0-test",
+    );
+    try std.testing.expectEqual(ResidentContainment.plist_invalid, info.containment);
+    try std.testing.expect(info.program_path == null);
+    try std.testing.expect(info.binary == null);
+
+    const selected_path = try std.fs.path.join(a, &.{ home, ".local/bin/oauth-mux" });
+    var report = sampleReport();
+    report.resident = info;
+    report.stale = evaluateStaleness(.{
+        .resident_containment = info.containment,
+        .resident_sha = null,
+        .resident_version = null,
+        .installed_sha = null,
+        .installed_version = null,
+        .self_version = "0.0.0-test",
+    });
+    var json = std.ArrayList(u8).init(a);
+    try writeJson(report, json.writer());
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"program_path\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"binary\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, selected_path) == null);
+
+    var text = std.ArrayList(u8).init(a);
+    try writeText(report, text.writer());
+    try std.testing.expect(std.mem.indexOf(u8, text.items, selected_path) == null);
+}
+
+test "resident gathering reports v0.1 compatibility without resident facts" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const home = try tmp.dir.realpathAlloc(a, ".");
+    try tmp.dir.makePath("Library/LaunchAgents");
+    const plist = try std.mem.replaceOwned(
+        u8,
+        a,
+        legacy_v01_launch_agent,
+        "/Users/x",
+        home,
+    );
+    {
+        const plist_file = try tmp.dir.createFile(keepalive_plist_rel, .{});
+        defer plist_file.close();
+        try plist_file.writeAll(plist);
+    }
+
+    const info = try gatherResidentForIdentity(
+        a,
+        .{ .user = "x", .home = home },
+        null,
+        "0.0.0-test",
+    );
+    try std.testing.expectEqual(ResidentContainment.legacy_uncontained, info.containment);
+    try std.testing.expect(info.program_path == null);
+    try std.testing.expect(info.binary == null);
+
+    const selected_path = try std.fs.path.join(a, &.{ home, ".local/bin/oauth-mux" });
+    var report = sampleReport();
+    report.resident = info;
+    report.stale = evaluateStaleness(.{
+        .resident_containment = info.containment,
+        .resident_sha = null,
+        .resident_version = null,
+        .installed_sha = null,
+        .installed_version = null,
+        .self_version = "0.0.0-test",
+    });
+    var json = std.ArrayList(u8).init(a);
+    try writeJson(report, json.writer());
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"containment_state\":\"legacy_uncontained\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"program_path\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, "\"binary\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json.items, selected_path) == null);
+
+    var text = std.ArrayList(u8).init(a);
+    try writeText(report, text.writer());
+    try std.testing.expect(std.mem.indexOf(u8, text.items, "containment: legacy_uncontained") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text.items, "reinstall the service to upgrade containment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text.items, selected_path) == null);
 }
 
 fn sampleReport() BinariesReport {
@@ -781,8 +2334,15 @@ fn sampleReport() BinariesReport {
             .plist_present = false,
             .program_path = null,
             .binary = null,
+            .containment = .unsupported,
         },
-        .stale = .{ .stale = false, .sha_mismatch = false, .version_older = false, .reason = "no_resident_or_unreadable" },
+        .stale = .{
+            .stale = false,
+            .containment_unhealthy = false,
+            .sha_mismatch = false,
+            .version_older = false,
+            .reason = "unsupported",
+        },
     };
 }
 
@@ -795,7 +2355,8 @@ test "writeJson renders a null-safe, well-formed binaries object" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"path_winner\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"sha256\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"shadowed\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "\"reason\":\"no_resident_or_unreadable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"containment_state\":\"unsupported\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"reason\":\"unsupported\"") != null);
 
     // Wrap and parse to confirm it is valid JSON.
     var full = std.ArrayList(u8).init(std.testing.allocator);
@@ -827,4 +2388,71 @@ test "writeText renders and is null-safe" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "self:") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "not supported") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "none on PATH") != null);
+}
+
+test "renderers withhold plist-selected path and facts for every unhealthy state" {
+    var json = std.ArrayList(u8).init(std.testing.allocator);
+    defer json.deinit();
+    var text = std.ArrayList(u8).init(std.testing.allocator);
+    defer text.deinit();
+
+    const selected_path = "/private/plist-selected/oauth-mux";
+    const selected_version = "resident-version-must-not-render";
+    const selected_sha = "resident-sha-must-not-render";
+    for ([_]ResidentContainment{
+        .identity_unavailable,
+        .plist_unreadable,
+        .plist_invalid,
+        .legacy_uncontained,
+        .binary_unreadable,
+    }) |unhealthy| {
+        var report = sampleReport();
+        report.resident = ResidentInfo{
+            .supported = true,
+            .label = keepalive_label,
+            .plist_path = "/redacted/LaunchAgent.plist",
+            .plist_present = true,
+            .program_path = selected_path,
+            .binary = BinaryFacts{
+                .path = selected_path,
+                .exists = false,
+                .sha256 = selected_sha,
+                .version = selected_version,
+                .version_source = "unknown",
+                .source = "path_or_installed",
+            },
+            .containment = unhealthy,
+        };
+        report.stale = evaluateStaleness(.{
+            .resident_containment = unhealthy,
+            .resident_sha = null,
+            .resident_version = null,
+            .installed_sha = null,
+            .installed_version = null,
+            .self_version = "0.1.15",
+        });
+
+        json.clearRetainingCapacity();
+        try writeJson(report, json.writer());
+        try std.testing.expect(std.mem.indexOf(u8, json.items, "\"containment_healthy\":false") != null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, "\"program_path\":null") != null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, "\"binary\":null") != null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, "\"stale\":true") != null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, "\"containment_unhealthy\":true") != null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, selected_path) == null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, selected_version) == null);
+        try std.testing.expect(std.mem.indexOf(u8, json.items, selected_sha) == null);
+
+        text.clearRetainingCapacity();
+        try writeText(report, text.writer());
+        try std.testing.expect(std.mem.indexOf(u8, text.items, "program: (withheld because resident containment is unhealthy)") != null);
+        if (unhealthy == .legacy_uncontained) {
+            try std.testing.expect(std.mem.indexOf(u8, text.items, "WARN: resident keepalive LaunchAgent is legacy and uncontained") != null);
+        } else {
+            try std.testing.expect(std.mem.indexOf(u8, text.items, "WARN: resident keepalive containment is unhealthy") != null);
+        }
+        try std.testing.expect(std.mem.indexOf(u8, text.items, selected_path) == null);
+        try std.testing.expect(std.mem.indexOf(u8, text.items, selected_version) == null);
+        try std.testing.expect(std.mem.indexOf(u8, text.items, selected_sha) == null);
+    }
 }
