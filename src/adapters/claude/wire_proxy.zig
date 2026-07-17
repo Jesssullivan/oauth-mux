@@ -4,6 +4,7 @@
 //! inject provider credentials, select routes, retry requests, or spawn Claude.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
 
@@ -101,17 +102,36 @@ fn startWithUpstream(
     return @ptrCast(state);
 }
 
+pub const testing = if (builtin.is_test) struct {
+    /// Test-only composition seam. The caller supplies the repository's
+    /// deterministic fake explicitly; production upstream selection remains
+    /// compile-fixed and unavailable through this API.
+    pub fn startWithFake(
+        allocator: std.mem.Allocator,
+        capability: *SessionCapability,
+        upstream: *FakeUpstream,
+        event_writer: std.io.AnyWriter,
+    ) !*Listener {
+        return startWithUpstream(
+            allocator,
+            capability,
+            event_writer,
+            .{ .fake = upstream },
+        );
+    }
+} else struct {};
+
 /// This file-private seam can only target the repository's deterministic fake.
 fn startForTest(
     allocator: std.mem.Allocator,
     capability: *SessionCapability,
     upstream: *FakeUpstream,
 ) !*Listener {
-    return startWithUpstream(
+    return testing.startWithFake(
         allocator,
         capability,
+        upstream,
         std.io.null_writer.any(),
-        .{ .fake = upstream },
     );
 }
 
