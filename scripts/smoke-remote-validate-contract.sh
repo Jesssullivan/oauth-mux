@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/scripts/remote-validate.sh"
 PROVENANCE="$ROOT/scripts/v02-proof-provenance-local.sh"
 PREDICATES="$ROOT/scripts/v02-proof-predicate-manifest-local.sh"
+OBSERVATIONS="$ROOT/scripts/v02-stage2-observation-local.sh"
 METRICS="$ROOT/scripts/v02-benchmark-metrics-local.sh"
 WORKFLOW="$ROOT/.github/workflows/remote-validate.yml"
 JUSTFILE="$ROOT/justfile"
@@ -38,6 +39,7 @@ expect_fake_status() (
 bash -n "$SCRIPT"
 bash -n "$PROVENANCE"
 bash -n "$PREDICATES"
+bash -n "$OBSERVATIONS"
 bash -n "$METRICS"
 
 grep -F 'candidate_sha:' "$WORKFLOW" >/dev/null ||
@@ -50,7 +52,7 @@ grep -F 'ref: ${{ inputs.candidate_sha }}' "$WORKFLOW" >/dev/null ||
   fail "v0.2 checkout must use candidate_sha"
 [ "$(grep -Fc 'uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' "$WORKFLOW")" -eq 2 ] ||
   fail "workflow must pin both official checkout actions"
-[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$WORKFLOW")" -eq 3 ] ||
+[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$WORKFLOW")" -eq 4 ] ||
   fail "workflow must pin every artifact upload action"
 grep -F 'name: Checkout generic validation ref' "$WORKFLOW" >/dev/null ||
   fail "generic validation must retain default checkout behavior"
@@ -65,6 +67,16 @@ grep -F 'name: v02-proof-provenance-${{ github.run_attempt }}' "$WORKFLOW" >/dev
   fail "provenance artifact must be attempt-scoped"
 grep -F 'name: v02-proof-predicates-${{ inputs.target }}-${{ github.run_attempt }}' "$WORKFLOW" >/dev/null ||
   fail "predicate artifact must be separate and attempt-scoped"
+grep -F 'name: v02-stage2-observations-${{ github.run_attempt }}' "$WORKFLOW" >/dev/null ||
+  fail "Stage 2 observation artifact must be separate and attempt-scoped"
+grep -F 'path: v02-stage2-observations.json' "$WORKFLOW" >/dev/null ||
+  fail "workflow must upload the typed Stage 2 observation artifact"
+grep -F 'return "$observer_status"' "$WORKFLOW" >/dev/null ||
+  fail "a failed Stage 2 observer must fail the proof run"
+grep -F 'OMUX_REMOTE_STAGE2_TIMEOUT:-20m' "$WORKFLOW" >/dev/null ||
+  fail "the Stage 2 observer must run under a bounded timeout"
+grep -F 'rm -f "${GITHUB_WORKSPACE}/v02-stage2-observations.json.tmp"' "$WORKFLOW" >/dev/null ||
+  fail "a killed Stage 2 observer must not strand its atomic-write temporary"
 grep -F 'name: v02-proof-benchmark-metrics-${{ github.run_attempt }}' "$WORKFLOW" >/dev/null ||
   fail "benchmark metrics artifact must be attempt-scoped"
 grep -F 'path: v02-benchmark-metrics.json' "$WORKFLOW" >/dev/null ||
@@ -99,7 +111,11 @@ grep -F -- '-f "candidate_ref=$candidate_ref"' "$SCRIPT" >/dev/null ||
 grep -F 'assert_exact_regular_file' "$SCRIPT" >/dev/null ||
   fail "downloaded artifacts must have exact regular file sets"
 grep -F 'v02-proof-predicate-manifest-local.sh" require-incomplete' "$SCRIPT" >/dev/null ||
-  fail "failed runs must accept any canonical incomplete predicate manifest"
+  fail "failed runs must reconcile canonical incomplete predicate manifests"
+grep -F 'v02-proof-predicate-manifest-local.sh" reduce-stage2' "$SCRIPT" >/dev/null ||
+  fail "the auditor must independently reduce Stage 2 observations"
+grep -F 'v02-proof-predicate-manifest-local.sh" require-stage2-slice' "$SCRIPT" >/dev/null ||
+  fail "the auditor must enforce the exact observed Stage 2 slice"
 if grep -F 'v02-proof-predicate-manifest-local.sh" require-all-missing' "$SCRIPT" >/dev/null; then
   fail "failed-run reconciliation must not require every predicate to be missing"
 fi
@@ -130,6 +146,53 @@ run_id=424242
 run_attempt=2
 gh_log="$tmp_dir/gh.log"
 
+stage2_facts_json="$(cat <<'EOF' | jq -R -s 'split("\n") | map(select(length > 0))'
+listener_bound_ipv4_loopback
+carrier_is_canonical_256bit_base64url
+valid_capability_reaches_fake_once
+invalid_capability_returns_401
+invalid_capability_adds_zero_fake_calls
+invalid_capability_observation_is_fresh
+caller_auth_headers_absent_upstream
+forwarding_identity_headers_absent_upstream
+hop_headers_absent_upstream
+required_safe_headers_present_upstream
+invalid_origin_requests_return_400
+forward_proxy_requests_return_400
+invalid_origin_and_proxy_requests_add_zero_fake_calls
+redirect_returns_local_502
+redirect_is_not_followed
+streaming_prefix_arrives_before_upstream_completion
+streaming_body_arrives_byte_preserved
+streaming_uses_one_fake_call
+provider_5xx_status_and_body_pass_through
+provider_5xx_uses_one_fake_call
+EOF
+)"
+passing_observations="$tmp_dir/stage2-observations-pass.json"
+jq -n \
+  --arg candidate_sha "$candidate_sha" \
+  --arg candidate_tree "$candidate_tree" \
+  --argjson workflow_run_id "$run_id" \
+  --argjson workflow_run_attempt "$run_attempt" \
+  --argjson facts "$stage2_facts_json" \
+  '{
+    schema_version: 1,
+    target: "v02-stage2-conformance",
+    candidate_sha: $candidate_sha,
+    candidate_tree: $candidate_tree,
+    workflow_run_id: $workflow_run_id,
+    workflow_run_attempt: $workflow_run_attempt,
+    gf_target_class: "tinyland-nix",
+    facts: [$facts[] | {id: ., status: "pass"}]
+  }' >"$passing_observations"
+"$OBSERVATIONS" verify \
+  "$passing_observations" "$candidate_sha" "$candidate_tree" \
+  "$run_id" "$run_attempt" tinyland-nix
+"$OBSERVATIONS" require-pass \
+  "$passing_observations" "$candidate_sha" "$candidate_tree" \
+  "$run_id" "$run_attempt" tinyland-nix
+
 # Predicate manifests accept exactly the canonical ordered set and status enum.
 stage2_manifest="$tmp_dir/stage2.json"
 benchmark_manifest="$tmp_dir/benchmark.json"
@@ -137,6 +200,17 @@ benchmark_manifest="$tmp_dir/benchmark.json"
 "$PREDICATES" emit-missing v02-benchmark "$benchmark_manifest"
 "$PREDICATES" require-all-missing v02-stage2-conformance "$stage2_manifest"
 "$PREDICATES" require-all-missing v02-benchmark "$benchmark_manifest"
+stage2_slice_manifest="$tmp_dir/stage2-slice.json"
+"$PREDICATES" reduce-stage2 \
+  "$passing_observations" \
+  "$stage2_slice_manifest" \
+  "$candidate_sha" \
+  "$candidate_tree" \
+  "$run_id" \
+  "$run_attempt" \
+  tinyland-nix
+"$PREDICATES" require-stage2-slice \
+  v02-stage2-conformance "$stage2_slice_manifest"
 
 expected_stage2_ids='provider_egress_denial
 provider_call_count_zero
@@ -665,8 +739,19 @@ case "${1:-} ${2:-}" in
         [ "$mode" != "download-error" ] || exit 1
         [ "$mode" != "missing-file" ] || exit 0
 
-        "$FAKE_GH_PREDICATE_TOOL" emit-missing "$FAKE_GH_TARGET" \
-          "$output_dir/v02-proof-predicate-manifest.json"
+        if [ "$FAKE_GH_TARGET" = "v02-stage2-conformance" ]; then
+          "$FAKE_GH_PREDICATE_TOOL" reduce-stage2 \
+            "$FAKE_GH_PASSING_OBSERVATIONS" \
+            "$output_dir/v02-proof-predicate-manifest.json" \
+            "$FAKE_GH_CANDIDATE_SHA" \
+            "$FAKE_GH_RESOLVED_TREE" \
+            "$FAKE_GH_RUN_ID" \
+            "$FAKE_GH_RUN_ATTEMPT" \
+            tinyland-nix
+        else
+          "$FAKE_GH_PREDICATE_TOOL" emit-missing "$FAKE_GH_TARGET" \
+            "$output_dir/v02-proof-predicate-manifest.json"
+        fi
         case "$mode" in
           unknown)
             filter='.predicates[0].id = "unknown_predicate"'
@@ -694,6 +779,55 @@ case "${1:-} ${2:-}" in
           >"$output_dir/manifest.tmp"
         mv "$output_dir/manifest.tmp" "$output_dir/v02-proof-predicate-manifest.json"
         [ "$mode" != "extra-file" ] || mkdir "$output_dir/forbidden-directory"
+        ;;
+
+      "v02-stage2-observations-${FAKE_GH_RUN_ATTEMPT}")
+        mode="$FAKE_GH_OBSERVATION_ARTIFACT"
+        [ "$mode" != "download-error" ] || exit 1
+        [ "$mode" != "missing-file" ] || exit 0
+
+        observation_file="$output_dir/v02-stage2-observations.json"
+        cp "$FAKE_GH_PASSING_OBSERVATIONS" "$observation_file"
+        case "$mode" in
+          wrong-candidate)
+            jq --arg candidate_sha "$FAKE_GH_OTHER_SHA" \
+              '.candidate_sha = $candidate_sha' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          stale-attempt)
+            jq '.workflow_run_attempt += 1' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          unknown)
+            jq '.facts[0].id = "unknown_fact"' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          duplicate)
+            jq '.facts[1].id = .facts[0].id' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          omitted)
+            jq 'del(.facts[0])' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          invalid-status)
+            jq '.facts[0].status = "missing"' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          failed-fact)
+            jq '.facts[0].status = "fail"' "$observation_file" \
+              >"$output_dir/observation.tmp"
+            ;;
+          *)
+            : >"$output_dir/observation.tmp"
+            ;;
+        esac
+        if [ -s "$output_dir/observation.tmp" ]; then
+          mv "$output_dir/observation.tmp" "$observation_file"
+        else
+          rm -f "$output_dir/observation.tmp"
+        fi
+        [ "$mode" != "extra-file" ] || : >"$output_dir/forbidden.txt"
         ;;
 
       "v02-proof-benchmark-metrics-${FAKE_GH_RUN_ATTEMPT}")
@@ -774,6 +908,8 @@ run_fake() (
   FAKE_GH_PROVENANCE_ARTIFACT="${FAKE_GH_PROVENANCE_ARTIFACT:-valid}" \
   FAKE_GH_PREDICATE_ARTIFACT="${FAKE_GH_PREDICATE_ARTIFACT:-valid}" \
   FAKE_GH_PREDICATE_TOOL="$PREDICATES" \
+  FAKE_GH_OBSERVATION_ARTIFACT="${FAKE_GH_OBSERVATION_ARTIFACT:-valid}" \
+  FAKE_GH_PASSING_OBSERVATIONS="$passing_observations" \
   FAKE_GH_METRICS_ARTIFACT="${FAKE_GH_METRICS_ARTIFACT:-valid}" \
   FAKE_GH_METRICS_TOOL="$METRICS" \
   FAKE_GH_PASSING_METRICS="$passing_metrics" \
@@ -820,22 +956,35 @@ grep -F "run download $run_id --repo Jesssullivan/oauth-mux --name v02-proof-pro
   fail "failed target must download attempt-scoped provenance"
 grep -F -- "--name v02-proof-predicates-v02-stage2-conformance-$run_attempt" "$gh_log" >/dev/null ||
   fail "failed target must separately download predicate manifest"
+grep -F -- "--name v02-stage2-observations-$run_attempt" "$gh_log" >/dev/null ||
+  fail "failed Stage 2 target must separately download typed observations"
 grep -F 'verified immutable proof artifacts' "$tmp_dir/explicit-branch.out" >/dev/null ||
   fail "failed target must verify both artifacts before returning"
 if grep -F 'v02-proof-benchmark-metrics-' "$gh_log" >/dev/null; then
   fail "Stage 2 must not download benchmark metrics"
 fi
 
-# Failed proof reconciliation accepts canonical mixtures of pass/fail/missing.
+# A shape-valid predicate manifest that disagrees with the observations is rejected.
 : >"$gh_log"
 (
   FAKE_GH_PREDICATE_ARTIFACT=mixed-incomplete \
-    expect_fake_status 3 mixed-incomplete-failure \
+    expect_fake_status 1 mixed-incomplete-failure \
     run_fake v02-stage2-conformance refs/heads/proof-ref --candidate-sha "$candidate_sha"
 )
-grep -F 'verified immutable proof artifacts' \
+grep -F 'does not match the independently reduced observations' \
   "$tmp_dir/mixed-incomplete-failure.out" >/dev/null ||
-  fail "failed run must reconcile a canonical incomplete predicate manifest"
+  fail "observation/manifest drift must fail independent reduction"
+
+: >"$gh_log"
+(
+  FAKE_GH_OBSERVATION_ARTIFACT=failed-fact \
+  FAKE_GH_PREDICATE_ARTIFACT=all-pass \
+    expect_fake_status 1 failed-observation-lying-manifest \
+    run_fake v02-stage2-conformance refs/heads/proof-ref --candidate-sha "$candidate_sha"
+)
+grep -F 'Stage 2 observer did not exercise every fixed fact successfully' \
+  "$tmp_dir/failed-observation-lying-manifest.out" >/dev/null ||
+  fail "a failed observation must be rejected before a lying all-pass manifest"
 
 : >"$gh_log"
 (
@@ -1007,7 +1156,17 @@ for mode in missing-file extra-file download-error unknown duplicate omitted inv
   )
 done
 
-# A green run cannot claim Stage 2/G4 while the canonical manifest is still missing.
+# Stage 2 observations are exact-candidate, attempt-bound, fixed-cardinality artifacts.
+for mode in missing-file extra-file download-error wrong-candidate stale-attempt unknown duplicate omitted invalid-status; do
+  : >"$gh_log"
+  (
+    FAKE_GH_OBSERVATION_ARTIFACT="$mode" \
+      expect_fake_status 1 "observations-${mode}" \
+      run_fake v02-stage2-conformance refs/heads/proof-ref --candidate-sha "$candidate_sha"
+  )
+done
+
+# A green run cannot claim Stage 2 while 114 canonical predicates remain missing.
 : >"$gh_log"
 (
   FAKE_GH_WATCH_STATUS=0 \
@@ -1015,7 +1174,7 @@ done
     run_fake v02-stage2-conformance refs/heads/proof-ref --candidate-sha "$candidate_sha"
 )
 if grep -F 'verified immutable proof artifacts' "$tmp_dir/false-green.out" >/dev/null; then
-  fail "all-missing manifest must not produce a completed Stage 2 claim"
+  fail "the 10/124 slice must not produce a completed Stage 2 claim"
 fi
 
 # Stage 1 accepts only exact lowercase local HEAD identity; detachedness is remote-only.
@@ -1141,6 +1300,7 @@ mkdir -p "$post_run_repo" "$post_run_gf"
   post_run_gf_sha="$(git -C "$post_run_gf" rev-parse HEAD)"
 
   printf '{"schema_version":1}\n' >v02-proof-predicate-manifest.json
+  printf '{"schema_version":1}\n' >v02-stage2-observations.json
   "$PROVENANCE" assert-post-run \
     "$post_run_candidate_sha" "$post_run_candidate_sha" \
     v02-stage2-conformance "$post_run_gf_sha"

@@ -167,6 +167,7 @@ fn beginRequestObservation(state: *State) void {
 fn markRequestOutcome(state: *State, outcome: RequestOutcome) void {
     state.observation_mutex.lock();
     defer state.observation_mutex.unlock();
+    if (state.observation.outcome != .receiving_head) return;
     state.observation.outcome = outcome;
 }
 
@@ -2286,6 +2287,10 @@ test "truncated chunked upstream remains detectably incomplete downstream" {
         event_stream.getWritten(),
         "claude_proxy_upstream_interrupted",
     ) != null);
+    try std.testing.expectEqual(
+        RequestOutcome.upstream_response,
+        observationSnapshot(listener).outcome,
+    );
     try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
 }
 

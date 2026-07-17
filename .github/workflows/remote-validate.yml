@@ -208,9 +208,51 @@ jobs:
                     nix develop --command just release-proof-local "${release_version}"
                   ;;
                 v02-stage2-conformance)
-                  ./scripts/v02-proof-predicate-manifest-local.sh emit-missing \
-                    "${OMUX_REMOTE_TARGET}" \
-                    "${GITHUB_WORKSPACE}/v02-proof-predicate-manifest.json"
+                  candidate_tree="$(git rev-parse --verify 'HEAD^{tree}')"
+                  stage2_cache_root="$(mktemp -d "${RUNNER_TEMP}/omux-stage2-zig.XXXXXX")"
+                  set +e
+                  run_with_timeout \
+                    "v0.2 Stage 2 observer" \
+                    "${OMUX_REMOTE_STAGE2_TIMEOUT:-20m}" \
+                    nix develop --command env \
+                      ZIG_LOCAL_CACHE_DIR="${stage2_cache_root}/local" \
+                      ZIG_GLOBAL_CACHE_DIR="${stage2_cache_root}/global" \
+                      zig build v02-stage2-observe \
+                      -Dv02-candidate-sha="${OMUX_V02_CANDIDATE_SHA}" \
+                      -Dv02-candidate-tree="${candidate_tree}" \
+                      -Dv02-workflow-run-id="${OMUX_V02_WORKFLOW_RUN_ID}" \
+                      -Dv02-workflow-run-attempt="${OMUX_V02_WORKFLOW_RUN_ATTEMPT}" \
+                      -Dv02-gf-target-class="${OMUX_V02_GF_TARGET_CLASS}"
+                  observer_status=$?
+                  set -e
+                  rm -rf "$stage2_cache_root"
+                  rm -f "${GITHUB_WORKSPACE}/v02-stage2-observations.json.tmp"
+                  if [ -f "${GITHUB_WORKSPACE}/v02-stage2-observations.json" ] &&
+                    ./scripts/v02-stage2-observation-local.sh verify \
+                      "${GITHUB_WORKSPACE}/v02-stage2-observations.json" \
+                      "${OMUX_V02_CANDIDATE_SHA}" \
+                      "${candidate_tree}" \
+                      "${OMUX_V02_WORKFLOW_RUN_ID}" \
+                      "${OMUX_V02_WORKFLOW_RUN_ATTEMPT}" \
+                      "${OMUX_V02_GF_TARGET_CLASS}"
+                  then
+                    ./scripts/v02-proof-predicate-manifest-local.sh reduce-stage2 \
+                      "${GITHUB_WORKSPACE}/v02-stage2-observations.json" \
+                      "${GITHUB_WORKSPACE}/v02-proof-predicate-manifest.json" \
+                      "${OMUX_V02_CANDIDATE_SHA}" \
+                      "${candidate_tree}" \
+                      "${OMUX_V02_WORKFLOW_RUN_ID}" \
+                      "${OMUX_V02_WORKFLOW_RUN_ATTEMPT}" \
+                      "${OMUX_V02_GF_TARGET_CLASS}"
+                  else
+                    ./scripts/v02-proof-predicate-manifest-local.sh emit-missing \
+                      "${OMUX_REMOTE_TARGET}" \
+                      "${GITHUB_WORKSPACE}/v02-proof-predicate-manifest.json"
+                  fi
+                  if [ "$observer_status" -ne 0 ]; then
+                    echo "::error::Claude fake-upstream observer failed with status ${observer_status}"
+                    return "$observer_status"
+                  fi
                   ./scripts/v02-proof-predicate-manifest-local.sh require-pass \
                     "${OMUX_REMOTE_TARGET}" \
                     "${GITHUB_WORKSPACE}/v02-proof-predicate-manifest.json"
@@ -295,6 +337,14 @@ jobs:
         with:
           name: v02-proof-predicates-${{ inputs.target }}-${{ github.run_attempt }}
           path: v02-proof-predicate-manifest.json
+          if-no-files-found: error
+
+      - name: Upload v0.2 Stage 2 observations
+        if: ${{ always() && inputs.target == 'v02-stage2-conformance' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: v02-stage2-observations-${{ github.run_attempt }}
+          path: v02-stage2-observations.json
           if-no-files-found: error
 
       - name: Upload v0.2 benchmark metrics

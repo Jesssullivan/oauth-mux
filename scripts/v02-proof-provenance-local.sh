@@ -124,7 +124,8 @@ assert_post_run() {
   )" || fail "could not inspect post-run candidate artifacts"
   case "$target" in
     v02-stage2-conformance)
-      expected_status='?? v02-proof-predicate-manifest.json'
+      expected_status='?? v02-proof-predicate-manifest.json
+?? v02-stage2-observations.json'
       ;;
     v02-benchmark)
       expected_status='?? v02-benchmark-metrics.json

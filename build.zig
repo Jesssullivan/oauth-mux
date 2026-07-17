@@ -130,6 +130,51 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(check_manifest_step);
     test_step.dependOn(check_managed_schema_step);
 
+    const stage2_options = b.addOptions();
+    stage2_options.addOption(
+        []const u8,
+        "candidate_sha",
+        b.option([]const u8, "v02-candidate-sha", "Exact v0.2 candidate commit") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "candidate_tree",
+        b.option([]const u8, "v02-candidate-tree", "Exact v0.2 candidate tree") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "workflow_run_id",
+        b.option([]const u8, "v02-workflow-run-id", "Authoritative workflow run id") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "workflow_run_attempt",
+        b.option([]const u8, "v02-workflow-run-attempt", "Authoritative workflow run attempt") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "gf_target_class",
+        b.option([]const u8, "v02-gf-target-class", "GloriousFlywheel target class") orelse "",
+    );
+    const stage2_observer = b.addTest(.{
+        .root_source_file = b.path("test/stage2_observer_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const stage2_observer_module = b.createModule(.{
+        .root_source_file = b.path("src/adapters/claude/stage2_observer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stage2_observer.root_module.addImport("stage2_observer", stage2_observer_module);
+    stage2_observer.root_module.addOptions("stage2_build_options", stage2_options);
+    const run_stage2_observer = b.addRunArtifact(stage2_observer);
+    const stage2_observer_step = b.step(
+        "v02-stage2-observe",
+        "Emit typed Claude fake-upstream Stage 2 observations",
+    );
+    stage2_observer_step.dependOn(&run_stage2_observer.step);
+
     const release_step = b.step("release", "Build release binaries for all platforms");
     release_step.dependOn(check_manifest_step);
     release_step.dependOn(check_managed_schema_step);
