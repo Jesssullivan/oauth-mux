@@ -24,7 +24,7 @@ claims.
   reusing the doctor binary walk; detects PATH shadowing live
   (TIN-2463, #462).
 
-### Added — v0.2 broker program (experimental, unshipped, no CLI surface)
+### Added — v0.2 broker program (experimental, unshipped, fail-closed CLI only)
 
 - v0.2 authority chain: full-broker program plan, deletion ledger, threat
   model, authority map, and fail-closed supersedence docs
@@ -36,14 +36,29 @@ claims.
 - Managed harness JSON-RPC v2 declaration-only schema (TIN-1798, #475) —
   methods declared, none implemented.
 - Managed-Claude adapter foundations (TIN-1829/TIN-2047, #477, #478, #480,
-  #481): fail-closed child authority + env scrubbing, 256-bit session
+  #481, #483, #484, #485): fail-closed child authority + env scrubbing, 256-bit session
   capability carrier, deterministic fake upstream, authenticated loopback
   ingress with fixed-origin enforcement, and synthetic managed child
-  lifecycle. **Library-only**: imported solely by the test root, reachable
-  from no CLI verb, and real upstream forwarding is compile-disabled
-  (`production_forwarding_enabled = false`). Earns zero TIN-2057 rows.
+  lifecycle. `omux claude` now reaches only an explicit unshipped refusal;
+  its path into managed-child composition and real upstream forwarding remains
+  compile-disabled (`production_forwarding_enabled = false`). #485 repairs
+  #484's sequencing defect: the disabled verb now refuses before constructing
+  the full inherited launch environment or preparing managed argv/config/binary
+  state. It still performs ordinary startup, logging initialization, and CLI
+  parsing before that gate. #483 remotely proves one bounded synthetic
+  composition of the generated memory-only session capability through the
+  managed child environment and real loopback listener against only the
+  deterministic fake upstream: missing/wrong carriers stay local, the valid
+  carrier makes exactly one fake call, and the client is capped at 16 KiB/5 s.
+  It reads no provider credential and makes no provider call. This is a partial
+  Stage 2 predicate, not Stage 2 exit, and earns zero TIN-2057 rows.
 - v0.2 evaluation and dogfood ladder runbook (TIN-2057, #479) — the
   operator contract for evidence, dogfood, rollback, and claim promotion.
+- Pure advisory-usage normalization core (TIN-2400, #486): synthetic-only
+  schema validation, freshness/negative-cache semantics, process-lifetime
+  schema-drift kill switch, and reactive-evidence precedence. It performs no
+  I/O, is not wired to an endpoint or resident service, and earns no Stage 2
+  or TIN-2057 credit.
 
 ### Changed / fixed
 
