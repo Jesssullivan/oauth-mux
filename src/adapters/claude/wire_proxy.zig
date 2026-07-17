@@ -42,27 +42,36 @@ const State = struct {
     observation: RequestObservation = .{},
 };
 
-/// The last request's exact-model accounting, exposed to tests through the same
+/// FIRST-ATTEMPT ADMISSION ONLY. Records what model was admitted for the one
+/// upstream attempt of the last request. It is exposed to tests through the same
 /// snapshot pattern the fake upstream uses. The model bytes are the public model
 /// identifier only; no credential or body payload is retained.
+///
+/// It deliberately makes NO result-side claim. Ladder §8.2 step 3 (the
+/// harness-visible successful result reporting the same public model through a
+/// trusted local observation) is NOT established here: this slice never inspects
+/// the response body for a model, so result-side model evidence does not exist
+/// yet. `admittedModel()` describes only what was admitted for the attempt,
+/// never what the upstream result reported.
 const RequestObservation = struct {
     had_body: bool = false,
+    /// A top-level request model was present and admitted for the attempt.
     model_present: bool = false,
-    model_buf: [max_model_len]u8 = undefined,
-    model_len: usize = 0,
+    admitted_model_buf: [max_model_len]u8 = undefined,
+    admitted_model_len: usize = 0,
     upstream_attempted: bool = false,
     upstream_status: u16 = 0,
     model_admission_rejected: bool = false,
 
-    fn model(self: *const RequestObservation) []const u8 {
-        return self.model_buf[0..self.model_len];
+    fn admittedModel(self: *const RequestObservation) []const u8 {
+        return self.admitted_model_buf[0..self.admitted_model_len];
     }
 };
 
 const ModelObservationInput = struct {
     had_body: bool = false,
     model_present: bool = false,
-    model: ?[]const u8 = null,
+    admitted_model: ?[]const u8 = null,
     upstream_attempted: bool = false,
     upstream_status: u16 = 0,
     model_admission_rejected: bool = false,
@@ -78,10 +87,10 @@ fn recordModelObservation(state: *State, input: ModelObservationInput) void {
         .upstream_status = input.upstream_status,
         .model_admission_rejected = input.model_admission_rejected,
     };
-    if (input.model) |m| {
+    if (input.admitted_model) |m| {
         const n = @min(m.len, max_model_len);
-        @memcpy(obs.model_buf[0..n], m[0..n]);
-        obs.model_len = n;
+        @memcpy(obs.admitted_model_buf[0..n], m[0..n]);
+        obs.admitted_model_len = n;
     }
     state.observation = obs;
 }
@@ -636,7 +645,7 @@ fn forwardOnce(
     recordModelObservation(state, .{
         .had_body = body.len != 0,
         .model_present = captured_model != null,
-        .model = captured_model,
+        .admitted_model = captured_model,
         .upstream_attempted = true,
         .upstream_status = @intFromEnum(upstream_status),
     });
@@ -1178,6 +1187,27 @@ fn readResponseRemainder(stream: *std.net.Stream, response: *std.ArrayList(u8)) 
     }
 }
 
+/// Decodes the chunked transfer-encoded body of a raw HTTP response into its
+/// plain bytes, so a test can assert byte-for-byte stream equality.
+fn decodeChunkedBody(alloc: std.mem.Allocator, response: []const u8) ![]u8 {
+    const head_end = std.mem.indexOf(u8, response, "\r\n\r\n") orelse return error.NoHead;
+    var body = response[head_end + 4 ..];
+    var out = std.ArrayList(u8).init(alloc);
+    errdefer out.deinit();
+    while (true) {
+        const line_end = std.mem.indexOf(u8, body, "\r\n") orelse return error.BadChunk;
+        var len_field = body[0..line_end];
+        if (std.mem.indexOfScalar(u8, len_field, ';')) |semi| len_field = len_field[0..semi];
+        const chunk_len = try std.fmt.parseInt(usize, std.mem.trim(u8, len_field, " \t"), 16);
+        body = body[line_end + 2 ..];
+        if (chunk_len == 0) break;
+        if (body.len < chunk_len + 2) return error.BadChunk;
+        try out.appendSlice(body[0..chunk_len]);
+        body = body[chunk_len + 2 ..];
+    }
+    return out.toOwnedSlice();
+}
+
 test "exact model is captured and forwarded byte-identically to the fake upstream" {
     const capability = try SessionCapability.generate(std.testing.allocator);
     defer capability.deinit();
@@ -1208,7 +1238,7 @@ test "exact model is captured and forwarded byte-identically to the fake upstrea
     try std.testing.expect(obs.model_present);
     try std.testing.expect(obs.upstream_attempted);
     try std.testing.expectEqual(@as(u16, 200), obs.upstream_status);
-    try std.testing.expectEqualStrings(model, obs.model());
+    try std.testing.expectEqualStrings(model, obs.admittedModel());
 
     var captured: [256]u8 = undefined;
     const captured_len = upstream.capturedRequestBody(&captured);
@@ -1264,9 +1294,11 @@ test "SSE response prefix reaches the client before the upstream completes" {
 
     upstream.releasePausedResponse();
     try readResponseRemainder(&stream, &response);
-    try std.testing.expect(std.mem.indexOf(u8, response.items, first) != null);
-    try std.testing.expect(std.mem.indexOf(u8, response.items, rest) != null);
-    try std.testing.expect(std.mem.endsWith(u8, response.items, "0\r\n\r\n"));
+    // Strict byte-for-byte reassembly: the decoded chunked body must equal the
+    // whole dripped stream exactly, not merely contain its segments.
+    const decoded = try decodeChunkedBody(std.testing.allocator, response.items);
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings(sse, decoded);
     try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
 }
 
@@ -1544,7 +1576,7 @@ test "model after the former peek window is admitted from the complete bounded b
     const obs = observationSnapshot(listener);
     try std.testing.expect(obs.model_present);
     try std.testing.expect(obs.upstream_attempted);
-    try std.testing.expectEqualStrings(model, obs.model());
+    try std.testing.expectEqualStrings(model, obs.admittedModel());
     const capture = upstream.requestCaptureSnapshot();
     try std.testing.expectEqual(json.len, capture.total_len);
     try std.testing.expect(capture.truncated);
@@ -1561,12 +1593,17 @@ test "malformed ambiguous and missing model bodies refuse locally with zero upst
     const listener = try startForTest(std.testing.allocator, capability, &upstream);
     defer listener.deinit();
 
+    // Full-document admission (program §2.2, ladder §8.2): the whole buffered
+    // body must be one complete JSON object with exactly one top-level `model`
+    // string, no trailing non-whitespace, and a model within the length bound.
+    const overlong_model = "{\"model\":\"" ++ ("x" ** (max_model_len + 1)) ++ "\"}";
     const bodies = [_][]const u8{
         "not json at all",
         "{\"messages\":[]}",
         "{\"model\":5}",
         "{\"model\":\"\"}",
         "[]",
+        overlong_model, // model exceeds the length bound
         "{\"model\":\"claude-opus-4-20250514\",\"model\":\"claude-haiku-4-20250514\"}",
         "{\"model\":\"claude-opus-4-20250514\",\"model\":\"claude-opus-4-20250514\"}",
         "{\"model\":\"claude-opus-4-20250514\"} trailing",
@@ -1584,6 +1621,16 @@ test "malformed ambiguous and missing model bodies refuse locally with zero upst
     const obs = observationSnapshot(listener);
     try std.testing.expect(obs.model_admission_rejected);
     try std.testing.expect(!obs.upstream_attempted);
+
+    // Trailing whitespace after a complete single-model document is tolerated,
+    // so a legitimate body with a trailing newline still admits and forwards.
+    const trailing_ws = "{\"model\":\"claude-opus-4-20250514\"}\n\n  \t";
+    const accept_request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, trailing_ws);
+    defer std.testing.allocator.free(accept_request);
+    const accept_response = try requestRawAlloc(std.testing.allocator, listener.address(), accept_request);
+    defer std.testing.allocator.free(accept_response);
+    try expectStatus(accept_response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expectEqual(@as(usize, 1), upstream.snapshot().call_count);
 }
 
 test "shutdown interrupts a partial request within a fixed deadline" {
