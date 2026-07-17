@@ -13243,22 +13243,7 @@ fn inspectCodexManagedResume(
     defer allocator.free(store_dir);
     result.store_available = true;
 
-    const index_path = try std.fs.path.join(allocator, &.{ store_dir, "session_index.jsonl" });
-    defer allocator.free(index_path);
-    result.session_index_checked = true;
-    result.session_index_match = fileContainsNeedle(allocator, index_path, resume_id) catch false;
-
-    const sessions_dir = try std.fs.path.join(allocator, &.{ store_dir, "sessions" });
-    defer allocator.free(sessions_dir);
-    result.rollout_filenames_checked = true;
-    result.rollout_filename_match = directoryFileNameContainsNeedle(allocator, sessions_dir, resume_id) catch false;
-
-    result.state_store_checked = true;
-    result.state_store_match =
-        (try codexManagedStateFileContainsNeedle(allocator, store_dir, "state_5.sqlite", resume_id)) or
-        (try codexManagedStateFileContainsNeedle(allocator, store_dir, "state_5.sqlite-wal", resume_id));
-
-    result.found = result.session_index_match or result.rollout_filename_match or result.state_store_match;
+    try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &result);
     if (result.found) {
         result.status = "found_in_selected_store";
         result.diagnostic = "resume id was found in the selected route-local Codex store; canonical resume authority is checked by oauth-mux codex resume";
@@ -13310,48 +13295,95 @@ test "codexManagedOverlayHomeForPlanning detects managed overlay homes" {
     try std.testing.expect(try codexManagedOverlayHomeForPlanning(allocator, tmp_path));
 }
 
-fn codexManagedStateFileContainsNeedle(
+fn inspectCodexManagedResumeStore(
     allocator: std.mem.Allocator,
     store_dir: []const u8,
-    filename: []const u8,
-    needle: []const u8,
-) !bool {
-    const path = try std.fs.path.join(allocator, &.{ store_dir, filename });
-    defer allocator.free(path);
-    return fileContainsNeedle(allocator, path, needle) catch false;
+    resume_id: []const u8,
+    result: *CodexManagedResumeInspection,
+) !void {
+    const index_path = try std.fs.path.join(allocator, &.{ store_dir, "session_index.jsonl" });
+    defer allocator.free(index_path);
+    result.session_index_checked = true;
+    result.session_index_match = sessionIndexContainsExactResumeId(allocator, index_path, resume_id) catch false;
+
+    const sessions_dir = try std.fs.path.join(allocator, &.{ store_dir, "sessions" });
+    defer allocator.free(sessions_dir);
+    result.rollout_filenames_checked = true;
+    result.rollout_filename_match = directoryHasExactRolloutResumeId(allocator, sessions_dir, resume_id) catch false;
+
+    // Raw SQLite/WAL bytes have no record boundary. Until oauth-mux has a
+    // structured state-store reader, they cannot prove resume identity.
+    result.state_store_checked = false;
+    result.state_store_match = false;
+    result.found = result.session_index_match or result.rollout_filename_match;
 }
 
-fn fileContainsNeedle(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) !bool {
-    if (needle.len == 0) return false;
+const codex_resume_index_max_line_bytes = 1024 * 1024;
+
+fn sessionIndexContainsExactResumeId(allocator: std.mem.Allocator, path: []const u8, resume_id: []const u8) !bool {
+    if (resume_id.len == 0) return false;
     var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
         error.FileNotFound, error.AccessDenied, error.NotDir => return false,
         else => return err,
     };
     defer file.close();
 
-    var previous = std.ArrayList(u8).init(allocator);
-    defer previous.deinit();
+    var line = std.ArrayList(u8).init(allocator);
+    defer line.deinit();
+    var oversized = false;
+    var buffer: [8192]u8 = undefined;
 
-    var buf: [8192]u8 = undefined;
     while (true) {
-        const n = try file.read(&buf);
-        if (n == 0) break;
+        const read_len = try file.read(&buffer);
+        if (read_len == 0) break;
 
-        var haystack = std.ArrayList(u8).init(allocator);
-        defer haystack.deinit();
-        try haystack.appendSlice(previous.items);
-        try haystack.appendSlice(buf[0..n]);
-        if (std.mem.indexOf(u8, haystack.items, needle) != null) return true;
+        for (buffer[0..read_len]) |byte| {
+            if (byte == '\n') {
+                if (!oversized and line.items.len != 0 and sessionIndexLineMatchesResumeId(allocator, line.items, resume_id)) {
+                    return true;
+                }
+                line.clearRetainingCapacity();
+                oversized = false;
+                continue;
+            }
 
-        previous.clearRetainingCapacity();
-        const keep = @min(needle.len - 1, haystack.items.len);
-        if (keep != 0) try previous.appendSlice(haystack.items[haystack.items.len - keep ..]);
+            if (oversized) continue;
+            if (line.items.len == codex_resume_index_max_line_bytes) {
+                line.clearRetainingCapacity();
+                oversized = true;
+                continue;
+            }
+            try line.append(byte);
+        }
     }
-    return false;
+
+    return !oversized and
+        line.items.len != 0 and
+        sessionIndexLineMatchesResumeId(allocator, line.items, resume_id);
 }
 
-fn directoryFileNameContainsNeedle(allocator: std.mem.Allocator, root: []const u8, needle: []const u8) !bool {
-    if (needle.len == 0) return false;
+fn sessionIndexLineMatchesResumeId(allocator: std.mem.Allocator, line_raw: []const u8, resume_id: []const u8) bool {
+    const line = std.mem.trim(u8, line_raw, " \t\r\n");
+    if (line.len == 0) return false;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{
+        .allocate = .alloc_always,
+    }) catch return false;
+    defer parsed.deinit();
+
+    const object = switch (parsed.value) {
+        .object => |value| value,
+        else => return false,
+    };
+    const id_value = object.get("id") orelse return false;
+    return switch (id_value) {
+        .string => |value| std.mem.eql(u8, value, resume_id),
+        else => false,
+    };
+}
+
+fn directoryHasExactRolloutResumeId(allocator: std.mem.Allocator, root: []const u8, resume_id: []const u8) !bool {
+    if (resume_id.len == 0) return false;
     var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.AccessDenied, error.NotDir => return false,
         else => return err,
@@ -13366,9 +13398,214 @@ fn directoryFileNameContainsNeedle(allocator: std.mem.Allocator, root: []const u
         if (entry.kind != .file) continue;
         inspected += 1;
         if (inspected > 20000) return false;
-        if (std.mem.indexOf(u8, entry.basename, needle) != null) return true;
+        if (rolloutFileNameMatchesResumeId(entry.basename, resume_id)) return true;
     }
     return false;
+}
+
+fn rolloutFileNameMatchesResumeId(filename: []const u8, resume_id: []const u8) bool {
+    if (!isCanonicalCodexThreadId(resume_id)) return false;
+    if (!std.mem.startsWith(u8, filename, "rollout-") or !std.mem.endsWith(u8, filename, ".jsonl")) return false;
+
+    const core = filename["rollout-".len .. filename.len - ".jsonl".len];
+    const timestamp_len = "YYYY-MM-DDThh-mm-ss".len;
+    if (core.len <= timestamp_len or core[timestamp_len] != '-') return false;
+    if (!isCodexRolloutTimestamp(core[0..timestamp_len])) return false;
+
+    return std.mem.eql(u8, core[timestamp_len + 1 ..], resume_id);
+}
+
+fn isCodexRolloutTimestamp(value: []const u8) bool {
+    if (value.len != "YYYY-MM-DDThh-mm-ss".len) return false;
+    if (value[4] != '-' or value[7] != '-' or value[10] != 'T' or value[13] != '-' or value[16] != '-') return false;
+
+    const year = std.fmt.parseInt(u16, value[0..4], 10) catch return false;
+    const month = std.fmt.parseInt(u8, value[5..7], 10) catch return false;
+    const day = std.fmt.parseInt(u8, value[8..10], 10) catch return false;
+    const hour = std.fmt.parseInt(u8, value[11..13], 10) catch return false;
+    const minute = std.fmt.parseInt(u8, value[14..16], 10) catch return false;
+    const second = std.fmt.parseInt(u8, value[17..19], 10) catch return false;
+    if (year < std.time.epoch.epoch_year or month < 1 or month > 12 or day < 1 or hour > 23 or minute > 59 or second > 59) {
+        return false;
+    }
+
+    const leap_kind: std.time.epoch.YearLeapKind = if (std.time.epoch.isLeapYear(year)) .leap else .not_leap;
+    const month_enum: std.time.epoch.Month = @enumFromInt(month);
+    return day <= std.time.epoch.getDaysInMonth(leap_kind, month_enum);
+}
+
+fn isCanonicalCodexThreadId(value: []const u8) bool {
+    if (value.len != 36) return false;
+    for (value, 0..) |byte, idx| {
+        switch (idx) {
+            8, 13, 18, 23 => if (byte != '-') return false,
+            else => if (!std.ascii.isHex(byte) or std.ascii.isUpper(byte)) return false,
+        }
+    }
+    return true;
+}
+
+test "Codex resume session index matching is structural and exact" {
+    const allocator = std.testing.allocator;
+    const resume_id = "short-valid";
+
+    try std.testing.expect(sessionIndexLineMatchesResumeId(
+        allocator,
+        \\{"id":"short-valid","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
+    ,
+        resume_id,
+    ));
+    try std.testing.expect(!sessionIndexLineMatchesResumeId(
+        allocator,
+        \\{"id":"short-valid-longer","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
+    ,
+        resume_id,
+    ));
+    try std.testing.expect(!sessionIndexLineMatchesResumeId(
+        allocator,
+        \\{"id":"different","thread_name":"short-valid","filename":"rollout-short-valid.jsonl"}
+    ,
+        resume_id,
+    ));
+    try std.testing.expect(!sessionIndexLineMatchesResumeId(
+        allocator,
+        \\{"id":42,"thread_name":"short-valid"}
+    ,
+        resume_id,
+    ));
+    try std.testing.expect(!sessionIndexLineMatchesResumeId(
+        allocator,
+        \\{"id":"different","id":"short-valid"}
+    ,
+        resume_id,
+    ));
+    try std.testing.expect(!sessionIndexLineMatchesResumeId(
+        allocator,
+        \\{"id":"short-valid"} trailing
+    ,
+        resume_id,
+    ));
+    try std.testing.expect(!sessionIndexLineMatchesResumeId(allocator, "not-json", resume_id));
+}
+
+test "Codex rollout filename matching requires the exact identity field" {
+    const resume_id = "11111111-2222-4333-8444-555555555555";
+
+    try std.testing.expect(rolloutFileNameMatchesResumeId(
+        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
+        resume_id,
+    ));
+    try std.testing.expect(!rolloutFileNameMatchesResumeId(
+        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl.zst",
+        resume_id,
+    ));
+    try std.testing.expect(!rolloutFileNameMatchesResumeId(
+        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555-extra.jsonl",
+        resume_id,
+    ));
+    try std.testing.expect(!rolloutFileNameMatchesResumeId(
+        "rollout-2026-02-30T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
+        resume_id,
+    ));
+    try std.testing.expect(!rolloutFileNameMatchesResumeId(
+        "notes-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
+        resume_id,
+    ));
+    try std.testing.expect(!rolloutFileNameMatchesResumeId(
+        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
+        "short-valid",
+    ));
+    try std.testing.expect(!rolloutFileNameMatchesResumeId(
+        "rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
+        "11111111-2222-4333-8444-55555555555A",
+    ));
+}
+
+test "Codex resume session index skips oversized records before an exact record" {
+    const allocator = std.testing.allocator;
+    const resume_id = "short-valid";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const index = try tmp.dir.createFile("session_index.jsonl", .{});
+    defer index.close();
+    var oversized_chunk = [_]u8{'x'} ** 4096;
+    var remaining: usize = codex_resume_index_max_line_bytes + 1;
+    while (remaining != 0) {
+        const write_len = @min(remaining, oversized_chunk.len);
+        try index.writeAll(oversized_chunk[0..write_len]);
+        remaining -= write_len;
+    }
+    try index.writeAll(
+        \\
+        \\{"id":"short-valid","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
+        \\
+    );
+
+    const index_path = try tmp.dir.realpathAlloc(allocator, "session_index.jsonl");
+    defer allocator.free(index_path);
+    try std.testing.expect(try sessionIndexContainsExactResumeId(allocator, index_path, resume_id));
+}
+
+test "Codex managed resume ignores unparsed state database bytes" {
+    const allocator = std.testing.allocator;
+    const resume_id = "short-valid";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("sessions/2026/07/17");
+    {
+        const index = try tmp.dir.createFile("session_index.jsonl", .{});
+        defer index.close();
+        try index.writeAll(
+            \\{"id":"short-valid-longer","thread_name":"short-valid","updated_at":"2026-07-17T00:00:00Z"}
+            \\
+        );
+    }
+    {
+        const rollout = try tmp.dir.createFile(
+            "sessions/2026/07/17/rollout-2026-07-17T12-34-56-short-valid-longer.jsonl",
+            .{},
+        );
+        rollout.close();
+    }
+    {
+        const state = try tmp.dir.createFile("state_5.sqlite", .{});
+        defer state.close();
+        try state.writeAll("unparsed database bytes containing short-valid");
+    }
+    {
+        const wal = try tmp.dir.createFile("state_5.sqlite-wal", .{});
+        defer wal.close();
+        try wal.writeAll("unparsed WAL bytes containing short-valid");
+    }
+
+    const store_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(store_dir);
+
+    var inspection = CodexManagedResumeInspection{};
+    try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &inspection);
+    try std.testing.expect(inspection.session_index_checked);
+    try std.testing.expect(!inspection.session_index_match);
+    try std.testing.expect(inspection.rollout_filenames_checked);
+    try std.testing.expect(!inspection.rollout_filename_match);
+    try std.testing.expect(!inspection.state_store_checked);
+    try std.testing.expect(!inspection.state_store_match);
+    try std.testing.expect(!inspection.found);
+
+    {
+        const index = try tmp.dir.createFile("session_index.jsonl", .{ .truncate = true });
+        defer index.close();
+        try index.writeAll(
+            \\{"id":"short-valid","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
+            \\
+        );
+    }
+
+    inspection = .{};
+    try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &inspection);
+    try std.testing.expect(inspection.session_index_match);
+    try std.testing.expect(inspection.found);
 }
 
 fn codexManagedResumeAllowsLaunch(inspection: CodexManagedResumeInspection) bool {
