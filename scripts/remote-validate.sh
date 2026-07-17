@@ -438,7 +438,8 @@ assert_exact_regular_file() {
 
 provenance_dir="${v02_tmp_dir}/provenance"
 predicate_dir="${v02_tmp_dir}/predicates"
-mkdir -p "$provenance_dir" "$predicate_dir"
+observation_dir="${v02_tmp_dir}/observations"
+mkdir -p "$provenance_dir" "$predicate_dir" "$observation_dir"
 
 set +e
 gh run download "$run_id" --repo "$repo" \
@@ -463,6 +464,56 @@ if [ "$download_status" -ne 0 ]; then
   exit 1
 fi
 assert_exact_regular_file "$predicate_dir" v02-proof-predicate-manifest.json
+
+if [ "$target" = "v02-stage2-conformance" ]; then
+  set +e
+  gh run download "$run_id" --repo "$repo" \
+    --name "v02-stage2-observations-${workflow_run_attempt}" \
+    --dir "$observation_dir"
+  download_status=$?
+  set -e
+  if [ "$download_status" -ne 0 ]; then
+    echo "remote-validate: v0.2 Stage 2 observation artifact is unavailable" >&2
+    exit 1
+  fi
+  assert_exact_regular_file "$observation_dir" v02-stage2-observations.json
+  "${script_dir}/v02-stage2-observation-local.sh" verify \
+    "$observation_dir/v02-stage2-observations.json" \
+    "$candidate_sha" \
+    "$candidate_tree" \
+    "$run_id" \
+    "$workflow_run_attempt" \
+    tinyland-nix
+  "${script_dir}/v02-stage2-observation-local.sh" require-pass \
+    "$observation_dir/v02-stage2-observations.json" \
+    "$candidate_sha" \
+    "$candidate_tree" \
+    "$run_id" \
+    "$workflow_run_attempt" \
+    tinyland-nix
+
+  derived_manifest="${v02_tmp_dir}/derived-stage2-predicate-manifest.json"
+  "${script_dir}/v02-proof-predicate-manifest-local.sh" reduce-stage2 \
+    "$observation_dir/v02-stage2-observations.json" \
+    "$derived_manifest" \
+    "$candidate_sha" \
+    "$candidate_tree" \
+    "$run_id" \
+    "$workflow_run_attempt" \
+    tinyland-nix
+  "${script_dir}/v02-proof-predicate-manifest-local.sh" verify \
+    "$target" \
+    "$predicate_dir/v02-proof-predicate-manifest.json"
+  downloaded_manifest_json="$(jq -S -c . "$predicate_dir/v02-proof-predicate-manifest.json")"
+  derived_manifest_json="$(jq -S -c . "$derived_manifest")"
+  if [ "$downloaded_manifest_json" != "$derived_manifest_json" ]; then
+    echo "remote-validate: Stage 2 predicate manifest does not match the independently reduced observations" >&2
+    exit 1
+  fi
+  "${script_dir}/v02-proof-predicate-manifest-local.sh" require-stage2-slice \
+    "$target" \
+    "$predicate_dir/v02-proof-predicate-manifest.json"
+fi
 
 "${script_dir}/v02-proof-provenance-local.sh" verify \
   "$provenance_dir/v02-proof-provenance.json" \
