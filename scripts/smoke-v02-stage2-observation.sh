@@ -60,10 +60,10 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 10 ] ||
-  fail "expected exactly ten exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 114 ] ||
-  fail "expected exactly 114 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 11 ] ||
+  fail "expected exactly eleven exercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 113 ] ||
+  fail "expected exactly 113 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
 
@@ -76,9 +76,39 @@ origin_form_request_enforcement
 redirect_ssrf_rejection
 generic_forward_proxy_rejection
 byte_preserving_streaming
-provider_5xx_pass_through'
+provider_5xx_pass_through
+accepted_rejected_counter_reconciliation'
 actual_passes=$(jq -r '.predicates[] | select(.status == "pass") | .id' "$manifest")
 [ "$actual_passes" = "$expected_passes" ] || fail "predicate reduction drifted"
+
+counter_fact_ids='aggregate_accepted_request_count_is_one
+aggregate_rejected_request_count_is_one
+aggregate_request_counts_reconcile_with_ids'
+while IFS= read -r fact_id; do
+  failed_observation="$TMP/${fact_id}-failed.json"
+  failed_counter_manifest="$TMP/${fact_id}-manifest.json"
+  jq --arg fact_id "$fact_id" \
+    '(.facts[] | select(.id == $fact_id)).status = "fail"' \
+    "$OBSERVATION" >"$failed_observation"
+  "$PREDICATES" reduce-stage2 \
+    "$failed_observation" \
+    "$failed_counter_manifest" \
+    "$candidate_sha" \
+    "$candidate_tree" \
+    "$workflow_run_id" \
+    "$workflow_run_attempt" \
+    "$gf_target_class"
+  jq -e --slurpfile positive_manifest "$manifest" '
+    [.predicates[] | {id: .id, status: .status}]
+    ==
+    (
+      $positive_manifest[0].predicates
+      | map({id: .id, status: .status})
+      | .[69].status = "fail"
+    )
+  ' "$failed_counter_manifest" >/dev/null ||
+    fail "${fact_id} did not exclusively fail counter reconciliation"
+done <<<"$counter_fact_ids"
 
 expect_rejected "$VERIFY" verify \
   "$TMP/missing.json" "$candidate_sha" "$candidate_tree" \

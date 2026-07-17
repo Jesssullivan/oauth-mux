@@ -183,6 +183,7 @@ redirect_ssrf_rejection
 generic_forward_proxy_rejection
 byte_preserving_streaming
 provider_5xx_pass_through
+accepted_rejected_counter_reconciliation
 EOF
 }
 
@@ -338,6 +339,12 @@ case "$mode" in
             "provider_5xx_status_and_body_pass_through",
             "provider_5xx_uses_one_fake_call"
           ])
+        elif .id == "accepted_rejected_counter_reconciliation" then
+          .status = reduced([
+            "aggregate_accepted_request_count_is_one",
+            "aggregate_rejected_request_count_is_one",
+            "aggregate_request_counts_reconcile_with_ids"
+          ])
         else
           .
         end
@@ -414,9 +421,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 114)
+      and ([.predicates[] | select(.status == "missing")] | length == 113)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 10-pass/0-fail/114-missing Stage 2 slice"
+      fail "manifest is not the exact 11-pass/0-fail/113-missing Stage 2 slice"
     ;;
 
   -h|--help|help)
