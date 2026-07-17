@@ -86,6 +86,7 @@ const AllModules = struct {
 
     pub const quota_advise = @import("quota/advise.zig");
     pub const quota_advise_tests = @import("quota/advise_tests.zig");
+    pub const quota_advisory_usage = @import("quota/advisory_usage.zig");
     pub const quota_bucket = @import("quota/bucket.zig");
     pub const quota_bucket_tests = @import("quota/bucket_tests.zig");
 
