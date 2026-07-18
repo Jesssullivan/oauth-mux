@@ -150,7 +150,7 @@ spoof_home="$tmp/spoofed-home"
 spoof_user="spoofed-user"
 mkdir -p "$spoof_home"
 rendered="$tmp/rendered.txt"
-HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+HOME="$host_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render >"$rendered"
 
 assert_absent "$rendered" '<key>EnvironmentVariables</key>' \
@@ -182,7 +182,6 @@ assert_absent "$child_env" "$inherited_value" \
   "env -i wrapper leaked the inherited sentinel value"
 assert_contains_line "$child_env" "HOME=$host_home" "OS-derived HOME allowlist entry is absent"
 assert_contains_line "$child_env" "USER=$host_user" "OS-derived USER allowlist entry is absent"
-assert_absent "$child_env" "$spoof_home" "caller HOME reached the resident environment"
 assert_absent "$child_env" "$spoof_user" "caller USER reached the resident environment"
 assert_contains_line "$child_env" "PATH=/usr/bin:/bin:/usr/sbin:/sbin" \
   "fixed PATH allowlist entry is absent"
@@ -196,61 +195,11 @@ expect_rejected() {
   fi
 }
 
-path_override_value="omux-path-domain-value-must-not-appear-3024"
-for path_override_name in \
-  OMUX_CONFIG \
-  OMUX_CONFIG_DIR \
-  OMUX_STATE_DIR \
-  OMUX_RUNTIME_DIR \
-  OMUX_CODEX_STORE_ROOT \
-  OMUX_CLAUDE_CONFIG_ROOT \
-  XDG_CONFIG_HOME \
-  XDG_STATE_HOME \
-  XDG_RUNTIME_DIR \
-  XDG_DATA_HOME
-do
-  for path_override_command in render verify install; do
-    : >"$mutation_log"
-    expect_rejected \
-      "$path_override_name for $path_override_command" \
-      env \
-      "$path_override_name=$path_override_value" \
-      HOME="$spoof_home" \
-      USER="$spoof_user" \
-      OMUX_BIN="$fake_omux" \
-      OMUX_SMOKE_MUTATION_LOG="$mutation_log" \
-      PATH="$fake_tools:/usr/bin:/bin" \
-      "$fixture_service" "$path_override_command"
-    grep -Fq \
-      "nondefault resident path-domain override is active: $path_override_name (value withheld)" \
-      "$tmp/rejected.stderr" ||
-      fail "$path_override_name did not produce the value-free domain refusal"
-    assert_absent "$tmp/rejected.stdout" "$path_override_value" \
-      "$path_override_name value leaked to stdout"
-    assert_absent "$tmp/rejected.stderr" "$path_override_value" \
-      "$path_override_name value leaked to stderr"
-    [ ! -s "$mutation_log" ] ||
-      fail "$path_override_name refusal attempted a service mutation"
-  done
-done
-
-expect_rejected "empty OMUX_STATE_DIR for render" env \
-  OMUX_STATE_DIR= \
-  HOME="$spoof_home" \
-  USER="$spoof_user" \
-  OMUX_BIN="$fake_omux" \
-  PATH="$fake_tools:/usr/bin:/bin" \
-  "$fixture_service" render
-grep -Fq \
-  "nondefault resident path-domain override is active: OMUX_STATE_DIR (value withheld)" \
-  "$tmp/rejected.stderr" ||
-  fail "empty OMUX_STATE_DIR did not fail closed"
-
 non_regular_omux_bin="$tmp/non-regular-omux-bin"
 mkdir "$non_regular_omux_bin"
 for non_regular_command in render verify install; do
   expect_rejected "non-regular OMUX_BIN for $non_regular_command" env \
-    HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$non_regular_omux_bin" \
+    HOME="$host_home" USER="$spoof_user" OMUX_BIN="$non_regular_omux_bin" \
     PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" "$non_regular_command"
   grep -Fq 'OMUX_BIN must name a regular executable file' "$tmp/rejected.stderr" ||
     fail "$non_regular_command did not fail at explicit OMUX_BIN regular-file validation"
@@ -285,24 +234,24 @@ chmod +x \
   "$unsafe_c1_bin" \
   "$safe_unicode_bin"
 expect_rejected "executable path containing the sed delimiter" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$unsafe_sed_bin" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$unsafe_sed_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 expect_rejected "executable path containing an assignment delimiter" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$unsafe_equals_bin" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$unsafe_equals_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 expect_rejected "executable path containing SOH" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$unsafe_soh_bin" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$unsafe_soh_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 expect_rejected "executable path containing TAB" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$unsafe_tab_bin" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$unsafe_tab_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 expect_rejected "executable path containing DEL" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$unsafe_del_bin" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$unsafe_del_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 expect_rejected "executable path containing C1" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$unsafe_c1_bin" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$unsafe_c1_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
-HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$safe_unicode_bin" \
+HOME="$host_home" USER="$spoof_user" OMUX_BIN="$safe_unicode_bin" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render \
   >"$tmp/rendered-safe-unicode.txt"
 grep -Fq "<string>$safe_unicode_bin</string>" "$tmp/rendered-safe-unicode.txt" ||
@@ -317,7 +266,7 @@ awk '
 ' "$fixture_plist" >"$tmp/unknown-assignment.plist"
 mv "$tmp/unknown-assignment.plist" "$fixture_plist"
 expect_rejected "noncanonical ProgramArguments assignment" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 
 cp "$repo_root/dist/launchd/dev.xoxd.omux.keepalive.plist.tmpl" "$fixture_plist"
@@ -325,7 +274,7 @@ sed 's|<string>NO_COLOR=1</string>|<string>@OMUX_UNKNOWN@</string>|' \
   "$fixture_plist" >"$tmp/unresolved-marker.plist"
 mv "$tmp/unresolved-marker.plist" "$fixture_plist"
 expect_rejected "unresolved template marker" env \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  HOME="$host_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
   PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 
 set_plist_insertion() {
@@ -345,7 +294,7 @@ set_plist_insertion() {
 expect_adversarial_plist_rejected() {
   eap_name="$1"
   expect_rejected "$eap_name" env \
-    HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+    HOME="$host_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
     PATH="$fake_tools:/usr/bin:/bin" "$fixture_service" render
 }
 
@@ -510,17 +459,30 @@ chmod +x "$non_fhs_service"
 OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
   OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
   OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  HOME="$non_fhs_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
   PATH="$fake_tools:/usr/bin:/bin" "$non_fhs_service" render \
   >"$tmp/non-fhs-rendered.txt"
 grep -Fq "<string>HOME=$non_fhs_home</string>" "$tmp/non-fhs-rendered.txt" ||
   fail "trusted non-FHS Linux identity did not supply HOME"
 grep -Fq "<string>USER=$non_fhs_user</string>" "$tmp/non-fhs-rendered.txt" ||
   fail "trusted non-FHS Linux identity did not supply USER"
-assert_absent "$tmp/non-fhs-rendered.txt" "$spoof_home" \
-  "caller HOME overrode trusted non-FHS Linux identity"
 assert_absent "$tmp/non-fhs-rendered.txt" "$spoof_user" \
   "caller USER overrode trusted non-FHS Linux identity"
+
+cat >"$fake_tools/systemd-analyze" <<'EOF'
+#!/bin/sh
+exit 73
+EOF
+chmod +x "$fake_tools/systemd-analyze"
+expect_rejected "systemd-analyze rejection" env \
+  OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
+  OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
+  OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
+  HOME="$non_fhs_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  PATH="$fake_tools:/usr/bin:/bin" "$non_fhs_service" verify
+grep -Fq 'systemd-analyze rejected the rendered user unit' "$tmp/rejected.stderr" ||
+  fail "systemd-analyze failure did not fail closed"
+rm -f "$fake_tools/systemd-analyze"
 
 expect_non_fhs_record_rejected() {
   enfhr_name="$1"
@@ -530,7 +492,7 @@ expect_non_fhs_record_rejected() {
     OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
     OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
     OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
-    HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+    HOME="$non_fhs_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
     PATH="$fake_tools:/usr/bin:/bin" "$non_fhs_service" render
 }
 
@@ -573,7 +535,7 @@ chmod +x "$minimal_service"
 OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
   OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
   OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
-  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  HOME="$non_fhs_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
   PATH="$fake_tools:/usr/bin:/bin" "$minimal_service" render \
   >"$tmp/minimal-linux-rendered.txt"
 grep -Fq "<string>HOME=$non_fhs_home</string>" "$tmp/minimal-linux-rendered.txt" ||
@@ -589,7 +551,7 @@ expect_minimal_passwd_rejected() {
     OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
     OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
     OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
-    HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+    HOME="$non_fhs_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
     PATH="$fake_tools:/usr/bin:/bin" "$minimal_service" render
 }
 
@@ -747,6 +709,97 @@ expected_print="launchctl argc=2 arg1=print arg2=gui/$managed_uid/dev.xoxd.omux.
 expected_bootout="launchctl argc=3 arg1=bootout arg2=gui/$managed_uid arg3=$managed_home/Library/LaunchAgents/dev.xoxd.omux.keepalive.plist"
 expected_bootstrap="launchctl argc=3 arg1=bootstrap arg2=gui/$managed_uid arg3=$managed_home/Library/LaunchAgents/dev.xoxd.omux.keepalive.plist"
 
+managed_plist_dir="$managed_home/Library/LaunchAgents"
+managed_plist="$managed_plist_dir/dev.xoxd.omux.keepalive.plist"
+managed_refusal_sentinel="refusal plist sentinel"
+mkdir -p "$managed_plist_dir"
+printf '%s\n' "$managed_refusal_sentinel" >"$managed_plist"
+
+path_override_value="omux-path-domain-value-must-not-appear-3024"
+for path_override_name in \
+  OMUX_CONFIG \
+  OMUX_CONFIG_DIR \
+  OMUX_STATE_DIR \
+  OMUX_RUNTIME_DIR \
+  OMUX_CODEX_STORE_ROOT \
+  OMUX_CLAUDE_CONFIG_ROOT \
+  XDG_CONFIG_HOME \
+  XDG_STATE_HOME \
+  XDG_RUNTIME_DIR \
+  XDG_DATA_HOME
+do
+  for path_override_command in render verify install; do
+    : >"$command_log"
+    : >"$mutation_log"
+    expect_rejected \
+      "$path_override_name for $path_override_command" \
+      env \
+      "$path_override_name=$path_override_value" \
+      HOME="$managed_home" \
+      USER="$spoof_user" \
+      OMUX_BIN="$fake_omux" \
+      PATH="$fake_tools:/usr/bin:/bin" \
+      "$lifecycle_service" "$path_override_command"
+    grep -Fq \
+      "nondefault resident path-domain override is active: $path_override_name (value withheld)" \
+      "$tmp/rejected.stderr" ||
+      fail "$path_override_name did not produce the value-free domain refusal"
+    assert_absent "$tmp/rejected.stdout" "$path_override_value" \
+      "$path_override_name value leaked to stdout"
+    assert_absent "$tmp/rejected.stderr" "$path_override_value" \
+      "$path_override_name value leaked to stderr"
+    [ ! -s "$command_log" ] ||
+      fail "$path_override_name refusal called the service manager"
+    [ ! -s "$mutation_log" ] ||
+      fail "$path_override_name refusal attempted a service mutation"
+    grep -Fqx "$managed_refusal_sentinel" "$managed_plist" ||
+      fail "$path_override_name refusal changed the installed plist"
+    if /usr/bin/find "$managed_plist_dir" \
+      -name '.dev.xoxd.omux.keepalive.plist.tmp.*' -print | grep -q .; then
+      fail "$path_override_name refusal left a service temporary file"
+    fi
+  done
+done
+
+expect_rejected "empty OMUX_STATE_DIR for render" env \
+  OMUX_STATE_DIR= \
+  HOME="$managed_home" \
+  USER="$spoof_user" \
+  OMUX_BIN="$fake_omux" \
+  PATH="$fake_tools:/usr/bin:/bin" \
+  "$lifecycle_service" render
+grep -Fq \
+  "nondefault resident path-domain override is active: OMUX_STATE_DIR (value withheld)" \
+  "$tmp/rejected.stderr" ||
+  fail "empty OMUX_STATE_DIR did not fail closed"
+
+for home_override_command in render verify install; do
+  : >"$command_log"
+  : >"$mutation_log"
+  expect_rejected "nondefault HOME for $home_override_command" env \
+    HOME="$spoof_home" \
+    USER="$spoof_user" \
+    OMUX_BIN="$fake_omux" \
+    PATH="$fake_tools:/usr/bin:/bin" \
+    "$lifecycle_service" "$home_override_command"
+  grep -Fq \
+    'nondefault resident HOME path domain is active (value withheld)' \
+    "$tmp/rejected.stderr" ||
+    fail "nondefault HOME did not produce the value-free domain refusal"
+  assert_absent "$tmp/rejected.stdout" "$spoof_home" \
+    "nondefault HOME leaked to stdout"
+  assert_absent "$tmp/rejected.stderr" "$spoof_home" \
+    "nondefault HOME leaked to stderr"
+  [ ! -s "$command_log" ] ||
+    fail "nondefault HOME refusal called the service manager"
+  [ ! -s "$mutation_log" ] ||
+    fail "nondefault HOME refusal attempted a service mutation"
+  grep -Fqx "$managed_refusal_sentinel" "$managed_plist" ||
+    fail "nondefault HOME refusal changed the installed plist"
+done
+
+: >"$command_log"
+: >"$mutation_log"
 loaded_status="$tmp/status-loaded.txt"
 /usr/bin/env -u HOME -u USER \
   OMUX_SMOKE_COMMAND_LOG="$command_log" \
@@ -791,16 +844,13 @@ if grep -Eq '(^| )(bootstrap|bootout|kickstart|install|uninstall|enable|disable|
   fail "synthetic smoke invoked a service mutation command"
 fi
 
-managed_plist_dir="$managed_home/Library/LaunchAgents"
-managed_plist="$managed_plist_dir/dev.xoxd.omux.keepalive.plist"
-mkdir -p "$managed_plist_dir"
 printf 'original plist sentinel\n' >"$managed_plist"
 
 : >"$command_log"
 : >"$mutation_log"
 expect_rejected "install with loaded-job bootout failure" env \
   OMUX_SMOKE_LAUNCHCTL_STATE=bootout_failure \
-  OMUX_BIN="$fake_omux" PATH="$fake_tools:/usr/bin:/bin" \
+  HOME="$managed_home" OMUX_BIN="$fake_omux" PATH="$fake_tools:/usr/bin:/bin" \
   "$lifecycle_service" install
 grep -Fqx 'original plist sentinel' "$managed_plist" ||
   fail "failed install replaced the existing plist"
@@ -830,7 +880,8 @@ $expected_bootout" \
 : >"$command_log"
 : >"$mutation_log"
 OMUX_SMOKE_LAUNCHCTL_STATE=absent OMUX_BIN="$fake_omux" \
-  PATH="$fake_tools:/usr/bin:/bin" "$lifecycle_service" install \
+  HOME="$managed_home" PATH="$fake_tools:/usr/bin:/bin" \
+  "$lifecycle_service" install \
   >"$tmp/install-absent.stdout"
 grep -Fq "installed and loaded: $managed_plist" "$tmp/install-absent.stdout" ||
   fail "install did not report success after an absent-job result"

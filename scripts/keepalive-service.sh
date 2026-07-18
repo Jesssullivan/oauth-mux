@@ -48,9 +48,8 @@ refuse_active_path_override() { # $1=name, $2=set marker
 }
 
 require_default_resident_path_domain() {
-  # The contained service intentionally starts from `env -i`. Until setup can
-  # install a validated path-domain manifest, accepting any of these caller
-  # overrides would split the resident refresh/quarantine/lock domain from the
+  # Until setup can install a validated path-domain manifest, accepting any of
+  # these caller overrides would make the rendered unit disagree with the
   # foreground harness. Check set-ness only; never read or print the value.
   refuse_active_path_override "OMUX_CONFIG" "${OMUX_CONFIG+x}"
   refuse_active_path_override "OMUX_CONFIG_DIR" "${OMUX_CONFIG_DIR+x}"
@@ -62,6 +61,14 @@ require_default_resident_path_domain() {
   refuse_active_path_override "XDG_STATE_HOME" "${XDG_STATE_HOME+x}"
   refuse_active_path_override "XDG_RUNTIME_DIR" "${XDG_RUNTIME_DIR+x}"
   refuse_active_path_override "XDG_DATA_HOME" "${XDG_DATA_HOME+x}"
+}
+
+require_default_resident_home() {
+  # An unset HOME is safe because render_home comes from the OS account record.
+  # A set HOME must name that same domain. Compare only; never print either path.
+  [ "${HOME+x}" != "x" ] ||
+    [ "${HOME-}" = "$render_home" ] ||
+    fail "nondefault resident HOME path domain is active (value withheld)"
 }
 
 optional_absolute_tool() {
@@ -621,7 +628,11 @@ verify_offline() {
   if command -v systemd-analyze >/dev/null 2>&1; then
     [ -n "$vo_tmpdir" ] || vo_tmpdir="$(mktemp -d)"
     printf '%s\n' "$vo_unit" >"$vo_tmpdir/$unit_name"
-    systemd-analyze verify --user "$vo_tmpdir/$unit_name" && printf 'systemd-analyze verify: green\n'
+    if systemd-analyze verify --user "$vo_tmpdir/$unit_name"; then
+      printf 'systemd-analyze verify: green\n'
+    else
+      fail "systemd-analyze rejected the rendered user unit"
+    fi
   else
     printf 'systemd-analyze unavailable on this host: full unit verify PENDING live Linux validation\n'
   fi
@@ -634,6 +645,7 @@ case "$cmd" in
     require_default_resident_path_domain
     detect_platform
     prepare_render_context
+    require_default_resident_home
     case "$platform" in
       Darwin) install_darwin ;;
       Linux) install_linux ;;
@@ -661,12 +673,14 @@ case "$cmd" in
     require_default_resident_path_domain
     detect_platform
     prepare_render_context
+    require_default_resident_home
     do_render
     ;;
   verify)
     require_default_resident_path_domain
     detect_platform
     prepare_render_context
+    require_default_resident_home
     verify_offline
     ;;
   -h|--help|help) usage; exit 0 ;;

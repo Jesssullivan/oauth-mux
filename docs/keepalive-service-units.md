@@ -35,22 +35,28 @@ An explicit `OMUX_BIN` must resolve to a regular executable file; executable
 directories and other non-regular filesystem objects are rejected by render,
 verify, and install.
 
-The contained resident service currently supports only the default omux path
-domain. Render, verify, and install fail closed when any of `OMUX_CONFIG`,
-`OMUX_CONFIG_DIR`, `OMUX_STATE_DIR`, `OMUX_RUNTIME_DIR`,
-`OMUX_CODEX_STORE_ROOT`, `OMUX_CLAUDE_CONFIG_ROOT`, `XDG_CONFIG_HOME`,
-`XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, or `XDG_DATA_HOME` is set, including to an
-empty value. The refusal names the variable but never reads or prints its value.
-This prevents the foreground harness and resident service from using different
-config, credential-store, quarantine, state, runtime, or flock domains. Custom
-domains remain unsupported until setup can install and validate one explicit
-path-domain manifest.
+The service helper currently renders only the default omux path domain. Render,
+verify, and install fail closed when any of `OMUX_CONFIG`, `OMUX_CONFIG_DIR`,
+`OMUX_STATE_DIR`, `OMUX_RUNTIME_DIR`, `OMUX_CODEX_STORE_ROOT`,
+`OMUX_CLAUDE_CONFIG_ROOT`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
+`XDG_RUNTIME_DIR`, or `XDG_DATA_HOME` is set, including to an empty value. A
+set caller `HOME` must equal the OS account home. Refusals name only the
+variable or path class and never read or print its value. Custom domains remain
+unsupported until setup can install and validate one explicit path-domain
+manifest.
 
-Rendered `HOME`, `USER`, and the macOS `gui/<uid>` target come from the
-current process identity and OS account database through absolute system-tool
-paths. Caller-supplied `HOME`, `USER`, and PATH-shadowed identity tools cannot
-redirect service placement or change the LaunchAgent identity. Help and status
-remain available with `HOME` and `USER` unset.
+On macOS, those preflight checks combine with the fixed `env -i` LaunchAgent
+wrapper to prevent foreground/resident divergence across config,
+credential-store, quarantine, state, runtime, and flock paths. On Linux, the
+checks constrain only the installer's input: a systemd user manager may retain
+its own imported or `environment.d` variables. Linux environment containment
+therefore remains unproven and must not inherit the macOS claim.
+
+Rendered `HOME`, `USER`, and the macOS `gui/<uid>` target come from the current
+process identity and OS account database through absolute system-tool paths. A
+mismatching caller `HOME` is refused; caller `USER` and PATH-shadowed identity
+tools cannot redirect service placement or change the LaunchAgent identity.
+Help and status remain available with `HOME` and `USER` unset.
 
 - macOS: `~/Library/LaunchAgents/dev.xoxd.omux.keepalive.plist`,
   label `dev.xoxd.omux.keepalive`, logs in `~/Library/Logs/oauth-mux/`.
@@ -69,7 +75,7 @@ On macOS, the LaunchAgent invokes `/usr/bin/env -i` and then supplies exactly
 the validated `HOME`, `USER`, fixed `PATH`, and `NO_COLOR=1` assignments before
 the resolved absolute `oauth-mux` binary and fixed keepalive arguments. It does
 not use an `EnvironmentVariables` dictionary, so launchd's inherited environment
-is discarded rather than forwarded to the resident process. On every platform,
+is discarded rather than forwarded to the resident process. On every host,
 rendering requires the complete LaunchAgent source to match the canonical
 top-level dictionary. This rejects `Program`, `EnvironmentVariables`, duplicate
 or entity-encoded keys, unknown assignments, noncanonical values, unresolved
