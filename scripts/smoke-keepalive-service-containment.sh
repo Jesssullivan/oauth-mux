@@ -3,6 +3,20 @@
 
 set -eu
 
+# Keep the synthetic baseline independent from the caller's path domain. The
+# refusal cases below set each variable explicitly and verify value-free output.
+unset \
+  OMUX_CONFIG \
+  OMUX_CONFIG_DIR \
+  OMUX_STATE_DIR \
+  OMUX_RUNTIME_DIR \
+  OMUX_CODEX_STORE_ROOT \
+  OMUX_CLAUDE_CONFIG_ROOT \
+  XDG_CONFIG_HOME \
+  XDG_STATE_HOME \
+  XDG_RUNTIME_DIR \
+  XDG_DATA_HOME
+
 repo_root="$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/omux-keepalive-containment.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
@@ -181,6 +195,56 @@ expect_rejected() {
     fail "$er_name was accepted"
   fi
 }
+
+path_override_value="omux-path-domain-value-must-not-appear-3024"
+for path_override_name in \
+  OMUX_CONFIG \
+  OMUX_CONFIG_DIR \
+  OMUX_STATE_DIR \
+  OMUX_RUNTIME_DIR \
+  OMUX_CODEX_STORE_ROOT \
+  OMUX_CLAUDE_CONFIG_ROOT \
+  XDG_CONFIG_HOME \
+  XDG_STATE_HOME \
+  XDG_RUNTIME_DIR \
+  XDG_DATA_HOME
+do
+  for path_override_command in render verify install; do
+    : >"$mutation_log"
+    expect_rejected \
+      "$path_override_name for $path_override_command" \
+      env \
+      "$path_override_name=$path_override_value" \
+      HOME="$spoof_home" \
+      USER="$spoof_user" \
+      OMUX_BIN="$fake_omux" \
+      OMUX_SMOKE_MUTATION_LOG="$mutation_log" \
+      PATH="$fake_tools:/usr/bin:/bin" \
+      "$fixture_service" "$path_override_command"
+    grep -Fq \
+      "nondefault resident path-domain override is active: $path_override_name (value withheld)" \
+      "$tmp/rejected.stderr" ||
+      fail "$path_override_name did not produce the value-free domain refusal"
+    assert_absent "$tmp/rejected.stdout" "$path_override_value" \
+      "$path_override_name value leaked to stdout"
+    assert_absent "$tmp/rejected.stderr" "$path_override_value" \
+      "$path_override_name value leaked to stderr"
+    [ ! -s "$mutation_log" ] ||
+      fail "$path_override_name refusal attempted a service mutation"
+  done
+done
+
+expect_rejected "empty OMUX_STATE_DIR for render" env \
+  OMUX_STATE_DIR= \
+  HOME="$spoof_home" \
+  USER="$spoof_user" \
+  OMUX_BIN="$fake_omux" \
+  PATH="$fake_tools:/usr/bin:/bin" \
+  "$fixture_service" render
+grep -Fq \
+  "nondefault resident path-domain override is active: OMUX_STATE_DIR (value withheld)" \
+  "$tmp/rejected.stderr" ||
+  fail "empty OMUX_STATE_DIR did not fail closed"
 
 non_regular_omux_bin="$tmp/non-regular-omux-bin"
 mkdir "$non_regular_omux_bin"

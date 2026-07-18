@@ -35,6 +35,17 @@ An explicit `OMUX_BIN` must resolve to a regular executable file; executable
 directories and other non-regular filesystem objects are rejected by render,
 verify, and install.
 
+The contained resident service currently supports only the default omux path
+domain. Render, verify, and install fail closed when any of `OMUX_CONFIG`,
+`OMUX_CONFIG_DIR`, `OMUX_STATE_DIR`, `OMUX_RUNTIME_DIR`,
+`OMUX_CODEX_STORE_ROOT`, `OMUX_CLAUDE_CONFIG_ROOT`, `XDG_CONFIG_HOME`,
+`XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, or `XDG_DATA_HOME` is set, including to an
+empty value. The refusal names the variable but never reads or prints its value.
+This prevents the foreground harness and resident service from using different
+config, credential-store, quarantine, state, runtime, or flock domains. Custom
+domains remain unsupported until setup can install and validate one explicit
+path-domain manifest.
+
 Rendered `HOME`, `USER`, and the macOS `gui/<uid>` target come from the
 current process identity and OS account database through absolute system-tool
 paths. Caller-supplied `HOME`, `USER`, and PATH-shadowed identity tools cannot
@@ -96,7 +107,7 @@ launchd uses `KeepAlive=true` + `ThrottleInterval=300`; systemd uses
 ## Logs and health
 
 - One JSON summary line per process incarnation on stdout:
-  `{"accounts":N,"ticks":N,"refreshed":N,"failed":N,"died":N,"drained":bool}`
+  `{"accounts":N,"ticks":N,"refreshed":N,"failed":N,"died":N,"transient":N,"quarantined":N,"drained":bool}`
 - Diagnostics go to stderr (`NO_COLOR=1` is set in the unit environment).
 - Redacted refresh events: `oauth-mux daemon events --json`.
 - macOS service status emits only the fixed `service_label` and

@@ -42,6 +42,28 @@ EOF
 
 fail() { printf 'keepalive-service: %s\n' "$1" >&2; exit 1; }
 
+refuse_active_path_override() { # $1=name, $2=set marker
+  [ "$2" != "x" ] ||
+    fail "nondefault resident path-domain override is active: $1 (value withheld)"
+}
+
+require_default_resident_path_domain() {
+  # The contained service intentionally starts from `env -i`. Until setup can
+  # install a validated path-domain manifest, accepting any of these caller
+  # overrides would split the resident refresh/quarantine/lock domain from the
+  # foreground harness. Check set-ness only; never read or print the value.
+  refuse_active_path_override "OMUX_CONFIG" "${OMUX_CONFIG+x}"
+  refuse_active_path_override "OMUX_CONFIG_DIR" "${OMUX_CONFIG_DIR+x}"
+  refuse_active_path_override "OMUX_STATE_DIR" "${OMUX_STATE_DIR+x}"
+  refuse_active_path_override "OMUX_RUNTIME_DIR" "${OMUX_RUNTIME_DIR+x}"
+  refuse_active_path_override "OMUX_CODEX_STORE_ROOT" "${OMUX_CODEX_STORE_ROOT+x}"
+  refuse_active_path_override "OMUX_CLAUDE_CONFIG_ROOT" "${OMUX_CLAUDE_CONFIG_ROOT+x}"
+  refuse_active_path_override "XDG_CONFIG_HOME" "${XDG_CONFIG_HOME+x}"
+  refuse_active_path_override "XDG_STATE_HOME" "${XDG_STATE_HOME+x}"
+  refuse_active_path_override "XDG_RUNTIME_DIR" "${XDG_RUNTIME_DIR+x}"
+  refuse_active_path_override "XDG_DATA_HOME" "${XDG_DATA_HOME+x}"
+}
+
 optional_absolute_tool() {
   for at_candidate in "$@"; do
     if [ -f "$at_candidate" ] && [ -x "$at_candidate" ]; then
@@ -609,6 +631,7 @@ verify_offline() {
 cmd="${1:-}"
 case "$cmd" in
   install)
+    require_default_resident_path_domain
     detect_platform
     prepare_render_context
     case "$platform" in
@@ -635,11 +658,13 @@ case "$cmd" in
     esac
     ;;
   render)
+    require_default_resident_path_domain
     detect_platform
     prepare_render_context
     do_render
     ;;
   verify)
+    require_default_resident_path_domain
     detect_platform
     prepare_render_context
     verify_offline
