@@ -1512,8 +1512,28 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             return RunError.NoCodexHome;
         },
         error.UnauthenticatedCodexHome => {
-            try stderr.writeAll("oauth-mux codex: the account's managed home has no usable auth.json (and no recoverable shadow backup); run `CODEX_HOME=<home> codex login` to stage it\n");
+            try stderr.writeAll("oauth-mux codex: the account's managed home has no usable auth.json; run provider-owned `CODEX_HOME=<account-home> codex login` to re-enroll it\n");
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "unauthenticated_codex_home", "codex_home_setup", "UnauthenticatedCodexHome", session_started_emitted, null);
+            return RunError.NoCodexHome;
+        },
+        error.RefreshLineageIndeterminate => {
+            repair_state.persistIndeterminateRefreshQuarantine(
+                allocator,
+                "codex",
+                session_account_only,
+            ) catch |persist_err| {
+                try stderr.print(
+                    "oauth-mux codex: cannot persist indeterminate refresh-lineage quarantine for {s}: {s}; refusing launch\n",
+                    .{ session_account_only, @errorName(persist_err) },
+                );
+                try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "refresh_quarantine_persistence_failed", "codex_home_setup", @errorName(persist_err), session_started_emitted, null);
+                return RunError.NoCodexHome;
+            };
+            try stderr.print(
+                "oauth-mux codex: auth.json is missing or torn while auth.json.omux-bak remains; the backup is forensic-only because its rotating refresh token may already be consumed. The route is quarantined. Run `oauth-mux codex login-device {s}` for provider-owned re-enrollment\n",
+                .{session_account_only},
+            );
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "refresh_lineage_indeterminate", "codex_home_setup", "RefreshLineageIndeterminate", session_started_emitted, null);
             return RunError.NoCodexHome;
         },
         error.CanonicalCodexHomeGuardUncheckable => {
@@ -1944,14 +1964,24 @@ fn writeManagedPreSpawnAbortStatus(
     // a blocking account-lock acquire timed out on). Rendered as a JSON string
     // or null; the frame parser reads fields by key, so this is additive.
     const path_printed = detail != null;
+    const refresh_lineage_indeterminate = std.mem.eql(
+        u8,
+        reason,
+        "refresh_lineage_indeterminate",
+    );
     try writer.print(
         "{{\"kind\":\"session_aborted\",\"adapter\":\"codex\",\"reason\":\"{s}\",\"phase\":\"{s}\",\"error\":\"{s}\",\"detail\":",
         .{ reason, phase, error_name },
     );
     if (detail) |d| try std.json.stringify(d, .{}, writer) else try writer.writeAll("null");
     try writer.print(
-        ",\"exit_code\":-1,\"term_kind\":null,\"term_code\":null,\"signal_name\":null,\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":false,\"pre_spawn\":true,\"child_spawned\":false,\"path_printed\":{any},\"token_material_printed\":false,\"session_id_printed\":false}}\n",
-        .{ if (session_started_emitted) "broker_owned" else "none", path_printed },
+        ",\"exit_code\":-1,\"term_kind\":null,\"term_code\":null,\"signal_name\":null,\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":false,\"pre_spawn\":true,\"child_spawned\":false,\"refresh_lineage_quarantined\":{any},\"provider_reenroll_required\":{any},\"stale_backup_restore_allowed\":false,\"forensic_backup_restore_allowed\":false,\"path_printed\":{any},\"token_material_printed\":false,\"session_id_printed\":false}}\n",
+        .{
+            if (session_started_emitted) "broker_owned" else "none",
+            refresh_lineage_indeterminate,
+            refresh_lineage_indeterminate,
+            path_printed,
+        },
     );
 }
 
@@ -2193,18 +2223,13 @@ fn writePersistentAuthShadow(allocator: std.mem.Allocator, auth_path: []const u8
     try writeFileReplaceBytes(allocator, bak_path, bytes);
 }
 
-/// Integrity preflight + crash recovery for the home-is-store auth.json. If the
-/// in-place file is missing/torn (codex killed mid-rewrite), restore the last
-/// known-good shadow backup. Refuse the launch when neither is usable rather than
-/// silently bootstrapping an empty/unauthenticated home.
+/// Integrity preflight for the home-is-store auth.json. The shadow is forensic
+/// rollback evidence only: after a torn/missing canonical file, its rotating
+/// refresh token may already have been consumed upstream, so automatic restore
+/// would replay stale lineage.
 fn ensurePersistentAuthUsable(allocator: std.mem.Allocator, auth_path: []const u8, bak_path: []const u8) !void {
     if (authJsonParses(allocator, auth_path)) return;
-    if (authJsonParses(allocator, bak_path)) {
-        const bytes = try readFileAbsoluteOrCwd(allocator, bak_path, 2 * 1024 * 1024);
-        defer allocator.free(bytes);
-        try writeFileReplaceBytes(allocator, auth_path, bytes);
-        return;
-    }
+    if (authJsonParses(allocator, bak_path)) return error.RefreshLineageIndeterminate;
     return error.UnauthenticatedCodexHome;
 }
 
@@ -2239,8 +2264,8 @@ fn createPersistentCodexHome(
     defer allocator.free(bak_path);
 
     try ensurePersistentAuthUsable(allocator, home_auth_path, bak_path);
-    // Refresh the shadow to the current good auth so a torn mid-session rewrite is
-    // recoverable next launch. Best-effort: a shadow failure is not fatal.
+    // Stage a forensic rollback snapshot. It is never auto-restored because its
+    // rotating refresh token may be older than provider lineage.
     writePersistentAuthShadow(allocator, home_auth_path, bak_path) catch {};
 
     const auth_initial_hash = try hashFileContents(allocator, home_auth_path);
@@ -2328,7 +2353,7 @@ test "ensureNotCanonicalCodexHome refuses ~/.codex and its subtree, accepts a de
     try ensureNotCanonicalCodexHome(a, dedicated); // dedicated oauth-mux home is allowed
 }
 
-test "ensurePersistentAuthUsable restores a torn auth.json from the shadow, else refuses" {
+test "ensurePersistentAuthUsable keeps a shadow forensic and refuses stale lineage replay" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2339,16 +2364,76 @@ test "ensurePersistentAuthUsable restores a torn auth.json from the shadow, else
     const bak = try std.fs.path.join(a, &.{ root, "auth.json.omux-bak" });
     defer a.free(bak);
 
-    // Torn in-place auth + good shadow → restored.
-    try writeFileReplaceBytes(a, auth, "{ this is not json");
+    const torn = "{ this is not json";
+    try writeFileReplaceBytes(a, auth, torn);
     try writeFileReplaceBytes(a, bak, "{\"tokens\":{\"account_id\":\"acct-test\"}}");
-    try ensurePersistentAuthUsable(a, auth, bak);
-    try std.testing.expect(authJsonParses(a, auth));
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        ensurePersistentAuthUsable(a, auth, bak),
+    );
+    const after = try readFileAbsoluteOrCwd(a, auth, 2 * 1024 * 1024);
+    defer a.free(after);
+    try std.testing.expectEqualStrings(torn, after);
+    try std.testing.expect(authJsonParses(a, bak));
+
+    // Missing canonical + good shadow is the same unknown-lineage state. The
+    // preflight must not recreate auth.json from the shadow.
+    try std.fs.deleteFileAbsolute(auth);
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        ensurePersistentAuthUsable(a, auth, bak),
+    );
+    try std.testing.expect(!pathExistsAbsolute(auth));
 
     // Both unusable → refuse rather than bootstrap an empty home.
     try writeFileReplaceBytes(a, auth, "broken");
     try writeFileReplaceBytes(a, bak, "also broken");
     try std.testing.expectError(error.UnauthenticatedCodexHome, ensurePersistentAuthUsable(a, auth, bak));
+}
+
+test "indeterminate Codex auth status requires reenrollment and forbids backup restore" {
+    var status = std.ArrayList(u8).init(std.testing.allocator);
+    defer status.deinit();
+    try writeManagedPreSpawnAbortStatus(
+        status.writer(),
+        true,
+        "refresh_lineage_indeterminate",
+        "codex_home_setup",
+        "RefreshLineageIndeterminate",
+        false,
+        null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"refresh_lineage_quarantined\":true",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"provider_reenroll_required\":true",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"stale_backup_restore_allowed\":false",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"forensic_backup_restore_allowed\":false",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, status.items, "refresh_token") == null,
+    );
 }
 
 test "makeSessionCodexHome isolated_persistent dispatches to home-is-store at dirname(auth)" {

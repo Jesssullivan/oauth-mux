@@ -510,12 +510,19 @@ fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
 
     // Bind the scheduler to the live refresh path (proactive; refuses ungranted).
     var wr = warm_runner.WarmRunner{ .allocator = allocator, .cfg = cfg, .health = &health };
-    var binding = warm_binding.RefreshBinding{ .do_refresh = warm_runner.WarmRunner.doRefresh, .do_refresh_ctx = &wr };
+    var binding = warm_binding.RefreshBinding{
+        .do_refresh = warm_runner.WarmRunner.doRefresh,
+        .do_refresh_ctx = &wr,
+        .do_refresh_outcome = warm_runner.WarmRunner.refreshOutcome,
+        .do_refresh_quarantined = warm_runner.WarmRunner.refreshQuarantined,
+    };
     var sched = warm_scheduler.Scheduler{
         .clock = warm_runner.WarmRunner.clock,
         .clock_ctx = &wr,
         .refresh = warm_binding.RefreshBinding.refresh,
         .refresh_ctx = &binding,
+        .refresh_outcome = warm_binding.RefreshBinding.refreshOutcome,
+        .refresh_quarantined = warm_binding.RefreshBinding.refreshQuarantined,
     };
 
     // TIN-2061: opt-in desktop alerting on refresh-failure / credential-dead
@@ -532,16 +539,24 @@ fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
 
     var wait_ctx = KeepaliveWait{ .remaining = args.iterations -| 1, .cap_ms = args.interval_ms };
     const report = warm_binding.runLoop(&sched, accounts, KeepaliveWait.wait, &wait_ctx);
+    try writeKeepaliveReport(writer, accounts.len, report, args.json);
+}
 
-    if (args.json) {
+fn writeKeepaliveReport(
+    writer: anytype,
+    account_count: usize,
+    report: warm_binding.LoopReport,
+    json: bool,
+) !void {
+    if (json) {
         try writer.print(
-            "{{\"accounts\":{d},\"ticks\":{d},\"refreshed\":{d},\"failed\":{d},\"died\":{d},\"drained\":{}}}\n",
-            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+            "{{\"accounts\":{d},\"ticks\":{d},\"refreshed\":{d},\"failed\":{d},\"died\":{d},\"transient\":{d},\"quarantined\":{d},\"drained\":{}}}\n",
+            .{ account_count, report.ticks, report.refreshed, report.failed, report.died, report.transient, report.quarantined, report.drained },
         );
     } else {
         try writer.print(
-            "keepalive: {d} account(s); {d} tick(s) — refreshed={d} failed={d} died={d} drained={}\n",
-            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+            "keepalive: {d} account(s); {d} tick(s) — refreshed={d} failed={d} died={d} transient={d} quarantined={d} drained={}\n",
+            .{ account_count, report.ticks, report.refreshed, report.failed, report.died, report.transient, report.quarantined, report.drained },
         );
     }
 }
@@ -562,7 +577,14 @@ fn exitCodeFromPipelineError(e: anyerror) u8 {
         error.ConfigNotFound, error.ConfigParseError, error.ConfigValidationError => types.ExitCode.config_error.int(),
         error.AllAccountsExhausted => types.ExitCode.all_accounts_exhausted.int(),
         error.SecretReadFailed, error.SecretDecryptFailed => types.ExitCode.secret_read_failed.int(),
-        error.TokenRefreshFailed => types.ExitCode.token_refresh_failed.int(),
+        error.TokenRefreshFailed,
+        error.RefreshQuarantinePersistenceFailed,
+        error.RefreshTransientLock,
+        error.RefreshTransientNetwork,
+        error.RefreshTransientStore,
+        error.RefreshTransientEndpoint,
+        error.RefreshLineageIndeterminate,
+        => types.ExitCode.token_refresh_failed.int(),
         error.NetworkError => types.ExitCode.network_error.int(),
         // TIN-2054: misconfigured account (Claude without a config_dir) — a
         // config-shaped error, surfaced as such for scripts/agents.
@@ -601,6 +623,7 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
     const now_ms = std.time.milliTimestamp();
+    const refresh_summary = loadRefreshJournalSummary(allocator);
 
     if (args.json) {
         try writer.writeAll("{\n");
@@ -617,7 +640,9 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
                 entry.value_ptr.accounts.map.count(),
             });
         }
-        try writer.writeAll("\n  },\n");
+        try writer.writeAll("\n  },\n  \"refresh_outcomes\": ");
+        try writeRefreshJournalSummaryJson(writer, refresh_summary);
+        try writer.writeAll(",\n");
         try writeAdviceJson(writer, allocator, &store, now_ms);
         try writer.writeAll("\n}\n");
     } else {
@@ -637,8 +662,77 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
             }
         }
         try writer.writeByte('\n');
+        try writeRefreshJournalSummaryText(writer, refresh_summary);
+        try writer.writeByte('\n');
         try writeAdviceText(writer, allocator, &store, now_ms);
     }
+}
+
+fn loadRefreshJournalSummary(allocator: std.mem.Allocator) repair_state.RefreshJournalSummary {
+    return repair_state.refreshJournalSummary(allocator) catch |e| {
+        log.warn("refresh outcome state is unreadable: {s}", .{@errorName(e)});
+        return .{
+            .valid = false,
+            .invalid_events = 1,
+        };
+    };
+}
+
+fn writeRefreshJournalSummaryJson(
+    writer: anytype,
+    summary: repair_state.RefreshJournalSummary,
+) !void {
+    const provider_reenroll_required =
+        summary.hard_lineage_events != 0 or
+        summary.indeterminate_lineage_markers != 0;
+    const quarantine_present = !summary.valid or provider_reenroll_required;
+    try writer.writeAll("{\"valid\":");
+    try writer.writeAll(if (summary.valid) "true" else "false");
+    try writer.print(
+        ",\"typed_events\":{d},\"invalid_events\":{d},\"hard_lineage_events\":{d},\"indeterminate_lineage_markers\":{d},\"latest_outcome\":",
+        .{ summary.typed_events, summary.invalid_events, summary.hard_lineage_events, summary.indeterminate_lineage_markers },
+    );
+    if (summary.latest_outcome) |outcome| {
+        try std.json.stringify(@tagName(outcome), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"quarantine_present\":");
+    try writer.writeAll(if (quarantine_present) "true" else "false");
+    try writer.writeAll(",\"provider_reenroll_required\":");
+    try writer.writeAll(if (provider_reenroll_required) "true" else "false");
+    try writer.writeAll(",\"evidence_repair_required\":");
+    try writer.writeAll(if (summary.valid) "false" else "true");
+    try writer.writeAll(
+        ",\"hard_quarantine_clearance_available\":false,\"stale_backup_restore_allowed\":false}",
+    );
+}
+
+fn writeRefreshJournalSummaryText(
+    writer: anytype,
+    summary: repair_state.RefreshJournalSummary,
+) !void {
+    const provider_reenroll_required =
+        summary.hard_lineage_events != 0 or
+        summary.indeterminate_lineage_markers != 0;
+    const quarantine_present = !summary.valid or provider_reenroll_required;
+    try writer.print(
+        "refresh outcomes: valid={s} typed={d} invalid={d} hard_lineage={d} indeterminate_lineage={d} quarantine={s} provider_reenroll={s} evidence_repair={s} hard_quarantine_clearance=unimplemented stale_backup_restore=false",
+        .{
+            if (summary.valid) "true" else "false",
+            summary.typed_events,
+            summary.invalid_events,
+            summary.hard_lineage_events,
+            summary.indeterminate_lineage_markers,
+            if (quarantine_present) "true" else "false",
+            if (provider_reenroll_required) "required" else "not_required",
+            if (summary.valid) "not_required" else "required",
+        },
+    );
+    if (summary.latest_outcome) |outcome| {
+        try writer.print(" latest={s}", .{@tagName(outcome)});
+    }
+    try writer.writeByte('\n');
 }
 
 // ── valet advice rendering (TIN-2719 M0 PR2) ──────────────────────────────────
@@ -4391,7 +4485,7 @@ fn executeCodexLoginDeviceRepair(
     const expanded = try paths.expandTilde(allocator, config_dir);
     defer allocator.free(expanded);
     const ok = try runCodexCli(allocator, expanded, &.{ "login", "--device-auth" });
-    if (ok) recordCodexLoginSuccess(allocator, route.account);
+    if (ok) try recordCodexLoginSuccess(allocator, route.account, expanded);
     return ok;
 }
 
@@ -8114,9 +8208,18 @@ const DoctorStats = struct {
     codex_max_configured: bool = false,
     health_file_exists: bool = false,
     health_entries: usize = 0,
+    refresh_outcomes_valid: bool = true,
+    refresh_typed_events: usize = 0,
+    refresh_invalid_events: usize = 0,
+    refresh_hard_lineage_events: usize = 0,
+    refresh_indeterminate_lineage_markers: usize = 0,
+    latest_refresh_outcome: ?types.RefreshOutcome = null,
 
     fn ok(self: DoctorStats) bool {
-        return self.configured and self.config_valid and self.provider_count > 0 and self.account_count > 0;
+        return self.configured and self.config_valid and self.provider_count > 0 and
+            self.account_count > 0 and self.refresh_outcomes_valid and
+            self.refresh_hard_lineage_events == 0 and
+            self.refresh_indeterminate_lineage_markers == 0;
     }
 };
 
@@ -8156,6 +8259,13 @@ fn runDoctor(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Do
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
     stats.health_entries = store.accounts.count();
+    const refresh_summary = loadRefreshJournalSummary(allocator);
+    stats.refresh_outcomes_valid = refresh_summary.valid;
+    stats.refresh_typed_events = refresh_summary.typed_events;
+    stats.refresh_invalid_events = refresh_summary.invalid_events;
+    stats.refresh_hard_lineage_events = refresh_summary.hard_lineage_events;
+    stats.refresh_indeterminate_lineage_markers = refresh_summary.indeterminate_lineage_markers;
+    stats.latest_refresh_outcome = refresh_summary.latest_outcome;
 
     // TIN-2723: resident-service + PATH binary truth. Gathered into an arena so
     // the many small owned strings free in one shot; any failure degrades to a
@@ -8201,6 +8311,15 @@ fn writeDoctorText(
         health_path,
         if (stats.health_file_exists) "present" else "not recorded",
         stats.health_entries,
+    });
+    try writer.writeAll("  ");
+    try writeRefreshJournalSummaryText(writer, .{
+        .valid = stats.refresh_outcomes_valid,
+        .typed_events = stats.refresh_typed_events,
+        .invalid_events = stats.refresh_invalid_events,
+        .hard_lineage_events = stats.refresh_hard_lineage_events,
+        .indeterminate_lineage_markers = stats.refresh_indeterminate_lineage_markers,
+        .latest_outcome = stats.latest_refresh_outcome,
     });
     try writer.print("  readiness: {s}\n", .{if (stats.ok()) "ready" else "action_needed"});
 
@@ -8250,7 +8369,7 @@ fn writeDoctorJson(
         try writer.writeAll("null");
     }
     try writer.print(
-        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s},\"codex_max_configured\":{s}",
+        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s},\"codex_max_configured\":{s},\"refresh_outcomes\":",
         .{
             stats.provider_count,
             stats.account_count,
@@ -8262,6 +8381,14 @@ fn writeDoctorJson(
             if (stats.codex_max_configured) "true" else "false",
         },
     );
+    try writeRefreshJournalSummaryJson(writer, .{
+        .valid = stats.refresh_outcomes_valid,
+        .typed_events = stats.refresh_typed_events,
+        .invalid_events = stats.refresh_invalid_events,
+        .hard_lineage_events = stats.refresh_hard_lineage_events,
+        .indeterminate_lineage_markers = stats.refresh_indeterminate_lineage_markers,
+        .latest_outcome = stats.latest_refresh_outcome,
+    });
     try writer.writeByte(',');
     try doctor_binaries.writeJson(binaries, writer);
     try writer.writeAll(",\"checks\":[");
@@ -8295,6 +8422,37 @@ fn writeDoctorChecksJson(writer: anytype, stats: DoctorStats, validation_message
         );
     }
     try writeDoctorCheckJson(writer, &first, "health_recorded", stats.health_entries > 0, if (stats.health_entries > 0) "ok" else "info", if (stats.health_entries > 0) "health state recorded" else "no health state recorded yet");
+    try writeDoctorCheckJson(
+        writer,
+        &first,
+        "refresh_outcomes_valid",
+        stats.refresh_outcomes_valid,
+        if (stats.refresh_outcomes_valid) "ok" else "error",
+        if (stats.refresh_outcomes_valid) "typed refresh outcomes validate" else "unknown or malformed typed refresh outcome; route remains quarantined",
+    );
+    try writeDoctorCheckJson(
+        writer,
+        &first,
+        "refresh_lineage_quarantine",
+        stats.refresh_hard_lineage_events == 0 and
+            stats.refresh_indeterminate_lineage_markers == 0 and
+            stats.refresh_outcomes_valid,
+        if (stats.refresh_hard_lineage_events == 0 and
+            stats.refresh_indeterminate_lineage_markers == 0 and
+            stats.refresh_outcomes_valid) "ok" else "error",
+        if (stats.refresh_hard_lineage_events == 0 and
+            stats.refresh_indeterminate_lineage_markers == 0 and
+            stats.refresh_outcomes_valid)
+            "no refresh lineage quarantine recorded"
+        else if (!stats.refresh_outcomes_valid)
+            "refresh outcome evidence is malformed; route remains quarantined and evidence repair is required before the recovery action can be determined"
+        else if (stats.refresh_hard_lineage_events != 0)
+            "provider-owned re-enrollment required; managed hard-quarantine clearance is not implemented; stale refresh-token backup restoration is disabled"
+        else if (stats.refresh_indeterminate_lineage_markers != 0)
+            "provider-owned re-enrollment required; a successful managed provider login clears indeterminate lineage; stale refresh-token backup restoration is disabled"
+        else
+            unreachable,
+    );
 }
 
 fn writeDoctorCheckJson(
@@ -10607,7 +10765,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             if (!try runCodexCli(allocator, dir, &.{"login"})) return error.CodexCommandFailed;
-            recordCodexLoginSuccess(allocator, account);
+            try recordCodexLoginSuccess(allocator, account, dir);
         },
         .login_device => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
@@ -10615,7 +10773,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             if (!try runCodexCli(allocator, dir, &.{ "login", "--device-auth" })) return error.CodexCommandFailed;
-            recordCodexLoginSuccess(allocator, account);
+            try recordCodexLoginSuccess(allocator, account, dir);
         },
         .login_status => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
@@ -10645,11 +10803,125 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
     }
 }
 
-fn recordCodexLoginSuccess(allocator: std.mem.Allocator, account: []const u8) void {
+fn codexLoginPersistedRotatingCredential(
+    allocator: std.mem.Allocator,
+    account_dir: []const u8,
+) !bool {
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ account_dir, "auth.json" },
+    );
+    defer allocator.free(auth_path);
+    const raw = std.fs.cwd().readFileAlloc(
+        allocator,
+        auth_path,
+        2 * 1024 * 1024,
+    ) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied => return false,
+        else => return err,
+    };
+    defer allocator.free(raw);
+    const parsed = std.json.parseFromSlice(
+        CodexBrokerAuthJson,
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    ) catch return false;
+    defer parsed.deinit();
+    const tokens = parsed.value.tokens orelse return false;
+    return nonEmpty(tokens.access_token) != null and
+        nonEmpty(tokens.refresh_token) != null;
+}
+
+fn recordCodexLoginSuccess(
+    allocator: std.mem.Allocator,
+    account: []const u8,
+    account_dir: []const u8,
+) !void {
+    var lock = try repair_state.acquireRepairLock(
+        allocator,
+        "codex",
+        account,
+    );
+    defer lock.release();
+
+    const marker = try repair_state.refreshQuarantineForRoute(
+        allocator,
+        "codex",
+        account,
+    );
+    if (marker == .indeterminate_lineage and
+        !try codexLoginPersistedRotatingCredential(allocator, account_dir))
+    {
+        return error.CodexLoginCredentialNotPersisted;
+    }
+    _ = try repair_state.resolveIndeterminateRefreshQuarantineAfterProviderReenroll(
+        allocator,
+        "codex",
+        account,
+    );
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
     store.recordAuthRefresh("codex", account);
     store.persist();
+}
+
+test "Codex provider login success resolves indeterminate lineage before health" {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "codex", "max-1");
+    const account_dir = try std.fs.path.join(a, &.{ scope.root, "max-1" });
+    defer a.free(account_dir);
+    try std.fs.makeDirAbsolute(account_dir);
+    const auth_path = try std.fs.path.join(a, &.{ account_dir, "auth.json" });
+    defer a.free(auth_path);
+    {
+        const auth = try std.fs.createFileAbsolute(auth_path, .{
+            .mode = 0o600,
+        });
+        defer auth.close();
+        try auth.writeAll(
+            "{\"tokens\":{\"access_token\":\"at-new\",\"refresh_token\":\"rt-new\"}}",
+        );
+        try auth.sync();
+    }
+    {
+        var store = health_mod.HealthStore.init(a, .{});
+        defer store.deinit();
+        store.recordFailure("codex:max-1", .auth_failure);
+        store.persist();
+    }
+
+    try recordCodexLoginSuccess(a, "max-1", account_dir);
+
+    try std.testing.expect(
+        (try repair_state.refreshQuarantineForRoute(a, "codex", "max-1")) == null,
+    );
+    var recovered = health_mod.HealthStore.load(a, .{});
+    defer recovered.deinit();
+    try std.testing.expectEqual(
+        types.MuxDecision.use_this,
+        recovered.muxDecision("codex:max-1"),
+    );
+
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "codex", "max-2");
+    const missing_dir = try std.fs.path.join(a, &.{ scope.root, "max-2" });
+    defer a.free(missing_dir);
+    try std.testing.expectError(
+        error.CodexLoginCredentialNotPersisted,
+        recordCodexLoginSuccess(a, "max-2", missing_dir),
+    );
+    try std.testing.expectEqual(
+        repair_state.RefreshQuarantineState.indeterminate_lineage,
+        (try repair_state.refreshQuarantineForRoute(
+            a,
+            "codex",
+            "max-2",
+        )).?,
+    );
 }
 
 fn runCodexOnboard(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
@@ -19001,6 +19273,272 @@ test "codexMaxShapeConfigured rejects single-account Codex config" {
 
     try std.testing.expect(codexConfigured(parsed.value));
     try std.testing.expect(!codexMaxShapeConfigured(parsed.value));
+}
+
+test "keepalive report surfaces transient and quarantined counters in json and text" {
+    const report = warm_binding.LoopReport{
+        .ticks = 4,
+        .refreshed = 1,
+        .failed = 2,
+        .died = 1,
+        .transient = 3,
+        .quarantined = 1,
+        .drained = true,
+    };
+    var json = std.ArrayList(u8).init(std.testing.allocator);
+    defer json.deinit();
+    try writeKeepaliveReport(json.writer(), 5, report, true);
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"transient\":3") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"quarantined\":1") != null,
+    );
+
+    var text = std.ArrayList(u8).init(std.testing.allocator);
+    defer text.deinit();
+    try writeKeepaliveReport(text.writer(), 5, report, false);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "transient=3") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "quarantined=1") != null,
+    );
+}
+
+test "generic status refresh summary renders every closed tag without provider text" {
+    inline for (std.meta.fields(types.RefreshOutcome)) |field| {
+        const outcome: types.RefreshOutcome = @enumFromInt(field.value);
+        var buf = std.ArrayList(u8).init(std.testing.allocator);
+        defer buf.deinit();
+        try writeRefreshJournalSummaryJson(buf.writer(), .{
+            .typed_events = 1,
+            .hard_lineage_events = if (outcome == .hard_lineage_invalidated) 1 else 0,
+            .latest_outcome = outcome,
+        });
+
+        const marker = try std.fmt.allocPrint(std.testing.allocator, "\"latest_outcome\":\"{s}\"", .{field.name});
+        defer std.testing.allocator.free(marker);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, "invalid_grant") == null);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, "refresh_token") == null);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale_backup_restore_allowed\":false") != null);
+        try std.testing.expect(
+            std.mem.indexOf(
+                u8,
+                buf.items,
+                "\"hard_quarantine_clearance_available\":false",
+            ) != null,
+        );
+    }
+}
+
+fn writeHardRefreshStatusEvidenceForTest(
+    allocator: std.mem.Allocator,
+    state_root: []const u8,
+    journal_account: []const u8,
+    marker_account: []const u8,
+) !void {
+    const journal_path = try std.fs.path.join(
+        allocator,
+        &.{ state_root, "repair-events.jsonl" },
+    );
+    defer allocator.free(journal_path);
+    const journal_row = try std.fmt.allocPrint(
+        allocator,
+        "{{\"kind\":\"token_refresh\",\"provider\":\"toy\",\"account\":\"{s}\",\"refresh_outcome\":\"hard_lineage_invalidated\",\"outcome\":\"hard_lineage_invalidated\",\"ok\":false,\"executed\":true,\"mutating\":true}}\n",
+        .{journal_account},
+    );
+    defer allocator.free(journal_row);
+    {
+        const journal = try std.fs.createFileAbsolute(journal_path, .{
+            .truncate = true,
+            .mode = 0o600,
+        });
+        defer journal.close();
+        try journal.writeAll(journal_row);
+    }
+
+    const marker_path = try repair_state.refreshQuarantineMarkerPathForTest(
+        allocator,
+        "toy",
+        marker_account,
+    );
+    defer allocator.free(marker_path);
+    try std.fs.cwd().makePath(std.fs.path.dirname(marker_path).?);
+    const marker_row = try std.fmt.allocPrint(
+        allocator,
+        "{{\"version\":1,\"provider\":\"toy\",\"account\":\"{s}\",\"state\":\"hard_lineage_invalidated\",\"outcome\":\"hard_lineage_invalidated\",\"recovery\":\"provider_reenroll\",\"stale_backup_restore_allowed\":false,\"store_fingerprint\":null,\"identity_fingerprint\":null}}\n",
+        .{marker_account},
+    );
+    defer allocator.free(marker_row);
+    const marker = try std.fs.createFileAbsolute(marker_path, .{
+        .truncate = true,
+        .mode = 0o600,
+    });
+    defer marker.close();
+    try marker.writeAll(marker_row);
+}
+
+test "status sums hard quarantine evidence for disjoint routes" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+    try writeHardRefreshStatusEvidenceForTest(
+        allocator,
+        scope.root,
+        "journal-route",
+        "marker-route",
+    );
+
+    const summary = try repair_state.refreshJournalSummary(allocator);
+    try std.testing.expectEqual(@as(usize, 2), summary.hard_lineage_events);
+
+    var json = std.ArrayList(u8).init(allocator);
+    defer json.deinit();
+    try writeRefreshJournalSummaryJson(json.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"hard_lineage_events\":2") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"quarantine_present\":true") != null,
+    );
+
+    var text = std.ArrayList(u8).init(allocator);
+    defer text.deinit();
+    try writeRefreshJournalSummaryText(text.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "hard_lineage=2") != null,
+    );
+}
+
+test "status deduplicates hard journal and marker evidence for one route" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+    try writeHardRefreshStatusEvidenceForTest(
+        allocator,
+        scope.root,
+        "shared-route",
+        "shared-route",
+    );
+
+    const summary = try repair_state.refreshJournalSummary(allocator);
+    try std.testing.expectEqual(@as(usize, 1), summary.hard_lineage_events);
+
+    var json = std.ArrayList(u8).init(allocator);
+    defer json.deinit();
+    try writeRefreshJournalSummaryJson(json.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"hard_lineage_events\":1") != null,
+    );
+
+    var text = std.ArrayList(u8).init(allocator);
+    defer text.deinit();
+    try writeRefreshJournalSummaryText(text.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "hard_lineage=1") != null,
+    );
+}
+
+test "generic status and doctor fail closed on hard or unknown refresh outcomes" {
+    var status_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer status_buf.deinit();
+    try writeRefreshJournalSummaryJson(status_buf.writer(), .{
+        .valid = false,
+        .invalid_events = 1,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"valid\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"quarantine_present\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"provider_reenroll_required\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"evidence_repair_required\":true") != null);
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status_buf.items,
+            "\"hard_quarantine_clearance_available\":false",
+        ) != null,
+    );
+
+    var doctor_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer doctor_buf.deinit();
+    const stats = DoctorStats{
+        .configured = true,
+        .config_valid = true,
+        .provider_count = 1,
+        .account_count = 1,
+        .refresh_hard_lineage_events = 1,
+        .latest_refresh_outcome = .hard_lineage_invalidated,
+    };
+    try writeDoctorJson(
+        doctor_buf.writer(),
+        stats,
+        "/redacted/config",
+        "/redacted/state",
+        "/redacted/health",
+        "",
+        null,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "\"latest_outcome\":\"hard_lineage_invalidated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "provider-owned re-enrollment required") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "managed hard-quarantine clearance is not implemented") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "stale refresh-token backup restoration is disabled") != null);
+
+    var indeterminate_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer indeterminate_buf.deinit();
+    var indeterminate_stats = stats;
+    indeterminate_stats.refresh_hard_lineage_events = 0;
+    indeterminate_stats.refresh_indeterminate_lineage_markers = 1;
+    indeterminate_stats.latest_refresh_outcome = .transient_store;
+    try writeDoctorJson(
+        indeterminate_buf.writer(),
+        indeterminate_stats,
+        "/redacted/config",
+        "/redacted/state",
+        "/redacted/health",
+        "",
+        null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            indeterminate_buf.items,
+            "a successful managed provider login clears indeterminate lineage",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            indeterminate_buf.items,
+            "managed hard-quarantine clearance is not implemented",
+        ) == null,
+    );
+
+    var malformed_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer malformed_buf.deinit();
+    var malformed_stats = stats;
+    malformed_stats.refresh_outcomes_valid = false;
+    malformed_stats.refresh_hard_lineage_events = 0;
+    malformed_stats.latest_refresh_outcome = null;
+    try writeDoctorJson(
+        malformed_buf.writer(),
+        malformed_stats,
+        "/redacted/config",
+        "/redacted/state",
+        "/redacted/health",
+        "",
+        null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            malformed_buf.items,
+            "evidence repair is required before the recovery action can be determined",
+        ) != null,
+    );
 }
 
 test "doctor json recommends Codex Max candidate for single-account drift" {

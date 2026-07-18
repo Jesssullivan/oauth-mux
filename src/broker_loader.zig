@@ -274,6 +274,11 @@ fn applyIdentityDedupe(
         const colon = std.mem.indexOfScalar(u8, entry.id, ':') orelse continue;
         const provider_name = entry.id[0..colon];
         const account_name = entry.id[colon + 1 ..];
+        if (refreshRouteGateAfterInflightWait(
+            pool.allocator,
+            provider_name,
+            account_name,
+        ) != .clear) continue;
         if (config_mod.resolveProviderKind(cfg, provider_name)) |kind| {
             if (kind == .claude) {
                 // Claude's canonical account UUID is profile metadata, not a
@@ -498,6 +503,18 @@ fn applyRouteHealth(
 ) void {
     for (pool.accounts.items) |*entry| {
         if (!entry.selectable) continue;
+        const refresh_gate = refreshLineageGateAfterInflightWait(
+            pool.allocator,
+            entry.id,
+        );
+        if (refresh_gate != .clear) {
+            entry.selectable = false;
+            entry.liveness = if (refresh_gate == .hard) .dead else .unknown;
+            entry.availability = .unknown;
+            entry.next_eligible_at = null;
+            setPoolEntryCapability(pool, entry, null) catch {};
+            continue;
+        }
         const route_health = routeHealthForPoolAccount(pool.allocator, cfg, profile_name, capability_name, entry.id, store) orelse {
             entry.selectable = false;
             entry.liveness = .unknown;
@@ -513,6 +530,63 @@ fn applyRouteHealth(
         };
         applyHealthToPoolEntry(entry, route_health.health);
     }
+}
+
+const RefreshRouteGate = enum {
+    clear,
+    indeterminate,
+    hard,
+    unreadable,
+};
+
+fn refreshLineageGateAfterInflightWait(
+    allocator: std.mem.Allocator,
+    account_id: []const u8,
+) RefreshRouteGate {
+    const colon = std.mem.indexOfScalar(u8, account_id, ':') orelse
+        return .unreadable;
+    return refreshRouteGateAfterInflightWait(
+        allocator,
+        account_id[0..colon],
+        account_id[colon + 1 ..],
+    );
+}
+
+fn refreshRouteGate(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+) RefreshRouteGate {
+    const state = repair_state.effectiveRefreshQuarantineForRoute(
+        allocator,
+        provider,
+        account,
+    ) catch return .unreadable;
+    return if (state) |quarantine| switch (quarantine) {
+        .indeterminate_lineage => .indeterminate,
+        .hard_lineage_invalidated => .hard,
+    } else .clear;
+}
+
+fn refreshRouteGateAfterInflightWait(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+) RefreshRouteGate {
+    const initial = refreshRouteGate(allocator, provider, account);
+    if (initial != .indeterminate) return initial;
+
+    // An indeterminate marker can be either crash residue or the durable
+    // pre-send marker of the account writer currently rotating this lineage.
+    // Join that writer before deciding: success clears the marker only after
+    // canonical persistence; failure leaves it in place and still fails closed.
+    var lock = repair_state.acquireRepairLockBlocking(
+        allocator,
+        provider,
+        account,
+    ) catch return .unreadable;
+    defer lock.release();
+    return refreshRouteGate(allocator, provider, account);
 }
 
 fn routeHealthForPoolAccount(
@@ -749,18 +823,74 @@ fn refreshCodexAccountAuthFile(
     account: []const u8,
     acct_cfg: config_mod.AccountConfig,
 ) !void {
-    const path = try accountAuthMaterialPath(allocator, acct_cfg);
+    return refreshCodexAccountAuthFileWithHook(
+        allocator,
+        cfg,
+        provider,
+        account,
+        acct_cfg,
+        null,
+    );
+}
+
+const BrokerRefreshWaitHook = struct {
+    func: *const fn (ctx: *anyopaque) void,
+    ctx: *anyopaque,
+};
+
+fn refreshCodexAccountAuthFileWithHook(
+    allocator: std.mem.Allocator,
+    cfg: config_mod.Config,
+    provider: []const u8,
+    account: []const u8,
+    acct_cfg: config_mod.AccountConfig,
+    after_initial_quarantine_check: ?BrokerRefreshWaitHook,
+) !void {
+    switch (refreshRouteGate(allocator, provider, account)) {
+        .clear, .indeterminate => {},
+        .hard => return error.RefreshLineageQuarantined,
+        .unreadable => {
+            recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+            return error.RefreshQuarantineUnavailable;
+        },
+    }
+    if (after_initial_quarantine_check) |hook| hook.func(hook.ctx);
+    const path = accountAuthMaterialPath(allocator, acct_cfg) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+        return e;
+    };
     defer allocator.free(path);
 
-    var lock = try repair_state.acquireRepairLockBlocking(allocator, provider, account);
+    var lock = repair_state.acquireRepairLockBlocking(allocator, provider, account) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_lock, false);
+        return e;
+    };
     defer lock.release();
 
-    const bytes = try readFileAlloc(allocator, path);
+    // A blocking waiter may have observed "not quarantined" before another
+    // flock owner established the sticky marker. Recheck under the acquired
+    // account flock before any endpoint call or canonical-store mutation.
+    switch (refreshRouteGate(allocator, provider, account)) {
+        .clear => {},
+        .indeterminate, .hard => return error.RefreshLineageQuarantined,
+        .unreadable => {
+            recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+            return error.RefreshQuarantineUnavailable;
+        },
+    }
+
+    const bytes = readFileAlloc(allocator, path) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+        return e;
+    };
     defer allocator.free(bytes);
 
     switch (refreshCodexAuthState(allocator, bytes)) {
         .not_needed => return,
-        .unavailable => return error.NoRefreshToken,
+        .unavailable => {
+            recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+            return error.NoRefreshToken;
+        },
         .needed => {},
     }
 
@@ -776,36 +906,126 @@ fn refreshCodexAccountAuthFile(
     var identity_lock: ?repair_state.RepairLock = null;
     defer if (identity_lock) |*l| l.release();
     if (def.credential.identity_claim_path != null) {
-        const account_id = (provider_schema.identityClaimFromCredential(def, bytes, allocator) catch null) orelse
+        const account_id = (provider_schema.identityClaimFromCredential(def, bytes, allocator) catch null) orelse {
             // Defensive: a store that reached here already parsed an
             // account_id via refreshCodexAuthState above (a store without
             // one bails as .not_needed before this point), so this refuse is
             // belt-and-suspenders against future changes to that gate — never
             // dodge the duplicate-identity guard on an unresolved id.
+            recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
             return error.NoIdentityClaim;
+        };
         defer allocator.free(account_id);
-        const id_hash = try identity_hash.sha256_12hex(allocator, account_id);
+        const id_hash = identity_hash.sha256_12hex(allocator, account_id) catch |e| {
+            recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+            return e;
+        };
         defer allocator.free(id_hash);
-        const identity_domain = try std.fmt.allocPrint(allocator, "{s}-identity", .{provider});
+        const identity_domain = std.fmt.allocPrint(allocator, "{s}-identity", .{provider}) catch |e| {
+            recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+            return e;
+        };
         defer allocator.free(identity_domain);
         identity_lock = repair_state.acquireRepairLock(allocator, identity_domain, id_hash) catch |e| switch (e) {
-            error.RepairInProgress => return, // a live session owns the chain; skip this background refresh
-            else => return e,
+            error.RepairInProgress => {
+                recordBrokerRefreshOutcome(allocator, provider, account, .transient_lock, false);
+                return; // a live session owns the chain; skip this background refresh
+            },
+            else => {
+                recordBrokerRefreshOutcome(allocator, provider, account, .transient_lock, false);
+                return e;
+            },
         };
     }
 
-    var material = try parseCodexAuthRefreshMaterial(allocator, bytes);
+    var material = parseCodexAuthRefreshMaterial(allocator, bytes) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+        return e;
+    };
     defer material.deinit(allocator);
-    const refresh_token = material.refresh_token orelse return error.NoRefreshToken;
+    const refresh_token = material.refresh_token orelse {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, false);
+        return error.NoRefreshToken;
+    };
 
-    const token_url = def.auth.token_endpoint orelse oauth.refreshUrl(.codex) orelse return error.NoTokenEndpoint;
-    const result = try oauth.refreshToken(allocator, token_url, refresh_token, def.auth.client_id);
+    const token_url = def.auth.token_endpoint orelse oauth.refreshUrl(.codex) orelse {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_endpoint, false);
+        return error.NoTokenEndpoint;
+    };
+    var health = health_mod.HealthStore.init(allocator, .{});
+    defer health.deinit();
+    var refresh_ctx = pipeline.Context.init(allocator, cfg, &health);
+    defer refresh_ctx.deinit();
+    refresh_ctx.provider_name = provider;
+    refresh_ctx.account_name = account;
+    const attempt = pipeline.refreshTokenHoldingFlock(
+        &refresh_ctx,
+        token_url,
+        refresh_token,
+        def.auth.client_id,
+        .{},
+    ) catch |e| {
+        if (e == error.RefreshQuarantinePersistenceFailed) return e;
+        const outcome: types.RefreshOutcome = switch (e) {
+            error.OutOfMemory => .transient_store,
+            error.RefreshQuarantinePersistenceFailed => unreachable,
+        };
+        recordBrokerRefreshOutcome(allocator, provider, account, outcome, false);
+        return e;
+    };
+    var success = switch (attempt) {
+        .refreshed => |refreshed| refreshed,
+        .failed => |failure| {
+            if (failure.outcome != .hard_lineage_invalidated) {
+                recordBrokerRefreshOutcome(
+                    allocator,
+                    provider,
+                    account,
+                    failure.outcome,
+                    failure.endpoint_executed,
+                );
+            }
+            return error.RefreshDenied;
+        },
+    };
+    defer success.releaseStoreLock();
+    const result = success.result;
     defer allocator.free(result.access_token);
     defer if (result.refresh_token) |rt| allocator.free(rt);
 
-    const refreshed = try buildRefreshedCodexAuthJson(allocator, material, result);
+    const refreshed = buildRefreshedCodexAuthJson(allocator, material, result) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, true);
+        return e;
+    };
     defer allocator.free(refreshed);
-    try writeFileReplace(path, refreshed, allocator);
+    writeFileReplace(path, refreshed, allocator) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, true);
+        return e;
+    };
+    success.credentialPersisted(allocator) catch |e| {
+        recordBrokerRefreshOutcome(allocator, provider, account, .transient_store, true);
+        return e;
+    };
+    recordBrokerRefreshOutcome(allocator, provider, account, .refreshed, true);
+}
+
+fn recordBrokerRefreshOutcome(
+    allocator: std.mem.Allocator,
+    provider: []const u8,
+    account: []const u8,
+    outcome: types.RefreshOutcome,
+    executed: bool,
+) void {
+    std.debug.assert(outcome != .hard_lineage_invalidated);
+    if (comptime builtin.is_test) return;
+    repair_state.appendEvent(allocator, repair_state.refreshEvent(.{
+        .provider = provider,
+        .account = account,
+        .outcome = outcome,
+        .ok = outcome == .refreshed,
+        .executed = executed,
+        .mutating = executed,
+    })) catch {};
 }
 
 const CodexAuthRefreshState = enum {
@@ -996,6 +1216,18 @@ fn writeFileReplace(path: []const u8, bytes: []const u8, allocator: std.mem.Allo
     } else {
         try std.fs.cwd().rename(tmp_path, path);
     }
+    try syncReplacedFileParent(path, is_absolute);
+}
+
+fn syncReplacedFileParent(path: []const u8, is_absolute: bool) !void {
+    if (comptime builtin.os.tag == .windows) return;
+    const parent = std.fs.path.dirname(path) orelse ".";
+    var dir = if (is_absolute)
+        try std.fs.openDirAbsolute(parent, .{ .iterate = true })
+    else
+        try std.fs.cwd().openDir(parent, .{ .iterate = true });
+    defer dir.close();
+    try std.posix.fsync(dir.fd);
 }
 
 fn applyHealthToPoolEntry(entry: *broker.account_pool_mod.AccountSummary, health: health_mod.AccountHealth) void {
@@ -1078,6 +1310,13 @@ pub fn materializeChatgpt(
     }
     const acct_cfg = provider_cfg.accounts.map.get(account) orelse
         return broker_types.BrokerError.AccountNotFound;
+    if (refreshRouteGateAfterInflightWait(
+        allocator,
+        provider,
+        account,
+    ) != .clear) {
+        return broker_types.BrokerError.SecretUnavailable;
+    }
 
     if (!std.mem.eql(u8, acct_cfg.secret.backend, "file")) {
         // Phase 1: only file-backend is wired. Other backends
@@ -1667,6 +1906,223 @@ test "populatePoolFromRouteHealth mirrors broker-session-plan route health" {
             try std.testing.expectEqual(broker.account_pool_mod.Availability.unknown, entry.availability);
         }
     }
+}
+
+test "broker pool quarantines a hard refresh lineage despite live route health" {
+    try std.testing.expect(!@hasDecl(pipeline, "LockedRefreshLineage"));
+
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer scope.deinit(std.testing.allocator);
+    scope.activate();
+
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "auth.json" },
+    );
+    defer allocator.free(auth_path);
+    {
+        const auth = try std.fs.createFileAbsolute(auth_path, .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll(
+            "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":\"at\",\"refresh_token\":\"rt\",\"account_id\":\"identity\"}}",
+        );
+    }
+    const cfg_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex", "accounts": {{
+        \\      "lineage": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{ "work": {{ "providers": ["codex:lineage#status"] }} }},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer allocator.free(cfg_json);
+    const parsed = try config_mod.loadFromBytes(allocator, cfg_json);
+    defer parsed.deinit();
+    var store = health_mod.HealthStore.init(allocator, .{});
+    defer store.deinit();
+    _ = try store.getOrCreate("codex:lineage#status");
+
+    const acct_cfg = parsed.value.providers.map.get("codex").?.accounts.map.get("lineage").?;
+    try repair_state.establishHardRefreshQuarantineForTest(
+        allocator,
+        "codex",
+        "lineage",
+        try config_mod.resolveSecretBackend(acct_cfg.secret),
+        config_mod.resolveProviderDefinition(parsed.value, "codex"),
+    );
+    try std.testing.expectError(
+        error.RefreshLineageQuarantined,
+        refreshCodexAccountAuthFile(
+            allocator,
+            parsed.value,
+            "codex",
+            "lineage",
+            acct_cfg,
+        ),
+    );
+
+    var pool = broker.AccountPool.init(allocator);
+    defer pool.deinit();
+    try populatePoolFromRouteHealth(&pool, parsed.value, "work", &store);
+
+    try std.testing.expectEqual(@as(usize, 1), pool.accounts.items.len);
+    try std.testing.expect(!pool.accounts.items[0].selectable);
+    try std.testing.expectEqual(broker.account_pool_mod.Liveness.dead, pool.accounts.items[0].liveness);
+    try std.testing.expectError(
+        broker_types.BrokerError.NoAccountSelectable,
+        pool.elect("work", "status", &.{}),
+    );
+}
+
+test "broker waiter rechecks quarantine after acquiring the account flock" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "wait-race-auth.json" },
+    );
+    defer allocator.free(auth_path);
+    const auth_bytes = try testCodexAuthJsonWithExp(
+        allocator,
+        1,
+        "rt-current",
+        "identity-current",
+    );
+    defer allocator.free(auth_bytes);
+    {
+        const auth = try std.fs.createFileAbsolute(auth_path, .{ .mode = 0o600 });
+        defer auth.close();
+        try auth.writeAll(auth_bytes);
+    }
+    const cfg_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "codex-test": {{
+        \\      "name": "codex-test",
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:9/token" }},
+        \\      "repair": {{ "owner": "oauth_mux_refresh", "proactive_refresh": "oauth_refresh_token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "tokens.access_token",
+        \\        "refresh_token_path": "tokens.refresh_token",
+        \\        "identity_claim_path": "tokens.account_id"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "codex": {{ "kind": "codex-test", "accounts": {{
+        \\      "lineage": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer allocator.free(cfg_json);
+    const parsed = try config_mod.loadFromBytes(allocator, cfg_json);
+    defer parsed.deinit();
+    const acct_cfg = parsed.value.providers.map.get("codex").?.accounts.map.get("lineage").?;
+    const def = config_mod.resolveProviderDefinition(parsed.value, "codex");
+    const backend = try config_mod.resolveSecretBackend(acct_cfg.secret);
+
+    var holder = try repair_state.acquireRepairLock(
+        allocator,
+        "codex",
+        "lineage",
+    );
+    var initial_check_done = std.atomic.Value(bool).init(false);
+    var waiter_result = std.atomic.Value(u8).init(0);
+    const Waiter = struct {
+        fn afterInitialCheck(ctx: *anyopaque) void {
+            const checked: *std.atomic.Value(bool) = @ptrCast(@alignCast(ctx));
+            checked.store(true, .seq_cst);
+        }
+
+        fn run(
+            cfg: config_mod.Config,
+            account_config: config_mod.AccountConfig,
+            checked: *std.atomic.Value(bool),
+            result: *std.atomic.Value(u8),
+        ) void {
+            refreshCodexAccountAuthFileWithHook(
+                std.heap.page_allocator,
+                cfg,
+                "codex",
+                "lineage",
+                account_config,
+                .{
+                    .func = afterInitialCheck,
+                    .ctx = checked,
+                },
+            ) catch |err| {
+                result.store(
+                    if (err == error.RefreshLineageQuarantined) 1 else 2,
+                    .seq_cst,
+                );
+                return;
+            };
+            result.store(3, .seq_cst);
+        }
+    };
+    const waiter = try std.Thread.spawn(
+        .{},
+        Waiter.run,
+        .{ parsed.value, acct_cfg, &initial_check_done, &waiter_result },
+    );
+    var holder_live = true;
+    var waiter_joined = false;
+    defer {
+        if (holder_live) {
+            holder.release();
+            holder_live = false;
+        }
+        if (!waiter_joined) waiter.join();
+    }
+
+    var spins: usize = 0;
+    while (!initial_check_done.load(.seq_cst) and spins < 100_000) : (spins += 1) {
+        std.Thread.yield() catch {};
+    }
+    if (!initial_check_done.load(.seq_cst)) {
+        holder.release();
+        holder_live = false;
+        waiter.join();
+        waiter_joined = true;
+        return error.TestWaiterDidNotReachInitialCheck;
+    }
+
+    // The waiter saw no quarantine and is now blocked behind this account hold.
+    // Establish hard state through the complete proof path, then release it.
+    try repair_state.establishHardRefreshQuarantineForTest(
+        allocator,
+        "codex",
+        "lineage",
+        backend,
+        def,
+    );
+    holder.release();
+    holder_live = false;
+    waiter.join();
+    waiter_joined = true;
+
+    try std.testing.expectEqual(@as(u8, 1), waiter_result.load(.seq_cst));
+    const after = try readFileAlloc(allocator, auth_path);
+    defer allocator.free(after);
+    try std.testing.expectEqualStrings(auth_bytes, after);
 }
 
 test "populatePoolFromRouteHealthScoped keeps mixed-profile capabilities isolated" {

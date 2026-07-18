@@ -244,6 +244,13 @@ def run_once(args):
             "provider_definitions": {
                 "codex-test": {
                     "name": "codex-test",
+                    # The locked-lineage boundary refuses undeclared refresh
+                    # authority before endpoint submission. Match production
+                    # Codex's explicit OAuth refresh grant.
+                    "repair": {
+                        "owner": "upstream_cli_login",
+                        "proactive_refresh": "oauth_refresh_token",
+                    },
                     "auth": {
                         "token_endpoint": f"http://127.0.0.1:{port}/token",
                         "client_id": "race-client",

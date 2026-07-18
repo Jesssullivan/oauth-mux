@@ -59,12 +59,14 @@ existing meanings.
    refresh — plus a `sha256_12hex(account_id)` identity flock, for the whole session. Same
    account or shared upstream identity cannot run concurrently and self-revoke the rotating
    refresh chain.
-5. **Auth integrity preflight + shadow backup** (`auth.json.omux-bak`): recover a torn in-place
-   write / crash-mid-refresh; refuse if neither the live file nor the shadow is usable.
+5. **Auth integrity preflight + forensic shadow** (`auth.json.omux-bak`): never automatically
+   restore a potentially consumed rotating refresh token. A torn/missing live file with a valid
+   shadow quarantines the route and requires provider-owned re-enrollment.
 
 ## Verification
 
-Unit tests cover the dispatch, the overlap guard, the config/shadow scrub, and crash recovery.
+Unit tests cover the dispatch, the overlap guard, the config/shadow scrub, and stale-shadow
+replay refusal.
 Per the unit-green≠working lesson, the gate is the **live** `scripts/live-codex-mux-e2e.sh`
 (driven against `jess@xoxd.ai`): a real managed `codex exec` returns the token, **0** new
 `oauth-mux-codex`/`omux-managed` rows appear in canonical `~/.codex/state_5.sqlite`, integrity

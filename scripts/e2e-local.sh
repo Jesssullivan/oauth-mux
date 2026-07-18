@@ -1784,10 +1784,14 @@ if OMUX_CONFIG="$refresh_config" OMUX_STATE_DIR="$state_dir" "$bin" env --profil
 fi
 refresh_events="$(OMUX_STATE_DIR="$state_dir" "$bin" daemon events --json)"
 expect_contains "$refresh_events" '"kind":"token_refresh"' "refresh event records event kind"
-expect_contains "$refresh_events" '"outcome":"not_admitted"' "refresh event records admission refusal"
+expect_contains "$refresh_events" '"refresh_outcome":"transient_store"' "refresh event records typed admission refusal"
+expect_contains "$refresh_events" '"outcome":"transient_store"' "refresh event keeps legacy outcome aligned"
 expect_contains "$refresh_events" '"writeback_capability":"replace_file"' "refresh event records writeback capability"
 expect_contains "$refresh_events" '"automatic_refresh_admitted":false' "refresh event records admission boolean"
-expect_contains "$refresh_events" '"reason":"provider_repair_owned_by_upstream_cli"' "refresh event records redacted refusal reason"
+expect_contains "$refresh_events" '"reason":null' "refresh event omits free-form refusal text"
+expect_contains "$refresh_events" '"ok":false' "refresh event records unsuccessful outcome"
+expect_contains "$refresh_events" '"executed":false' "refresh event records no endpoint execution"
+expect_contains "$refresh_events" '"mutating":false' "refresh event records no mutation"
 
 printf 'e2e: route health does not poison unrelated capability\n'
 cheap_after_quota="$(omux env --profile cheap --capability cheap --shell bash)"
