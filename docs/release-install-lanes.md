@@ -1,6 +1,6 @@
 # Release And Install Lanes
 
-Updated: 2026-07-11
+Updated: 2026-07-17
 
 This is the DRY map for installer, package, CI, and dogfood lanes.
 Detailed historical evidence stays in `docs/install-beta-matrix.md` and
@@ -14,7 +14,7 @@ Detailed historical evidence stays in `docs/install-beta-matrix.md` and
 | User-local dogfood | `oauth-mux ...` and managed `codex ...` with PATH resolving to `~/.local/bin` | copied worktree binary plus shared POSIX shim | hash match with `./zig-out/bin/oauth-mux`, version check, shim pass-through smoke, preflight check | installed-command dogfood for current checkout |
 | Nix package | `nix build .#` | flake package plus shared POSIX shim | `./result/bin/oauth-mux version`, `nix flake check` binary+shim smoke | package derivation proof |
 | GitHub Release | downloaded tarball | `dist/out/v*/artifacts` from release workflow | checksum verify, tarball binary+shim smoke | public raw binary lane |
-| npm (RETIRED 2026-06-12) | — | lane retired; stale `0.1.9` package abandoned in place | none | excluded from the Bazel SSOT derived lanes (TIN-2046/2050) |
+| npm (RETIRED 2026-06-12) | — | lane retired; stale `0.1.9` package abandoned in place | none | excluded from current and planned release-manifest consumers |
 | Homebrew | `brew install jesssullivan/omux/oauth-mux` | public tap formula from release checksums | `just homebrew-qa <version>`, formula test proves no `codex` install, parsed version check | public macOS/Linux tap lane |
 | curl installer | `curl .../install.sh \| sh` | GitHub Release `install.sh` + tarballs | local file URL binary+shim smoke and public installer smoke | shell installer lane |
 | deb/rpm | system package install | GitHub Release `.deb` / `.rpm` | hosted container install QA for `/usr/bin/oauth-mux`; set `OMUX_EXPECT_CODEX_SHIM=1` for releases that should include `/usr/bin/codex` | distro package lane |
@@ -68,8 +68,9 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 | Surface | Workflow or command | Mutates registries? | Purpose |
 | --- | --- | --- | --- |
 | PR/push CI | `.github/workflows/ci.yml` | no | required GloriousFlywheel unit, E2E, cross-compile, Nix, and cache-first proof on trusted branches; fork PRs require maintainer promotion |
+| v0.2 bounded prerelease readiness | `just v02-prerelease-readiness <candidate-sha> <branch-or-tag-ref>` / `.github/workflows/remote-validate.yml` | no | run the synthetic resolved-manifest/artifact gate in the immutable-candidate GF envelope and reconcile attempt-scoped provenance; not publication, install, Stage 2, G4, or broad release proof |
 | Release staging | `just remote-release-proof <ref> <version>` / `.github/workflows/release-proof.yml` | no | build the release tree, smoke installers/packages, generate handoff on the remote runner |
-| GitHub Release | `.github/workflows/release.yml` on `v*` tag | GitHub release assets only | upload staged binary tarballs, formula, checksums, installer, deb/rpm packages, and handoff |
+| GitHub Release | `.github/workflows/release.yml` on `v*` tag, fail-closed to `^v0\.1\.[0-9]+$` | GitHub release assets only | upload stable v0.1 staged binary tarballs, formula, checksums, installer, deb/rpm packages, and handoff; v0.2 tags fail before publishing |
 | Registry dry run | `.github/workflows/registry-dry-run.yml` | no | contact configured registries/taps with explicit non-publishing confirmation |
 | npm deprecate (RETIRED lane, keeper-only) | `.github/workflows/npm-deprecate.yml` | yes when `plan_only=false` | npm publication is retired; this workflow's only remaining job is keeping the stale `0.1.9` registry package deprecated |
 | System package QA | `.github/workflows/system-package-install-qa.yml` | no | manual, explicitly versioned install of published `.deb` and `.rpm` assets in clean containers; `expect_codex_shim` gates new shim-bearing releases |
@@ -79,6 +80,13 @@ Codex command resolution is unchanged by `brew install jesssullivan/omux/oauth-m
 
 - Use `scripts/project-version.sh` as the version source. Do not hand-edit
   package versions independently.
+- The Zig release graph and its generated, checked `release-manifest.json`
+  projection define current v0.2 release-manifest authority. Bazel/GF consumers
+  remain downstream migrations and do not replace that authority.
+- The generated v0.2 release-manifest projection declares no Darwin `.pkg`;
+  do not present one as a current authoritative lane. Current macOS
+  distribution surfaces are archives and the binary-only Homebrew formula,
+  bounded by committed release evidence.
 - `just remote-release-proof <ref> <version>` is the release tree proof. It must pass
   before any registry mutation.
 - `nix flake check` is a local package debugging smoke, not release proof.
@@ -183,6 +191,9 @@ DX gates:
 - `just release-proof <version> [ref]` or
   `just remote-release-proof <ref> <version>` is required before any registry
   mutation;
+- `just v02-prerelease-readiness <candidate-sha> <branch-or-tag-ref>` is the
+  named immutable-candidate GF lane for the bounded synthetic v0.2 manifest
+  gate; it does not replace Stage 2, G4, or release proof;
 - local `just check-local`, `just release-proof-local <version>`, `nix build .#`,
   and `nix flake check` are debugging tools only and do not replace remote
   proof.

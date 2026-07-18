@@ -167,6 +167,12 @@ release-manifest-update:
 release-manifest-check-local:
     {{zig}} build check-release-manifest
 
+v02-prerelease-readiness-local:
+    {{zig}} build v02-prerelease-readiness -Doptimize=Debug
+
+v02-prerelease-manifest-check-local $MANIFEST $ARTIFACT_ROOT $EXPECTED_COMMIT $EXPECTED_TREE:
+    {{zig}} build v02-prerelease-manifest-check -Doptimize=Debug -- "$MANIFEST" "$ARTIFACT_ROOT" "$EXPECTED_COMMIT" "$EXPECTED_TREE"
+
 managed-harness-schema-update:
     {{zig}} build update-managed-harness-schema
 
@@ -302,11 +308,14 @@ v02-stage1-local CANDIDATE_SHA:
     ./scripts/smoke-remote-validate-contract.sh
     @echo "v02-stage1-local: result=local_debug_only"
 
-v02-stage2-conformance CANDIDATE_SHA REF:
-    ./scripts/remote-validate.sh v02-stage2-conformance "{{REF}}" --candidate-sha "{{CANDIDATE_SHA}}"
+v02-stage2-conformance $CANDIDATE_SHA $REF:
+    ./scripts/remote-validate.sh v02-stage2-conformance "$REF" --candidate-sha "$CANDIDATE_SHA"
 
-v02-benchmark CANDIDATE_SHA REF:
-    ./scripts/remote-validate.sh v02-benchmark "{{REF}}" --candidate-sha "{{CANDIDATE_SHA}}"
+v02-benchmark $CANDIDATE_SHA $REF:
+    ./scripts/remote-validate.sh v02-benchmark "$REF" --candidate-sha "$CANDIDATE_SHA"
+
+v02-prerelease-readiness $CANDIDATE_SHA $REF:
+    ./scripts/remote-validate.sh v02-prerelease-readiness "$REF" --candidate-sha "$CANDIDATE_SHA"
 
 # ── Bazel / REAPI candidate (TIN-2105, not proof authority yet) ──
 

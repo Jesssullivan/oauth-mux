@@ -9,6 +9,8 @@ PROVENANCE="$ROOT/scripts/v02-proof-provenance-local.sh"
 PREDICATES="$ROOT/scripts/v02-proof-predicate-manifest-local.sh"
 OBSERVATIONS="$ROOT/scripts/v02-stage2-observation-local.sh"
 METRICS="$ROOT/scripts/v02-benchmark-metrics-local.sh"
+READINESS="$ROOT/scripts/v02-prerelease-readiness-local.sh"
+READINESS_GENERATOR="$ROOT/scripts/v02-prerelease-bundle.zig"
 WORKFLOW="$ROOT/.github/workflows/remote-validate.yml"
 JUSTFILE="$ROOT/justfile"
 
@@ -41,6 +43,15 @@ bash -n "$PROVENANCE"
 bash -n "$PREDICATES"
 bash -n "$OBSERVATIONS"
 bash -n "$METRICS"
+bash -n "$READINESS"
+zig fmt --check "$READINESS_GENERATOR"
+grep -F 'release_manifest.v0_2_prerelease_targets' "$READINESS_GENERATOR" >/dev/null ||
+  fail "readiness fixture generator must consume the Zig target authority"
+grep -F 'release_manifest.renderV02PrereleaseResolved' "$READINESS_GENERATOR" >/dev/null ||
+  fail "readiness fixture generator must use the Zig resolved-manifest renderer"
+if grep -F 'release_assets:' "$READINESS" >/dev/null; then
+  fail "readiness shell must not duplicate the Zig release asset table"
+fi
 
 grep -F 'candidate_sha:' "$WORKFLOW" >/dev/null ||
   fail "workflow must expose candidate_sha"
@@ -52,7 +63,7 @@ grep -F 'ref: ${{ inputs.candidate_sha }}' "$WORKFLOW" >/dev/null ||
   fail "v0.2 checkout must use candidate_sha"
 [ "$(grep -Fc 'uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' "$WORKFLOW")" -eq 2 ] ||
   fail "workflow must pin both official checkout actions"
-[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$WORKFLOW")" -eq 4 ] ||
+[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$WORKFLOW")" -eq 5 ] ||
   fail "workflow must pin every artifact upload action"
 grep -F 'name: Checkout generic validation ref' "$WORKFLOW" >/dev/null ||
   fail "generic validation must retain default checkout behavior"
@@ -89,6 +100,14 @@ grep -F 'v02-proof-predicate-manifest-local.sh emit-missing' "$WORKFLOW" >/dev/n
   fail "v0.2 targets must emit the canonical predicate manifest"
 grep -F 'v02-benchmark-metrics-local.sh emit-missing' "$WORKFLOW" >/dev/null ||
   fail "benchmark target must emit strict metrics before failing closed"
+grep -F 'name: v02-prerelease-readiness-${{ github.run_attempt }}' "$WORKFLOW" >/dev/null ||
+  fail "prerelease readiness artifact must be attempt-scoped"
+grep -F 'path: ${{ runner.temp }}/v02-prerelease-readiness' "$WORKFLOW" >/dev/null ||
+  fail "prerelease readiness output must stay outside the candidate checkout"
+grep -F 'bash ./scripts/v02-prerelease-readiness-local.sh run' "$WORKFLOW" >/dev/null ||
+  fail "workflow must execute the bounded readiness bundle producer"
+grep -F 'OMUX_REMOTE_PRERELEASE_TIMEOUT:-20m' "$WORKFLOW" >/dev/null ||
+  fail "prerelease readiness must run under a bounded timeout"
 grep -F 'OMUX_V02_GF_ACTION_SHA: 2357988536f1f6258291c363e1428962b6cced1b' "$WORKFLOW" >/dev/null ||
   fail "workflow must bind provenance to the audited GF action commit"
 if grep -F 'missing_predicates=' "$WORKFLOW" >/dev/null; then
@@ -101,6 +120,15 @@ grep -F 'assert-local-candidate "{{CANDIDATE_SHA}}"' "$JUSTFILE" >/dev/null ||
   fail "Stage 1 must bind local HEAD to CANDIDATE_SHA"
 grep -F 'local_debug_only' "$JUSTFILE" >/dev/null ||
   fail "Stage 1 must remain local_debug_only"
+for target in v02-stage2-conformance v02-benchmark v02-prerelease-readiness; do
+  grep -F "${target} \$CANDIDATE_SHA \$REF:" "$JUSTFILE" >/dev/null ||
+    fail "$target recipe must export candidate SHA and ref"
+  grep -F "remote-validate.sh ${target} \"\$REF\" --candidate-sha \"\$CANDIDATE_SHA\"" "$JUSTFILE" >/dev/null ||
+    fail "$target recipe must pass exported parameters to the immutable-candidate dispatcher"
+done
+if grep -E 'remote-validate\.sh v02-(stage2-conformance|benchmark|prerelease-readiness).*\{\{(REF|CANDIDATE_SHA)\}\}' "$JUSTFILE" >/dev/null; then
+  fail "v0.2 remote recipes must not interpolate caller-controlled parameters into shell source"
+fi
 
 grep -F -- '--include' "$SCRIPT" >/dev/null ||
   fail "ref lookup must inspect HTTP status"
@@ -116,6 +144,12 @@ grep -F 'v02-proof-predicate-manifest-local.sh" reduce-stage2' "$SCRIPT" >/dev/n
   fail "the auditor must independently reduce Stage 2 observations"
 grep -F 'v02-proof-predicate-manifest-local.sh" require-stage2-slice' "$SCRIPT" >/dev/null ||
   fail "the auditor must enforce the exact observed Stage 2 slice"
+grep -F -- '--name "v02-prerelease-readiness-${workflow_run_attempt}"' "$SCRIPT" >/dev/null ||
+  fail "dispatcher must download the attempt-scoped readiness bundle"
+grep -F 'v02-prerelease-readiness-local.sh" verify' "$SCRIPT" >/dev/null ||
+  fail "dispatcher must independently verify the downloaded readiness bundle"
+grep -F 'nix develop "$repo_root" --command bash "${script_dir}/v02-prerelease-readiness-local.sh" verify' "$SCRIPT" >/dev/null ||
+  fail "dispatcher must prefer the repository-managed verifier toolchain"
 if grep -F 'v02-proof-predicate-manifest-local.sh" require-all-missing' "$SCRIPT" >/dev/null; then
   fail "failed-run reconciliation must not require every predicate to be missing"
 fi
@@ -136,6 +170,133 @@ trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 fake_bin="$tmp_dir/bin"
 mkdir -p "$fake_bin"
 
+# Zig 0.14.1 creates an empty repo-local .zig-cache/tmp even when explicit
+# cache roots are supplied. Readiness may remove only that owned empty shape.
+readiness_cache_root="$tmp_dir/readiness-cache-contract"
+readiness_cache_bin="$readiness_cache_root/bin"
+mkdir -p "$readiness_cache_root/scripts" "$readiness_cache_bin"
+cp "$READINESS" "$readiness_cache_root/scripts/v02-prerelease-readiness-local.sh"
+cat >"$readiness_cache_bin/jq" <<'EOF'
+#!/usr/bin/env sh
+exit 0
+EOF
+chmod +x "$readiness_cache_bin/jq"
+cat >"$readiness_cache_bin/zig" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+mkdir -p .zig-cache/tmp
+if [ "${FAKE_ZIG_EXTRA_RESIDUE:-0}" = 1 ]; then
+  printf 'unexpected\n' >.zig-cache/unexpected
+fi
+case "${1:-}" in
+  run)
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+      shift
+    done
+    [ "${1:-}" = "--" ]
+    shift
+    mkdir -p "$1/artifacts"
+    printf '{}\n' >"$1/resolved-manifest.json"
+    ;;
+  build)
+    if [ -n "${FAKE_ZIG_BUILD_STATUS:-}" ]; then
+      exit "$FAKE_ZIG_BUILD_STATUS"
+    fi
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$readiness_cache_bin/zig"
+(
+  cd "$readiness_cache_root"
+  PATH="$readiness_cache_bin:$PATH" \
+    bash scripts/v02-prerelease-readiness-local.sh emit \
+      "$readiness_cache_root/bundle-clean" \
+      1111111111111111111111111111111111111111 \
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      424242 2 tinyland-nix
+  [ ! -e .zig-cache ] && [ ! -L .zig-cache ] ||
+    fail "readiness must remove the exact empty repo-local Zig cache it owns"
+
+  set +e
+  FAKE_ZIG_EXTRA_RESIDUE=1 PATH="$readiness_cache_bin:$PATH" \
+    bash scripts/v02-prerelease-readiness-local.sh emit \
+      "$readiness_cache_root/bundle-extra" \
+      1111111111111111111111111111111111111111 \
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      424242 2 tinyland-nix \
+      >"$readiness_cache_root/extra-residue.out" 2>&1
+  readiness_extra_status=$?
+  set -e
+  [ "$readiness_extra_status" -ne 0 ] ||
+    fail "readiness must fail when repo-local Zig cache contains extra residue"
+  [ -f .zig-cache/unexpected ] ||
+    fail "readiness must not delete unexpected repo-local Zig cache residue"
+
+  set +e
+  PATH="$readiness_cache_bin:$PATH" \
+    bash scripts/v02-prerelease-readiness-local.sh emit \
+      "$readiness_cache_root/bundle-preexisting" \
+      1111111111111111111111111111111111111111 \
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      424242 2 tinyland-nix \
+      >"$readiness_cache_root/preexisting-cache.out" 2>&1
+  readiness_preexisting_status=$?
+  set -e
+  [ "$readiness_preexisting_status" -eq 0 ] ||
+    fail "readiness must succeed when repo-local Zig cache predates the invocation"
+  [ -f .zig-cache/unexpected ] ||
+    fail "readiness must preserve a pre-existing repo-local Zig cache"
+
+  rm -rf .zig-cache
+  set +e
+  FAKE_ZIG_BUILD_STATUS=42 PATH="$readiness_cache_bin:$PATH" \
+    bash scripts/v02-prerelease-readiness-local.sh emit \
+      "$readiness_cache_root/bundle-failed" \
+      1111111111111111111111111111111111111111 \
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      424242 2 tinyland-nix \
+      >"$readiness_cache_root/failed-gate.out" 2>&1
+  readiness_failed_status=$?
+  set -e
+  [ "$readiness_failed_status" -eq 42 ] ||
+    fail "readiness must preserve the exact failed manifest-gate status"
+  [ ! -e .zig-cache ] && [ ! -L .zig-cache ] ||
+    fail "readiness must remove invocation-owned cache after a failed gate"
+  [ ! -e "$readiness_cache_root/bundle-failed" ] &&
+    [ ! -L "$readiness_cache_root/bundle-failed" ] ||
+    fail "readiness must not publish a bundle after a failed gate"
+  if find "$readiness_cache_root" -maxdepth 1 \
+    -name 'bundle-failed.tmp.*' -print -quit | grep -q .; then
+    fail "readiness must remove its temporary bundle after a failed gate"
+  fi
+
+  set +e
+  FAKE_ZIG_BUILD_STATUS=42 FAKE_ZIG_EXTRA_RESIDUE=1 \
+    PATH="$readiness_cache_bin:$PATH" \
+    bash scripts/v02-prerelease-readiness-local.sh emit \
+      "$readiness_cache_root/bundle-failed-residue" \
+      1111111111111111111111111111111111111111 \
+      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+      424242 2 tinyland-nix \
+      >"$readiness_cache_root/failed-gate-residue.out" 2>&1
+  readiness_failed_residue_status=$?
+  set -e
+  [ "$readiness_failed_residue_status" -eq 42 ] ||
+    fail "cache-cleanup failure must not mask the manifest-gate status"
+  [ -f .zig-cache/unexpected ] ||
+    fail "failed cleanup must preserve unexpected repo-local cache residue"
+  grep -F 'repo-local .zig-cache contains files outside the owned tmp directory' \
+    "$readiness_cache_root/failed-gate-residue.out" >/dev/null ||
+    fail "failed cleanup must emit a cache-residue diagnostic"
+  if find "$readiness_cache_root" -maxdepth 1 \
+    -name 'bundle-failed-residue.tmp.*' -print -quit | grep -q .; then
+    fail "failed cleanup must still remove the temporary bundle"
+  fi
+)
+
 candidate_sha=1111111111111111111111111111111111111111
 candidate_tree=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 moved_sha=2222222222222222222222222222222222222222
@@ -145,6 +306,59 @@ gf_action_sha=2357988536f1f6258291c363e1428962b6cced1b
 run_id=424242
 run_attempt=2
 gh_log="$tmp_dir/gh.log"
+readiness_fixture="$tmp_dir/readiness-fixture"
+ZIG_LOCAL_CACHE_DIR="$tmp_dir/zig-local" \
+ZIG_GLOBAL_CACHE_DIR="$tmp_dir/zig-global" \
+  bash "$READINESS" emit \
+    "$readiness_fixture" \
+    "$candidate_sha" \
+    "$candidate_tree" \
+    "$run_id" \
+    "$run_attempt" \
+    tinyland-nix
+
+# Just must transport caller values through the environment, not render them
+# into shell source. This ref is valid Git syntax and executes `touch` under
+# the old interpolation form.
+just_transport_root="$tmp_dir/just-transport"
+mkdir -p "$just_transport_root/scripts"
+cat >"$just_transport_root/scripts/remote-validate.sh" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+{
+  printf '%s\n' "$#"
+  for arg in "$@"; do
+    printf '%s\n' "$arg"
+  done
+} >"$OMUX_JUST_ARGS_LOG"
+EOF
+chmod +x "$just_transport_root/scripts/remote-validate.sh"
+cat >"$just_transport_root/scripts/project-version.sh" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' '0.0.0-test'
+EOF
+chmod +x "$just_transport_root/scripts/project-version.sh"
+
+injection_ref='refs/heads/proof$(touch${IFS}just-interpolation-ran)'
+git check-ref-format "$injection_ref" ||
+  fail "Just transport injection fixture must remain a valid Git ref"
+for target in v02-stage2-conformance v02-benchmark v02-prerelease-readiness; do
+  args_log="$just_transport_root/${target}.args"
+  expected_args="$just_transport_root/${target}.expected"
+  rm -f "$just_transport_root/just-interpolation-ran"
+  (
+    cd "$just_transport_root"
+    OMUX_JUST_ARGS_LOG="$args_log" \
+      just --justfile "$JUSTFILE" --working-directory "$just_transport_root" \
+        "$target" "$candidate_sha" "$injection_ref"
+  )
+  [ ! -e "$just_transport_root/just-interpolation-ran" ] ||
+    fail "$target executed command substitution from REF"
+  printf '4\n%s\n%s\n--candidate-sha\n%s\n' \
+    "$target" "$injection_ref" "$candidate_sha" >"$expected_args"
+  cmp -s "$expected_args" "$args_log" ||
+    fail "$target did not preserve ref and candidate SHA bytes"
+done
 
 stage2_facts_json="$(cat <<'EOF' | jq -R -s 'split("\n") | map(select(length > 0))'
 listener_bound_ipv4_loopback
@@ -872,6 +1086,50 @@ case "${1:-} ${2:-}" in
         [ "$mode" != "extra-file" ] || : >"$output_dir/forbidden.txt"
         ;;
 
+      "v02-prerelease-readiness-${FAKE_GH_RUN_ATTEMPT}")
+        mode="$FAKE_GH_READINESS_ARTIFACT"
+        [ "$mode" != "download-error" ] || exit 1
+        cp -R "$FAKE_GH_READINESS_FIXTURE"/. "$output_dir"/
+        readiness_manifest="$output_dir/resolved-manifest.json"
+        case "$mode" in
+          missing-file)
+            rm "$readiness_manifest"
+            ;;
+          extra-file)
+            : >"$output_dir/forbidden.txt"
+            ;;
+          wrong-candidate)
+            jq --arg candidate_sha "$FAKE_GH_OTHER_SHA" \
+              '.release.source_commit = $candidate_sha' \
+              "$readiness_manifest" >"$output_dir/readiness.tmp"
+            mv "$output_dir/readiness.tmp" "$readiness_manifest"
+            ;;
+          wrong-tree)
+            jq --arg candidate_tree "$FAKE_GH_OTHER_TREE" \
+              '.release.source_tree = $candidate_tree' \
+              "$readiness_manifest" >"$output_dir/readiness.tmp"
+            mv "$output_dir/readiness.tmp" "$readiness_manifest"
+            ;;
+          stale-attempt)
+            stale_build_id="gf-tinyland-nix-run-${FAKE_GH_RUN_ID}-attempt-$((FAKE_GH_RUN_ATTEMPT + 1))"
+            jq --arg build_id "$stale_build_id" \
+              '.release.build_id.value = $build_id' \
+              "$readiness_manifest" >"$output_dir/readiness.tmp"
+            mv "$output_dir/readiness.tmp" "$readiness_manifest"
+            ;;
+          digest-drift)
+            printf 'changed after manifest resolution\n' \
+              >>"$output_dir/artifacts/oauth-mux-x86_64-linux.tar.gz"
+            ;;
+          missing-artifact)
+            rm "$output_dir/artifacts/oauth-mux-aarch64-linux.tar.gz"
+            ;;
+          extra-artifact)
+            : >"$output_dir/artifacts/unexpected.txt"
+            ;;
+        esac
+        ;;
+
       *)
         echo "fake gh: unexpected artifact name: $artifact_name" >&2
         exit 2
@@ -887,15 +1145,29 @@ esac
 EOF
 chmod +x "$fake_bin/gh"
 
+cat >"$fake_bin/nix" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+
+[ "${1:-}" = develop ] || exit 2
+[ "${2:-}" = "$FAKE_NIX_EXPECTED_FLAKE" ] || exit 2
+[ "${3:-}" = --command ] || exit 2
+shift 3
+exec "$@"
+EOF
+chmod +x "$fake_bin/nix"
+
 run_fake() (
   target="$1"
   shift
+  fake_ref_sha="${FAKE_GH_REF_SHA:-$candidate_sha}"
+  fake_resolved_sha="${FAKE_GH_RESOLVED_SHA:-$fake_ref_sha}"
   PATH="$fake_bin:$PATH" \
   OMUX_REMOTE_REQUEST_ID=tin2989-contract-smoke \
   FAKE_GH_LOG="$gh_log" \
   FAKE_GH_CANDIDATE_SHA="$candidate_sha" \
-  FAKE_GH_REF_SHA="${FAKE_GH_REF_SHA:-$candidate_sha}" \
-  FAKE_GH_RESOLVED_SHA="${FAKE_GH_RESOLVED_SHA:-${FAKE_GH_REF_SHA:-$candidate_sha}}" \
+  FAKE_GH_REF_SHA="$fake_ref_sha" \
+  FAKE_GH_RESOLVED_SHA="$fake_resolved_sha" \
   FAKE_GH_RESOLVED_TREE="${FAKE_GH_RESOLVED_TREE:-$candidate_tree}" \
   FAKE_GH_OTHER_TREE="$moved_tree" \
   FAKE_GH_OTHER_SHA="$moved_sha" \
@@ -917,6 +1189,11 @@ run_fake() (
   FAKE_GH_METRICS_TOOL="$METRICS" \
   FAKE_GH_PASSING_METRICS="$passing_metrics" \
   FAKE_GH_FALSE_PASS_METRICS="$false_pass_metrics" \
+  FAKE_GH_READINESS_ARTIFACT="${FAKE_GH_READINESS_ARTIFACT:-valid}" \
+  FAKE_GH_READINESS_FIXTURE="$readiness_fixture" \
+  FAKE_NIX_EXPECTED_FLAKE="$ROOT" \
+  ZIG_LOCAL_CACHE_DIR="$tmp_dir/zig-local" \
+  ZIG_GLOBAL_CACHE_DIR="$tmp_dir/zig-global" \
     "$SCRIPT" "$target" "$@"
 )
 
@@ -1149,6 +1426,36 @@ done
     run_fake v02-benchmark refs/heads/proof-ref --candidate-sha "$candidate_sha"
 )
 
+# The bounded readiness target reconciles its candidate/run-bound bundle without
+# borrowing Stage 2 predicates, observations, or benchmark metrics.
+: >"$gh_log"
+(
+  cd "$tmp_dir"
+  FAKE_GH_WATCH_STATUS=0 \
+    expect_fake_status 0 prerelease-readiness-valid \
+    run_fake v02-prerelease-readiness refs/heads/proof-ref --candidate-sha "$candidate_sha"
+)
+grep -F -- "--name v02-prerelease-readiness-$run_attempt" "$gh_log" >/dev/null ||
+  fail "readiness target must download its attempt-scoped bundle"
+if grep -F 'v02-proof-predicates-' "$gh_log" >/dev/null ||
+  grep -F 'v02-stage2-observations-' "$gh_log" >/dev/null ||
+  grep -F 'v02-proof-benchmark-metrics-' "$gh_log" >/dev/null; then
+  fail "readiness target must not borrow Stage 2/G4 evidence"
+fi
+grep -F 'verified immutable proof artifacts' \
+  "$tmp_dir/prerelease-readiness-valid.out" >/dev/null ||
+  fail "readiness target must reconcile provenance and resolved artifacts"
+
+for mode in missing-file extra-file download-error wrong-candidate wrong-tree stale-attempt digest-drift missing-artifact extra-artifact; do
+  : >"$gh_log"
+  (
+    FAKE_GH_WATCH_STATUS=0 \
+    FAKE_GH_READINESS_ARTIFACT="$mode" \
+      expect_fake_status 1 "readiness-${mode}" \
+      run_fake v02-prerelease-readiness refs/heads/proof-ref --candidate-sha "$candidate_sha"
+  )
+done
+
 # Predicate artifacts reject missing/extra members and invalid canonical manifests.
 for mode in missing-file extra-file download-error unknown duplicate omitted invalid-status; do
   : >"$gh_log"
@@ -1252,7 +1559,7 @@ PATH="$fake_bin:$PATH" \
 FAKE_GIT_HEAD_SHA="$candidate_sha" \
 FAKE_GIT_TREE="$candidate_tree" \
 FAKE_GIT_ATTACHED=0 \
-FAKE_GIT_STATUS= \
+FAKE_GIT_STATUS='' \
   "$PROVENANCE" assert-checkout "$candidate_sha" "$candidate_sha"
 
 set +e
@@ -1301,6 +1608,10 @@ mkdir -p "$post_run_repo" "$post_run_gf"
   git -C "$post_run_gf" add action.yml
   git -C "$post_run_gf" commit -q -m action
   post_run_gf_sha="$(git -C "$post_run_gf" rev-parse HEAD)"
+
+  "$PROVENANCE" assert-post-run \
+    "$post_run_candidate_sha" "$post_run_candidate_sha" \
+    v02-prerelease-readiness "$post_run_gf_sha"
 
   printf '{"schema_version":1}\n' >v02-proof-predicate-manifest.json
   printf '{"schema_version":1}\n' >v02-stage2-observations.json

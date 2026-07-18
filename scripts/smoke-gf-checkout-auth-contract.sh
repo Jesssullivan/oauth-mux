@@ -74,8 +74,8 @@ grep -A2 'uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' 
   fail "remote validation must fetch full history for baseline characterization"
 [ "$(grep -Fc 'uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4' "$REMOTE")" -eq 2 ] ||
   fail "remote validation must pin both official checkout uses"
-[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$REMOTE")" -eq 4 ] ||
-  fail "remote validation must pin all four artifact uploads"
+[ "$(grep -Fc 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4' "$REMOTE")" -eq 5 ] ||
+  fail "remote validation must pin all five artifact uploads"
 [ "$(grep -Fc 'uses: ./.github/actions/checkout-gloriousflywheel' "$RELEASE")" -eq 1 ] ||
   fail "release proof must use exactly one scoped checkout action"
 

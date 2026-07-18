@@ -4,6 +4,7 @@ const managed_harness_contract = @import("managed_harness_contract.zig");
 const product_identity = @import("product_identity.zig");
 
 pub const schema_version: u32 = 1;
+pub const compatibility_materialization = "same_bytes";
 
 pub const ReleaseTarget = struct {
     id: []const u8,
@@ -298,7 +299,7 @@ pub fn renderDeclaration(allocator: std.mem.Allocator, version: []const u8) ![]u
         compatibility_links[index] = .{
             .name = name,
             .target = product_identity.primary_executable_name,
-            .materialization = "same_bytes",
+            .materialization = compatibility_materialization,
         };
     }
 
@@ -524,7 +525,7 @@ fn validateDeclaration(manifest: Manifest) !void {
     for (manifest.product.compatibility_links, 0..) |link, index| {
         if (link.name.len == 0 or
             !std.mem.eql(u8, link.target, manifest.product.primary_executable) or
-            !std.mem.eql(u8, link.materialization, "same_bytes"))
+            !std.mem.eql(u8, link.materialization, compatibility_materialization))
         {
             return error.InvalidCompatibilityLink;
         }
@@ -656,6 +657,394 @@ fn unresolvedAsset(
         .sbom_ref = null,
         .provenance_ref = null,
     };
+}
+
+pub const v0_2_prerelease_profile_id = "v0.2-prerelease";
+
+pub const V02PrereleaseTargetSpec = struct {
+    id: []const u8,
+    zig_target: []const u8,
+    os: []const u8,
+    support: []const u8,
+    asset_id: []const u8,
+    asset_name: []const u8,
+    signature_ref: []const u8,
+    sbom_ref: []const u8,
+    provenance_ref: []const u8,
+};
+
+/// This table is deliberately separate from `release_targets`: it describes
+/// the experimental bounded v0.2 profile, not the shipped v0.1.15 layout.
+pub const v0_2_prerelease_targets = [_]V02PrereleaseTargetSpec{
+    .{
+        .id = "x86_64-linux",
+        .zig_target = "x86_64-linux-musl",
+        .os = "linux",
+        .support = "beta_experimental_unshipped",
+        .asset_id = "archive-x86_64-linux",
+        .asset_name = "oauth-mux-x86_64-linux.tar.gz",
+        .signature_ref = "oauth-mux-x86_64-linux.tar.gz.sig",
+        .sbom_ref = "oauth-mux-x86_64-linux.tar.gz.spdx.json",
+        .provenance_ref = "oauth-mux-x86_64-linux.tar.gz.intoto.jsonl",
+    },
+    .{
+        .id = "aarch64-linux",
+        .zig_target = "aarch64-linux-musl",
+        .os = "linux",
+        .support = "beta_experimental_unshipped",
+        .asset_id = "archive-aarch64-linux",
+        .asset_name = "oauth-mux-aarch64-linux.tar.gz",
+        .signature_ref = "oauth-mux-aarch64-linux.tar.gz.sig",
+        .sbom_ref = "oauth-mux-aarch64-linux.tar.gz.spdx.json",
+        .provenance_ref = "oauth-mux-aarch64-linux.tar.gz.intoto.jsonl",
+    },
+    .{
+        .id = "x86_64-macos",
+        .zig_target = "x86_64-macos",
+        .os = "macos",
+        .support = "ga_target_experimental_unshipped",
+        .asset_id = "archive-x86_64-macos",
+        .asset_name = "oauth-mux-x86_64-macos.tar.gz",
+        .signature_ref = "oauth-mux-x86_64-macos.tar.gz.sig",
+        .sbom_ref = "oauth-mux-x86_64-macos.tar.gz.spdx.json",
+        .provenance_ref = "oauth-mux-x86_64-macos.tar.gz.intoto.jsonl",
+    },
+    .{
+        .id = "aarch64-macos",
+        .zig_target = "aarch64-macos",
+        .os = "macos",
+        .support = "ga_target_experimental_unshipped",
+        .asset_id = "archive-aarch64-macos",
+        .asset_name = "oauth-mux-aarch64-macos.tar.gz",
+        .signature_ref = "oauth-mux-aarch64-macos.tar.gz.sig",
+        .sbom_ref = "oauth-mux-aarch64-macos.tar.gz.spdx.json",
+        .provenance_ref = "oauth-mux-aarch64-macos.tar.gz.intoto.jsonl",
+    },
+};
+
+pub const V02PrereleaseResolution = struct {
+    version: []const u8,
+    build_id: []const u8,
+    source_commit: []const u8,
+    source_tree: []const u8,
+    archive_sha256: [v0_2_prerelease_targets.len][]const u8,
+};
+
+pub const V02PrereleaseManifest = struct {
+    schema_version: u32,
+    phase: []const u8,
+    profile: V02PrereleaseProfile,
+    release: V02PrereleaseRelease,
+    product: V02PrereleaseProduct,
+    platforms: V02PrereleasePlatforms,
+    targets: []const V02PrereleaseTarget,
+    release_assets: []const V02PrereleaseAsset,
+    integrity: V02PrereleaseIntegrity,
+};
+
+pub const V02PrereleaseProfile = struct {
+    id: []const u8,
+    status: []const u8,
+    publication_enabled: bool,
+};
+
+pub const V02PrereleaseRelease = struct {
+    version: []const u8,
+    build_id: V02PrereleaseBuildId,
+    source_commit: []const u8,
+    source_tree: []const u8,
+    prerelease: bool,
+    make_latest: bool,
+};
+
+pub const V02PrereleaseBuildId = struct {
+    value: []const u8,
+    source_order: []const []const u8,
+};
+
+pub const V02PrereleaseProduct = struct {
+    package_name: []const u8,
+    primary_executable: []const u8,
+    compatibility_links: []const V02CompatibilityLink,
+    storage_namespace: []const u8,
+};
+
+pub const V02CompatibilityLink = struct {
+    name: []const u8,
+    target: []const u8,
+    materialization: []const u8,
+};
+
+pub const V02PrereleasePlatforms = struct {
+    macos: []const u8,
+    linux: []const u8,
+    windows: []const u8,
+};
+
+pub const V02PrereleaseTarget = struct {
+    id: []const u8,
+    zig_target: []const u8,
+    os: []const u8,
+    support: []const u8,
+};
+
+pub const V02PrereleaseAsset = struct {
+    id: []const u8,
+    kind: []const u8,
+    target_id: []const u8,
+    release_name: []const u8,
+    materialization_state: []const u8,
+    sha256: []const u8,
+    signature_ref: []const u8,
+    sbom_ref: []const u8,
+    provenance_ref: []const u8,
+};
+
+pub const V02PrereleaseIntegrity = struct {
+    hash_algorithm: []const u8,
+    outer_artifact_digests: []const u8,
+    signature_references: []const u8,
+    sbom_references: []const u8,
+    provenance_references: []const u8,
+};
+
+const v0_2_prerelease_compatibility_links = [_]V02CompatibilityLink{.{
+    .name = product_identity.compatibility_executable_names[0],
+    .target = product_identity.primary_executable_name,
+    .materialization = compatibility_materialization,
+}};
+const v0_2_prerelease_build_id_sources = [_][]const u8{
+    "zig-option:build-id",
+    "env:OMUX_BUILD_ID",
+    "git-describe",
+    "release.version",
+};
+
+pub fn renderV02PrereleaseResolved(
+    allocator: std.mem.Allocator,
+    resolution: V02PrereleaseResolution,
+) ![]u8 {
+    var targets: [v0_2_prerelease_targets.len]V02PrereleaseTarget = undefined;
+    var assets: [v0_2_prerelease_targets.len]V02PrereleaseAsset = undefined;
+    for (v0_2_prerelease_targets, 0..) |spec, index| {
+        targets[index] = .{
+            .id = spec.id,
+            .zig_target = spec.zig_target,
+            .os = spec.os,
+            .support = spec.support,
+        };
+        assets[index] = .{
+            .id = spec.asset_id,
+            .kind = "archive",
+            .target_id = spec.id,
+            .release_name = spec.asset_name,
+            .materialization_state = "resolved",
+            .sha256 = resolution.archive_sha256[index],
+            .signature_ref = spec.signature_ref,
+            .sbom_ref = spec.sbom_ref,
+            .provenance_ref = spec.provenance_ref,
+        };
+    }
+
+    const manifest = V02PrereleaseManifest{
+        .schema_version = schema_version,
+        .phase = "resolved",
+        .profile = .{
+            .id = v0_2_prerelease_profile_id,
+            .status = "experimental_unshipped",
+            .publication_enabled = false,
+        },
+        .release = .{
+            .version = resolution.version,
+            .build_id = .{
+                .value = resolution.build_id,
+                .source_order = &v0_2_prerelease_build_id_sources,
+            },
+            .source_commit = resolution.source_commit,
+            .source_tree = resolution.source_tree,
+            .prerelease = true,
+            .make_latest = false,
+        },
+        .product = .{
+            .package_name = product_identity.package_name,
+            .primary_executable = product_identity.primary_executable_name,
+            .compatibility_links = &v0_2_prerelease_compatibility_links,
+            .storage_namespace = product_identity.storage_namespace,
+        },
+        .platforms = .{
+            .macos = "ga_target_experimental_unshipped",
+            .linux = "beta_experimental_unshipped",
+            .windows = "unsupported_stable_history_only",
+        },
+        .targets = &targets,
+        .release_assets = &assets,
+        .integrity = .{
+            .hash_algorithm = "sha256",
+            .outer_artifact_digests = "required_exact",
+            .signature_references = "required_nonempty_file_only",
+            .sbom_references = "required_nonempty_file_only",
+            .provenance_references = "required_nonempty_file_only",
+        },
+    };
+    try validateV02PrereleaseSchema(manifest);
+
+    var output = std.ArrayList(u8).init(allocator);
+    errdefer output.deinit();
+    try std.json.stringify(manifest, .{ .whitespace = .indent_2 }, output.writer());
+    try output.append('\n');
+    return output.toOwnedSlice();
+}
+
+pub fn validateV02PrereleaseSchema(manifest: V02PrereleaseManifest) !void {
+    if (manifest.schema_version != schema_version or
+        !std.mem.eql(u8, manifest.phase, "resolved") or
+        !std.mem.eql(u8, manifest.profile.id, v0_2_prerelease_profile_id) or
+        !std.mem.eql(u8, manifest.profile.status, "experimental_unshipped") or
+        manifest.profile.publication_enabled)
+    {
+        return error.InvalidPrereleaseProfile;
+    }
+
+    const semver = std.SemanticVersion.parse(manifest.release.version) catch
+        return error.InvalidPrereleaseVersion;
+    if (semver.major != 0 or semver.minor != 2 or semver.pre == null or
+        semver.pre.?.len == 0)
+    {
+        return error.InvalidPrereleaseVersion;
+    }
+    if (!isSafeBuildId(manifest.release.build_id.value) or
+        manifest.release.build_id.source_order.len != v0_2_prerelease_build_id_sources.len)
+    {
+        return error.InvalidBuildId;
+    }
+    for (v0_2_prerelease_build_id_sources, 0..) |expected, index| {
+        if (!std.mem.eql(u8, manifest.release.build_id.source_order[index], expected)) {
+            return error.InvalidBuildId;
+        }
+    }
+    if (!isLowerHex(manifest.release.source_commit, 40)) return error.InvalidSourceCommit;
+    if (!isLowerHex(manifest.release.source_tree, 40)) return error.InvalidSourceTree;
+    if (!manifest.release.prerelease or manifest.release.make_latest) {
+        return error.InvalidPrereleaseReleasePolicy;
+    }
+
+    if (!std.mem.eql(u8, manifest.product.package_name, product_identity.package_name) or
+        !std.mem.eql(u8, manifest.product.primary_executable, product_identity.primary_executable_name) or
+        !std.mem.eql(u8, manifest.product.storage_namespace, product_identity.storage_namespace) or
+        manifest.product.compatibility_links.len != 1)
+    {
+        return error.InvalidPrereleaseProduct;
+    }
+    const compatibility = manifest.product.compatibility_links[0];
+    if (!std.mem.eql(u8, compatibility.name, product_identity.compatibility_executable_names[0]) or
+        !std.mem.eql(u8, compatibility.target, product_identity.primary_executable_name) or
+        !std.mem.eql(u8, compatibility.materialization, compatibility_materialization))
+    {
+        return error.InvalidPrereleaseProduct;
+    }
+
+    if (!std.mem.eql(u8, manifest.platforms.macos, "ga_target_experimental_unshipped") or
+        !std.mem.eql(u8, manifest.platforms.linux, "beta_experimental_unshipped") or
+        !std.mem.eql(u8, manifest.platforms.windows, "unsupported_stable_history_only"))
+    {
+        return error.InvalidPrereleasePlatformPolicy;
+    }
+    if (!std.mem.eql(u8, manifest.integrity.hash_algorithm, "sha256") or
+        !std.mem.eql(u8, manifest.integrity.outer_artifact_digests, "required_exact") or
+        !std.mem.eql(u8, manifest.integrity.signature_references, "required_nonempty_file_only") or
+        !std.mem.eql(u8, manifest.integrity.sbom_references, "required_nonempty_file_only") or
+        !std.mem.eql(u8, manifest.integrity.provenance_references, "required_nonempty_file_only"))
+    {
+        return error.InvalidPrereleaseIntegrityPolicy;
+    }
+
+    if (manifest.targets.len != v0_2_prerelease_targets.len or
+        manifest.release_assets.len != v0_2_prerelease_targets.len)
+    {
+        return error.InvalidPrereleaseAssetSet;
+    }
+
+    var references: [v0_2_prerelease_targets.len * 4][]const u8 = undefined;
+    var reference_index: usize = 0;
+    for (v0_2_prerelease_targets, 0..) |spec, index| {
+        const target = manifest.targets[index];
+        if (!std.mem.eql(u8, target.id, spec.id) or
+            !std.mem.eql(u8, target.zig_target, spec.zig_target) or
+            !std.mem.eql(u8, target.os, spec.os) or
+            !std.mem.eql(u8, target.support, spec.support))
+        {
+            return error.InvalidPrereleaseTargetSet;
+        }
+
+        const asset = manifest.release_assets[index];
+        if (!isLowerHex(asset.sha256, 64)) return error.InvalidAssetDigest;
+
+        for ([_][]const u8{
+            asset.release_name,
+            asset.signature_ref,
+            asset.sbom_ref,
+            asset.provenance_ref,
+        }) |reference| {
+            if (!isSafeReference(reference)) return error.InvalidArtifactReference;
+            for (references[0..reference_index]) |existing| {
+                if (std.mem.eql(u8, reference, existing)) return error.DuplicateArtifactReference;
+            }
+            references[reference_index] = reference;
+            reference_index += 1;
+        }
+
+        if (!std.mem.eql(u8, asset.id, spec.asset_id) or
+            !std.mem.eql(u8, asset.kind, "archive") or
+            !std.mem.eql(u8, asset.target_id, spec.id) or
+            !std.mem.eql(u8, asset.release_name, spec.asset_name) or
+            !std.mem.eql(u8, asset.materialization_state, "resolved") or
+            !std.mem.eql(u8, asset.signature_ref, spec.signature_ref) or
+            !std.mem.eql(u8, asset.sbom_ref, spec.sbom_ref) or
+            !std.mem.eql(u8, asset.provenance_ref, spec.provenance_ref))
+        {
+            return error.InvalidPrereleaseAssetSet;
+        }
+    }
+}
+
+fn isLowerHex(value: []const u8, expected_len: usize) bool {
+    if (value.len != expected_len) return false;
+    for (value) |byte| {
+        if (!std.ascii.isDigit(byte) and !(byte >= 'a' and byte <= 'f')) return false;
+    }
+    return true;
+}
+
+fn isSafeBuildId(value: []const u8) bool {
+    if (value.len == 0 or value.len > 256) return false;
+    for (value) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and
+            byte != '.' and byte != '_' and byte != '+' and byte != '-' and byte != ':')
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn isSafeReference(value: []const u8) bool {
+    if (value.len == 0 or value.len > 255 or
+        std.fs.path.isAbsolute(value) or
+        std.mem.indexOfScalar(u8, value, '/') != null or
+        std.mem.indexOfScalar(u8, value, '\\') != null or
+        std.mem.eql(u8, value, ".") or
+        std.mem.eql(u8, value, ".."))
+    {
+        return false;
+    }
+    for (value) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and
+            byte != '.' and byte != '_' and byte != '+' and byte != '-')
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 test "release target table is unique and preserves explicit platform policy" {

@@ -1,6 +1,6 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-07-13
+Updated: 2026-07-17
 
 Release discipline (2026-07-04): cuts are evidence-bound per `CHANGELOG.md`;
 cadence + tag-drift warning tracked in TIN-2462.
@@ -60,6 +60,69 @@ Run only that harness with:
 ```bash
 just e2e
 ```
+
+## Experimental v0.2 Bounded Manifest Gate
+
+The v0.2 prerelease profile is experimental, unshipped, and nonpublishing. Its
+focused local test creates synthetic macOS/Linux outer artifacts and nonempty
+reference placeholders, then exercises the bounded gate:
+
+```bash
+just v02-prerelease-readiness-local
+```
+
+The named GloriousFlywheel readiness lane uses the TIN-2989
+immutable-candidate envelope. Supply both the exact candidate commit and a
+remote branch or tag that currently resolves to it:
+
+```bash
+candidate_sha="$(git rev-parse HEAD)"
+candidate_ref="refs/heads/tin-3005-candidate"
+just v02-prerelease-readiness \
+  "$candidate_sha" "$candidate_ref"
+```
+
+The dispatcher refuses raw-SHA refs, resolves the remote ref and tree before
+dispatch, checks out the exact commit detached, runs on `tinyland-nix` through
+the pinned GloriousFlywheel action, and emits attempt-scoped provenance.
+The runner uploads its Zig-rendered synthetic manifest and exact
+artifact/reference set; the dispatcher downloads that bundle and independently
+rechecks candidate commit, tree, workflow run and attempt identity, schema,
+exact filenames, nonempty references, and whole-outer-artifact SHA-256 digests.
+A moved ref, dirty checkout, missing or extra member, stale attempt, digest
+drift, local fallback, or provenance mismatch fails closed.
+
+For an explicitly identified candidate, pass the resolved manifest, artifact
+directory, expected commit, and expected tree as separate arguments. The object
+IDs in this example are synthetic:
+
+```bash
+just v02-prerelease-manifest-check-local \
+  '/path/to/resolved-manifest.json' '/path/to/artifacts' \
+  0123456789abcdef0123456789abcdef01234567 \
+  89abcdef0123456789abcdef0123456789abcdef
+```
+
+The gate requires the manifest commit and tree to equal those expected inputs,
+including rejecting different values that are otherwise valid lowercase Git
+object IDs. It checks the bounded schema, exact asset and reference names,
+nonempty regular reference files, and the SHA-256 digest of each whole outer
+artifact. File opens are atomic no-follow operations on macOS and Linux; the
+gate fails closed on platforms where that operation is unavailable.
+
+The bounded gate and its remote readiness lane do not inspect archive members,
+compare `omux` and `oauth-mux` bytes, verify a cryptographic signature, parse or
+validate SBOM content, parse or validate provenance-reference content, or prove
+real release artifact production. Signature, SBOM, and provenance fields are
+filename references whose only checked file property is nonempty regular-file
+presence. The remote bundle remains synthetic and nonpublishing; it proves the
+candidate-bound resolved-manifest gate, not Stage 2, G4, golden continuity,
+installability, or broad release readiness. The profile marks Windows
+unsupported/stable-history-only.
+
+Neither mode installs artifacts, contacts providers, publishes a release, or
+mutates tags or registries. Publication and migrated release consumers remain
+owned by TIN-2050.
 
 ## Local Release Proof
 
@@ -152,7 +215,10 @@ deprecating already-published versions; it cannot publish a package.
 
 ## Release Workflow
 
-Tags matching `v*` run `.github/workflows/release.yml`.
+Tags matching `v*` start `.github/workflows/release.yml`, but a fail-closed
+authorization job permits only tags matching `^v0\.1\.[0-9]+$` to reach release
+staging or `softprops/action-gh-release`. Every v0.2 tag fails before publishing;
+there is no v0.2 publication lane.
 
 The workflow calls the same build-plus-smoke proof used locally:
 
@@ -161,7 +227,8 @@ nix develop --command just release-proof-local "${GITHUB_REF_NAME#v}"
 ```
 
 The release job only uploads the staged `dist/out/` tree after the smoke proof
-and handoff generation pass. It then attaches these files to the GitHub release:
+and handoff generation pass. Stable releases explicitly set `prerelease=false`
+and `make_latest=true`, then attach these files to the GitHub release:
 
 - `v*/artifacts/*`
 - `v*/homebrew/oauth-mux.rb`

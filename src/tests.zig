@@ -25,6 +25,7 @@ const AllModules = struct {
     pub const probe = @import("probe.zig");
     pub const product_identity = @import("product_identity.zig");
     pub const release_manifest = @import("release_manifest.zig");
+    pub const release_manifest_gate = @import("release_manifest_gate.zig");
     pub const provider = @import("provider.zig");
     pub const provider_schema = @import("provider_schema.zig");
     pub const repair_state = @import("repair_state.zig");

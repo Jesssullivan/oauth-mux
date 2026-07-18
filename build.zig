@@ -130,6 +130,44 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(check_manifest_step);
     test_step.dependOn(check_managed_schema_step);
 
+    const prerelease_gate = b.addExecutable(.{
+        .name = "release-manifest-gate",
+        .root_source_file = b.path("src/release_manifest_gate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_prerelease_gate = b.addRunArtifact(prerelease_gate);
+    if (b.args) |args| run_prerelease_gate.addArgs(args);
+    const prerelease_manifest_check_step = b.step(
+        "v02-prerelease-manifest-check",
+        "Check v0.2 schema, candidate identity, references, and outer digests without publishing",
+    );
+    prerelease_manifest_check_step.dependOn(check_manifest_step);
+    prerelease_manifest_check_step.dependOn(&run_prerelease_gate.step);
+
+    const prerelease_readiness_tests = b.addTest(.{
+        .root_source_file = b.path("test/release_manifest_readiness_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const prerelease_gate_module = b.createModule(.{
+        .root_source_file = b.path("src/release_manifest_gate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    prerelease_readiness_tests.root_module.addImport(
+        "release_manifest_gate",
+        prerelease_gate_module,
+    );
+    const run_prerelease_readiness_tests = b.addRunArtifact(prerelease_readiness_tests);
+    test_step.dependOn(&run_prerelease_readiness_tests.step);
+    const prerelease_readiness_step = b.step(
+        "v02-prerelease-readiness",
+        "Run synthetic v0.2 schema/reference/outer-digest checks",
+    );
+    prerelease_readiness_step.dependOn(check_manifest_step);
+    prerelease_readiness_step.dependOn(&run_prerelease_readiness_tests.step);
+
     const stage2_options = b.addOptions();
     stage2_options.addOption(
         []const u8,
