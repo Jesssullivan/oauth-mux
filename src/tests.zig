@@ -7,6 +7,7 @@ const AllModules = struct {
     pub const age = @import("age.zig");
     pub const broker_loader = @import("broker_loader.zig");
     pub const cli = @import("cli.zig");
+    pub const codex_resume_index = @import("codex_resume_index.zig");
     pub const config = @import("config.zig");
     pub const daemon = @import("daemon.zig");
     pub const doctor_binaries = @import("doctor_binaries.zig");

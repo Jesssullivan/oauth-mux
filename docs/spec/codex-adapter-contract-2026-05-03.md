@@ -118,6 +118,21 @@ back to the legacy `sessions/`, `shell_snapshots/`, `history.jsonl`, and
 `sqlite_authority`, `resume_authority_state_db_bridged`,
 `resume_authority_logs_db_bridged`, and `resume_lookup_source`.
 
+Implementation update, 2026-07-17: explicit route-local resume authority is
+limited to a bounded, structurally parsed `session_index.jsonl` regular file.
+The reader refuses relative or symlinked store authorities, symlinked or
+non-regular indexes on the macOS/Linux product targets, records over 1 MiB, and
+indexes over 16 MiB; the same structural lookup remains available to preserved
+Windows managed launches. Status distinguishes unavailable evidence from a
+checked non-match with `resume_lookup_available` /
+`session_index_available`; explicit resume writeback reports
+`writeback_observed:false` rather than inferring no mutation. Managed launch
+rechecks the exact resume id inside route election, including after a selected
+route fails before `exec`, and executes from that same immutable loaded config
+snapshot. Evidence from one route-local `CODEX_HOME` therefore cannot authorize
+launching another through either selector churn or a concurrent config-file
+replacement.
+
 Implementation update, 2026-05-26: native resume picker parity also depends on
 the active provider namespace. Codex filters persisted `threads` by
 `model_provider`; a custom `oauth_mux_openai` provider made managed resume show

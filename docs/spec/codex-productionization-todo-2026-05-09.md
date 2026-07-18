@@ -161,9 +161,13 @@ Not proven:
 ## P0 Startup And Resume UX
 
 - [x] Explicit `oauth-mux codex resume <id>` no longer recursively snapshots all
-  rollouts before spawn. It resolves targeted evidence from `state_5.sqlite*`,
-  then `logs_2.sqlite*`, then `session_index.jsonl`, then a bounded filename
-  lookup, and reports `resume_lookup_source` in redacted status.
+  rollouts before spawn. It resolves exact structured evidence from
+  a bounded, no-follow `session_index.jsonl` regular file and reports
+  `resume_lookup_source` plus evidence availability in redacted status. Raw
+  SQLite, WAL, and SHM bytes and rollout filenames are explicitly excluded
+  because this path has no parsed record boundary for them. The selected route
+  is rechecked at the launch boundary; one route's index cannot authorize
+  another route's child.
 - [x] Bare `oauth-mux codex resume` reports authority readiness without scanning
   rollouts before child spawn. The `child_spawn_elapsed_ms` launch timing
   remains the primary startup UX metric.
