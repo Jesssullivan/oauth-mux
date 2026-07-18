@@ -349,6 +349,208 @@ help_output="$tmp/help.txt"
 grep -Fq 'usage: keepalive-service.sh' "$help_output" ||
   fail "help failed with HOME and USER unset"
 
+# A disposable Linux fixture proves identity derivation without any FHS
+# identity tool. PATH contains hostile lookalikes; only the explicit
+# /run/current-system/sw candidate rewrites may run.
+non_fhs_root="$tmp/non-fhs-linux-fixture"
+non_fhs_service="$non_fhs_root/scripts/keepalive-service.sh"
+non_fhs_tools="$tmp/non-fhs-linux-tools"
+non_fhs_missing="$tmp/non-fhs-linux-missing"
+non_fhs_home="$tmp/non-fhs-linux-home"
+non_fhs_user="nix-user"
+non_fhs_uid="5252"
+mkdir -p \
+  "$non_fhs_root/dist/launchd" \
+  "$non_fhs_root/dist/systemd" \
+  "$non_fhs_root/scripts" \
+  "$non_fhs_tools" \
+  "$non_fhs_missing" \
+  "$non_fhs_home"
+cp "$repo_root/dist/launchd/dev.xoxd.omux.keepalive.plist.tmpl" \
+  "$non_fhs_root/dist/launchd/dev.xoxd.omux.keepalive.plist.tmpl"
+cp "$repo_root/dist/systemd/oauth-mux-keepalive.service.tmpl" \
+  "$non_fhs_root/dist/systemd/oauth-mux-keepalive.service.tmpl"
+
+cat >"$non_fhs_tools/uname" <<'EOF'
+#!/bin/sh
+printf 'Linux\n'
+EOF
+cat >"$non_fhs_tools/id" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = "-u" ] || exit 64
+printf '%s\n' "${OMUX_SMOKE_DERIVED_UID:?}"
+EOF
+cat >"$non_fhs_tools/getent" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = "passwd" ] || exit 64
+[ "${2:-}" = "${OMUX_SMOKE_DERIVED_UID:?}" ] || exit 65
+if [ "${OMUX_SMOKE_ACCOUNT_RECORD+x}" = "x" ]; then
+  printf '%s\n' "$OMUX_SMOKE_ACCOUNT_RECORD"
+  exit 0
+fi
+printf '%s:*:%s:20:Managed:%s:/bin/sh\n' \
+  "${OMUX_SMOKE_DERIVED_USER:?}" \
+  "${OMUX_SMOKE_DERIVED_UID:?}" \
+  "${OMUX_SMOKE_DERIVED_HOME:?}"
+EOF
+cat >"$non_fhs_tools/od" <<'EOF'
+#!/bin/sh
+exec /usr/bin/od "$@"
+EOF
+cat >"$non_fhs_tools/awk" <<'EOF'
+#!/bin/sh
+exec /usr/bin/awk "$@"
+EOF
+chmod +x \
+  "$non_fhs_tools/uname" \
+  "$non_fhs_tools/id" \
+  "$non_fhs_tools/getent" \
+  "$non_fhs_tools/od" \
+  "$non_fhs_tools/awk"
+
+non_fhs_uname_sed="$(sed_escape_replacement "$non_fhs_tools/uname")"
+non_fhs_id_sed="$(sed_escape_replacement "$non_fhs_tools/id")"
+non_fhs_getent_sed="$(sed_escape_replacement "$non_fhs_tools/getent")"
+non_fhs_od_sed="$(sed_escape_replacement "$non_fhs_tools/od")"
+non_fhs_awk_sed="$(sed_escape_replacement "$non_fhs_tools/awk")"
+missing_uname_sed="$(sed_escape_replacement "$non_fhs_missing/uname")"
+missing_id_sed="$(sed_escape_replacement "$non_fhs_missing/id")"
+missing_getent_sed="$(sed_escape_replacement "$non_fhs_missing/getent")"
+missing_od_sed="$(sed_escape_replacement "$non_fhs_missing/od")"
+missing_awk_sed="$(sed_escape_replacement "$non_fhs_missing/awk")"
+
+/usr/bin/sed \
+  -e "s|/run/current-system/sw/bin/uname|$non_fhs_uname_sed|g" \
+  -e "s|/nix/var/nix/profiles/default/bin/uname|$missing_uname_sed|g" \
+  -e "s|/usr/bin/uname|$missing_uname_sed|g" \
+  -e "s|/bin/uname|$missing_uname_sed|g" \
+  -e "s|/run/current-system/sw/bin/id|$non_fhs_id_sed|g" \
+  -e "s|/nix/var/nix/profiles/default/bin/id|$missing_id_sed|g" \
+  -e "s|/usr/bin/id|$missing_id_sed|g" \
+  -e "s|/bin/id|$missing_id_sed|g" \
+  -e "s|/run/current-system/sw/bin/getent|$non_fhs_getent_sed|g" \
+  -e "s|/nix/var/nix/profiles/default/bin/getent|$missing_getent_sed|g" \
+  -e "s|/usr/bin/getent|$missing_getent_sed|g" \
+  -e "s|/bin/getent|$missing_getent_sed|g" \
+  -e "s|/run/current-system/sw/bin/od|$non_fhs_od_sed|g" \
+  -e "s|/nix/var/nix/profiles/default/bin/od|$missing_od_sed|g" \
+  -e "s|/usr/bin/od|$missing_od_sed|g" \
+  -e "s|/bin/od|$missing_od_sed|g" \
+  -e "s|/run/current-system/sw/bin/awk|$non_fhs_awk_sed|g" \
+  -e "s|/nix/var/nix/profiles/default/bin/awk|$missing_awk_sed|g" \
+  -e "s|/usr/bin/awk|$missing_awk_sed|g" \
+  -e "s|/bin/awk|$missing_awk_sed|g" \
+  "$repo_root/scripts/keepalive-service.sh" >"$non_fhs_service"
+chmod +x "$non_fhs_service"
+
+OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
+  OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
+  OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
+  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  PATH="$fake_tools:/usr/bin:/bin" "$non_fhs_service" render \
+  >"$tmp/non-fhs-rendered.txt"
+grep -Fq "<string>HOME=$non_fhs_home</string>" "$tmp/non-fhs-rendered.txt" ||
+  fail "trusted non-FHS Linux identity did not supply HOME"
+grep -Fq "<string>USER=$non_fhs_user</string>" "$tmp/non-fhs-rendered.txt" ||
+  fail "trusted non-FHS Linux identity did not supply USER"
+assert_absent "$tmp/non-fhs-rendered.txt" "$spoof_home" \
+  "caller HOME overrode trusted non-FHS Linux identity"
+assert_absent "$tmp/non-fhs-rendered.txt" "$spoof_user" \
+  "caller USER overrode trusted non-FHS Linux identity"
+
+expect_non_fhs_record_rejected() {
+  enfhr_name="$1"
+  enfhr_record="$2"
+  expect_rejected "$enfhr_name" env \
+    OMUX_SMOKE_ACCOUNT_RECORD="$enfhr_record" \
+    OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
+    OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
+    OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
+    HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+    PATH="$fake_tools:/usr/bin:/bin" "$non_fhs_service" render
+}
+
+expect_non_fhs_record_rejected \
+  "non-FHS getent record with a surplus field" \
+  "$non_fhs_user:*:$non_fhs_uid:20:Managed:$non_fhs_home:/bin/sh:surplus"
+expect_non_fhs_record_rejected \
+  "non-FHS getent record with a missing field" \
+  "$non_fhs_user:*:$non_fhs_uid:20:Managed:$non_fhs_home"
+non_fhs_duplicate_record="$(
+  printf '%s:*:%s:20:Managed:%s:/bin/sh\n' \
+    "$non_fhs_user" "$non_fhs_uid" "$non_fhs_home"
+  printf '%s-duplicate:*:%s:20:Managed:%s:/bin/sh\n' \
+    "$non_fhs_user" "$non_fhs_uid" "$non_fhs_home"
+)"
+expect_non_fhs_record_rejected \
+  "non-FHS getent lookup with duplicate uid records" \
+  "$non_fhs_duplicate_record"
+expect_non_fhs_record_rejected \
+  "non-FHS getent record with an unsafe user" \
+  "unsafe user:*:$non_fhs_uid:20:Managed:$non_fhs_home:/bin/sh"
+expect_non_fhs_record_rejected \
+  "non-FHS getent record with an unsafe home" \
+  "$non_fhs_user:*:$non_fhs_uid:20:Managed:relative/home:/bin/sh"
+
+# Minimal Linux without getent falls back to a fixed account database using
+# shell builtins. The test rewrites only the fixed /etc/passwd path inside its
+# disposable copy.
+minimal_passwd="$tmp/minimal-linux-passwd"
+minimal_service="$non_fhs_root/scripts/keepalive-service-minimal.sh"
+printf '%s:*:%s:20:Managed:%s:/bin/sh\n' \
+  "$non_fhs_user" "$non_fhs_uid" "$non_fhs_home" >"$minimal_passwd"
+minimal_passwd_sed="$(sed_escape_replacement "$minimal_passwd")"
+/usr/bin/sed \
+  -e "s|$non_fhs_getent_sed|$missing_getent_sed|g" \
+  -e "s|/etc/passwd|$minimal_passwd_sed|g" \
+  "$non_fhs_service" >"$minimal_service"
+chmod +x "$minimal_service"
+
+OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
+  OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
+  OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
+  HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+  PATH="$fake_tools:/usr/bin:/bin" "$minimal_service" render \
+  >"$tmp/minimal-linux-rendered.txt"
+grep -Fq "<string>HOME=$non_fhs_home</string>" "$tmp/minimal-linux-rendered.txt" ||
+  fail "minimal Linux passwd fallback did not supply HOME"
+grep -Fq "<string>USER=$non_fhs_user</string>" "$tmp/minimal-linux-rendered.txt" ||
+  fail "minimal Linux passwd fallback did not supply USER"
+
+expect_minimal_passwd_rejected() {
+  empr_name="$1"
+  empr_records="$2"
+  printf '%s\n' "$empr_records" >"$minimal_passwd"
+  expect_rejected "$empr_name" env \
+    OMUX_SMOKE_DERIVED_HOME="$non_fhs_home" \
+    OMUX_SMOKE_DERIVED_USER="$non_fhs_user" \
+    OMUX_SMOKE_DERIVED_UID="$non_fhs_uid" \
+    HOME="$spoof_home" USER="$spoof_user" OMUX_BIN="$fake_omux" \
+    PATH="$fake_tools:/usr/bin:/bin" "$minimal_service" render
+}
+
+expect_minimal_passwd_rejected \
+  "minimal Linux passwd record with a surplus field" \
+  "$non_fhs_user:*:$non_fhs_uid:20:Managed:$non_fhs_home:/bin/sh:surplus"
+expect_minimal_passwd_rejected \
+  "minimal Linux passwd record with a missing field" \
+  "$non_fhs_user:*:$non_fhs_uid:20:Managed:$non_fhs_home"
+minimal_duplicate_record="$(
+  printf '%s:*:%s:20:Managed:%s:/bin/sh\n' \
+    "$non_fhs_user" "$non_fhs_uid" "$non_fhs_home"
+  printf '%s-duplicate:*:%s:20:Managed:%s:/bin/sh\n' \
+    "$non_fhs_user" "$non_fhs_uid" "$non_fhs_home"
+)"
+expect_minimal_passwd_rejected \
+  "minimal Linux passwd database with duplicate uid records" \
+  "$minimal_duplicate_record"
+expect_minimal_passwd_rejected \
+  "minimal Linux passwd record with an unsafe user" \
+  "unsafe user:*:$non_fhs_uid:20:Managed:$non_fhs_home:/bin/sh"
+expect_minimal_passwd_rejected \
+  "minimal Linux passwd record with an unsafe home" \
+  "$non_fhs_user:*:$non_fhs_uid:20:Managed:relative/home:/bin/sh"
+
 fake_system="$tmp/fake-system"
 lifecycle_root="$tmp/lifecycle-fixture"
 lifecycle_service="$lifecycle_root/scripts/keepalive-service.sh"

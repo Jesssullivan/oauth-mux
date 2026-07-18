@@ -42,19 +42,30 @@ EOF
 
 fail() { printf 'keepalive-service: %s\n' "$1" >&2; exit 1; }
 
-absolute_tool() {
+optional_absolute_tool() {
   for at_candidate in "$@"; do
-    if [ -x "$at_candidate" ]; then
+    if [ -f "$at_candidate" ] && [ -x "$at_candidate" ]; then
       printf '%s\n' "$at_candidate"
       return 0
     fi
   done
+  return 1
+}
+
+absolute_tool() {
+  optional_absolute_tool "$@" && return 0
   fail "required system tool is unavailable"
 }
 
 contains_unsafe_control() { # $1=value
-  cuc_od="$(absolute_tool /usr/bin/od /bin/od)"
-  cuc_awk="$(absolute_tool /usr/bin/awk /bin/awk)"
+  cuc_od="$(absolute_tool \
+    /usr/bin/od /bin/od \
+    /run/current-system/sw/bin/od \
+    /nix/var/nix/profiles/default/bin/od)"
+  cuc_awk="$(absolute_tool \
+    /usr/bin/awk /bin/awk \
+    /run/current-system/sw/bin/awk \
+    /nix/var/nix/profiles/default/bin/awk)"
   printf '%s' "$1" |
     LC_ALL=C "$cuc_od" -An -v -tu1 |
     LC_ALL=C "$cuc_awk" '
@@ -162,6 +173,29 @@ validate_uid() {
   esac
 }
 
+parse_linux_account_record() { # $1=one passwd record; sets plar_user/uid/home
+  plar_record="$1"
+  case "$plar_record" in
+    '' | *"$nl"* | *"$cr"*) return 1 ;;
+  esac
+
+  # Appending a marker makes POSIX read distinguish exactly seven fields from
+  # both missing fields and surplus delimiters (including an empty eighth).
+  if ! IFS=: read -r \
+    plar_user _plar_password plar_uid _plar_gid _plar_gecos plar_home \
+    _plar_shell plar_end <<EOF
+$plar_record:__OMUX_ACCOUNT_RECORD_END__
+EOF
+  then
+    return 1
+  fi
+  [ "$plar_end" = "__OMUX_ACCOUNT_RECORD_END__" ] || return 1
+
+  validate_uid "$plar_uid"
+  validate_user "$plar_user"
+  validate_home "$plar_home"
+}
+
 validate_executable_path() {
   validate_render_value "oauth-mux executable path" "$1"
   case "$1" in
@@ -174,42 +208,77 @@ validate_executable_path() {
 }
 
 detect_platform() {
-  dp_uname="$(absolute_tool /usr/bin/uname /bin/uname)"
+  dp_uname="$(absolute_tool \
+    /usr/bin/uname /bin/uname \
+    /run/current-system/sw/bin/uname \
+    /nix/var/nix/profiles/default/bin/uname)"
   platform="$("$dp_uname" -s)" ||
     fail "could not determine the operating system"
 }
 
 os_uid() {
-  ou_id="$(absolute_tool /usr/bin/id /bin/id)"
+  ou_id="$(absolute_tool \
+    /usr/bin/id /bin/id \
+    /run/current-system/sw/bin/id \
+    /nix/var/nix/profiles/default/bin/id)"
   ou_uid="$("$ou_id" -u)" || fail "could not resolve the OS uid"
   validate_uid "$ou_uid"
   printf '%s\n' "$ou_uid"
 }
 
 derive_render_identity() {
-  dri_id="$(absolute_tool /usr/bin/id /bin/id)"
+  dri_id="$(absolute_tool \
+    /usr/bin/id /bin/id \
+    /run/current-system/sw/bin/id \
+    /nix/var/nix/profiles/default/bin/id)"
   render_uid="$("$dri_id" -u)" || fail "could not resolve the OS uid"
   validate_uid "$render_uid"
 
-  if [ -x /usr/bin/getent ]; then
-    dri_record="$(/usr/bin/getent passwd "$render_uid")" ||
-      fail "could not resolve the OS account record"
-    IFS=: read -r render_user dri_password dri_uid dri_gid dri_gecos render_home dri_shell <<EOF
+  case "$platform" in
+    Linux)
+      if dri_getent="$(optional_absolute_tool \
+        /usr/bin/getent /bin/getent \
+        /run/current-system/sw/bin/getent \
+        /nix/var/nix/profiles/default/bin/getent)"; then
+        dri_record="$("$dri_getent" passwd "$render_uid")" ||
+          fail "could not resolve the OS account record"
+        parse_linux_account_record "$dri_record" ||
+          fail "OS account lookup returned a malformed or ambiguous record"
+        render_user="$plar_user"
+        dri_uid="$plar_uid"
+        render_home="$plar_home"
+      else
+        [ -f /etc/passwd ] && [ -r /etc/passwd ] ||
+          fail "no trusted Linux account database is available"
+        dri_found=0
+        while IFS= read -r dri_record || [ -n "$dri_record" ]; do
+          parse_linux_account_record "$dri_record" ||
+            fail "trusted Linux account database contains a malformed record"
+          if [ "$plar_uid" = "$render_uid" ]; then
+            dri_found=$((dri_found + 1))
+            [ "$dri_found" -eq 1 ] ||
+              fail "trusted Linux account database contains duplicate uid records"
+            render_user="$plar_user"
+            dri_uid="$plar_uid"
+            render_home="$plar_home"
+          fi
+        done </etc/passwd
+        [ "$dri_found" = "1" ] ||
+          fail "could not resolve the OS account record"
+      fi
+      ;;
+    Darwin)
+      dri_record="$("$dri_id" -P)" ||
+        fail "could not resolve the OS account record"
+      case "$dri_record" in
+        *"$nl"*) fail "OS account lookup returned multiple records" ;;
+      esac
+      IFS=: read -r render_user dri_password dri_uid dri_gid dri_class dri_change dri_expire dri_gecos render_home dri_shell <<EOF
 $dri_record
 EOF
-  elif [ -x /bin/getent ]; then
-    dri_record="$(/bin/getent passwd "$render_uid")" ||
-      fail "could not resolve the OS account record"
-    IFS=: read -r render_user dri_password dri_uid dri_gid dri_gecos render_home dri_shell <<EOF
-$dri_record
-EOF
-  else
-    dri_record="$("$dri_id" -P)" ||
-      fail "could not resolve the OS account record"
-    IFS=: read -r render_user dri_password dri_uid dri_gid dri_class dri_change dri_expire dri_gecos render_home dri_shell <<EOF
-$dri_record
-EOF
-  fi
+      ;;
+    *) fail "unsupported platform $platform" ;;
+  esac
 
   [ "$dri_uid" = "$render_uid" ] ||
     fail "OS account record does not match the process uid"

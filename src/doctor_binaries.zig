@@ -5,9 +5,9 @@
 //! Design notes:
 //!  * Discovery never establishes execution trust. PATH and plist candidates
 //!    are statted and hashed without running them.
-//!  * A caller may explicitly opt a PATH candidate into the bounded
-//!    `<path> version --json` fallback. Plist-selected resident candidates
-//!    remain metadata-only even under that opt-in.
+//!  * A selected binary inherits the running binary's known version only when
+//!    its SHA-256 is identical. Different or unreadable bytes remain version
+//!    unknown; no selected binary is executed.
 //!  * Invalid or unreadable resident containment is an explicit unhealthy,
 //!    stale state. The doctor remains available without treating uncertainty
 //!    as healthy.
@@ -29,7 +29,7 @@ pub const BinaryFacts = struct {
     exists: bool,
     sha256: ?[]const u8,
     version: ?[]const u8,
-    /// how `version` was resolved: "self" | "sha_match_self" | "subprocess" | "unknown"
+    /// how `version` was resolved: "self" | "sha_match_self" | "unknown"
     version_source: []const u8,
     /// classifyOauthMuxBinarySource: repo_local | user_local | homebrew | nix_store | npm | path_or_installed
     source: []const u8,
@@ -97,12 +97,10 @@ pub const ShadowVerdict = struct {
 pub const StaleInputs = struct {
     resident_containment: ResidentContainment,
     resident_sha: ?[]const u8,
-    resident_version: ?[]const u8,
     /// PATH-winner ("installed") reference.
     installed_sha: ?[]const u8,
-    installed_version: ?[]const u8,
-    /// the running doctor binary's version.
-    self_version: ?[]const u8,
+    /// The currently running doctor binary.
+    self_sha: ?[]const u8,
 };
 
 pub const StaleVerdict = struct {
@@ -123,12 +121,7 @@ pub const BinariesReport = struct {
     stale: StaleVerdict,
 };
 
-pub const GatherOptions = struct {
-    /// Explicitly trust PATH candidates for `<path> version --json`.
-    /// Plist-selected candidates never inherit this permission.
-    exec_versions: bool = false,
-    version_exec_timeout_ms: u64 = 2000,
-};
+pub const GatherOptions = struct {};
 
 // ---------------------------------------------------------------------------
 // Pure core: PATH scan
@@ -227,8 +220,9 @@ fn parseLeadingUint(s: []const u8) ?u64 {
 }
 
 /// Offline staleness verdict for the resident keepalive binary. Invalid or
-/// unreadable containment is stale by construction; a valid resident is stale
-/// when its SHA differs or its known version is older.
+/// unreadable containment is stale by construction. A healthy resident must
+/// have complete, identical SHA identity across the resident binary, PATH
+/// winner, and currently running binary; uncertainty fails closed.
 pub fn evaluateStaleness(in: StaleInputs) StaleVerdict {
     if (in.resident_containment.unhealthy()) {
         return .{
@@ -240,51 +234,60 @@ pub fn evaluateStaleness(in: StaleInputs) StaleVerdict {
         };
     }
 
-    if (in.resident_sha == null and in.resident_version == null) {
+    if (in.resident_containment == .unsupported or
+        in.resident_containment == .absent)
+    {
         return .{
             .stale = false,
             .containment_unhealthy = false,
             .sha_mismatch = false,
             .version_older = false,
-            .reason = switch (in.resident_containment) {
-                .unsupported => "unsupported",
-                .absent => "no_resident",
-                .healthy => "resident_metadata_unavailable",
-                else => unreachable,
-            },
+            .reason = if (in.resident_containment == .unsupported)
+                "unsupported"
+            else
+                "no_resident",
         };
     }
 
-    var sha_mismatch = false;
-    if (in.resident_sha) |rs| {
-        if (in.installed_sha) |is| sha_mismatch = !std.mem.eql(u8, rs, is);
-    }
+    const resident_sha = in.resident_sha orelse return .{
+        .stale = true,
+        .containment_unhealthy = false,
+        .sha_mismatch = false,
+        .version_older = false,
+        .reason = "resident_identity_provenance_incomplete",
+    };
+    const installed_sha = in.installed_sha orelse return .{
+        .stale = true,
+        .containment_unhealthy = false,
+        .sha_mismatch = false,
+        .version_older = false,
+        .reason = "resident_identity_provenance_incomplete",
+    };
+    const self_sha = in.self_sha orelse return .{
+        .stale = true,
+        .containment_unhealthy = false,
+        .sha_mismatch = false,
+        .version_older = false,
+        .reason = "resident_identity_provenance_incomplete",
+    };
 
-    var version_older = false;
-    if (in.resident_version) |rv| {
-        if (in.installed_version) |iv| {
-            if (compareSemver(rv, iv) == .lt) version_older = true;
-        }
-        if (in.self_version) |sv| {
-            if (compareSemver(rv, sv) == .lt) version_older = true;
-        }
-    }
-
-    const stale = sha_mismatch or version_older;
-    const reason: []const u8 = if (sha_mismatch and version_older)
-        "resident_sha_differs_and_version_older"
-    else if (sha_mismatch)
+    const differs_from_installed = !std.mem.eql(u8, resident_sha, installed_sha);
+    const differs_from_current = !std.mem.eql(u8, resident_sha, self_sha);
+    const sha_mismatch = differs_from_installed or differs_from_current;
+    const reason: []const u8 = if (differs_from_installed and differs_from_current)
+        "resident_sha_differs_from_installed_and_current"
+    else if (differs_from_installed)
         "resident_sha_differs_from_installed"
-    else if (version_older)
-        "resident_version_older"
+    else if (differs_from_current)
+        "resident_sha_differs_from_current"
     else
         "in_sync";
 
     return .{
-        .stale = stale,
+        .stale = sha_mismatch,
         .containment_unhealthy = false,
         .sha_mismatch = sha_mismatch,
-        .version_older = version_older,
+        .version_older = false,
         .reason = reason,
     };
 }
@@ -754,6 +757,8 @@ fn hasKeepaliveProgramTail(args: []const []const u8, offset: usize) bool {
 /// Build the full binaries report. Every step is catch-guarded; on total
 /// failure the caller renders "unavailable" and the doctor stays ok.
 pub fn gather(arena: std.mem.Allocator, self_version: []const u8, opts: GatherOptions) !BinariesReport {
+    _ = opts;
+
     // Self.
     const self_path = std.fs.selfExePathAlloc(arena) catch try arena.dupe(u8, "unknown");
     const self_known = !std.mem.eql(u8, self_path, "unknown");
@@ -775,14 +780,7 @@ pub fn gather(arena: std.mem.Allocator, self_version: []const u8, opts: GatherOp
         var scan_ctx: u8 = 0;
         const scan = scanPath(arena, pe, pathDelimiter(), "oauth-mux", &scan_ctx, realExecCheck) catch PathScan{ .paths = &.{} };
         for (scan.paths) |p| {
-            try entries.append(factsFor(
-                arena,
-                p,
-                self_sha,
-                self_version,
-                if (opts.exec_versions) .trusted_exec else .metadata_only,
-                opts.version_exec_timeout_ms,
-            ));
+            try entries.append(factsFor(arena, p, self_sha, self_version));
         }
     }
     const entries_slice = try entries.toOwnedSlice();
@@ -801,10 +799,8 @@ pub fn gather(arena: std.mem.Allocator, self_version: []const u8, opts: GatherOp
     const stale = evaluateStaleness(.{
         .resident_containment = if (resident) |res| res.containment else .identity_unavailable,
         .resident_sha = if (resident_binary) |b| b.sha256 else null,
-        .resident_version = if (resident_binary) |b| b.version else null,
         .installed_sha = if (winner) |w| w.sha256 else null,
-        .installed_version = if (winner) |w| w.version else null,
-        .self_version = self_version,
+        .self_sha = self_sha,
     });
 
     return .{
@@ -995,6 +991,678 @@ fn sameParsedLaunchAgent(left: ParsedLaunchAgent, right: ParsedLaunchAgent) bool
     };
 }
 
+const fixed_helper_timeout_ms: u64 = 2000;
+const fixed_helper_poll_slice_ms: i32 = 10;
+const fixed_helper_reap_reserve_max_ns: i128 = 100 * std.time.ns_per_ms;
+
+const FixedHelperCommand = enum {
+    plutil_normalize,
+    id_uid,
+    id_account,
+    test_spin,
+    test_inherited_stdout,
+    test_output_overflow,
+};
+
+const FixedHelperFailure = enum {
+    unsupported,
+    invalid_command,
+    spawn_failed,
+    io_setup_failed,
+    io_failed,
+    output_too_large,
+    timeout,
+    kill_failed,
+    reap_failed,
+    reap_timeout,
+    stdin_incomplete,
+    exited_nonzero,
+    signaled,
+    allocation_failed,
+};
+
+const FixedHelperOutput = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+};
+
+const FixedHelperResult = union(enum) {
+    success: FixedHelperOutput,
+    failure: FixedHelperFailure,
+};
+
+const FixedHelperLimits = struct {
+    timeout_ms: u64,
+    max_output_bytes: usize,
+};
+
+const FixedHelperDeadlines = struct {
+    terminate_ns: i128,
+    final_ns: i128,
+};
+
+const RawWaitResult = union(enum) {
+    running,
+    exited: u32,
+    interrupted,
+    no_child,
+    failed,
+};
+
+const RawIoResult = union(enum) {
+    bytes: usize,
+    eof,
+    would_block,
+    interrupted,
+    failed,
+};
+
+const RawPollResult = enum {
+    ready,
+    elapsed,
+    interrupted,
+    failed,
+};
+
+const RawFcntlResult = union(enum) {
+    value: usize,
+    interrupted,
+    failed,
+};
+
+const FixedHelperOps = struct {
+    context: ?*anyopaque = null,
+    now_fn: *const fn (?*anyopaque) i128,
+    read_fn: *const fn (?*anyopaque, std.posix.fd_t, []u8) RawIoResult,
+    poll_fn: *const fn (?*anyopaque, []std.posix.pollfd, i32) RawPollResult,
+    wait_fn: *const fn (?*anyopaque, std.posix.pid_t) RawWaitResult,
+    kill_fn: *const fn (?*anyopaque, std.posix.pid_t) bool,
+
+    fn now(self: *const FixedHelperOps) i128 {
+        return self.now_fn(self.context);
+    }
+
+    fn read(
+        self: *const FixedHelperOps,
+        fd: std.posix.fd_t,
+        buffer: []u8,
+    ) RawIoResult {
+        return self.read_fn(self.context, fd, buffer);
+    }
+
+    fn poll(
+        self: *const FixedHelperOps,
+        fds: []std.posix.pollfd,
+        timeout_ms: i32,
+    ) RawPollResult {
+        return self.poll_fn(self.context, fds, timeout_ms);
+    }
+
+    fn waitNoHang(
+        self: *const FixedHelperOps,
+        pid: std.posix.pid_t,
+    ) RawWaitResult {
+        return self.wait_fn(self.context, pid);
+    }
+
+    fn killExact(
+        self: *const FixedHelperOps,
+        pid: std.posix.pid_t,
+    ) bool {
+        std.debug.assert(pid > 0);
+        return self.kill_fn(self.context, pid);
+    }
+};
+
+fn fixedHelperArgv(command: FixedHelperCommand) ?[]const []const u8 {
+    return switch (command) {
+        .plutil_normalize => &.{
+            "/usr/bin/plutil",
+            "-convert",
+            "xml1",
+            "-o",
+            "-",
+            "--",
+            "-",
+        },
+        .id_uid => &.{ "/usr/bin/id", "-u" },
+        .id_account => &.{ "/usr/bin/id", "-P" },
+        // These fixed commands are compiled only into Zig test binaries. The
+        // production helper has no path, argv, environment, or config seam
+        // through which a caller can select an executable.
+        .test_spin => if (builtin.is_test)
+            &.{ "/bin/sh", "-c", "while :; do :; done" }
+        else
+            null,
+        .test_inherited_stdout => if (builtin.is_test)
+            &.{ "/bin/sh", "-c", "(/bin/sleep 1) & printf ok" }
+        else
+            null,
+        .test_output_overflow => if (builtin.is_test)
+            &.{
+                "/bin/sh",
+                "-c",
+                "i=0; while [ \"$i\" -lt 1000 ]; do printf 0123456789; i=$((i + 1)); done",
+            }
+        else
+            null,
+    };
+}
+
+fn fixedHelperDeadlines(start_ns: i128, timeout_ms: u64) FixedHelperDeadlines {
+    const timeout_ns = @max(
+        @as(i128, @intCast(timeout_ms)) * std.time.ns_per_ms,
+        @as(i128, std.time.ns_per_ms),
+    );
+    const final_ns = start_ns + timeout_ns;
+    const reap_reserve_ns = @max(
+        @as(i128, std.time.ns_per_ms),
+        @min(timeout_ns / 4, fixed_helper_reap_reserve_max_ns),
+    );
+    return .{
+        .terminate_ns = final_ns - reap_reserve_ns,
+        .final_ns = final_ns,
+    };
+}
+
+/// Convert the remaining portion of one immutable deadline into a short poll
+/// slice. A raw EINTR returns to the outer loop, which calls this again with
+/// the same deadline and a newer monotonic timestamp.
+fn fixedHelperPollTimeoutMs(deadline_ns: i128, now_ns: i128) ?i32 {
+    if (now_ns >= deadline_ns) return null;
+    const remaining_ns = deadline_ns - now_ns;
+    const rounded_ms = @divTrunc(remaining_ns, std.time.ns_per_ms);
+    return @intCast(@min(
+        rounded_ms,
+        @as(i128, fixed_helper_poll_slice_ms),
+    ));
+}
+
+fn rawFcntl(fd: std.posix.fd_t, command: i32, arg: usize) RawFcntlResult {
+    const rc = std.posix.system.fcntl(fd, command, arg);
+    return switch (std.posix.errno(rc)) {
+        .SUCCESS => .{ .value = @intCast(rc) },
+        .INTR => .interrupted,
+        else => .failed,
+    };
+}
+
+fn setNonBlocking(
+    ops: *const FixedHelperOps,
+    fd: std.posix.fd_t,
+    deadline_ns: i128,
+) ?FixedHelperFailure {
+    var current: usize = undefined;
+    while (true) {
+        if (ops.now() >= deadline_ns) return .timeout;
+        switch (rawFcntl(fd, std.posix.F.GETFL, 0)) {
+            .value => |flags| {
+                current = flags;
+                break;
+            },
+            .interrupted => continue,
+            .failed => return .io_setup_failed,
+        }
+    }
+
+    const nonblocking: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
+    while (true) {
+        if (ops.now() >= deadline_ns) return .timeout;
+        switch (rawFcntl(
+            fd,
+            std.posix.F.SETFL,
+            current | @as(usize, nonblocking),
+        )) {
+            .value => return null,
+            .interrupted => continue,
+            .failed => return .io_setup_failed,
+        }
+    }
+}
+
+fn rawRead(fd: std.posix.fd_t, buffer: []u8) RawIoResult {
+    const rc = std.posix.system.read(fd, buffer.ptr, buffer.len);
+    return switch (std.posix.errno(rc)) {
+        .SUCCESS => if (rc == 0)
+            .eof
+        else
+            .{ .bytes = @intCast(rc) },
+        .AGAIN => .would_block,
+        .INTR => .interrupted,
+        else => .failed,
+    };
+}
+
+fn rawWrite(fd: std.posix.fd_t, bytes: []const u8) RawIoResult {
+    if (bytes.len == 0) return .eof;
+    const rc = std.posix.system.write(fd, bytes.ptr, bytes.len);
+    return switch (std.posix.errno(rc)) {
+        .SUCCESS => if (rc == 0)
+            .failed
+        else
+            .{ .bytes = @intCast(rc) },
+        .AGAIN => .would_block,
+        .INTR => .interrupted,
+        else => .failed,
+    };
+}
+
+fn rawPoll(fds: []std.posix.pollfd, timeout_ms: i32) RawPollResult {
+    const rc = std.posix.system.poll(
+        fds.ptr,
+        @intCast(fds.len),
+        timeout_ms,
+    );
+    return switch (std.posix.errno(rc)) {
+        .SUCCESS => if (rc == 0) .elapsed else .ready,
+        .INTR => .interrupted,
+        else => .failed,
+    };
+}
+
+fn rawWaitNoHang(pid: std.posix.pid_t) RawWaitResult {
+    var status: if (builtin.link_libc) c_int else u32 = 0;
+    const rc = std.posix.system.waitpid(
+        pid,
+        &status,
+        @intCast(std.posix.W.NOHANG),
+    );
+    return switch (std.posix.errno(rc)) {
+        .SUCCESS => if (rc == 0)
+            .running
+        else if (@as(std.posix.pid_t, @intCast(rc)) == pid)
+            .{ .exited = @bitCast(status) }
+        else
+            .failed,
+        .INTR => .interrupted,
+        .CHILD => .no_child,
+        else => .failed,
+    };
+}
+
+fn closeChildStdin(child: *std.process.Child) void {
+    if (child.stdin) |file| file.close();
+    child.stdin = null;
+}
+
+fn closeChildPipes(child: *std.process.Child) void {
+    closeChildStdin(child);
+    if (child.stdout) |file| file.close();
+    child.stdout = null;
+    if (child.stderr) |file| file.close();
+    child.stderr = null;
+    if (comptime builtin.os.tag != .windows) {
+        if (child.err_pipe) |fd| std.posix.close(fd);
+        child.err_pipe = null;
+    }
+}
+
+fn appendFixedHelperChunk(
+    ops: *const FixedHelperOps,
+    fd: std.posix.fd_t,
+    output: *std.ArrayListUnmanaged(u8),
+    max_output_bytes: usize,
+    interrupt_is_failure: bool,
+) ?FixedHelperFailure {
+    var buffer: [4096]u8 = undefined;
+    return switch (ops.read(fd, &buffer)) {
+        .bytes => |count| blk: {
+            if (count > max_output_bytes -| output.items.len) {
+                break :blk .output_too_large;
+            }
+            std.debug.assert(output.capacity >= output.items.len + count);
+            output.appendSliceAssumeCapacity(buffer[0..count]);
+            break :blk null;
+        },
+        .eof, .would_block => null,
+        .interrupted => if (interrupt_is_failure) .io_failed else null,
+        .failed => .io_failed,
+    };
+}
+
+const FixedHelperMonotonicClock = struct {
+    timer: std.time.Timer,
+};
+
+fn systemFixedHelperNow(context: ?*anyopaque) i128 {
+    const clock: *FixedHelperMonotonicClock =
+        @ptrCast(@alignCast(context.?));
+    return @intCast(clock.timer.read());
+}
+
+fn systemFixedHelperRead(
+    _: ?*anyopaque,
+    fd: std.posix.fd_t,
+    buffer: []u8,
+) RawIoResult {
+    return rawRead(fd, buffer);
+}
+
+fn systemFixedHelperPoll(
+    _: ?*anyopaque,
+    fds: []std.posix.pollfd,
+    timeout_ms: i32,
+) RawPollResult {
+    return rawPoll(fds, timeout_ms);
+}
+
+fn systemFixedHelperWait(
+    _: ?*anyopaque,
+    pid: std.posix.pid_t,
+) RawWaitResult {
+    return rawWaitNoHang(pid);
+}
+
+fn systemKillExactChild(_: ?*anyopaque, pid: std.posix.pid_t) bool {
+    std.debug.assert(pid > 0);
+    std.posix.kill(pid, std.posix.SIG.KILL) catch |err| switch (err) {
+        error.ProcessNotFound => return true,
+        else => return false,
+    };
+    return true;
+}
+
+fn systemFixedHelperOps(clock: *FixedHelperMonotonicClock) FixedHelperOps {
+    return .{
+        .context = clock,
+        .now_fn = systemFixedHelperNow,
+        .read_fn = systemFixedHelperRead,
+        .poll_fn = systemFixedHelperPoll,
+        .wait_fn = systemFixedHelperWait,
+        .kill_fn = systemKillExactChild,
+    };
+}
+
+fn terminateAndReapFixedHelper(
+    ops: *const FixedHelperOps,
+    pid: std.posix.pid_t,
+    final_deadline_ns: i128,
+    initial_failure: FixedHelperFailure,
+) FixedHelperFailure {
+    std.debug.assert(pid > 0);
+    var failure = initial_failure;
+    if (!ops.killExact(pid)) failure = .kill_failed;
+
+    while (true) {
+        switch (ops.waitNoHang(pid)) {
+            .exited, .no_child => return failure,
+            .running, .interrupted => {},
+            .failed => failure = .reap_failed,
+        }
+
+        const now_ns = ops.now();
+        if (now_ns >= final_deadline_ns) {
+            // Every reap-timeout exit performs one final post-kill waitpid.
+            // This remains nonblocking and does not extend the original
+            // monotonic deadline.
+            return switch (ops.waitNoHang(pid)) {
+                .exited, .no_child => failure,
+                .failed => .reap_failed,
+                .running, .interrupted => .reap_timeout,
+            };
+        }
+
+        var no_fds = [_]std.posix.pollfd{};
+        const poll_ms = fixedHelperPollTimeoutMs(
+            final_deadline_ns,
+            now_ns,
+        ) orelse continue;
+        switch (ops.poll(&no_fds, poll_ms)) {
+            .ready, .elapsed, .interrupted => {},
+            .failed => if (failure != .kill_failed) {
+                failure = .reap_failed;
+            },
+        }
+    }
+}
+
+fn finishFixedHelper(
+    status: u32,
+    prior_failure: ?FixedHelperFailure,
+    stdin_complete: bool,
+    stdout: *std.ArrayListUnmanaged(u8),
+    stderr: *std.ArrayListUnmanaged(u8),
+) FixedHelperResult {
+    if (prior_failure) |failure| return .{ .failure = failure };
+    if (!stdin_complete) return .{ .failure = .stdin_incomplete };
+    if (!std.posix.W.IFEXITED(status)) return .{ .failure = .signaled };
+    if (std.posix.W.EXITSTATUS(status) != 0) return .{ .failure = .exited_nonzero };
+
+    return .{ .success = .{
+        .stdout = stdout.items,
+        .stderr = stderr.items,
+    } };
+}
+
+/// Run one allowlisted system helper with a single end-to-end monotonic
+/// deadline. Parent pipe ends are nonblocking. Only the positive direct-child
+/// PID is signaled; waitpid(WNOHANG) is retried within the original budget, and
+/// the helper never waits for descendant-inherited stdout/stderr to close.
+fn runBoundedFixedHelper(
+    arena: std.mem.Allocator,
+    command: FixedHelperCommand,
+    child_env: ?*const std.process.EnvMap,
+    stdin_bytes: ?[]const u8,
+    limits: FixedHelperLimits,
+) FixedHelperResult {
+    var clock = FixedHelperMonotonicClock{
+        .timer = std.time.Timer.start() catch
+            return .{ .failure = .unsupported },
+    };
+    const ops = systemFixedHelperOps(&clock);
+    return runBoundedFixedHelperWithOps(
+        arena,
+        command,
+        child_env,
+        stdin_bytes,
+        limits,
+        &ops,
+    );
+}
+
+fn runBoundedFixedHelperWithOps(
+    arena: std.mem.Allocator,
+    command: FixedHelperCommand,
+    child_env: ?*const std.process.EnvMap,
+    stdin_bytes: ?[]const u8,
+    limits: FixedHelperLimits,
+    ops: *const FixedHelperOps,
+) FixedHelperResult {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return .{ .failure = .unsupported };
+    }
+
+    const argv = fixedHelperArgv(command) orelse
+        return .{ .failure = .invalid_command };
+    const deadlines = fixedHelperDeadlines(ops.now(), limits.timeout_ms);
+
+    // Preallocate exactly the per-stream cap. ArrayList's geometric growth
+    // would otherwise make the stated output memory bound imprecise.
+    var stdout = std.ArrayListUnmanaged(u8){};
+    stdout.ensureTotalCapacityPrecise(arena, limits.max_output_bytes) catch
+        return .{ .failure = .allocation_failed };
+    var stderr = std.ArrayListUnmanaged(u8){};
+    stderr.ensureTotalCapacityPrecise(arena, limits.max_output_bytes) catch
+        return .{ .failure = .allocation_failed };
+
+    var child = std.process.Child.init(argv, arena);
+    child.stdin_behavior = if (stdin_bytes != null) .Pipe else .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.env_map = child_env;
+    child.spawn() catch return .{ .failure = .spawn_failed };
+    defer closeChildPipes(&child);
+
+    // We classify deferred exec failure from the direct child's status. The
+    // std.Child err pipe is intentionally not read with its blocking helper.
+    if (child.err_pipe) |fd| {
+        std.posix.close(fd);
+        child.err_pipe = null;
+    }
+
+    var failure: ?FixedHelperFailure = null;
+    var stdin_offset: usize = 0;
+    var stdin_complete = stdin_bytes == null;
+
+    const stdout_fd = child.stdout.?.handle;
+    const stderr_fd = child.stderr.?.handle;
+    if (setNonBlocking(ops, stdout_fd, deadlines.terminate_ns)) |setup_failure|
+        failure = setup_failure;
+    if (failure == null) {
+        if (setNonBlocking(ops, stderr_fd, deadlines.terminate_ns)) |setup_failure|
+            failure = setup_failure;
+    }
+    if (child.stdin) |stdin_file| {
+        if (failure == null) {
+            if (setNonBlocking(
+                ops,
+                stdin_file.handle,
+                deadlines.terminate_ns,
+            )) |setup_failure|
+                failure = setup_failure;
+        }
+    }
+
+    while (true) {
+        const now_ns = ops.now();
+        if (failure) |terminal_failure| {
+            closeChildStdin(&child);
+            return .{ .failure = terminateAndReapFixedHelper(
+                ops,
+                child.id,
+                deadlines.final_ns,
+                terminal_failure,
+            ) };
+        }
+        if (failure == null and now_ns >= deadlines.terminate_ns) {
+            closeChildStdin(&child);
+            return .{ .failure = terminateAndReapFixedHelper(
+                ops,
+                child.id,
+                deadlines.final_ns,
+                .timeout,
+            ) };
+        }
+
+        if (failure == null) {
+            if (child.stdin) |stdin_file| {
+                const input = stdin_bytes.?;
+                if (stdin_offset == input.len) {
+                    closeChildStdin(&child);
+                    stdin_complete = true;
+                } else {
+                    switch (rawWrite(stdin_file.handle, input[stdin_offset..])) {
+                        .bytes => |count| stdin_offset += count,
+                        .would_block, .interrupted => {},
+                        .eof, .failed => failure = .io_failed,
+                    }
+                }
+            }
+
+            if (appendFixedHelperChunk(
+                ops,
+                stdout_fd,
+                &stdout,
+                limits.max_output_bytes,
+                false,
+            )) |read_failure| failure = read_failure;
+            if (appendFixedHelperChunk(
+                ops,
+                stderr_fd,
+                &stderr,
+                limits.max_output_bytes,
+                false,
+            )) |read_failure| failure = read_failure;
+        }
+
+        if (failure) |terminal_failure| {
+            closeChildStdin(&child);
+            return .{ .failure = terminateAndReapFixedHelper(
+                ops,
+                child.id,
+                deadlines.final_ns,
+                terminal_failure,
+            ) };
+        }
+
+        const wait_result = ops.waitNoHang(child.id);
+        switch (wait_result) {
+            .exited => |status| {
+                // Drain only bytes already available after the direct child is
+                // reaped. Do not wait for an inherited descriptor to close.
+                var drain_count: usize = 0;
+                while (drain_count < 64) : (drain_count += 1) {
+                    const before = stdout.items.len + stderr.items.len;
+                    if (appendFixedHelperChunk(
+                        ops,
+                        stdout_fd,
+                        &stdout,
+                        limits.max_output_bytes,
+                        true,
+                    )) |read_failure| failure = read_failure;
+                    if (appendFixedHelperChunk(
+                        ops,
+                        stderr_fd,
+                        &stderr,
+                        limits.max_output_bytes,
+                        true,
+                    )) |read_failure| failure = read_failure;
+                    if (stdout.items.len + stderr.items.len == before) break;
+                }
+                return finishFixedHelper(
+                    status,
+                    failure,
+                    stdin_complete or stdin_offset == (stdin_bytes orelse "").len,
+                    &stdout,
+                    &stderr,
+                );
+            },
+            .interrupted => continue,
+            .no_child => return .{ .failure = .reap_failed },
+            .failed => failure = .reap_failed,
+            .running => {},
+        }
+
+        if (failure) |terminal_failure| {
+            closeChildStdin(&child);
+            return .{ .failure = terminateAndReapFixedHelper(
+                ops,
+                child.id,
+                deadlines.final_ns,
+                terminal_failure,
+            ) };
+        }
+
+        var fds = [_]std.posix.pollfd{
+            .{
+                .fd = if (child.stdin) |file| file.handle else -1,
+                .events = std.posix.POLL.OUT,
+                .revents = 0,
+            },
+            .{
+                .fd = stdout_fd,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            },
+            .{
+                .fd = stderr_fd,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            },
+        };
+        const poll_ms = fixedHelperPollTimeoutMs(
+            deadlines.terminate_ns,
+            ops.now(),
+        ) orelse continue;
+        switch (ops.poll(&fds, poll_ms)) {
+            .ready, .elapsed, .interrupted => {},
+            .failed => if (failure == null) {
+                failure = .io_failed;
+            },
+        }
+    }
+}
+
 fn normalizeDarwinPlist(
     arena: std.mem.Allocator,
     contents: []const u8,
@@ -1005,47 +1673,20 @@ fn normalizeDarwinPlist(
     defer child_env.deinit();
     child_env.put("LC_ALL", "C") catch return null;
 
-    const argv = [_][]const u8{
-        "/usr/bin/plutil",
-        "-convert",
-        "xml1",
-        "-o",
-        "-",
-        "--",
-        "-",
+    const result = runBoundedFixedHelper(
+        arena,
+        .plutil_normalize,
+        &child_env,
+        contents,
+        .{
+            .timeout_ms = fixed_helper_timeout_ms,
+            .max_output_bytes = 1024 * 1024,
+        },
+    );
+    return switch (result) {
+        .success => |output| if (output.stdout.len == 0) null else output.stdout,
+        .failure => null,
     };
-    var child = std.process.Child.init(&argv, arena);
-    child.stdin_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.env_map = &child_env;
-    child.spawn() catch return null;
-
-    var reaped = false;
-    defer if (!reaped) {
-        _ = child.kill() catch {
-            _ = child.wait() catch {};
-        };
-    };
-
-    const stdin_file = child.stdin orelse return null;
-    stdin_file.writeAll(contents) catch return null;
-    stdin_file.close();
-    child.stdin = null;
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    defer stdout.deinit(arena);
-    var stderr = std.ArrayListUnmanaged(u8){};
-    defer stderr.deinit(arena);
-    child.collectOutput(arena, &stdout, &stderr, 1024 * 1024) catch return null;
-    const term = child.wait() catch return null;
-    reaped = true;
-    switch (term) {
-        .Exited => |code| if (code != 0) return null,
-        else => return null,
-    }
-    if (stdout.items.len == 0) return null;
-    return stdout.toOwnedSlice(arena) catch null;
 }
 
 fn resolveDarwinResidentIdentity(arena: std.mem.Allocator) ?ResidentIdentity {
@@ -1053,7 +1694,10 @@ fn resolveDarwinResidentIdentity(arena: std.mem.Allocator) ?ResidentIdentity {
     defer child_env.deinit();
     child_env.put("LC_ALL", "C") catch return null;
 
-    const uid_output = runDarwinId(arena, &child_env, "-u") orelse return null;
+    const uid_output = switch (runDarwinId(arena, &child_env, .id_uid)) {
+        .success => |output| output.stdout,
+        .failure => return null,
+    };
     const uid_text = std.mem.trimRight(u8, uid_output, "\r\n");
     if (uid_text.len == 0 or
         std.mem.indexOfScalar(u8, uid_text, '\r') != null or
@@ -1062,27 +1706,29 @@ fn resolveDarwinResidentIdentity(arena: std.mem.Allocator) ?ResidentIdentity {
         return null;
     }
     const uid = std.fmt.parseInt(u64, uid_text, 10) catch return null;
-    const account_output = runDarwinId(arena, &child_env, "-P") orelse return null;
+    const account_output = switch (runDarwinId(arena, &child_env, .id_account)) {
+        .success => |output| output.stdout,
+        .failure => return null,
+    };
     return parseDarwinAccountRecord(arena, account_output, uid);
 }
 
 fn runDarwinId(
     arena: std.mem.Allocator,
     child_env: *const std.process.EnvMap,
-    flag: []const u8,
-) ?[]const u8 {
-    const result = std.process.Child.run(.{
-        .allocator = arena,
-        .argv = &.{ "/usr/bin/id", flag },
-        .env_map = child_env,
-        .max_output_bytes = 16 * 1024,
-    }) catch return null;
-    const clean_exit = switch (result.term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-    if (!clean_exit) return null;
-    return result.stdout;
+    command: FixedHelperCommand,
+) FixedHelperResult {
+    std.debug.assert(command == .id_uid or command == .id_account);
+    return runBoundedFixedHelper(
+        arena,
+        command,
+        child_env,
+        null,
+        .{
+            .timeout_ms = fixed_helper_timeout_ms,
+            .max_output_bytes = 16 * 1024,
+        },
+    );
 }
 
 fn parseDarwinAccountRecord(
@@ -1122,18 +1768,13 @@ fn parseDarwinAccountRecord(
     };
 }
 
-const VersionPolicy = enum {
-    metadata_only,
-    trusted_exec,
-};
-
 fn factsForResident(
     arena: std.mem.Allocator,
     path: []const u8,
     self_sha: ?[]const u8,
     self_version: []const u8,
 ) BinaryFacts {
-    return factsFor(arena, path, self_sha, self_version, .metadata_only, 0);
+    return factsFor(arena, path, self_sha, self_version);
 }
 
 fn factsFor(
@@ -1141,23 +1782,17 @@ fn factsFor(
     path: []const u8,
     self_sha: ?[]const u8,
     self_version: []const u8,
-    version_policy: VersionPolicy,
-    version_exec_timeout_ms: u64,
 ) BinaryFacts {
     const exists = isRegularExecutable(path);
     const sha: ?[]const u8 = if (exists) (runtime.hashFileSha256Hex(arena, path) catch null) else null;
 
     var version: ?[]const u8 = null;
     var version_source: []const u8 = "unknown";
-    if (exists) {
-        if (self_sha != null and sha != null and std.mem.eql(u8, self_sha.?, sha.?)) {
-            // Same bytes as us — reuse our own version, no exec.
-            version = arena.dupe(u8, self_version) catch null;
-            if (version != null) version_source = "sha_match_self";
-        } else if (version_policy == .trusted_exec) {
-            version = runVersionJsonBounded(arena, path, version_exec_timeout_ms);
-            if (version != null) version_source = "subprocess";
-        }
+    if (exists and self_sha != null and sha != null and
+        std.mem.eql(u8, self_sha.?, sha.?))
+    {
+        version = arena.dupe(u8, self_version) catch null;
+        if (version != null) version_source = "sha_match_self";
     }
 
     return .{
@@ -1185,85 +1820,6 @@ fn isRegularExecutable(path: []const u8) bool {
 
 fn pathDelimiter() u8 {
     return if (builtin.os.tag == .windows) ';' else ':';
-}
-
-// ---------------------------------------------------------------------------
-// Bounded `<path> version --json` subprocess (version fallback)
-// ---------------------------------------------------------------------------
-
-/// Run `<path> version --json` with a watchdog-enforced timeout and parse the
-/// top-level "version" field. Tolerant of every failure mode (spawn error,
-/// non-zero exit, killed by timeout, missing subcommand, unparsable output) →
-/// returns null so an old resident binary reports "unknown" rather than
-/// erroring the doctor.
-fn runVersionJsonBounded(allocator: std.mem.Allocator, path: []const u8, timeout_ms: u64) ?[]const u8 {
-    var child = std.process.Child.init(&.{ path, "version", "--json" }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return null;
-
-    // POSIX: a watchdog thread kills the child if it overruns; the resulting
-    // pipe EOF unblocks the read below. Windows: best-effort, no watchdog.
-    var wctx = WatchCtx{
-        .pid = child.id,
-        .timeout_ms = timeout_ms,
-        .done = std.atomic.Value(bool).init(false),
-    };
-    const watch_thread: ?std.Thread = if (builtin.os.tag == .windows)
-        null
-    else
-        std.Thread.spawn(.{}, watchdogRun, .{&wctx}) catch null;
-
-    const stdout_data: ?[]u8 = if (child.stdout) |so|
-        so.reader().readAllAlloc(allocator, 64 * 1024) catch null
-    else
-        null;
-
-    const term = child.wait() catch {
-        wctx.done.store(true, .release);
-        if (watch_thread) |t| t.join();
-        if (stdout_data) |d| allocator.free(d);
-        return null;
-    };
-    wctx.done.store(true, .release);
-    if (watch_thread) |t| t.join();
-
-    const clean = switch (term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-    const data = stdout_data orelse return null;
-    defer allocator.free(data);
-    if (!clean) return null;
-    return parseVersionField(allocator, data);
-}
-
-const WatchCtx = struct {
-    pid: if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.pid_t,
-    timeout_ms: u64,
-    done: std.atomic.Value(bool),
-};
-
-fn watchdogRun(ctx: *WatchCtx) void {
-    if (builtin.os.tag == .windows) return;
-    const step_ms: u64 = 10;
-    var waited: u64 = 0;
-    while (waited < ctx.timeout_ms) : (waited += step_ms) {
-        if (ctx.done.load(.acquire)) return;
-        std.time.sleep(step_ms * std.time.ns_per_ms);
-    }
-    if (!ctx.done.load(.acquire)) {
-        std.posix.kill(ctx.pid, std.posix.SIG.KILL) catch {};
-    }
-}
-
-fn parseVersionField(allocator: std.mem.Allocator, data: []const u8) ?[]const u8 {
-    const Shape = struct { version: []const u8 };
-    const parsed = std.json.parseFromSlice(Shape, allocator, data, .{ .ignore_unknown_fields = true }) catch return null;
-    defer parsed.deinit();
-    if (parsed.value.version.len == 0) return null;
-    return allocator.dupe(u8, parsed.value.version) catch null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1452,6 +2008,10 @@ const FakeChecker = struct {
     }
 };
 
+fn isExpectedLiveSchedulerTimeout(failure: FixedHelperFailure) bool {
+    return failure == .timeout or failure == .reap_timeout;
+}
+
 test "scanPath lists executable oauth-mux dirs, winner first, dedups" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1493,6 +2053,309 @@ test "distinctShaCount counts distinct non-null shas" {
     try std.testing.expectEqual(@as(usize, 1), distinctShaCount(&.{ a, n, a }));
 }
 
+const InjectedFixedHelperState = struct {
+    logical_start_ns: i128,
+    logical_step_ns: i128,
+    now_calls: usize = 0,
+    first_now_ns: ?i128 = null,
+    last_now_ns: i128 = 0,
+    read_eintr_remaining: usize = 2,
+    read_eintr_injected: usize = 0,
+    poll_eintr_before_kill_remaining: usize = 2,
+    poll_eintr_after_kill_remaining: usize = 2,
+    poll_eintr_injected: usize = 0,
+    wait_eintr_before_kill_remaining: usize = 2,
+    wait_eintr_after_kill_remaining: usize = 2,
+    wait_eintr_injected: usize = 0,
+    kill_calls: usize = 0,
+    post_kill_wait_calls: usize = 0,
+    reaped_after_kill: bool = false,
+
+    fn fromContext(context: ?*anyopaque) *InjectedFixedHelperState {
+        return @ptrCast(@alignCast(context.?));
+    }
+
+    fn now(context: ?*anyopaque) i128 {
+        const self = fromContext(context);
+        const current = self.logical_start_ns +
+            @as(i128, @intCast(self.now_calls)) * self.logical_step_ns;
+        self.now_calls += 1;
+        if (self.first_now_ns == null) self.first_now_ns = current;
+        self.last_now_ns = current;
+        return current;
+    }
+
+    fn read(
+        context: ?*anyopaque,
+        fd: std.posix.fd_t,
+        buffer: []u8,
+    ) RawIoResult {
+        const self = fromContext(context);
+        if (self.read_eintr_remaining > 0) {
+            self.read_eintr_remaining -= 1;
+            self.read_eintr_injected += 1;
+            return .interrupted;
+        }
+        return rawRead(fd, buffer);
+    }
+
+    fn poll(
+        context: ?*anyopaque,
+        fds: []std.posix.pollfd,
+        timeout_ms: i32,
+    ) RawPollResult {
+        const self = fromContext(context);
+        const remaining = if (self.kill_calls == 0)
+            &self.poll_eintr_before_kill_remaining
+        else
+            &self.poll_eintr_after_kill_remaining;
+        if (remaining.* > 0) {
+            remaining.* -= 1;
+            self.poll_eintr_injected += 1;
+            return .interrupted;
+        }
+        return rawPoll(fds, timeout_ms);
+    }
+
+    fn waitNoHang(
+        context: ?*anyopaque,
+        pid: std.posix.pid_t,
+    ) RawWaitResult {
+        const self = fromContext(context);
+        const after_kill = self.kill_calls > 0;
+        if (after_kill) self.post_kill_wait_calls += 1;
+        const remaining = if (after_kill)
+            &self.wait_eintr_after_kill_remaining
+        else
+            &self.wait_eintr_before_kill_remaining;
+        if (remaining.* > 0) {
+            remaining.* -= 1;
+            self.wait_eintr_injected += 1;
+            return .interrupted;
+        }
+
+        const result = rawWaitNoHang(pid);
+        if (after_kill) {
+            switch (result) {
+                .exited, .no_child => self.reaped_after_kill = true,
+                else => {},
+            }
+        }
+        return result;
+    }
+
+    fn killExact(context: ?*anyopaque, pid: std.posix.pid_t) bool {
+        const self = fromContext(context);
+        self.kill_calls += 1;
+        return systemKillExactChild(null, pid);
+    }
+
+    fn ops(self: *InjectedFixedHelperState) FixedHelperOps {
+        return .{
+            .context = self,
+            .now_fn = now,
+            .read_fn = read,
+            .poll_fn = poll,
+            .wait_fn = waitNoHang,
+            .kill_fn = killExact,
+        };
+    }
+};
+
+const BlockedHeadReapAudit = struct {
+    kill_calls: usize = 0,
+    post_kill_wait_calls: usize = 0,
+};
+
+fn modelBlockedHead559228eFinalDeadline(audit: *BlockedHeadReapAudit) void {
+    // 559228e signaled the child and returned immediately from both final
+    // deadline branches. This negative control intentionally preserves that
+    // ordering so the new contract test can prove it is insufficient.
+    audit.kill_calls += 1;
+}
+
+fn satisfiesPostKillReapContract(audit: BlockedHeadReapAudit) bool {
+    return audit.kill_calls == 1 and audit.post_kill_wait_calls > 0;
+}
+
+test "negative control 559228e kill-and-return violates reap contract" {
+    var audit = BlockedHeadReapAudit{};
+    modelBlockedHead559228eFinalDeadline(&audit);
+    try std.testing.expect(!satisfiesPostKillReapContract(audit));
+}
+
+test "production fixed helper clock is Timer-backed, never wall-clock-backed" {
+    const source = @embedFile("doctor_binaries.zig");
+    const start = std.mem.indexOf(
+        u8,
+        source,
+        "fn systemFixedHelperNow",
+    ) orelse return error.TestUnexpectedResult;
+    const finish = std.mem.indexOfPos(
+        u8,
+        source,
+        start,
+        "fn systemFixedHelperRead",
+    ) orelse return error.TestUnexpectedResult;
+    const production_clock_body = source[start..finish];
+
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        production_clock_body,
+        "clock.timer.read()",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        production_clock_body,
+        "nanoTimestamp",
+    ) == null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        production_clock_body,
+        ".REALTIME",
+    ) == null);
+
+    var clock = FixedHelperMonotonicClock{
+        .timer = std.time.Timer.start() catch return error.SkipZigTest,
+    };
+    const ops = systemFixedHelperOps(&clock);
+    const first = ops.now();
+    const second = ops.now();
+    try std.testing.expect(second >= first);
+}
+
+test "bounded fixed helper times out and reaps its direct child" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var elapsed_timer = try std.time.Timer.start();
+    const result = runBoundedFixedHelper(
+        arena_state.allocator(),
+        .test_spin,
+        null,
+        null,
+        .{ .timeout_ms = 120, .max_output_bytes = 1024 },
+    );
+    const elapsed_ns = elapsed_timer.read();
+
+    switch (result) {
+        .failure => |failure| try std.testing.expect(isExpectedLiveSchedulerTimeout(failure)),
+        .success => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(elapsed_ns < std.time.ns_per_s);
+}
+
+test "bounded fixed helper consumes injected EINTR and reaps within original deadline" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var injected = InjectedFixedHelperState{
+        .logical_start_ns = 10 * std.time.ns_per_s,
+        .logical_step_ns = 10 * std.time.ns_per_ms,
+    };
+    const ops = injected.ops();
+    const result = runBoundedFixedHelperWithOps(
+        arena_state.allocator(),
+        .test_spin,
+        null,
+        null,
+        .{ .timeout_ms = 500, .max_output_bytes = 1024 },
+        &ops,
+    );
+
+    switch (result) {
+        .failure => |failure| try std.testing.expect(isExpectedLiveSchedulerTimeout(failure)),
+        .success => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqual(@as(usize, 2), injected.read_eintr_injected);
+    try std.testing.expectEqual(@as(usize, 4), injected.poll_eintr_injected);
+    try std.testing.expectEqual(@as(usize, 4), injected.wait_eintr_injected);
+    try std.testing.expectEqual(@as(usize, 1), injected.kill_calls);
+    try std.testing.expect(injected.post_kill_wait_calls >= 3);
+    try std.testing.expect(injected.reaped_after_kill);
+
+    const original_final_ns = injected.first_now_ns.? +
+        500 * std.time.ns_per_ms;
+    try std.testing.expect(
+        injected.last_now_ns <= original_final_ns + injected.logical_step_ns,
+    );
+    try std.testing.expect(
+        injected.now_calls <= 500 / 10 + 2,
+    );
+}
+
+test "bounded fixed helper does not wait for descendant-inherited stdout" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var elapsed_timer = try std.time.Timer.start();
+    const result = runBoundedFixedHelper(
+        arena_state.allocator(),
+        .test_inherited_stdout,
+        null,
+        null,
+        .{ .timeout_ms = 500, .max_output_bytes = 1024 },
+    );
+    const elapsed_ns = elapsed_timer.read();
+
+    switch (result) {
+        .success => |output| try std.testing.expectEqualStrings("ok", output.stdout),
+        .failure => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(elapsed_ns < 500 * std.time.ns_per_ms);
+}
+
+test "bounded fixed helper rejects output beyond its memory cap" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+        return error.SkipZigTest;
+    }
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = runBoundedFixedHelper(
+        arena_state.allocator(),
+        .test_output_overflow,
+        null,
+        null,
+        .{ .timeout_ms = 500, .max_output_bytes = 64 },
+    );
+
+    switch (result) {
+        .failure => |failure| try std.testing.expectEqual(FixedHelperFailure.output_too_large, failure),
+        .success => return error.TestUnexpectedResult,
+    }
+}
+
+test "bounded fixed helper EINTR retries consume one deadline budget" {
+    const start_ns: i128 = 10 * std.time.ns_per_s;
+    const deadlines = fixedHelperDeadlines(start_ns, 100);
+
+    // Treat each observation as occurring after a raw poll/wait returned
+    // EINTR. The immutable deadline makes each later budget strictly smaller.
+    const first = fixedHelperPollTimeoutMs(
+        deadlines.terminate_ns,
+        start_ns + 5 * std.time.ns_per_ms,
+    ).?;
+    const later = fixedHelperPollTimeoutMs(
+        deadlines.terminate_ns,
+        start_ns + 70 * std.time.ns_per_ms,
+    ).?;
+    try std.testing.expect(later < first);
+    try std.testing.expect(fixedHelperPollTimeoutMs(
+        deadlines.terminate_ns,
+        deadlines.terminate_ns,
+    ) == null);
+}
+
 test "resident metadata gathering never executes a plist-selected binary" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
@@ -1525,6 +2388,63 @@ test "resident metadata gathering never executes a plist-selected binary" {
     try std.testing.expect(facts.sha256 != null);
     try std.testing.expect(facts.version == null);
     try std.testing.expectEqualStrings("unknown", facts.version_source);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("executed", .{}));
+}
+
+test "PATH metadata gathering never executes a selected executable" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    const path = try std.fs.path.join(a, &.{ root, "oauth-mux" });
+    const side_effect_path = try std.fs.path.join(a, &.{ root, "executed" });
+    const script = try std.fmt.allocPrint(
+        a,
+        "#!/bin/sh\n: > '{s}'\nprintf '{{\"version\":\"999.0.0\"}}\\n'\n",
+        .{side_effect_path},
+    );
+    var selected = try tmp.dir.createFile("oauth-mux", .{ .mode = 0o755 });
+    defer selected.close();
+    try selected.writeAll(script);
+
+    const facts = factsFor(a, path, null, "0.0.0-test");
+    try std.testing.expect(facts.exists);
+    try std.testing.expect(facts.sha256 != null);
+    try std.testing.expect(facts.version == null);
+    try std.testing.expectEqualStrings("unknown", facts.version_source);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("executed", .{}));
+}
+
+test "SHA-equivalent selected binary inherits only the current version" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const root = try tmp.dir.realpathAlloc(a, ".");
+    const path = try std.fs.path.join(a, &.{ root, "oauth-mux" });
+    const side_effect_path = try std.fs.path.join(a, &.{ root, "executed" });
+    const script = try std.fmt.allocPrint(
+        a,
+        "#!/bin/sh\n: > '{s}'\nprintf '{{\"version\":\"hostile\"}}\\n'\n",
+        .{side_effect_path},
+    );
+    var selected = try tmp.dir.createFile("oauth-mux", .{ .mode = 0o755 });
+    defer selected.close();
+    try selected.writeAll(script);
+
+    const selected_sha = try runtime.hashFileSha256Hex(a, path);
+    const facts = factsFor(a, path, selected_sha, "0.1.15-current");
+    try std.testing.expectEqualStrings("0.1.15-current", facts.version.?);
+    try std.testing.expectEqualStrings("sha_match_self", facts.version_source);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access("executed", .{}));
 }
 
@@ -1680,34 +2600,68 @@ test "compareSemver ordering table" {
 
 test "evaluateStaleness table" {
     // Absent resident is distinct from unhealthy containment.
-    var v = evaluateStaleness(.{ .resident_containment = .absent, .resident_sha = null, .resident_version = null, .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    var v = evaluateStaleness(.{
+        .resident_containment = .absent,
+        .resident_sha = null,
+        .installed_sha = "aaa",
+        .self_sha = "aaa",
+    });
     try std.testing.expect(!v.stale);
     try std.testing.expect(!v.containment_unhealthy);
     try std.testing.expectEqualStrings("no_resident", v.reason);
 
     // In sync.
-    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.14", .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    v = evaluateStaleness(.{
+        .resident_containment = .healthy,
+        .resident_sha = "aaa",
+        .installed_sha = "aaa",
+        .self_sha = "aaa",
+    });
     try std.testing.expect(!v.stale);
     try std.testing.expectEqualStrings("in_sync", v.reason);
 
-    // SHA mismatch only.
-    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.14", .installed_sha = "bbb", .installed_version = "0.1.14", .self_version = "0.1.14" });
+    // Resident differs from PATH, while matching the current process.
+    v = evaluateStaleness(.{
+        .resident_containment = .healthy,
+        .resident_sha = "aaa",
+        .installed_sha = "bbb",
+        .self_sha = "aaa",
+    });
     try std.testing.expect(v.stale and v.sha_mismatch and !v.version_older);
     try std.testing.expectEqualStrings("resident_sha_differs_from_installed", v.reason);
 
-    // Version older only (vs installed).
-    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = "aaa", .installed_version = "0.1.14", .self_version = "0.1.14" });
-    try std.testing.expect(v.stale and !v.sha_mismatch and v.version_older);
-    try std.testing.expectEqualStrings("resident_version_older", v.reason);
+    // Resident differs from the current process, while matching PATH.
+    v = evaluateStaleness(.{
+        .resident_containment = .healthy,
+        .resident_sha = "aaa",
+        .installed_sha = "aaa",
+        .self_sha = "bbb",
+    });
+    try std.testing.expect(v.stale and v.sha_mismatch and !v.version_older);
+    try std.testing.expectEqualStrings("resident_sha_differs_from_current", v.reason);
 
-    // Both.
-    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = "bbb", .installed_version = "0.1.14", .self_version = "0.1.14" });
-    try std.testing.expect(v.stale and v.sha_mismatch and v.version_older);
-    try std.testing.expectEqualStrings("resident_sha_differs_and_version_older", v.reason);
+    // Resident differs from both references.
+    v = evaluateStaleness(.{
+        .resident_containment = .healthy,
+        .resident_sha = "aaa",
+        .installed_sha = "bbb",
+        .self_sha = "ccc",
+    });
+    try std.testing.expect(v.stale and v.sha_mismatch and !v.version_older);
+    try std.testing.expectEqualStrings("resident_sha_differs_from_installed_and_current", v.reason);
 
-    // Older than self even when installed reference is unknown.
-    v = evaluateStaleness(.{ .resident_containment = .healthy, .resident_sha = "aaa", .resident_version = "0.1.13", .installed_sha = null, .installed_version = null, .self_version = "0.1.14" });
-    try std.testing.expect(v.stale and v.version_older);
+    // Any missing SHA makes a healthy resident unverifiable.
+    const incomplete = [_]StaleInputs{
+        .{ .resident_containment = .healthy, .resident_sha = null, .installed_sha = "aaa", .self_sha = "aaa" },
+        .{ .resident_containment = .healthy, .resident_sha = "aaa", .installed_sha = null, .self_sha = "aaa" },
+        .{ .resident_containment = .healthy, .resident_sha = "aaa", .installed_sha = "aaa", .self_sha = null },
+    };
+    for (incomplete) |inputs| {
+        v = evaluateStaleness(inputs);
+        try std.testing.expect(v.stale);
+        try std.testing.expect(!v.sha_mismatch);
+        try std.testing.expectEqualStrings("resident_identity_provenance_incomplete", v.reason);
+    }
 
     for ([_]ResidentContainment{
         .identity_unavailable,
@@ -1719,10 +2673,8 @@ test "evaluateStaleness table" {
         v = evaluateStaleness(.{
             .resident_containment = unhealthy,
             .resident_sha = null,
-            .resident_version = null,
             .installed_sha = "aaa",
-            .installed_version = "0.1.14",
-            .self_version = "0.1.14",
+            .self_sha = "aaa",
         });
         try std.testing.expect(v.stale);
         try std.testing.expect(v.containment_unhealthy);
@@ -2237,10 +3189,8 @@ test "resident gathering fails closed when plutil rejects the XML encoding" {
     report.stale = evaluateStaleness(.{
         .resident_containment = info.containment,
         .resident_sha = null,
-        .resident_version = null,
         .installed_sha = null,
-        .installed_version = null,
-        .self_version = "0.0.0-test",
+        .self_sha = null,
     });
     var json = std.ArrayList(u8).init(a);
     try writeJson(report, json.writer());
@@ -2293,10 +3243,8 @@ test "resident gathering reports v0.1 compatibility without resident facts" {
     report.stale = evaluateStaleness(.{
         .resident_containment = info.containment,
         .resident_sha = null,
-        .resident_version = null,
         .installed_sha = null,
-        .installed_version = null,
-        .self_version = "0.0.0-test",
+        .self_sha = null,
     });
     var json = std.ArrayList(u8).init(a);
     try writeJson(report, json.writer());
@@ -2426,10 +3374,8 @@ test "renderers withhold plist-selected path and facts for every unhealthy state
         report.stale = evaluateStaleness(.{
             .resident_containment = unhealthy,
             .resident_sha = null,
-            .resident_version = null,
             .installed_sha = null,
-            .installed_version = null,
-            .self_version = "0.1.15",
+            .self_sha = null,
         });
 
         json.clearRetainingCapacity();
