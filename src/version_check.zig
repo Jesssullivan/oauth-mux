@@ -4,20 +4,18 @@
 //!
 //! Design notes:
 //!  * OFFLINE by construction. `version --check` makes ZERO network calls. The
-//!    PATH scan, SHA-256 truth, PATH-shadow detection, and (bounded, local)
-//!    `<path> version --json` fallback are all reused from `doctor_binaries` —
-//!    none of which touch the network. Executing a discovered local binary to
-//!    read its version is a subprocess, not a network request.
+//!    PATH scan, SHA-256 truth, and PATH-shadow detection are reused from
+//!    `doctor_binaries`. Discovered binaries are never executed.
 //!  * The ONLY path that may open a socket is `realOnlineFetch`, and it is
 //!    reachable exclusively when the operator passes `--online` (gated by
 //!    `onlineConsultAllowed`). It is never implicit, never cached-auto, and is
 //!    unreachable from the daemon/keepalive loop.
-//!  * The comparison core (`compareAgainst`, `compareVersionOnly`, `assemble`)
-//!    is pure over its inputs and exhaustively tested. SHA is the strongest
-//!    signal (identical bytes → match); version ordering is the fallback.
-//!  * Exit non-zero (`stale_exit_code`) ONLY when the running binary is stale
-//!    (older than a reference we can actually compare against) — so the check is
-//!    scriptable. match / ahead / diverged / unknown-provenance all exit 0.
+//!  * Local binary identity is SHA-only: identical bytes match; differing or
+//!    unreadable provenance fails closed. Version ordering is reserved for the
+//!    explicit online release consult.
+//!  * Exit non-zero (`stale_exit_code`) when local identity cannot be verified,
+//!    local bytes differ, or an explicit online consult proves the running
+//!    version stale.
 
 const std = @import("std");
 const cli = @import("cli.zig");
@@ -32,7 +30,7 @@ pub const sidecar_filename = "oauth-mux.version.json";
 /// Default GitHub repo consulted by `--online` (override with OMUX_RELEASE_REPO).
 pub const default_repo_slug = "Jesssullivan/oauth-mux";
 
-/// The only non-zero exit code — emitted when the running binary is stale.
+/// The only non-zero exit code — emitted when the binary check fails closed.
 pub const stale_exit_code: u8 = 1;
 
 // ---------------------------------------------------------------------------
@@ -42,17 +40,21 @@ pub const stale_exit_code: u8 = 1;
 pub const Verdict = enum {
     /// Identical bytes as the running binary — in sync.
     match,
-    /// Running binary is OLDER than the reference — the only stale verdict.
+    /// Running binary is OLDER than a trusted version-only reference.
     stale,
     /// Running binary is NEWER than the reference (the reference is behind).
     ahead,
-    /// Same version, different bytes — a provenance mismatch, not "older".
+    /// Local reference bytes differ from the running binary.
     diverged,
     /// Cannot compare (reference absent, or fields missing/unparseable).
     unknown_provenance,
 
     pub fn isStale(self: Verdict) bool {
         return self == .stale;
+    }
+
+    pub fn identityVerified(self: Verdict) bool {
+        return self == .match;
     }
 
     pub fn label(self: Verdict) []const u8 {
@@ -70,7 +72,7 @@ pub const Verdict = enum {
             .match => "match (running binary is in sync)",
             .stale => "STALE (running binary is older)",
             .ahead => "ahead (running binary is newer)",
-            .diverged => "diverged (same version, different build)",
+            .diverged => "diverged (different binary bytes)",
             .unknown_provenance => "unknown-provenance (cannot compare)",
         };
     }
@@ -82,42 +84,15 @@ pub const Verdict = enum {
 
 pub const CompareInputs = struct {
     self_sha: ?[]const u8,
-    self_version: ?[]const u8,
     ref_sha: ?[]const u8,
-    ref_version: ?[]const u8,
 };
 
-/// SHA-primary, version-fallback compare of the running binary against a
-/// reference (PATH-installed binary or install sidecar). Pure.
+/// SHA-only compare of the running binary against a local reference
+/// (PATH-installed binary or install sidecar). Pure.
 pub fn compareAgainst(in: CompareInputs) Verdict {
-    // No reference at all → nothing to compare against.
-    if (in.ref_sha == null and in.ref_version == null) return .unknown_provenance;
-
-    // Identical bytes is the strongest possible signal.
-    if (in.self_sha) |ss| {
-        if (in.ref_sha) |rs| {
-            if (std.mem.eql(u8, ss, rs)) return .match;
-        }
-    }
-
-    // Bytes differ (or a SHA is missing): fall back to version ordering.
-    if (in.self_version) |sv| {
-        if (in.ref_version) |rv| {
-            return switch (doctor_binaries.compareSemver(sv, rv)) {
-                .lt => .stale,
-                .gt => .ahead,
-                .eq => blk: {
-                    // Same version but non-identical bytes (both SHAs known) →
-                    // diverged; if a SHA is unknown we cannot be that certain.
-                    if (in.self_sha != null and in.ref_sha != null) break :blk .diverged;
-                    break :blk .unknown_provenance;
-                },
-                .unknown => .unknown_provenance,
-            };
-        }
-    }
-
-    return .unknown_provenance;
+    const self_sha = in.self_sha orelse return .unknown_provenance;
+    const ref_sha = in.ref_sha orelse return .unknown_provenance;
+    return if (std.mem.eql(u8, self_sha, ref_sha)) .match else .diverged;
 }
 
 /// Version-only compare, used for the `--online` latest-release consult where no
@@ -214,6 +189,7 @@ pub const CheckReport = struct {
     sidecar: ?Sidecar,
     sidecar_path: ?[]const u8,
     sidecar_verdict: Verdict,
+    resident_verdict: doctor_binaries.StaleVerdict,
 
     shadow: doctor_binaries.ShadowVerdict,
     path_entries: []const doctor_binaries.BinaryFacts,
@@ -224,8 +200,12 @@ pub const CheckReport = struct {
     online_verdict: Verdict,
 
     pub fn stale(self: CheckReport) bool {
-        if (self.path_verdict.isStale()) return true;
-        if (self.sidecar_verdict.isStale()) return true;
+        // PATH is the active executable authority. Missing, unreadable, or
+        // different bytes fail closed.
+        if (!self.path_verdict.identityVerified()) return true;
+        // The sidecar is optional, but once present its SHA must agree.
+        if (self.sidecar != null and !self.sidecar_verdict.identityVerified()) return true;
+        if (self.resident_verdict.stale) return true;
         // Online only contributes when the operator actually consulted it.
         if (self.online_attempted and self.online_verdict.isStale()) return true;
         return false;
@@ -247,24 +227,19 @@ pub fn assemble(
     online_latest: ?[]const u8,
 ) CheckReport {
     const self_sha = report.self.sha256;
-    const self_version = report.self.version;
 
     const path_verdict: Verdict = if (report.path_winner) |w| compareAgainst(.{
         .self_sha = self_sha,
-        .self_version = self_version,
         .ref_sha = w.sha256,
-        .ref_version = w.version,
     }) else .unknown_provenance;
 
     const sidecar_verdict: Verdict = if (sidecar) |s| compareAgainst(.{
         .self_sha = self_sha,
-        .self_version = self_version,
         .ref_sha = s.binary_sha256,
-        .ref_version = s.version,
     }) else .unknown_provenance;
 
     const online_verdict: Verdict = if (online_attempted)
-        compareVersionOnly(self_version, online_latest)
+        compareVersionOnly(report.self.version, online_latest)
     else
         .unknown_provenance;
 
@@ -276,6 +251,7 @@ pub fn assemble(
         .sidecar = sidecar,
         .sidecar_path = sidecar_path,
         .sidecar_verdict = sidecar_verdict,
+        .resident_verdict = report.stale,
         .shadow = report.shadow,
         .path_entries = report.path_entries,
         .path_env_present = report.path_env_present,
@@ -352,6 +328,11 @@ pub fn writeText(report: CheckReport, writer: anytype) !void {
         try writer.writeAll("           none found (install provenance unrecorded)\n");
     }
 
+    try writer.print("  vs resident service: {s} ({s})\n", .{
+        if (report.resident_verdict.stale) "FAILED" else "ok",
+        report.resident_verdict.reason,
+    });
+
     // PATH shadow (only when there is more than one distinct binary on PATH).
     if (report.shadow.shadowed) {
         try writer.print("\n  PATH shadow: {d} distinct oauth-mux on PATH (winner: {s})\n", .{
@@ -380,7 +361,10 @@ pub fn writeText(report: CheckReport, writer: anytype) !void {
     }
 
     try writer.print("\n  verdict: {s}\n", .{
-        if (report.stale()) "STALE — running binary is behind; upgrade recommended" else "ok — running binary is not stale",
+        if (report.stale())
+            "FAILED — local binary identity is unverified/diverged or the running version is stale"
+        else
+            "ok — local binary identity is verified",
     });
 }
 
@@ -410,6 +394,14 @@ pub fn writeJson(report: CheckReport, writer: anytype) !void {
     if (report.self.sha256) |s| try std.json.stringify(s, .{}, writer) else try writer.writeAll("null");
     try writer.writeAll(",\"source\":");
     try std.json.stringify(report.self.source, .{}, writer);
+    try writer.writeByte('}');
+
+    try writer.writeAll(",\"resident_identity\":{\"stale\":");
+    try writer.writeAll(if (report.resident_verdict.stale) "true" else "false");
+    try writer.writeAll(",\"sha_mismatch\":");
+    try writer.writeAll(if (report.resident_verdict.sha_mismatch) "true" else "false");
+    try writer.writeAll(",\"reason\":");
+    try std.json.stringify(report.resident_verdict.reason, .{}, writer);
     try writer.writeByte('}');
 
     // PATH-installed.
@@ -477,19 +469,23 @@ pub fn writeJson(report: CheckReport, writer: anytype) !void {
 // ---------------------------------------------------------------------------
 
 /// `oauth-mux version --check [--online]`. Returns the process exit code
-/// (non-zero only when the running binary is stale). All effects (PATH gather,
-/// sidecar read, optional online consult) are confined here; the offline default
-/// makes zero network calls.
+/// (non-zero when local identity cannot be verified or an explicit online
+/// consult proves staleness). All effects (PATH gather, sidecar read, optional
+/// online consult) are confined here; the offline default makes zero network
+/// calls and executes no selected binary.
 pub fn run(gpa: std.mem.Allocator, writer: anytype, opts: RunOptions) !u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    // Reuse the doctor's PATH scan + SHA + shadow detection wholesale. No
-    // network; the only subprocess is a bounded local `<path> version --json`.
+    // Reuse the doctor's metadata-only PATH scan + SHA + shadow detection.
     const report = doctor_binaries.gather(arena, cli.version, .{}) catch {
-        try writer.writeAll("oauth-mux version --check\n\n  unavailable: could not gather binary facts\n");
-        return 0;
+        if (opts.json) {
+            try writer.writeAll("{\"check\":true,\"error\":\"binary_facts_unavailable\",\"stale\":true,\"exit_code\":1}\n");
+        } else {
+            try writer.writeAll("oauth-mux version --check\n\n  FAILED: could not gather binary facts\n");
+        }
+        return stale_exit_code;
     };
 
     const sc = readSidecar(arena, report);
@@ -556,66 +552,28 @@ fn parseLatestTag(allocator: std.mem.Allocator, data: []const u8) ?[]const u8 {
 // Tests
 // ---------------------------------------------------------------------------
 
-test "compareAgainst: identical SHA is a match regardless of version" {
+test "compareAgainst: identical SHA is a match" {
     try std.testing.expectEqual(Verdict.match, compareAgainst(.{
         .self_sha = "aaa",
-        .self_version = "0.1.15",
         .ref_sha = "aaa",
-        .ref_version = "0.1.13", // version disagrees but bytes are identical
     }));
 }
 
-test "compareAgainst: older running binary is stale" {
-    try std.testing.expectEqual(Verdict.stale, compareAgainst(.{
-        .self_sha = "aaa",
-        .self_version = "0.1.13",
-        .ref_sha = "bbb",
-        .ref_version = "0.1.15",
-    }));
-}
-
-test "compareAgainst: newer running binary is ahead" {
-    try std.testing.expectEqual(Verdict.ahead, compareAgainst(.{
-        .self_sha = "aaa",
-        .self_version = "0.1.15",
-        .ref_sha = "bbb",
-        .ref_version = "0.1.13",
-    }));
-}
-
-test "compareAgainst: same version different bytes is diverged" {
+test "compareAgainst: differing local bytes diverge" {
     try std.testing.expectEqual(Verdict.diverged, compareAgainst(.{
         .self_sha = "aaa",
-        .self_version = "0.1.15",
         .ref_sha = "bbb",
-        .ref_version = "0.1.15",
     }));
 }
 
-test "compareAgainst: absent reference is unknown-provenance" {
+test "compareAgainst: missing SHA is unknown-provenance" {
     try std.testing.expectEqual(Verdict.unknown_provenance, compareAgainst(.{
         .self_sha = "aaa",
-        .self_version = "0.1.15",
         .ref_sha = null,
-        .ref_version = null,
     }));
-}
-
-test "compareAgainst: unparsable versions with differing bytes are unknown-provenance" {
-    try std.testing.expectEqual(Verdict.unknown_provenance, compareAgainst(.{
-        .self_sha = "aaa",
-        .self_version = "nightly",
-        .ref_sha = "bbb",
-        .ref_version = "nightly",
-    }));
-}
-
-test "compareAgainst: same version but a SHA is unknown stays unknown-provenance" {
     try std.testing.expectEqual(Verdict.unknown_provenance, compareAgainst(.{
         .self_sha = null,
-        .self_version = "0.1.15",
         .ref_sha = "bbb",
-        .ref_version = "0.1.15",
     }));
 }
 
@@ -669,7 +627,7 @@ fn factsFixture(path: []const u8, sha: ?[]const u8, version: ?[]const u8) doctor
         .exists = true,
         .sha256 = sha,
         .version = version,
-        .version_source = "subprocess",
+        .version_source = "fixture",
         .source = "path_or_installed",
     };
 }
@@ -687,21 +645,20 @@ fn reportFixture(self_sha: ?[]const u8, self_version: ?[]const u8, winner: ?doct
 }
 
 test "assemble + exitCode contract: stale PATH winner exits non-zero" {
-    // Running 0.1.13, PATH-installed 0.1.15 with different bytes → stale.
+    // Different local bytes fail closed without executing either binary.
     const winner = factsFixture("/usr/local/bin/oauth-mux", "bbb", "0.1.15");
     const check = assemble(reportFixture("aaa", "0.1.13", winner), "0.1.13", null, null, false, null);
-    try std.testing.expectEqual(Verdict.stale, check.path_verdict);
+    try std.testing.expectEqual(Verdict.diverged, check.path_verdict);
     try std.testing.expect(check.stale());
     try std.testing.expectEqual(stale_exit_code, check.exitCode());
 }
 
-test "assemble + exitCode contract: ahead PATH winner exits zero" {
-    // Running 0.1.15, PATH-installed 0.1.13 (the neo shadow shape) → not stale.
+test "assemble + exitCode contract: differing PATH winner fails even when its version is older" {
     const winner = factsFixture("/nix/store/x/bin/oauth-mux", "bbb", "0.1.13");
     const check = assemble(reportFixture("aaa", "0.1.15", winner), "0.1.15", null, null, false, null);
-    try std.testing.expectEqual(Verdict.ahead, check.path_verdict);
-    try std.testing.expect(!check.stale());
-    try std.testing.expectEqual(@as(u8, 0), check.exitCode());
+    try std.testing.expectEqual(Verdict.diverged, check.path_verdict);
+    try std.testing.expect(check.stale());
+    try std.testing.expectEqual(stale_exit_code, check.exitCode());
 }
 
 test "assemble + exitCode contract: match PATH winner exits zero" {
@@ -712,41 +669,59 @@ test "assemble + exitCode contract: match PATH winner exits zero" {
     try std.testing.expectEqual(@as(u8, 0), check.exitCode());
 }
 
-test "assemble: no PATH winner and no sidecar is unknown-provenance, exits zero" {
+test "assemble: no PATH winner is unknown-provenance and fails closed" {
     const check = assemble(reportFixture("aaa", "0.1.15", null), "0.1.15", null, null, false, null);
     try std.testing.expectEqual(Verdict.unknown_provenance, check.path_verdict);
     try std.testing.expectEqual(Verdict.unknown_provenance, check.sidecar_verdict);
-    try std.testing.expect(!check.stale());
-    try std.testing.expectEqual(@as(u8, 0), check.exitCode());
+    try std.testing.expect(check.stale());
+    try std.testing.expectEqual(stale_exit_code, check.exitCode());
 }
 
-test "assemble: stale sidecar exits non-zero" {
+test "assemble: divergent sidecar exits non-zero" {
     const sc = Sidecar{ .version = "0.1.15", .binary_sha256 = "ccc" };
-    const check = assemble(reportFixture("aaa", "0.1.13", null), "0.1.13", sc, "/usr/local/bin/oauth-mux.version.json", false, null);
-    try std.testing.expectEqual(Verdict.stale, check.sidecar_verdict);
+    const winner = factsFixture("/usr/local/bin/oauth-mux", "aaa", "0.1.13");
+    const check = assemble(reportFixture("aaa", "0.1.13", winner), "0.1.13", sc, "/usr/local/bin/oauth-mux.version.json", false, null);
+    try std.testing.expectEqual(Verdict.diverged, check.sidecar_verdict);
+    try std.testing.expect(check.stale());
+    try std.testing.expectEqual(stale_exit_code, check.exitCode());
+}
+
+test "assemble: resident provenance failure exits non-zero" {
+    const winner = factsFixture("/usr/local/bin/oauth-mux", "aaa", "0.1.15");
+    var report = reportFixture("aaa", "0.1.15", winner);
+    report.stale = .{
+        .stale = true,
+        .sha_mismatch = false,
+        .version_older = false,
+        .reason = "resident_identity_provenance_incomplete",
+    };
+    const check = assemble(report, "0.1.15", null, null, false, null);
+    try std.testing.expectEqual(Verdict.match, check.path_verdict);
     try std.testing.expect(check.stale());
     try std.testing.expectEqual(stale_exit_code, check.exitCode());
 }
 
 test "assemble: online is inert unless attempted, then can flip staleness" {
+    const winner_013 = factsFixture("/usr/local/bin/oauth-mux", "aaa", "0.1.13");
+    const winner_015 = factsFixture("/usr/local/bin/oauth-mux", "aaa", "0.1.15");
     // Not attempted: even a newer latest tag cannot affect the verdict.
-    var check = assemble(reportFixture("aaa", "0.1.13", null), "0.1.13", null, null, false, "0.1.99");
+    var check = assemble(reportFixture("aaa", "0.1.13", winner_013), "0.1.13", null, null, false, "0.1.99");
     try std.testing.expect(!check.stale());
     try std.testing.expectEqual(Verdict.unknown_provenance, check.online_verdict);
 
     // Attempted + behind latest release → stale.
-    check = assemble(reportFixture("aaa", "0.1.13", null), "0.1.13", null, null, true, "0.1.99");
+    check = assemble(reportFixture("aaa", "0.1.13", winner_013), "0.1.13", null, null, true, "0.1.99");
     try std.testing.expectEqual(Verdict.stale, check.online_verdict);
     try std.testing.expect(check.stale());
 
     // Attempted + on latest release → not stale.
-    check = assemble(reportFixture("aaa", "0.1.15", null), "0.1.15", null, null, true, "v0.1.15");
+    check = assemble(reportFixture("aaa", "0.1.15", winner_015), "0.1.15", null, null, true, "v0.1.15");
     try std.testing.expectEqual(Verdict.match, check.online_verdict);
     try std.testing.expect(!check.stale());
 }
 
 test "writeJson renders well-formed, parseable JSON" {
-    const winner = factsFixture("/nix/store/x/bin/oauth-mux", "bbb", "0.1.13");
+    const winner = factsFixture("/nix/store/x/bin/oauth-mux", "aaa", "0.1.15");
     const check = assemble(reportFixture("aaa", "0.1.15", winner), "0.1.15", null, "/nix/store/x/bin/oauth-mux.version.json", false, null);
 
     var buf = std.ArrayList(u8).init(std.testing.allocator);
@@ -754,7 +729,8 @@ test "writeJson renders well-formed, parseable JSON" {
     try writeJson(check, buf.writer());
 
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"check\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"verdict\":\"ahead\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"resident_identity\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"verdict\":\"match\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"exit_code\":0") != null);
 
@@ -763,7 +739,7 @@ test "writeJson renders well-formed, parseable JSON" {
 }
 
 test "writeText renders the running/PATH/sidecar sections and a verdict" {
-    const winner = factsFixture("/nix/store/x/bin/oauth-mux", "bbb", "0.1.13");
+    const winner = factsFixture("/nix/store/x/bin/oauth-mux", "aaa", "0.1.15");
     const check = assemble(reportFixture("aaa", "0.1.15", winner), "0.1.15", null, null, false, null);
 
     var buf = std.ArrayList(u8).init(std.testing.allocator);
@@ -773,6 +749,7 @@ test "writeText renders the running/PATH/sidecar sections and a verdict" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "running:") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "vs PATH-installed:") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "vs install sidecar:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "vs resident service:") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "verdict:") != null);
     // No --online → no online section.
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "latest release:") == null);
