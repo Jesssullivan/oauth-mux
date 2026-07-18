@@ -1380,14 +1380,25 @@ fn terminateAndReapFixedHelper(
     initial_failure: FixedHelperFailure,
 ) FixedHelperFailure {
     std.debug.assert(pid > 0);
-    var failure = initial_failure;
-    if (!ops.killExact(pid)) failure = .kill_failed;
+
+    // Avoid signaling a PID that has already exited or been reaped. An exited
+    // direct child cannot be reused until this wait reaps it.
+    var reap_failed = false;
+    switch (ops.waitNoHang(pid)) {
+        .exited, .no_child => return initial_failure,
+        .failed => reap_failed = true,
+        .running, .interrupted => {},
+    }
+
+    const kill_failed = !ops.killExact(pid);
 
     while (true) {
         switch (ops.waitNoHang(pid)) {
-            .exited, .no_child => return failure,
+            // A transient wait/poll failure does not replace the primary
+            // helper failure once cleanup is subsequently proven complete.
+            .exited, .no_child => return initial_failure,
             .running, .interrupted => {},
-            .failed => failure = .reap_failed,
+            .failed => reap_failed = true,
         }
 
         const now_ns = ops.now();
@@ -1396,9 +1407,14 @@ fn terminateAndReapFixedHelper(
             // This remains nonblocking and does not extend the original
             // monotonic deadline.
             return switch (ops.waitNoHang(pid)) {
-                .exited, .no_child => failure,
-                .failed => .reap_failed,
-                .running, .interrupted => .reap_timeout,
+                .exited, .no_child => initial_failure,
+                .failed => if (kill_failed) .kill_failed else .reap_failed,
+                .running, .interrupted => if (kill_failed)
+                    .kill_failed
+                else if (reap_failed)
+                    .reap_failed
+                else
+                    .reap_timeout,
             };
         }
 
@@ -1409,9 +1425,7 @@ fn terminateAndReapFixedHelper(
         ) orelse continue;
         switch (ops.poll(&no_fds, poll_ms)) {
             .ready, .elapsed, .interrupted => {},
-            .failed => if (failure != .kill_failed) {
-                failure = .reap_failed;
-            },
+            .failed => reap_failed = true,
         }
     }
 }
@@ -2167,6 +2181,82 @@ const BlockedHeadReapAudit = struct {
     post_kill_wait_calls: usize = 0,
 };
 
+const ScriptedFixedHelperCleanup = struct {
+    wait_results: []const RawWaitResult,
+    poll_results: []const RawPollResult,
+    now_results: []const i128,
+    wait_index: usize = 0,
+    poll_index: usize = 0,
+    now_index: usize = 0,
+    kill_calls: usize = 0,
+    wait_calls_before_kill: usize = 0,
+    kill_succeeds: bool = true,
+
+    fn fromContext(context: ?*anyopaque) *ScriptedFixedHelperCleanup {
+        return @ptrCast(@alignCast(context.?));
+    }
+
+    fn now(context: ?*anyopaque) i128 {
+        const self = fromContext(context);
+        const index = @min(self.now_index, self.now_results.len - 1);
+        self.now_index += 1;
+        return self.now_results[index];
+    }
+
+    fn read(
+        _: ?*anyopaque,
+        _: std.posix.fd_t,
+        _: []u8,
+    ) RawIoResult {
+        return .failed;
+    }
+
+    fn poll(
+        context: ?*anyopaque,
+        _: []std.posix.pollfd,
+        _: i32,
+    ) RawPollResult {
+        const self = fromContext(context);
+        const index = @min(self.poll_index, self.poll_results.len - 1);
+        self.poll_index += 1;
+        return self.poll_results[index];
+    }
+
+    fn waitNoHang(
+        context: ?*anyopaque,
+        _: std.posix.pid_t,
+    ) RawWaitResult {
+        const self = fromContext(context);
+        if (self.kill_calls == 0) self.wait_calls_before_kill += 1;
+        const index = @min(self.wait_index, self.wait_results.len - 1);
+        self.wait_index += 1;
+        return self.wait_results[index];
+    }
+
+    fn killExact(
+        context: ?*anyopaque,
+        _: std.posix.pid_t,
+    ) bool {
+        const self = fromContext(context);
+        self.kill_calls += 1;
+        return self.kill_succeeds;
+    }
+
+    fn ops(self: *ScriptedFixedHelperCleanup) FixedHelperOps {
+        std.debug.assert(self.wait_results.len > 0);
+        std.debug.assert(self.poll_results.len > 0);
+        std.debug.assert(self.now_results.len > 0);
+        return .{
+            .context = self,
+            .now_fn = now,
+            .read_fn = read,
+            .poll_fn = poll,
+            .wait_fn = waitNoHang,
+            .kill_fn = killExact,
+        };
+    }
+};
+
 fn modelBlockedHead559228eFinalDeadline(audit: *BlockedHeadReapAudit) void {
     // 559228e signaled the child and returned immediately from both final
     // deadline branches. This negative control intentionally preserves that
@@ -2182,6 +2272,74 @@ test "negative control 559228e kill-and-return violates reap contract" {
     var audit = BlockedHeadReapAudit{};
     modelBlockedHead559228eFinalDeadline(&audit);
     try std.testing.expect(!satisfiesPostKillReapContract(audit));
+}
+
+test "fixed helper cleanup preserves primary failure after transient reap fault" {
+    const exited_status: u32 = 0;
+    var scripted = ScriptedFixedHelperCleanup{
+        .wait_results = &.{
+            .running,
+            .failed,
+            .{ .exited = exited_status },
+        },
+        .poll_results = &.{.elapsed},
+        .now_results = &.{0},
+    };
+    const ops = scripted.ops();
+
+    const failure = terminateAndReapFixedHelper(
+        &ops,
+        42,
+        std.time.ns_per_s,
+        .output_too_large,
+    );
+
+    try std.testing.expectEqual(
+        FixedHelperFailure.output_too_large,
+        failure,
+    );
+    try std.testing.expectEqual(@as(usize, 1), scripted.kill_calls);
+    try std.testing.expectEqual(@as(usize, 1), scripted.wait_calls_before_kill);
+}
+
+test "fixed helper cleanup reports unresolved reap fault at deadline" {
+    var scripted = ScriptedFixedHelperCleanup{
+        .wait_results = &.{ .running, .failed, .failed },
+        .poll_results = &.{.elapsed},
+        .now_results = &.{std.time.ns_per_s},
+    };
+    const ops = scripted.ops();
+
+    const failure = terminateAndReapFixedHelper(
+        &ops,
+        42,
+        std.time.ns_per_s,
+        .timeout,
+    );
+
+    try std.testing.expectEqual(FixedHelperFailure.reap_failed, failure);
+    try std.testing.expectEqual(@as(usize, 1), scripted.kill_calls);
+}
+
+test "fixed helper cleanup never signals an already-exited child" {
+    const exited_status: u32 = 0;
+    var scripted = ScriptedFixedHelperCleanup{
+        .wait_results = &.{.{ .exited = exited_status }},
+        .poll_results = &.{.elapsed},
+        .now_results = &.{0},
+    };
+    const ops = scripted.ops();
+
+    const failure = terminateAndReapFixedHelper(
+        &ops,
+        42,
+        std.time.ns_per_s,
+        .timeout,
+    );
+
+    try std.testing.expectEqual(FixedHelperFailure.timeout, failure);
+    try std.testing.expectEqual(@as(usize, 0), scripted.kill_calls);
+    try std.testing.expectEqual(@as(usize, 1), scripted.wait_calls_before_kill);
 }
 
 test "production fixed helper clock is Timer-backed, never wall-clock-backed" {
