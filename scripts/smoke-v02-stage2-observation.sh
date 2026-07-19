@@ -60,17 +60,16 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 37 ] ||
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 36 ] ||
   fail "expected exactly thirty-seven exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 87 ] ||
-  fail "expected exactly 87 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 88 ] ||
+  fail "expected exactly 88 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
 
 expected_passes='capability_carrier
 loopback_sidecar_bind
 capability_256bit_base64url
-capability_revocation_on_teardown
 bad_token_zero_call_rejection
 inbound_auth_header_stripping
 origin_form_request_enforcement

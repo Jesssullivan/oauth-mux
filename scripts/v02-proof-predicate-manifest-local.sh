@@ -176,7 +176,6 @@ stage2_slice_predicates_json() {
 capability_carrier
 loopback_sidecar_bind
 capability_256bit_base64url
-capability_revocation_on_teardown
 bad_token_zero_call_rejection
 inbound_auth_header_stripping
 origin_form_request_enforcement
@@ -430,8 +429,6 @@ case "$mode" in
           .status = reduced(["abrupt_death_mid_alternate_reclaims_to_zero"])
         elif .id == "resident_absence" then
           .status = reduced(["routed_alternate_completes_with_no_resident"])
-        elif .id == "capability_revocation_on_teardown" then
-          .status = reduced(["capability_revoked_after_teardown_rejects"])
         elif .id == "streaming_cancellation" then
           .status = reduced(["streaming_cancellation_single_attempt"])
         elif .id == "bounded_reset_wait" then
@@ -533,9 +530,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 87)
+      and ([.predicates[] | select(.status == "missing")] | length == 88)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 37-pass/0-fail/87-missing Stage 2 slice"
+      fail "manifest is not the exact 36-pass/0-fail/88-missing Stage 2 slice"
     ;;
 
   -h|--help|help)

@@ -85,7 +85,6 @@ const FactId = enum {
     abrupt_death_mid_alternate_reclaims_to_zero,
     teardown_holds_then_releases_reservation,
     teardown_converges_within_bound,
-    capability_revoked_after_teardown_rejects,
     partial_request_teardown_no_replay_bounded,
     sequential_routed_requests_release_each_time,
 };
@@ -149,7 +148,6 @@ const fact_ids = [_]FactId{
     .abrupt_death_mid_alternate_reclaims_to_zero,
     .teardown_holds_then_releases_reservation,
     .teardown_converges_within_bound,
-    .capability_revoked_after_teardown_rejects,
     .partial_request_teardown_no_replay_bounded,
     .sequential_routed_requests_release_each_time,
 };
@@ -1620,10 +1618,6 @@ fn runAbruptDeathScenario(facts: []Fact) !void {
         primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1);
     setFact(facts, .teardown_holds_then_releases_reservation, held and outstanding == 0);
     setFact(facts, .teardown_converges_within_bound, bounded);
-
-    capability.revoke();
-    setFact(facts, .capability_revoked_after_teardown_rejects,
-        capability.isRevoked() and !capability.validate(&carrier));
 }
 
 fn runPartialSendTeardownScenario(facts: []Fact) !void {
