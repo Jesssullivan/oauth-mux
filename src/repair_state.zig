@@ -2729,20 +2729,38 @@ fn writeTextLines(writer: anytype, lines: []const []const u8) !void {
 /// unit tests never write into the user's real runtime/state directories.
 /// Pub so other modules' refresh/probe tests can reuse the same isolation.
 pub const TestRuntimeDirScope = struct {
-    tmp: std.testing.TmpDir,
     root: []const u8,
     overrides: std.process.EnvMap,
 
     pub fn init(allocator: std.mem.Allocator) !TestRuntimeDirScope {
-        var tmp = std.testing.tmpDir(.{});
-        errdefer tmp.cleanup();
-        const root = try tmp.dir.realpathAlloc(allocator, ".");
+        // std.testing.tmpDir would leave .zig-cache/tmp inside the checkout;
+        // the v0.2 proof provenance allowlist forbids any post-run residue
+        // there, so runtime state is scoped under the system temp dir.
+        const base = std.process.getEnvVarOwned(allocator, "TMPDIR") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => try allocator.dupe(u8, "/tmp"),
+            else => return err,
+        };
+        defer allocator.free(base);
+        var random_bytes: [8]u8 = undefined;
+        std.crypto.random.bytes(&random_bytes);
+        const unique = try std.fmt.allocPrint(
+            allocator,
+            "{s}/omux-test-runtime-{s}",
+            .{
+                std.mem.trimRight(u8, base, "/"),
+                std.fmt.fmtSliceHexLower(&random_bytes),
+            },
+        );
+        defer allocator.free(unique);
+        try std.fs.makeDirAbsolute(unique);
+        errdefer std.fs.deleteTreeAbsolute(unique) catch {};
+        const root = try std.fs.realpathAlloc(allocator, unique);
         errdefer allocator.free(root);
         var overrides = std.process.EnvMap.init(allocator);
         errdefer overrides.deinit();
         try overrides.put("OMUX_RUNTIME_DIR", root);
         try overrides.put("OMUX_STATE_DIR", root);
-        return .{ .tmp = tmp, .root = root, .overrides = overrides };
+        return .{ .root = root, .overrides = overrides };
     }
 
     pub fn activate(self: *TestRuntimeDirScope) void {
@@ -2752,8 +2770,8 @@ pub const TestRuntimeDirScope = struct {
     pub fn deinit(self: *TestRuntimeDirScope, allocator: std.mem.Allocator) void {
         env.test_overrides = null;
         self.overrides.deinit();
+        std.fs.deleteTreeAbsolute(self.root) catch {};
         allocator.free(self.root);
-        self.tmp.cleanup();
     }
 };
 
