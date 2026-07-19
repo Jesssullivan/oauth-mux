@@ -19,6 +19,29 @@ expect_rejected() {
   fi
 }
 
+require_unproven_predicates_missing() {
+  jq -e '
+    [
+      "provider_egress_denial",
+      "provider_call_count_zero",
+      "one_sidecar_per_managed_child",
+      "capability_memory_only",
+      "capability_constant_time_validation",
+      "capability_revocation_on_teardown",
+      "elected_oauth_credential_injection",
+      "managed_launch_fail_closed",
+      "explicit_direct_fallback_policy",
+      "fixed_origin_enforcement",
+      "system_tls_verification",
+      "resident_request_body_forwarding_rejection",
+      "evidence_allowlist_redaction",
+      "no_request_disk_spooling"
+    ] as $must_remain_missing
+    | [.predicates[] | select(.status == "missing") | .id] as $missing
+    | (($must_remain_missing - $missing) | length) == 0
+  ' "$1" >/dev/null
+}
+
 cd "$ROOT"
 candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
 candidate_tree=$(git rev-parse --verify 'HEAD^{tree}')
@@ -66,6 +89,24 @@ manifest="$TMP/manifest.json"
   fail "expected exactly 51 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
+require_unproven_predicates_missing "$manifest" ||
+  fail "predicate without canonical evidence moved out of missing"
+withdrawn_predicates='one_sidecar_per_managed_child
+capability_memory_only
+capability_constant_time_validation
+capability_revocation_on_teardown
+managed_launch_fail_closed
+evidence_allowlist_redaction
+no_request_disk_spooling'
+while IFS= read -r predicate_id; do
+  unproven_promoted="$TMP/${predicate_id}-promoted.json"
+  jq --arg predicate_id "$predicate_id" \
+    '(.predicates[] | select(.id == $predicate_id)).status = "pass"' \
+    "$manifest" >"$unproven_promoted"
+  if require_unproven_predicates_missing "$unproven_promoted"; then
+    fail "missing-predicate guard accepted false promotion: ${predicate_id}"
+  fi
+done <<<"$withdrawn_predicates"
 
 expected_passes='capability_carrier
 loopback_sidecar_bind
