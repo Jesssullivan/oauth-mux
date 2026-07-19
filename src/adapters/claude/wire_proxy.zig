@@ -3292,6 +3292,181 @@ test "replay reservations release exactly once across sequential routed requests
     try std.testing.expectEqual(@as(usize, iterations), alternate.snapshot().call_count);
 }
 
+test "the admitted model is sent byte-exact on the first attempt and on the alternate replay" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 fails pre-body 401, so the SAME buffered bytes are replayed to the
+    // distinct-identity alternate. Both fakes capture the request body they
+    // received before responding, so the model on the wire of EACH attempt is
+    // observable independently of the admission observation.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "{\"ok\":true}" }});
+    defer alternate.deinit();
+
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+
+    // FIRST-ATTEMPT ADMISSION ONLY (#492): the observation records the model
+    // admitted for the one attempt and makes no result-side claim.
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.model_present);
+    try std.testing.expectEqualStrings(routed_model, obs.admittedModel());
+
+    // The exact admitted model bytes appear on the body ACTUALLY SENT upstream on
+    // BOTH the first attempt (primary) and the §2.2 alternate replay — never a
+    // substituted, family-inferred, or re-serialized model. The whole body is
+    // byte-identical, and the admitted model is a byte-exact substring of each.
+    var first_sent: [256]u8 = undefined;
+    const first_len = primary.capturedRequestBody(&first_sent);
+    try std.testing.expectEqualStrings(routed_json, first_sent[0..first_len]);
+    try std.testing.expect(std.mem.indexOf(u8, first_sent[0..first_len], obs.admittedModel()) != null);
+
+    var replayed_sent: [256]u8 = undefined;
+    const replayed_len = alternate.capturedRequestBody(&replayed_sent);
+    try std.testing.expectEqualStrings(routed_json, replayed_sent[0..replayed_len]);
+    try std.testing.expect(std.mem.indexOf(u8, replayed_sent[0..replayed_len], obs.admittedModel()) != null);
+
+    // The bytes sent on the two attempts are byte-identical to each other.
+    try std.testing.expectEqualStrings(first_sent[0..first_len], replayed_sent[0..replayed_len]);
+}
+
+test "client cancellation mid stream in a stream-once request keeps the latch latched and releases the reservation" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // A large 2xx that pauses mid-stream so the client can cancel while the pump
+    // is running.
+    const response_body = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(response_body);
+    @memset(response_body, 'y');
+    const prefix = "streamed-prefix";
+    @memcpy(response_body[0..prefix.len], prefix);
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = response_body,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    var event_buffer: [512]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    // Budget below the request body: it cannot be reserved, so the request is
+    // IRREVOCABLY stream-once before the primary is even contacted — distinct
+    // from the replayable mid-stream cancellation already covered.
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .reservation_budget_bytes = 4096,
+    });
+    defer listener.deinit();
+
+    const pad = try std.testing.allocator.alloc(u8, 8 * 1024);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"model\":\"{s}\",\"pad\":\"{s}\"}}", .{ routed_model, pad });
+    defer std.testing.allocator.free(body);
+
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, body);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    var stream_live = true;
+    defer if (stream_live) stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&primary);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    // Cancel mid-stream, then let the paused upstream resume into a dead client.
+    std.posix.shutdown(stream.handle, .both) catch {};
+    stream.close();
+    stream_live = false;
+    primary.releasePausedResponse();
+    try waitForListenerIdle(listener);
+
+    // Streaming cancellation is observable as a VALUE-FREE event: the kind is
+    // immediately closed, carrying no payload field.
+    try std.testing.expect(eventBufferContains(event_stream.getWritten(), "{\"kind\":\"claude_proxy_client_disconnected\"}"));
+    // The stream-once latch never flipped back to replayable...
+    const obs = observationSnapshot(listener);
+    try std.testing.expectEqual(ReplayMode.stream_once, obs.replay_mode);
+    // ...and every reservation for the request returned to zero.
+    try std.testing.expectEqual(@as(usize, 0), reservedBytes(listener));
+    // No replay to the alternate; exactly one primary attempt was made.
+    try std.testing.expect(alternate.snapshot().isZero());
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+}
+
+test "a replay-budget overflow releases its reservation and the next request is unaffected" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 always fails pre-body 401; the alternate always succeeds.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .unauthorized, .body = "denied" },
+        .{ .status = .unauthorized, .body = "denied" },
+    });
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "{\"ok\":true}" }});
+    defer alternate.deinit();
+
+    // A budget large enough for the small replayable request but far below the
+    // padded overflow request.
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .reservation_budget_bytes = 8192,
+    });
+    defer listener.deinit();
+
+    // Request 1 overflows the pool: it cannot reserve, degrades to stream-once,
+    // refuses the alternate, and delivers route 1's own 401.
+    const pad = try std.testing.allocator.alloc(u8, 32 * 1024);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const overflow_body = try std.fmt.allocPrint(std.testing.allocator, "{{\"model\":\"{s}\",\"pad\":\"{s}\"}}", .{ routed_model, pad });
+    defer std.testing.allocator.free(overflow_body);
+    {
+        const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, overflow_body);
+        defer std.testing.allocator.free(request);
+        const response = try requestRawAlloc(std.testing.allocator, listener.address(), request);
+        defer std.testing.allocator.free(response);
+        try expectStatus(response, "HTTP/1.1 401 Unauthorized\r\n");
+    }
+    // The overflow request returned every reservation it took (it took none): the
+    // pool is back to its prior level and the alternate was never contacted.
+    try std.testing.expectEqual(@as(usize, 0), reservedBytes(listener));
+    try std.testing.expect(alternate.snapshot().isZero());
+
+    // Request 2 is small enough to reserve: the pool is uncorrupted, so it takes
+    // and releases a reservation and the alternate serves the retry.
+    {
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+        try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    }
+    try std.testing.expectEqual(@as(usize, 0), reservedBytes(listener));
+    try std.testing.expectEqual(@as(usize, 1), alternate.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 2), primary.snapshot().call_count);
+}
+
 test "a same-identity alternate is refused and the original pre-body failure is delivered" {
     const capability = try SessionCapability.generate(std.testing.allocator);
     defer capability.deinit();
@@ -3968,6 +4143,72 @@ test "abrupt sidecar death before the routed capability check stays bounded and 
     // No reservation was ever taken, and no upstream call ran.
     try std.testing.expectEqual(@as(usize, 0), outstanding);
     try std.testing.expect(primary.snapshot().isZero());
+    try std.testing.expect(alternate.snapshot().isZero());
+
+    capability.revoke();
+    try std.testing.expect(capability.isRevoked());
+    try std.testing.expect(!capability.validate(&carrier));
+}
+
+test "abrupt sidecar death mid stream in an overflow-origin request stays bounded and reclaims" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // A large 2xx that pauses mid-stream and never resumes.
+    const big = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'y');
+    const prefix = "overflow-stalled-prefix";
+    @memcpy(big[0..prefix.len], prefix);
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = big,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    // Budget below the request body: the request is stream-once (overflow origin)
+    // and holds NO reservation while it streams — distinct from the replayable
+    // mid-stream teardown already covered, which holds a live reservation.
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .reservation_budget_bytes = 4096,
+    });
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const pad = try std.testing.allocator.alloc(u8, 8 * 1024);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"model\":\"{s}\",\"pad\":\"{s}\"}}", .{ routed_model, pad });
+    defer std.testing.allocator.free(body);
+
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, body);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&primary);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    // Overflow origin: the request holds no reservation while it streams.
+    try std.testing.expectEqual(@as(usize, 0), reservedBytes(listener));
+
+    // Teardown must interrupt the stalled upstream read, stay bounded, and leave
+    // the pool at zero.
+    var shutdown_timer = try std.time.Timer.start();
+    const outstanding = teardown(listener);
+    listener_live = false;
+    try std.testing.expect(shutdown_timer.read() < std.time.ns_per_s);
+    try std.testing.expectEqual(@as(usize, 0), outstanding);
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
     try std.testing.expect(alternate.snapshot().isZero());
 
     capability.revoke();
