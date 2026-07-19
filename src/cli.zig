@@ -18,6 +18,8 @@ pub const Command = union(enum) {
     recommend,
     health: HealthArgs,
     discover: DiscoverArgs,
+    setup_plan: SetupPlanArgs,
+    repair_target_plan: RepairTargetPlanArgs,
     repair_plan: RepairPlanArgs,
     repair_run: RepairRunArgs,
     route: RouteArgs,
@@ -198,6 +200,39 @@ pub const Command = union(enum) {
 
     pub const DiscoverArgs = struct {
         json: bool = false,
+    };
+
+    pub const PlanningProvider = enum {
+        claude,
+        codex,
+    };
+
+    pub const PlanningParseError = enum {
+        missing_target,
+        missing_value,
+        unsupported_provider,
+        duplicate_option,
+        unexpected_argument,
+        empty_label,
+        reserved_character,
+        reserved_subcommand,
+    };
+
+    pub const SetupPlanArgs = struct {
+        provider: ?PlanningProvider = null,
+        label: ?[]const u8 = null,
+        json: bool = false,
+        parse_error: ?PlanningParseError = null,
+        invalid_argument: ?[]const u8 = null,
+    };
+
+    pub const RepairTargetPlanArgs = struct {
+        target: ?[]const u8 = null,
+        provider: ?PlanningProvider = null,
+        label: ?[]const u8 = null,
+        json: bool = false,
+        parse_error: ?PlanningParseError = null,
+        invalid_argument: ?[]const u8 = null,
     };
 
     pub const RepairPlanArgs = struct {
@@ -845,7 +880,51 @@ fn parseRepair(args: []const []const u8) Command {
     if (args.len > 0 and eql(args[0], "run")) {
         return parseRepairRun(args[1..]);
     }
-    return .help;
+    if (repairPlanningHelpRequested(args)) return .help;
+
+    var result = Command.RepairTargetPlanArgs{};
+    var target_seen = false;
+    var json_seen = false;
+    var positional_only = false;
+
+    for (args) |arg| {
+        if (!positional_only and eql(arg, "--")) {
+            positional_only = true;
+            continue;
+        }
+        if (!positional_only and eql(arg, "--json")) {
+            if (json_seen) {
+                setRepairPlanningError(&result, .duplicate_option, arg);
+            } else {
+                json_seen = true;
+                result.json = true;
+            }
+            continue;
+        }
+        if (!positional_only and std.mem.startsWith(u8, arg, "-")) {
+            setRepairPlanningError(&result, .unexpected_argument, arg);
+            continue;
+        }
+        if (target_seen) {
+            setRepairPlanningError(&result, .unexpected_argument, arg);
+            continue;
+        }
+
+        target_seen = true;
+        result.target = arg;
+        parseRepairPlanningTarget(&result, arg);
+    }
+
+    if (!target_seen) setRepairPlanningError(&result, .missing_target, null);
+    return .{ .repair_target_plan = result };
+}
+
+fn repairPlanningHelpRequested(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (eql(arg, "--")) return false;
+        if (eql(arg, "--help") or eql(arg, "-h")) return true;
+    }
+    return false;
 }
 
 fn parseRepairRun(args: []const []const u8) Command {
@@ -1242,19 +1321,166 @@ fn parseInit(args: []const []const u8) Command {
 }
 
 fn parseSetup(args: []const []const u8) Command {
-    if (args.len == 0) return .help;
-    if (eql(args[0], "codex")) {
-        if (hasHelpFlag(args[1..])) return .codex_help;
+    if (args.len > 0 and eql(args[0], "codex")) {
+        if (codexHelpRequested(args[1..])) return .codex_help;
         var result = Command.CodexArgs{ .action = .onboard };
         parseCodexOptions(&result, args, 1);
         return .{ .codex = result };
     }
-    if (eql(args[0], "help") or hasHelpFlag(args)) return .help;
-    return .help;
+    if (setupPlanningHelpRequested(args)) return .help;
+
+    var result = Command.SetupPlanArgs{};
+    var provider_seen = false;
+    var label_seen = false;
+    var json_seen = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.startsWith(u8, arg, "--provider=")) {
+            if (provider_seen) {
+                setSetupPlanningError(&result, .duplicate_option, "--provider");
+                continue;
+            }
+            provider_seen = true;
+            const value = arg["--provider=".len..];
+            if (value.len == 0) {
+                setSetupPlanningError(&result, .missing_value, "--provider");
+            } else {
+                result.provider = parsePlanningProvider(value) orelse {
+                    setSetupPlanningError(&result, .unsupported_provider, value);
+                    continue;
+                };
+            }
+        } else if (std.mem.startsWith(u8, arg, "--label=")) {
+            if (label_seen) {
+                setSetupPlanningError(&result, .duplicate_option, "--label");
+                continue;
+            }
+            label_seen = true;
+            setSetupPlanningLabel(&result, arg["--label=".len..]);
+        } else if (eql(arg, "--json")) {
+            if (json_seen) {
+                setSetupPlanningError(&result, .duplicate_option, arg);
+            } else {
+                json_seen = true;
+                result.json = true;
+            }
+        } else if (eql(arg, "--provider")) {
+            if (provider_seen) {
+                setSetupPlanningError(&result, .duplicate_option, arg);
+                if (i + 1 < args.len and !isSetupPlanningFlag(args[i + 1])) i += 1;
+                continue;
+            }
+            provider_seen = true;
+            if (i + 1 >= args.len or isSetupPlanningFlag(args[i + 1])) {
+                setSetupPlanningError(&result, .missing_value, arg);
+                continue;
+            }
+            i += 1;
+            result.provider = parsePlanningProvider(args[i]) orelse {
+                setSetupPlanningError(&result, .unsupported_provider, args[i]);
+                continue;
+            };
+        } else if (eql(arg, "--label")) {
+            if (label_seen) {
+                setSetupPlanningError(&result, .duplicate_option, arg);
+                if (i + 1 < args.len and !isSetupPlanningFlag(args[i + 1])) i += 1;
+                continue;
+            }
+            label_seen = true;
+            if (i + 1 >= args.len) {
+                setSetupPlanningError(&result, .missing_value, arg);
+                continue;
+            }
+            i += 1;
+            setSetupPlanningLabel(&result, args[i]);
+        } else {
+            setSetupPlanningError(&result, .unexpected_argument, arg);
+        }
+    }
+    return .{ .setup_plan = result };
+}
+
+fn setSetupPlanningLabel(result: *Command.SetupPlanArgs, value: []const u8) void {
+    if (value.len == 0) {
+        setSetupPlanningError(result, .empty_label, value);
+    } else if (std.mem.indexOfScalar(u8, value, '#') != null) {
+        setSetupPlanningError(result, .reserved_character, value);
+    } else {
+        result.label = value;
+    }
+}
+
+fn isSetupPlanningFlag(value: []const u8) bool {
+    return eql(value, "--provider") or
+        eql(value, "--label") or
+        eql(value, "--json") or
+        eql(value, "--help") or
+        eql(value, "-h");
+}
+
+fn parsePlanningProvider(value: []const u8) ?Command.PlanningProvider {
+    if (eql(value, "claude")) return .claude;
+    if (eql(value, "codex")) return .codex;
+    return null;
+}
+
+fn parseRepairPlanningTarget(result: *Command.RepairTargetPlanArgs, target: []const u8) void {
+    if (target.len == 0) {
+        setRepairPlanningError(result, .empty_label, target);
+        return;
+    }
+    const colon = std.mem.indexOfScalar(u8, target, ':') orelse {
+        if (eql(target, "run")) {
+            setRepairPlanningError(result, .reserved_subcommand, target);
+            return;
+        }
+        if (std.mem.indexOfScalar(u8, target, '#') != null) {
+            setRepairPlanningError(result, .reserved_character, target);
+            return;
+        }
+        result.label = target;
+        return;
+    };
+    const provider_name = target[0..colon];
+    const label = target[colon + 1 ..];
+    result.provider = parsePlanningProvider(provider_name) orelse {
+        setRepairPlanningError(result, .unsupported_provider, provider_name);
+        return;
+    };
+    if (label.len == 0) {
+        setRepairPlanningError(result, .empty_label, label);
+        return;
+    }
+    if (std.mem.indexOfScalar(u8, label, '#') != null) {
+        setRepairPlanningError(result, .reserved_character, label);
+        return;
+    }
+    result.label = label;
+}
+
+fn setSetupPlanningError(
+    result: *Command.SetupPlanArgs,
+    err: Command.PlanningParseError,
+    invalid_argument: ?[]const u8,
+) void {
+    if (result.parse_error != null) return;
+    result.parse_error = err;
+    result.invalid_argument = invalid_argument;
+}
+
+fn setRepairPlanningError(
+    result: *Command.RepairTargetPlanArgs,
+    err: Command.PlanningParseError,
+    invalid_argument: ?[]const u8,
+) void {
+    if (result.parse_error != null) return;
+    result.parse_error = err;
+    result.invalid_argument = invalid_argument;
 }
 
 fn parseCodex(args: []const []const u8) Command {
-    if (hasHelpFlag(args) or (args.len > 0 and eql(args[0], "help"))) return .codex_help;
+    if (codexHelpRequested(args)) return .codex_help;
 
     var result = Command.CodexArgs{};
     var option_start: usize = 0;
@@ -1403,11 +1629,57 @@ fn eql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-fn hasHelpFlag(args: []const []const u8) bool {
-    for (args) |arg| {
-        if (eql(arg, "--help") or eql(arg, "-h")) return true;
+fn setupPlanningHelpRequested(args: []const []const u8) bool {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if ((i == 0 and eql(arg, "help")) or eql(arg, "--help") or eql(arg, "-h")) {
+            return true;
+        }
+        if ((eql(arg, "--provider") or eql(arg, "--label")) and i + 1 < args.len) {
+            i += 1;
+        }
     }
     return false;
+}
+
+fn codexHelpRequested(args: []const []const u8) bool {
+    const forwards_after_separator = args.len > 0 and eql(args[0], "managed");
+    var after_separator = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (eql(arg, "--")) {
+            if (forwards_after_separator) return false;
+            after_separator = true;
+            continue;
+        }
+        if (eql(arg, "--help") or eql(arg, "-h") or
+            (i == 0 and eql(arg, "help")))
+        {
+            return true;
+        }
+        if (!after_separator and codexOptionTakesValue(arg) and i + 1 < args.len) i += 1;
+    }
+    return false;
+}
+
+fn codexOptionTakesValue(arg: []const u8) bool {
+    return eql(arg, "--profile") or
+        eql(arg, "-p") or
+        eql(arg, "--account") or
+        eql(arg, "--accounts") or
+        eql(arg, "--capabilities") or
+        eql(arg, "--capability") or
+        eql(arg, "--store-root") or
+        eql(arg, "--output") or
+        eql(arg, "--candidate") or
+        eql(arg, "--backup") or
+        eql(arg, "--status-file") or
+        eql(arg, "--prompt") or
+        eql(arg, "--model") or
+        eql(arg, "--from-account") or
+        eql(arg, "--resume");
 }
 
 pub fn printUsage(writer: anytype) !void {
@@ -1471,6 +1743,11 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  repair-plan [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--json]
         \\      Explain non-mutating repair actions from runtime and liveness state.
+        \\
+        \\  repair [--json] [--] <label|provider:label>
+        \\      Plan a label-scoped repair without reading credentials or executing a provider CLI.
+        \\      The bare label "run" is reserved by the legacy executor; use provider:run for that account.
+        \\      Use -- before a target that begins with '-'.
         \\
         \\  repair run [--profile <name>] [--provider <name>] [--account <name>] [--capability <name>] [--confirm-repair] [--json]
         \\      Run one admitted repair action; refuses mutation without confirmation.
@@ -1540,8 +1817,11 @@ pub fn printUsage(writer: anytype) !void {
         \\  init [--interactive] [--codex-max]
         \\      Generate a starter config file.
         \\
+        \\  setup [--provider claude|codex] [--label <label>] [--json]
+        \\      Plan first-run setup without credential, provider, install, or service access.
+        \\
         \\  setup codex [--accounts a,b,c] [--device|--status-only] [--live]
-        \\      First-run Codex setup alias.
+        \\      Legacy effectful Codex onboarding; may create stores and execute Codex login/status.
         \\
         \\  codex setup|onboard [--accounts a,b,c] [--device|--status-only] [--live]
         \\      Bootstrap isolated Codex account stores and login flow.
@@ -1989,6 +2269,16 @@ test "parse codex managed resume last passthrough" {
         },
         else => return error.Unexpected,
     }
+
+    const help_args = [_][]const u8{ "codex", "managed", "--", "--help" };
+    switch (parse(&help_args)) {
+        .codex => |codex| {
+            try std.testing.expect(codex.action == .managed);
+            try std.testing.expectEqual(@as(usize, 1), codex.managed_argv.len);
+            try std.testing.expectEqualStrings("--help", codex.managed_argv[0]);
+        },
+        else => return error.Unexpected,
+    }
 }
 
 test "parse codex broker session smoke" {
@@ -2139,6 +2429,132 @@ test "parse setup codex alias" {
         },
         else => return error.Unexpected,
     }
+
+    const separator_help = [_][]const u8{ "setup", "codex", "--", "--help" };
+    try std.testing.expect(parse(&separator_help) == .codex_help);
+
+    const direct_separator_help = [_][]const u8{ "codex", "setup", "--", "--help" };
+    try std.testing.expect(parse(&direct_separator_help) == .codex_help);
+
+    const separator_option_help = [_][]const u8{ "codex", "setup", "--", "--account", "--help" };
+    try std.testing.expect(parse(&separator_option_help) == .codex_help);
+
+    const separator_short_help = [_][]const u8{ "codex", "canary", "--", "--profile", "-h" };
+    try std.testing.expect(parse(&separator_short_help) == .codex_help);
+}
+
+test "parse setup planning front door" {
+    const empty_args = [_][]const u8{"setup"};
+    switch (parse(&empty_args)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.provider == null);
+            try std.testing.expect(setup.label == null);
+            try std.testing.expect(setup.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const args = [_][]const u8{ "setup", "--provider", "claude", "--label", "work", "--json" };
+    switch (parse(&args)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.provider == .claude);
+            try std.testing.expectEqualStrings("work", setup.label.?);
+            try std.testing.expect(setup.json);
+            try std.testing.expect(setup.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const help_label = [_][]const u8{ "setup", "--provider", "codex", "--label", "--help", "--json" };
+    switch (parse(&help_label)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.provider == .codex);
+            try std.testing.expectEqualStrings("--help", setup.label.?);
+            try std.testing.expect(setup.json);
+            try std.testing.expect(setup.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse setup planning errors stay structured" {
+    const unsupported = [_][]const u8{ "setup", "--provider", "figma", "--json" };
+    switch (parse(&unsupported)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.json);
+            try std.testing.expect(setup.parse_error == .unsupported_provider);
+            try std.testing.expectEqualStrings("figma", setup.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const duplicate = [_][]const u8{ "setup", "--label", "one", "--label", "two" };
+    switch (parse(&duplicate)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.parse_error == .duplicate_option);
+            try std.testing.expectEqualStrings("--label", setup.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const missing_provider = [_][]const u8{ "setup", "--provider", "--json" };
+    switch (parse(&missing_provider)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.json);
+            try std.testing.expect(setup.parse_error == .missing_value);
+            try std.testing.expectEqualStrings("--provider", setup.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const duplicate_before_flag = [_][]const u8{ "setup", "--label", "one", "--label", "--json" };
+    switch (parse(&duplicate_before_flag)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.json);
+            try std.testing.expect(setup.parse_error == .duplicate_option);
+            try std.testing.expectEqualStrings("--label", setup.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const reserved = [_][]const u8{ "setup", "--label", "work#codex-max" };
+    switch (parse(&reserved)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.parse_error == .reserved_character);
+            try std.testing.expectEqualStrings("work#codex-max", setup.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const long_label = "x" ** 300;
+    const long = [_][]const u8{ "setup", "--provider", "claude", "--label", long_label };
+    switch (parse(&long)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.parse_error == null);
+            try std.testing.expectEqualStrings(long_label, setup.label.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const leading_hyphen = [_][]const u8{ "setup", "--provider", "codex", "--label", "-work" };
+    switch (parse(&leading_hyphen)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.parse_error == null);
+            try std.testing.expectEqualStrings("-work", setup.label.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const flag_shaped_label = [_][]const u8{ "setup", "--json", "--provider=codex", "--label=--json" };
+    switch (parse(&flag_shaped_label)) {
+        .setup_plan => |setup| {
+            try std.testing.expect(setup.provider == .codex);
+            try std.testing.expectEqualStrings("--json", setup.label.?);
+            try std.testing.expect(setup.json);
+            try std.testing.expect(setup.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
 }
 
 test "parse codex probe-all with capability alias" {
@@ -2175,6 +2591,38 @@ test "parse codex login account" {
             try std.testing.expect(codex.device);
         },
         else => return error.Unexpected,
+    }
+}
+
+test "parse codex help-shaped option values as account labels" {
+    for ([_][]const u8{ "--help", "-h" }) |label| {
+        const args = [_][]const u8{ "codex", "login-device", "--account", label };
+        switch (parse(&args)) {
+            .codex => |codex| {
+                try std.testing.expect(codex.action == .login_device);
+                try std.testing.expectEqualStrings(label, codex.account.?);
+                try std.testing.expect(codex.device);
+            },
+            else => return error.Unexpected,
+        }
+
+        const setup_args = [_][]const u8{ "setup", "codex", "--account", label };
+        switch (parse(&setup_args)) {
+            .codex => |codex| {
+                try std.testing.expect(codex.action == .onboard);
+                try std.testing.expectEqualStrings(label, codex.account.?);
+            },
+            else => return error.Unexpected,
+        }
+
+        const direct_setup_args = [_][]const u8{ "codex", "setup", "--account", label };
+        switch (parse(&direct_setup_args)) {
+            .codex => |codex| {
+                try std.testing.expect(codex.action == .onboard);
+                try std.testing.expectEqualStrings(label, codex.account.?);
+            },
+            else => return error.Unexpected,
+        }
     }
 }
 
@@ -2224,6 +2672,19 @@ test "parse enroll plan provider account mode json" {
             try std.testing.expect(enroll.json);
         },
         else => return error.Unexpected,
+    }
+}
+
+test "parse enroll plan accepts flag-shaped provider through explicit option" {
+    const args = [_][]const u8{ "enroll", "plan", "--provider", "--json", "--account", "work", "--json" };
+    switch (parse(&args)) {
+        .enroll => |enroll| {
+            try std.testing.expect(enroll.action == .plan);
+            try std.testing.expectEqualStrings("--json", enroll.provider.?);
+            try std.testing.expectEqualStrings("work", enroll.account.?);
+            try std.testing.expect(enroll.json);
+        },
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -2311,6 +2772,116 @@ test "parse repair run requires explicit confirmation flag" {
             try std.testing.expectEqualStrings("codex-max", repair.capability.?);
             try std.testing.expect(repair.confirm_repair);
             try std.testing.expect(repair.json);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse repair target planning front door" {
+    const bare_args = [_][]const u8{ "repair", "work", "--json" };
+    switch (parse(&bare_args)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.provider == null);
+            try std.testing.expectEqualStrings("work", repair.label.?);
+            try std.testing.expect(repair.json);
+            try std.testing.expect(repair.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const scoped_args = [_][]const u8{ "repair", "claude:work:west" };
+    switch (parse(&scoped_args)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.provider == .claude);
+            try std.testing.expectEqualStrings("work:west", repair.label.?);
+            try std.testing.expect(repair.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const reserved_legacy_label = [_][]const u8{ "repair", "codex:run", "--json" };
+    switch (parse(&reserved_legacy_label)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.provider == .codex);
+            try std.testing.expectEqualStrings("run", repair.label.?);
+            try std.testing.expect(repair.json);
+            try std.testing.expect(repair.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const leading_hyphen = [_][]const u8{ "repair", "--json", "--", "-work" };
+    switch (parse(&leading_hyphen)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.provider == null);
+            try std.testing.expectEqualStrings("-work", repair.label.?);
+            try std.testing.expect(repair.json);
+            try std.testing.expect(repair.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const help_shaped_label = [_][]const u8{ "repair", "--json", "--", "codex:--help" };
+    switch (parse(&help_shaped_label)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.provider == .codex);
+            try std.testing.expectEqualStrings("--help", repair.label.?);
+            try std.testing.expect(repair.json);
+            try std.testing.expect(repair.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse repair target planning errors stay structured" {
+    const missing = [_][]const u8{ "repair", "--json" };
+    switch (parse(&missing)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.json);
+            try std.testing.expect(repair.parse_error == .missing_target);
+        },
+        else => return error.Unexpected,
+    }
+
+    const unsupported = [_][]const u8{ "repair", "figma:work" };
+    switch (parse(&unsupported)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.parse_error == .unsupported_provider);
+            try std.testing.expectEqualStrings("figma", repair.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const reserved = [_][]const u8{ "repair", "codex:max-1#codex-max" };
+    switch (parse(&reserved)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.parse_error == .reserved_character);
+            try std.testing.expectEqualStrings("max-1#codex-max", repair.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    for ([_][]const []const u8{
+        &.{ "repair", "--json", "run" },
+        &.{ "repair", "--", "run" },
+    }) |reserved_run| {
+        switch (parse(reserved_run)) {
+            .repair_target_plan => |repair| {
+                try std.testing.expect(repair.parse_error == .reserved_subcommand);
+                try std.testing.expectEqualStrings("run", repair.invalid_argument.?);
+            },
+            else => return error.Unexpected,
+        }
+    }
+
+    const long_label = "x" ** 300;
+    const scoped_long = "claude:" ++ long_label;
+    const long = [_][]const u8{ "repair", scoped_long };
+    switch (parse(&long)) {
+        .repair_target_plan => |repair| {
+            try std.testing.expect(repair.parse_error == null);
+            try std.testing.expect(repair.provider == .claude);
+            try std.testing.expectEqualStrings(long_label, repair.label.?);
         },
         else => return error.Unexpected,
     }
@@ -2794,6 +3365,30 @@ test "parse codex run property: unknown pre-separator args are never dropped" {
 pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
     if (eql(shell_name, "fish")) {
         try writer.writeAll(
+            \\function __omux_exact_subcommand_pair
+            \\    set -l tokens (commandline -opc)
+            \\    test (count $tokens) -ge 3; or return 1
+            \\    test "$tokens[2]" = "$argv[1]"; and test "$tokens[3]" = "$argv[2]"
+            \\end
+            \\function __omux_command_is
+            \\    set -l tokens (commandline -opc)
+            \\    test (count $tokens) -ge 2; or return 1
+            \\    test "$tokens[2]" = "$argv[1]"
+            \\end
+            \\function __omux_command_root
+            \\    set -l tokens (commandline -opc)
+            \\    test (count $tokens) -eq 2; or return 1
+            \\    test "$tokens[2]" = "$argv[1]"
+            \\end
+            \\function __omux_setup_planning
+            \\    set -l tokens (commandline -opc)
+            \\    test (count $tokens) -ge 2; or return 1
+            \\    test "$tokens[2]" = setup; or return 1
+            \\    if test (count $tokens) -ge 3; and test "$tokens[3]" = codex
+            \\        return 1
+            \\    end
+            \\    return 0
+            \\end
             \\complete -c omux -w oauth-mux
             \\complete -c oauth-mux -f
             \\complete -c oauth-mux -n __fish_use_subcommand -a exec -d 'Execute with muxed credentials'
@@ -2855,13 +3450,13 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l provider -d 'Provider name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l account -d 'Account name' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair-plan' -l capability -d 'Route capability' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -a 'run' -d 'Repair subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l json -d 'JSON output'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l provider -d 'Provider name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l account -d 'Account name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l capability -d 'Route capability' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from repair' -l confirm-repair -d 'Confirm mutating repair'
+            \\complete -c oauth-mux -n '__omux_command_root repair' -a 'run' -d 'Explicit mutating repair subcommand'
+            \\complete -c oauth-mux -n '__omux_command_is repair' -l json -d 'JSON output'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair repair run' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair repair run' -l provider -d 'Provider name' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair repair run' -l account -d 'Account name' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair repair run' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair repair run' -l confirm-repair -d 'Confirm mutating repair'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -a 'select explain' -d 'Route subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from route' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l json -d 'JSON output'
@@ -2882,16 +3477,19 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l classify-codex-usage-limit -d 'Classify captured Codex usage-limit text'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l stream-capture -d 'Tee captured child output while retaining classifier buffers'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from setup' -a 'codex' -d 'Setup target'
+            \\complete -c oauth-mux -n '__omux_command_root setup' -a 'codex' -d 'Legacy Codex onboarding target'
+            \\complete -c oauth-mux -n '__omux_setup_planning' -l provider -d 'Planning provider (claude or codex)' -r
+            \\complete -c oauth-mux -n '__omux_setup_planning' -l label -d 'Account label' -r
+            \\complete -c oauth-mux -n '__omux_setup_planning' -l json -d 'JSON output'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from config' -a 'validate path' -d 'Config subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all preflight managed-plan managed status-latest broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l profile -s p -d 'Profile name' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l capability -d 'Route capability' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l account -d 'Route account id' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l session-home -d 'Canonical Codex session authority home' -r
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l isolated-session-store -d 'Use isolated session authority for this run'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l json-status -d 'Emit redacted adapter status frames'
-            \\complete -c oauth-mux -n '__fish_seen_subcommand_from codex run' -l json-status-file -d 'Write redacted adapter status frames to a file' -r
+            \\complete -c oauth-mux -n '__omux_command_root codex' -a 'resume run setup onboard canary live-qa revalidate-exhausted probe-all preflight managed-plan managed status-latest broker-plan broker-session-plan broker-session-smoke broker-run broker-fallback-drill broker-smoke broker-refresh-smoke broker-401-smoke broker-quota-smoke config-candidate config-merge bootstrap-dirs login login-device login-status login-status-all' -d 'Codex subcommand'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l profile -s p -d 'Profile name' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l capability -d 'Route capability' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l account -d 'Route account id' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l session-home -d 'Canonical Codex session authority home' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l isolated-session-store -d 'Use isolated session authority for this run'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l json-status -d 'Emit redacted adapter status frames'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair codex run' -l json-status-file -d 'Write redacted adapter status frames to a file' -r
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -a 'run loop start stop status events handoffs tick' -d 'Daemon subcommand'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l stay-afloat -d 'Host foreground stay-afloat tick loop'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from daemon' -l json -d 'JSON output'
@@ -2956,6 +3554,43 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\
         );
     }
+}
+
+test "fish completions distinguish planning from legacy positional verbs" {
+    var output = std.ArrayList(u8).init(std.testing.allocator);
+    defer output.deinit();
+    try printCompletions(output.writer(), "fish");
+
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_setup_planning' -l label",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_exact_subcommand_pair repair run' -l confirm-repair",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_exact_subcommand_pair codex run' -l session-home",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_command_root repair' -a 'run'",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_command_root setup' -a 'codex'",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_command_root codex' -a 'resume run setup",
+    ) != null);
 }
 
 test "parse version" {

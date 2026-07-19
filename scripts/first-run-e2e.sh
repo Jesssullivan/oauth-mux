@@ -106,9 +106,187 @@ run_json() {
   jq -e type "$output_file" >/dev/null
 }
 
+sentinel_bin="$tmp/tin3006-bin"
+sentinel_log="$tmp/tin3006-executed"
+sentinel_trace="$tmp/tin3006-trace"
+mkdir -p "$sentinel_bin"
+for sentinel_name in claude codex oauth-mux security secret-tool launchctl systemctl brew nix tin3006-credential-sentinel; do
+  cat >"$sentinel_bin/$sentinel_name" <<'SENTINEL'
+#!/usr/bin/env bash
+printf '%s\n' "${0##*/}" >>"${TIN3006_SENTINEL_LOG:?}"
+exit 97
+SENTINEL
+  chmod 0755 "$sentinel_bin/$sentinel_name"
+done
+
+planning_omux() (
+  export PATH="$sentinel_bin:$PATH"
+  export TIN3006_SENTINEL_LOG="$sentinel_log"
+  export OMUX_TRACE=1
+  export OMUX_TRACE_FILE="$sentinel_trace"
+  omux "$@"
+)
+
+planning_omux_with_config() (
+  config_override="$1"
+  shift
+  unset OMUX_CONFIG_DIR
+  unset OMUX_STATE_DIR
+  unset OMUX_CODEX_STORE_ROOT
+  unset OMUX_CLAUDE_CONFIG_ROOT
+  export HOME="$home"
+  export XDG_CONFIG_HOME="$xdg_config"
+  export XDG_STATE_HOME="$xdg_state"
+  export XDG_DATA_HOME="$xdg_data"
+  export XDG_RUNTIME_DIR="$xdg_runtime"
+  export OMUX_CONFIG="$config_override"
+  export PATH="$sentinel_bin:$PATH"
+  export TIN3006_SENTINEL_LOG="$sentinel_log"
+  export OMUX_TRACE=1
+  export OMUX_TRACE_FILE="$sentinel_trace"
+  "$bin" "$@"
+)
+
+planning_omux_with_config_and_state() (
+  config_override="$1"
+  state_override="$2"
+  shift 2
+  unset OMUX_CONFIG_DIR
+  unset OMUX_CODEX_STORE_ROOT
+  unset OMUX_CLAUDE_CONFIG_ROOT
+  export HOME="$home"
+  export XDG_CONFIG_HOME="$xdg_config"
+  export XDG_STATE_HOME="$xdg_state"
+  export XDG_DATA_HOME="$xdg_data"
+  export XDG_RUNTIME_DIR="$xdg_runtime"
+  export OMUX_CONFIG="$config_override"
+  export OMUX_STATE_DIR="$state_override"
+  export PATH="$sentinel_bin:$PATH"
+  export TIN3006_SENTINEL_LOG="$sentinel_log"
+  export OMUX_TRACE=1
+  export OMUX_TRACE_FILE="$sentinel_trace"
+  "$bin" "$@"
+)
+
+snapshot_isolated_roots() {
+  output_file="$1"
+  {
+    for root in "$home" "$xdg_config" "$xdg_state" "$xdg_data" "$xdg_runtime"; do
+      printf 'root %s\n' "$root"
+      if [ ! -e "$root" ]; then
+        printf 'missing\n'
+        continue
+      fi
+      find "$root" -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r path; do
+        relative="${path#"$root"/}"
+        if [ -L "$path" ]; then
+          printf 'link %s -> %s\n' "$relative" "$(readlink "$path")"
+        elif [ -d "$path" ]; then
+          printf 'dir %s\n' "$relative"
+        elif [ -f "$path" ]; then
+          printf 'file %s ' "$relative"
+          cksum <"$path"
+        else
+          printf 'other %s\n' "$relative"
+        fi
+      done
+    done
+  } >"$output_file"
+}
+
+assert_planning_truth() {
+  output_file="$1"
+  jq -e '
+    .execution_available == false
+    and .mutates == false
+    and .reads_credential_material == false
+    and .executes_provider_cli == false
+    and .spends_provider_calls == false
+    and .managed_claude_forwarding == "compile_disabled"
+    and .claim_level == "planning_only"
+    and .readiness_claimed == false
+    and .binary_observation.metadata_only == true
+    and .binary_observation.version_execution == false
+    and (.binary_observation.running_version | type == "string")
+  ' "$output_file" >/dev/null
+}
+
 printf 'first-run e2e: version from isolated environment\n'
 version_out="$(omux version)"
 expect_contains "$version_out" "oauth-mux " "version prints binary version"
+
+printf 'first-run e2e: setup and repair planning are zero-touch before config\n'
+planning_before="$tmp/tin3006-before"
+planning_after="$tmp/tin3006-after"
+snapshot_isolated_roots "$planning_before"
+setup_before="$tmp/tin3006-setup-before.json"
+repair_before="$tmp/tin3006-repair-before.json"
+planning_omux setup --provider claude --label work --json >"$setup_before"
+planning_omux repair claude:work --json >"$repair_before"
+assert_planning_truth "$setup_before"
+assert_planning_truth "$repair_before"
+planning_omux setup --provider claude --label work --json >"$tmp/tin3006-setup-before-repeat.json"
+planning_omux repair claude:work --json >"$tmp/tin3006-repair-before-repeat.json"
+cmp "$setup_before" "$tmp/tin3006-setup-before-repeat.json"
+cmp "$repair_before" "$tmp/tin3006-repair-before-repeat.json"
+jq -e '
+  .command == "setup"
+  and .provider == "claude"
+  and .label == "work"
+  and .status == "config_missing"
+  and .config.state == "missing"
+  and .next_action.command == "omux init"
+  and .next_action.mutates == true
+' "$setup_before" >/dev/null
+jq -e '
+  .command == "repair"
+  and .target == "claude:work"
+  and .provider == "claude"
+  and .label == "work"
+  and .status == "config_missing"
+  and .config.state == "missing"
+' "$repair_before" >/dev/null
+
+help_label_setup="$tmp/tin3006-help-label-setup.json"
+planning_omux setup --provider codex --label --help --json >"$help_label_setup"
+assert_planning_truth "$help_label_setup"
+jq -e '
+  .command == "setup"
+  and .provider == "codex"
+  and .label == "--help"
+  and .status == "config_missing"
+  and .config.state == "missing"
+' "$help_label_setup" >/dev/null
+
+invalid_setup="$tmp/tin3006-invalid-setup.json"
+if planning_omux setup --provider --json >"$invalid_setup"; then
+  printf 'first-run e2e assertion failed: invalid setup planning returned success\n' >&2
+  exit 1
+fi
+assert_planning_truth "$invalid_setup"
+jq -e '
+  .ok == false
+  and .error == "missing_value"
+  and .invalid_argument == "--provider"
+  and .status == "invalid_request"
+' "$invalid_setup" >/dev/null
+
+adversarial_label=$'work\'"\nnext_action=forged'
+setup_adversarial="$tmp/tin3006-setup-adversarial.json"
+planning_omux setup --provider claude --label "$adversarial_label" --json >"$setup_adversarial"
+assert_planning_truth "$setup_adversarial"
+jq -e --arg label "$adversarial_label" '.label == $label' "$setup_adversarial" >/dev/null
+setup_adversarial_text="$(planning_omux setup --provider claude --label "$adversarial_label")"
+expect_contains "$setup_adversarial_text" 'label="work'\''\"\nnext_action=forged"' "planning text quotes adversarial label"
+if printf '%s\n' "$setup_adversarial_text" | grep -q '^next_action=forged$'; then
+  printf 'first-run e2e assertion failed: adversarial label injected a text field\n' >&2
+  exit 1
+fi
+
+snapshot_isolated_roots "$planning_after"
+cmp "$planning_before" "$planning_after"
+test ! -e "$sentinel_log"
+test ! -e "$sentinel_trace"
 
 printf 'first-run e2e: doctor before config is parseable and actionable\n'
 doctor_before="$tmp/doctor-before.json"
@@ -133,6 +311,647 @@ expect_not_contains "$config_json" "$operator_home" "starter config does not ref
 printf 'first-run e2e: generated config validates\n'
 validate_out="$(omux config validate)"
 expect_contains "$validate_out" "config: valid" "config validate succeeds"
+
+printf 'first-run e2e: configured setup and repair plans remain zero-touch\n'
+planning_configured_before="$tmp/tin3006-configured-before"
+planning_configured_after="$tmp/tin3006-configured-after"
+snapshot_isolated_roots "$planning_configured_before"
+setup_configured="$tmp/tin3006-setup-configured.json"
+repair_configured="$tmp/tin3006-repair-configured.json"
+planning_omux setup --provider codex --label max-1 --json >"$setup_configured"
+planning_omux repair codex:max-1 --json >"$repair_configured"
+assert_planning_truth "$setup_configured"
+assert_planning_truth "$repair_configured"
+planning_omux setup --provider codex --label max-1 --json >"$tmp/tin3006-setup-configured-repeat.json"
+planning_omux repair codex:max-1 --json >"$tmp/tin3006-repair-configured-repeat.json"
+cmp "$setup_configured" "$tmp/tin3006-setup-configured-repeat.json"
+cmp "$repair_configured" "$tmp/tin3006-repair-configured-repeat.json"
+jq -e '
+  .status == "capability_routes_ready_for_inspection"
+  and .config.state == "valid"
+  and .config.provider_configured == true
+  and .config.label_configured == true
+  and .config.matching_capabilities == 2
+  and .capability == null
+  and .capability_probeable == null
+  and (.capability_routes | map(.name) | sort) == ["codex-max", "codex-mini"]
+  and all(.capability_routes[];
+    .probeable == true
+    and (.planning_command | startswith("omux repair-plan "))
+    and .planning_argv[0:4] == ["omux", "repair-plan", "--json", "--provider"]
+  )
+  and .health.key_addressable == true
+  and .binary_observation.provider_cli_present == null
+  and .next_action.command == null
+  and (.next_action.instruction | contains("capability_routes"))
+' "$setup_configured" >/dev/null
+jq -e '
+  .status == "capability_ambiguous"
+  and .config.state == "valid"
+  and .config.label_configured == true
+  and .config.matching_capabilities == 2
+  and .capability == null
+  and (.capability_routes | map(.name) | sort) == ["codex-max", "codex-mini"]
+  and all(.capability_routes[];
+    .probeable == true
+    and (.planning_command | startswith("omux repair-plan "))
+    and .planning_argv[0:4] == ["omux", "repair-plan", "--json", "--provider"]
+  )
+  and .health.recorded == false
+  and .repair_action == null
+  and .next_action.command == null
+  and (.next_action.instruction | contains("capability_routes"))
+' "$repair_configured" >/dev/null
+
+codex_max_only_config="$tmp/tin3006-codex-max-only-config.json"
+jq '
+  .profiles |= with_entries(select(.key == "codex-max"))
+  | .profiles["codex-max"].providers |= map(select(endswith("#codex-max")))
+  | .profiles["codex-max"].capability_degradation_chain = []
+' "$config_path" >"$codex_max_only_config"
+codex_max_plan="$tmp/tin3006-codex-max-plan.json"
+planning_omux_with_config "$codex_max_only_config" repair codex:max-1 --json >"$codex_max_plan"
+assert_planning_truth "$codex_max_plan"
+jq -e '
+  .status == "probe_needed"
+  and .capability == "codex-max"
+  and .capability_probeable == true
+  and .config.matching_capabilities == 1
+  and .health.key_addressable == true
+  and .health.recorded == false
+  and .repair_action.kind == "probe_needed"
+  and .next_action.command == "omux probe --json --provider codex --account '\''max-1'\'' --capability '\''codex-max'\''"
+  and .next_action.command_shell == "posix"
+  and .next_action.platform_supported == true
+  and .next_action.mutates == true
+  and .next_action.reads_credential_material == true
+  and .next_action.executes_provider_cli == true
+  and .next_action.spends_provider_calls == true
+' "$codex_max_plan" >/dev/null
+
+adversarial_config="$tmp/tin3006-adversarial-config.json"
+jq --arg label "$adversarial_label" '
+  .providers.codex.accounts[$label] = .providers.codex.accounts["max-1"]
+  | .profiles |= with_entries(select(.key == "codex-max"))
+  | .profiles["codex-max"].providers |= map(select(endswith("#codex-max")))
+  | .profiles["codex-max"].capability_degradation_chain = []
+  | .profiles["codex-max"].providers += ["codex:\($label)#codex-max"]
+' "$config_path" >"$adversarial_config"
+adversarial_target="codex:$adversarial_label"
+repair_adversarial="$tmp/tin3006-repair-adversarial.json"
+planning_omux_with_config "$adversarial_config" repair "$adversarial_target" --json >"$repair_adversarial"
+assert_planning_truth "$repair_adversarial"
+jq -e --arg label "$adversarial_label" '
+  .label == $label
+  and .capability == "codex-max"
+  and (.next_action.command | startswith("omux probe --json --provider codex --account "))
+  and (.next_action.command | endswith(" --capability '\''codex-max'\''"))
+' "$repair_adversarial" >/dev/null
+repair_adversarial_text="$(planning_omux_with_config "$adversarial_config" repair "$adversarial_target")"
+if printf '%s\n' "$repair_adversarial_text" | grep -q '^next_action=forged$'; then
+  printf 'first-run e2e assertion failed: adversarial label injected a configured planning field\n' >&2
+  exit 1
+fi
+
+nonexec_bin="$tmp/tin3006-nonexec-bin"
+mkdir -p "$nonexec_bin"
+printf '#!/bin/sh\nexit 97\n' >"$nonexec_bin/codex"
+chmod 0644 "$nonexec_bin/codex"
+nonexec_plan="$tmp/tin3006-nonexec-plan.json"
+(
+  export HOME="$home"
+  export XDG_CONFIG_HOME="$xdg_config"
+  export XDG_STATE_HOME="$xdg_state"
+  export XDG_DATA_HOME="$xdg_data"
+  export XDG_RUNTIME_DIR="$xdg_runtime"
+  export PATH="$nonexec_bin"
+  OMUX_CONFIG="$codex_max_only_config" "$bin" setup --provider codex --label max-1 --json
+) >"$nonexec_plan"
+assert_planning_truth "$nonexec_plan"
+jq -e '
+  .status == "provider_cli_missing"
+  and .binary_observation.provider_cli_present == false
+  and .next_action.command == null
+  and (.next_action.instruction | contains("install"))
+' "$nonexec_plan" >/dev/null
+
+ambiguous_config="$tmp/tin3006-ambiguous-config.json"
+cat >"$ambiguous_config" <<'JSON'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "kind": "claude",
+      "accounts": {
+        "shared": {
+          "secret": { "backend": "env", "variable": "TIN3006_CLAUDE_TOKEN" }
+        }
+      }
+    },
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "shared": {
+          "secret": { "backend": "env", "variable": "TIN3006_CODEX_TOKEN" }
+        }
+      }
+    }
+  }
+}
+JSON
+http_probe_config="$tmp/tin3006-http-probe-config.json"
+jq '
+  .provider_definitions = {
+    "claude": {
+      "name": "claude",
+      "repair": { "owner": "upstream_cli_login" },
+      "capabilities": [{
+        "name": "auth-status",
+        "probe": {
+          "transport": "http",
+          "method": "GET",
+          "url": "https://example.invalid/probe",
+          "auth": "none",
+          "budget": "free_local"
+        }
+      }],
+      "failure_rules": [{
+        "status": 401,
+        "class": { "dead": "token_revoked" }
+      }]
+    }
+  }
+  | .providers = { "claude": .providers.claude }
+' "$ambiguous_config" >"$http_probe_config"
+http_probe_plan="$tmp/tin3006-http-probe-plan.json"
+(
+  export HOME="$home"
+  export XDG_CONFIG_HOME="$xdg_config"
+  export XDG_STATE_HOME="$xdg_state"
+  export XDG_DATA_HOME="$xdg_data"
+  export XDG_RUNTIME_DIR="$xdg_runtime"
+  export PATH="$nonexec_bin"
+  OMUX_CONFIG="$http_probe_config" "$bin" repair claude:shared --json
+) >"$http_probe_plan"
+assert_planning_truth "$http_probe_plan"
+if ! jq -e '
+  .status == "probe_needed"
+  and .capability == "auth-status"
+  and .binary_observation.provider_cli_present == null
+  and .next_action.reads_credential_material == false
+  and .next_action.executes_provider_cli == false
+  and .next_action.spends_provider_calls == true
+' "$http_probe_plan" >/dev/null; then
+  printf 'first-run e2e assertion failed: exact HTTP probe effects were not preserved\n' >&2
+  jq . "$http_probe_plan" >&2
+  exit 1
+fi
+
+ambiguous_plan="$tmp/tin3006-ambiguous-plan.json"
+planning_omux_with_config "$ambiguous_config" repair shared --json >"$ambiguous_plan"
+assert_planning_truth "$ambiguous_plan"
+jq -e '
+  .status == "ambiguous_target"
+  and .provider == null
+  and .config.matching_providers == 2
+  and .next_action.command == null
+  and (.next_action.instruction | contains("provider-qualified"))
+' "$ambiguous_plan" >/dev/null
+
+claude_plan="$tmp/tin3006-claude-plan.json"
+planning_omux_with_config "$ambiguous_config" repair claude:shared --json >"$claude_plan"
+assert_planning_truth "$claude_plan"
+jq -e '
+  .status == "probe_needed"
+  and .capability == "auth-status"
+  and .capability_probeable == true
+  and .config.matching_capabilities == 1
+  and .next_action.command == "omux probe --json --provider claude --account '\''shared'\'' --capability '\''auth-status'\''"
+  and .next_action.mutates == true
+  and .next_action.reads_credential_material == true
+  and .next_action.executes_provider_cli == true
+  and .next_action.spends_provider_calls == false
+' "$claude_plan" >/dev/null
+
+claude_haiku_config="$tmp/tin3006-claude-haiku-config.json"
+jq '
+  .profiles = {
+    "claude-haiku": {
+      "providers": ["claude:shared#haiku"]
+    }
+  }
+' "$ambiguous_config" >"$claude_haiku_config"
+claude_haiku_plan="$tmp/tin3006-claude-haiku-plan.json"
+planning_omux_with_config "$claude_haiku_config" repair claude:shared --json >"$claude_haiku_plan"
+assert_planning_truth "$claude_haiku_plan"
+jq -e '
+  .status == "passive_observation_required"
+  and .capability == "haiku"
+  and .capability_probeable == false
+  and .config.matching_capabilities == 1
+  and .capability_routes == [{
+    "name": "haiku",
+    "probeable": false,
+    "planning_command": "omux repair-plan --json --provider claude --account '\''shared'\'' --capability '\''haiku'\''",
+    "planning_argv": ["omux", "repair-plan", "--json", "--provider", "claude", "--account", "shared", "--capability", "haiku"]
+  }]
+  and .repair_action == null
+  and .next_action.command == null
+  and (.next_action.instruction | contains("passive route evidence"))
+' "$claude_haiku_plan" >/dev/null
+
+account_only_state="$tmp/tin3006-account-only-state"
+mkdir -p "$account_only_state"
+cat >"$account_only_state/health.json" <<'JSON'
+{
+  "version": 2,
+  "accounts": [
+    {
+      "key": "claude:shared",
+      "liveness": {
+        "state": "live",
+        "availability": "available"
+      }
+    }
+  ]
+}
+JSON
+account_only_haiku_plan="$tmp/tin3006-account-only-haiku-plan.json"
+planning_omux_with_config_and_state \
+  "$claude_haiku_config" \
+  "$account_only_state" \
+  repair claude:shared --json >"$account_only_haiku_plan"
+assert_planning_truth "$account_only_haiku_plan"
+jq -e '
+  .status == "passive_observation_required"
+  and .capability == "haiku"
+  and .health.recorded == false
+  and .repair_action == null
+  and .next_action.command == null
+' "$account_only_haiku_plan" >/dev/null
+
+claude_mixed_config="$tmp/tin3006-claude-mixed-config.json"
+jq '
+  .profiles = {
+    "claude-mixed": {
+      "providers": [
+        "claude:shared#auth-status",
+        "claude:shared#haiku"
+      ]
+    }
+  }
+' "$ambiguous_config" >"$claude_mixed_config"
+claude_mixed_plan="$tmp/tin3006-claude-mixed-plan.json"
+planning_omux_with_config "$claude_mixed_config" repair claude:shared --json >"$claude_mixed_plan"
+assert_planning_truth "$claude_mixed_plan"
+jq -e '
+  .status == "capability_ambiguous"
+  and .capability == null
+  and .capability_probeable == null
+  and .config.matching_capabilities == 2
+  and (.capability_routes | map(.name)) == ["auth-status", "haiku"]
+  and (.capability_routes | map(.probeable)) == [true, false]
+  and all(.capability_routes[]; .planning_command != null and .planning_argv != null)
+  and .next_action.command == null
+' "$claude_mixed_plan" >/dev/null
+
+codex_alias_config="$tmp/tin3006-codex-alias-config.json"
+sed 's/#codex-max/#gpt-5.5/g' "$codex_max_only_config" >"$codex_alias_config"
+codex_alias_plan="$tmp/tin3006-codex-alias-plan.json"
+planning_omux_with_config "$codex_alias_config" repair codex:max-1 --json >"$codex_alias_plan"
+assert_planning_truth "$codex_alias_plan"
+jq -e '
+  .status == "probe_needed"
+  and .capability == "gpt-5.5"
+  and .capability_probeable == true
+  and .config.matching_capabilities == 1
+  and .capability_routes[0].name == "gpt-5.5"
+  and (.capability_routes[0].planning_command | endswith("--capability '\''gpt-5.5'\''"))
+  and .capability_routes[0].planning_argv[-1] == "gpt-5.5"
+  and (.next_action.command | endswith("--capability '\''gpt-5.5'\''"))
+' "$codex_alias_plan" >/dev/null
+
+quota_state="$tmp/tin3006-quota-state"
+mkdir -p "$quota_state"
+cat >"$quota_state/health.json" <<'JSON'
+{
+  "version": 2,
+  "accounts": [
+    {
+      "key": "codex:max-1#codex-max",
+      "last_probe_source": "capability_probe",
+      "last_probe_hint_class": "quota_exhausted",
+      "last_probe_decision": "try_next_account",
+      "liveness": {
+        "state": "live",
+        "availability": "quota_exhausted",
+        "window_resets_at": 4102444800,
+        "exhausted_at": 1
+      }
+    }
+  ]
+}
+JSON
+cp "$quota_state/health.json" "$tmp/tin3006-quota-health-before.json"
+quota_plan="$tmp/tin3006-quota-plan.json"
+planning_omux_with_config_and_state "$codex_max_only_config" "$quota_state" repair codex:max-1 --json >"$quota_plan"
+assert_planning_truth "$quota_plan"
+jq -e '
+  .status == "wait_for_quota"
+  and .health.recorded == true
+  and .health.summary == "quota_exhausted:reset@4102444800"
+  and .repair_action.kind == "wait_for_quota"
+  and .next_action.command == null
+' "$quota_plan" >/dev/null
+cmp "$tmp/tin3006-quota-health-before.json" "$quota_state/health.json"
+
+long_label="$(printf '%0300d' 0 | tr '0' x)"
+long_label_config="$tmp/tin3006-long-label-config.json"
+jq --arg label "$long_label" '
+  .providers.codex.accounts[$label] = .providers.codex.accounts["max-1"]
+' "$config_path" >"$long_label_config"
+long_setup="$tmp/tin3006-long-setup.json"
+long_repair="$tmp/tin3006-long-repair.json"
+planning_omux_with_config "$long_label_config" setup --provider codex --label "$long_label" --json >"$long_setup"
+planning_omux_with_config "$long_label_config" repair "codex:$long_label" --json >"$long_repair"
+assert_planning_truth "$long_setup"
+assert_planning_truth "$long_repair"
+jq -e '
+  .status == "label_not_health_addressable"
+  and .health.key_addressable == false
+  and .next_action.command == null
+' "$long_setup" >/dev/null
+jq -e '
+  .status == "label_not_health_addressable"
+  and .health.key_addressable == false
+  and .health.recorded == false
+  and .repair_action == null
+  and .next_action.command == null
+' "$long_repair" >/dev/null
+
+boundary_label="$(printf '%0240d' 0 | tr '0' x)"
+boundary_label_config="$tmp/tin3006-boundary-label-config.json"
+jq --arg label "$boundary_label" '
+  .providers.codex.accounts[$label] = .providers.codex.accounts["max-1"]
+' "$config_path" >"$boundary_label_config"
+boundary_setup="$tmp/tin3006-boundary-setup.json"
+boundary_repair="$tmp/tin3006-boundary-repair.json"
+boundary_unconfigured_setup="$tmp/tin3006-boundary-unconfigured-setup.json"
+boundary_missing_setup="$tmp/tin3006-boundary-missing-setup.json"
+boundary_invalid_setup="$tmp/tin3006-boundary-invalid-setup.json"
+boundary_invalid_config="$tmp/tin3006-boundary-invalid-config.json"
+printf '{\n' >"$boundary_invalid_config"
+planning_omux_with_config "$boundary_label_config" setup --provider codex --label "$boundary_label" --json >"$boundary_setup"
+planning_omux_with_config "$boundary_label_config" repair "codex:$boundary_label" --json >"$boundary_repair"
+planning_omux setup --provider codex --label "$boundary_label" --json >"$boundary_unconfigured_setup"
+planning_omux_with_config "$tmp/tin3006-missing-config.json" setup --provider codex --label "$boundary_label" --json >"$boundary_missing_setup"
+planning_omux_with_config "$boundary_invalid_config" setup --provider codex --label "$boundary_label" --json >"$boundary_invalid_setup"
+assert_planning_truth "$boundary_setup"
+assert_planning_truth "$boundary_repair"
+assert_planning_truth "$boundary_unconfigured_setup"
+assert_planning_truth "$boundary_missing_setup"
+assert_planning_truth "$boundary_invalid_setup"
+jq -e '
+  .config.matching_capabilities == 2
+  and .status == "label_not_health_addressable"
+  and .health.key_addressable == false
+  and all(.capability_routes[]; .planning_command == null and .planning_argv == null)
+' "$boundary_setup" >/dev/null
+jq -e '
+  .config.matching_capabilities == 2
+  and .status == "label_not_health_addressable"
+  and .health.key_addressable == false
+  and all(.capability_routes[]; .planning_command == null and .planning_argv == null)
+' "$boundary_repair" >/dev/null
+jq -e '
+  .config.label_configured == false
+  and .config.matching_capabilities == 2
+  and .status == "label_not_health_addressable"
+  and .health.key_addressable == false
+  and .next_action.command == null
+' "$boundary_unconfigured_setup" >/dev/null
+jq -e '
+  .config.state == "missing"
+  and .config.matching_capabilities == 2
+  and .status == "label_not_health_addressable"
+  and .health.key_addressable == false
+  and .next_action.command == null
+  and all(.capability_routes[]; .planning_command == null and .planning_argv == null)
+' "$boundary_missing_setup" >/dev/null
+jq -e '
+  .config.state == "invalid"
+  and .status == "config_invalid"
+  and .health.key_addressable == false
+  and .next_action.command == "omux config validate"
+' "$boundary_invalid_setup" >/dev/null
+
+reserved_label_plan="$tmp/tin3006-reserved-label.json"
+if planning_omux repair 'codex:max-1#codex-max' --json >"$reserved_label_plan"; then
+  printf 'first-run e2e assertion failed: reserved health-key label returned success\n' >&2
+  exit 1
+fi
+assert_planning_truth "$reserved_label_plan"
+jq -e '
+  .error == "reserved_character"
+  and .status == "invalid_request"
+' "$reserved_label_plan" >/dev/null
+
+run_label_config="$tmp/tin3006-run-label-config.json"
+jq '
+  .providers.codex.accounts.run = .providers.codex.accounts["max-1"]
+  | .profiles["codex-max"].providers += ["codex:run#codex-max"]
+' "$codex_max_only_config" >"$run_label_config"
+run_label_plan="$tmp/tin3006-run-label-plan.json"
+planning_omux_with_config "$run_label_config" repair codex:run --json >"$run_label_plan"
+assert_planning_truth "$run_label_plan"
+jq -e '
+  .label == "run"
+  and .status == "probe_needed"
+  and .capability == "codex-max"
+' "$run_label_plan" >/dev/null
+
+for reserved_run_order in before_separator after_separator; do
+  reserved_run_plan="$tmp/tin3006-reserved-run-$reserved_run_order.json"
+  if [ "$reserved_run_order" = before_separator ]; then
+    if planning_omux repair --json run >"$reserved_run_plan"; then
+      printf 'first-run e2e assertion failed: bare run label after option returned success\n' >&2
+      exit 1
+    fi
+  elif planning_omux repair --json -- run >"$reserved_run_plan"; then
+    printf 'first-run e2e assertion failed: bare run label after separator returned success\n' >&2
+    exit 1
+  fi
+  assert_planning_truth "$reserved_run_plan"
+  jq -e '
+    .error == "reserved_subcommand"
+    and .invalid_argument == "run"
+    and .status == "invalid_request"
+  ' "$reserved_run_plan" >/dev/null
+done
+
+flag_label_config="$tmp/tin3006-flag-label-config.json"
+jq '
+  .providers.codex.accounts["--json"] = .providers.codex.accounts["max-1"]
+' "$config_path" >"$flag_label_config"
+flag_repair_plan="$tmp/tin3006-flag-label-repair.json"
+planning_omux_with_config "$flag_label_config" repair codex:--json --json >"$flag_repair_plan"
+assert_planning_truth "$flag_repair_plan"
+jq -e '
+  .status == "capability_ambiguous"
+  and .label == "--json"
+  and .next_action.command == null
+  and all(.capability_routes[]; (.planning_command | contains("--account '\''--json'\''")))
+  and all(.capability_routes[]; .planning_argv[6] == "--json")
+' "$flag_repair_plan" >/dev/null
+
+flag_setup_plan="$tmp/tin3006-flag-label-setup.json"
+planning_omux_with_config "$flag_label_config" setup --json --provider=codex --label=--json >"$flag_setup_plan"
+assert_planning_truth "$flag_setup_plan"
+jq -e '
+  .status == "capability_routes_ready_for_inspection"
+  and .provider == "codex"
+  and .label == "--json"
+  and .config.label_configured == true
+' "$flag_setup_plan" >/dev/null
+
+flag_capability_plan="$tmp/tin3006-flag-label-capability-plan.json"
+planning_omux_with_config "$flag_label_config" repair-plan --json --provider codex --account --json --capability codex-max >"$flag_capability_plan"
+jq -e --arg quoted "'--json'" '
+  (.routes | length) == 1
+  and .routes[0].account == "--json"
+  and (
+    if .routes[0].action.command != null
+    then (.routes[0].action.command | contains($quoted))
+    else true
+    end
+  )
+  and (
+    if .routes[0].action.diagnostic_command != null
+    then (.routes[0].action.diagnostic_command | contains($quoted))
+    else true
+    end
+  )
+' "$flag_capability_plan" >/dev/null
+
+flag_enroll_plan="$tmp/tin3006-flag-label-enroll-plan.json"
+planning_omux_with_config "$flag_label_config" enroll plan codex --json --account --json >"$flag_enroll_plan"
+jq -e --arg quoted "'--json'" '
+  .account == "--json"
+  and (.steps[] | select(.kind == "provider_login")
+    | .command == "oauth-mux codex login-device --account '\''--json'\''")
+  and all(.steps[]; if .command != null and (.kind == "provider_login" or .kind == "runtime_proof")
+    then (.command | contains($quoted))
+    else true
+    end)
+  and (.future_provider_neutral_command.command | contains($quoted))
+' "$flag_enroll_plan" >/dev/null
+
+flag_enroll_preview="$tmp/tin3006-flag-label-enroll-preview.json"
+planning_omux_with_config "$flag_label_config" enroll codex --account --json --json >"$flag_enroll_preview"
+jq -e '
+  .account == "--json"
+  and .executed == false
+  and .confirmation_required == true
+  and .confirm_command == "oauth-mux enroll codex --account '\''--json'\'' --confirm-enroll --json"
+' "$flag_enroll_preview" >/dev/null
+
+invalid_secret_env="$tmp/tin3006-invalid-secret-env.json"
+planning_omux_with_config "$flag_label_config" enroll figma --account design --mode pat --secret-env 'FIGMA; touch /tmp/forbidden' --json >"$invalid_secret_env"
+jq -e '
+  .ok == false
+  and .executed == false
+  and .error == "invalid_secret_env"
+  and .mutates == false
+  and .spends_provider_calls == false
+  and .secret_env == "FIGMA; touch /tmp/forbidden"
+  and .requires == "[A-Za-z_][A-Za-z0-9_]*"
+' "$invalid_secret_env" >/dev/null
+
+leading_label_config="$tmp/tin3006-leading-label-config.json"
+jq '
+  .providers.codex.accounts["-work"] = .providers.codex.accounts["max-1"]
+' "$config_path" >"$leading_label_config"
+leading_repair_plan="$tmp/tin3006-leading-label-repair.json"
+planning_omux_with_config "$leading_label_config" repair --json -- -work >"$leading_repair_plan"
+assert_planning_truth "$leading_repair_plan"
+jq -e '
+  .label == "-work"
+  and .config.label_configured == true
+  and .status == "capability_ambiguous"
+' "$leading_repair_plan" >/dev/null
+
+command_secret_config="$tmp/tin3006-command-secret.json"
+cat >"$command_secret_config" <<'JSON'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "kind": "codex",
+      "accounts": {
+        "command-backed": {
+          "secret": {
+            "backend": "command",
+            "command": ["tin3006-credential-sentinel"]
+          }
+        }
+      }
+    }
+  }
+}
+JSON
+command_secret_plan="$tmp/tin3006-command-secret-plan.json"
+planning_omux_with_config "$command_secret_config" repair codex:command-backed --json >"$command_secret_plan"
+assert_planning_truth "$command_secret_plan"
+jq -e '
+  .config.state == "valid"
+  and .config.label_configured == true
+  and .reads_credential_material == false
+' "$command_secret_plan" >/dev/null
+
+if command -v fish >/dev/null 2>&1; then
+  printf 'first-run e2e: fish completion predicates respect command positions\n'
+  fish_completions="$tmp/tin3006-completions.fish"
+  planning_omux completions fish >"$fish_completions"
+  fish_candidates() {
+    OMUX_COMPLETIONS="$fish_completions" fish -c \
+      'source "$OMUX_COMPLETIONS"; complete -C "$argv[1]"' -- "$1" |
+      cut -f1
+  }
+
+  repair_root_candidates="$(fish_candidates 'oauth-mux repair ')"
+  repair_target_candidates="$(fish_candidates 'oauth-mux repair work ')"
+  setup_codex_value_candidates="$(fish_candidates 'oauth-mux setup --provider codex ')"
+  setup_claude_value_candidates="$(fish_candidates 'oauth-mux setup --provider claude ')"
+  setup_codex_flag_candidates="$(fish_candidates 'oauth-mux setup --provider codex -')"
+  setup_claude_flag_candidates="$(fish_candidates 'oauth-mux setup --provider claude -')"
+  codex_root_candidates="$(fish_candidates 'oauth-mux codex ')"
+  codex_run_candidates="$(fish_candidates 'oauth-mux codex run ')"
+  codex_login_candidates="$(fish_candidates 'oauth-mux codex login-device ')"
+
+  expect_contains "$repair_root_candidates" "run" "repair root offers legacy executor"
+  if printf '%s\n' "$repair_target_candidates" | grep -Fxq 'run'; then
+    printf 'first-run e2e assertion failed: repair target leaked the legacy run completion\n' >&2
+    exit 1
+  fi
+  expect_contains "$setup_codex_flag_candidates" "--label" "setup provider value retains planning flags"
+  expect_contains "$setup_claude_flag_candidates" "--label" "setup Claude value retains planning flags"
+  if printf '%s\n%s\n' "$setup_codex_value_candidates" "$setup_claude_value_candidates" |
+    grep -Eq '^(codex|login-device|broker-run)$'; then
+    printf 'first-run e2e assertion failed: setup option value leaked positional/subcommand completions\n' >&2
+    exit 1
+  fi
+  expect_contains "$codex_root_candidates" "login-device" "Codex root offers Codex verbs"
+  if printf '%s\n%s\n' "$codex_run_candidates" "$codex_login_candidates" |
+    grep -Eq '^(login-device|broker-run|run|setup)$'; then
+    printf 'first-run e2e assertion failed: selected Codex verb leaked sibling verb completions\n' >&2
+    exit 1
+  fi
+fi
+
+snapshot_isolated_roots "$planning_configured_after"
+cmp "$planning_configured_before" "$planning_configured_after"
+test ! -e "$sentinel_log"
+test ! -e "$sentinel_trace"
 
 printf 'first-run e2e: doctor after config reports ready shape\n'
 doctor_after="$tmp/doctor-after.json"
@@ -545,8 +1364,11 @@ jq -e '
 ' "$live_qa_json" >/dev/null
 
 printf 'first-run e2e: Codex help remains non-mutating\n'
-help_out="$(omux codex canary --help)"
+help_out="$(planning_omux codex canary --help)"
 expect_contains "$help_out" "non-mutating" "Codex help declares non-mutating behavior"
+separator_help_out="$(planning_omux codex setup -- --account --help)"
+expect_contains "$separator_help_out" "non-mutating" "Codex help after a legacy separator remains non-mutating"
+test ! -e "$sentinel_log"
 test ! -e "$store_root"
 test ! -e "$legacy_store_root"
 

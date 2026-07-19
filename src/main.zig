@@ -254,6 +254,16 @@ pub fn main() !void {
             try runDiscover(allocator, stdout, discover_args);
         },
 
+        .setup_plan => |setup_args| {
+            const ok = try runSetupPlanningFrontDoor(allocator, stdout, setup_args);
+            if (!ok) std.process.exit(types.ExitCode.general_error.int());
+        },
+
+        .repair_target_plan => |repair_args| {
+            const ok = try runRepairPlanningFrontDoor(allocator, stdout, repair_args);
+            if (!ok) std.process.exit(types.ExitCode.general_error.int());
+        },
+
         .repair_plan => |repair_args| {
             runRepairPlan(allocator, stdout, repair_args) catch |e| {
                 log.err("repair-plan: {s}", .{@errorName(e)});
@@ -2412,6 +2422,18 @@ fn runEnrollFigma(allocator: std.mem.Allocator, writer: anytype, args: cli.Comma
     else
         try figmaDefaultSecretEnv(allocator, account, mode);
     defer allocator.free(secret_env);
+    if (!validEnvVariableName(secret_env)) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"executed\":false,\"error\":\"invalid_secret_env\",\"mutates\":false,\"spends_provider_calls\":false,\"secret_env\":");
+            try std.json.stringify(secret_env, .{}, writer);
+            try writer.writeAll(",\"requires\":\"[A-Za-z_][A-Za-z0-9_]*\"}\n");
+        } else {
+            try writer.writeAll("oauth-mux enroll figma\n\n");
+            try writer.print("  invalid --secret-env value: {s}\n", .{secret_env});
+            try writer.writeAll("  expected: [A-Za-z_][A-Za-z0-9_]*\n");
+        }
+        return;
+    }
 
     const active_config_path = try paths.configFilePath(allocator);
     defer allocator.free(active_config_path);
@@ -2829,29 +2851,37 @@ fn writeEnrollFigmaResult(writer: anytype, allocator: std.mem.Allocator, result:
 }
 
 fn enrollCodexConfirmCommand(allocator: std.mem.Allocator, account: []const u8, store_root: ?[]const u8, json: bool) ![]const u8 {
+    const command_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(command_account);
     if (store_root) |root| {
+        const command_root = try shellCommandValueAlloc(allocator, root);
+        defer allocator.free(command_root);
         return try std.fmt.allocPrint(allocator, "oauth-mux enroll codex --account {s} --store-root {s} --confirm-enroll{s}", .{
-            account,
-            root,
+            command_account,
+            command_root,
             if (json) " --json" else "",
         });
     }
     return try std.fmt.allocPrint(allocator, "oauth-mux enroll codex --account {s} --confirm-enroll{s}", .{
-        account,
+        command_account,
         if (json) " --json" else "",
     });
 }
 
 fn enrollClaudeConfirmCommand(allocator: std.mem.Allocator, account: []const u8, config_root: ?[]const u8, json: bool) ![]const u8 {
+    const command_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(command_account);
     if (config_root) |root| {
+        const command_root = try shellCommandValueAlloc(allocator, root);
+        defer allocator.free(command_root);
         return try std.fmt.allocPrint(allocator, "oauth-mux enroll claude --account {s} --config-root {s} --confirm-enroll{s}", .{
-            account,
-            root,
+            command_account,
+            command_root,
             if (json) " --json" else "",
         });
     }
     return try std.fmt.allocPrint(allocator, "oauth-mux enroll claude --account {s} --confirm-enroll{s}", .{
-        account,
+        command_account,
         if (json) " --json" else "",
     });
 }
@@ -2869,17 +2899,23 @@ fn enrollFigmaConfirmCommand(
     secret_env: ?[]const u8,
     json: bool,
 ) ![]const u8 {
+    const command_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(command_account);
     var command = std.ArrayList(u8).init(allocator);
     errdefer command.deinit();
     try command.appendSlice("oauth-mux enroll figma --account ");
-    try command.appendSlice(account);
+    try command.appendSlice(command_account);
     if (mode) |value| {
+        const command_mode = try shellCommandValueAlloc(allocator, value);
+        defer allocator.free(command_mode);
         try command.appendSlice(" --mode ");
-        try command.appendSlice(value);
+        try command.appendSlice(command_mode);
     }
     if (secret_env) |value| {
+        const command_secret_env = try shellCommandValueAlloc(allocator, value);
+        defer allocator.free(command_secret_env);
         try command.appendSlice(" --secret-env ");
-        try command.appendSlice(value);
+        try command.appendSlice(command_secret_env);
     }
     try command.appendSlice(" --confirm-enroll");
     if (json) try command.appendSlice(" --json");
@@ -2887,7 +2923,16 @@ fn enrollFigmaConfirmCommand(
 }
 
 fn figmaSecretExportCommand(allocator: std.mem.Allocator, secret_env: []const u8) ![]const u8 {
+    if (!validEnvVariableName(secret_env)) return error.InvalidCharacter;
     return try std.fmt.allocPrint(allocator, "export {s}=<figma-token>", .{secret_env});
+}
+
+fn validEnvVariableName(value: []const u8) bool {
+    if (value.len == 0 or !(std.ascii.isAlphabetic(value[0]) or value[0] == '_')) return false;
+    for (value[1..]) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_')) return false;
+    }
+    return true;
 }
 
 fn codexEnrollmentShapeConfigured(cfg: config.Config, account: []const u8) bool {
@@ -3665,15 +3710,19 @@ fn writeEnrollFutureCommandJson(writer: anytype, allocator: std.mem.Allocator, a
     };
     const account = args.account orelse "<account>";
     const available = enrollMutationSupported(provider_name);
+    const command_provider = try shellCommandValueAlloc(allocator, provider_name);
+    defer allocator.free(command_provider);
+    const command_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(command_account);
     try writer.writeAll("\"available\":");
     try writer.writeAll(if (available) "true" else "false");
     try writer.writeAll(",\"command\":");
     const command = if (available and isProvider(provider_name, "figma"))
         try enrollFigmaConfirmCommand(allocator, account, args.mode, args.secret_env, false)
     else if (available)
-        try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s} --confirm-enroll", .{ provider_name, account })
+        try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s} --confirm-enroll", .{ command_provider, command_account })
     else
-        try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s}", .{ provider_name, account });
+        try std.fmt.allocPrint(allocator, "oauth-mux enroll {s} --account {s}", .{ command_provider, command_account });
     defer allocator.free(command);
     try std.json.stringify(command, .{}, writer);
     if (available) {
@@ -3746,12 +3795,16 @@ fn figmaDefaultSecretEnv(allocator: std.mem.Allocator, account: []const u8, mode
 }
 
 fn enrollAccountsCommand(allocator: std.mem.Allocator, provider_name: ?[]const u8) ![]const u8 {
-    if (provider_name) |name| return std.fmt.allocPrint(allocator, "oauth-mux accounts list --provider {s} --json", .{name});
+    if (provider_name) |name| {
+        const command_name = try shellCommandValueAlloc(allocator, name);
+        defer allocator.free(command_name);
+        return std.fmt.allocPrint(allocator, "oauth-mux accounts list --provider {s} --json", .{command_name});
+    }
     return allocator.dupe(u8, "oauth-mux accounts list --json");
 }
 
 fn enrollCodexLoginCommand(allocator: std.mem.Allocator, account: ?[]const u8) ![]const u8 {
-    if (account) |name| return std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{name});
+    if (account) |name| return codexLoginDeviceCommandAlloc(allocator, name);
     return allocator.dupe(u8, "oauth-mux setup codex --status-only");
 }
 
@@ -3770,16 +3823,24 @@ fn enrollRuntimeCommand(
     account: ?[]const u8,
     capability: ?[]const u8,
 ) ![]const u8 {
+    const command_provider = try shellCommandValueAlloc(allocator, provider_name);
+    defer allocator.free(command_provider);
     if (account) |account_name| {
+        const command_account = try shellCommandValueAlloc(allocator, account_name);
+        defer allocator.free(command_account);
         if (capability) |capability_name| {
-            return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ provider_name, account_name, capability_name });
+            const command_capability = try shellCommandValueAlloc(allocator, capability_name);
+            defer allocator.free(command_capability);
+            return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ command_provider, command_account, command_capability });
         }
-        return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --json", .{ provider_name, account_name });
+        return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --json", .{ command_provider, command_account });
     }
     if (capability) |capability_name| {
-        return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --capability {s} --json", .{ provider_name, capability_name });
+        const command_capability = try shellCommandValueAlloc(allocator, capability_name);
+        defer allocator.free(command_capability);
+        return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --capability {s} --json", .{ command_provider, command_capability });
     }
-    return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --json", .{provider_name});
+    return std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --json", .{command_provider});
 }
 
 fn enrollProbeCommand(
@@ -3788,10 +3849,16 @@ fn enrollProbeCommand(
     account: ?[]const u8,
     capability: []const u8,
 ) ![]const u8 {
+    const command_provider = try shellCommandValueAlloc(allocator, provider_name);
+    defer allocator.free(command_provider);
+    const command_capability = try shellCommandValueAlloc(allocator, capability);
+    defer allocator.free(command_capability);
     if (account) |account_name| {
-        return std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --capability {s} --json", .{ provider_name, account_name, capability });
+        const command_account = try shellCommandValueAlloc(allocator, account_name);
+        defer allocator.free(command_account);
+        return std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --capability {s} --json", .{ command_provider, command_account, command_capability });
     }
-    return std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --capability {s} --json", .{ provider_name, capability });
+    return std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --capability {s} --json", .{ command_provider, command_capability });
 }
 
 fn runDiscover(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.DiscoverArgs) !void {
@@ -4051,6 +4118,1337 @@ fn writeDiscoverJson(writer: anytype, cfg: config.Config, config_path: []const u
 
 fn writeCommandJson(writer: anytype, command: []const u8) !void {
     try std.json.stringify(command, .{}, writer);
+}
+
+const PlanningConfigState = enum {
+    not_inspected,
+    missing,
+    invalid,
+    valid,
+};
+
+const PlanningCapabilityFact = struct {
+    name: []const u8,
+    probeable: bool,
+    probe_transport: ?provider_schema.ProbeTransport = null,
+    probe_auth: ?provider_schema.ProbeAuth = null,
+    probe_budget: ?types.ActionBudget = null,
+    probe_executable: ?[]const u8 = null,
+
+    fn deinit(self: PlanningCapabilityFact, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.probe_executable) |executable| allocator.free(executable);
+    }
+};
+
+const PlanningConfigFacts = struct {
+    state: PlanningConfigState = .not_inspected,
+    provider_configured: bool = false,
+    label_configured: bool = false,
+    matching_providers: u8 = 0,
+    resolved_provider: ?cli.Command.PlanningProvider = null,
+    selected_capability: ?[]const u8 = null,
+    selected_capability_probeable: bool = false,
+    selected_probe_transport: ?provider_schema.ProbeTransport = null,
+    selected_probe_auth: ?provider_schema.ProbeAuth = null,
+    selected_probe_budget: ?types.ActionBudget = null,
+    selected_probe_executable: ?[]const u8 = null,
+    matching_capabilities: usize = 0,
+    capabilities: []PlanningCapabilityFact = &.{},
+    repair_owner: types.RepairOwner = .manual_only,
+
+    fn deinit(self: *PlanningConfigFacts, allocator: std.mem.Allocator) void {
+        for (self.capabilities) |capability| capability.deinit(allocator);
+        if (self.capabilities.len > 0) allocator.free(self.capabilities);
+        self.* = .{};
+    }
+};
+
+const PlanningDecision = struct {
+    status: []const u8,
+    next_instruction: ?[]const u8 = null,
+    next_action: ?[]const u8 = null,
+    next_action_mutates: bool = false,
+    next_action_reads_credential_material: bool = false,
+    next_action_executes_provider_cli: bool = false,
+    next_action_spends_provider_calls: bool = false,
+};
+
+const PlanningFrontDoorResult = struct {
+    command: []const u8,
+    target: ?[]const u8 = null,
+    provider: ?cli.Command.PlanningProvider = null,
+    label: ?[]const u8 = null,
+    parse_error: ?cli.Command.PlanningParseError = null,
+    invalid_argument: ?[]const u8 = null,
+    config: PlanningConfigFacts = .{},
+    provider_cli_present: ?bool = null,
+    health_key_addressable: bool = false,
+    health_recorded: bool = false,
+    health_summary: ?[]const u8 = null,
+    action: ?RepairAction = null,
+    decision: PlanningDecision,
+};
+
+fn runSetupPlanningFrontDoor(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.SetupPlanArgs,
+) !bool {
+    var config_facts = if (args.parse_error == null)
+        try inspectPlanningConfig(allocator, args.provider, args.label, false)
+    else
+        PlanningConfigFacts{};
+    defer config_facts.deinit(allocator);
+    const provider_cli_present = if (args.parse_error == null)
+        try planningProbeCommandPresent(allocator, config_facts)
+    else
+        null;
+    const health_key_addressable = if (config_facts.state == .invalid)
+        false
+    else if (args.provider != null and args.label != null)
+        planningHealthKeysAddressable(
+            planningProviderName(args.provider.?),
+            args.label.?,
+            config_facts.capabilities,
+        )
+    else
+        false;
+    const decision = try setupPlanningDecisionAlloc(
+        allocator,
+        args,
+        config_facts,
+        provider_cli_present,
+        health_key_addressable,
+    );
+    defer if (decision.next_action) |command| allocator.free(command);
+
+    const result = PlanningFrontDoorResult{
+        .command = "setup",
+        .provider = args.provider,
+        .label = args.label,
+        .parse_error = args.parse_error,
+        .invalid_argument = args.invalid_argument,
+        .config = config_facts,
+        .provider_cli_present = provider_cli_present,
+        .health_key_addressable = health_key_addressable,
+        .decision = decision,
+    };
+    if (args.json) {
+        try writePlanningFrontDoorJson(allocator, writer, result);
+    } else {
+        try writePlanningFrontDoorText(allocator, writer, result);
+    }
+    return args.parse_error == null;
+}
+
+fn runRepairPlanningFrontDoor(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.RepairTargetPlanArgs,
+) !bool {
+    var config_facts = if (args.parse_error == null)
+        try inspectPlanningConfig(allocator, args.provider, args.label, true)
+    else
+        PlanningConfigFacts{};
+    defer config_facts.deinit(allocator);
+    const resolved_provider = args.provider orelse config_facts.resolved_provider;
+    config_facts.resolved_provider = resolved_provider;
+    const provider_cli_present = if (args.parse_error == null)
+        try planningProbeCommandPresent(allocator, config_facts)
+    else
+        null;
+
+    var health_key_addressable = false;
+    var health_recorded = false;
+    var health_summary_buf: [160]u8 = undefined;
+    var health_summary: ?[]const u8 = null;
+    var action: ?RepairAction = null;
+    if (args.parse_error == null and
+        config_facts.state == .valid and
+        config_facts.label_configured)
+    {
+        if (resolved_provider) |planning_provider| {
+            const provider_name = planningProviderName(planning_provider);
+            const capability = config_facts.selected_capability;
+            const label = args.label.?;
+            const now = std.time.timestamp();
+            var store = health_mod.HealthStore.load(allocator, .{});
+            defer store.deinit();
+            const account_key_addressable = planningHealthKeyAddressable(provider_name, label, null);
+            health_key_addressable = planningHealthKeysAddressable(
+                provider_name,
+                label,
+                config_facts.capabilities,
+            );
+            const account_health = if (account_key_addressable)
+                planningHealthForRouteAt(&store, provider_name, label, null, now)
+            else
+                null;
+            const health = if (account_health) |value|
+                if (accountLivenessBlocksRoute(value.liveness))
+                    value
+                else if (capability != null and health_key_addressable)
+                    planningHealthForRouteAt(&store, provider_name, label, capability, now)
+                else
+                    null
+            else if (capability != null and health_key_addressable)
+                planningHealthForRouteAt(&store, provider_name, label, capability, now)
+            else
+                null;
+            if (health) |value| {
+                health_recorded = true;
+                health_summary = livenessSummaryIntoBuffer(value.liveness, &health_summary_buf);
+            }
+            var planning_def = provider_schema.generic_def;
+            planning_def.repair.owner = config_facts.repair_owner;
+            if (health != null or (capability != null and health_key_addressable)) {
+                action = repairActionForAt(
+                    .{ .provider = provider_name, .account = label, .capability = capability },
+                    planning_def,
+                    .ready,
+                    health,
+                    config_facts.selected_probe_budget,
+                    now,
+                );
+                if (!config_facts.selected_capability_probeable) {
+                    if (action) |candidate| {
+                        if (candidate.kind == .probe_needed or
+                            candidate.kind == .revalidation_needed)
+                        {
+                            action = null;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const decision = try repairPlanningDecisionAlloc(
+        allocator,
+        args,
+        config_facts,
+        resolved_provider,
+        provider_cli_present,
+        health_key_addressable,
+        action,
+    );
+    defer if (decision.next_action) |command| allocator.free(command);
+
+    const result = PlanningFrontDoorResult{
+        .command = "repair",
+        .target = args.target,
+        .provider = resolved_provider,
+        .label = args.label,
+        .parse_error = args.parse_error,
+        .invalid_argument = args.invalid_argument,
+        .config = config_facts,
+        .provider_cli_present = provider_cli_present,
+        .health_key_addressable = health_key_addressable,
+        .health_recorded = health_recorded,
+        .health_summary = health_summary,
+        .action = action,
+        .decision = decision,
+    };
+    if (args.json) {
+        try writePlanningFrontDoorJson(allocator, writer, result);
+    } else {
+        try writePlanningFrontDoorText(allocator, writer, result);
+    }
+    return args.parse_error == null;
+}
+
+fn inspectPlanningConfig(
+    allocator: std.mem.Allocator,
+    selected_provider: ?cli.Command.PlanningProvider,
+    label: ?[]const u8,
+    resolve_unqualified: bool,
+) !PlanningConfigFacts {
+    var facts = PlanningConfigFacts{};
+    errdefer facts.deinit(allocator);
+    const parsed = config.load(allocator) catch |err| {
+        facts.state = if (err == error.FileNotFound) .missing else .invalid;
+        if (facts.state == .missing and label != null) {
+            if (selected_provider) |provider_value| {
+                facts.resolved_provider = provider_value;
+                try inspectBuiltinPlanningCapabilities(allocator, provider_value, &facts);
+            }
+        }
+        return facts;
+    };
+    defer parsed.deinit();
+
+    var validation_messages = std.ArrayList(u8).init(allocator);
+    defer validation_messages.deinit();
+    config.validate(parsed.value, validation_messages.writer()) catch {
+        facts.state = .invalid;
+        return facts;
+    };
+    facts.state = .valid;
+
+    if (selected_provider) |provider_value| {
+        facts.resolved_provider = provider_value;
+        const provider_name = planningProviderName(provider_value);
+        const configured_provider = parsed.value.providers.map.get(provider_name);
+        facts.provider_configured = configured_provider != null;
+        if (label) |account_label| {
+            if (configured_provider) |provider_config| {
+                facts.label_configured = provider_config.accounts.map.get(account_label) != null;
+                facts.matching_providers = if (facts.label_configured) 1 else 0;
+            }
+            try inspectPlanningCapabilities(
+                allocator,
+                parsed.value,
+                provider_value,
+                account_label,
+                &facts,
+            );
+        }
+        return facts;
+    }
+
+    const account_label = label orelse return facts;
+    for ([_]cli.Command.PlanningProvider{ .claude, .codex }) |provider_value| {
+        const provider_config = parsed.value.providers.map.get(planningProviderName(provider_value)) orelse continue;
+        if (provider_config.accounts.map.get(account_label) == null) continue;
+        facts.matching_providers += 1;
+        if (resolve_unqualified and facts.resolved_provider == null) {
+            facts.resolved_provider = provider_value;
+        }
+    }
+    if (facts.matching_providers == 1) {
+        facts.provider_configured = true;
+        facts.label_configured = true;
+        try inspectPlanningCapabilities(
+            allocator,
+            parsed.value,
+            facts.resolved_provider.?,
+            account_label,
+            &facts,
+        );
+    } else if (facts.matching_providers > 1) {
+        facts.resolved_provider = null;
+    }
+    return facts;
+}
+
+fn planningProviderName(provider_value: cli.Command.PlanningProvider) []const u8 {
+    return switch (provider_value) {
+        .claude => "claude",
+        .codex => "codex",
+    };
+}
+
+fn inspectBuiltinPlanningCapabilities(
+    allocator: std.mem.Allocator,
+    provider_value: cli.Command.PlanningProvider,
+    facts: *PlanningConfigFacts,
+) !void {
+    const def = provider_schema.findBuiltin(planningProviderName(provider_value)) orelse
+        provider_schema.generic_def;
+    facts.repair_owner = def.repair.owner;
+    facts.matching_capabilities = def.capabilities.len;
+    if (def.capabilities.len == 0) return;
+
+    const owned = try allocator.alloc(PlanningCapabilityFact, def.capabilities.len);
+    errdefer allocator.free(owned);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |capability| capability.deinit(allocator);
+    }
+    for (def.capabilities, 0..) |capability, index| {
+        owned[index] = try planningCapabilityFactAlloc(allocator, def, capability.name);
+        initialized += 1;
+    }
+    facts.capabilities = owned;
+    if (owned.len == 1) {
+        facts.selected_capability = owned[0].name;
+        facts.selected_capability_probeable = owned[0].probeable;
+        facts.selected_probe_transport = owned[0].probe_transport;
+        facts.selected_probe_auth = owned[0].probe_auth;
+        facts.selected_probe_budget = owned[0].probe_budget;
+        facts.selected_probe_executable = owned[0].probe_executable;
+    }
+}
+
+fn inspectPlanningCapabilities(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    provider_value: cli.Command.PlanningProvider,
+    label: []const u8,
+    facts: *PlanningConfigFacts,
+) !void {
+    const provider_name = planningProviderName(provider_value);
+    const def = config.resolveProviderDefinition(cfg, provider_name);
+    facts.repair_owner = def.repair.owner;
+
+    var capabilities = std.ArrayList([]const u8).init(allocator);
+    defer capabilities.deinit();
+
+    var profile_it = cfg.profiles.map.iterator();
+    while (profile_it.next()) |profile_entry| {
+        for (profile_entry.value_ptr.providers) |spec| {
+            const route = parseRepairRouteSpec(spec) orelse continue;
+            if (!std.mem.eql(u8, route.provider, provider_name) or
+                !std.mem.eql(u8, route.account, label))
+            {
+                continue;
+            }
+            const requested = route.capability orelse continue;
+            if (planningCapabilitySeen(capabilities.items, requested)) continue;
+            try capabilities.append(requested);
+        }
+    }
+
+    if (capabilities.items.len == 0) {
+        for (def.capabilities) |capability| {
+            if (capability.probe == null) continue;
+            if (planningCapabilitySeen(capabilities.items, capability.name)) continue;
+            try capabilities.append(capability.name);
+        }
+    }
+
+    facts.matching_capabilities = capabilities.items.len;
+    if (capabilities.items.len == 0) return;
+
+    const owned = try allocator.alloc(PlanningCapabilityFact, capabilities.items.len);
+    errdefer allocator.free(owned);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |capability| capability.deinit(allocator);
+    }
+    for (capabilities.items, 0..) |capability, index| {
+        owned[index] = try planningCapabilityFactAlloc(allocator, def, capability);
+        initialized += 1;
+    }
+
+    facts.capabilities = owned;
+    if (owned.len == 1) {
+        facts.selected_capability = owned[0].name;
+        facts.selected_capability_probeable = owned[0].probeable;
+        facts.selected_probe_transport = owned[0].probe_transport;
+        facts.selected_probe_auth = owned[0].probe_auth;
+        facts.selected_probe_budget = owned[0].probe_budget;
+        facts.selected_probe_executable = owned[0].probe_executable;
+    }
+}
+
+fn planningCapabilityFactAlloc(
+    allocator: std.mem.Allocator,
+    def: provider_schema.ProviderDefinition,
+    capability: []const u8,
+) !PlanningCapabilityFact {
+    var fact = PlanningCapabilityFact{
+        .name = try allocator.dupe(u8, capability),
+        .probeable = false,
+    };
+    errdefer fact.deinit(allocator);
+
+    const plan = provider_schema.probePlanForCapability(def, capability) orelse return fact;
+    fact.probeable = true;
+    fact.probe_transport = plan.transport;
+    fact.probe_auth = plan.auth;
+    fact.probe_budget = plan.budget;
+    if (plan.transport == .command) {
+        const command = plan.command orelse return fact;
+        if (command.len > 0) {
+            fact.probe_executable = try allocator.dupe(u8, command[0]);
+        }
+    }
+    return fact;
+}
+
+fn planningCapabilitySeen(values: []const []const u8, candidate: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, candidate)) return true;
+    }
+    return false;
+}
+
+fn planningProbeCommandPresent(
+    allocator: std.mem.Allocator,
+    config_facts: PlanningConfigFacts,
+) !?bool {
+    const transport = config_facts.selected_probe_transport orelse return null;
+    if (transport != .command) return null;
+    const executable = config_facts.selected_probe_executable orelse return false;
+    return try planningCommandAvailable(allocator, executable);
+}
+
+fn planningCommandAvailable(allocator: std.mem.Allocator, binary_name: []const u8) !bool {
+    if (binary_name.len == 0) return false;
+    if (comptime builtin.os.tag == .windows) {
+        return planningWindowsCommandAvailable(allocator, binary_name);
+    }
+    if (std.mem.indexOfScalar(u8, binary_name, '/') != null or
+        std.mem.indexOfScalar(u8, binary_name, '\\') != null)
+    {
+        return planningRegularExecutable(binary_name);
+    }
+
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+    defer allocator.free(path_env);
+
+    var dirs = std.mem.splitScalar(u8, path_env, ':');
+    while (dirs.next()) |dir| {
+        const search_dir = if (dir.len == 0) "." else dir;
+        const candidate = try std.fs.path.join(allocator, &.{ search_dir, binary_name });
+        defer allocator.free(candidate);
+        if (planningRegularExecutable(candidate)) return true;
+    }
+    return false;
+}
+
+fn planningWindowsCommandAvailable(
+    allocator: std.mem.Allocator,
+    binary_name: []const u8,
+) !bool {
+    const path_ext = std.process.getEnvVarOwned(allocator, "PATHEXT") catch
+        try allocator.dupe(u8, ".COM;.EXE;.BAT;.CMD");
+    defer allocator.free(path_ext);
+
+    if (std.mem.indexOfScalar(u8, binary_name, '/') != null or
+        std.mem.indexOfScalar(u8, binary_name, '\\') != null)
+    {
+        if (!planningWindowsExecutableName(binary_name, path_ext)) return false;
+        return planningRegularExecutable(binary_name);
+    }
+
+    const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch return false;
+    defer allocator.free(path_env);
+    var dirs = std.mem.splitScalar(u8, path_env, ';');
+    while (dirs.next()) |dir| {
+        const search_dir = if (dir.len == 0) "." else dir;
+        if (planningWindowsExecutableName(binary_name, path_ext)) {
+            const candidate = try std.fs.path.join(allocator, &.{ search_dir, binary_name });
+            defer allocator.free(candidate);
+            if (planningRegularExecutable(candidate)) return true;
+            continue;
+        }
+
+        var extensions = std.mem.splitScalar(u8, path_ext, ';');
+        while (extensions.next()) |raw_extension| {
+            const extension = std.mem.trim(u8, raw_extension, " \t\r\n");
+            if (extension.len == 0) continue;
+            const executable_name = try std.fmt.allocPrint(
+                allocator,
+                "{s}{s}",
+                .{ binary_name, extension },
+            );
+            defer allocator.free(executable_name);
+            const candidate = try std.fs.path.join(allocator, &.{ search_dir, executable_name });
+            defer allocator.free(candidate);
+            if (planningRegularExecutable(candidate)) return true;
+        }
+    }
+    return false;
+}
+
+fn planningWindowsExecutableName(binary_name: []const u8, path_ext: []const u8) bool {
+    var extensions = std.mem.splitScalar(u8, path_ext, ';');
+    while (extensions.next()) |raw_extension| {
+        const extension = std.mem.trim(u8, raw_extension, " \t\r\n");
+        if (extension.len == 0) continue;
+        if (std.ascii.endsWithIgnoreCase(binary_name, extension)) return true;
+    }
+    return false;
+}
+
+fn planningRegularExecutable(path_value: []const u8) bool {
+    const stat = std.fs.cwd().statFile(path_value) catch return false;
+    if (stat.kind != .file) return false;
+    if (comptime builtin.os.tag == .windows) return true;
+    std.posix.access(path_value, std.posix.X_OK) catch return false;
+    return true;
+}
+
+fn planningHealthForRouteAt(
+    store: *health_mod.HealthStore,
+    provider_name: []const u8,
+    label: []const u8,
+    capability: ?[]const u8,
+    now: i64,
+) ?health_mod.AccountHealth {
+    const account_key = health_mod.accountKey(provider_name, label);
+    const account_health = if (store.accounts.get(account_key.slice())) |health|
+        health_mod.effectiveHealthForRouteSelection(health, now)
+    else
+        null;
+    if (account_health) |health| {
+        if (accountLivenessBlocksRoute(health.liveness)) return health;
+    }
+
+    if (capability) |capability_name| {
+        const capability_key = health_mod.capabilityKey(provider_name, label, capability_name);
+        if (store.accounts.get(capability_key.slice())) |health| {
+            return health_mod.effectiveHealthForRouteSelection(health, now);
+        }
+        return null;
+    }
+    return account_health;
+}
+
+test "planning capability health does not inherit nonblocking account health" {
+    var store = health_mod.HealthStore.init(std.testing.allocator, .{});
+    defer store.deinit();
+
+    const account_health = try store.getOrCreate("claude:shared");
+    try std.testing.expect(planningHealthForRouteAt(
+        &store,
+        "claude",
+        "shared",
+        "haiku",
+        1_000,
+    ) == null);
+
+    account_health.liveness = .{ .dead = .{ .reason = .token_revoked, .since = 900 } };
+    const blocking = planningHealthForRouteAt(
+        &store,
+        "claude",
+        "shared",
+        "haiku",
+        1_000,
+    ) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(accountLivenessBlocksRoute(blocking.liveness));
+}
+
+fn planningHealthKeyAddressable(
+    provider_name: []const u8,
+    label: []const u8,
+    capability: ?[]const u8,
+) bool {
+    if (std.mem.indexOfScalar(u8, label, '#') != null) return false;
+    if (provider_name.len >= 256) return false;
+    const provider_prefix_len = provider_name.len + 1;
+    if (label.len > 256 - provider_prefix_len) return false;
+    const account_key_len = provider_prefix_len + label.len;
+    const capability_name = capability orelse return true;
+    if (account_key_len >= 256) return false;
+    return capability_name.len <= 256 - account_key_len - 1;
+}
+
+fn planningHealthKeysAddressable(
+    provider_name: []const u8,
+    label: []const u8,
+    capabilities: []const PlanningCapabilityFact,
+) bool {
+    if (!planningHealthKeyAddressable(provider_name, label, null)) return false;
+    for (capabilities) |capability| {
+        if (!planningHealthKeyAddressable(provider_name, label, capability.name)) return false;
+    }
+    return true;
+}
+
+test "planning health keys fail closed instead of truncating labels" {
+    const label = "x" ** 237;
+    try std.testing.expect(planningHealthKeyAddressable("claude", label, "auth-status"));
+    try std.testing.expect(!planningHealthKeyAddressable("claude", label ++ "x", "auth-status"));
+    try std.testing.expect(!planningHealthKeyAddressable("codex", "max-1#codex-max", null));
+
+    const ambiguous = [_]PlanningCapabilityFact{
+        .{ .name = "codex-max", .probeable = true },
+        .{ .name = "codex-mini", .probeable = true },
+    };
+    try std.testing.expect(!planningHealthKeysAddressable(
+        "codex",
+        "x" ** 240,
+        &ambiguous,
+    ));
+}
+
+fn setupPlanningDecisionAlloc(
+    allocator: std.mem.Allocator,
+    args: cli.Command.SetupPlanArgs,
+    config_facts: PlanningConfigFacts,
+    provider_cli_present: ?bool,
+    health_key_addressable: bool,
+) !PlanningDecision {
+    if (args.parse_error != null) return .{ .status = "invalid_request" };
+    const provider_value = args.provider orelse return .{
+        .status = "provider_required",
+        .next_instruction = "choose either claude or codex and rerun setup with --provider",
+    };
+    const provider_name = planningProviderName(provider_value);
+    const label = args.label orelse return .{
+        .status = "label_required",
+        .next_instruction = "choose a non-empty account label and rerun setup with --label",
+    };
+    if (config_facts.state == .invalid) return .{
+        .status = "config_invalid",
+        .next_instruction = "validate and repair the config before setup",
+        .next_action = try allocator.dupe(u8, "omux config validate"),
+    };
+    if (!health_key_addressable) {
+        return .{
+            .status = "label_not_health_addressable",
+            .next_instruction = "choose a shorter label without the reserved health-key separator",
+        };
+    }
+    if (config_facts.state == .missing) return .{
+        .status = "config_missing",
+        .next_instruction = "review and create an isolated oauth-mux config",
+        .next_action = try allocator.dupe(u8, "omux init"),
+        .next_action_mutates = true,
+    };
+    if (!config_facts.provider_configured or !config_facts.label_configured) {
+        return .{
+            .status = if (config_facts.provider_configured) "label_not_configured" else "provider_not_configured",
+            .next_instruction = "review the non-mutating enrollment plan for this account",
+            .next_action = try planningEnrollCommandAlloc(allocator, provider_name, label),
+        };
+    }
+    if (config_facts.matching_capabilities > 1) return .{
+        .status = "capability_routes_ready_for_inspection",
+        .next_instruction = "inspect each exact configured capability using the capability_routes planning commands",
+    };
+    if (config_facts.selected_probe_transport == .command and
+        !(provider_cli_present orelse false))
+    {
+        return .{
+            .status = "provider_cli_missing",
+            .next_instruction = "install the selected provider CLI on PATH, then rerun this planning command",
+        };
+    }
+    return .{
+        .status = "credential_state_not_observed",
+        .next_instruction = "inspect the account-scoped repair plan",
+        .next_action = try planningRepairCommandAlloc(allocator, provider_name, label),
+    };
+}
+
+fn repairPlanningDecisionAlloc(
+    allocator: std.mem.Allocator,
+    args: cli.Command.RepairTargetPlanArgs,
+    config_facts: PlanningConfigFacts,
+    resolved_provider: ?cli.Command.PlanningProvider,
+    provider_cli_present: ?bool,
+    health_key_addressable: bool,
+    action: ?RepairAction,
+) !PlanningDecision {
+    if (args.parse_error != null) return .{ .status = "invalid_request" };
+    if (config_facts.state == .missing) return .{
+        .status = "config_missing",
+        .next_instruction = "inspect setup requirements before creating configuration",
+        .next_action = try allocator.dupe(u8, "omux setup --json"),
+    };
+    if (config_facts.state == .invalid) return .{
+        .status = "config_invalid",
+        .next_instruction = "validate and repair the config before planning repair",
+        .next_action = try allocator.dupe(u8, "omux config validate"),
+    };
+    if (config_facts.matching_providers > 1) return .{
+        .status = "ambiguous_target",
+        .next_instruction = "rerun repair with a provider-qualified target",
+    };
+    const provider_value = resolved_provider orelse return .{
+        .status = "target_not_configured",
+        .next_instruction = "choose a provider and inspect setup for this label",
+    };
+    const provider_name = planningProviderName(provider_value);
+    const label = args.label orelse return .{ .status = "target_not_configured" };
+    if (!config_facts.label_configured) return .{
+        .status = "target_not_configured",
+        .next_instruction = "inspect setup requirements for this provider and label",
+        .next_action = try planningSetupCommandAlloc(allocator, provider_name, label),
+    };
+    if (!health_key_addressable) return .{
+        .status = "label_not_health_addressable",
+        .next_instruction = "use a shorter label without the reserved health-key separator",
+    };
+    if (action == null and config_facts.matching_capabilities > 1) return .{
+        .status = "capability_ambiguous",
+        .next_instruction = "inspect each exact configured capability using the capability_routes planning commands; label-wide model health is not inferred",
+    };
+    if (action == null and config_facts.selected_capability == null) return .{
+        .status = "capability_unresolved",
+        .next_instruction = "configure one explicit capability route before requesting a provider probe",
+    };
+    if (config_facts.selected_probe_transport == .command and
+        !(provider_cli_present orelse false))
+    {
+        return .{
+            .status = "provider_cli_missing",
+            .next_instruction = "install the selected provider CLI on PATH, then rerun this planning command",
+        };
+    }
+    if (action) |candidate| {
+        if ((candidate.kind == .probe_needed or candidate.kind == .revalidation_needed) and
+            config_facts.selected_capability == null)
+        {
+            return .{
+                .status = if (config_facts.matching_capabilities > 1)
+                    "capability_ambiguous"
+                else
+                    "capability_unresolved",
+                .next_instruction = "choose one explicit capability route before requesting a provider probe",
+            };
+        }
+    }
+    if (config_facts.selected_capability != null and
+        !config_facts.selected_capability_probeable and
+        action == null)
+    {
+        return .{
+            .status = "passive_observation_required",
+            .next_instruction = "this capability has no active probe; wait for managed harness traffic to record passive route evidence",
+        };
+    }
+    const repair_action = action orelse return .{
+        .status = "health_not_observed",
+        .next_instruction = "record route health only through an explicitly authorized probe",
+    };
+    return switch (repair_action.kind) {
+        .none => .{
+            .status = "no_repair_indicated",
+            .next_instruction = "no repair action is currently indicated",
+        },
+        .wait_for_repair,
+        .wait_and_retry,
+        .wait_for_quota,
+        .wait_for_cooldown,
+        => .{
+            .status = @tagName(repair_action.kind),
+            .next_instruction = "wait for the recorded condition, then rerun this planning command",
+        },
+        .probe_needed, .revalidation_needed => .{
+            .status = @tagName(repair_action.kind),
+            .next_instruction = "run one explicit account-scoped provider probe",
+            .next_action = try planningProbeCommandAlloc(
+                allocator,
+                provider_name,
+                label,
+                config_facts.selected_capability.?,
+            ),
+            .next_action_mutates = true,
+            .next_action_reads_credential_material = planningProbeReadsCredentialMaterial(config_facts),
+            .next_action_executes_provider_cli = config_facts.selected_probe_transport == .command,
+            .next_action_spends_provider_calls = planningProbeSpendsProviderCalls(config_facts),
+        },
+        .fix_runtime => .{
+            .status = "fix_runtime",
+            .next_instruction = "install or repair the selected provider CLI, then rerun this planning command",
+        },
+        .scope_or_permission,
+        .resource_or_audience,
+        .provider_plan,
+        .try_next_provider,
+        .inspect_provider_schema,
+        .reauth,
+        .refresh,
+        .external_secret_rotation,
+        .manual_repair,
+        => .{
+            .status = @tagName(repair_action.kind),
+            .next_instruction = "review the provider-owned enrollment or reauthentication plan",
+            .next_action = try planningEnrollCommandAlloc(allocator, provider_name, label),
+        },
+    };
+}
+
+fn planningProbeReadsCredentialMaterial(config_facts: PlanningConfigFacts) bool {
+    const transport = config_facts.selected_probe_transport orelse return false;
+    if (transport == .command) return true;
+    const auth = config_facts.selected_probe_auth orelse return false;
+    return auth != .none;
+}
+
+fn planningProbeSpendsProviderCalls(config_facts: PlanningConfigFacts) bool {
+    const transport = config_facts.selected_probe_transport orelse return false;
+    if (transport == .http) return true;
+    const selected = config_facts.selected_probe_budget orelse return false;
+    return selected == .cheap_provider or selected == .spend_provider;
+}
+
+test "planning probe effects follow the exact capability definition" {
+    const capabilities = [_]provider_schema.CapabilityDefinition{
+        .{
+            .name = "auth-status",
+            .probe = .{
+                .transport = .http,
+                .method = "GET",
+                .url = "https://example.invalid/probe",
+                .auth = .none,
+                .budget = .free_local,
+            },
+        },
+    };
+    const def = provider_schema.ProviderDefinition{
+        .name = "claude",
+        .capabilities = &capabilities,
+    };
+    const fact = try planningCapabilityFactAlloc(
+        std.testing.allocator,
+        def,
+        "auth-status",
+    );
+    defer fact.deinit(std.testing.allocator);
+    try std.testing.expectEqual(provider_schema.ProbeTransport.http, fact.probe_transport.?);
+    try std.testing.expectEqual(provider_schema.ProbeAuth.none, fact.probe_auth.?);
+    try std.testing.expectEqual(types.ActionBudget.free_local, fact.probe_budget.?);
+    try std.testing.expect(fact.probe_executable == null);
+
+    const config_facts = PlanningConfigFacts{
+        .state = .valid,
+        .provider_configured = true,
+        .label_configured = true,
+        .matching_providers = 1,
+        .resolved_provider = .claude,
+        .selected_capability = "auth-status",
+        .selected_capability_probeable = true,
+        .selected_probe_transport = fact.probe_transport,
+        .selected_probe_auth = fact.probe_auth,
+        .selected_probe_budget = fact.probe_budget,
+        .matching_capabilities = 1,
+    };
+    try std.testing.expect((try planningProbeCommandPresent(
+        std.testing.allocator,
+        config_facts,
+    )) == null);
+
+    const decision = try repairPlanningDecisionAlloc(
+        std.testing.allocator,
+        .{
+            .target = "claude:shared",
+            .provider = .claude,
+            .label = "shared",
+        },
+        config_facts,
+        .claude,
+        null,
+        true,
+        .{
+            .kind = .probe_needed,
+            .severity = "warning",
+            .message = "synthetic HTTP probe",
+        },
+    );
+    defer if (decision.next_action) |command| std.testing.allocator.free(command);
+    try std.testing.expectEqualStrings("probe_needed", decision.status);
+    try std.testing.expect(!decision.next_action_reads_credential_material);
+    try std.testing.expect(!decision.next_action_executes_provider_cli);
+    try std.testing.expect(decision.next_action_spends_provider_calls);
+}
+
+test "planning repair never emits a probe without an exact capability" {
+    const decision = try repairPlanningDecisionAlloc(
+        std.testing.allocator,
+        .{
+            .target = "codex:max-1",
+            .provider = .codex,
+            .label = "max-1",
+        },
+        .{
+            .state = .valid,
+            .provider_configured = true,
+            .label_configured = true,
+            .matching_providers = 1,
+            .matching_capabilities = 2,
+        },
+        .codex,
+        true,
+        true,
+        .{
+            .kind = .revalidation_needed,
+            .severity = "warning",
+            .message = "synthetic account-level revalidation",
+        },
+    );
+    try std.testing.expectEqualStrings("capability_ambiguous", decision.status);
+    try std.testing.expect(decision.next_action == null);
+}
+
+fn planningSetupCommandAlloc(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    label: []const u8,
+) ![]const u8 {
+    const quoted_label = try shellQuoteAlloc(allocator, label);
+    defer allocator.free(quoted_label);
+    return try std.fmt.allocPrint(
+        allocator,
+        "omux setup --json --provider {s} --label={s}",
+        .{ provider_name, quoted_label },
+    );
+}
+
+fn planningRepairCommandAlloc(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    label: []const u8,
+) ![]const u8 {
+    const target = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ provider_name, label });
+    defer allocator.free(target);
+    const quoted_target = try shellQuoteAlloc(allocator, target);
+    defer allocator.free(quoted_target);
+    return try std.fmt.allocPrint(allocator, "omux repair --json -- {s}", .{quoted_target});
+}
+
+fn planningEnrollCommandAlloc(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    label: []const u8,
+) ![]const u8 {
+    const quoted_label = try shellQuoteAlloc(allocator, label);
+    defer allocator.free(quoted_label);
+    return try std.fmt.allocPrint(
+        allocator,
+        "omux enroll plan {s} --json --account {s}",
+        .{ provider_name, quoted_label },
+    );
+}
+
+fn planningProbeCommandAlloc(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    label: []const u8,
+    capability: []const u8,
+) ![]const u8 {
+    const quoted_label = try shellQuoteAlloc(allocator, label);
+    defer allocator.free(quoted_label);
+    const quoted_capability = try shellQuoteAlloc(allocator, capability);
+    defer allocator.free(quoted_capability);
+    return try std.fmt.allocPrint(
+        allocator,
+        "omux probe --json --provider {s} --account {s} --capability {s}",
+        .{ provider_name, quoted_label, quoted_capability },
+    );
+}
+
+fn planningCapabilityRouteCommandAlloc(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    label: []const u8,
+    capability: []const u8,
+) ![]const u8 {
+    const quoted_label = try shellQuoteAlloc(allocator, label);
+    defer allocator.free(quoted_label);
+    const quoted_capability = try shellQuoteAlloc(allocator, capability);
+    defer allocator.free(quoted_capability);
+    return try std.fmt.allocPrint(
+        allocator,
+        "omux repair-plan --json --provider {s} --account {s} --capability {s}",
+        .{ provider_name, quoted_label, quoted_capability },
+    );
+}
+
+fn writePlanningCapabilityRouteArgvJson(
+    writer: anytype,
+    provider_name: []const u8,
+    label: []const u8,
+    capability: []const u8,
+) !void {
+    const argv = [_][]const u8{
+        "omux",
+        "repair-plan",
+        "--json",
+        "--provider",
+        provider_name,
+        "--account",
+        label,
+        "--capability",
+        capability,
+    };
+    try std.json.stringify(argv, .{}, writer);
+}
+
+test "planning capability route argv is shell independent" {
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    try writePlanningCapabilityRouteArgvJson(
+        buf.writer(),
+        "codex",
+        "--help",
+        "gpt-5.5",
+    );
+    try std.testing.expectEqualStrings(
+        "[\"omux\",\"repair-plan\",\"--json\",\"--provider\",\"codex\",\"--account\",\"--help\",\"--capability\",\"gpt-5.5\"]",
+        buf.items,
+    );
+}
+
+fn writePlanningFrontDoorJson(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    result: PlanningFrontDoorResult,
+) !void {
+    try writer.writeAll("{\"version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"command\":");
+    try std.json.stringify(result.command, .{}, writer);
+    try writer.writeAll(",\"ok\":");
+    try writer.writeAll(if (result.parse_error == null) "true" else "false");
+    try writer.writeAll(",\"target\":");
+    try writeOptionalJsonString(writer, result.target);
+    try writer.writeAll(",\"provider\":");
+    if (result.provider) |provider_value| {
+        try std.json.stringify(planningProviderName(provider_value), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"label\":");
+    try writeOptionalJsonString(writer, result.label);
+    try writer.writeAll(",\"capability\":");
+    try writeOptionalJsonString(writer, result.config.selected_capability);
+    try writer.writeAll(",\"capability_probeable\":");
+    if (result.config.selected_capability != null) {
+        try writer.writeAll(if (result.config.selected_capability_probeable) "true" else "false");
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"error\":");
+    if (result.parse_error) |parse_error| {
+        try std.json.stringify(@tagName(parse_error), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"invalid_argument\":");
+    try writeOptionalJsonString(writer, result.invalid_argument);
+    try writer.writeAll(
+        ",\"execution_available\":false,\"mutates\":false,\"reads_credential_material\":false,\"executes_provider_cli\":false,\"spends_provider_calls\":false,\"managed_claude_forwarding\":\"compile_disabled\",\"claim_level\":\"planning_only\",\"readiness_claimed\":false",
+    );
+    try writer.writeAll(",\"status\":");
+    try std.json.stringify(result.decision.status, .{}, writer);
+    try writer.writeAll(",\"config\":{\"state\":");
+    try std.json.stringify(@tagName(result.config.state), .{}, writer);
+    try writer.writeAll(",\"provider_configured\":");
+    try writer.writeAll(if (result.config.provider_configured) "true" else "false");
+    try writer.writeAll(",\"label_configured\":");
+    try writer.writeAll(if (result.config.label_configured) "true" else "false");
+    try writer.print(",\"matching_providers\":{d}", .{result.config.matching_providers});
+    try writer.print(",\"matching_capabilities\":{d}", .{result.config.matching_capabilities});
+    try writer.writeAll("},\"capability_routes\":[");
+    for (result.config.capabilities, 0..) |capability, index| {
+        if (index > 0) try writer.writeByte(',');
+        try writer.writeAll("{\"name\":");
+        try std.json.stringify(capability.name, .{}, writer);
+        try writer.writeAll(",\"probeable\":");
+        try writer.writeAll(if (capability.probeable) "true" else "false");
+        try writer.writeAll(",\"planning_command\":");
+        if (result.provider != null and
+            result.label != null and
+            result.health_key_addressable and
+            planningPosixCommandSupported())
+        {
+            const command = try planningCapabilityRouteCommandAlloc(
+                allocator,
+                planningProviderName(result.provider.?),
+                result.label.?,
+                capability.name,
+            );
+            defer allocator.free(command);
+            try std.json.stringify(command, .{}, writer);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll(",\"planning_argv\":");
+        if (result.provider != null and
+            result.label != null and
+            result.health_key_addressable)
+        {
+            try writePlanningCapabilityRouteArgvJson(
+                writer,
+                planningProviderName(result.provider.?),
+                result.label.?,
+                capability.name,
+            );
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll("}");
+    }
+    try writer.writeAll("],\"binary_observation\":{\"metadata_only\":true,\"version_execution\":false,\"running_version\":");
+    try std.json.stringify(cli.version, .{}, writer);
+    try writer.writeAll(",\"provider_cli_present\":");
+    if (result.provider_cli_present) |present| {
+        try writer.writeAll(if (present) "true" else "false");
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll("},\"health\":{\"key_addressable\":");
+    try writer.writeAll(if (result.health_key_addressable) "true" else "false");
+    try writer.writeAll(",\"recorded\":");
+    try writer.writeAll(if (result.health_recorded) "true" else "false");
+    try writer.writeAll(",\"summary\":");
+    try writeOptionalJsonString(writer, result.health_summary);
+    try writer.writeAll("},\"repair_action\":");
+    if (result.action) |action| {
+        try writer.writeAll("{\"kind\":");
+        try std.json.stringify(@tagName(action.kind), .{}, writer);
+        try writer.writeAll(",\"severity\":");
+        try std.json.stringify(action.severity, .{}, writer);
+        try writer.writeAll(",\"message\":");
+        try std.json.stringify(action.message, .{}, writer);
+        try writer.writeAll("}");
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"next_action\":");
+    if (result.decision.next_instruction != null or result.decision.next_action != null) {
+        try writer.writeAll("{\"instruction\":");
+        try writeOptionalJsonString(writer, result.decision.next_instruction);
+        try writer.writeAll(",\"command\":");
+        try writeOptionalJsonString(
+            writer,
+            if (planningPosixCommandSupported()) result.decision.next_action else null,
+        );
+        try writer.writeAll(",\"command_shell\":");
+        try writeOptionalJsonString(
+            writer,
+            if (planningPosixCommandSupported() and result.decision.next_action != null) "posix" else null,
+        );
+        try writer.writeAll(",\"platform_supported\":");
+        try writer.writeAll(if (planningPosixCommandSupported()) "true" else "false");
+        try writer.writeAll(",\"mutates\":");
+        try writer.writeAll(if (result.decision.next_action_mutates) "true" else "false");
+        try writer.writeAll(",\"reads_credential_material\":");
+        try writer.writeAll(if (result.decision.next_action_reads_credential_material) "true" else "false");
+        try writer.writeAll(",\"executes_provider_cli\":");
+        try writer.writeAll(if (result.decision.next_action_executes_provider_cli) "true" else "false");
+        try writer.writeAll(",\"spends_provider_calls\":");
+        try writer.writeAll(if (result.decision.next_action_spends_provider_calls) "true" else "false");
+        try writer.writeAll("}");
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll("}\n");
+}
+
+fn writePlanningFrontDoorText(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    result: PlanningFrontDoorResult,
+) !void {
+    try writer.print("omux {s} plan\n", .{result.command});
+    try writePlanningTextValue(writer, "target", result.target);
+    if (result.provider) |provider_value| {
+        try writePlanningTextValue(writer, "provider", planningProviderName(provider_value));
+    } else {
+        try writePlanningTextValue(writer, "provider", null);
+    }
+    try writePlanningTextValue(writer, "label", result.label);
+    try writePlanningTextValue(writer, "capability", result.config.selected_capability);
+    if (result.config.selected_capability != null) {
+        try writer.print("capability_probeable={s}\n", .{
+            if (result.config.selected_capability_probeable) "true" else "false",
+        });
+    } else {
+        try writer.writeAll("capability_probeable=null\n");
+    }
+    if (result.parse_error) |parse_error| {
+        try writePlanningTextValue(writer, "error", @tagName(parse_error));
+    } else {
+        try writePlanningTextValue(writer, "error", null);
+    }
+    try writePlanningTextValue(writer, "invalid_argument", result.invalid_argument);
+    try writer.writeAll(
+        "execution_available=false\nmutates=false\nreads_credential_material=false\nexecutes_provider_cli=false\nspends_provider_calls=false\nmanaged_claude_forwarding=compile_disabled\nclaim_level=planning_only\nreadiness_claimed=false\n",
+    );
+    try writer.print("status={s}\nconfig_state={s}\nprovider_configured={s}\nlabel_configured={s}\nmatching_providers={d}\nmatching_capabilities={d}\n", .{
+        result.decision.status,
+        @tagName(result.config.state),
+        if (result.config.provider_configured) "true" else "false",
+        if (result.config.label_configured) "true" else "false",
+        result.config.matching_providers,
+        result.config.matching_capabilities,
+    });
+    for (result.config.capabilities, 0..) |capability, index| {
+        try writer.print("capability_route_{d}_name=", .{index});
+        try std.json.stringify(capability.name, .{}, writer);
+        try writer.print("\ncapability_route_{d}_probeable={s}\n", .{
+            index,
+            if (capability.probeable) "true" else "false",
+        });
+        const command = if (result.provider != null and
+            result.label != null and
+            result.health_key_addressable and
+            planningPosixCommandSupported())
+            try planningCapabilityRouteCommandAlloc(
+                allocator,
+                planningProviderName(result.provider.?),
+                result.label.?,
+                capability.name,
+            )
+        else
+            null;
+        defer if (command) |value| allocator.free(value);
+        const key = try std.fmt.allocPrint(
+            allocator,
+            "capability_route_{d}_planning_command",
+            .{index},
+        );
+        defer allocator.free(key);
+        try writePlanningTextValue(
+            writer,
+            key,
+            command,
+        );
+        try writer.print("capability_route_{d}_planning_argv=", .{index});
+        if (result.provider != null and
+            result.label != null and
+            result.health_key_addressable)
+        {
+            try writePlanningCapabilityRouteArgvJson(
+                writer,
+                planningProviderName(result.provider.?),
+                result.label.?,
+                capability.name,
+            );
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeByte('\n');
+    }
+    try writer.print("binary_metadata_only=true\nbinary_version_execution=false\nrunning_version={s}\n", .{cli.version});
+    if (result.provider_cli_present) |present| {
+        try writer.print("provider_cli_present={s}\n", .{if (present) "true" else "false"});
+    } else {
+        try writer.writeAll("provider_cli_present=null\n");
+    }
+    try writer.print("health_key_addressable={s}\nhealth_recorded={s}\n", .{
+        if (result.health_key_addressable) "true" else "false",
+        if (result.health_recorded) "true" else "false",
+    });
+    try writePlanningTextValue(writer, "health_summary", result.health_summary);
+    if (result.action) |action| {
+        try writer.print("repair_action={s}\nrepair_severity={s}\n", .{ @tagName(action.kind), action.severity });
+        try writePlanningTextValue(writer, "repair_message", action.message);
+    } else {
+        try writer.writeAll("repair_action=null\nrepair_severity=null\nrepair_message=null\n");
+    }
+    try writePlanningTextValue(writer, "next_instruction", result.decision.next_instruction);
+    try writePlanningTextValue(
+        writer,
+        "next_action",
+        if (planningPosixCommandSupported()) result.decision.next_action else null,
+    );
+    try writePlanningTextValue(
+        writer,
+        "next_action_shell",
+        if (planningPosixCommandSupported() and result.decision.next_action != null) "posix" else null,
+    );
+    try writer.print("next_action_platform_supported={s}\n", .{
+        if (planningPosixCommandSupported()) "true" else "false",
+    });
+    try writer.print("next_action_mutates={s}\nnext_action_reads_credential_material={s}\nnext_action_executes_provider_cli={s}\nnext_action_spends_provider_calls={s}\n", .{
+        if (result.decision.next_action_mutates) "true" else "false",
+        if (result.decision.next_action_reads_credential_material) "true" else "false",
+        if (result.decision.next_action_executes_provider_cli) "true" else "false",
+        if (result.decision.next_action_spends_provider_calls) "true" else "false",
+    });
+}
+
+fn writePlanningTextValue(writer: anytype, key: []const u8, value: ?[]const u8) !void {
+    try writer.print("{s}=", .{key});
+    if (value) |text| {
+        try std.json.stringify(text, .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeByte('\n');
+}
+
+fn planningPosixCommandSupported() bool {
+    return builtin.os.tag != .windows;
 }
 
 const RepairPlanRoute = struct {
@@ -5026,6 +6424,17 @@ fn repairActionFor(
     health: ?health_mod.AccountHealth,
     budget: ?types.ActionBudget,
 ) RepairAction {
+    return repairActionForAt(route, def, runtime, health, budget, std.time.timestamp());
+}
+
+fn repairActionForAt(
+    route: RepairPlanRoute,
+    def: provider_schema.ProviderDefinition,
+    runtime: types.RuntimeReadiness,
+    health: ?health_mod.AccountHealth,
+    budget: ?types.ActionBudget,
+    now: i64,
+) RepairAction {
     switch (runtime) {
         .ready => {},
         .missing_binary => return .{
@@ -5086,7 +6495,7 @@ fn repairActionFor(
                 .budget = .free_local,
                 .retry_after_s = rl.retry_after_s,
             },
-            .quota_exhausted => |quota| if (quotaWindowRevalidationNeeded(quota)) .{
+            .quota_exhausted => |quota| if (quotaWindowRevalidationNeededAt(quota, now)) .{
                 .kind = .revalidation_needed,
                 .severity = "warning",
                 .message = "quota reset window has passed; revalidate route health before using this route",
@@ -5116,8 +6525,12 @@ fn repairActionFor(
 }
 
 fn quotaWindowRevalidationNeeded(quota: types.Availability.QuotaInfo) bool {
+    return quotaWindowRevalidationNeededAt(quota, std.time.timestamp());
+}
+
+fn quotaWindowRevalidationNeededAt(quota: types.Availability.QuotaInfo, now: i64) bool {
     const reset = quota.window_resets_at orelse return false;
-    return std.time.timestamp() >= reset;
+    return now >= reset;
 }
 
 fn degradedAction(
@@ -5211,13 +6624,18 @@ fn repairCommandAlloc(
     command: RepairCommandKind,
     route: RepairPlanRoute,
 ) !?[]const u8 {
+    const command_provider = try shellCommandValueAlloc(allocator, route.provider);
+    defer allocator.free(command_provider);
+    const command_account = try shellCommandValueAlloc(allocator, route.account);
+    defer allocator.free(command_account);
     return switch (command) {
         .none => null,
-        .probe => if (route.capability) |capability|
-            try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --capability {s} --json", .{ route.provider, route.account, capability })
-        else
-            try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --json", .{ route.provider, route.account }),
-        .codex_login_device => try std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{route.account}),
+        .probe => if (route.capability) |capability| blk: {
+            const command_capability = try shellCommandValueAlloc(allocator, capability);
+            defer allocator.free(command_capability);
+            break :blk try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --capability {s} --json", .{ command_provider, command_account, command_capability });
+        } else try std.fmt.allocPrint(allocator, "oauth-mux probe --provider {s} --account {s} --json", .{ command_provider, command_account }),
+        .codex_login_device => try codexLoginDeviceCommandAlloc(allocator, route.account),
     };
 }
 
@@ -5229,7 +6647,7 @@ fn handoffPlanCommandAlloc(
     if (action.mediation != .user_handoff) return null;
     if (action.command != .none) return null;
     if (action.owner == null or action.owner.? != .upstream_cli_login) return null;
-    return try std.fmt.allocPrint(allocator, "oauth-mux enroll plan {s} --account {s} --json", .{ route.provider, route.account });
+    return try enrollPlanCommandAlloc(allocator, route.provider, route.account);
 }
 
 fn runtimeDiagnosticCommandAlloc(
@@ -5238,10 +6656,15 @@ fn runtimeDiagnosticCommandAlloc(
     route: RepairPlanRoute,
 ) !?[]const u8 {
     if (action.kind != .fix_runtime) return null;
-    return if (route.capability) |capability|
-        try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ route.provider, route.account, capability })
-    else
-        try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --json", .{ route.provider, route.account });
+    const command_provider = try shellCommandValueAlloc(allocator, route.provider);
+    defer allocator.free(command_provider);
+    const command_account = try shellCommandValueAlloc(allocator, route.account);
+    defer allocator.free(command_account);
+    return if (route.capability) |capability| blk: {
+        const command_capability = try shellCommandValueAlloc(allocator, capability);
+        defer allocator.free(command_capability);
+        break :blk try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --capability {s} --json", .{ command_provider, command_account, command_capability });
+    } else try std.fmt.allocPrint(allocator, "oauth-mux doctor runtime --provider {s} --account {s} --json", .{ command_provider, command_account });
 }
 
 const RouteEvaluation = struct {
@@ -6912,12 +8335,9 @@ fn writeReauthWaitResult(
 
 fn reauthCommandOwnedCommandAlloc(allocator: std.mem.Allocator, provider_name: []const u8, account: []const u8) ![]const u8 {
     if (std.mem.eql(u8, provider_name, "codex")) {
-        return try std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{account});
+        return codexLoginDeviceCommandAlloc(allocator, account);
     }
-    if (std.mem.eql(u8, provider_name, "claude")) {
-        return try std.fmt.allocPrint(allocator, "oauth-mux enroll plan claude --account {s} --json", .{account});
-    }
-    return try std.fmt.allocPrint(allocator, "oauth-mux enroll plan {s} --account {s} --json", .{ provider_name, account });
+    return enrollPlanCommandAlloc(allocator, provider_name, account);
 }
 
 fn reauthNeedsFreshBrowserContext(provider_name: []const u8) bool {
@@ -18724,6 +20144,58 @@ fn shellQuoteAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 
     return out.toOwnedSlice();
 }
 
+fn shellCommandValueAlloc(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    if (value.len > 0 and value[0] != '-') {
+        for (value) |c| {
+            if (std.ascii.isAlphanumeric(c) or
+                c == '_' or c == '@' or c == '%' or c == '+' or c == '=' or
+                c == ':' or c == ',' or c == '.' or c == '/' or c == '-')
+            {
+                continue;
+            }
+            return shellQuoteAlloc(allocator, value);
+        }
+        return allocator.dupe(u8, value);
+    }
+    return shellQuoteAlloc(allocator, value);
+}
+
+fn codexLoginDeviceCommandAlloc(allocator: std.mem.Allocator, account: []const u8) ![]const u8 {
+    const command_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(command_account);
+    if (account.len == 0 or account[0] == '-') {
+        return std.fmt.allocPrint(
+            allocator,
+            "oauth-mux codex login-device --account {s}",
+            .{command_account},
+        );
+    }
+    return std.fmt.allocPrint(allocator, "oauth-mux codex login-device {s}", .{command_account});
+}
+
+fn enrollPlanCommandAlloc(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    account: []const u8,
+) ![]const u8 {
+    const command_provider = try shellCommandValueAlloc(allocator, provider_name);
+    defer allocator.free(command_provider);
+    const command_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(command_account);
+    if (provider_name.len == 0 or provider_name[0] == '-') {
+        return std.fmt.allocPrint(
+            allocator,
+            "oauth-mux enroll plan --provider {s} --account {s} --json",
+            .{ command_provider, command_account },
+        );
+    }
+    return std.fmt.allocPrint(
+        allocator,
+        "oauth-mux enroll plan {s} --account {s} --json",
+        .{ command_provider, command_account },
+    );
+}
+
 fn validateCurrentConfig(allocator: std.mem.Allocator, writer: anytype) !void {
     const parsed = config.load(allocator) catch return error.ConfigNotFound;
     defer parsed.deinit();
@@ -21663,6 +23135,87 @@ test "shellQuoteAlloc protects config paths with spaces" {
     const with_quote = try shellQuoteAlloc(std.testing.allocator, "/tmp/it's-here.json");
     defer std.testing.allocator.free(with_quote);
     try std.testing.expectEqualStrings("'/tmp/it'\\''s-here.json'", with_quote);
+}
+
+test "shellCommandValueAlloc preserves stable output and quotes unsafe values" {
+    const ordinary = try shellCommandValueAlloc(std.testing.allocator, "max-1");
+    defer std.testing.allocator.free(ordinary);
+    try std.testing.expectEqualStrings("max-1", ordinary);
+
+    const leading_flag = try shellCommandValueAlloc(std.testing.allocator, "--json");
+    defer std.testing.allocator.free(leading_flag);
+    try std.testing.expectEqualStrings("'--json'", leading_flag);
+
+    const injected = try shellCommandValueAlloc(std.testing.allocator, "work; touch /tmp/forbidden");
+    defer std.testing.allocator.free(injected);
+    try std.testing.expectEqualStrings("'work; touch /tmp/forbidden'", injected);
+}
+
+test "codexLoginDeviceCommandAlloc preserves ordinary syntax and addresses flag labels" {
+    const ordinary = try codexLoginDeviceCommandAlloc(std.testing.allocator, "max-1");
+    defer std.testing.allocator.free(ordinary);
+    try std.testing.expectEqualStrings("oauth-mux codex login-device max-1", ordinary);
+
+    const leading_flag = try codexLoginDeviceCommandAlloc(std.testing.allocator, "--json");
+    defer std.testing.allocator.free(leading_flag);
+    try std.testing.expectEqualStrings("oauth-mux codex login-device --account '--json'", leading_flag);
+}
+
+test "enrollment and reauth command renderers quote unsafe values" {
+    const codex_confirm = try enrollCodexConfirmCommand(std.testing.allocator, "--json", "/tmp/store root", true);
+    defer std.testing.allocator.free(codex_confirm);
+    try std.testing.expectEqualStrings(
+        "oauth-mux enroll codex --account '--json' --store-root '/tmp/store root' --confirm-enroll --json",
+        codex_confirm,
+    );
+
+    const claude_confirm = try enrollClaudeConfirmCommand(std.testing.allocator, "work;stop", null, false);
+    defer std.testing.allocator.free(claude_confirm);
+    try std.testing.expectEqualStrings(
+        "oauth-mux enroll claude --account 'work;stop' --confirm-enroll",
+        claude_confirm,
+    );
+
+    const figma_confirm = try enrollFigmaConfirmCommand(std.testing.allocator, "--json", "pat", "FIGMA_TOKEN", true);
+    defer std.testing.allocator.free(figma_confirm);
+    try std.testing.expectEqualStrings(
+        "oauth-mux enroll figma --account '--json' --mode pat --secret-env FIGMA_TOKEN --confirm-enroll --json",
+        figma_confirm,
+    );
+
+    const reauth = try reauthCommandOwnedCommandAlloc(std.testing.allocator, "claude", "--json");
+    defer std.testing.allocator.free(reauth);
+    try std.testing.expectEqualStrings(
+        "oauth-mux enroll plan claude --account '--json' --json",
+        reauth,
+    );
+
+    const ordinary_plan = try enrollPlanCommandAlloc(std.testing.allocator, "claude", "work");
+    defer std.testing.allocator.free(ordinary_plan);
+    try std.testing.expectEqualStrings(
+        "oauth-mux enroll plan claude --account work --json",
+        ordinary_plan,
+    );
+
+    const flag_provider_plan = try enrollPlanCommandAlloc(std.testing.allocator, "--json", "work");
+    defer std.testing.allocator.free(flag_provider_plan);
+    try std.testing.expectEqualStrings(
+        "oauth-mux enroll plan --provider '--json' --account work --json",
+        flag_provider_plan,
+    );
+}
+
+test "Figma secret env names must be valid shell identifiers" {
+    try std.testing.expect(validEnvVariableName("FIGMA_TOKEN"));
+    try std.testing.expect(validEnvVariableName("_FIGMA_2"));
+    try std.testing.expect(!validEnvVariableName(""));
+    try std.testing.expect(!validEnvVariableName("2FIGMA"));
+    try std.testing.expect(!validEnvVariableName("FIGMA-TOKEN"));
+    try std.testing.expect(!validEnvVariableName("FIGMA; touch /tmp/forbidden"));
+    try std.testing.expectError(
+        error.InvalidCharacter,
+        figmaSecretExportCommand(std.testing.allocator, "FIGMA; touch /tmp/forbidden"),
+    );
 }
 
 test "writeProbeJson includes terminal pipeline error" {
