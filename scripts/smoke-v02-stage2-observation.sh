@@ -60,10 +60,10 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 36 ] ||
-  fail "expected exactly thirty-seven exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 88 ] ||
-  fail "expected exactly 88 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 64 ] ||
+  fail "expected exactly 64 exercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 60 ] ||
+  fail "expected exactly 60 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
 
@@ -102,7 +102,35 @@ typed_all_exhausted_429
 trusted_retry_after
 all_exhausted_no_loop
 all_exhausted_no_invented_capacity
-accepted_rejected_counter_reconciliation'
+accepted_rejected_counter_reconciliation
+advisory_usage_default_on
+advisory_usage_non_authoritative
+sidecar_no_proactive_usage_polling
+advisory_usage_five_minute_freshness
+advisory_usage_valid_empty_negative_cache
+advisory_usage_normalized_observations_only
+advisory_usage_no_raw_response_persistence
+advisory_usage_unknown_field_tolerance
+advisory_usage_required_scope
+advisory_usage_required_window
+advisory_usage_bounded_value
+advisory_usage_absolute_reset
+advisory_usage_exact_model_scope
+advisory_usage_invalid_row_exclusion
+advisory_usage_schema_event_redaction
+advisory_usage_schema_event_deduplication
+advisory_usage_missing_structure_kill_switch
+advisory_usage_unsupported_schema_kill_switch
+advisory_stale_reactive_fallback
+advisory_missing_reactive_fallback
+advisory_contradictory_reactive_fallback
+advisory_killed_reactive_fallback
+advisory_failure_nonblocking
+advisory_no_invented_route_readiness
+advisory_no_invented_model_readiness
+observed_exhaustion_trusted_through_reset
+availability_expires_at_deadline
+request_path_evidence_precedence'
 actual_passes=$(jq -r '.predicates[] | select(.status == "pass") | .id' "$manifest")
 [ "$actual_passes" = "$expected_passes" ] || fail "predicate reduction drifted"
 

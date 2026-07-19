@@ -209,6 +209,34 @@ trusted_retry_after
 all_exhausted_no_loop
 all_exhausted_no_invented_capacity
 accepted_rejected_counter_reconciliation
+advisory_usage_default_on
+advisory_usage_non_authoritative
+sidecar_no_proactive_usage_polling
+advisory_usage_five_minute_freshness
+advisory_usage_valid_empty_negative_cache
+advisory_usage_normalized_observations_only
+advisory_usage_no_raw_response_persistence
+advisory_usage_unknown_field_tolerance
+advisory_usage_required_scope
+advisory_usage_required_window
+advisory_usage_bounded_value
+advisory_usage_absolute_reset
+advisory_usage_exact_model_scope
+advisory_usage_invalid_row_exclusion
+advisory_usage_schema_event_redaction
+advisory_usage_schema_event_deduplication
+advisory_usage_missing_structure_kill_switch
+advisory_usage_unsupported_schema_kill_switch
+advisory_stale_reactive_fallback
+advisory_missing_reactive_fallback
+advisory_contradictory_reactive_fallback
+advisory_killed_reactive_fallback
+advisory_failure_nonblocking
+advisory_no_invented_route_readiness
+advisory_no_invented_model_readiness
+observed_exhaustion_trusted_through_reset
+availability_expires_at_deadline
+request_path_evidence_precedence
 EOF
 }
 
@@ -454,6 +482,65 @@ case "$mode" in
             "all_exhausted_without_reset_omits_retry_after",
             "all_exhausted_ignores_malformed_reset"
           ])
+        elif .id == "advisory_usage_default_on" then
+          .status = reduced(["advisory_observed_on_every_routed_response"])
+        elif .id == "advisory_usage_non_authoritative" then
+          .status = reduced([
+            "advisory_capped_at_inferred_never_proven",
+            "advisory_changes_no_routing_decision"
+          ])
+        elif .id == "sidecar_no_proactive_usage_polling" then
+          .status = reduced(["advisory_observation_adds_no_upstream_call"])
+        elif .id == "advisory_usage_five_minute_freshness" then
+          .status = reduced(["advisory_fresh_window_boundary_exact"])
+        elif .id == "advisory_usage_valid_empty_negative_cache" then
+          .status = reduced(["advisory_valid_empty_arms_negative_cache"])
+        elif .id == "advisory_usage_normalized_observations_only" then
+          .status = reduced(["advisory_records_normalized_typed_observation"])
+        elif .id == "advisory_usage_no_raw_response_persistence" then
+          .status = reduced(["advisory_surface_and_event_value_free"])
+        elif .id == "advisory_usage_unknown_field_tolerance" then
+          .status = reduced(["advisory_tolerates_unknown_fields"])
+        elif .id == "advisory_usage_required_scope" then
+          .status = reduced(["advisory_excludes_row_missing_scope"])
+        elif .id == "advisory_usage_required_window" then
+          .status = reduced(["advisory_excludes_row_missing_window"])
+        elif .id == "advisory_usage_bounded_value" then
+          .status = reduced(["advisory_excludes_row_unbounded_value"])
+        elif .id == "advisory_usage_absolute_reset" then
+          .status = reduced(["advisory_excludes_row_non_absolute_reset"])
+        elif .id == "advisory_usage_exact_model_scope" then
+          .status = reduced(["advisory_model_scope_requires_exact_model"])
+        elif .id == "advisory_usage_invalid_row_exclusion" then
+          .status = reduced(["advisory_invalid_row_excluded_never_fabricated"])
+        elif .id == "advisory_usage_schema_event_redaction" then
+          .status = reduced(["advisory_schema_event_redacted_value_free"])
+        elif .id == "advisory_usage_schema_event_deduplication" then
+          .status = reduced(["advisory_one_schema_event_per_fingerprint"])
+        elif .id == "advisory_usage_missing_structure_kill_switch" then
+          .status = reduced(["advisory_missing_structure_trips_kill"])
+        elif .id == "advisory_usage_unsupported_schema_kill_switch" then
+          .status = reduced(["advisory_unsupported_schema_trips_kill"])
+        elif .id == "advisory_stale_reactive_fallback" then
+          .status = reduced(["advisory_stale_falls_back_to_reactive"])
+        elif .id == "advisory_missing_reactive_fallback" then
+          .status = reduced(["advisory_missing_falls_back_to_reactive"])
+        elif .id == "advisory_contradictory_reactive_fallback" then
+          .status = reduced(["advisory_contradictory_falls_back_to_reactive"])
+        elif .id == "advisory_killed_reactive_fallback" then
+          .status = reduced(["advisory_killed_falls_back_to_reactive"])
+        elif .id == "advisory_failure_nonblocking" then
+          .status = reduced(["advisory_failure_never_blocks_serving"])
+        elif .id == "advisory_no_invented_route_readiness" then
+          .status = reduced(["advisory_absent_invents_no_route_readiness"])
+        elif .id == "advisory_no_invented_model_readiness" then
+          .status = reduced(["advisory_mismatch_invents_no_model_readiness"])
+        elif .id == "observed_exhaustion_trusted_through_reset" then
+          .status = reduced(["advisory_exhaustion_trusted_through_reset"])
+        elif .id == "availability_expires_at_deadline" then
+          .status = reduced(["advisory_availability_expires_at_deadline"])
+        elif .id == "request_path_evidence_precedence" then
+          .status = reduced(["reactive_outranks_fresh_advisory"])
         else
           .
         end
@@ -530,9 +617,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 88)
+      and ([.predicates[] | select(.status == "missing")] | length == 60)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 36-pass/0-fail/88-missing Stage 2 slice"
+      fail "manifest is not the exact 64-pass/0-fail/60-missing Stage 2 slice"
     ;;
 
   -h|--help|help)

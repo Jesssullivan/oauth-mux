@@ -8,6 +8,7 @@ const std = @import("std");
 const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
 const wire_proxy = @import("wire_proxy.zig");
+const advisory_usage = @import("../../quota/advisory_usage.zig");
 
 const SessionCapability = capability_mod.SessionCapability;
 const FakeUpstream = fake_upstream_mod.FakeUpstream;
@@ -87,6 +88,39 @@ const FactId = enum {
     teardown_converges_within_bound,
     partial_request_teardown_no_replay_bounded,
     sequential_routed_requests_release_each_time,
+    // §8.8 advisory-usage OBSERVATION family (TIN-2400, observation-only, PR B).
+    // Every fact below is read from the value-free `AdvisoryObservation` the #505
+    // wiring folds through the pure `advisory_usage` core and exposes on the
+    // request observation surface; advisory data never touches a routing decision.
+    advisory_observed_on_every_routed_response,
+    advisory_capped_at_inferred_never_proven,
+    advisory_changes_no_routing_decision,
+    advisory_fresh_window_boundary_exact,
+    advisory_valid_empty_arms_negative_cache,
+    advisory_records_normalized_typed_observation,
+    advisory_surface_and_event_value_free,
+    advisory_tolerates_unknown_fields,
+    advisory_excludes_row_missing_scope,
+    advisory_excludes_row_missing_window,
+    advisory_excludes_row_unbounded_value,
+    advisory_excludes_row_non_absolute_reset,
+    advisory_model_scope_requires_exact_model,
+    advisory_invalid_row_excluded_never_fabricated,
+    advisory_schema_event_redacted_value_free,
+    advisory_one_schema_event_per_fingerprint,
+    advisory_missing_structure_trips_kill,
+    advisory_unsupported_schema_trips_kill,
+    advisory_stale_falls_back_to_reactive,
+    advisory_missing_falls_back_to_reactive,
+    advisory_contradictory_falls_back_to_reactive,
+    advisory_killed_falls_back_to_reactive,
+    advisory_failure_never_blocks_serving,
+    advisory_absent_invents_no_route_readiness,
+    advisory_mismatch_invents_no_model_readiness,
+    reactive_outranks_fresh_advisory,
+    advisory_observation_adds_no_upstream_call,
+    advisory_exhaustion_trusted_through_reset,
+    advisory_availability_expires_at_deadline,
 };
 
 const fact_ids = [_]FactId{
@@ -150,6 +184,35 @@ const fact_ids = [_]FactId{
     .teardown_converges_within_bound,
     .partial_request_teardown_no_replay_bounded,
     .sequential_routed_requests_release_each_time,
+    .advisory_observed_on_every_routed_response,
+    .advisory_capped_at_inferred_never_proven,
+    .advisory_changes_no_routing_decision,
+    .advisory_fresh_window_boundary_exact,
+    .advisory_valid_empty_arms_negative_cache,
+    .advisory_records_normalized_typed_observation,
+    .advisory_surface_and_event_value_free,
+    .advisory_tolerates_unknown_fields,
+    .advisory_excludes_row_missing_scope,
+    .advisory_excludes_row_missing_window,
+    .advisory_excludes_row_unbounded_value,
+    .advisory_excludes_row_non_absolute_reset,
+    .advisory_model_scope_requires_exact_model,
+    .advisory_invalid_row_excluded_never_fabricated,
+    .advisory_schema_event_redacted_value_free,
+    .advisory_one_schema_event_per_fingerprint,
+    .advisory_missing_structure_trips_kill,
+    .advisory_unsupported_schema_trips_kill,
+    .advisory_stale_falls_back_to_reactive,
+    .advisory_missing_falls_back_to_reactive,
+    .advisory_contradictory_falls_back_to_reactive,
+    .advisory_killed_falls_back_to_reactive,
+    .advisory_failure_never_blocks_serving,
+    .advisory_absent_invents_no_route_readiness,
+    .advisory_mismatch_invents_no_model_readiness,
+    .reactive_outranks_fresh_advisory,
+    .advisory_observation_adds_no_upstream_call,
+    .advisory_exhaustion_trusted_through_reset,
+    .advisory_availability_expires_at_deadline,
 };
 
 const Fact = struct {
@@ -251,6 +314,28 @@ pub fn emit(identity: BuildIdentity) !void {
     runAbruptDeathScenario(&facts) catch {};
     runPartialSendTeardownScenario(&facts) catch {};
     runSequentialReleaseScenario(&facts) catch {};
+    // §8.8 advisory-usage OBSERVATION family (observation-only, PR B).
+    runAdvisoryDefaultOnScenario(&facts) catch {};
+    runAdvisoryNonAuthoritativeScenario(&facts) catch {};
+    runAdvisoryFreshnessBoundaryScenario(&facts) catch {};
+    runAdvisoryNegativeCacheScenario(&facts) catch {};
+    runAdvisoryNormalizedValueFreeScenario(&facts) catch {};
+    runAdvisoryUnknownFieldToleranceScenario(&facts) catch {};
+    runAdvisoryRequiredFieldExclusionScenario(&facts) catch {};
+    runAdvisoryExactModelScopeScenario(&facts) catch {};
+    runAdvisoryInvalidRowExclusionScenario(&facts) catch {};
+    runAdvisorySchemaKillScenario(&facts) catch {};
+    runAdvisoryStaleFallbackScenario(&facts) catch {};
+    runAdvisoryMissingFallbackScenario(&facts) catch {};
+    runAdvisoryContradictoryFallbackScenario(&facts) catch {};
+    runAdvisoryKilledFallbackScenario(&facts) catch {};
+    runAdvisoryNonBlockingScenario(&facts) catch {};
+    runAdvisoryNoInventedRouteScenario(&facts) catch {};
+    runAdvisoryNoInventedModelScenario(&facts) catch {};
+    runAdvisoryReactivePrecedenceScenario(&facts) catch {};
+    runAdvisoryNoPollScenario(&facts) catch {};
+    runAdvisoryThroughResetScenario(&facts) catch {};
+    runAdvisoryDeadlineScenario(&facts) catch {};
 
     const artifact = Artifact{
         .candidate_sha = identity.candidate_sha,
@@ -1686,6 +1771,740 @@ fn runSequentialReleaseScenario(facts: []Fact) !void {
     setFact(facts, .sequential_routed_requests_release_each_time, all_ok and
         wire_proxy.testing.reservationOutstanding(listener) == 0 and
         alternate.snapshot().call_count == iterations);
+}
+
+// ===========================================================================
+// §8.8 advisory-usage OBSERVATION family (TIN-2400, observation-only, PR B).
+//
+// Every scenario drives the routed synthetic seam (#494) with the #505 advisory
+// wiring: a canned advisory usage document is threaded through the response's
+// `anthropic-ratelimit-usage` header on the deterministic `FakeUpstream`, folded
+// through the pure `advisory_usage` core, and read back from the value-free
+// `AdvisoryObservation` on the request observation surface. The documents are the
+// core's OWN synthetic schema (the core is the sole schema authority). Advisory
+// state NEVER touches a routing/retry/terminal decision — these facts only prove
+// the §8.8 behaviors are observable at the wire boundary. A deterministic
+// `VirtualClock` pins the 300 s freshness window and negative cache to the exact
+// second, and all values stay value-free (fixed ids + pass/fail only).
+// ===========================================================================
+
+const adv_header = wire_proxy.advisory_usage_header;
+
+// Canonical synthetic advisory documents (the core's own schema grammar). Each
+// is a fixed byte string carried by the `anthropic-ratelimit-usage` header.
+const adv_fresh_available = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400}]}";
+const adv_empty = "{\"schema_version\":1,\"usage\":[]}";
+const adv_v2 = "{\"schema_version\":2,\"usage\":[]}";
+const adv_v3 = "{\"schema_version\":3,\"usage\":[]}";
+const adv_missing_usage_array = "{\"schema_version\":1}";
+const adv_unknown_fields = "{\"schema_version\":1,\"telemetry\":\"x\",\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400,\"nonce\":\"y\",\"weight\":7}]}";
+const adv_row_missing_scope = "{\"schema_version\":1,\"usage\":[{\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400}]}";
+const adv_row_missing_window = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"utilization\":0.42,\"resets_at\":1783652400}]}";
+const adv_row_unbounded_value = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":1.7,\"resets_at\":1783652400}]}";
+const adv_row_non_absolute_reset = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":-5}]}";
+const adv_model_match = "{\"schema_version\":1,\"usage\":[{\"scope\":\"model\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400,\"model\":\"" ++ routed_model ++ "\"}]}";
+const adv_model_missing_id = "{\"schema_version\":1,\"usage\":[{\"scope\":\"model\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400}]}";
+const adv_model_mismatch = "{\"schema_version\":1,\"usage\":[{\"scope\":\"model\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400,\"model\":\"claude-sonnet-4-20250514\"}]}";
+const adv_contradiction = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400},{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":1.0,\"resets_at\":1783652400}]}";
+// Exhausted / available rows whose absolute reset (epoch second 1100) falls
+// INSIDE the freshness window after an observation at now_s = 1000, so a later
+// query crosses the reset boundary while the row is still fresh.
+const adv_exhausted_reset_1100 = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":1.0,\"resets_at\":1100}]}";
+const adv_available_deadline_1100 = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1100}]}";
+
+fn advHeader(doc: []const u8) fake_upstream_mod.Header {
+    return .{ .name = adv_header, .value = doc };
+}
+
+fn advisoryObs(listener: *wire_proxy.Listener) wire_proxy.AdvisoryObservation {
+    return wire_proxy.testing.requestObservation(listener).advisory;
+}
+
+/// Populate the per-account cache once with an advisory-carrying 2xx, then serve
+/// `follow` further header-less 2xx responses so later requests re-query the
+/// SAME cached window (proving "no re-fetch"). `now_ns` is the injected clock.
+const AdvisoryScript = struct {
+    fn oneRoute(
+        capability: *SessionCapability,
+        upstream: *FakeUpstream,
+        vclock: *VirtualClock,
+        event_writer: std.io.AnyWriter,
+    ) !*wire_proxy.Listener {
+        return wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, event_writer, .{
+            .primary = .{ .upstream = upstream, .bearer = "r1", .identity = "acct-1" },
+            .clock = vclock.clock(),
+        });
+    }
+};
+
+/// advisory_usage_default_on: the sidecar usage reader runs UNCONDITIONALLY on
+/// every routed response — there is no enable flag; a fresh advisory on a routed
+/// 2xx is admitted, classified fresh/available, and never latched killed.
+fn runAdvisoryDefaultOnScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_fresh_available)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_observed_on_every_routed_response, hasStatus(response, "200 OK") and
+        adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
+        !adv.killed and primary.snapshot().call_count == 1);
+}
+
+/// advisory_usage_non_authoritative: a fresh advisory is capped at `.inferred`
+/// (never `.proven`), and an advisory header changes NO routing/attempt decision
+/// (byte-identical accounting with vs without the header).
+fn runAdvisoryNonAuthoritativeScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var with_adv = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_fresh_available)},
+    }});
+    defer with_adv.deinit();
+    var without_adv = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "ok" }});
+    defer without_adv.deinit();
+
+    var vclock_a = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener_a = try AdvisoryScript.oneRoute(capability, &with_adv, &vclock_a, std.io.null_writer.any());
+    defer listener_a.deinit();
+    var vclock_b = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener_b = try AdvisoryScript.oneRoute(capability, &without_adv, &vclock_b, std.io.null_writer.any());
+    defer listener_b.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener_a, &carrier));
+    std.testing.allocator.free(try routedRequest(listener_b, &carrier));
+    const a = wire_proxy.testing.requestObservation(listener_a);
+    const b = wire_proxy.testing.requestObservation(listener_b);
+
+    setFact(facts, .advisory_capped_at_inferred_never_proven,
+        a.advisory.present and a.advisory.provenance == .inferred and a.advisory.provenance != .proven);
+    setFact(facts, .advisory_changes_no_routing_decision,
+        a.advisory.present and !b.advisory.present and
+            a.attempts_total == b.attempts_total and a.alternate_count == b.alternate_count and
+            a.same_route_retry_count == b.same_route_retry_count and
+            a.third_attempt_count == b.third_attempt_count and
+            a.upstream_status == b.upstream_status and a.replay_mode == b.replay_mode and
+            with_adv.snapshot().call_count == without_adv.snapshot().call_count);
+}
+
+/// advisory_usage_five_minute_freshness: fresh WHILE age < 300 s (reused with no
+/// re-fetch), stale at the EXACT 300 s boundary.
+fn runAdvisoryFreshnessBoundaryScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_fresh_available)} },
+        .{ .status = .ok, .body = "b" },
+        .{ .status = .ok, .body = "c" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const populated = advisoryObs(listener).freshness == .populated_fresh;
+
+    vclock.now_ns = 1299 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const inside = advisoryObs(listener);
+    const still_fresh = !inside.present and inside.freshness == .populated_fresh;
+
+    vclock.now_ns = 1300 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const boundary = advisoryObs(listener);
+    const stale_at_boundary = boundary.freshness == .populated_stale and
+        boundary.readiness == .unknown and boundary.provenance == .unobserved;
+
+    setFact(facts, .advisory_fresh_window_boundary_exact, populated and still_fresh and stale_at_boundary);
+}
+
+/// advisory_usage_valid_empty_negative_cache: a valid-empty result arms the
+/// negative cache; active while age < 300 s, expired at the exact boundary.
+fn runAdvisoryNegativeCacheScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_empty)} },
+        .{ .status = .ok, .body = "b" },
+        .{ .status = .ok, .body = "c" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 500 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const armed = advisoryObs(listener).freshness == .negative_active;
+
+    vclock.now_ns = 799 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const inside = advisoryObs(listener);
+    const active = !inside.present and inside.freshness == .negative_active;
+
+    vclock.now_ns = 800 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const expired = advisoryObs(listener).freshness == .negative_expired;
+
+    setFact(facts, .advisory_valid_empty_arms_negative_cache, armed and active and expired);
+}
+
+/// advisory_usage_normalized_observations_only + advisory_usage_no_raw_response_
+/// persistence: a well-formed account row folds to a fully NORMALIZED typed
+/// observation (typed freshness/readiness/provenance, no raw text), and neither
+/// the event nor the surface carries any provider payload value.
+fn runAdvisoryNormalizedValueFreeScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_fresh_available)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, event_stream.writer().any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    const written = event_stream.getWritten();
+
+    setFact(facts, .advisory_records_normalized_typed_observation,
+        adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
+            adv.provenance == .inferred and !adv.killed and adv.reactive_present);
+    setFact(facts, .advisory_surface_and_event_value_free,
+        std.mem.indexOf(u8, written, "claude_proxy_advisory_observed") != null and
+            std.mem.indexOf(u8, written, "1783652400") == null and
+            std.mem.indexOf(u8, written, "0.42") == null and
+            std.mem.indexOf(u8, written, "utilization") == null and
+            std.mem.indexOf(u8, written, "resets_at") == null and
+            std.mem.indexOf(u8, written, "schema_version") == null);
+}
+
+/// advisory_usage_unknown_field_tolerance: unknown JSON fields (top-level and
+/// per-row) are tolerated — the valid row is still admitted.
+fn runAdvisoryUnknownFieldToleranceScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_unknown_fields)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_tolerates_unknown_fields,
+        adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
+            adv.provenance == .inferred and !adv.killed);
+}
+
+/// Drive one advisory doc and return its value-free observation at now_s = 1000.
+fn observeAdvisoryDoc(capability: *SessionCapability, carrier: []const u8, doc: []const u8) !wire_proxy.AdvisoryObservation {
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(doc)},
+    }});
+    defer primary.deinit();
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+    std.testing.allocator.free(try routedRequest(listener, carrier));
+    return advisoryObs(listener);
+}
+
+/// A row is EXCLUDED (not fabricated) exactly when it violates a required field:
+/// the sole invalid row leaves a valid-empty result → negative cache, no
+/// populated readiness. Proven per required field (scope/window/value/reset).
+fn runAdvisoryRequiredFieldExclusionScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const excluded = struct {
+        fn ok(adv: wire_proxy.AdvisoryObservation) bool {
+            // No row survived: valid-empty → negative cache, nothing invented.
+            return adv.present and adv.freshness == .negative_active and
+                adv.readiness == .unknown and adv.provenance == .unobserved;
+        }
+    }.ok;
+
+    setFact(facts, .advisory_excludes_row_missing_scope,
+        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_missing_scope)));
+    setFact(facts, .advisory_excludes_row_missing_window,
+        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_missing_window)));
+    setFact(facts, .advisory_excludes_row_unbounded_value,
+        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_unbounded_value)));
+    setFact(facts, .advisory_excludes_row_non_absolute_reset,
+        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_non_absolute_reset)));
+}
+
+/// advisory_usage_exact_model_scope: a model-scoped row applies ONLY to its exact
+/// model (admitted for the routed model), and a model-scoped row missing its
+/// model identifier is excluded.
+fn runAdvisoryExactModelScopeScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const match = try observeAdvisoryDoc(capability, &carrier, adv_model_match);
+    const missing_id = try observeAdvisoryDoc(capability, &carrier, adv_model_missing_id);
+    setFact(facts, .advisory_model_scope_requires_exact_model,
+        match.present and match.freshness == .populated_fresh and match.readiness == .available and
+            match.provenance == .inferred and
+            missing_id.present and missing_id.freshness == .negative_active and
+            missing_id.readiness == .unknown and missing_id.provenance == .unobserved);
+}
+
+/// advisory_usage_invalid_row_exclusion: an invalid row is never fabricated into
+/// a default — the result degrades to valid-empty with no populated readiness.
+fn runAdvisoryInvalidRowExclusionScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const adv = try observeAdvisoryDoc(capability, &carrier, adv_row_missing_scope);
+    setFact(facts, .advisory_invalid_row_excluded_never_fabricated,
+        adv.present and adv.freshness == .negative_active and adv.readiness == .unknown and
+            adv.provenance == .unobserved and !adv.killed);
+}
+
+/// advisory_usage_schema_event_{redaction,deduplication} + the two kill switches:
+/// an unsupported version and a missing top-level structure each latch the
+/// per-account process-lifetime kill; the redacted event surface is value-free;
+/// and exactly one event fires per distinct schema fingerprint.
+fn runAdvisorySchemaKillScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Unsupported-version kill + value-free redacted event.
+    {
+        var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+            .status = .ok,
+            .body = "ok",
+            .headers = &.{advHeader(adv_v2)},
+        }});
+        defer primary.deinit();
+        var event_buffer: [1024]u8 = undefined;
+        var event_stream = std.io.fixedBufferStream(&event_buffer);
+        var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+        const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, event_stream.writer().any());
+        defer listener.deinit();
+        std.testing.allocator.free(try routedRequest(listener, &carrier));
+        const adv = advisoryObs(listener);
+        const written = event_stream.getWritten();
+        setFact(facts, .advisory_unsupported_schema_trips_kill,
+            adv.present and adv.killed and adv.freshness == .killed and
+                std.mem.count(u8, written, "claude_proxy_advisory_schema_rejected") == 1);
+        setFact(facts, .advisory_schema_event_redacted_value_free,
+            std.mem.indexOf(u8, written, "claude_proxy_advisory_schema_rejected") != null and
+                std.mem.indexOf(u8, written, "schema_version") == null and
+                std.mem.indexOf(u8, written, "usage") == null);
+    }
+
+    // Missing top-level structure (no `usage` array) kill.
+    {
+        var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+            .status = .ok,
+            .body = "ok",
+            .headers = &.{advHeader(adv_missing_usage_array)},
+        }});
+        defer primary.deinit();
+        var event_buffer: [1024]u8 = undefined;
+        var event_stream = std.io.fixedBufferStream(&event_buffer);
+        var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+        const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, event_stream.writer().any());
+        defer listener.deinit();
+        std.testing.allocator.free(try routedRequest(listener, &carrier));
+        const adv = advisoryObs(listener);
+        setFact(facts, .advisory_missing_structure_trips_kill,
+            adv.present and adv.killed and adv.freshness == .killed and
+                std.mem.count(u8, event_stream.getWritten(), "claude_proxy_advisory_schema_rejected") == 1);
+    }
+
+    // Dedup: two distinct fingerprints (v2, v3), each seen twice → exactly 2.
+    {
+        var primary = try FakeUpstream.start(std.testing.allocator, &.{
+            .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_v2)} },
+            .{ .status = .ok, .body = "b", .headers = &.{advHeader(adv_v2)} },
+            .{ .status = .ok, .body = "c", .headers = &.{advHeader(adv_v3)} },
+            .{ .status = .ok, .body = "d", .headers = &.{advHeader(adv_v3)} },
+        });
+        defer primary.deinit();
+        var event_buffer: [2048]u8 = undefined;
+        var event_stream = std.io.fixedBufferStream(&event_buffer);
+        var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+        const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, event_stream.writer().any());
+        defer listener.deinit();
+        var i: usize = 0;
+        while (i < 4) : (i += 1) std.testing.allocator.free(try routedRequest(listener, &carrier));
+        setFact(facts, .advisory_one_schema_event_per_fingerprint,
+            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_advisory_schema_rejected") == 2);
+    }
+}
+
+/// advisory_stale_reactive_fallback: once the advisory window elapses, advisory
+/// state degrades and the direct request-path (reactive) evidence is elected.
+fn runAdvisoryStaleFallbackScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_fresh_available)} },
+        .{ .status = .ok, .body = "b" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    vclock.now_ns = 1300 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_stale_falls_back_to_reactive,
+        adv.freshness == .populated_stale and adv.provenance == .unobserved and
+            adv.reactive_present and adv.elected_provenance == .proven and
+            adv.elected_readiness == .available);
+}
+
+/// advisory_missing_reactive_fallback: with no advisory header the election comes
+/// purely from the direct request-path evidence.
+fn runAdvisoryMissingFallbackScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "ok" }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_missing_falls_back_to_reactive,
+        !adv.present and adv.freshness == .never and adv.provenance == .unobserved and
+            adv.reactive_present and adv.elected_provenance == .proven and
+            adv.elected_readiness == .available);
+}
+
+/// advisory_contradictory_reactive_fallback: two same-key rows disagreeing on
+/// readiness make the advisory state contradictory → it degrades to reactive.
+fn runAdvisoryContradictoryFallbackScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_contradiction)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_contradictory_falls_back_to_reactive,
+        adv.present and adv.freshness == .populated_fresh and adv.readiness == .unknown and
+            adv.provenance == .unobserved and adv.reactive_present and
+            adv.elected_provenance == .proven and adv.elected_readiness == .available);
+}
+
+/// advisory_killed_reactive_fallback: a killed account still yields honest
+/// reactive evidence (a later 2xx elects proven-available), advisory ignored.
+fn runAdvisoryKilledFallbackScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_v2)} },
+        .{ .status = .ok, .body = "b", .headers = &.{advHeader(adv_fresh_available)} },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_killed_falls_back_to_reactive,
+        adv.killed and adv.freshness == .killed and adv.provenance == .unobserved and
+            adv.reactive_present and adv.elected_provenance == .proven and
+            adv.elected_readiness == .available);
+}
+
+/// advisory_failure_nonblocking: a per-account kill NEVER stops the harness — the
+/// sidecar keeps serving every routed request with honest reactive evidence.
+fn runAdvisoryNonBlockingScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const iterations = 3;
+    const script = [_]fake_upstream_mod.ScriptedResponse{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_v2)},
+    }} ** iterations;
+    var primary = try FakeUpstream.start(std.testing.allocator, &script);
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    var all_served = true;
+    var i: usize = 0;
+    while (i < iterations) : (i += 1) {
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+        all_served = all_served and hasStatus(response, "200 OK");
+    }
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_failure_never_blocks_serving,
+        all_served and adv.killed and adv.elected_provenance == .proven and
+            primary.snapshot().call_count == iterations);
+}
+
+/// advisory_no_invented_route_readiness: with no advisory and a response class
+/// that carries no reactive readiness (a 5xx pass-through), the election is an
+/// honest `.unobserved`/`unknown` — never an invented route readiness.
+fn runAdvisoryNoInventedRouteScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .internal_server_error,
+        .body = "boom",
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_absent_invents_no_route_readiness,
+        hasStatus(response, "500 Internal Server Error") and !adv.present and
+            adv.freshness == .never and !adv.reactive_present and
+            adv.provenance == .unobserved and adv.elected_provenance == .unobserved and
+            adv.elected_readiness == .unknown);
+}
+
+/// advisory_no_invented_model_readiness: a fresh advisory row for a DIFFERENT
+/// model does not apply to the admitted model — no model readiness is invented.
+fn runAdvisoryNoInventedModelScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const adv = try observeAdvisoryDoc(capability, &carrier, adv_model_mismatch);
+    setFact(facts, .advisory_mismatch_invents_no_model_readiness,
+        adv.present and adv.freshness == .populated_fresh and adv.readiness == .unknown and
+            adv.provenance == .unobserved);
+}
+
+/// request_path_evidence_precedence: a direct request-path 429 OUTRANKS a fresh
+/// advisory that claims availability.
+fn runAdvisoryReactivePrecedenceScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{ .{ .name = "Retry-After", .value = "5" }, advHeader(adv_fresh_available) },
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const adv = advisoryObs(listener);
+    setFact(facts, .reactive_outranks_fresh_advisory,
+        hasStatus(response, "429 Too Many Requests") and adv.present and
+            adv.readiness == .available and adv.provenance == .inferred and
+            adv.reactive_present and adv.elected_readiness == .exhausted and
+            adv.elected_provenance == .proven);
+}
+
+/// sidecar_no_proactive_usage_polling: the observation is response-driven only —
+/// it piggybacks the single upstream call and never opens a second polling read.
+fn runAdvisoryNoPollScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advHeader(adv_fresh_available)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const adv = advisoryObs(listener);
+    setFact(facts, .advisory_observation_adds_no_upstream_call,
+        adv.present and primary.snapshot().call_count == 1 and primary.snapshot().attempt_count == 1);
+}
+
+/// observed_exhaustion_trusted_through_reset: an observed exhaustion is trusted
+/// (`.inferred`) WHILE now_s < its reset, then the advisory election degrades to
+/// `.unobserved` at the reset — it never invents availability. The advisory row
+/// stays fresh across the crossing (reset 1100 is inside the 300 s window).
+fn runAdvisoryThroughResetScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_exhausted_reset_1100)} },
+        .{ .status = .ok, .body = "b" },
+        .{ .status = .ok, .body = "c" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const at_observe = advisoryObs(listener);
+
+    vclock.now_ns = 1099 * std.time.ns_per_s; // still before the reset
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const before_reset = advisoryObs(listener);
+
+    vclock.now_ns = 1100 * std.time.ns_per_s; // exactly the reset boundary
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const at_reset = advisoryObs(listener);
+
+    setFact(facts, .advisory_exhaustion_trusted_through_reset,
+        // Trusted through the reset: exhausted/inferred while now_s < reset ...
+        at_observe.freshness == .populated_fresh and at_observe.readiness == .exhausted and
+            at_observe.provenance == .inferred and
+            before_reset.freshness == .populated_fresh and before_reset.provenance == .inferred and
+            // ... then no invention at the reset: the advisory election degrades
+            // to unobserved (still fresh, so this is the reset — not staleness).
+            at_reset.freshness == .populated_fresh and at_reset.provenance == .unobserved);
+}
+
+/// availability_expires_at_deadline: an availability observation is trusted
+/// (`.inferred`) WHILE now_s < its deadline, then EXPIRES to `.unobserved` at the
+/// deadline (still fresh, so the transition is the deadline, not staleness).
+fn runAdvisoryDeadlineScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advHeader(adv_available_deadline_1100)} },
+        .{ .status = .ok, .body = "b" },
+        .{ .status = .ok, .body = "c" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try AdvisoryScript.oneRoute(capability, &primary, &vclock, std.io.null_writer.any());
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const at_observe = advisoryObs(listener);
+
+    vclock.now_ns = 1099 * std.time.ns_per_s; // before the deadline
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const before_deadline = advisoryObs(listener);
+
+    vclock.now_ns = 1100 * std.time.ns_per_s; // exactly the deadline
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const at_deadline = advisoryObs(listener);
+
+    setFact(facts, .advisory_availability_expires_at_deadline,
+        at_observe.freshness == .populated_fresh and at_observe.readiness == .available and
+            at_observe.provenance == .inferred and
+            before_deadline.freshness == .populated_fresh and before_deadline.provenance == .inferred and
+            at_deadline.freshness == .populated_fresh and at_deadline.provenance == .unobserved);
 }
 
 fn writeArtifactAtomic(artifact: Artifact) !void {
