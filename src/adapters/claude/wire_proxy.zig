@@ -2,6 +2,16 @@
 //!
 //! This slice only establishes the local HTTP boundary. It does not read or
 //! inject provider credentials, select routes, retry requests, or spawn Claude.
+//!
+//! RESIDENT-ABSENCE INVARIANT (G6 sidecar half; plan §2.1/§2.4, ladder §7/G6):
+//! the sidecar consults NO resident/daemon/service state. Every routing, retry,
+//! and terminal decision derives solely from the inbound request, the session
+//! capability, the injected synthetic routes, and the per-sidecar replay
+//! reservation pool. There is no resident hook to read, so resident-service
+//! absence or restart cannot change routing, expose a request body, or make the
+//! resident the session proxy. This is grep-proof (no `resident`/`daemon`/
+//! `keepalive`/`service` symbol appears in this file) and is enforced as a
+//! structural test over the listener `State` (see the "resident absence" test).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -197,22 +207,35 @@ pub const Listener = opaque {
     /// Interrupts an accepted inbound connection, joins the listener thread,
     /// and only then releases the socket and listener state.
     pub fn deinit(self: *Listener) void {
-        const state = statePtr(self);
-        state.stopping.store(true, .release);
-        state.active.interrupt();
-        state.upstream_active.interrupt();
-        if (state.thread) |thread| thread.join();
-        state.server.deinit();
-        const allocator = state.allocator;
-        // The synthetic routing struct is sidecar-owned; its `FakeUpstream`
-        // targets and credential slices remain caller-owned and outlive us.
-        switch (state.upstream) {
-            .synthetic => |routing| allocator.destroy(routing),
-            else => {},
-        }
-        allocator.destroy(state);
+        _ = teardown(self);
     }
 };
+
+/// Tears the listener down and returns the per-sidecar replay reservation still
+/// outstanding at teardown. The measurement is taken AFTER the serve thread is
+/// joined — so any in-flight request has fully unwound and released its
+/// reservation via its `defer guard.release()` — and BEFORE the state is freed.
+/// This is the abrupt-death reclamation seam (ladder §9 Stage 2): a live request
+/// killed mid-attempt or mid-stream must return the pool to zero.
+fn teardown(self: *Listener) usize {
+    const state = statePtr(self);
+    state.stopping.store(true, .release);
+    state.active.interrupt();
+    state.upstream_active.interrupt();
+    if (state.thread) |thread| thread.join();
+    // Post-join: the request path (if any) has run its exactly-once release.
+    const outstanding = state.reservation.outstanding();
+    state.server.deinit();
+    const allocator = state.allocator;
+    // The synthetic routing struct is sidecar-owned; its `FakeUpstream`
+    // targets and credential slices remain caller-owned and outlive us.
+    switch (state.upstream) {
+        .synthetic => |routing| allocator.destroy(routing),
+        else => {},
+    }
+    allocator.destroy(state);
+    return outstanding;
+}
 
 fn statePtr(listener: *Listener) *State {
     return @ptrCast(@alignCast(listener));
@@ -1009,19 +1032,19 @@ fn stripResponseHeader(name: []const u8, headers: []const std.http.Header) bool 
 // ===========================================================================
 // §2.2 single-alternate retry state machine (synthetic test seam only).
 //
-// STRUCTURAL two-attempt bound (why a third attempt cannot compile/execute):
+// STRUCTURAL two-attempt bound (why a third attempt cannot execute):
 //   * `forwardRouted` calls `performAttempt(.first)` EXACTLY ONCE and has no
 //     loop and no recursion.
-//   * ONLY `performAttempt(.first)` can return a retry-bearing disposition
-//     (`.transport_failed_presend` or `.pre_body_reauth`). Every consumption
-//     path routes the single follow-up through `attemptSecondTerminal`, which
-//     returns `void` and internally forces role `.second`. Role `.second`
-//     collapses every classification into a delivered terminal
-//     (`.delivered_success` / `.delivered_failure`) — it can NEVER produce a
-//     retry-bearing disposition, and there is no producer of a retry
-//     entitlement other than the one already-consumed first attempt.
-//   * `attemptSecondTerminal` never calls `forwardRouted` or re-dispatches, so
-//     control never re-enters the switch.
+//   * The single follow-up ALWAYS routes through `attemptSecondTerminal`, which
+//     returns `void`, forces role `.second`, and calls `performAttempt(.second)`
+//     EXACTLY ONCE. Role `.second` never surfaces `.transport_failed_presend`
+//     (a role-`.second` pre-send failure is delivered as a terminal 502); the
+//     only disposition it can hand back is `.pre_body_reauth`, which
+//     `attemptSecondTerminal` DELIVERS terminally — as the single-identity
+//     reauth (same-route form) or the composed all-exhausted 429 (alternate
+//     form) — with no re-dispatch.
+//   * No path calls `forwardRouted` or `performAttempt` a third time, so control
+//     never re-enters the attempt machinery after the second attempt.
 //   * The `RetrySlot` value asserts single consumption, and
 //     `commitObservation` asserts `attempts_total <= 2`,
 //     `third_attempt_count == 0`, and never-both-forms. Breaking the structural
@@ -1121,11 +1144,14 @@ const BufferedResponse = struct {
 
 const AttemptResult = union(enum) {
     /// Zero request bytes were written upstream (proven: no socket write ran).
-    /// Produced ONLY by role `.first` — the same-route retry entitlement.
+    /// Produced ONLY by role `.first` — the same-route retry entitlement. Role
+    /// `.second` delivers a pre-send failure as a terminal 502 instead.
     transport_failed_presend,
-    /// A pre-body 401/403/429 buffered in full before any downstream byte.
-    /// Produced ONLY by role `.first` — the distinct-account alternate
-    /// entitlement.
+    /// A pre-body 401/403/429 buffered in full before any downstream byte. Role
+    /// `.first` uses it to elect a distinct-identity alternate. Role `.second`
+    /// surfaces it as a TERMINAL hand-back that `attemptSecondTerminal` delivers
+    /// without re-dispatch — the composed all-exhausted 429 (alternate form) or
+    /// the single-identity reauth (same-route form).
     pre_body_reauth: BufferedResponse,
     /// A 2xx response was delivered/streamed downstream. Terminal.
     delivered_success,
@@ -1293,12 +1319,14 @@ fn ambiguousOutcome(downstream: *std.http.Server.Request) AttemptResult {
     return .delivered_failure;
 }
 
-/// One upstream attempt against `route`. Role `.first` may DEFER a pre-send
-/// transport failure or a pre-body 401/403/429 to the dispatcher (returning a
-/// retry-bearing disposition without emitting any downstream byte). Role
-/// `.second` delivers every classification as a terminal and can never return a
-/// retry-bearing disposition — this is the type-level barrier that bounds the
-/// request to two attempts.
+/// One upstream attempt against `route`. Both roles DEFER a pre-body 401/403/429
+/// to the dispatcher (returning `.pre_body_reauth` without emitting any
+/// downstream byte); role `.first` additionally defers a proven pre-send
+/// transport failure (`.transport_failed_presend`). Role `.second` never defers
+/// a transport failure — it delivers one as a terminal 502 — and its
+/// `.pre_body_reauth` hand-back is delivered terminally by
+/// `attemptSecondTerminal` with no re-dispatch, so the request stays bounded to
+/// two attempts.
 fn performAttempt(
     state: *State,
     downstream: *std.http.Server.Request,
@@ -1400,11 +1428,15 @@ fn performAttempt(
             emitEvent(state, "claude_proxy_upstream_server_error");
         }
         const buffered = try bufferResponse(allocator, &upstream_request, upstream_status);
-        // Only the FIRST attempt defers a pre-body reauth for an alternate
-        // decision; 5xx and non-reauth 4xx are delivered as-is (single attempt,
-        // never a cross-account attempt). The terminal second attempt delivers
-        // every status.
-        if (role == .first and is_reauth) {
+        // A pre-body 401/403/429 is DEFERRED to the dispatcher for BOTH roles,
+        // without emitting any downstream byte. Role `.first` uses it to elect a
+        // distinct-identity alternate; role `.second` uses it to compose the
+        // bounded all-exhausted terminal (both identities failed pre-body) or,
+        // for a same-route retry, to deliver the single identity's own reauth.
+        // Neither path re-dispatches, so the two-attempt bound holds. Non-reauth
+        // 4xx and all 5xx are delivered as-is and never authorize a cross-account
+        // attempt.
+        if (is_reauth) {
             return .{ .pre_body_reauth = buffered };
         }
         deliverBuffered(downstream, buffered);
@@ -1447,9 +1479,11 @@ fn performAttempt(
     return .delivered_success;
 }
 
-/// The single follow-up attempt. It returns `void` and forces role `.second`,
-/// so it can neither surface a retry entitlement nor re-enter the dispatcher —
-/// a third attempt is unrepresentable.
+/// The single follow-up attempt. It returns `void`, forces role `.second`, and
+/// never re-enters the dispatcher, so a third attempt is unrepresentable. When
+/// the second attempt is itself a pre-body reauth, `primary_reauth` (the route-1
+/// buffered reauth, supplied only for the `.alternate` form) lets it compose the
+/// bounded all-exhausted terminal.
 fn attemptSecondTerminal(
     state: *State,
     downstream: *std.http.Server.Request,
@@ -1460,6 +1494,7 @@ fn attemptSecondTerminal(
     captured_model: ?[]const u8,
     form: SecondForm,
     obs: *RequestObservation,
+    primary_reauth: ?BufferedResponse,
 ) void {
     switch (form) {
         .same_route_retry => obs.same_route_retry_count += 1,
@@ -1490,8 +1525,30 @@ fn attemptSecondTerminal(
     switch (result) {
         .delivered_success => {},
         .delivered_failure => emitEvent(state, "claude_proxy_slot_exhausted"),
-        // Role `.second` cannot produce these; the union arm proves it.
-        .transport_failed_presend, .pre_body_reauth => unreachable,
+        .pre_body_reauth => |second_buffered| switch (form) {
+            // A same-route retry that itself returns a pre-body 401/403/429 means
+            // ONE identity was contacted twice: deliver its own response as-is
+            // (no cross-account claim). This is a terminal delivery, not a
+            // further attempt.
+            .same_route_retry => {
+                deliverBuffered(downstream, second_buffered);
+                emitEvent(state, "claude_proxy_slot_exhausted");
+            },
+            // BOTH distinct identities failed pre-body: the bounded all-exhausted
+            // terminal. It composes the minimum trusted Retry-After across the
+            // two routes and DELIVERS ONLY — no re-dispatch, so the two-attempt
+            // bound holds.
+            .alternate => deliverAllExhausted(
+                state,
+                downstream,
+                if (primary_reauth) |pr| pr.headers else second_buffered.headers,
+                second_buffered.headers,
+                obs.attempts_total,
+            ),
+        },
+        // Role `.second` never surfaces a same-route transport-retry entitlement:
+        // `presendOutcome(.second)` delivers a terminal 502 instead.
+        .transport_failed_presend => unreachable,
     }
 }
 
@@ -1542,6 +1599,96 @@ fn retryAfterNs(headers: []const std.http.Header) u64 {
         return std.math.mul(u64, seconds, std.time.ns_per_s) catch std.math.maxInt(u64);
     }
     return 0;
+}
+
+/// Parses a `Retry-After` value for downstream PROPAGATION in the bounded
+/// all-exhausted terminal (ladder G10 "trusted Retry-After where available, no
+/// invented capacity"). Returns the delta-seconds ONLY when the provider
+/// supplied a well-formed, representable value; returns null for an absent,
+/// empty, non-numeric, signed, or arithmetically huge value. A null contributes
+/// nothing to the propagated bound, so a malformed reset is never echoed and no
+/// capacity is invented. Only the first occurrence is considered.
+fn trustedRetryAfterSeconds(headers: []const std.http.Header) ?u64 {
+    var raw: ?[]const u8 = null;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "retry-after")) continue;
+        raw = header.value;
+        break;
+    }
+    const value = raw orelse return null;
+    const trimmed = std.mem.trim(u8, value, " \t");
+    if (trimmed.len == 0) return null;
+    // Digits only: rejects a leading sign, an HTTP-date, and embedded spaces.
+    for (trimmed) |c| {
+        if (!std.ascii.isDigit(c)) return null;
+    }
+    const seconds = std.fmt.parseInt(u64, trimmed, 10) catch return null; // > u64 → huge
+    // Require nanosecond-representability so "huge" is a principled bound, not an
+    // arbitrary business ceiling: a value that cannot be represented is ignored.
+    _ = std.math.mul(u64, seconds, std.time.ns_per_s) catch return null;
+    return seconds;
+}
+
+/// The MINIMUM trusted `Retry-After` across the two exhausted routes, or null
+/// when neither supplied a well-formed one. MIN — not MAX — is the honest bound
+/// (ladder G10): it is the earliest time at which SOME route may regain
+/// capacity. MAX would report the earliest time BOTH routes could be retried,
+/// telling the harness to wait longer than any single route requires and
+/// inventing scarcity. MIN never tells the harness to retry before any
+/// provider's own reset, so it invents no capacity either.
+fn minTrustedRetryAfterSeconds(
+    a: []const std.http.Header,
+    b: []const std.http.Header,
+) ?u64 {
+    const va = trustedRetryAfterSeconds(a);
+    const vb = trustedRetryAfterSeconds(b);
+    if (va) |x| {
+        if (vb) |y| return @min(x, y);
+        return x;
+    }
+    return vb;
+}
+
+/// Emits the typed all-exhausted event with bounded counts only (no bodies,
+/// headers, or credential material): the total upstream attempts made and
+/// whether a trusted reset was propagated.
+fn emitAllExhausted(state: *State, attempts_total: usize, retry_after_present: bool) void {
+    state.event_writer.print(
+        "{{\"kind\":\"claude_proxy_all_exhausted\",\"attempts_total\":{d},\"retry_after_present\":{}}}\n",
+        .{ attempts_total, retry_after_present },
+    ) catch {};
+}
+
+/// The bounded all-exhausted terminal (plan §7, ladder G10): both distinct
+/// identities failed pre-body, so no eligible route can serve. Delivers ONE
+/// typed 429 — never a synthetic 200, never a fabricated reset — carrying the
+/// minimum trusted `Retry-After` when any route supplied one. It makes ZERO
+/// further upstream attempts: it only formats a downstream response and emits
+/// the typed event.
+fn deliverAllExhausted(
+    state: *State,
+    downstream: *std.http.Server.Request,
+    first_headers: []const std.http.Header,
+    second_headers: []const std.http.Header,
+    attempts_total: usize,
+) void {
+    if (minTrustedRetryAfterSeconds(first_headers, second_headers)) |secs| {
+        var buffer: [24]u8 = undefined;
+        if (std.fmt.bufPrint(&buffer, "{d}", .{secs})) |rendered| {
+            downstream.respond("all upstream identities exhausted; retry later", .{
+                .status = .too_many_requests,
+                .keep_alive = false,
+                .extra_headers = &.{.{ .name = "Retry-After", .value = rendered }},
+            }) catch {};
+            emitAllExhausted(state, attempts_total, true);
+            return;
+        } else |_| {}
+    }
+    downstream.respond("all upstream identities exhausted; retry later", .{
+        .status = .too_many_requests,
+        .keep_alive = false,
+    }) catch {};
+    emitAllExhausted(state, attempts_total, false);
 }
 
 fn deliverLocal429(
@@ -1647,26 +1794,36 @@ fn forwardRouted(
                 captured_model,
                 .same_route_retry,
                 &obs,
+                null,
             );
             commitObservation(state, obs);
             return;
         },
         .pre_body_reauth => |buffered| {
             const alternate = selectAlternate(routing) catch {
-                // Same-identity alternate refused (typed). Deliver the original
-                // pre-body failure unchanged; never reuse the same account.
+                // Same-identity-only pool: no eligible DISTINCT identity exists,
+                // so the distinct-identity pool is exhausted. Keep the typed
+                // refusal — deliver route 1's own pre-body result, which already
+                // carries its own trusted Retry-After — and emit the uniform
+                // all-exhausted terminal event.
                 obs.same_identity_alternate_refused = true;
                 emitEvent(state, "claude_proxy_same_identity_alternate_refused");
-                commitObservation(state, obs);
                 deliverBuffered(downstream, buffered);
+                emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
+                commitObservation(state, obs);
                 return;
             } orelse {
-                // No alternate configured: the pre-body failure is the result.
+                // No alternate configured: route 1's pre-body result is the
+                // single-route bounded terminal. Uniform all-exhausted event.
                 deliverBuffered(downstream, buffered);
+                emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
+                commitObservation(state, obs);
                 return;
             };
             if (!latch.isReplayable()) {
-                // Stream-once degradation: no replay body, so no alternate.
+                // Stream-once degradation (not identity exhaustion): the body
+                // could not be reserved for replay, so the eligible alternate is
+                // never contacted. Distinct terminal — NOT all-exhausted.
                 emitEvent(state, "claude_proxy_slot_exhausted");
                 deliverBuffered(downstream, buffered);
                 return;
@@ -1690,6 +1847,7 @@ fn forwardRouted(
                 captured_model,
                 .alternate,
                 &obs,
+                buffered,
             );
             commitObservation(state, obs);
             return;
@@ -3296,4 +3454,523 @@ test "the production path is single-attempt fail-closed and never routes an alte
     try std.testing.expectEqual(@as(usize, 0), obs.alternate_count);
     try std.testing.expectEqual(@as(usize, 0), obs.same_route_retry_count);
     try std.testing.expect(!obs.upstream_attempted);
+}
+
+// ===========================================================================
+// Bounded all-exhausted terminal tests (plan §7, ladder §9 Stage 2 / G10).
+// Both distinct identities fail pre-body → ONE typed bounded 429 carrying the
+// MINIMUM trusted Retry-After, zero further upstream attempts, one typed event.
+// ===========================================================================
+
+fn responseHasRetryAfter(response: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(response, "retry-after") != null;
+}
+
+test "all identities exhausted returns a bounded 429 carrying the minimum trusted Retry-After" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 resets in 10s, route 2 in 30s. Both are pre-body 429, so both
+    // distinct identities are exhausted. The honest bound is the MINIMUM (10):
+    // route 1 may regain capacity first. MAX (30) would invent scarcity.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "p-limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "10" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "a-limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "30" }},
+    }});
+    defer alternate.deinit();
+
+    var vclock = VirtualClock{};
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+
+    // ONE typed bounded 429; never a synthetic 200. MIN(10,30)=10 propagated.
+    try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, "Retry-After: 10\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "Retry-After: 30\r\n") == null);
+    // Neither upstream's raw body leaks into the composed terminal.
+    try std.testing.expect(std.mem.indexOf(u8, response, "p-limit") == null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "a-limit") == null);
+
+    // Zero further attempts: exactly the two structural attempts, no third route.
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), alternate.snapshot().call_count);
+    const obs = observationSnapshot(listener);
+    try std.testing.expectEqual(@as(usize, 2), obs.attempts_total);
+    try std.testing.expectEqual(@as(usize, 1), obs.alternate_count);
+    try std.testing.expectEqual(@as(usize, 0), obs.same_route_retry_count);
+    try std.testing.expectEqual(@as(usize, 0), obs.third_attempt_count);
+    try std.testing.expectEqual(@as(usize, 0), reservedBytes(listener));
+
+    // Exactly one typed all-exhausted event, marking the propagated reset.
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted"),
+    );
+    try std.testing.expect(eventBufferContains(event_stream.getWritten(), "\"retry_after_present\":true"));
+    // The single pre-alternate wait bound still composes: at most one wait ≤ 30s.
+    try std.testing.expectEqual(@as(usize, 1), vclock.sleep_calls);
+    try std.testing.expect(vclock.last_sleep_ns <= default_max_wait_ns);
+}
+
+test "all identities exhausted with no trusted reset returns a bounded 429 without Retry-After" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 401, route 2 403: both pre-body reauth, neither supplies a reset.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .forbidden, .body = "forbidden" }});
+    defer alternate.deinit();
+
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+
+    // Still ONE typed bounded 429, but no fabricated reset: no Retry-After.
+    try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+    try std.testing.expect(!responseHasRetryAfter(response));
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), alternate.snapshot().call_count);
+    const obs = observationSnapshot(listener);
+    try std.testing.expectEqual(@as(usize, 2), obs.attempts_total);
+    try std.testing.expectEqual(@as(usize, 1), obs.alternate_count);
+    try std.testing.expectEqual(@as(usize, 0), obs.third_attempt_count);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted"),
+    );
+    try std.testing.expect(eventBufferContains(event_stream.getWritten(), "\"retry_after_present\":false"));
+}
+
+test "all identities exhausted propagates a single route's trusted reset" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 401 (no reset → no wait), route 2 429 with a 20s reset. The MIN
+    // over {none, 20} is 20: the only trusted value is propagated.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "20" }},
+    }});
+    defer alternate.deinit();
+
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, "Retry-After: 20\r\n") != null);
+    const obs = observationSnapshot(listener);
+    try std.testing.expectEqual(@as(usize, 2), obs.attempts_total);
+    try std.testing.expectEqual(@as(usize, 1), obs.alternate_count);
+}
+
+test "all identities exhausted ignores a malformed Retry-After and never invents capacity" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 is a bare 401 (no reset, no wait). Route 2 is a 429 whose
+    // Retry-After is malformed. Every malformed value is ignored, so the bounded
+    // terminal carries NO reset: a garbage reset is never propagated.
+    const malformed = [_][]const u8{
+        "soon", // non-numeric
+        "-30", // negative
+        "", // empty
+        "10 20", // embedded space
+        "18446744073709551616", // 2^64, does not fit u64 → huge
+        "99999999999", // fits u64 but overflows the nanosecond domain → huge
+    };
+    for (malformed) |bad| {
+        var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+        defer primary.deinit();
+        var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+            .status = .too_many_requests,
+            .body = "limit",
+            .headers = &.{.{ .name = "Retry-After", .value = bad }},
+        }});
+        defer alternate.deinit();
+
+        const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+            .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+            .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        });
+        defer listener.deinit();
+
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+
+        try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+        try std.testing.expect(!responseHasRetryAfter(response));
+        const obs = observationSnapshot(listener);
+        try std.testing.expectEqual(@as(usize, 2), obs.attempts_total);
+        try std.testing.expectEqual(@as(usize, 1), obs.alternate_count);
+    }
+}
+
+test "all identities exhausted excludes a malformed route reset from the propagated minimum" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 is a 429 whose Retry-After is malformed ("soon"): the wait parser
+    // reads no trusted reset, so no wait occurs and the alternate is consumed.
+    // Route 2 supplies a valid 15s reset. The MIN excludes the malformed value,
+    // so the propagated terminal reset is 15 alone.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "soon" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "15" }},
+    }});
+    defer alternate.deinit();
+
+    var vclock = VirtualClock{};
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, "Retry-After: 15\r\n") != null);
+    // The malformed route-1 reset produced no wait.
+    try std.testing.expectEqual(@as(usize, 0), vclock.sleep_calls);
+}
+
+test "no distinct alternate configured emits the uniform all-exhausted terminal" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // No alternate at all: route 1's own pre-body 429 (reset 9) is the
+    // single-route bounded terminal, delivered as-is, plus the uniform event.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "denied",
+        .headers = &.{.{ .name = "Retry-After", .value = "9" }},
+    }});
+    defer primary.deinit();
+
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+    try std.testing.expect(std.mem.indexOf(u8, response, "Retry-After: 9\r\n") != null);
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+    const obs = observationSnapshot(listener);
+    try std.testing.expectEqual(@as(usize, 1), obs.attempts_total);
+    try std.testing.expectEqual(@as(usize, 0), obs.alternate_count);
+    // The uniform terminal event fires exactly once, marking the trusted reset.
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted"),
+    );
+    try std.testing.expect(eventBufferContains(event_stream.getWritten(), "\"retry_after_present\":true"));
+}
+
+test "a same-identity-only pool emits the uniform all-exhausted terminal beside the refusal" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // The only configured alternate shares route 1's identity: the
+    // distinct-identity pool is exhausted. Route 1's own 401 is delivered as-is
+    // (refusal), and the uniform all-exhausted event fires exactly once beside
+    // the typed same-identity refusal event.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-1" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+
+    try expectStatus(response, "HTTP/1.1 401 Unauthorized\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\ndenied"));
+    try std.testing.expect(alternate.snapshot().isZero());
+    const written = event_stream.getWritten();
+    try std.testing.expect(eventBufferContains(written, "claude_proxy_same_identity_alternate_refused"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, written, "claude_proxy_all_exhausted"));
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.same_identity_alternate_refused);
+    try std.testing.expectEqual(@as(usize, 1), obs.attempts_total);
+    try std.testing.expectEqual(@as(usize, 0), obs.alternate_count);
+}
+
+// ===========================================================================
+// Resident-absence invariant (G6 sidecar half; plan §2.1/§2.4, ladder §7/G6).
+// ===========================================================================
+
+test "resident absence: the sidecar State carries no resident/daemon/service hook" {
+    // G6 sidecar half: the sidecar consults no resident-plane state. This is the
+    // structural grep-as-test — it fails the BUILD if a future edit smuggles a
+    // resident/daemon/keepalive/service field (by name or type) into `State`.
+    // There is no resident hook to inject, so absence cannot change routing.
+    const denied = [_][]const u8{ "resident", "daemon", "keepalive", "service" };
+    comptime {
+        @setEvalBranchQuota(100_000);
+        for (@typeInfo(State).@"struct".fields) |field| {
+            for (denied) |token| {
+                if (std.ascii.indexOfIgnoreCase(field.name, token) != null) {
+                    @compileError("wire_proxy State field '" ++ field.name ++ "' references resident-plane state");
+                }
+                if (std.ascii.indexOfIgnoreCase(@typeName(field.type), token) != null) {
+                    @compileError("wire_proxy State field type '" ++ @typeName(field.type) ++ "' references resident-plane state");
+                }
+            }
+        }
+    }
+
+    // Behavioral leg: a full routed alternate flow completes with no resident
+    // present — there is none to construct or consult — so its absence cannot
+    // alter the routing decision or the terminal outcome.
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "alt-ok" }});
+    defer alternate.deinit();
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    const obs = observationSnapshot(listener);
+    try std.testing.expectEqual(@as(usize, 1), obs.alternate_count);
+}
+
+// ===========================================================================
+// Abrupt-death reclamation breadth (ladder §9 Stage 2): kill the listener mid-
+// request and prove reservations return to zero, the capability is disposed, no
+// upstream call leaks past teardown, and teardown stays bounded.
+// ===========================================================================
+
+test "abrupt sidecar death mid routed alternate reclaims the replay reservation to zero" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 fails pre-body 401 (buffered); the alternate is a large 2xx that
+    // pauses mid-stream, parking the request in attempt 2 with its replay
+    // reservation still outstanding.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    const big = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'y');
+    const prefix = "alt-streamed-prefix";
+    @memcpy(big[0..prefix.len], prefix);
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = big,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer alternate.deinit();
+
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, routed_json);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&alternate);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    // The routed body's reservation is outstanding while attempt 2 streams.
+    try std.testing.expect(reservedBytes(listener) > 0);
+
+    // Abrupt death mid-stream: teardown joins the serve thread, so the request's
+    // exactly-once `defer guard.release()` has run when the pool is measured.
+    var shutdown_timer = try std.time.Timer.start();
+    const outstanding = teardown(listener);
+    listener_live = false;
+    try std.testing.expect(shutdown_timer.read() < std.time.ns_per_s);
+    try std.testing.expectEqual(@as(usize, 0), outstanding);
+    // No upstream call leaked past the two attempts already made.
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), alternate.snapshot().call_count);
+
+    // Compose with session-capability revocation: the managed session disposes
+    // the carrier, and the revoked capability admits nothing further.
+    capability.revoke();
+    try std.testing.expect(capability.isRevoked());
+    try std.testing.expect(!capability.validate(&carrier));
+}
+
+test "abrupt sidecar death mid routed stream with a stalled upstream stays bounded and reclaims" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // The primary is a large 2xx that pauses mid-stream and never resumes.
+    const big = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'y');
+    const prefix = "stalled-prefix";
+    @memcpy(big[0..prefix.len], prefix);
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = big,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), &carrier, routed_json);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&primary);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    try std.testing.expect(reservedBytes(listener) > 0);
+
+    // Teardown must interrupt the stalled upstream read and stay bounded.
+    var shutdown_timer = try std.time.Timer.start();
+    const outstanding = teardown(listener);
+    listener_live = false;
+    try std.testing.expect(shutdown_timer.read() < std.time.ns_per_s);
+    try std.testing.expectEqual(@as(usize, 0), outstanding);
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+    // The alternate was never contacted: no upstream call leaks at teardown.
+    try std.testing.expect(alternate.snapshot().isZero());
+
+    capability.revoke();
+    try std.testing.expect(capability.isRevoked());
+}
+
+test "abrupt sidecar death before the routed capability check stays bounded and reclaims" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{});
+    defer alternate.deinit();
+
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    // A partial head parks the serve thread in receiveHead — before the
+    // capability check and before any reservation is taken.
+    try stream.writeAll("POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1");
+
+    var active_timer = try std.time.Timer.start();
+    while (!statePtr(listener).active.isSet()) {
+        if (active_timer.read() > std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.yield() catch {};
+    }
+
+    var shutdown_timer = try std.time.Timer.start();
+    const outstanding = teardown(listener);
+    listener_live = false;
+    try std.testing.expect(shutdown_timer.read() < std.time.ns_per_s);
+    // No reservation was ever taken, and no upstream call ran.
+    try std.testing.expectEqual(@as(usize, 0), outstanding);
+    try std.testing.expect(primary.snapshot().isZero());
+    try std.testing.expect(alternate.snapshot().isZero());
+
+    capability.revoke();
+    try std.testing.expect(capability.isRevoked());
+    try std.testing.expect(!capability.validate(&carrier));
 }
