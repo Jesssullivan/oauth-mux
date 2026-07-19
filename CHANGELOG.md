@@ -59,6 +59,48 @@ claims.
   schema-drift kill switch, and reactive-evidence precedence. It performs no
   I/O, is not wired to an endpoint or resident service, and earns no Stage 2
   or TIN-2057 credit.
+- v0.2 proof-and-candidate authority: source/proof reconciliation docs
+  (#487, #490) and CI binding of every v0.2 proof run to an immutable
+  candidate — exact commit and tree (TIN-2989, #489) — with named recipes
+  `v02-stage1-local` / `v02-stage2-conformance` / `v02-benchmark`.
+- Broker handle validation for active v2 and legacy handles
+  (TIN-2992, #488).
+- Exact-model single-route forwarding against the fake upstream
+  (TIN-2400, #491; #492 grafts admission-scope docs and refusal coverage):
+  full-document model admission (complete `std.json.Scanner` walk, exactly
+  one top-level `model`, typed 400 with zero upstream attempts on
+  violation) and incremental streaming (pre-body head forwarding, bounded
+  pump, upstream-truncation detection). Observation is first-attempt
+  admission only — no result-side model claim.
+- Header-stripping observation at the fake upstream (TIN-2400, #493).
+- §2.2 single-alternate retry state machine (TIN-2400, #494): two attempts
+  total, the single retry slot consumed by either one proven-pre-send
+  same-route retry or one distinct-identity alternate; structurally no
+  third attempt; 32 MiB request-replay / 64 MiB per-sidecar reservation
+  accounting with a one-way stream-once latch. Synthetic seams only; the
+  production path remains single-attempt fail-closed.
+- Candidate-bound Stage 2 observation emission (TIN-2400, #495 —
+  `stage2_observer.zig` value-free facts) and request-counter
+  reconciliation (TIN-3003, #497). Canonical conformance state after
+  reduction: 11 of 124 predicates pass, 113 missing — Stage 2 remains
+  incomplete by design.
+- Codex resume evidence hardening (TIN-2991, #496, #498): exact structured
+  resume evidence and adapter resume preflight evidence are now required.
+- Bounded v0.2 prerelease profile (TIN-3005, #499) — a nonpublishing gate;
+  no v0.2 prerelease exists.
+- Flock-owned refresh outcomes (TIN-2990, #500) — typed refresh-outcome
+  model under the flock; earns no Stage 2 predicate.
+- Launchd keepalive service environment containment, source only
+  (TIN-3024, #501): `env -i` allowlist wrapper (HOME/USER/PATH/NO_COLOR),
+  rendered-plist validation, value-free service status, and a synthetic
+  containment smoke. A precursor to the R-TIN-1759 sequence — no live
+  activation, restart, or rotation is performed; the gate remains closed.
+- Bounded all-exhausted terminal, resident-absence invariant, and abrupt
+  sidecar-death reclamation (TIN-2400, #502): exactly one typed 429
+  carrying the minimum trusted `Retry-After` across exhausted routes
+  (malformed values never propagated), comptime plus behavioral proof that
+  the wire proxy holds no resident-service hooks, and deinit-mid-request
+  reservation reclamation to zero.
 
 ### Changed / fixed
 
