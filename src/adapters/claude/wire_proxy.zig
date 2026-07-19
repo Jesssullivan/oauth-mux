@@ -434,6 +434,28 @@ pub const testing = if (builtin.is_test) struct {
     pub fn requestObservation(listener: *Listener) RequestObservation {
         return observationSnapshot(listener);
     }
+
+    /// Outstanding per-sidecar replay reservation bytes. Test-observation only;
+    /// it reads the same accounting the retry machine maintains and changes
+    /// nothing.
+    pub fn reservationOutstanding(listener: *Listener) usize {
+        return reservedBytes(listener);
+    }
+
+    /// True while a downstream connection is being served. Lets a test wait for
+    /// the serve thread to release an in-flight request deterministically
+    /// (poll-until-idle), never a sleep-as-synchronization.
+    pub fn connectionActive(listener: *Listener) bool {
+        return statePtr(listener).active.isSet();
+    }
+
+    /// Tears the listener down and returns the per-sidecar replay reservation
+    /// still outstanding once the serve thread has joined — the abrupt-death
+    /// reclamation seam (ladder §9 Stage 2). The listener must not be used
+    /// afterward. This only exposes the value `deinit` already discards.
+    pub fn teardownReclaim(listener: *Listener) usize {
+        return teardown(listener);
+    }
 } else struct {};
 
 /// File-private routed test seam over the deterministic fakes, discarding

@@ -176,13 +176,39 @@ stage2_slice_predicates_json() {
 capability_carrier
 loopback_sidecar_bind
 capability_256bit_base64url
+capability_revocation_on_teardown
 bad_token_zero_call_rejection
 inbound_auth_header_stripping
 origin_form_request_enforcement
 redirect_ssrf_rejection
 generic_forward_proxy_rejection
 byte_preserving_streaming
+streaming_cancellation
+two_attempt_limit
+safe_same_route_retry_not_sent
+prebody_401_alternate
+prebody_403_alternate
+prebody_429_alternate
+single_retry_slot_exclusivity
 provider_5xx_pass_through
+partial_send_no_replay
+cancellation_no_replay
+started_response_no_replay
+transport_failure_no_cross_account
+replay_budget_overflow_no_alternate
+sidecar_memory_budget
+reservation_release_on_cancellation
+reservation_release_on_overflow
+reservation_release_on_teardown
+exact_model_preservation
+graceful_teardown
+abrupt_death_reclamation
+resident_absence
+bounded_reset_wait
+typed_all_exhausted_429
+trusted_retry_after
+all_exhausted_no_loop
+all_exhausted_no_invented_capacity
 accepted_rejected_counter_reconciliation
 EOF
 }
@@ -345,6 +371,92 @@ case "$mode" in
             "aggregate_rejected_request_count_is_one",
             "aggregate_request_counts_reconcile_with_ids"
           ])
+        elif .id == "two_attempt_limit" then
+          .status = reduced([
+            "alternate_success_records_two_attempts",
+            "alternate_failure_no_third_attempt"
+          ])
+        elif .id == "safe_same_route_retry_not_sent" then
+          .status = reduced(["presend_fault_consumes_one_same_route_retry"])
+        elif .id == "prebody_401_alternate" then
+          .status = reduced(["prebody_401_consumes_one_alternate"])
+        elif .id == "prebody_403_alternate" then
+          .status = reduced(["prebody_403_consumes_one_alternate"])
+        elif .id == "prebody_429_alternate" then
+          .status = reduced(["prebody_429_consumes_alternate_after_wait"])
+        elif .id == "single_retry_slot_exclusivity" then
+          .status = reduced([
+            "alternate_slot_transport_fail_adds_no_retry",
+            "same_route_retry_401_adds_no_alternate"
+          ])
+        elif .id == "partial_send_no_replay" then
+          .status = reduced([
+            "stream_once_cancellation_keeps_latch_no_replay",
+            "partial_request_teardown_no_replay_bounded"
+          ])
+        elif .id == "cancellation_no_replay" then
+          .status = reduced(["cancellation_makes_no_replay"])
+        elif .id == "started_response_no_replay" then
+          .status = reduced(["started_response_never_replayed"])
+        elif .id == "transport_failure_no_cross_account" then
+          .status = reduced([
+            "transport_failure_never_contacts_alternate",
+            "same_identity_alternate_delivers_original"
+          ])
+        elif .id == "replay_budget_overflow_no_alternate" then
+          .status = reduced(["oversize_body_streams_once_refuses_alternate"])
+        elif .id == "sidecar_memory_budget" then
+          .status = reduced(["sidecar_budget_exhaustion_forces_stream_once"])
+        elif .id == "reservation_release_on_cancellation" then
+          .status = reduced([
+            "cancellation_releases_reservation_to_zero",
+            "stream_once_cancellation_releases_reservation"
+          ])
+        elif .id == "reservation_release_on_overflow" then
+          .status = reduced(["overflow_releases_reservation_next_unaffected"])
+        elif .id == "reservation_release_on_teardown" then
+          .status = reduced(["teardown_holds_then_releases_reservation"])
+        elif .id == "exact_model_preservation" then
+          .status = reduced([
+            "first_attempt_body_forwarded_byte_exact",
+            "alternate_replay_body_byte_exact"
+          ])
+        elif .id == "graceful_teardown" then
+          .status = reduced([
+            "teardown_converges_within_bound",
+            "sequential_routed_requests_release_each_time"
+          ])
+        elif .id == "abrupt_death_reclamation" then
+          .status = reduced(["abrupt_death_mid_alternate_reclaims_to_zero"])
+        elif .id == "resident_absence" then
+          .status = reduced(["routed_alternate_completes_with_no_resident"])
+        elif .id == "capability_revocation_on_teardown" then
+          .status = reduced(["capability_revoked_after_teardown_rejects"])
+        elif .id == "streaming_cancellation" then
+          .status = reduced(["streaming_cancellation_single_attempt"])
+        elif .id == "bounded_reset_wait" then
+          .status = reduced([
+            "pre_alternate_wait_within_bound",
+            "wait_beyond_max_returns_local_429",
+            "wait_beyond_deadline_returns_local_429"
+          ])
+        elif .id == "typed_all_exhausted_429" then
+          .status = reduced([
+            "all_exhausted_returns_bounded_429",
+            "all_exhausted_delivers_typed_429_not_200"
+          ])
+        elif .id == "trusted_retry_after" then
+          .status = reduced(["all_exhausted_propagates_minimum_trusted_reset"])
+        elif .id == "all_exhausted_no_loop" then
+          .status = reduced([
+            "no_alternate_emits_single_uniform_terminal",
+            "same_identity_pool_emits_single_uniform_terminal"
+          ])
+        elif .id == "all_exhausted_no_invented_capacity" then
+          .status = reduced([
+            "all_exhausted_without_reset_omits_retry_after",
+            "all_exhausted_ignores_malformed_reset"
+          ])
         else
           .
         end
@@ -421,9 +533,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 113)
+      and ([.predicates[] | select(.status == "missing")] | length == 87)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 11-pass/0-fail/113-missing Stage 2 slice"
+      fail "manifest is not the exact 37-pass/0-fail/87-missing Stage 2 slice"
     ;;
 
   -h|--help|help)
