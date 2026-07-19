@@ -12,6 +12,9 @@
 //!   methods.zig       — method handlers (surface/*, account/*, …)
 //!   session.zig       — session table
 //!   account_pool.zig  — read-side account access over the existing config
+//!   model_demand.zig  — parse-free exact-model demand
+//!   route_observation.zig — typed route evidence projection
+//!   decision.zig      — pure deterministic route election
 //!
 //! Surface version is `1` (see broker spec §2). Method shapes are stable
 //! within a major; adding optional fields is allowed.
@@ -23,6 +26,9 @@ pub const server = @import("server.zig");
 pub const methods = @import("methods.zig");
 pub const session_mod = @import("session.zig");
 pub const account_pool_mod = @import("account_pool.zig");
+pub const model_demand = @import("model_demand.zig");
+pub const route_observation = @import("route_observation.zig");
+pub const decision = @import("decision.zig");
 
 pub const SURFACE_VERSION: u32 = types.surface_version;
 pub const BUILD_TAG: []const u8 = "oauth-mux 0.2.0+broker";
@@ -32,6 +38,10 @@ pub const Session = session_mod.Session;
 pub const AccountPool = account_pool_mod.AccountPool;
 pub const ClaimLevel = types.ClaimLevel;
 pub const BrokerError = types.BrokerError;
+pub const ModelDemand = model_demand.ModelDemand;
+pub const RouteObservation = route_observation.RouteObservation;
+pub const EvidenceProvenance = route_observation.EvidenceProvenance;
+pub const BrokerDecision = decision.BrokerDecision;
 
 test {
     std.testing.refAllDeclsRecursive(@This());
