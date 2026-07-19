@@ -9,6 +9,13 @@ const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
 const wire_proxy = @import("wire_proxy.zig");
 const advisory_usage = @import("../../quota/advisory_usage.zig");
+// §8.8 refresh-predicate OBSERVATION family (TIN-2400, PR C). The observer
+// drives the landed TIN-2990 flock-owned locked-lineage refresh engine directly
+// over synthetic stores/credentials in isolated temp dirs. No provider-
+// authenticated call, real store, or keychain is ever touched.
+const repair_state = @import("../../repair_state.zig");
+const types = @import("../../types.zig");
+const provider_schema = @import("../../provider_schema.zig");
 
 const SessionCapability = capability_mod.SessionCapability;
 const FakeUpstream = fake_upstream_mod.FakeUpstream;
@@ -121,6 +128,26 @@ const FactId = enum {
     advisory_observation_adds_no_upstream_call,
     advisory_exhaustion_trusted_through_reset,
     advisory_availability_expires_at_deadline,
+    // §8.8 refresh-predicate OBSERVATION family (TIN-2400, PR C). Every fact
+    // below is read from the typed `LockedRefreshAttempt` / quarantine-marker
+    // state the TIN-2990 flock-owned refresh engine produces on synthetic
+    // stores; refresh values, tokens, paths, and accounts never enter the
+    // artifact.
+    refresh_requires_owned_account_flock,
+    account_flock_serializes_cross_actor,
+    account_flock_reentrant_same_actor,
+    transient_lock_failure_skips_endpoint,
+    transient_lock_failure_leaves_no_quarantine,
+    transient_store_failure_skips_endpoint,
+    transient_store_failure_leaves_no_quarantine,
+    invalid_grant_lineage_hard_quarantined,
+    invalid_grant_hard_quarantine_blocks_before_endpoint,
+    hard_tag_refused_without_locked_lineage_proof,
+    hard_quarantine_refuses_reenroll_clearance,
+    indeterminate_quarantine_clears_via_reenroll,
+    quarantine_marker_forbids_stale_backup_restore,
+    stale_backup_restore_marker_rejected,
+    quarantine_recovery_is_provider_reenroll_only,
 };
 
 const fact_ids = [_]FactId{
@@ -213,6 +240,21 @@ const fact_ids = [_]FactId{
     .advisory_observation_adds_no_upstream_call,
     .advisory_exhaustion_trusted_through_reset,
     .advisory_availability_expires_at_deadline,
+    .refresh_requires_owned_account_flock,
+    .account_flock_serializes_cross_actor,
+    .account_flock_reentrant_same_actor,
+    .transient_lock_failure_skips_endpoint,
+    .transient_lock_failure_leaves_no_quarantine,
+    .transient_store_failure_skips_endpoint,
+    .transient_store_failure_leaves_no_quarantine,
+    .invalid_grant_lineage_hard_quarantined,
+    .invalid_grant_hard_quarantine_blocks_before_endpoint,
+    .hard_tag_refused_without_locked_lineage_proof,
+    .hard_quarantine_refuses_reenroll_clearance,
+    .indeterminate_quarantine_clears_via_reenroll,
+    .quarantine_marker_forbids_stale_backup_restore,
+    .stale_backup_restore_marker_rejected,
+    .quarantine_recovery_is_provider_reenroll_only,
 };
 
 const Fact = struct {
@@ -336,6 +378,16 @@ pub fn emit(identity: BuildIdentity) !void {
     runAdvisoryNoPollScenario(&facts) catch {};
     runAdvisoryThroughResetScenario(&facts) catch {};
     runAdvisoryDeadlineScenario(&facts) catch {};
+    // §8.8 refresh-predicate OBSERVATION family (TIN-2400, PR C).
+    runRefreshSharedAccountFlockScenario(&facts) catch {};
+    runRefreshLockNoDeadlockScenario(&facts) catch {};
+    runRefreshTransientLockFailureScenario(&facts) catch {};
+    runRefreshTransientStoreFailureScenario(&facts) catch {};
+    runRefreshInvalidLineageQuarantineScenario(&facts) catch {};
+    runRefreshProviderEvidenceScenario(&facts) catch {};
+    runRefreshReenrollmentScenario(&facts) catch {};
+    runRefreshNoStaleBackupRestoreScenario(&facts) catch {};
+    runRefreshNoForensicBackupRestoreScenario(&facts) catch {};
 
     const artifact = Artifact{
         .candidate_sha = identity.candidate_sha,
@@ -2529,4 +2581,478 @@ fn writeArtifactAtomic(artifact: Artifact) !void {
     file.close();
     file_open = false;
     try cwd.rename(temporary, output);
+}
+
+// ===========================================================================
+// §8.8 refresh-predicate OBSERVATION family (TIN-2400, PR C). Every scenario
+// drives the landed TIN-2990 flock-owned locked-lineage refresh engine
+// (repair_state.zig) directly, over a synthetic credential file in an isolated
+// runtime dir, and records only value-free pass/fail facts. There is no
+// provider-authenticated call: transient scenarios never contact any endpoint,
+// and the single hard-lineage scenario uses the production
+// `establishHardRefreshQuarantineForTest` fixture, which spins its own loopback
+// invalid_grant responder. The observation is the exact typed
+// `LockedRefreshAttempt` / quarantine-marker state the product persists.
+//
+// Deterministic by construction: refusals return synchronously (no sleeps), the
+// one cross-actor contention probe uses a nonblocking acquire that returns
+// immediately, and every synthetic store lives in its own temp dir.
+// ===========================================================================
+
+const synthetic_unused_token_url = "http://127.0.0.1:1/token";
+const synthetic_refresh_token = "synthetic-refresh";
+const synthetic_credential_json =
+    "{\"access_token\":\"synthetic-access\"," ++
+    "\"refresh_token\":\"" ++ synthetic_refresh_token ++ "\"," ++
+    "\"account_id\":\"synthetic-identity\"}";
+
+fn syntheticProviderDef() provider_schema.ProviderDefinition {
+    return .{
+        .name = "toy",
+        .credential = .{
+            .access_token_path = "access_token",
+            .refresh_token_path = "refresh_token",
+            .identity_claim_path = "account_id",
+        },
+        .repair = .{
+            .owner = .oauth_mux_refresh,
+            .proactive_refresh = .oauth_refresh_token,
+        },
+    };
+}
+
+/// Write a synthetic canonical-store credential under the active runtime dir and
+/// return its absolute path (caller frees). The bytes are inert placeholders,
+/// never real provider secrets.
+fn writeSyntheticCredential(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    file_name: []const u8,
+) ![]const u8 {
+    const path = try std.fs.path.join(allocator, &.{ root, file_name });
+    errdefer allocator.free(path);
+    const file = try std.fs.createFileAbsolute(path, .{ .mode = 0o600 });
+    defer file.close();
+    try file.writeAll(synthetic_credential_json);
+    return path;
+}
+
+fn syntheticFileBackend(path: []const u8) types.SecretBackend {
+    return .{ .file = .{ .path = path } };
+}
+
+/// Release and free a `LockedRefreshSuccess` that a transient scenario did not
+/// expect: keeps the synthetic runtime dir clean and the allocator leak-free.
+fn discardUnexpectedRefreshSuccess(
+    allocator: std.mem.Allocator,
+    success: *repair_state.LockedRefreshSuccess,
+) void {
+    success.releaseStoreLock();
+    allocator.free(success.result.access_token);
+    if (success.result.refresh_token) |refresh_token| allocator.free(refresh_token);
+}
+
+/// Cross-actor (separate thread) nonblocking probe of a per-account repair
+/// flock. A different actor must be refused (`RepairInProgress`) while the flock
+/// is held, proving a single shared flock serializes the account.
+const AccountFlockProbe = struct {
+    const blocked: u8 = 1;
+    const acquired: u8 = 2;
+    const failed: u8 = 3;
+
+    fn run(
+        provider: []const u8,
+        account: []const u8,
+        outcome: *std.atomic.Value(u8),
+    ) void {
+        var lock = repair_state.acquireRepairLock(
+            std.heap.page_allocator,
+            provider,
+            account,
+        ) catch |err| {
+            outcome.store(
+                if (err == error.RepairInProgress) blocked else failed,
+                .seq_cst,
+            );
+            return;
+        };
+        lock.release();
+        outcome.store(acquired, .seq_cst);
+    }
+};
+
+fn readMarkerAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const file = try std.fs.openFileAbsolute(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(allocator, 4 * 1024);
+}
+
+fn runRefreshSharedAccountFlockScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    const path = try writeSyntheticCredential(a, scope.root, "shared-flock.json");
+    defer a.free(path);
+    const def = syntheticProviderDef();
+    const backend = syntheticFileBackend(path);
+
+    // (a) The locked-lineage refresh refuses to arm or contact the endpoint
+    // unless the current actor owns the shared per-account flock.
+    const unowned = try repair_state.refreshTokenWithLockedLineage(
+        a,
+        "toy",
+        "shared",
+        backend,
+        def,
+        synthetic_unused_token_url,
+        synthetic_refresh_token,
+        null,
+        .{},
+    );
+    switch (unowned) {
+        .failed => |failure| setFact(
+            facts,
+            .refresh_requires_owned_account_flock,
+            failure.outcome == .transient_lock and !failure.endpoint_executed,
+        ),
+        .refreshed => |value| {
+            var success = value;
+            discardUnexpectedRefreshSuccess(a, &success);
+        },
+    }
+
+    // (b) Exactly one shared flock serializes the account: while this actor
+    // holds it, a cross-actor nonblocking acquire of the same key is refused.
+    var held = try repair_state.acquireRepairLock(a, "toy", "shared");
+    defer held.release();
+    var probe_outcome = std.atomic.Value(u8).init(0);
+    const probe = try std.Thread.spawn(
+        .{},
+        AccountFlockProbe.run,
+        .{ "toy", "shared", &probe_outcome },
+    );
+    probe.join();
+    setFact(
+        facts,
+        .account_flock_serializes_cross_actor,
+        probe_outcome.load(.seq_cst) == AccountFlockProbe.blocked,
+    );
+}
+
+fn runRefreshLockNoDeadlockScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    // Re-entrant single-flock-per-key: the resident tick and an in-process
+    // request-boundary refresh are the same actor for one (provider,account),
+    // so nested acquires must NOT self-deadlock on the per-fd flock.
+    var l1 = try repair_state.acquireRepairLockBlocking(a, "toy", "reentrant");
+    var l2 = try repair_state.acquireRepairLockBlocking(a, "toy", "reentrant");
+    var l3 = try repair_state.acquireRepairLock(a, "toy", "reentrant");
+    l3.release();
+    l2.release();
+    l1.release();
+    // Fully released: a fresh acquire still succeeds (registry entry cleared).
+    var l4 = try repair_state.acquireRepairLockBlocking(a, "toy", "reentrant");
+    l4.release();
+    setFact(facts, .account_flock_reentrant_same_actor, true);
+}
+
+fn runRefreshTransientLockFailureScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    const path = try writeSyntheticCredential(a, scope.root, "lock-fail.json");
+    defer a.free(path);
+    const def = syntheticProviderDef();
+    const backend = syntheticFileBackend(path);
+
+    // No account-flock ownership → typed transient_lock, before the boundary
+    // arms: the endpoint is never executed and no lineage is quarantined.
+    const attempt = try repair_state.refreshTokenWithLockedLineage(
+        a,
+        "toy",
+        "lock-fail",
+        backend,
+        def,
+        synthetic_unused_token_url,
+        synthetic_refresh_token,
+        null,
+        .{},
+    );
+    switch (attempt) {
+        .failed => |failure| setFact(
+            facts,
+            .transient_lock_failure_skips_endpoint,
+            failure.outcome == .transient_lock and
+                !failure.endpoint_executed and
+                !failure.lineage_quarantined,
+        ),
+        .refreshed => |value| {
+            var success = value;
+            discardUnexpectedRefreshSuccess(a, &success);
+        },
+    }
+    const quarantine = try repair_state.refreshQuarantineForRoute(a, "toy", "lock-fail");
+    setFact(facts, .transient_lock_failure_leaves_no_quarantine, quarantine == null);
+}
+
+fn runRefreshTransientStoreFailureScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    const path = try writeSyntheticCredential(a, scope.root, "store-fail.json");
+    defer a.free(path);
+    const def = syntheticProviderDef();
+    const backend = syntheticFileBackend(path);
+
+    var lock = try repair_state.acquireRepairLock(a, "toy", "store-fail");
+    defer lock.release();
+
+    // The submitted token no longer matches the canonical store lineage →
+    // typed transient_store, before the boundary arms: no endpoint contact and
+    // no quarantine.
+    const attempt = try repair_state.refreshTokenWithLockedLineage(
+        a,
+        "toy",
+        "store-fail",
+        backend,
+        def,
+        synthetic_unused_token_url,
+        "stale-mismatched-refresh",
+        null,
+        .{},
+    );
+    switch (attempt) {
+        .failed => |failure| setFact(
+            facts,
+            .transient_store_failure_skips_endpoint,
+            failure.outcome == .transient_store and
+                !failure.endpoint_executed and
+                !failure.lineage_quarantined,
+        ),
+        .refreshed => |value| {
+            var success = value;
+            discardUnexpectedRefreshSuccess(a, &success);
+        },
+    }
+    const quarantine = try repair_state.refreshQuarantineForRoute(a, "toy", "store-fail");
+    setFact(facts, .transient_store_failure_leaves_no_quarantine, quarantine == null);
+}
+
+fn runRefreshInvalidLineageQuarantineScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    const path = try writeSyntheticCredential(a, scope.root, "invalid-grant.json");
+    defer a.free(path);
+    const def = syntheticProviderDef();
+    const backend = syntheticFileBackend(path);
+
+    // Hard provider evidence (an OAuth invalid_grant response, the sole hard
+    // signal) drives the full locked-lineage proof to a sticky hard quarantine.
+    try repair_state.establishHardRefreshQuarantineForTest(
+        a,
+        "toy",
+        "invalid",
+        backend,
+        def,
+    );
+    const effective = try repair_state.effectiveRefreshQuarantineForRoute(a, "toy", "invalid");
+    setFact(
+        facts,
+        .invalid_grant_lineage_hard_quarantined,
+        effective == .hard_lineage_invalidated,
+    );
+
+    // The sticky hard tag blocks a fresh locked-lineage attempt before the
+    // boundary arms — the closed lineage is never re-submitted to any endpoint.
+    var lock = try repair_state.acquireRepairLock(a, "toy", "invalid");
+    defer lock.release();
+    const restart = try repair_state.refreshTokenWithLockedLineage(
+        a,
+        "toy",
+        "invalid",
+        backend,
+        def,
+        synthetic_unused_token_url,
+        synthetic_refresh_token,
+        null,
+        .{},
+    );
+    switch (restart) {
+        .failed => |failure| setFact(
+            facts,
+            .invalid_grant_hard_quarantine_blocks_before_endpoint,
+            failure.outcome == .hard_lineage_invalidated and
+                !failure.endpoint_executed and
+                failure.lineage_quarantined,
+        ),
+        .refreshed => |value| {
+            var success = value;
+            discardUnexpectedRefreshSuccess(a, &success);
+        },
+    }
+}
+
+fn runRefreshProviderEvidenceScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    // The hard tag is not a proof primitive: an ordinary journal appender
+    // cannot manufacture it without the flock-owned locked-lineage proof, so
+    // only real provider evidence can quarantine a lineage.
+    const event = repair_state.refreshEvent(.{
+        .provider = "toy",
+        .account = "evidence",
+        .outcome = .hard_lineage_invalidated,
+        .executed = true,
+    });
+    if (repair_state.appendEvent(a, event)) |_| {
+        // Unexpected success leaves the fact failed by default.
+    } else |err| {
+        setFact(
+            facts,
+            .hard_tag_refused_without_locked_lineage_proof,
+            err == error.HardRefreshRequiresLockedLineageProof,
+        );
+    }
+}
+
+fn runRefreshReenrollmentScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    const path = try writeSyntheticCredential(a, scope.root, "reenroll.json");
+    defer a.free(path);
+    const def = syntheticProviderDef();
+    const backend = syntheticFileBackend(path);
+
+    // A hard-invalidated lineage is sticky: provider re-enrollment recovery
+    // refuses to clear it, so recovery requires provider-owned re-enrollment
+    // (the hard journal authority is never erased by the recovery path).
+    try repair_state.establishHardRefreshQuarantineForTest(
+        a,
+        "toy",
+        "hard",
+        backend,
+        def,
+    );
+    {
+        var lock = try repair_state.acquireRepairLock(a, "toy", "hard");
+        defer lock.release();
+        if (repair_state.resolveIndeterminateRefreshQuarantineAfterProviderReenroll(
+            a,
+            "toy",
+            "hard",
+        )) |_| {
+            // Unexpected clearance leaves the fact failed by default.
+        } else |err| {
+            setFact(
+                facts,
+                .hard_quarantine_refuses_reenroll_clearance,
+                err == error.HardRefreshQuarantineCannotBeCleared,
+            );
+        }
+    }
+
+    // The clearable (indeterminate) tier resolves only through the explicit
+    // provider re-enrollment recovery, and only then becomes selectable again.
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "toy", "soft");
+    {
+        var lock = try repair_state.acquireRepairLock(a, "toy", "soft");
+        defer lock.release();
+        const cleared = try repair_state.resolveIndeterminateRefreshQuarantineAfterProviderReenroll(
+            a,
+            "toy",
+            "soft",
+        );
+        const after = try repair_state.refreshQuarantineForRoute(a, "toy", "soft");
+        setFact(
+            facts,
+            .indeterminate_quarantine_clears_via_reenroll,
+            cleared and after == null,
+        );
+    }
+}
+
+fn runRefreshNoStaleBackupRestoreScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    // Every persisted quarantine marker hard-codes the stale-backup-restore
+    // invariant to false: no stale credential backup is ever restored.
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "toy", "marker");
+    const marker_path = try repair_state.refreshQuarantineMarkerPathForTest(a, "toy", "marker");
+    defer a.free(marker_path);
+    const bytes = try readMarkerAlloc(a, marker_path);
+    defer a.free(bytes);
+    setFact(
+        facts,
+        .quarantine_marker_forbids_stale_backup_restore,
+        std.mem.indexOf(u8, bytes, "\"stale_backup_restore_allowed\":false") != null,
+    );
+
+    // A tampered marker that asserts stale-backup restore is refused as invalid,
+    // so no read path can turn the invariant on.
+    const tampered_path = try repair_state.refreshQuarantineMarkerPathForTest(a, "toy", "tampered");
+    defer a.free(tampered_path);
+    {
+        const file = try std.fs.createFileAbsolute(tampered_path, .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(
+            "{\"version\":1,\"provider\":\"toy\",\"account\":\"tampered\"," ++
+                "\"state\":\"indeterminate_lineage\",\"outcome\":null," ++
+                "\"recovery\":\"provider_reenroll\"," ++
+                "\"stale_backup_restore_allowed\":true," ++
+                "\"store_fingerprint\":null,\"identity_fingerprint\":null}\n",
+        );
+    }
+    if (repair_state.refreshQuarantineForRoute(a, "toy", "tampered")) |_| {
+        // Unexpected acceptance leaves the fact failed by default.
+    } else |err| {
+        setFact(
+            facts,
+            .stale_backup_restore_marker_rejected,
+            err == error.InvalidRefreshQuarantine,
+        );
+    }
+}
+
+fn runRefreshNoForensicBackupRestoreScenario(facts: []Fact) !void {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    // The only sanctioned recovery is provider re-enrollment. No forensic or
+    // automatic backup-restore recovery is encoded anywhere in the marker, and
+    // no such restore path exists in the engine.
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "toy", "forensic");
+    const marker_path = try repair_state.refreshQuarantineMarkerPathForTest(a, "toy", "forensic");
+    defer a.free(marker_path);
+    const bytes = try readMarkerAlloc(a, marker_path);
+    defer a.free(bytes);
+    setFact(
+        facts,
+        .quarantine_recovery_is_provider_reenroll_only,
+        std.mem.indexOf(u8, bytes, "\"recovery\":\"provider_reenroll\"") != null and
+            std.mem.indexOf(u8, bytes, "\"stale_backup_restore_allowed\":false") != null,
+    );
 }

@@ -60,10 +60,10 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 64 ] ||
-  fail "expected exactly 64 exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 60 ] ||
-  fail "expected exactly 60 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 73 ] ||
+  fail "expected exactly 73 exercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 51 ] ||
+  fail "expected exactly 51 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
 
@@ -130,7 +130,16 @@ advisory_no_invented_route_readiness
 advisory_no_invented_model_readiness
 observed_exhaustion_trusted_through_reset
 availability_expires_at_deadline
-request_path_evidence_precedence'
+request_path_evidence_precedence
+refresh_shared_account_flock
+refresh_lock_no_deadlock
+refresh_transient_lock_failure_no_quarantine
+refresh_transient_store_failure_no_quarantine
+refresh_invalid_lineage_quarantine
+refresh_quarantine_requires_provider_evidence
+refresh_quarantine_requires_reenrollment
+refresh_no_stale_backup_restore
+refresh_no_forensic_backup_restore'
 actual_passes=$(jq -r '.predicates[] | select(.status == "pass") | .id' "$manifest")
 [ "$actual_passes" = "$expected_passes" ] || fail "predicate reduction drifted"
 

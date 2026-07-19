@@ -237,6 +237,15 @@ advisory_no_invented_model_readiness
 observed_exhaustion_trusted_through_reset
 availability_expires_at_deadline
 request_path_evidence_precedence
+refresh_shared_account_flock
+refresh_lock_no_deadlock
+refresh_transient_lock_failure_no_quarantine
+refresh_transient_store_failure_no_quarantine
+refresh_invalid_lineage_quarantine
+refresh_quarantine_requires_provider_evidence
+refresh_quarantine_requires_reenrollment
+refresh_no_stale_backup_restore
+refresh_no_forensic_backup_restore
 EOF
 }
 
@@ -541,6 +550,42 @@ case "$mode" in
           .status = reduced(["advisory_availability_expires_at_deadline"])
         elif .id == "request_path_evidence_precedence" then
           .status = reduced(["reactive_outranks_fresh_advisory"])
+        elif .id == "refresh_shared_account_flock" then
+          .status = reduced([
+            "refresh_requires_owned_account_flock",
+            "account_flock_serializes_cross_actor"
+          ])
+        elif .id == "refresh_lock_no_deadlock" then
+          .status = reduced(["account_flock_reentrant_same_actor"])
+        elif .id == "refresh_transient_lock_failure_no_quarantine" then
+          .status = reduced([
+            "transient_lock_failure_skips_endpoint",
+            "transient_lock_failure_leaves_no_quarantine"
+          ])
+        elif .id == "refresh_transient_store_failure_no_quarantine" then
+          .status = reduced([
+            "transient_store_failure_skips_endpoint",
+            "transient_store_failure_leaves_no_quarantine"
+          ])
+        elif .id == "refresh_invalid_lineage_quarantine" then
+          .status = reduced([
+            "invalid_grant_lineage_hard_quarantined",
+            "invalid_grant_hard_quarantine_blocks_before_endpoint"
+          ])
+        elif .id == "refresh_quarantine_requires_provider_evidence" then
+          .status = reduced(["hard_tag_refused_without_locked_lineage_proof"])
+        elif .id == "refresh_quarantine_requires_reenrollment" then
+          .status = reduced([
+            "hard_quarantine_refuses_reenroll_clearance",
+            "indeterminate_quarantine_clears_via_reenroll"
+          ])
+        elif .id == "refresh_no_stale_backup_restore" then
+          .status = reduced([
+            "quarantine_marker_forbids_stale_backup_restore",
+            "stale_backup_restore_marker_rejected"
+          ])
+        elif .id == "refresh_no_forensic_backup_restore" then
+          .status = reduced(["quarantine_recovery_is_provider_reenroll_only"])
         else
           .
         end
@@ -617,9 +662,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 60)
+      and ([.predicates[] | select(.status == "missing")] | length == 51)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 64-pass/0-fail/60-missing Stage 2 slice"
+      fail "manifest is not the exact 73-pass/0-fail/51-missing Stage 2 slice"
     ;;
 
   -h|--help|help)
