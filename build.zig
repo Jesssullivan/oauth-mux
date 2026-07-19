@@ -200,7 +200,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const stage2_observer_module = b.createModule(.{
-        .root_source_file = b.path("src/adapters/claude/stage2_observer.zig"),
+        .root_source_file = b.path("src/stage2_observer_module.zig"),
         .target = target,
         .optimize = optimize,
     });

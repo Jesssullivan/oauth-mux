@@ -17,9 +17,26 @@ const std = @import("std");
 const builtin = @import("builtin");
 const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
+const advisory_usage = @import("../../quota/advisory_usage.zig");
 
 const SessionCapability = capability_mod.SessionCapability;
 const FakeUpstream = fake_upstream_mod.FakeUpstream;
+
+// §8.8 advisory-usage OBSERVATION vocabulary (TIN-2400, observation-only).
+//
+// The pure `advisory_usage` core validates a SYNTHETIC JSON usage document (its
+// own `schema_version`/`usage[]` shape), not a discrete header set — it is
+// schema-neutral with respect to wire header NAMES. Per the live-proven reality
+// that Anthropic advisory rate-limit metadata rides `anthropic-ratelimit-*`
+// headers (NOT the mis-declared `x-ratelimit-*`), the fixture threads the core's
+// own authoritative usage document through a single `anthropic-ratelimit-*`
+// header. §8.8's real reader fetches that same document from a separate
+// `GET /api/oauth/usage` body; this observation-only slice never makes that call,
+// so the fixture carries the document inline. wire_proxy does NOT invent a second
+// header-derived schema — the pure core stays the sole schema authority, so its
+// kill switch, freshness window, negative cache, and provenance cap all apply
+// unchanged.
+pub const advisory_usage_header = "anthropic-ratelimit-usage";
 
 pub const production_origin = "https://api.anthropic.com";
 pub const production_forwarding_enabled = false;
@@ -67,6 +84,15 @@ const State = struct {
     upstream_active: ActiveConnection = .{},
     observation_mutex: std.Thread.Mutex = .{},
     observation: RequestObservation = .{},
+    /// §8.8 advisory-usage OBSERVATION state (TIN-2400). Per-account /
+    /// process-lifetime: the freshness window, negative cache, and kill latch
+    /// persist ACROSS requests for the one account this sidecar serves. Guarded
+    /// by `observation_mutex`. This is read-only advisory OBSERVATION — nothing
+    /// here participates in routing, retry, or any terminal decision.
+    advisory_cache: advisory_usage.AdvisoryCache = .{},
+    /// One redacted kill event per distinct schema fingerprint, process-lifetime
+    /// (§8.8). Guarded by `observation_mutex`. Value-free by construction.
+    kill_registry: advisory_usage.KillRegistry = .{},
     /// Per-sidecar replay reservation pool (§2.2). Only the synthetic routed
     /// seam reserves against it; the single-attempt `.fake`/`.production` paths
     /// never touch it, so the accounting stays at zero for those.
@@ -125,10 +151,58 @@ pub const RequestObservation = struct {
     /// A configured alternate was refused because it shared the primary's
     /// identity marker (§2.2 distinct-account requirement).
     same_identity_alternate_refused: bool = false,
+    /// §8.8 advisory-usage OBSERVATION for this request (TIN-2400). Value-free:
+    /// only normalized typed enums/flags — never a token count, limit, or reset
+    /// timestamp from the provider. Advisory OBSERVATION is decoupled from every
+    /// routing/retry/terminal field above; it records what the pure core made of
+    /// the response's advisory signal, and changes no decision.
+    advisory: AdvisoryObservation = .{},
 
     fn admittedModel(self: *const RequestObservation) []const u8 {
         return self.admitted_model_buf[0..self.admitted_model_len];
     }
+};
+
+/// The value-free normalized outcome of folding one response's advisory signal
+/// through the pure `advisory_usage` core (§8.8). Every field is a typed enum or
+/// bool — NO provider payload value (token count, remaining, limit, or reset
+/// epoch) is representable here, mirroring the core's own no-raw-persistence
+/// invariant. Exposed to tests through the same observation snapshot the routing
+/// accounting uses.
+pub const AdvisoryObservation = struct {
+    /// An `anthropic-ratelimit-usage` header was present on this response.
+    present: bool = false,
+    /// The per-account cache freshness AT observation time (never/fresh/stale/
+    /// negative-active/negative-expired/killed).
+    freshness: advisory_usage.Freshness = .never,
+    /// The advisory-tier readiness the fresh rows summarized to for the admitted
+    /// model (`unknown` when none apply / contradictory / not fresh).
+    readiness: advisory_usage.Readiness = .unknown,
+    /// The advisory-ONLY election provenance (`elect(advisory, null)`), which the
+    /// core caps at `.inferred` — advisory can never mint `.proven`.
+    provenance: advisory_usage.Provenance = .unobserved,
+    /// The per-account kill switch is latched (this response, or an earlier one).
+    killed: bool = false,
+    /// Direct request-path (reactive) evidence existed for this response.
+    reactive_present: bool = false,
+    /// The elected readiness once reactive evidence is allowed to outrank
+    /// advisory (`elect(advisory, reactive)`).
+    elected_readiness: advisory_usage.Readiness = .unknown,
+    /// The elected provenance — `.proven` whenever reactive evidence wins,
+    /// proving direct request-path evidence outranks advisory state.
+    elected_provenance: advisory_usage.Provenance = .unobserved,
+};
+
+/// At most one value-free advisory event per observed response (§8.8).
+const AdvisoryEvent = enum { none, observed, stale, schema_rejected };
+
+/// The full advisory observation result: the value-free `AdvisoryObservation`
+/// recorded onto the request surface, plus which (if any) value-free event to
+/// emit. Kept separate from I/O so the core fold runs under the state lock and
+/// the event write happens outside it.
+const AdvisoryOutcome = struct {
+    obs: AdvisoryObservation = .{},
+    event: AdvisoryEvent = .none,
 };
 
 const ModelObservationInput = struct {
@@ -703,6 +777,166 @@ fn emitEvent(state: *State, kind: []const u8) void {
     state.event_writer.print("{{\"kind\":\"{s}\"}}\n", .{kind}) catch {};
 }
 
+// ── §8.8 advisory-usage OBSERVATION (TIN-2400, observation-only) ───────────────
+//
+// This whole seam is READ-ONLY over the response: it runs AFTER the routing /
+// retry / terminal decision is already made and stores only value-free normalized
+// state. It can change no routing, election, or delivery — it exists so §8.8
+// advisory behaviors are observable and test-pinned, nothing more.
+
+/// The advisory clock in Unix SECONDS (the core's `now_s` grammar). It bridges
+/// the injected `WireClock` (nanoseconds) the routed seam already uses, so a test
+/// `VirtualClock` deterministically drives the freshness/negative-cache windows;
+/// the single-attempt/production paths fall back to the real clock.
+fn advisoryNowS(state: *State) i64 {
+    const ns: i128 = switch (state.upstream) {
+        .synthetic => |routing| routing.clock.now(),
+        else => realNowNs(null),
+    };
+    return @intCast(@divFloor(ns, std.time.ns_per_s));
+}
+
+/// The advisory usage document carried by the `anthropic-ratelimit-usage` header,
+/// or null when the response carries no advisory signal. Only the first
+/// occurrence is considered; the value is the core's own synthetic JSON document.
+fn findAdvisoryHeader(headers: []const std.http.Header) ?[]const u8 {
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, advisory_usage_header)) return header.value;
+    }
+    return null;
+}
+
+/// Direct request-path (reactive) evidence for the response status. A pre-body
+/// 401/403/429 is a PROVEN exhaustion; a 2xx is proven availability. Any other
+/// class (redirect, 5xx pass-through) yields no readiness evidence. `resets_at_s`
+/// is an internal projection instant only — it is NEVER surfaced on the
+/// observation, keeping the value-free rule intact.
+fn reactiveFromStatus(status: std.http.Status, now_s: i64) ?advisory_usage.Reactive {
+    return switch (@intFromEnum(status)) {
+        401, 403, 429 => .{ .readiness = .exhausted, .resets_at_s = now_s +| 1 },
+        200...299 => .{ .readiness = .available, .resets_at_s = now_s +| 1 },
+        else => null,
+    };
+}
+
+/// Fold one response's advisory signal through the pure core and produce the
+/// value-free observation + at most one event. Mutates the per-account cache and
+/// kill registry under `observation_mutex`; performs NO I/O (the caller emits the
+/// returned event outside the lock).
+fn computeAdvisoryOutcome(
+    state: *State,
+    allocator: std.mem.Allocator,
+    headers: []const std.http.Header,
+    status: std.http.Status,
+    captured_model: ?[]const u8,
+) AdvisoryOutcome {
+    const now_s = advisoryNowS(state);
+    const model_id = captured_model orelse "";
+
+    state.observation_mutex.lock();
+    defer state.observation_mutex.unlock();
+
+    var event: AdvisoryEvent = .none;
+    var present = false;
+    if (findAdvisoryHeader(headers)) |document| {
+        present = true;
+        var rows: [advisory_usage.MAX_ROWS]advisory_usage.Row = undefined;
+        var excl: [advisory_usage.MAX_ROWS]advisory_usage.ExclusionReason = undefined;
+        const parsed = advisory_usage.parseUsage(allocator, document, &rows, &excl);
+        if (parsed.killed) {
+            // One redacted event per distinct schema fingerprint, process-lifetime
+            // — the registry dedupes even after the cache latches killed, so a
+            // second DISTINCT shape still gets its own single event.
+            if (parsed.fingerprint) |fp| {
+                if (state.kill_registry.recordKill(fp) != null) event = .schema_rejected;
+            }
+        }
+        state.advisory_cache.ingest(parsed, now_s);
+    }
+
+    // Query the per-account cache at `now_s` REGARDLESS of whether this response
+    // carried a header: a fresh normalized window is honored by later requests,
+    // and a stale window is rejected, without any re-fetch.
+    const freshness = state.advisory_cache.freshness(now_s);
+    const fresh_rows = state.advisory_cache.freshRows(now_s);
+    const summary = advisory_usage.summarizeModel(fresh_rows, model_id, now_s);
+    const advisory: ?advisory_usage.Advisory = switch (summary) {
+        .advisory => |a| a,
+        else => null, // none / contradiction → degrade to reactive
+    };
+    const reactive = reactiveFromStatus(status, now_s);
+
+    const advisory_only = advisory_usage.elect(advisory, null, now_s);
+    const elected = advisory_usage.elect(advisory, reactive, now_s);
+
+    if (present and event == .none) {
+        event = switch (freshness) {
+            .populated_fresh => .observed,
+            .populated_stale, .negative_active, .negative_expired => .stale,
+            .never, .killed => .none,
+        };
+    }
+
+    return .{
+        .obs = .{
+            .present = present,
+            .freshness = freshness,
+            .readiness = switch (summary) {
+                .advisory => |a| a.readiness,
+                else => .unknown,
+            },
+            .provenance = advisory_only.provenance,
+            .killed = freshness == .killed,
+            .reactive_present = reactive != null,
+            .elected_readiness = elected.readiness,
+            .elected_provenance = elected.provenance,
+        },
+        .event = event,
+    };
+}
+
+fn emitAdvisoryEvent(state: *State, event: AdvisoryEvent) void {
+    switch (event) {
+        .none => {},
+        .observed => emitEvent(state, "claude_proxy_advisory_observed"),
+        .stale => emitEvent(state, "claude_proxy_advisory_stale"),
+        .schema_rejected => emitEvent(state, "claude_proxy_advisory_schema_rejected"),
+    }
+}
+
+/// Observe the response's advisory signal and write the value-free outcome onto a
+/// caller-owned request observation (the routed path's local `obs`), then emit at
+/// most one value-free event. Routing has already been decided; this only records.
+fn observeAdvisoryOnObs(
+    state: *State,
+    obs: *RequestObservation,
+    allocator: std.mem.Allocator,
+    headers: []const std.http.Header,
+    status: std.http.Status,
+    captured_model: ?[]const u8,
+) void {
+    const outcome = computeAdvisoryOutcome(state, allocator, headers, status, captured_model);
+    obs.advisory = outcome.obs;
+    emitAdvisoryEvent(state, outcome.event);
+}
+
+/// Observe the response's advisory signal and write the value-free outcome onto
+/// the shared `state.observation` (the single-attempt path, whose observation is
+/// committed in place by `recordModelObservation`), then emit at most one event.
+fn observeAdvisoryOnState(
+    state: *State,
+    allocator: std.mem.Allocator,
+    headers: []const std.http.Header,
+    status: std.http.Status,
+    captured_model: ?[]const u8,
+) void {
+    const outcome = computeAdvisoryOutcome(state, allocator, headers, status, captured_model);
+    state.observation_mutex.lock();
+    state.observation.advisory = outcome.obs;
+    state.observation_mutex.unlock();
+    emitAdvisoryEvent(state, outcome.event);
+}
+
 fn validCapability(capability: *SessionCapability, headers: []const std.http.Header) bool {
     var authorization: ?[]const u8 = null;
     for (headers) |header| {
@@ -869,6 +1103,15 @@ fn forwardOnce(
         response_headers[response_header_count] = header;
         response_header_count += 1;
     }
+
+    // §8.8 advisory-usage OBSERVATION (read-only; changes no routing decision).
+    observeAdvisoryOnState(
+        state,
+        allocator,
+        response_headers[0..response_header_count],
+        upstream_status,
+        captured_model,
+    );
 
     if (upstream_status.class() == .redirect) {
         try downstream.respond("upstream redirect rejected", .{
@@ -1428,6 +1671,11 @@ fn performAttempt(
             emitEvent(state, "claude_proxy_upstream_server_error");
         }
         const buffered = try bufferResponse(allocator, &upstream_request, upstream_status);
+        // §8.8 advisory OBSERVATION on the buffered error head. For a pre-body
+        // 401/403/429 this is where reactive exhaustion evidence is proven, so the
+        // election here demonstrates reactive outranking advisory. Read-only:
+        // buffering, the reauth decision, and delivery are all unchanged.
+        observeAdvisoryOnObs(state, obs, allocator, buffered.headers, upstream_status, captured_model);
         // A pre-body 401/403/429 is DEFERRED to the dispatcher for BOTH roles,
         // without emitting any downstream byte. Role `.first` uses it to elect a
         // distinct-identity alternate; role `.second` uses it to compose the
@@ -1457,6 +1705,10 @@ fn performAttempt(
         response_headers[response_header_count] = header;
         response_header_count += 1;
     }
+
+    // §8.8 advisory-usage OBSERVATION on the 2xx head, before any downstream byte
+    // (read-only; the streaming/no-body delivery below is unchanged).
+    observeAdvisoryOnObs(state, obs, allocator, response_headers[0..response_header_count], upstream_status, captured_model);
 
     if (responseHasNoBody(downstream, upstream_status)) {
         downstream.respond("", .{
@@ -4214,4 +4466,322 @@ test "abrupt sidecar death mid stream in an overflow-origin request stays bounde
     capability.revoke();
     try std.testing.expect(capability.isRevoked());
     try std.testing.expect(!capability.validate(&carrier));
+}
+
+// ===========================================================================
+// §8.8 advisory-usage OBSERVATION wiring (TIN-2400, observation-only).
+//
+// These prove the §8.8 advisory behaviors are OBSERVABLE at the wire boundary,
+// folded through the pure `advisory_usage` core. The fixture threads the core's
+// own synthetic usage document through the `anthropic-ratelimit-usage` header;
+// the sidecar records only value-free normalized state and at most one value-free
+// event, and NEVER lets advisory data touch a routing/retry/terminal decision.
+// The clock is the injected `WireClock` (VirtualClock) → `now_s`, so the 300 s
+// freshness window and negative cache are pinned deterministically.
+// ===========================================================================
+
+const advisory_fresh_doc = "{\"schema_version\":1,\"usage\":[{\"scope\":\"account\",\"window\":\"5h\",\"utilization\":0.42,\"resets_at\":1783652400}]}";
+const advisory_empty_doc = "{\"schema_version\":1,\"usage\":[]}";
+const advisory_v2_doc = "{\"schema_version\":2,\"usage\":[]}";
+const advisory_v3_doc = "{\"schema_version\":3,\"usage\":[]}";
+
+fn advisoryHeader(value: []const u8) std.http.Header {
+    return .{ .name = advisory_usage_header, .value = value };
+}
+
+test "advisory observation: a fresh advisory is admitted, capped at .inferred, never .proven" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advisoryHeader(advisory_fresh_doc)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+
+    const obs = observationSnapshot(listener);
+    try std.testing.expect(obs.advisory.present);
+    try std.testing.expectEqual(advisory_usage.Freshness.populated_fresh, obs.advisory.freshness);
+    try std.testing.expectEqual(advisory_usage.Readiness.available, obs.advisory.readiness);
+    // A fresh advisory is a classified read: exactly `.inferred`, never `.proven`.
+    try std.testing.expectEqual(advisory_usage.Provenance.inferred, obs.advisory.provenance);
+    try std.testing.expect(obs.advisory.provenance != .proven);
+    try std.testing.expect(!obs.advisory.killed);
+    try std.testing.expect(eventBufferContains(event_stream.getWritten(), "claude_proxy_advisory_observed"));
+}
+
+test "advisory observation: fresh within 300s, stale at the exact 300s boundary, no re-fetch" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // [0] populates at now_s=1000; [1]/[2] carry NO advisory header and only
+    // re-observe the cached window (proving "no re-validation" within the window).
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advisoryHeader(advisory_fresh_doc)} },
+        .{ .status = .ok, .body = "b" },
+        .{ .status = .ok, .body = "c" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    // Populate at now_s = 1000.
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    try std.testing.expectEqual(advisory_usage.Freshness.populated_fresh, observationSnapshot(listener).advisory.freshness);
+
+    // now_s = 1299 → still inside the window (age 299 < 300), reused without a header.
+    vclock.now_ns = 1299 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const inside = observationSnapshot(listener);
+    try std.testing.expect(!inside.advisory.present); // no re-fetch: cache reused
+    try std.testing.expectEqual(advisory_usage.Freshness.populated_fresh, inside.advisory.freshness);
+
+    // now_s = 1300 → exactly the boundary (age 300 >= 300) → stale, advisory degrades.
+    vclock.now_ns = 1300 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const boundary = observationSnapshot(listener);
+    try std.testing.expectEqual(advisory_usage.Freshness.populated_stale, boundary.advisory.freshness);
+    try std.testing.expectEqual(advisory_usage.Readiness.unknown, boundary.advisory.readiness);
+    try std.testing.expectEqual(advisory_usage.Provenance.unobserved, boundary.advisory.provenance);
+}
+
+test "advisory observation: a valid-empty advisory arms the negative cache to the 300s boundary" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advisoryHeader(advisory_empty_doc)} },
+        .{ .status = .ok, .body = "b" },
+        .{ .status = .ok, .body = "c" },
+    });
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 500 * std.time.ns_per_s };
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    // Arm the negative cache at now_s = 500 with a valid EMPTY result.
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    try std.testing.expectEqual(advisory_usage.Freshness.negative_active, observationSnapshot(listener).advisory.freshness);
+
+    // now_s = 799 → still inside the negative window; refused without re-validation.
+    vclock.now_ns = 799 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    const inside = observationSnapshot(listener);
+    try std.testing.expect(!inside.advisory.present);
+    try std.testing.expectEqual(advisory_usage.Freshness.negative_active, inside.advisory.freshness);
+
+    // now_s = 800 → exactly the boundary → the negative cache has expired.
+    vclock.now_ns = 800 * std.time.ns_per_s;
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+    try std.testing.expectEqual(advisory_usage.Freshness.negative_expired, observationSnapshot(listener).advisory.freshness);
+}
+
+test "advisory observation: an unknown schema trips the kill switch, one event per fingerprint" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Two distinct unknown schema fingerprints (v2, v3), each seen twice, then a
+    // VALID doc that must NOT revive the process-lifetime kill latch.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .ok, .body = "a", .headers = &.{advisoryHeader(advisory_v2_doc)} },
+        .{ .status = .ok, .body = "b", .headers = &.{advisoryHeader(advisory_v2_doc)} },
+        .{ .status = .ok, .body = "c", .headers = &.{advisoryHeader(advisory_v3_doc)} },
+        .{ .status = .ok, .body = "d", .headers = &.{advisoryHeader(advisory_v3_doc)} },
+        .{ .status = .ok, .body = "e", .headers = &.{advisoryHeader(advisory_fresh_doc)} },
+    });
+    defer primary.deinit();
+
+    var event_buffer: [4096]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+    });
+    defer listener.deinit();
+
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        std.testing.allocator.free(try routedRequest(listener, &carrier));
+        const obs = observationSnapshot(listener);
+        try std.testing.expect(obs.advisory.present);
+        try std.testing.expect(obs.advisory.killed); // latched from the first request onward
+        try std.testing.expectEqual(advisory_usage.Freshness.killed, obs.advisory.freshness);
+    }
+
+    // Exactly ONE redacted event per DISTINCT schema fingerprint (v2, v3) — repeats
+    // are deduped, and the later valid doc cannot revive the account.
+    const written = event_stream.getWritten();
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        std.mem.count(u8, written, "claude_proxy_advisory_schema_rejected"),
+    );
+
+    // A killed account still yields honest reactive evidence (2xx → proven).
+    const last = observationSnapshot(listener);
+    try std.testing.expect(last.advisory.reactive_present);
+    try std.testing.expectEqual(advisory_usage.Provenance.unobserved, last.advisory.provenance); // advisory ignored
+    try std.testing.expectEqual(advisory_usage.Provenance.proven, last.advisory.elected_provenance);
+}
+
+test "advisory observation: reactive pre-body 429 outranks a fresh advisory" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Primary returns a pre-body 429 (the §2.2 reactive signal) while ALSO carrying
+    // a fresh advisory that says "available". No alternate → the 429 is terminal.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{ .{ .name = "Retry-After", .value = "5" }, advisoryHeader(advisory_fresh_doc) },
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    try expectStatus(response, "HTTP/1.1 429 Too Many Requests\r\n");
+
+    const obs = observationSnapshot(listener);
+    // The advisory itself normalized to available/.inferred ...
+    try std.testing.expect(obs.advisory.present);
+    try std.testing.expectEqual(advisory_usage.Readiness.available, obs.advisory.readiness);
+    try std.testing.expectEqual(advisory_usage.Provenance.inferred, obs.advisory.provenance);
+    // ... but the direct request-path (reactive) exhaustion OUTRANKS it: the
+    // exposed election is proven-exhausted, not the advisory's available.
+    try std.testing.expect(obs.advisory.reactive_present);
+    try std.testing.expectEqual(advisory_usage.Readiness.exhausted, obs.advisory.elected_readiness);
+    try std.testing.expectEqual(advisory_usage.Provenance.proven, obs.advisory.elected_provenance);
+}
+
+test "advisory observation: an advisory header changes no routing decision" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Two otherwise-identical requests: one response carries advisory headers, the
+    // other does not. The routing/attempt accounting must be byte-identical.
+    var with_adv = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advisoryHeader(advisory_fresh_doc)},
+    }});
+    defer with_adv.deinit();
+    var without_adv = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "ok" }});
+    defer without_adv.deinit();
+
+    var vclock_a = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener_a = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &with_adv, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock_a.clock(),
+    });
+    defer listener_a.deinit();
+    var vclock_b = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    const listener_b = try startRoutedForTest(std.testing.allocator, capability, .{
+        .primary = .{ .upstream = &without_adv, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock_b.clock(),
+    });
+    defer listener_b.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener_a, &carrier));
+    std.testing.allocator.free(try routedRequest(listener_b, &carrier));
+
+    const a = observationSnapshot(listener_a);
+    const b = observationSnapshot(listener_b);
+
+    // Advisory presence differs ...
+    try std.testing.expect(a.advisory.present);
+    try std.testing.expect(!b.advisory.present);
+    // ... but EVERY routing/attempt observation is identical.
+    try std.testing.expectEqual(a.attempts_total, b.attempts_total);
+    try std.testing.expectEqual(a.alternate_count, b.alternate_count);
+    try std.testing.expectEqual(a.same_route_retry_count, b.same_route_retry_count);
+    try std.testing.expectEqual(a.third_attempt_count, b.third_attempt_count);
+    try std.testing.expectEqual(a.upstream_status, b.upstream_status);
+    try std.testing.expectEqual(a.replay_mode, b.replay_mode);
+    try std.testing.expectEqualStrings(a.admittedModel(), b.admittedModel());
+    try std.testing.expectEqual(with_adv.snapshot().call_count, without_adv.snapshot().call_count);
+}
+
+test "advisory observation: the event surface is value-free" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "ok",
+        .headers = &.{advisoryHeader(advisory_fresh_doc)},
+    }});
+    defer primary.deinit();
+
+    var vclock = VirtualClock{ .now_ns = 1000 * std.time.ns_per_s };
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    std.testing.allocator.free(try routedRequest(listener, &carrier));
+
+    const written = event_stream.getWritten();
+    try std.testing.expect(eventBufferContains(written, "claude_proxy_advisory_observed"));
+    // No provider payload value (limit, remaining, utilization, or reset epoch)
+    // and no field name from the parsed document appears in any event.
+    try std.testing.expect(!eventBufferContains(written, "1783652400"));
+    try std.testing.expect(!eventBufferContains(written, "0.42"));
+    try std.testing.expect(!eventBufferContains(written, "utilization"));
+    try std.testing.expect(!eventBufferContains(written, "resets_at"));
+    try std.testing.expect(!eventBufferContains(written, "schema_version"));
+}
+
+test "advisory observation: the observation surface carries no provider payload value" {
+    // Structural value-free guarantee: every AdvisoryObservation field is a typed
+    // enum or bool — no slice (raw text) and no int/float that could smuggle a
+    // token count, limit, or reset epoch onto the surface.
+    inline for (@typeInfo(AdvisoryObservation).@"struct".fields) |field| {
+        const info = @typeInfo(field.type);
+        try std.testing.expect(info == .@"enum" or info == .bool);
+    }
 }
