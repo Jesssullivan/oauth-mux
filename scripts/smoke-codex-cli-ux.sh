@@ -47,6 +47,9 @@ fi
 TMP="$(mktemp -d -t omux-codex-cli-ux.XXXXXX)"
 STATE_DIR="$TMP/state"
 CANONICAL_SESSION_HOME="$TMP/canonical-codex"
+RESUME_ID="019dea53-49a0-7890-9580-e88decb97af0"
+RAW_ONLY_RESUME_ID="11111111-2222-4333-8444-555555555555"
+ROLLOUT_RELATIVE="sessions/2026/05/06/rollout-2026-05-06T12-34-56-$RESUME_ID.jsonl"
 
 cleanup() {
     if [[ -n "${SQLITE_LOCK_PID:-}" ]]; then
@@ -58,15 +61,16 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$TMP/account-A" "$TMP/account-B" "$TMP/claude-personal" "$STATE_DIR" "$CANONICAL_SESSION_HOME/sessions/2026/05/06" "$CANONICAL_SESSION_HOME/shell_snapshots"
-touch "$CANONICAL_SESSION_HOME/history.jsonl" "$CANONICAL_SESSION_HOME/session_index.jsonl"
-printf '%s\n' '{"fixture":"resume"}' >"$CANONICAL_SESSION_HOME/sessions/2026/05/06/rollout-managed-good-session.jsonl"
+touch "$CANONICAL_SESSION_HOME/history.jsonl"
+printf '{"id":"%s","thread_name":"fixture"}\n' "$RESUME_ID" >"$CANONICAL_SESSION_HOME/session_index.jsonl"
+printf '%s\n' '{"fixture":"resume"}' >"$CANONICAL_SESSION_HOME/$ROLLOUT_RELATIVE"
 printf '%s\n' '{"bridge":"preexisting"}' >"$CANONICAL_SESSION_HOME/sessions/omux-session-bridge-smoke.jsonl"
-printf '%s\n' 'managed-good-session' >"$CANONICAL_SESSION_HOME/state_5.sqlite"
-printf '%s\n' 'managed-good-session-wal' >"$CANONICAL_SESSION_HOME/state_5.sqlite-wal"
-printf '%s\n' 'managed-good-session-shm' >"$CANONICAL_SESSION_HOME/state_5.sqlite-shm"
-printf '%s\n' 'managed-good-session' >"$CANONICAL_SESSION_HOME/logs_2.sqlite"
-printf '%s\n' 'managed-good-session-logs-wal' >"$CANONICAL_SESSION_HOME/logs_2.sqlite-wal"
-printf '%s\n' 'managed-good-session-logs-shm' >"$CANONICAL_SESSION_HOME/logs_2.sqlite-shm"
+printf 'unparsed sqlite bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$CANONICAL_SESSION_HOME/state_5.sqlite"
+printf 'unparsed sqlite wal bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$CANONICAL_SESSION_HOME/state_5.sqlite-wal"
+printf 'unparsed sqlite shm bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$CANONICAL_SESSION_HOME/state_5.sqlite-shm"
+printf 'unparsed logs sqlite bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$CANONICAL_SESSION_HOME/logs_2.sqlite"
+printf 'unparsed logs sqlite wal bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$CANONICAL_SESSION_HOME/logs_2.sqlite-wal"
+printf 'unparsed logs sqlite shm bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$CANONICAL_SESSION_HOME/logs_2.sqlite-shm"
 cat >"$CANONICAL_SESSION_HOME/config.toml" <<'EOF'
 model = "gpt-5.5"
 model_provider = "user_provider"
@@ -159,6 +163,18 @@ assert_grep() {
         cat "$file" >&2 || true
         exit 1
     fi
+}
+
+assert_not_grep() {
+    local label=$1 needle=$2 file=$3
+    if grep -q -F "$needle" "$file"; then
+        echo "  ✗ $label" >&2
+        echo "    forbidden bytes: $needle" >&2
+        echo "    file: $file" >&2
+        cat "$file" >&2 || true
+        exit 1
+    fi
+    echo "  ✓ $label"
 }
 
 assert_durable_bridge_homes_scrubbed() {
@@ -255,7 +271,7 @@ run_legacy_bridge_case() {
       OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
       OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
       OMUX_STUB_CANONICAL_SESSION_HOME="$CANONICAL_SESSION_HOME" \
-      OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+      OMUX_STUB_APPEND_SESSION="$ROLLOUT_RELATIVE" \
       OMUX_STUB_CODEX_TURNS=0 \
       OMUX_STUB_CODEX_REPORT="$report" \
       "${cmd[@]}" 2>"$stderr"
@@ -291,13 +307,19 @@ run_legacy_bridge_case() {
         assert_grep "$label chooser lookup not scanned" '"kind":"resume_preflight".*"mode":"chooser".*"resume_lookup_source":"not_scanned"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback".*"mode":"chooser"' "$ndjson"
     elif [[ "$label" == "legacy-bridge-resume-id" ]]; then
-        assert_grep "$label explicit state-db lookup" '"kind":"resume_preflight".*"mode":"explicit".*"resume_lookup_source":"state_db"' "$ndjson"
-        assert_grep "$label resume writeback" '"kind":"resume_writeback".*"changed_existing":[1-9]' "$ndjson"
+        assert_grep "$label exact session-index lookup" '"kind":"resume_preflight".*"mode":"explicit".*"rollouts_before":0.*"explicit_target_found_before":true.*"resume_lookup_source":"session_index"' "$ndjson"
+        assert_grep "$label no filename-derived writeback claim" '"kind":"resume_writeback".*"changed_existing":0.*"explicit_target_changed":null.*"writeback_observed":false.*"resume_lookup_available":true.*"resume_lookup_source":"session_index"' "$ndjson"
+    elif [[ "$label" == "legacy-bridge-resume-raw-only-id" ]]; then
+        assert_grep "$label raw db wal shm bytes are not identity authority" '"kind":"resume_preflight".*"mode":"explicit".*"explicit_target_found_before":false.*"resume_lookup_source":"session_index"' "$ndjson"
+        assert_grep "$label resume writeback" '"kind":"resume_writeback"' "$ndjson"
     else
         assert_grep "$label lookup not scanned" '"kind":"resume_preflight".*"resume_lookup_source":"not_scanned"' "$ndjson"
         assert_grep "$label resume writeback" '"kind":"resume_writeback"' "$ndjson"
     fi
     assert_grep "$label resume status redacts paths" '"kind":"resume_writeback".*"session_id_printed":false,"path_printed":false' "$ndjson"
+    assert_not_grep "$label status omits exact resume id bytes" "$RESUME_ID" "$ndjson"
+    assert_not_grep "$label status omits raw-only resume id bytes" "$RAW_ONLY_RESUME_ID" "$ndjson"
+    assert_not_grep "$label status omits fixture path bytes" "$TMP" "$ndjson"
     assert_grep "$label session_ended" '"kind":"session_ended".*"exit_code":0' "$ndjson"
 
     if grep -q '"kind":"session_started"' "$stderr"; then
@@ -377,7 +399,8 @@ run_legacy_bridge_case() {
 
 echo "smoke-codex-cli-ux: legacy bridge resume aliases (shared_canonical opt-in)"
 run_legacy_bridge_case top "legacy-bridge-resume-last" '["resume","--last"]' resume --last
-run_legacy_bridge_case top "legacy-bridge-resume-id" '["resume","managed-good-session"]' resume managed-good-session
+run_legacy_bridge_case top "legacy-bridge-resume-id" "[\"resume\",\"$RESUME_ID\"]" resume "$RESUME_ID"
+run_legacy_bridge_case top "legacy-bridge-resume-raw-only-id" "[\"resume\",\"$RAW_ONLY_RESUME_ID\"]" resume "$RAW_ONLY_RESUME_ID"
 run_legacy_bridge_case top "legacy-bridge-resume-chooser" '["resume"]' resume
 run_legacy_bridge_case raw "legacy-bridge-raw-run" '["resume","--last"]' resume --last
 
@@ -391,6 +414,15 @@ unset TINYLAND_CODEX_MUX_MODE
 # home (home-is-store) is the CODEX_HOME, sqlite stays isolated, and a clean
 # exit scrubs only the managed config.toml + auth shadow.
 DEFAULT_ROUTE_HOME="$TMP/account-A"
+mkdir -p "$DEFAULT_ROUTE_HOME/sessions/2026/05/06"
+printf '{"id":"%s","thread_name":"fixture"}\n' "$RESUME_ID" >"$DEFAULT_ROUTE_HOME/session_index.jsonl"
+printf '%s\n' '{"fixture":"resume"}' >"$DEFAULT_ROUTE_HOME/$ROLLOUT_RELATIVE"
+printf 'unparsed sqlite bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$DEFAULT_ROUTE_HOME/state_5.sqlite"
+printf 'unparsed sqlite wal bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$DEFAULT_ROUTE_HOME/state_5.sqlite-wal"
+printf 'unparsed sqlite shm bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$DEFAULT_ROUTE_HOME/state_5.sqlite-shm"
+printf 'unparsed logs sqlite bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$DEFAULT_ROUTE_HOME/logs_2.sqlite"
+printf 'unparsed logs sqlite wal bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$DEFAULT_ROUTE_HOME/logs_2.sqlite-wal"
+printf 'unparsed logs sqlite shm bytes containing %s\n' "$RAW_ONLY_RESUME_ID" >"$DEFAULT_ROUTE_HOME/logs_2.sqlite-shm"
 
 run_default_case() {
     local mode=$1 label=$2 expected_argv=$3
@@ -414,7 +446,7 @@ run_default_case() {
       OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
       CODEX_HOME="$CANONICAL_SESSION_HOME" \
       CODEX_SQLITE_HOME="$CANONICAL_SESSION_HOME" \
-      OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+      OMUX_STUB_APPEND_SESSION="$ROLLOUT_RELATIVE" \
       OMUX_STUB_CODEX_TURNS=0 \
       OMUX_STUB_CODEX_REPORT="$report" \
       "${cmd[@]}" 2>"$stderr"
@@ -439,9 +471,17 @@ run_default_case() {
     if [[ "$label" == "default-resume-chooser" ]]; then
         assert_grep "$label resume authority check ok" '"kind":"resume_authority_check".*"ok":true' "$ndjson"
         assert_grep "$label persistent store chooser diagnostic" '"kind":"resume_authority_check".*"diagnostic":"isolated_persistent_store"' "$ndjson"
+    elif [[ "$label" == "default-resume-id" ]]; then
+        assert_grep "$label exact route-local session-index lookup" '"kind":"resume_preflight".*"mode":"explicit".*"rollouts_before":0.*"explicit_target_found_before":true.*"resume_lookup_source":"session_index"' "$ndjson"
+        assert_grep "$label no route-local filename-derived writeback claim" '"kind":"resume_writeback".*"changed_existing":0.*"explicit_target_changed":null.*"writeback_observed":false.*"resume_lookup_available":true.*"resume_lookup_source":"session_index"' "$ndjson"
+    elif [[ "$label" == "default-resume-raw-only-id" ]]; then
+        assert_grep "$label route-local raw db wal shm bytes are not identity authority" '"kind":"resume_preflight".*"mode":"explicit".*"explicit_target_found_before":false.*"resume_lookup_source":"session_index"' "$ndjson"
     fi
     assert_grep "$label resume writeback" '"kind":"resume_writeback"' "$ndjson"
     assert_grep "$label resume status redacts paths" '"kind":"resume_writeback".*"session_id_printed":false,"path_printed":false' "$ndjson"
+    assert_not_grep "$label status omits exact resume id bytes" "$RESUME_ID" "$ndjson"
+    assert_not_grep "$label status omits raw-only resume id bytes" "$RAW_ONLY_RESUME_ID" "$ndjson"
+    assert_not_grep "$label status omits fixture path bytes" "$TMP" "$ndjson"
     assert_grep "$label session_ended" '"kind":"session_ended".*"exit_code":0' "$ndjson"
 
     if grep -q '"kind":"session_started"' "$stderr"; then
@@ -496,7 +536,8 @@ count_canonical_bridge_homes() {
 echo "smoke-codex-cli-ux: default home-is-store resume aliases"
 DEFAULT_FAMILY_BRIDGE_BEFORE="$(count_canonical_bridge_homes)"
 run_default_case top "default-resume-last" '["resume","--last"]' resume --last
-run_default_case top "default-resume-id" '["resume","managed-good-session"]' resume managed-good-session
+run_default_case top "default-resume-id" "[\"resume\",\"$RESUME_ID\"]" resume "$RESUME_ID"
+run_default_case top "default-resume-raw-only-id" "[\"resume\",\"$RAW_ONLY_RESUME_ID\"]" resume "$RAW_ONLY_RESUME_ID"
 run_default_case top "default-resume-chooser" '["resume"]' resume
 run_default_case raw "default-raw-run" '["resume","--last"]' resume --last
 DEFAULT_FAMILY_BRIDGE_AFTER="$(count_canonical_bridge_homes)"
@@ -669,7 +710,7 @@ if [[ -e "$BAD_AUTHORITY_REPORT" ]]; then
 else
     echo "  ✓ missing authority fails before child spawn"
 fi
-if grep -q -E 'managed-good-session|'"$BAD_AUTHORITY_HOME" "$BAD_AUTHORITY_NDJSON" "$BAD_AUTHORITY_STDERR"; then
+if grep -q -E "$RESUME_ID|$BAD_AUTHORITY_HOME" "$BAD_AUTHORITY_NDJSON" "$BAD_AUTHORITY_STDERR"; then
     echo "  ✗ missing authority diagnostic leaked path or session id" >&2
     cat "$BAD_AUTHORITY_NDJSON" >&2
     cat "$BAD_AUTHORITY_STDERR" >&2
@@ -786,7 +827,7 @@ if ! cmp -s "$STATE_DIR/health.json" "$SQLITE_AUTH_LOCK_HEALTH_BEFORE"; then
     diff -u "$SQLITE_AUTH_LOCK_HEALTH_BEFORE" "$STATE_DIR/health.json" >&2 || true
     exit 1
 fi
-if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR" "$SQLITE_AUTH_LOCK_STRICT_NDJSON" "$SQLITE_AUTH_LOCK_STRICT_STDERR"; then
+if grep -q -E "$RESUME_ID|$CANONICAL_SESSION_HOME" "$SQLITE_AUTH_LOCK_NDJSON" "$SQLITE_AUTH_LOCK_STDERR" "$SQLITE_AUTH_LOCK_STRICT_NDJSON" "$SQLITE_AUTH_LOCK_STRICT_STDERR"; then
     echo "  ✗ locked sqlite authority leaked path or session id" >&2
     cat "$SQLITE_AUTH_LOCK_NDJSON" >&2
     cat "$SQLITE_AUTH_LOCK_STDERR" >&2
@@ -836,7 +877,7 @@ if ! cmp -s "$STATE_DIR/health.json" "$SQLITE_LOCK_HEALTH_BEFORE"; then
     diff -u "$SQLITE_LOCK_HEALTH_BEFORE" "$STATE_DIR/health.json" >&2 || true
     exit 1
 fi
-if grep -q -E 'managed-good-session|'"$CANONICAL_SESSION_HOME" "$SQLITE_LOCK_NDJSON"; then
+if grep -q -E "$RESUME_ID|$CANONICAL_SESSION_HOME" "$SQLITE_LOCK_NDJSON"; then
     echo "  ✗ sqlite lock status leaked path or session id" >&2
     cat "$SQLITE_LOCK_NDJSON" >&2
     exit 1
@@ -892,7 +933,7 @@ env -u OMUX_CODEX_BIN -u TINYLAND_CODEX_MUX_MODE \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+  OMUX_STUB_APPEND_SESSION="$ROLLOUT_RELATIVE" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$PATH_REPORT" \
   "$BIN" codex --profile codex-max --json-status-file "$PATH_NDJSON" resume --last 2>"$PATH_STDERR"
@@ -1105,7 +1146,7 @@ env -u OMUX_CODEX_BIN -u TINYLAND_CODEX_MUX_MODE \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+  OMUX_STUB_APPEND_SESSION="$ROLLOUT_RELATIVE" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$NO_PROFILE_REPORT" \
   "$BIN" codex --json-status-file "$NO_PROFILE_NDJSON" resume --last 2>"$NO_PROFILE_STDERR"
@@ -1131,7 +1172,7 @@ env -u OMUX_CODEX_BIN -u TINYLAND_CODEX_MUX_MODE \
   CODEX_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_SESSION_HOME="$CANONICAL_SESSION_HOME" \
   OMUX_CODEX_CONFIG_HOME="$CANONICAL_SESSION_HOME" \
-  OMUX_STUB_APPEND_SESSION="sessions/2026/05/06/rollout-managed-good-session.jsonl" \
+  OMUX_STUB_APPEND_SESSION="$ROLLOUT_RELATIVE" \
   OMUX_STUB_CODEX_TURNS=0 \
   OMUX_STUB_CODEX_REPORT="$DEFAULT_REPORT" \
   "$BIN" codex --profile codex-max resume --last 2>"$DEFAULT_STDERR"

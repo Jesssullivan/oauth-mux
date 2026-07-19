@@ -42,7 +42,7 @@ require_timestamp() {
 
 require_target() {
   case "$1" in
-    v02-stage2-conformance|v02-benchmark)
+    v02-stage2-conformance|v02-benchmark|v02-prerelease-readiness)
       ;;
     *)
       fail "unsupported v0.2 proof target: $1"
@@ -124,19 +124,25 @@ assert_post_run() {
   )" || fail "could not inspect post-run candidate artifacts"
   case "$target" in
     v02-stage2-conformance)
-      expected_status='?? v02-proof-predicate-manifest.json'
+      expected_status='?? v02-proof-predicate-manifest.json
+?? v02-stage2-observations.json'
       ;;
     v02-benchmark)
       expected_status='?? v02-benchmark-metrics.json
 ?? v02-proof-predicate-manifest.json'
       ;;
+    v02-prerelease-readiness)
+      expected_status=""
+      ;;
   esac
   [ "$candidate_status" = "$expected_status" ] ||
     fail "post-run checkout contains files outside the proof artifact allowlist"
 
-  [ -f v02-proof-predicate-manifest.json ] &&
-    [ ! -L v02-proof-predicate-manifest.json ] ||
-    fail "predicate manifest must be a regular non-symlink file"
+  if [ "$target" != "v02-prerelease-readiness" ]; then
+    [ -f v02-proof-predicate-manifest.json ] &&
+      [ ! -L v02-proof-predicate-manifest.json ] ||
+      fail "predicate manifest must be a regular non-symlink file"
+  fi
   if [ "$target" = "v02-benchmark" ]; then
     [ -f v02-benchmark-metrics.json ] &&
       [ ! -L v02-benchmark-metrics.json ] ||

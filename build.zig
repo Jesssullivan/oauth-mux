@@ -130,6 +130,89 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(check_manifest_step);
     test_step.dependOn(check_managed_schema_step);
 
+    const prerelease_gate = b.addExecutable(.{
+        .name = "release-manifest-gate",
+        .root_source_file = b.path("src/release_manifest_gate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const run_prerelease_gate = b.addRunArtifact(prerelease_gate);
+    if (b.args) |args| run_prerelease_gate.addArgs(args);
+    const prerelease_manifest_check_step = b.step(
+        "v02-prerelease-manifest-check",
+        "Check v0.2 schema, candidate identity, references, and outer digests without publishing",
+    );
+    prerelease_manifest_check_step.dependOn(check_manifest_step);
+    prerelease_manifest_check_step.dependOn(&run_prerelease_gate.step);
+
+    const prerelease_readiness_tests = b.addTest(.{
+        .root_source_file = b.path("test/release_manifest_readiness_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const prerelease_gate_module = b.createModule(.{
+        .root_source_file = b.path("src/release_manifest_gate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    prerelease_readiness_tests.root_module.addImport(
+        "release_manifest_gate",
+        prerelease_gate_module,
+    );
+    const run_prerelease_readiness_tests = b.addRunArtifact(prerelease_readiness_tests);
+    test_step.dependOn(&run_prerelease_readiness_tests.step);
+    const prerelease_readiness_step = b.step(
+        "v02-prerelease-readiness",
+        "Run synthetic v0.2 schema/reference/outer-digest checks",
+    );
+    prerelease_readiness_step.dependOn(check_manifest_step);
+    prerelease_readiness_step.dependOn(&run_prerelease_readiness_tests.step);
+
+    const stage2_options = b.addOptions();
+    stage2_options.addOption(
+        []const u8,
+        "candidate_sha",
+        b.option([]const u8, "v02-candidate-sha", "Exact v0.2 candidate commit") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "candidate_tree",
+        b.option([]const u8, "v02-candidate-tree", "Exact v0.2 candidate tree") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "workflow_run_id",
+        b.option([]const u8, "v02-workflow-run-id", "Authoritative workflow run id") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "workflow_run_attempt",
+        b.option([]const u8, "v02-workflow-run-attempt", "Authoritative workflow run attempt") orelse "",
+    );
+    stage2_options.addOption(
+        []const u8,
+        "gf_target_class",
+        b.option([]const u8, "v02-gf-target-class", "GloriousFlywheel target class") orelse "",
+    );
+    const stage2_observer = b.addTest(.{
+        .root_source_file = b.path("test/stage2_observer_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const stage2_observer_module = b.createModule(.{
+        .root_source_file = b.path("src/adapters/claude/stage2_observer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stage2_observer.root_module.addImport("stage2_observer", stage2_observer_module);
+    stage2_observer.root_module.addOptions("stage2_build_options", stage2_options);
+    const run_stage2_observer = b.addRunArtifact(stage2_observer);
+    const stage2_observer_step = b.step(
+        "v02-stage2-observe",
+        "Emit typed Claude fake-upstream Stage 2 observations",
+    );
+    stage2_observer_step.dependOn(&run_stage2_observer.step);
+
     const release_step = b.step("release", "Build release binaries for all platforms");
     release_step.dependOn(check_manifest_step);
     release_step.dependOn(check_managed_schema_step);

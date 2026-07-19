@@ -199,6 +199,18 @@ fn writeFileReplace(ref: types.SecretBackend.FileRef, bytes: []const u8, allocat
         error.AccessDenied => return error.AccessDenied,
         else => return error.IoError,
     };
+    syncFileParent(expanded) catch return error.IoError;
+}
+
+fn syncFileParent(path: []const u8) !void {
+    // std.posix.rename uses MOVEFILE_WRITE_THROUGH on Windows. POSIX needs an
+    // explicit directory fsync so a successful credential replacement survives
+    // a crash before an in-flight refresh quarantine is cleared.
+    if (comptime builtin.os.tag == .windows) return;
+    const parent = std.fs.path.dirname(path) orelse return error.InvalidPath;
+    var dir = try std.fs.openDirAbsolute(parent, .{ .iterate = true });
+    defer dir.close();
+    try std.posix.fsync(dir.fd);
 }
 
 fn readKeychain(ref: types.SecretBackend.KeychainRef, allocator: std.mem.Allocator) ReadError![]const u8 {

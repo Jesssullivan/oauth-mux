@@ -32,6 +32,7 @@ const broker = @import("../../broker/mod.zig");
 const broker_types = @import("../../broker/types.zig");
 const broker_loader = @import("../../broker_loader.zig");
 const cli = @import("../../cli.zig");
+const codex_resume_index = @import("../../codex_resume_index.zig");
 const config_mod = @import("../../config.zig");
 const env_mod = @import("../../env.zig");
 const health_mod = @import("../../health.zig");
@@ -205,6 +206,12 @@ const SessionCodexHome = struct {
         if (self.authority_home) |home| allocator.free(home);
         if (self.config_authority_home) |home| allocator.free(home);
     }
+
+    fn explicitResumeEvidenceHome(self: *const SessionCodexHome) ?[]const u8 {
+        if (self.authority_home) |home| return home;
+        if (self.persistent_store) return self.path;
+        return null;
+    }
 };
 
 const ResumeMode = enum {
@@ -257,45 +264,21 @@ const RolloutSnapshot = struct {
 };
 
 const ResumeLookupSource = enum {
-    state_db,
-    logs_db,
     session_index,
-    filename_scan,
     not_scanned,
 
     fn toString(self: ResumeLookupSource) []const u8 {
         return switch (self) {
-            .state_db => "state_db",
-            .logs_db => "logs_db",
             .session_index => "session_index",
-            .filename_scan => "filename_scan",
             .not_scanned => "not_scanned",
         };
     }
 };
 
-const RolloutTargetSnapshot = struct {
-    allocator: std.mem.Allocator,
-    path: []u8,
-    entry: RolloutEntry,
-
-    fn deinit(self: *RolloutTargetSnapshot) void {
-        self.allocator.free(self.path);
-    }
-};
-
 const ResumePreflightObservation = struct {
     lookup_source: ResumeLookupSource = .not_scanned,
+    lookup_available: ?bool = null,
     explicit_target_found_before: ?bool = null,
-    target_snapshot: ?RolloutTargetSnapshot = null,
-
-    fn deinit(self: *ResumePreflightObservation) void {
-        if (self.target_snapshot) |*snapshot| snapshot.deinit();
-    }
-
-    fn rolloutsBefore(self: *const ResumePreflightObservation) usize {
-        return if (self.target_snapshot != null) 1 else 0;
-    }
 };
 
 const ResumeObservation = struct {
@@ -306,6 +289,8 @@ const ResumeObservation = struct {
     explicit_target_found_before: ?bool = null,
     explicit_target_changed: ?bool = null,
     lookup_source: ResumeLookupSource = .not_scanned,
+    lookup_available: ?bool = null,
+    writeback_observed: bool = false,
 };
 
 const ManagedConfigObservation = struct {
@@ -1527,8 +1512,28 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
             return RunError.NoCodexHome;
         },
         error.UnauthenticatedCodexHome => {
-            try stderr.writeAll("oauth-mux codex: the account's managed home has no usable auth.json (and no recoverable shadow backup); run `CODEX_HOME=<home> codex login` to stage it\n");
+            try stderr.writeAll("oauth-mux codex: the account's managed home has no usable auth.json; run provider-owned `CODEX_HOME=<account-home> codex login` to re-enroll it\n");
             try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "unauthenticated_codex_home", "codex_home_setup", "UnauthenticatedCodexHome", session_started_emitted, null);
+            return RunError.NoCodexHome;
+        },
+        error.RefreshLineageIndeterminate => {
+            repair_state.persistIndeterminateRefreshQuarantine(
+                allocator,
+                "codex",
+                session_account_only,
+            ) catch |persist_err| {
+                try stderr.print(
+                    "oauth-mux codex: cannot persist indeterminate refresh-lineage quarantine for {s}: {s}; refusing launch\n",
+                    .{ session_account_only, @errorName(persist_err) },
+                );
+                try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "refresh_quarantine_persistence_failed", "codex_home_setup", @errorName(persist_err), session_started_emitted, null);
+                return RunError.NoCodexHome;
+            };
+            try stderr.print(
+                "oauth-mux codex: auth.json is missing or torn while auth.json.omux-bak remains; the backup is forensic-only because its rotating refresh token may already be consumed. The route is quarantined. Run `oauth-mux codex login-device {s}` for provider-owned re-enrollment\n",
+                .{session_account_only},
+            );
+            try writeManagedPreSpawnAbortStatus(status_writer, emit_status, "refresh_lineage_indeterminate", "codex_home_setup", "RefreshLineageIndeterminate", session_started_emitted, null);
             return RunError.NoCodexHome;
         },
         error.CanonicalCodexHomeGuardUncheckable => {
@@ -1589,12 +1594,12 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     }
 
     var resume_preflight = ResumePreflightObservation{};
-    defer resume_preflight.deinit();
     if (resume_request.mode == .explicit) {
-        if (codex_home.authority_home) |authority_home| {
-            resume_preflight = try lookupExplicitResumePreflight(allocator, authority_home, resume_request.explicit_id.?);
+        if (codex_home.explicitResumeEvidenceHome()) |evidence_home| {
+            resume_preflight = try lookupExplicitResumePreflight(allocator, evidence_home, resume_request.explicit_id.?);
         } else {
-            resume_preflight.explicit_target_found_before = false;
+            resume_preflight.lookup_available = false;
+            resume_preflight.explicit_target_found_before = null;
         }
     }
 
@@ -1620,9 +1625,10 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
                 status_writer,
                 resume_request,
                 codex_home.session_authority,
-                resume_preflight.rolloutsBefore(),
+                0,
                 resume_preflight.explicit_target_found_before,
                 resume_preflight.lookup_source,
+                resume_preflight.lookup_available,
             );
         }
     }
@@ -1958,14 +1964,24 @@ fn writeManagedPreSpawnAbortStatus(
     // a blocking account-lock acquire timed out on). Rendered as a JSON string
     // or null; the frame parser reads fields by key, so this is additive.
     const path_printed = detail != null;
+    const refresh_lineage_indeterminate = std.mem.eql(
+        u8,
+        reason,
+        "refresh_lineage_indeterminate",
+    );
     try writer.print(
         "{{\"kind\":\"session_aborted\",\"adapter\":\"codex\",\"reason\":\"{s}\",\"phase\":\"{s}\",\"error\":\"{s}\",\"detail\":",
         .{ reason, phase, error_name },
     );
     if (detail) |d| try std.json.stringify(d, .{}, writer) else try writer.writeAll("null");
     try writer.print(
-        ",\"exit_code\":-1,\"term_kind\":null,\"term_code\":null,\"signal_name\":null,\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":false,\"pre_spawn\":true,\"child_spawned\":false,\"path_printed\":{any},\"token_material_printed\":false,\"session_id_printed\":false}}\n",
-        .{ if (session_started_emitted) "broker_owned" else "none", path_printed },
+        ",\"exit_code\":-1,\"term_kind\":null,\"term_code\":null,\"signal_name\":null,\"final_claim_level\":\"{s}\",\"synthetic_swap_observed\":false,\"pre_spawn\":true,\"child_spawned\":false,\"refresh_lineage_quarantined\":{any},\"provider_reenroll_required\":{any},\"stale_backup_restore_allowed\":false,\"forensic_backup_restore_allowed\":false,\"path_printed\":{any},\"token_material_printed\":false,\"session_id_printed\":false}}\n",
+        .{
+            if (session_started_emitted) "broker_owned" else "none",
+            refresh_lineage_indeterminate,
+            refresh_lineage_indeterminate,
+            path_printed,
+        },
     );
 }
 
@@ -2028,8 +2044,12 @@ fn finalizeManagedSession(
         try writeManagedAuthHealthStatus(status_writer, account_observation, auth_health);
     }
     if (resume_request.requested()) {
-        const observation = if (codex_home.authority_home) |authority_home|
-            try observeResumeWriteback(allocator, authority_home, resume_preflight, resume_request)
+        const evidence_home = if (resume_request.mode == .explicit)
+            codex_home.explicitResumeEvidenceHome()
+        else
+            codex_home.authority_home;
+        const observation = if (evidence_home) |home|
+            try observeResumeWriteback(allocator, home, resume_preflight, resume_request)
         else
             ResumeObservation{};
         try writeResumeWritebackStatus(status_writer, resume_request, codex_home.session_authority, observation);
@@ -2203,18 +2223,13 @@ fn writePersistentAuthShadow(allocator: std.mem.Allocator, auth_path: []const u8
     try writeFileReplaceBytes(allocator, bak_path, bytes);
 }
 
-/// Integrity preflight + crash recovery for the home-is-store auth.json. If the
-/// in-place file is missing/torn (codex killed mid-rewrite), restore the last
-/// known-good shadow backup. Refuse the launch when neither is usable rather than
-/// silently bootstrapping an empty/unauthenticated home.
+/// Integrity preflight for the home-is-store auth.json. The shadow is forensic
+/// rollback evidence only: after a torn/missing canonical file, its rotating
+/// refresh token may already have been consumed upstream, so automatic restore
+/// would replay stale lineage.
 fn ensurePersistentAuthUsable(allocator: std.mem.Allocator, auth_path: []const u8, bak_path: []const u8) !void {
     if (authJsonParses(allocator, auth_path)) return;
-    if (authJsonParses(allocator, bak_path)) {
-        const bytes = try readFileAbsoluteOrCwd(allocator, bak_path, 2 * 1024 * 1024);
-        defer allocator.free(bytes);
-        try writeFileReplaceBytes(allocator, auth_path, bytes);
-        return;
-    }
+    if (authJsonParses(allocator, bak_path)) return error.RefreshLineageIndeterminate;
     return error.UnauthenticatedCodexHome;
 }
 
@@ -2249,8 +2264,8 @@ fn createPersistentCodexHome(
     defer allocator.free(bak_path);
 
     try ensurePersistentAuthUsable(allocator, home_auth_path, bak_path);
-    // Refresh the shadow to the current good auth so a torn mid-session rewrite is
-    // recoverable next launch. Best-effort: a shadow failure is not fatal.
+    // Stage a forensic rollback snapshot. It is never auto-restored because its
+    // rotating refresh token may be older than provider lineage.
     writePersistentAuthShadow(allocator, home_auth_path, bak_path) catch {};
 
     const auth_initial_hash = try hashFileContents(allocator, home_auth_path);
@@ -2300,6 +2315,7 @@ test "createPersistentCodexHome builds a home-is-store session and scrubs only t
     try std.testing.expectEqual(CodexHomeCleanupMode.persist_scrub_config, session.cleanup_mode);
     try std.testing.expect(session.authority_home == null);
     try std.testing.expect(session.persistent_store);
+    try std.testing.expectEqualStrings(home, session.explicitResumeEvidenceHome().?);
 
     // Fresh managed config carries the session proxy port; shadow backup is staged.
     const cfg_path = try std.fs.path.join(a, &.{ home, "config.toml" });
@@ -2337,7 +2353,7 @@ test "ensureNotCanonicalCodexHome refuses ~/.codex and its subtree, accepts a de
     try ensureNotCanonicalCodexHome(a, dedicated); // dedicated oauth-mux home is allowed
 }
 
-test "ensurePersistentAuthUsable restores a torn auth.json from the shadow, else refuses" {
+test "ensurePersistentAuthUsable keeps a shadow forensic and refuses stale lineage replay" {
     const a = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2348,16 +2364,76 @@ test "ensurePersistentAuthUsable restores a torn auth.json from the shadow, else
     const bak = try std.fs.path.join(a, &.{ root, "auth.json.omux-bak" });
     defer a.free(bak);
 
-    // Torn in-place auth + good shadow → restored.
-    try writeFileReplaceBytes(a, auth, "{ this is not json");
+    const torn = "{ this is not json";
+    try writeFileReplaceBytes(a, auth, torn);
     try writeFileReplaceBytes(a, bak, "{\"tokens\":{\"account_id\":\"acct-test\"}}");
-    try ensurePersistentAuthUsable(a, auth, bak);
-    try std.testing.expect(authJsonParses(a, auth));
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        ensurePersistentAuthUsable(a, auth, bak),
+    );
+    const after = try readFileAbsoluteOrCwd(a, auth, 2 * 1024 * 1024);
+    defer a.free(after);
+    try std.testing.expectEqualStrings(torn, after);
+    try std.testing.expect(authJsonParses(a, bak));
+
+    // Missing canonical + good shadow is the same unknown-lineage state. The
+    // preflight must not recreate auth.json from the shadow.
+    try std.fs.deleteFileAbsolute(auth);
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        ensurePersistentAuthUsable(a, auth, bak),
+    );
+    try std.testing.expect(!pathExistsAbsolute(auth));
 
     // Both unusable → refuse rather than bootstrap an empty home.
     try writeFileReplaceBytes(a, auth, "broken");
     try writeFileReplaceBytes(a, bak, "also broken");
     try std.testing.expectError(error.UnauthenticatedCodexHome, ensurePersistentAuthUsable(a, auth, bak));
+}
+
+test "indeterminate Codex auth status requires reenrollment and forbids backup restore" {
+    var status = std.ArrayList(u8).init(std.testing.allocator);
+    defer status.deinit();
+    try writeManagedPreSpawnAbortStatus(
+        status.writer(),
+        true,
+        "refresh_lineage_indeterminate",
+        "codex_home_setup",
+        "RefreshLineageIndeterminate",
+        false,
+        null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"refresh_lineage_quarantined\":true",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"provider_reenroll_required\":true",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"stale_backup_restore_allowed\":false",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status.items,
+            "\"forensic_backup_restore_allowed\":false",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, status.items, "refresh_token") == null,
+    );
 }
 
 test "makeSessionCodexHome isolated_persistent dispatches to home-is-store at dirname(auth)" {
@@ -2867,163 +2943,23 @@ fn lookupExplicitResumePreflight(
     authority_home: []const u8,
     explicit_id: []const u8,
 ) !ResumePreflightObservation {
-    var result = ResumePreflightObservation{
-        .explicit_target_found_before = false,
-    };
-    errdefer result.deinit();
-
-    if (try stateDbContainsResumeId(allocator, authority_home, explicit_id)) {
-        result.lookup_source = .state_db;
-        result.explicit_target_found_before = true;
-        result.target_snapshot = try findRolloutTargetByFilename(allocator, authority_home, explicit_id);
-        return result;
-    }
-
-    if (try logsDbContainsResumeId(allocator, authority_home, explicit_id)) {
-        result.lookup_source = .logs_db;
-        result.explicit_target_found_before = true;
-        result.target_snapshot = try findRolloutTargetByFilename(allocator, authority_home, explicit_id);
-        return result;
-    }
-
-    if (try sessionIndexContainsResumeId(allocator, authority_home, explicit_id)) {
-        result.lookup_source = .session_index;
-        result.explicit_target_found_before = true;
-        result.target_snapshot = try findRolloutTargetByFilename(allocator, authority_home, explicit_id);
-        return result;
-    }
-
-    result.lookup_source = .filename_scan;
-    if (try findRolloutTargetByFilename(allocator, authority_home, explicit_id)) |target| {
-        result.explicit_target_found_before = true;
-        result.target_snapshot = target;
-    }
-    return result;
-}
-
-fn stateDbContainsResumeId(
-    allocator: std.mem.Allocator,
-    authority_home: []const u8,
-    explicit_id: []const u8,
-) !bool {
-    for (codex_optional_state_authority_entries) |entry| {
-        const path = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
-        defer allocator.free(path);
-        if (try fileContainsNeedleBounded(allocator, path, explicit_id)) return true;
-    }
-    return false;
-}
-
-fn logsDbContainsResumeId(
-    allocator: std.mem.Allocator,
-    authority_home: []const u8,
-    explicit_id: []const u8,
-) !bool {
-    for (codex_optional_logs_authority_entries) |entry| {
-        const path = try std.fs.path.join(allocator, &.{ authority_home, entry.name });
-        defer allocator.free(path);
-        if (try fileContainsNeedleBounded(allocator, path, explicit_id)) return true;
-    }
-    return false;
-}
-
-fn sessionIndexContainsResumeId(
-    allocator: std.mem.Allocator,
-    authority_home: []const u8,
-    explicit_id: []const u8,
-) !bool {
-    const path = try std.fs.path.join(allocator, &.{ authority_home, "session_index.jsonl" });
-    defer allocator.free(path);
-    return try fileContainsNeedleBounded(allocator, path, explicit_id);
-}
-
-fn fileContainsNeedleBounded(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    needle: []const u8,
-) !bool {
-    if (needle.len == 0) return false;
-    const file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
-        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
-        else => return e,
-    };
-    defer file.close();
-
-    var previous = std.ArrayListUnmanaged(u8){};
-    defer previous.deinit(allocator);
-
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = try file.read(&buf);
-        if (n == 0) break;
-
-        var haystack = std.ArrayListUnmanaged(u8){};
-        defer haystack.deinit(allocator);
-        try haystack.appendSlice(allocator, previous.items);
-        try haystack.appendSlice(allocator, buf[0..n]);
-        if (std.mem.indexOf(u8, haystack.items, needle) != null) return true;
-
-        previous.clearRetainingCapacity();
-        const keep = @min(needle.len - 1, haystack.items.len);
-        if (keep != 0) try previous.appendSlice(allocator, haystack.items[haystack.items.len - keep ..]);
-    }
-    return false;
-}
-
-fn findRolloutTargetByFilename(
-    allocator: std.mem.Allocator,
-    authority_home: []const u8,
-    explicit_id: []const u8,
-) !?RolloutTargetSnapshot {
-    if (explicit_id.len == 0) return null;
-    const sessions_dir = try std.fs.path.join(allocator, &.{ authority_home, "sessions" });
-    defer allocator.free(sessions_dir);
-    return try findRolloutTargetByFilenameUnder(allocator, sessions_dir, explicit_id, 0);
-}
-
-fn findRolloutTargetByFilenameUnder(
-    allocator: std.mem.Allocator,
-    dir_path: []const u8,
-    explicit_id: []const u8,
-    depth: usize,
-) !?RolloutTargetSnapshot {
-    if (depth > 16) return null;
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |e| switch (e) {
-        error.FileNotFound, error.AccessDenied, error.NotDir => return null,
-        else => return e,
-    };
-    defer dir.close();
-
-    var it = dir.iterate();
-    while (try it.next()) |entry| {
-        const path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
-        defer allocator.free(path);
-        switch (entry.kind) {
-            .directory => {
-                if (try findRolloutTargetByFilenameUnder(allocator, path, explicit_id, depth + 1)) |found| return found;
-            },
-            .file, .sym_link => {
-                if (!std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
-                if (std.mem.indexOf(u8, entry.name, explicit_id) == null) continue;
-                return try snapshotSingleRolloutTarget(allocator, path);
-            },
-            else => {},
-        }
-    }
-    return null;
-}
-
-fn snapshotSingleRolloutTarget(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-) !RolloutTargetSnapshot {
-    const stat = try std.fs.cwd().statFile(path);
-    return .{
-        .allocator = allocator,
-        .path = try allocator.dupe(u8, path),
-        .entry = .{
-            .size = stat.size,
-            .mtime = stat.mtime,
+    // Only a parsed index record has a stable identity boundary. Raw database
+    // bytes and rollout filenames are diagnostic data, not resume authority.
+    return switch (try codex_resume_index.lookup(allocator, authority_home, explicit_id)) {
+        .match => .{
+            .lookup_source = .session_index,
+            .lookup_available = true,
+            .explicit_target_found_before = true,
+        },
+        .no_match => .{
+            .lookup_source = .session_index,
+            .lookup_available = true,
+            .explicit_target_found_before = false,
+        },
+        .unavailable => .{
+            .lookup_source = .session_index,
+            .lookup_available = false,
+            .explicit_target_found_before = null,
         },
     };
 }
@@ -3035,29 +2971,13 @@ fn observeResumeWriteback(
     request: ResumeRequest,
 ) !ResumeObservation {
     if (request.mode == .explicit) {
-        var observation = ResumeObservation{
-            .rollouts_before = preflight.rolloutsBefore(),
-            .rollouts_after = 0,
+        return .{
             .explicit_target_found_before = preflight.explicit_target_found_before,
-            .explicit_target_changed = false,
+            .explicit_target_changed = null,
             .lookup_source = preflight.lookup_source,
+            .lookup_available = preflight.lookup_available,
+            .writeback_observed = false,
         };
-        if (preflight.target_snapshot) |target| {
-            const after = snapshotSingleRolloutTarget(allocator, target.path) catch |e| switch (e) {
-                error.FileNotFound, error.AccessDenied, error.NotDir => return observation,
-                else => return e,
-            };
-            var after_mut = after;
-            defer after_mut.deinit();
-
-            observation.rollouts_after = 1;
-            const changed = target.entry.size != after.entry.size or target.entry.mtime != after.entry.mtime;
-            if (changed) {
-                observation.changed_existing = 1;
-                observation.explicit_target_changed = true;
-            }
-        }
-        return observation;
     }
 
     var after = try snapshotRollouts(allocator, authority_home);
@@ -3069,6 +2989,8 @@ fn observeResumeWriteback(
         .explicit_target_found_before = null,
         .explicit_target_changed = if (request.explicit_id != null) false else null,
         .lookup_source = preflight.lookup_source,
+        .lookup_available = preflight.lookup_available,
+        .writeback_observed = true,
     };
 
     var it = after.entries.iterator();
@@ -3095,6 +3017,7 @@ fn writeResumePreflightStatus(
     rollouts_before: usize,
     explicit_target_found_before: ?bool,
     lookup_source: ResumeLookupSource,
+    lookup_available: ?bool,
 ) !void {
     try writer.print(
         "{{\"kind\":\"resume_preflight\",\"mode\":\"{s}\",\"session_authority\":\"{s}\",\"rollouts_before\":{d},\"explicit_id_provided\":{s},\"explicit_target_found_before\":",
@@ -3106,6 +3029,8 @@ fn writeResumePreflightStatus(
         },
     );
     try writeOptionalBool(writer, explicit_target_found_before);
+    try writer.writeAll(",\"resume_lookup_available\":");
+    try writeOptionalBool(writer, lookup_available);
     try writer.print(",\"resume_lookup_source\":\"{s}\",\"session_id_printed\":false,\"path_printed\":false}}\n", .{lookup_source.toString()});
 }
 
@@ -3159,6 +3084,10 @@ fn writeResumeWritebackStatus(
     try writeOptionalBool(writer, observation.explicit_target_found_before);
     try writer.writeAll(",\"explicit_target_changed\":");
     try writeOptionalBool(writer, observation.explicit_target_changed);
+    try writer.writeAll(",\"writeback_observed\":");
+    try writer.writeAll(if (observation.writeback_observed) "true" else "false");
+    try writer.writeAll(",\"resume_lookup_available\":");
+    try writeOptionalBool(writer, observation.lookup_available);
     try writer.print(",\"resume_lookup_source\":\"{s}\",\"session_id_printed\":false,\"path_printed\":false}}\n", .{observation.lookup_source.toString()});
 }
 
@@ -4067,13 +3996,22 @@ test "detectResumeRequest classifies forwarded Codex resume shapes" {
     try std.testing.expectEqualStrings("019dea53-49a0-7890-9580-e88decb97af0", explicit.explicit_id.?);
 }
 
-test "resume writeback observation reports existing rollout changes without printing paths" {
+test "explicit resume writeback does not infer identity or mutation from rollout filenames" {
+    const resume_id = "019dea53-49a0-7890-9580-e88decb97af0";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.makePath("canonical/sessions/2026/05/06");
     {
-        const rollout = try tmp.dir.createFile("canonical/sessions/2026/05/06/rollout-managed-good-session.jsonl", .{ .mode = 0o600 });
+        const index = try tmp.dir.createFile("canonical/session_index.jsonl", .{ .mode = 0o600 });
+        defer index.close();
+        try index.writeAll(
+            \\{"id":"019dea53-49a0-7890-9580-e88decb97af0","thread_name":"fixture"}
+            \\
+        );
+    }
+    {
+        const rollout = try tmp.dir.createFile("canonical/sessions/2026/05/06/rollout-2026-05-06T12-34-56-019dea53-49a0-7890-9580-e88decb97af0.jsonl", .{ .mode = 0o600 });
         defer rollout.close();
         try rollout.writeAll("{\"fixture\":true}\n");
     }
@@ -4082,14 +4020,12 @@ test "resume writeback observation reports existing rollout changes without prin
     defer std.testing.allocator.free(root_path);
     const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
     defer std.testing.allocator.free(canonical_path);
-    const rollout_path = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions", "2026", "05", "06", "rollout-managed-good-session.jsonl" });
+    const rollout_path = try std.fs.path.join(std.testing.allocator, &.{ canonical_path, "sessions", "2026", "05", "06", "rollout-2026-05-06T12-34-56-019dea53-49a0-7890-9580-e88decb97af0.jsonl" });
     defer std.testing.allocator.free(rollout_path);
 
-    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "managed-good-session");
-    defer preflight.deinit();
-    try std.testing.expectEqual(ResumeLookupSource.filename_scan, preflight.lookup_source);
+    const preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, resume_id);
+    try std.testing.expectEqual(ResumeLookupSource.session_index, preflight.lookup_source);
     try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
-    try std.testing.expectEqual(@as(usize, 1), preflight.rolloutsBefore());
 
     {
         const rollout = try std.fs.cwd().openFile(rollout_path, .{ .mode = .write_only });
@@ -4098,15 +4034,17 @@ test "resume writeback observation reports existing rollout changes without prin
         try rollout.writeAll("{\"managed\":true}\n");
     }
 
-    const request = ResumeRequest{ .mode = .explicit, .explicit_id = "managed-good-session" };
+    const request = ResumeRequest{ .mode = .explicit, .explicit_id = resume_id };
     const observation = try observeResumeWriteback(std.testing.allocator, canonical_path, &preflight, request);
-    try std.testing.expectEqual(@as(usize, 1), observation.rollouts_before);
-    try std.testing.expectEqual(@as(usize, 1), observation.rollouts_after);
-    try std.testing.expectEqual(@as(usize, 1), observation.changed_existing);
+    try std.testing.expectEqual(@as(usize, 0), observation.rollouts_before);
+    try std.testing.expectEqual(@as(usize, 0), observation.rollouts_after);
+    try std.testing.expectEqual(@as(usize, 0), observation.changed_existing);
     try std.testing.expectEqual(@as(usize, 0), observation.created);
     try std.testing.expectEqual(true, observation.explicit_target_found_before.?);
-    try std.testing.expectEqual(true, observation.explicit_target_changed.?);
-    try std.testing.expectEqual(ResumeLookupSource.filename_scan, observation.lookup_source);
+    try std.testing.expect(observation.explicit_target_changed == null);
+    try std.testing.expect(!observation.writeback_observed);
+    try std.testing.expectEqual(true, observation.lookup_available.?);
+    try std.testing.expectEqual(ResumeLookupSource.session_index, observation.lookup_source);
 }
 
 test "createSessionCodexHomeUnder copies auth and does not clobber source config" {
@@ -5075,79 +5013,64 @@ test "resume authority reports legacy provider namespace residue without failing
     try std.testing.expect(std.mem.indexOf(u8, status.items, canonical_path) == null);
 }
 
-test "explicit resume preflight prefers state db and targeted rollout stat" {
+test "explicit resume preflight ignores raw database bytes and rollout filenames" {
+    const allocator = std.testing.allocator;
+    const resume_id = "019dea53-49a0-7890-9580-e88decb97af0";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makePath("canonical/sessions/2026/05/06");
-    {
-        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
-        defer state.close();
-        try state.writeAll("managed-good-session");
+    try tmp.dir.makePath("canonical/sessions/2026/07/17");
+    const raw_authority_files = [_][]const u8{
+        "canonical/state_5.sqlite",
+        "canonical/state_5.sqlite-wal",
+        "canonical/state_5.sqlite-shm",
+        "canonical/logs_2.sqlite",
+        "canonical/logs_2.sqlite-wal",
+        "canonical/logs_2.sqlite-shm",
+    };
+    for (raw_authority_files) |relative_path| {
+        const file = try tmp.dir.createFile(relative_path, .{ .mode = 0o600 });
+        try file.writeAll("unparsed bytes containing ");
+        try file.writeAll(resume_id);
+        file.close();
     }
     {
-        const rollout = try tmp.dir.createFile("canonical/sessions/2026/05/06/rollout-managed-good-session.jsonl", .{ .mode = 0o600 });
+        const rollout = try tmp.dir.createFile(
+            "canonical/sessions/2026/07/17/rollout-2026-07-17T12-34-56-019dea53-49a0-7890-9580-e88decb97af0.jsonl",
+            .{ .mode = 0o600 },
+        );
         defer rollout.close();
-        try rollout.writeAll("{\"fixture\":true}\n");
+        try rollout.writeAll("{\"id\":\"019dea53-49a0-7890-9580-e88decb97af0\"}\n");
     }
 
-    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(root_path);
-    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
-    defer std.testing.allocator.free(canonical_path);
+    const canonical_path = try tmp.dir.realpathAlloc(allocator, "canonical");
+    defer allocator.free(canonical_path);
 
-    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "managed-good-session");
-    defer preflight.deinit();
-    try std.testing.expectEqual(ResumeLookupSource.state_db, preflight.lookup_source);
-    try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
-    try std.testing.expect(preflight.target_snapshot != null);
-    try std.testing.expectEqual(@as(usize, 1), preflight.rolloutsBefore());
+    const preflight = try lookupExplicitResumePreflight(allocator, canonical_path, resume_id);
+    try std.testing.expectEqual(ResumeLookupSource.session_index, preflight.lookup_source);
+    try std.testing.expectEqual(false, preflight.explicit_target_found_before.?);
 }
 
-test "explicit resume preflight can use state db without scanning rollout files" {
+test "explicit resume preflight accepts an exact session index id" {
+    const allocator = std.testing.allocator;
+    const resume_id = "019dea53-49a0-7890-9580-e88decb97af0";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.makePath("canonical");
     {
-        const state = try tmp.dir.createFile("canonical/state_5.sqlite", .{ .mode = 0o600 });
-        defer state.close();
-        try state.writeAll("state-only-session");
+        const index = try tmp.dir.createFile("canonical/session_index.jsonl", .{ .mode = 0o600 });
+        defer index.close();
+        try index.writeAll(
+            \\{"id":"019dea53-49a0-7890-9580-e88decb97af0","thread_name":"fixture"}
+            \\
+        );
     }
 
-    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(root_path);
-    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
-    defer std.testing.allocator.free(canonical_path);
+    const canonical_path = try tmp.dir.realpathAlloc(allocator, "canonical");
+    defer allocator.free(canonical_path);
 
-    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "state-only-session");
-    defer preflight.deinit();
-    try std.testing.expectEqual(ResumeLookupSource.state_db, preflight.lookup_source);
+    const preflight = try lookupExplicitResumePreflight(allocator, canonical_path, resume_id);
+    try std.testing.expectEqual(ResumeLookupSource.session_index, preflight.lookup_source);
     try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
-    try std.testing.expect(preflight.target_snapshot == null);
-    try std.testing.expectEqual(@as(usize, 0), preflight.rolloutsBefore());
-}
-
-test "explicit resume preflight can use logs db without scanning rollout files" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.makePath("canonical");
-    {
-        const logs = try tmp.dir.createFile("canonical/logs_2.sqlite", .{ .mode = 0o600 });
-        defer logs.close();
-        try logs.writeAll("logs-only-session");
-    }
-
-    const root_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
-    defer std.testing.allocator.free(root_path);
-    const canonical_path = try std.fs.path.join(std.testing.allocator, &.{ root_path, "canonical" });
-    defer std.testing.allocator.free(canonical_path);
-
-    var preflight = try lookupExplicitResumePreflight(std.testing.allocator, canonical_path, "logs-only-session");
-    defer preflight.deinit();
-    try std.testing.expectEqual(ResumeLookupSource.logs_db, preflight.lookup_source);
-    try std.testing.expectEqual(true, preflight.explicit_target_found_before.?);
-    try std.testing.expect(preflight.target_snapshot == null);
-    try std.testing.expectEqual(@as(usize, 0), preflight.rolloutsBefore());
 }

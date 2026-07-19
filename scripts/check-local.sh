@@ -21,6 +21,8 @@ bash -n ./scripts/release-handoff.sh
 bash -n ./scripts/smoke-release-manifest-current.sh
 bash -n ./scripts/system-package-install-qa.sh
 bash -n ./scripts/remote-validate.sh
+bash -n ./scripts/v02-stage2-observation-local.sh
+bash -n ./scripts/smoke-v02-stage2-observation.sh
 sh -n ./scripts/resolve-release-version.sh
 sh -n ./scripts/smoke-release-workflow-version-authority.sh
 sh -n ./scripts/check-retired-npm.sh
@@ -32,6 +34,9 @@ sh -n ./scripts/secrets-scan-dir.sh
 bash -n ./scripts/check-zig-test-root.sh
 sh -n ./scripts/check-v0.1.15-characterization.sh
 sh -n ./scripts/check-managed-harness-instances.sh
+sh -n ./scripts/keepalive-service.sh
+sh -n ./scripts/smoke-keepalive-service-containment.sh
+sh -n ./scripts/smoke-version-check-stale-path.sh
 bash -n ./scripts/public-source-check.sh
 sh -n ./scripts/smoke-public-source-workflow.sh
 python3 -m py_compile ./scripts/validate-managed-harness-instance.py
@@ -49,6 +54,8 @@ sh -n ./scripts/test-executable-compat.sh
 ./scripts/check-zig-test-root.sh
 ./scripts/check-v0.1.15-characterization.sh
 ./scripts/check-managed-harness-instances.sh
+./scripts/smoke-keepalive-service-containment.sh
+./scripts/smoke-version-check-stale-path.sh
 ./scripts/smoke-public-source-workflow.sh
 ./scripts/smoke-release-manifest-current.sh
 ./scripts/smoke-release-workflow-version-authority.sh
@@ -61,6 +68,7 @@ done
 ./scripts/first-run-e2e.sh
 ./scripts/stay-afloat-wrapper-doc-smoke.sh
 ./scripts/smoke-trace.sh
+./scripts/smoke-v02-stage2-observation.sh
 ./scripts/smoke-remote-validate-contract.sh
 ./scripts/smoke-bazel-remote-contract.sh
 ./scripts/smoke-dogfood-process-snapshot.sh

@@ -2,11 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  oauth-mux keepalive LaunchAgent template (TIN-1830).
-  Rendered by scripts/keepalive-service.sh install; @OMUX_BIN@ and
-  @OMUX_LOG_DIR@ are substituted with absolute paths at install time.
-  Guardrail: no credential material may ever appear in this file or in
-  EnvironmentVariables - the binary reads credential stores live at runtime.
+  oauth-mux keepalive LaunchAgent template (TIN-1830, TIN-3024).
+  Rendered by scripts/keepalive-service.sh install; @OMUX_HOME@ and @OMUX_USER@
+  come from the OS account record, while @OMUX_BIN@ and @OMUX_LOG_DIR@ are
+  validated and substituted at install time.
+  Guardrail: /usr/bin/env -i clears launchd's inherited environment before the
+  fixed non-credential allowlist is applied. The binary reads credential stores
+  live at runtime.
   The loop is bounded by design (100000 ticks, sleep capped at 60s);
   launchd owns residency via KeepAlive and restarts it on any exit.
 -->
@@ -16,6 +18,12 @@
   <string>dev.xoxd.omux.keepalive</string>
   <key>ProgramArguments</key>
   <array>
+    <string>/usr/bin/env</string>
+    <string>-i</string>
+    <string>HOME=@OMUX_HOME@</string>
+    <string>USER=@OMUX_USER@</string>
+    <string>PATH=/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>NO_COLOR=1</string>
     <string>@OMUX_BIN@</string>
     <string>keepalive</string>
     <string>--iterations</string>
@@ -32,13 +40,6 @@
   <integer>300</integer>
   <key>ProcessType</key>
   <string>Background</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>NO_COLOR</key>
-    <string>1</string>
-    <key>PATH</key>
-    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
-  </dict>
   <key>StandardOutPath</key>
   <string>@OMUX_LOG_DIR@/keepalive.out.log</string>
   <key>StandardErrorPath</key>

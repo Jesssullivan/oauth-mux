@@ -106,6 +106,50 @@ pub const RouteRef = struct {
     capability: ?[]const u8 = null,
 };
 
+pub const RefreshRecovery = enum {
+    none,
+    retry,
+    provider_reenroll,
+};
+
+pub const RefreshDisposition = struct {
+    retryable: bool,
+    quarantined: bool,
+    recovery: RefreshRecovery,
+    provider_reenroll_required: bool,
+    stale_backup_restore_allowed: bool = false,
+};
+
+/// Exhaustive runtime policy for the shared refresh outcome. The stale backup
+/// flag is false for every tag; a hard lineage can only recover through a
+/// provider-owned re-enrollment action.
+pub fn refreshDisposition(outcome: types.RefreshOutcome) RefreshDisposition {
+    return switch (outcome) {
+        .refreshed => .{
+            .retryable = false,
+            .quarantined = false,
+            .recovery = .none,
+            .provider_reenroll_required = false,
+        },
+        .transient_lock,
+        .transient_network,
+        .transient_store,
+        .transient_endpoint,
+        => .{
+            .retryable = true,
+            .quarantined = false,
+            .recovery = .retry,
+            .provider_reenroll_required = false,
+        },
+        .hard_lineage_invalidated => .{
+            .retryable = false,
+            .quarantined = true,
+            .recovery = .provider_reenroll,
+            .provider_reenroll_required = true,
+        },
+    };
+}
+
 pub const AccountInfo = struct {
     readiness: types.RuntimeReadiness = .ready,
     config_dir_set: bool = false,
@@ -145,17 +189,47 @@ pub fn providerReadiness(
     return .ready;
 }
 
+fn refreshLineageReadiness(
+    allocator: std.mem.Allocator,
+    route: RouteRef,
+) !?types.RuntimeReadiness {
+    if (try repair_state.effectiveRefreshQuarantineForRoute(
+        allocator,
+        route.provider,
+        route.account,
+    )) |state| {
+        return .{ .needs_reauth = .{
+            .methods = &.{"provider_reenroll"},
+            .reason = switch (state) {
+                .indeterminate_lineage => "refresh_lineage_indeterminate",
+                .hard_lineage_invalidated => "refresh_lineage_quarantined",
+            },
+        } };
+    }
+    const outcome = (try repair_state.refreshOutcomeForRoute(
+        allocator,
+        route.provider,
+        route.account,
+    )) orelse return null;
+    const disposition = refreshDisposition(outcome);
+    if (!disposition.quarantined) return null;
+    return .{ .needs_reauth = .{
+        .methods = &.{"provider_reenroll"},
+        .reason = "refresh_lineage_quarantined",
+    } };
+}
+
 pub fn routeReadiness(
     allocator: std.mem.Allocator,
     cfg: config.Config,
     route: RouteRef,
     def: provider_schema.ProviderDefinition,
 ) !types.RuntimeReadiness {
-    const provider_runtime = try providerReadiness(allocator, def, route.capability);
-    if (!provider_runtime.isReady()) return provider_runtime;
-
     const prov = cfg.providers.map.get(route.provider) orelse return .{ .session_unavailable = "provider_config_missing" };
     const account = prov.accounts.map.get(route.account) orelse return .{ .session_unavailable = "account_config_missing" };
+    if (try refreshLineageReadiness(allocator, route)) |readiness| return readiness;
+    const provider_runtime = try providerReadiness(allocator, def, route.capability);
+    if (!provider_runtime.isReady()) return provider_runtime;
     if (try repair_state.pendingHandoffProgress(allocator, .{
         .provider = route.provider,
         .account = route.account,
@@ -181,11 +255,11 @@ pub fn routeReadinessHoldingLock(
     route: RouteRef,
     def: provider_schema.ProviderDefinition,
 ) !types.RuntimeReadiness {
-    const provider_runtime = try providerReadiness(allocator, def, route.capability);
-    if (!provider_runtime.isReady()) return provider_runtime;
-
     const prov = cfg.providers.map.get(route.provider) orelse return .{ .session_unavailable = "provider_config_missing" };
     const account = prov.accounts.map.get(route.account) orelse return .{ .session_unavailable = "account_config_missing" };
+    if (try refreshLineageReadiness(allocator, route)) |readiness| return readiness;
+    const provider_runtime = try providerReadiness(allocator, def, route.capability);
+    if (!provider_runtime.isReady()) return provider_runtime;
     if (try repair_state.pendingHandoffProgress(allocator, .{
         .provider = route.provider,
         .account = route.account,
@@ -462,6 +536,118 @@ test "classify oauth mux binary source" {
     try std.testing.expectEqualStrings("nix_store", classifyOauthMuxBinarySource("/nix/store/abc-oauth-mux-0.1.7/bin/oauth-mux"));
     try std.testing.expectEqualStrings("npm", classifyOauthMuxBinarySource("/tmp/app/node_modules/.bin/oauth-mux"));
     try std.testing.expectEqualStrings("path_or_installed", classifyOauthMuxBinarySource("/usr/bin/oauth-mux"));
+}
+
+test "refresh disposition exhaustively maps quarantine and recovery policy" {
+    inline for (std.meta.fields(types.RefreshOutcome)) |field| {
+        const outcome: types.RefreshOutcome = @enumFromInt(field.value);
+        const disposition = refreshDisposition(outcome);
+        try std.testing.expect(!disposition.stale_backup_restore_allowed);
+        switch (outcome) {
+            .refreshed => {
+                try std.testing.expect(!disposition.retryable);
+                try std.testing.expect(!disposition.quarantined);
+                try std.testing.expectEqual(RefreshRecovery.none, disposition.recovery);
+            },
+            .transient_lock, .transient_network, .transient_store, .transient_endpoint => {
+                try std.testing.expect(disposition.retryable);
+                try std.testing.expect(!disposition.quarantined);
+                try std.testing.expectEqual(RefreshRecovery.retry, disposition.recovery);
+            },
+            .hard_lineage_invalidated => {
+                try std.testing.expect(!disposition.retryable);
+                try std.testing.expect(disposition.quarantined);
+                try std.testing.expect(disposition.provider_reenroll_required);
+                try std.testing.expectEqual(RefreshRecovery.provider_reenroll, disposition.recovery);
+            },
+        }
+    }
+}
+
+test "route readiness maps hard lineage to provider reenrollment only" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer scope.deinit(std.testing.allocator);
+    scope.activate();
+
+    const credential_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "lineage.json" },
+    );
+    defer allocator.free(credential_path);
+    {
+        const credential = try std.fs.createFileAbsolute(credential_path, .{
+            .mode = 0o600,
+        });
+        defer credential.close();
+        try credential.writeAll(
+            "{\"access_token\":\"at\",\"refresh_token\":\"rt\",\"account_id\":\"identity\"}",
+        );
+    }
+    const cfg_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh", "proactive_refresh": "oauth_refresh_token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "identity_claim_path": "account_id"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{ "kind": "toy", "accounts": {{
+        \\      "transient": {{ "secret": {{ "backend": "env", "variable": "OMUX_UNUSED" }} }},
+        \\      "lineage": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{credential_path},
+    );
+    defer allocator.free(cfg_json);
+    const parsed = try config.loadFromBytes(allocator, cfg_json);
+    defer parsed.deinit();
+    try repair_state.appendEvent(allocator, repair_state.refreshEvent(.{
+        .provider = "toy",
+        .account = "transient",
+        .outcome = .transient_endpoint,
+    }));
+    const acct_cfg = parsed.value.providers.map.get("toy").?.accounts.map.get("lineage").?;
+    try repair_state.establishHardRefreshQuarantineForTest(
+        allocator,
+        "toy",
+        "lineage",
+        try config.resolveSecretBackend(acct_cfg.secret),
+        config.resolveProviderDefinition(parsed.value, "toy"),
+    );
+    try std.fs.deleteFileAbsolute(credential_path);
+
+    const def = config.resolveProviderDefinition(parsed.value, "toy");
+    const transient = try routeReadiness(allocator, parsed.value, .{
+        .provider = "toy",
+        .account = "transient",
+    }, def);
+    try std.testing.expect(transient.isReady());
+
+    const hard = try routeReadiness(allocator, parsed.value, .{
+        .provider = "toy",
+        .account = "lineage",
+    }, def);
+    switch (hard) {
+        .needs_reauth => |info| {
+            try std.testing.expectEqualStrings("refresh_lineage_quarantined", info.reason);
+            try std.testing.expectEqual(@as(usize, 1), info.methods.len);
+            try std.testing.expectEqualStrings("provider_reenroll", info.methods[0]);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "routeReadiness reports missing command capability binary" {

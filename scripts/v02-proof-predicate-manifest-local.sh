@@ -9,6 +9,8 @@ usage:
   scripts/v02-proof-predicate-manifest-local.sh require-pass <target> <manifest.json>
   scripts/v02-proof-predicate-manifest-local.sh require-incomplete <target> <manifest.json>
   scripts/v02-proof-predicate-manifest-local.sh require-all-missing <target> <manifest.json>
+  scripts/v02-proof-predicate-manifest-local.sh require-stage2-slice <target> <manifest.json>
+  scripts/v02-proof-predicate-manifest-local.sh reduce-stage2 <observations.json> <output.json> <candidate_sha> <candidate_tree> <workflow_run_id> <workflow_run_attempt> <gf_target_class>
 USAGE
 }
 
@@ -16,6 +18,8 @@ fail() {
   echo "v02-proof-predicate-manifest: $*" >&2
   exit 1
 }
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 canonical_predicates() {
   case "$1" in
@@ -167,6 +171,22 @@ expected_predicates_json() {
   canonical_predicates "$1" | jq -R -s 'split("\n") | map(select(length > 0))'
 }
 
+stage2_slice_predicates_json() {
+  cat <<'EOF' | jq -R -s 'split("\n") | map(select(length > 0))'
+capability_carrier
+loopback_sidecar_bind
+capability_256bit_base64url
+bad_token_zero_call_rejection
+inbound_auth_header_stripping
+origin_form_request_enforcement
+redirect_ssrf_rejection
+generic_forward_proxy_rejection
+byte_preserving_streaming
+provider_5xx_pass_through
+accepted_rejected_counter_reconciliation
+EOF
+}
+
 verify_manifest() {
   local target="$1"
   local manifest="$2"
@@ -207,6 +227,25 @@ verify_manifest() {
     fail "predicate manifest does not match the canonical ${target} contract"
 }
 
+emit_missing_manifest() {
+  local target="$1"
+  local manifest="$2"
+  local expected tmp_manifest
+
+  expected="$(expected_predicates_json "$target")"
+  tmp_manifest="${manifest}.tmp.$$"
+  jq -n \
+    --arg target "$target" \
+    --argjson expected "$expected" \
+    '{
+      schema_version: 1,
+      target: $target,
+      predicates: [$expected[] | {id: ., status: "missing"}]
+    }' >"$tmp_manifest"
+  mv "$tmp_manifest" "$manifest"
+  verify_manifest "$target" "$manifest"
+}
+
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 
 mode="${1:-}"
@@ -219,20 +258,102 @@ case "$mode" in
       usage
       exit 2
     }
-    expected="$(expected_predicates_json "$target")"
-    tmp_manifest="${manifest}.tmp.$$"
-    trap 'rm -f "$tmp_manifest"' EXIT HUP INT TERM
-    jq -n \
-      --arg target "$target" \
-      --argjson expected "$expected" \
-      '{
-        schema_version: 1,
-        target: $target,
-        predicates: [$expected[] | {id: ., status: "missing"}]
-      }' >"$tmp_manifest"
-    mv "$tmp_manifest" "$manifest"
+    emit_missing_manifest "$target" "$manifest"
+    ;;
+
+  reduce-stage2)
+    [ "$#" -eq 8 ] || {
+      usage
+      exit 2
+    }
+    observations="$2"
+    manifest="$3"
+    candidate_sha="$4"
+    candidate_tree="$5"
+    workflow_run_id="$6"
+    workflow_run_attempt="$7"
+    gf_target_class="$8"
+    "$script_dir/v02-stage2-observation-local.sh" verify \
+      "$observations" \
+      "$candidate_sha" \
+      "$candidate_tree" \
+      "$workflow_run_id" \
+      "$workflow_run_attempt" \
+      "$gf_target_class"
+
+    base_manifest="${manifest}.base.$$"
+    reduced_manifest="${manifest}.tmp.$$"
+    trap 'rm -f "$base_manifest" "$reduced_manifest"' EXIT HUP INT TERM
+    emit_missing_manifest v02-stage2-conformance "$base_manifest"
+    jq --slurpfile observations "$observations" '
+      ($observations[0]) as $observed
+      | def fact($id):
+          ($observed.facts[] | select(.id == $id) | .status);
+        def all_pass($ids):
+          reduce $ids[] as $id (true; . and (fact($id) == "pass"));
+        def reduced($ids):
+          if all_pass($ids) then "pass" else "fail" end;
+      .predicates |= map(
+        if .id == "loopback_sidecar_bind" then
+          .status = reduced(["listener_bound_ipv4_loopback"])
+        elif .id == "capability_carrier" then
+          .status = reduced(["valid_capability_reaches_fake_once"])
+        elif .id == "capability_256bit_base64url" then
+          .status = reduced(["carrier_is_canonical_256bit_base64url"])
+        elif .id == "bad_token_zero_call_rejection" then
+          .status = reduced([
+            "invalid_capability_returns_401",
+            "invalid_capability_adds_zero_fake_calls",
+            "invalid_capability_observation_is_fresh"
+          ])
+        elif .id == "inbound_auth_header_stripping" then
+          .status = reduced([
+            "caller_auth_headers_absent_upstream",
+            "forwarding_identity_headers_absent_upstream",
+            "hop_headers_absent_upstream",
+            "required_safe_headers_present_upstream"
+          ])
+        elif .id == "origin_form_request_enforcement" then
+          .status = reduced([
+            "invalid_origin_requests_return_400",
+            "invalid_origin_and_proxy_requests_add_zero_fake_calls"
+          ])
+        elif .id == "generic_forward_proxy_rejection" then
+          .status = reduced([
+            "forward_proxy_requests_return_400",
+            "invalid_origin_and_proxy_requests_add_zero_fake_calls"
+          ])
+        elif .id == "redirect_ssrf_rejection" then
+          .status = reduced([
+            "redirect_returns_local_502",
+            "redirect_is_not_followed"
+          ])
+        elif .id == "byte_preserving_streaming" then
+          .status = reduced([
+            "streaming_prefix_arrives_before_upstream_completion",
+            "streaming_body_arrives_byte_preserved",
+            "streaming_uses_one_fake_call"
+          ])
+        elif .id == "provider_5xx_pass_through" then
+          .status = reduced([
+            "provider_5xx_status_and_body_pass_through",
+            "provider_5xx_uses_one_fake_call"
+          ])
+        elif .id == "accepted_rejected_counter_reconciliation" then
+          .status = reduced([
+            "aggregate_accepted_request_count_is_one",
+            "aggregate_rejected_request_count_is_one",
+            "aggregate_request_counts_reconcile_with_ids"
+          ])
+        else
+          .
+        end
+      )
+    ' "$base_manifest" >"$reduced_manifest"
+    mv "$reduced_manifest" "$manifest"
+    rm -f "$base_manifest"
     trap - EXIT HUP INT TERM
-    verify_manifest "$target" "$manifest"
+    verify_manifest v02-stage2-conformance "$manifest"
     ;;
 
   verify)
@@ -286,6 +407,23 @@ case "$mode" in
     verify_manifest "$target" "$manifest"
     jq -e 'all(.predicates[]; .status == "missing")' "$manifest" >/dev/null ||
       fail "current ${target} manifest must mark every predicate missing"
+    ;;
+
+  require-stage2-slice)
+    [ "$#" -eq 3 ] || {
+      usage
+      exit 2
+    }
+    [ "$target" = "v02-stage2-conformance" ] ||
+      fail "the observed Stage 2 slice applies only to v02-stage2-conformance"
+    verify_manifest "$target" "$manifest"
+    expected_slice="$(stage2_slice_predicates_json)"
+    jq -e --argjson expected_slice "$expected_slice" '
+      ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
+      and ([.predicates[] | select(.status == "fail")] | length == 0)
+      and ([.predicates[] | select(.status == "missing")] | length == 113)
+    ' "$manifest" >/dev/null ||
+      fail "manifest is not the exact 11-pass/0-fail/113-missing Stage 2 slice"
     ;;
 
   -h|--help|help)

@@ -44,10 +44,11 @@ pub const Context = struct {
     // this false — they must never rotate tokens; rotation belongs to the
     // repair phase under admission + the per-account repair lock.
     allow_refresh_mutation: bool = true,
-    // Diagnostics: the most recent refresh outcome/reason recorded for this
-    // context (also the assertable seam in tests, where events are skipped).
-    last_refresh_outcome: ?[]const u8 = null,
+    // Diagnostics: the most recent closed refresh outcome plus a local-only
+    // compatibility reason. Persisted/status surfaces receive only the enum.
+    last_refresh_outcome: ?types.RefreshOutcome = null,
     last_refresh_reason: ?[]const u8 = null,
+    last_refresh_quarantined: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, cfg: config_mod.Config, store: *health_mod.HealthStore) Context {
         return .{
@@ -110,7 +111,7 @@ pub fn runProbe(ctx: *Context) PipelineError!void {
 /// and per-identity flock and field-preserving (TIN-2073/2074).
 ///
 /// SAFE-BY-GATE: `attemptRefresh` calls `refreshWritebackBackend` FIRST, which
-/// returns `error.TokenRefreshFailed` ("not_admitted") for any account whose
+/// returns the typed `error.RefreshTransientStore` disposition for any account whose
 /// provider `proactive_refresh` grant and operator `allow_proactive_refresh` are
 /// not both admitted — BEFORE any network call or store write. So a warm loop
 /// over builtins (which declare no grant) only records refusals; nothing is
@@ -120,9 +121,34 @@ pub fn runProbe(ctx: *Context) PipelineError!void {
 /// into `ctx.token` is freed by `attemptRefresh` on the success/adopt paths and
 /// by `Context.deinit` on the refusal/error paths.
 pub fn refreshAccount(ctx: *Context) PipelineError!void {
-    try resolveProvider(ctx);
-    ctx.token = try readTokenSnapshot(ctx);
-    const rt = ctx.token.?.refresh_token orelse return error.TokenRefreshFailed;
+    resolveProvider(ctx) catch |e| {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_route_unresolved";
+        return e;
+    };
+    const prov = ctx.provider_name orelse {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_provider_missing";
+        return error.ProviderNotFound;
+    };
+    const acct = ctx.account_name orelse {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_account_missing";
+        return error.AccountNotFound;
+    };
+    if (try applyPersistedRefreshQuarantine(ctx, prov, acct)) {
+        return error.TokenRefreshFailed;
+    }
+    ctx.token = readTokenSnapshot(ctx) catch |e| {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_store_unreadable";
+        return e;
+    };
+    const rt = ctx.token.?.refresh_token orelse {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_token_missing";
+        return error.RefreshTransientStore;
+    };
     try attemptRefresh(ctx, rt);
 }
 
@@ -175,6 +201,30 @@ fn selectWithFallback(ctx: *Context) PipelineError!void {
         }
 
         const key = health_mod.accountKey(candidate.provider, candidate.account);
+        ctx.provider_name = candidate.provider;
+        ctx.account_name = candidate.account;
+        ctx.capability_name = candidate.capability;
+        ctx.provider_kind = config_mod.resolveProviderKind(ctx.cfg, candidate.provider);
+        const route_quarantined = applyPersistedRefreshQuarantine(
+            ctx,
+            candidate.provider,
+            candidate.account,
+        ) catch |e| {
+            last_err = e;
+            log.warn("pipeline: skip {s}:{s} (refresh quarantine unreadable)", .{
+                candidate.provider,
+                candidate.account,
+            });
+            continue;
+        };
+        if (route_quarantined) {
+            last_err = error.TokenRefreshFailed;
+            log.warn("pipeline: skip {s}:{s} (refresh lineage quarantined)", .{
+                candidate.provider,
+                candidate.account,
+            });
+            continue;
+        }
         const decision = ctx.health.muxDecisionFor(candidate.provider, candidate.account, candidate.capability);
         const bypass_health_gate = ctx.probe_only and ctx.probe_recheck_blocked;
 
@@ -204,12 +254,6 @@ fn selectWithFallback(ctx: *Context) PipelineError!void {
                 .use_this => {},
             }
         }
-
-        // Set context for this attempt
-        ctx.provider_name = candidate.provider;
-        ctx.account_name = candidate.account;
-        ctx.capability_name = candidate.capability;
-        ctx.provider_kind = config_mod.resolveProviderKind(ctx.cfg, candidate.provider);
 
         if (ctx.probe_only and probePlanUsesNoCredential(ctx)) {
             const post_probe_decision = probeCapability(ctx) catch |e| {
@@ -298,6 +342,37 @@ fn freeCurrentToken(ctx: *Context) void {
     ctx.token = null;
 }
 
+fn applyPersistedRefreshQuarantine(
+    ctx: *Context,
+    provider_name: []const u8,
+    account_name: []const u8,
+) PipelineError!bool {
+    const quarantine = repair_state.effectiveRefreshQuarantineForRoute(
+        ctx.allocator,
+        provider_name,
+        account_name,
+    ) catch {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_quarantine_read_failed";
+        ctx.last_refresh_quarantined = false;
+        return error.RefreshTransientStore;
+    };
+    const state = quarantine orelse return false;
+    if (state == .indeterminate_lineage) {
+        ctx.last_refresh_outcome = .transient_store;
+        ctx.last_refresh_reason = "refresh_lineage_indeterminate";
+        ctx.last_refresh_quarantined = true;
+        return error.RefreshLineageIndeterminate;
+    }
+
+    ctx.last_refresh_outcome = .hard_lineage_invalidated;
+    ctx.last_refresh_reason = "refresh_lineage_quarantined";
+    ctx.last_refresh_quarantined = true;
+    const key = health_mod.accountKey(provider_name, account_name);
+    ctx.health.recordFailure(key.slice(), .auth_failure);
+    return true;
+}
+
 fn probePlanUsesNoCredential(ctx: *Context) bool {
     const capability = ctx.capability_name orelse return false;
     const prov = ctx.provider_name orelse return false;
@@ -313,8 +388,15 @@ fn recordCandidateFailure(ctx: *Context, key: []const u8, err: PipelineError) vo
         error.TokenParseFailed,
         error.TokenExpired,
         error.TokenRefreshFailed,
+        error.RefreshQuarantinePersistenceFailed,
         error.TokenRevoked,
         => ctx.health.recordFailure(key, .auth_failure),
+        error.RefreshTransientLock,
+        error.RefreshTransientNetwork,
+        error.RefreshTransientStore,
+        error.RefreshTransientEndpoint,
+        error.RefreshLineageIndeterminate,
+        => {},
         error.RateLimited => ctx.health.recordFailure(key, .rate_limited),
         error.NetworkError => ctx.health.recordFailure(key, .timeout),
         error.ConfigNotFound,
@@ -536,7 +618,7 @@ fn validateToken(ctx: *Context) PipelineError!void {
                     log.info("token: refresh needed for {s}:{s} but caller budget is non-mutating; deferring", .{ prov, acct });
                     const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
                     if (refreshWritebackBackend(ctx, def)) |writeback| {
-                        recordRefreshEvent(ctx, writeback.plan, "deferred", "refresh_requires_mutating_budget", false, false);
+                        recordTypedRefreshEvent(ctx, writeback.plan, .transient_store, "refresh_requires_mutating_budget", false, false);
                     } else |_| {}
                     if (now >= exp) return error.TokenExpired;
                 } else {
@@ -741,6 +823,101 @@ fn addProbeReauthEnv(ctx: *Context, probe_env: *ProbeEnv, prov: []const u8, acct
     try probe_env.addOwned("OMUX_REAUTH_UI_URL", ui_url);
 }
 
+pub const FlockRefreshFailure = repair_state.LockedRefreshFailure;
+pub const FlockRefreshAttempt = repair_state.LockedRefreshAttempt;
+pub const FlockRefreshError = repair_state.LockedRefreshError;
+
+/// Perform one refresh while the current actor owns the account flock. Hard
+/// lineage can only emerge from repair_state's proof-complete operation, which
+/// binds the configured canonical store, exact before/after identity and refresh
+/// token values, account + identity flock ownership, endpoint evidence, and the
+/// durable quarantine commit. No proof primitive crosses this boundary.
+pub fn refreshTokenHoldingFlock(
+    ctx: *Context,
+    token_url: []const u8,
+    submitted_refresh_token: []const u8,
+    client_id: ?[]const u8,
+    metadata: repair_state.HardRefreshEventMetadata,
+) FlockRefreshError!FlockRefreshAttempt {
+    const prov = ctx.provider_name orelse return .{ .failed = .{
+        .outcome = .transient_store,
+        .endpoint_executed = false,
+    } };
+    const acct = ctx.account_name orelse return .{ .failed = .{
+        .outcome = .transient_store,
+        .endpoint_executed = false,
+    } };
+    const prov_cfg = ctx.cfg.providers.map.get(prov) orelse return .{ .failed = .{
+        .outcome = .transient_store,
+        .endpoint_executed = false,
+    } };
+    const acct_cfg = prov_cfg.accounts.map.get(acct) orelse return .{ .failed = .{
+        .outcome = .transient_store,
+        .endpoint_executed = false,
+    } };
+    const backend = config_mod.resolveSecretBackend(acct_cfg.secret) catch
+        return .{ .failed = .{
+            .outcome = .transient_store,
+            .endpoint_executed = false,
+        } };
+    const def = config_mod.resolveProviderDefinition(ctx.cfg, prov);
+    return repair_state.refreshTokenWithLockedLineage(
+        ctx.allocator,
+        prov,
+        acct,
+        backend,
+        def,
+        token_url,
+        submitted_refresh_token,
+        client_id,
+        .{
+            .profile = ctx.profile_name,
+            .capability = ctx.capability_name,
+            .writeback_capability = metadata.writeback_capability,
+            .automatic_refresh_admitted = metadata.automatic_refresh_admitted,
+        },
+    );
+}
+
+fn adoptFailClosedHardRefreshOutcome(
+    ctx: *Context,
+    reason: []const u8,
+) void {
+    ctx.last_refresh_outcome = .hard_lineage_invalidated;
+    ctx.last_refresh_reason = reason;
+    ctx.last_refresh_quarantined = true;
+    if (ctx.provider_name) |prov| {
+        if (ctx.account_name) |acct| {
+            const key = health_mod.accountKey(prov, acct);
+            ctx.health.recordFailure(key.slice(), .auth_failure);
+        }
+    }
+}
+
+fn refreshPipelineError(
+    outcome: types.RefreshOutcome,
+    quarantined: bool,
+) PipelineError {
+    if (quarantined and outcome != .hard_lineage_invalidated) {
+        return error.RefreshLineageIndeterminate;
+    }
+    return switch (outcome) {
+        .refreshed => unreachable,
+        .transient_lock => error.RefreshTransientLock,
+        .transient_network => error.RefreshTransientNetwork,
+        .transient_store => error.RefreshTransientStore,
+        .transient_endpoint => error.RefreshTransientEndpoint,
+        .hard_lineage_invalidated => error.TokenRefreshFailed,
+    };
+}
+
+fn refreshMetadata(plan: secret.WritebackPlan) repair_state.HardRefreshEventMetadata {
+    return .{
+        .writeback_capability = @tagName(plan.capability),
+        .automatic_refresh_admitted = plan.automatic_refresh_admitted,
+    };
+}
+
 fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     const prov = ctx.provider_name orelse return error.ProviderNotFound;
     const acct = ctx.account_name orelse return error.AccountNotFound;
@@ -758,7 +935,7 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     var refresh_lock = repair_state.acquireRepairLock(ctx.allocator, prov, acct) catch |e| switch (e) {
         error.RepairInProgress => {
             log.warn("token: refresh deferred for {s}:{s}: repair lock held", .{ prov, acct });
-            recordRefreshEvent(ctx, writeback.plan, "deferred", "refresh_lock_held", false, false);
+            recordTypedRefreshEvent(ctx, writeback.plan, .transient_lock, "refresh_lock_held", false, false);
             // Inside the 30s skew the current token is still provider-valid:
             // keep serving it so a benign in-flight peer rotation does not
             // poison route health as an auth failure. Only an actually
@@ -768,11 +945,11 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
                     if (std.time.timestamp() < exp) return;
                 }
             }
-            return error.TokenRefreshFailed;
+            return refreshPipelineError(.transient_lock, false);
         },
         else => {
-            recordRefreshEvent(ctx, writeback.plan, "lock_failed", @errorName(e), false, false);
-            return error.TokenRefreshFailed;
+            recordTypedRefreshEvent(ctx, writeback.plan, .transient_lock, @errorName(e), false, false);
+            return refreshPipelineError(.transient_lock, false);
         },
     };
     defer refresh_lock.release();
@@ -820,7 +997,7 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
             ctx.token = f;
             fresh_adopted = true;
             log.info("token: concurrent rotation detected for {s}:{s}; adopted fresh credential", .{ prov, acct });
-            recordRefreshEvent(ctx, writeback.plan, "not_needed", "concurrent_rotation_detected", true, false);
+            recordTypedRefreshEvent(ctx, writeback.plan, .refreshed, "concurrent_rotation_detected", true, false);
             return;
         }
     }
@@ -834,8 +1011,8 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     // it), so a null here is a transient store-read failure, not bootstrap.
     const raw_for_merge = existing_raw orelse {
         log.err("token: refusing refresh for {s}: credential store unreadable under lock", .{prov});
-        recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "store_unreadable_refusing_lossy_write", false, false);
-        return error.TokenRefreshFailed;
+        recordTypedRefreshEvent(ctx, writeback.plan, .transient_store, "store_unreadable_refusing_lossy_write", false, false);
+        return refreshPipelineError(.transient_store, false);
     };
 
     // TIN-2043: serialize against any LIVE SESSION (or background refresh)
@@ -858,8 +1035,8 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
             // a malformed store cannot dodge the guard). claude declares no
             // path and is unaffected.
             log.err("token: refusing refresh for {s}:{s}: identity claim unresolved", .{ prov, acct });
-            recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "identity_unresolved_refusing_refresh", false, false);
-            return error.TokenRefreshFailed;
+            recordTypedRefreshEvent(ctx, writeback.plan, .transient_store, "identity_unresolved_refusing_refresh", false, false);
+            return refreshPipelineError(.transient_store, false);
         };
         defer ctx.allocator.free(account_id);
         const id_hash = identity_hash.sha256_12hex(ctx.allocator, account_id) catch return error.OutOfMemory;
@@ -869,26 +1046,26 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
         identity_lock = repair_state.acquireRepairLock(ctx.allocator, identity_domain, id_hash) catch |e| switch (e) {
             error.RepairInProgress => {
                 log.warn("token: refresh deferred for {s}:{s}: identity lock held by a live session", .{ prov, acct });
-                recordRefreshEvent(ctx, writeback.plan, "deferred", "identity_lock_held", false, false);
+                recordTypedRefreshEvent(ctx, writeback.plan, .transient_lock, "identity_lock_held", false, false);
                 // Token still valid inside the skew → keep serving it.
                 if (ctx.token) |tok| {
                     if (tok.expires_at) |exp| {
                         if (std.time.timestamp() < exp) return;
                     }
                 }
-                return error.TokenRefreshFailed;
+                return refreshPipelineError(.transient_lock, false);
             },
             else => {
-                recordRefreshEvent(ctx, writeback.plan, "lock_failed", @errorName(e), false, false);
-                return error.TokenRefreshFailed;
+                recordTypedRefreshEvent(ctx, writeback.plan, .transient_lock, @errorName(e), false, false);
+                return refreshPipelineError(.transient_lock, false);
             },
         };
     }
 
     const url = def.auth.token_endpoint orelse fallbackRefreshUrl(ctx) orelse {
         log.warn("token: no refresh URL for {s}", .{prov});
-        recordRefreshEvent(ctx, writeback.plan, "no_token_endpoint", "token_endpoint_missing", false, false);
-        return error.TokenRefreshFailed;
+        recordTypedRefreshEvent(ctx, writeback.plan, .transient_endpoint, "token_endpoint_missing", false, false);
+        return refreshPipelineError(.transient_endpoint, false);
     };
 
     // oauth.refreshToken bounds the post-connect send/recv legs with a
@@ -899,25 +1076,66 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     // (winsock SO_RCVTIMEO takes DWORD ms, gated off). Acceptable while
     // builtin grants stay off; revisit if a connect-phase stall proves
     // material before the flip.
-    const result = oauth.refreshToken(ctx.allocator, url, effective_rt, def.auth.client_id) catch |e| {
+    const attempt = refreshTokenHoldingFlock(
+        ctx,
+        url,
+        effective_rt,
+        def.auth.client_id,
+        refreshMetadata(writeback.plan),
+    ) catch |e| {
         log.err("token: refresh failed: {s}", .{@errorName(e)});
-        recordRefreshEvent(ctx, writeback.plan, "token_endpoint_failed", @errorName(e), false, true);
-        return error.TokenRefreshFailed;
+        if (e == error.RefreshQuarantinePersistenceFailed) {
+            adoptFailClosedHardRefreshOutcome(
+                ctx,
+                "refresh_quarantine_persistence_failed",
+            );
+            return error.RefreshQuarantinePersistenceFailed;
+        }
+        const outcome: types.RefreshOutcome = switch (e) {
+            error.OutOfMemory => .transient_store,
+            error.RefreshQuarantinePersistenceFailed => unreachable,
+        };
+        recordTypedRefreshEvent(ctx, writeback.plan, outcome, @errorName(e), false, false);
+        return refreshPipelineError(outcome, false);
     };
+    var success = switch (attempt) {
+        .refreshed => |refreshed| refreshed,
+        .failed => |failure| {
+            if (failure.outcome == .hard_lineage_invalidated) {
+                adoptFailClosedHardRefreshOutcome(
+                    ctx,
+                    "refresh_lineage_invalidated",
+                );
+            } else {
+                recordTypedRefreshEvent(
+                    ctx,
+                    writeback.plan,
+                    failure.outcome,
+                    "token_endpoint_rejected",
+                    false,
+                    failure.endpoint_executed,
+                );
+                ctx.last_refresh_quarantined = failure.lineage_quarantined;
+            }
+            return refreshPipelineError(
+                failure.outcome,
+                failure.lineage_quarantined,
+            );
+        },
+    };
+    defer success.releaseStoreLock();
+    const result = success.result;
     errdefer ctx.allocator.free(result.access_token);
     errdefer if (result.refresh_token) |new_rt| ctx.allocator.free(new_rt);
 
     const expires_at = if (result.expires_in) |ei| std.time.timestamp() + ei else null;
-    var retained_refresh_token: ?[]const u8 = null;
-    var retained_refresh_token_from_old = false;
-    if (result.refresh_token) |new_rt| {
-        retained_refresh_token = new_rt;
-    } else {
-        retained_refresh_token = ctx.allocator.dupe(u8, effective_rt) catch return error.OutOfMemory;
-        retained_refresh_token_from_old = true;
-    }
-    errdefer if (retained_refresh_token_from_old) {
-        if (retained_refresh_token) |old_rt| ctx.allocator.free(old_rt);
+    const retained_refresh_token = switch (success.refresh_token_disposition) {
+        .endpoint_rotated => result.refresh_token.?,
+        .submitted_reused => ctx.allocator.dupe(u8, effective_rt) catch
+            return error.OutOfMemory,
+    };
+    errdefer if (success.refresh_token_disposition == .submitted_reused) {
+        ctx.allocator.free(retained_refresh_token);
     };
 
     // TIN-2074: field-preserving writeback. Merge the refreshed token
@@ -930,26 +1148,38 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
     // declared), falling back to the bootstrap template would overwrite the
     // canonical store the CLI reads with a blob missing every preserved
     // field — the exact corruption TIN-2074 exists to prevent. Refuse and
-    // keep the store intact; the just-minted access token stays usable
-    // in-process for this run. (buildCredentialGeneric remains the
-    // legitimate writer only for first-time injection of a fresh tmpdir
-    // credential, in injectEnv — a different path with no existing store.)
+    // keep the store intact and leave lineage quarantined.
+    // (buildCredentialGeneric remains the legitimate writer only for first-time
+    // injection of a fresh tmpdir credential, in injectEnv — a different path
+    // with no existing store.)
     const schema_token = provider_schema.TokenFields{
         .access_token = result.access_token,
-        .refresh_token = retained_refresh_token,
+        // Omission under an explicitly reusable-token policy means the token
+        // endpoint did not own this field. Let the merge preserve the
+        // under-lock canonical value rather than rewriting it from a response
+        // that did not contain it.
+        .refresh_token = switch (success.refresh_token_disposition) {
+            .endpoint_rotated => retained_refresh_token,
+            .submitted_reused => null,
+        },
         .expires_at = expires_at,
     };
     const credential = provider_schema.mergeCredentialGeneric(def, raw_for_merge, schema_token, ctx.allocator) catch |e| {
         log.err("token: refusing lossy writeback for {s}: merge failed ({s})", .{ prov, @errorName(e) });
-        recordRefreshEvent(ctx, writeback.plan, "writeback_refused", "merge_failed_refusing_lossy_write", false, false);
-        return error.TokenRefreshFailed;
+        recordQuarantinedRefreshEvent(ctx, writeback.plan, .transient_store, "merge_failed_refusing_lossy_write", false, true);
+        return refreshPipelineError(.transient_store, true);
     };
     defer ctx.allocator.free(credential);
 
     secret.writeReplace(writeback.backend, credential, ctx.allocator) catch |e| {
         log.err("token: refresh writeback failed for {s}: {s}", .{ prov, @errorName(e) });
-        recordRefreshEvent(ctx, writeback.plan, "writeback_failed", @errorName(e), false, true);
-        return error.TokenRefreshFailed;
+        recordQuarantinedRefreshEvent(ctx, writeback.plan, .transient_store, @errorName(e), false, true);
+        return refreshPipelineError(.transient_store, true);
+    };
+    success.credentialPersisted(ctx.allocator) catch |e| {
+        log.err("token: refresh quarantine clear failed for {s}: {s}", .{ prov, @errorName(e) });
+        recordQuarantinedRefreshEvent(ctx, writeback.plan, .transient_store, "refresh_quarantine_clear_failed", false, true);
+        return refreshPipelineError(.transient_store, true);
     };
 
     // Update the token in context
@@ -963,7 +1193,7 @@ fn attemptRefresh(ctx: *Context, rt: []const u8) PipelineError!void {
         .expires_at = expires_at,
     };
 
-    recordRefreshEvent(ctx, writeback.plan, "persisted", writeback.plan.reason, true, true);
+    recordTypedRefreshEvent(ctx, writeback.plan, .refreshed, writeback.plan.reason, true, true);
     log.info("token: refreshed successfully", .{});
 }
 
@@ -1009,8 +1239,8 @@ fn refreshWritebackBackend(
     });
     if (!plan.automatic_refresh_admitted) {
         log.warn("token: refresh writeback not admitted for {s}:{s}: {s}", .{ prov, acct, plan.reason });
-        recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
-        return error.TokenRefreshFailed;
+        recordTypedRefreshEvent(ctx, plan, .transient_store, plan.reason, false, false);
+        return error.RefreshTransientStore;
     }
     return .{
         .backend = backend,
@@ -1026,9 +1256,35 @@ fn recordRefreshEvent(
     ok: bool,
     executed: bool,
 ) void {
+    std.debug.assert(std.mem.eql(u8, outcome, "not_admitted"));
+    std.debug.assert(!ok and !executed);
+    ctx.last_refresh_outcome = null;
+    ctx.last_refresh_reason = reason;
+    ctx.last_refresh_quarantined = false;
+    persistCanonicalKeychainRefusalEvent(ctx, plan, outcome, reason);
+}
+
+fn recordTypedRefreshEvent(
+    ctx: *Context,
+    plan: secret.WritebackPlan,
+    outcome: types.RefreshOutcome,
+    reason: ?[]const u8,
+    ok: bool,
+    executed: bool,
+) void {
+    std.debug.assert(outcome != .hard_lineage_invalidated);
     ctx.last_refresh_outcome = outcome;
     ctx.last_refresh_reason = reason;
-    if (comptime builtin.is_test) return;
+    ctx.last_refresh_quarantined = false;
+    persistRefreshEvent(ctx, plan, outcome, ok, executed);
+}
+
+fn persistCanonicalKeychainRefusalEvent(
+    ctx: *Context,
+    plan: secret.WritebackPlan,
+    outcome: []const u8,
+    reason: ?[]const u8,
+) void {
     repair_state.appendEvent(ctx.allocator, .{
         .kind = "token_refresh",
         .profile = ctx.profile_name,
@@ -1040,11 +1296,50 @@ fn recordRefreshEvent(
         .automatic_refresh_admitted = plan.automatic_refresh_admitted,
         .outcome = outcome,
         .reason = reason,
+        .ok = false,
+        .executed = false,
+        .interactive = false,
+        .mutating = false,
+    }) catch {};
+}
+
+fn recordQuarantinedRefreshEvent(
+    ctx: *Context,
+    plan: secret.WritebackPlan,
+    outcome: types.RefreshOutcome,
+    reason: ?[]const u8,
+    ok: bool,
+    executed: bool,
+) void {
+    std.debug.assert(outcome != .hard_lineage_invalidated);
+    ctx.last_refresh_outcome = outcome;
+    ctx.last_refresh_reason = reason;
+    ctx.last_refresh_quarantined = true;
+    persistRefreshEvent(ctx, plan, outcome, ok, executed);
+}
+
+fn persistRefreshEvent(
+    ctx: *Context,
+    plan: secret.WritebackPlan,
+    outcome: types.RefreshOutcome,
+    ok: bool,
+    executed: bool,
+) void {
+    if (comptime builtin.is_test) return;
+    const provider_name = ctx.provider_name orelse return;
+    const account_name = ctx.account_name orelse return;
+    repair_state.appendEvent(ctx.allocator, repair_state.refreshEvent(.{
+        .profile = ctx.profile_name,
+        .provider = provider_name,
+        .account = account_name,
+        .capability = ctx.capability_name,
+        .writeback_capability = @tagName(plan.capability),
+        .automatic_refresh_admitted = plan.automatic_refresh_admitted,
+        .outcome = outcome,
         .ok = ok,
         .executed = executed,
-        .interactive = false,
         .mutating = executed,
-    }) catch {};
+    })) catch {};
 }
 
 fn fallbackRefreshUrl(ctx: *Context) ?[]const u8 {
@@ -1371,7 +1666,7 @@ test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
     upstream_ctx.provider_name = "toy";
     upstream_ctx.account_name = "default";
     try std.testing.expectError(
-        error.TokenRefreshFailed,
+        error.RefreshTransientStore,
         refreshWritebackBackend(&upstream_ctx, config_mod.resolveProviderDefinition(upstream.value, "toy")),
     );
 
@@ -1405,7 +1700,7 @@ test "refreshWritebackBackend admits only oauth-mux owned file writeback" {
     readonly_ctx.provider_name = "toy";
     readonly_ctx.account_name = "default";
     try std.testing.expectError(
-        error.TokenRefreshFailed,
+        error.RefreshTransientStore,
         refreshWritebackBackend(&readonly_ctx, config_mod.resolveProviderDefinition(readonly.value, "toy")),
     );
 }
@@ -2120,7 +2415,7 @@ test "refreshWritebackBackend admits opted-in proactive refresh under upstream l
     default_ctx.provider_name = "toy";
     default_ctx.account_name = "default";
     try std.testing.expectError(
-        error.TokenRefreshFailed,
+        error.RefreshTransientStore,
         refreshWritebackBackend(&default_ctx, config_mod.resolveProviderDefinition(defaulted.value, "toy")),
     );
 }
@@ -2184,7 +2479,7 @@ test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
     // refresh is deferred typed, and the endpoint is never contacted
     // (attemptRefresh is never entered).
     try validateToken(&ctx);
-    try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqual(types.RefreshOutcome.transient_store, ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("refresh_requires_mutating_budget", ctx.last_refresh_reason.?);
 
     // Actually expired: fails closed for the repair phase, still no rotation.
@@ -2192,7 +2487,7 @@ test "validateToken defers refresh under a non-mutating budget (TIN-2073)" {
     ctx.last_refresh_outcome = null;
     ctx.last_refresh_reason = null;
     try std.testing.expectError(error.TokenExpired, validateToken(&ctx));
-    try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqual(types.RefreshOutcome.transient_store, ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("refresh_requires_mutating_budget", ctx.last_refresh_reason.?);
 }
 
@@ -2265,8 +2560,8 @@ test "attemptRefresh defers typed when the repair flock is held by another proce
 
     {
         defer holder.close();
-        try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
-        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectError(error.RefreshTransientLock, validateToken(&ctx));
+        try std.testing.expectEqual(types.RefreshOutcome.transient_lock, ctx.last_refresh_outcome.?);
         try std.testing.expectEqualStrings("refresh_lock_held", ctx.last_refresh_reason.?);
 
         // Within the skew window (expiring but not expired) a held lock
@@ -2276,7 +2571,7 @@ test "attemptRefresh defers typed when the repair flock is held by another proce
         ctx.last_refresh_outcome = null;
         ctx.last_refresh_reason = null;
         try validateToken(&ctx);
-        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectEqual(types.RefreshOutcome.transient_lock, ctx.last_refresh_outcome.?);
         try std.testing.expectEqualStrings("refresh_lock_held", ctx.last_refresh_reason.?);
         ctx.token.?.expires_at = std.time.timestamp() - 10;
     }
@@ -2295,8 +2590,8 @@ test "attemptRefresh defers typed when the repair flock is held by another proce
     }
     ctx.last_refresh_outcome = null;
     ctx.last_refresh_reason = null;
-    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
-    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+    try std.testing.expectError(error.RefreshTransientNetwork, validateToken(&ctx));
+    try std.testing.expectEqual(types.RefreshOutcome.transient_network, ctx.last_refresh_outcome.?);
 }
 
 test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 TOCTOU)" {
@@ -2378,7 +2673,7 @@ test "attemptRefresh adopts a concurrent peer rotation under the lock (TIN-2073 
     // revalidation adopts the peer's rotation instead of re-rotating with
     // the superseded refresh token.
     try validateToken(&ctx);
-    try std.testing.expectEqualStrings("not_needed", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqual(types.RefreshOutcome.refreshed, ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
     try std.testing.expectEqualStrings("at-peer-fresh", ctx.token.?.access_token);
     try std.testing.expectEqualStrings("rt-peer-fresh", ctx.token.?.refresh_token.?);
@@ -2415,6 +2710,637 @@ fn proactiveTestConfig(allocator: std.mem.Allocator, auth_path: []const u8, owne
         \\  "strategies": {{}}
         \\}}
     , .{ owner, auth_path });
+}
+
+const TestRotatingRefreshServerArgs = struct {
+    server: std.net.Server,
+    credential_path: []const u8,
+    blocked_credential_path: ?[]const u8,
+    response_body: []const u8,
+    failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+};
+
+const TestRotatingRefreshServer = struct {
+    allocator: std.mem.Allocator,
+    args: *TestRotatingRefreshServerArgs,
+    thread: std.Thread,
+    port: u16,
+    joined: bool = false,
+
+    fn start(
+        allocator: std.mem.Allocator,
+        credential_path: []const u8,
+        blocked_credential_path: []const u8,
+    ) !TestRotatingRefreshServer {
+        return startConfigured(
+            allocator,
+            credential_path,
+            blocked_credential_path,
+            "{\"access_token\":\"at-new\",\"refresh_token\":\"rt-new\",\"expires_in\":3600}",
+        );
+    }
+
+    fn startWithResponse(
+        allocator: std.mem.Allocator,
+        credential_path: []const u8,
+        response_body: []const u8,
+    ) !TestRotatingRefreshServer {
+        return startConfigured(
+            allocator,
+            credential_path,
+            null,
+            response_body,
+        );
+    }
+
+    fn startConfigured(
+        allocator: std.mem.Allocator,
+        credential_path: []const u8,
+        blocked_credential_path: ?[]const u8,
+        response_body: []const u8,
+    ) !TestRotatingRefreshServer {
+        const address = try std.net.Address.parseIp("127.0.0.1", 0);
+        var server = try address.listen(.{ .reuse_address = true });
+        errdefer server.deinit();
+        const args = try allocator.create(TestRotatingRefreshServerArgs);
+        errdefer allocator.destroy(args);
+        args.* = .{
+            .server = server,
+            .credential_path = credential_path,
+            .blocked_credential_path = blocked_credential_path,
+            .response_body = response_body,
+        };
+        const thread = try std.Thread.spawn(.{}, runTestRotatingRefreshServer, .{args});
+        return .{
+            .allocator = allocator,
+            .args = args,
+            .thread = thread,
+            .port = server.listen_address.getPort(),
+        };
+    }
+
+    fn join(self: *TestRotatingRefreshServer) bool {
+        if (!self.joined) {
+            self.thread.join();
+            self.joined = true;
+        }
+        return self.args.failed.load(.seq_cst);
+    }
+
+    fn deinit(self: *TestRotatingRefreshServer) void {
+        _ = self.join();
+        self.allocator.destroy(self.args);
+    }
+};
+
+fn runTestRotatingRefreshServer(args: *TestRotatingRefreshServerArgs) void {
+    defer args.server.deinit();
+    runTestRotatingRefreshServerInner(args) catch {
+        args.failed.store(true, .seq_cst);
+    };
+}
+
+fn runTestRotatingRefreshServerInner(args: *TestRotatingRefreshServerArgs) !void {
+    const connection = try args.server.accept();
+    defer connection.stream.close();
+    var head_buffer: [4096]u8 = undefined;
+    var server = std.http.Server.init(connection, &head_buffer);
+    var request = try server.receiveHead();
+    const body_reader = try request.reader();
+    var discard: [1024]u8 = undefined;
+    while (try body_reader.read(&discard) != 0) {}
+
+    if (args.blocked_credential_path) |blocked_path| {
+        // Replace the canonical file with a directory after the endpoint has
+        // consumed the request. Atomic file replacement then fails under both
+        // privileged and unprivileged test runners.
+        try std.fs.renameAbsolute(args.credential_path, blocked_path);
+        try std.fs.makeDirAbsolute(args.credential_path);
+    }
+
+    try request.respond(
+        args.response_body,
+        .{
+            .status = .ok,
+            .keep_alive = false,
+            .extra_headers = &.{
+                .{ .name = "Content-Type", .value = "application/json" },
+            },
+        },
+    );
+}
+
+test "endpoint success plus canonical write failure quarantines stale lineage across restart" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "write-failure.json" },
+    );
+    defer allocator.free(auth_path);
+    const blocked_auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "write-failure.stale.json" },
+    );
+    defer allocator.free(blocked_auth_path);
+    const stale_credential =
+        "{\"access_token\":\"at-old\",\"refresh_token\":\"rt-old\",\"expires_at\":9999999999}";
+    {
+        const file = try std.fs.createFileAbsolute(auth_path, .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(stale_credential);
+    }
+
+    var restore_blocked_credential = true;
+    defer if (restore_blocked_credential) {
+        std.fs.deleteDirAbsolute(auth_path) catch {};
+        std.fs.renameAbsolute(blocked_auth_path, auth_path) catch {};
+    };
+    var server = try TestRotatingRefreshServer.start(
+        allocator,
+        auth_path,
+        blocked_auth_path,
+    );
+    defer server.deinit();
+    const config_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh", "proactive_refresh": "oauth_refresh_token" }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:{d}/token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{ "kind": "toy", "accounts": {{
+        \\      "lineage": {{
+        \\        "allow_proactive_refresh": true,
+        \\        "secret": {{ "backend": "file", "path": "{s}" }}
+        \\      }},
+        \\      "alias": {{
+        \\        "allow_proactive_refresh": true,
+        \\        "secret": {{ "backend": "file", "path": "{s}" }}
+        \\      }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{ server.port, auth_path, auth_path },
+    );
+    defer allocator.free(config_json);
+    const parsed = try config_mod.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    var health = health_mod.HealthStore.init(allocator, .{});
+    defer health.deinit();
+    var ctx = Context.init(allocator, parsed.value, &health);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "lineage";
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        refreshAccount(&ctx),
+    );
+    try std.testing.expect(!server.join());
+
+    try std.fs.deleteDirAbsolute(auth_path);
+    try std.fs.renameAbsolute(blocked_auth_path, auth_path);
+    restore_blocked_credential = false;
+
+    try std.testing.expect(ctx.last_refresh_quarantined);
+    try std.testing.expectEqual(
+        types.RefreshOutcome.transient_store,
+        ctx.last_refresh_outcome.?,
+    );
+    try std.testing.expectEqual(
+        repair_state.RefreshQuarantineState.indeterminate_lineage,
+        (try repair_state.refreshQuarantineForRoute(
+            allocator,
+            "toy",
+            "lineage",
+        )).?,
+    );
+    const canonical = try std.fs.openFileAbsolute(auth_path, .{});
+    defer canonical.close();
+    const canonical_bytes = try canonical.readToEndAlloc(allocator, 4096);
+    defer allocator.free(canonical_bytes);
+    try std.testing.expectEqualStrings(stale_credential, canonical_bytes);
+
+    // A fresh process context must stop at the marker before reading/replaying
+    // the stale canonical refresh token. The one-shot server is already gone.
+    var restart_health = health_mod.HealthStore.init(allocator, .{});
+    defer restart_health.deinit();
+    var restart_ctx = Context.init(allocator, parsed.value, &restart_health);
+    defer restart_ctx.deinit();
+    restart_ctx.provider_name = "toy";
+    restart_ctx.account_name = "lineage";
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        refreshAccount(&restart_ctx),
+    );
+    try std.testing.expect(restart_ctx.last_refresh_quarantined);
+
+    var alias_ctx = Context.init(allocator, parsed.value, &restart_health);
+    defer alias_ctx.deinit();
+    alias_ctx.provider_name = "toy";
+    alias_ctx.account_name = "alias";
+    try std.testing.expectError(
+        error.RefreshLineageIndeterminate,
+        refreshAccount(&alias_ctx),
+    );
+    try std.testing.expect(alias_ctx.last_refresh_quarantined);
+
+    const marker_path = try repair_state.refreshQuarantineMarkerPathForTest(
+        allocator,
+        "toy",
+        "lineage",
+    );
+    defer allocator.free(marker_path);
+    const marker = try std.fs.openFileAbsolute(marker_path, .{});
+    defer marker.close();
+    const marker_bytes = try marker.readToEndAlloc(allocator, 4096);
+    defer allocator.free(marker_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, marker_bytes, "rt-old") == null);
+    try std.testing.expect(std.mem.indexOf(u8, marker_bytes, "rt-new") == null);
+    try std.testing.expect(std.mem.indexOf(u8, marker_bytes, "at-new") == null);
+
+    // Damaged durable evidence must not fail open for a different account label
+    // that resolves to the same canonical store.
+    {
+        const torn_marker = try std.fs.createFileAbsolute(
+            marker_path,
+            .{ .truncate = true, .mode = 0o600 },
+        );
+        defer torn_marker.close();
+        try torn_marker.writeAll("{\"torn\":");
+        try torn_marker.sync();
+    }
+    var damaged_alias_ctx = Context.init(allocator, parsed.value, &restart_health);
+    defer damaged_alias_ctx.deinit();
+    damaged_alias_ctx.provider_name = "toy";
+    damaged_alias_ctx.account_name = "alias";
+    try std.testing.expectError(
+        error.RefreshTransientStore,
+        refreshAccount(&damaged_alias_ctx),
+    );
+    try std.testing.expect(!damaged_alias_ctx.last_refresh_quarantined);
+}
+
+test "explicit reusable-token policy preserves the submitted refresh token" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "reusable.json" },
+    );
+    defer allocator.free(auth_path);
+    {
+        const file = try std.fs.createFileAbsolute(auth_path, .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(
+            "{\"access_token\":\"at-old\",\"refresh_token\":\"rt-reusable\",\"expires_at\":1,\"preserved\":\"yes\"}",
+        );
+    }
+
+    var server = try TestRotatingRefreshServer.startWithResponse(
+        allocator,
+        scope.root,
+        "{\"access_token\":\"at-new\",\"expires_in\":3600}",
+    );
+    defer server.deinit();
+    const config_json = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{
+        \\        "owner": "oauth_mux_refresh",
+        \\        "proactive_refresh": "oauth_refresh_token",
+        \\        "refresh_token_response": "reuse_submitted_if_omitted"
+        \\      }},
+        \\      "auth": {{ "token_endpoint": "http://127.0.0.1:{d}/token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{ "kind": "toy", "accounts": {{
+        \\      "reusable": {{
+        \\        "allow_proactive_refresh": true,
+        \\        "secret": {{ "backend": "file", "path": "{s}" }}
+        \\      }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    , .{ server.port, auth_path });
+    defer allocator.free(config_json);
+    const parsed = try config_mod.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    var health = health_mod.HealthStore.init(allocator, .{});
+    defer health.deinit();
+    var ctx = Context.init(allocator, parsed.value, &health);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "reusable";
+    try refreshAccount(&ctx);
+    try std.testing.expect(!server.join());
+
+    try std.testing.expectEqual(
+        types.RefreshOutcome.refreshed,
+        ctx.last_refresh_outcome.?,
+    );
+    try std.testing.expectEqualStrings("at-new", ctx.token.?.access_token);
+    try std.testing.expectEqualStrings(
+        "rt-reusable",
+        ctx.token.?.refresh_token.?,
+    );
+    try std.testing.expect(
+        (try repair_state.refreshQuarantineForRoute(
+            allocator,
+            "toy",
+            "reusable",
+        )) == null,
+    );
+
+    const canonical = try std.fs.openFileAbsolute(auth_path, .{});
+    defer canonical.close();
+    const canonical_bytes = try canonical.readToEndAlloc(allocator, 4096);
+    defer allocator.free(canonical_bytes);
+    try std.testing.expect(
+        std.mem.indexOf(u8, canonical_bytes, "\"access_token\":\"at-new\"") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            canonical_bytes,
+            "\"refresh_token\":\"rt-reusable\"",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, canonical_bytes, "\"preserved\":\"yes\"") != null,
+    );
+}
+
+fn expectNoPersistedPermanentAuthFailure(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    account_name: []const u8,
+) !void {
+    var loaded = health_mod.HealthStore.load(allocator, .{});
+    defer loaded.deinit();
+    const key = health_mod.accountKey(provider_name, account_name);
+    const health = loaded.accounts.get(key.slice()) orelse
+        return error.TestExpectedPersistedHealthEntry;
+    switch (health.liveness) {
+        .dead => |dead| try std.testing.expect(
+            dead.reason != .auth_permanently_failed,
+        ),
+        else => {},
+    }
+}
+
+test "typed refresh dispositions stay out of persisted permanent auth health" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+
+    var store = health_mod.HealthStore.init(allocator, .{});
+    defer store.deinit();
+    const cases = [_]struct {
+        account: []const u8,
+        err: PipelineError,
+    }{
+        .{ .account = "lock", .err = error.RefreshTransientLock },
+        .{ .account = "network", .err = error.RefreshTransientNetwork },
+        .{ .account = "store", .err = error.RefreshTransientStore },
+        .{ .account = "endpoint", .err = error.RefreshTransientEndpoint },
+        .{ .account = "quarantine-read", .err = error.RefreshLineageIndeterminate },
+    };
+    var ctx: Context = undefined;
+    ctx.health = &store;
+    for (cases) |case| {
+        const key = health_mod.accountKey("toy", case.account);
+        _ = try store.getOrCreate(key.slice());
+        recordCandidateFailure(&ctx, key.slice(), case.err);
+    }
+    store.persist();
+    for (cases) |case| {
+        try expectNoPersistedPermanentAuthFailure(
+            allocator,
+            "toy",
+            case.account,
+        );
+    }
+}
+
+test "runEnv runProbe and runExec preserve quarantine read dispositions through persistence" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "consumer-auth.json" },
+    );
+    defer allocator.free(auth_path);
+    {
+        const file = try std.fs.createFileAbsolute(auth_path, .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll("{\"access_token\":\"api-key\"}");
+    }
+    const config_json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "providers": {{
+        \\    "toy": {{ "kind": "toy", "accounts": {{
+        \\      "consumer": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer allocator.free(config_json);
+    const parsed = try config_mod.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    const marker_path = try repair_state.refreshQuarantineMarkerPathForTest(
+        allocator,
+        "toy",
+        "consumer",
+    );
+    defer allocator.free(marker_path);
+    if (std.fs.path.dirname(marker_path)) |parent| {
+        try std.fs.cwd().makePath(parent);
+    }
+    {
+        const marker = try std.fs.createFileAbsolute(
+            marker_path,
+            .{ .mode = 0o600 },
+        );
+        defer marker.close();
+        try marker.writeAll("{\"torn\":");
+    }
+
+    const Runner = enum { env, probe, exec };
+    const runners = [_]Runner{ .env, .probe, .exec };
+    var store = health_mod.HealthStore.init(allocator, .{});
+    defer store.deinit();
+    _ = try store.getOrCreate("toy:consumer");
+    store.persist();
+    for (runners) |runner| {
+        var ctx = Context.init(allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "toy";
+        const result = switch (runner) {
+            .env => runEnv(&ctx),
+            .probe => runProbe(&ctx),
+            .exec => runExec(&ctx),
+        };
+        try std.testing.expectError(error.RefreshTransientStore, result);
+        try std.testing.expect(!ctx.last_refresh_quarantined);
+        store.persist();
+        try expectNoPersistedPermanentAuthFailure(
+            allocator,
+            "toy",
+            "consumer",
+        );
+    }
+
+    try std.fs.deleteFileAbsolute(marker_path);
+    try repair_state.persistIndeterminateRefreshQuarantine(
+        allocator,
+        "toy",
+        "consumer",
+    );
+    for (runners) |runner| {
+        var ctx = Context.init(allocator, parsed.value, &store);
+        defer ctx.deinit();
+        ctx.provider_name = "toy";
+        const result = switch (runner) {
+            .env => runEnv(&ctx),
+            .probe => runProbe(&ctx),
+            .exec => runExec(&ctx),
+        };
+        try std.testing.expectError(error.RefreshLineageIndeterminate, result);
+        try std.testing.expect(ctx.last_refresh_quarantined);
+        store.persist();
+        try expectNoPersistedPermanentAuthFailure(
+            allocator,
+            "toy",
+            "consumer",
+        );
+    }
+}
+
+test "proof-created hard lineage blocks refresh before credential read and kills health" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ scope.root, "lineage.json" },
+    );
+    defer allocator.free(auth_path);
+    {
+        const file = try std.fs.createFileAbsolute(auth_path, .{ .mode = 0o600 });
+        defer file.close();
+        try file.writeAll(
+            "{\"access_token\":\"at\",\"refresh_token\":\"rt-current\",\"expires_at\":9999999999,\"account_id\":\"identity-current\"}",
+        );
+    }
+    const json = try std.fmt.allocPrint(
+        allocator,
+        \\{{
+        \\  "version": 1,
+        \\  "provider_definitions": {{
+        \\    "toy": {{
+        \\      "name": "toy",
+        \\      "repair": {{ "owner": "oauth_mux_refresh", "proactive_refresh": "oauth_refresh_token" }},
+        \\      "credential": {{
+        \\        "access_token_path": "access_token",
+        \\        "refresh_token_path": "refresh_token",
+        \\        "expires_at_path": "expires_at",
+        \\        "identity_claim_path": "account_id"
+        \\      }}
+        \\    }}
+        \\  }},
+        \\  "providers": {{
+        \\    "toy": {{ "kind": "toy", "accounts": {{
+        \\      "lineage": {{ "secret": {{ "backend": "file", "path": "{s}" }} }}
+        \\    }} }}
+        \\  }},
+        \\  "profiles": {{}},
+        \\  "strategies": {{}}
+        \\}}
+    ,
+        .{auth_path},
+    );
+    defer allocator.free(json);
+    const parsed = try config_mod.loadFromBytes(allocator, json);
+    defer parsed.deinit();
+    const acct_cfg = parsed.value.providers.map.get("toy").?.accounts.map.get("lineage").?;
+    const backend = try config_mod.resolveSecretBackend(acct_cfg.secret);
+    const def = config_mod.resolveProviderDefinition(parsed.value, "toy");
+    try repair_state.establishHardRefreshQuarantineForTest(
+        allocator,
+        "toy",
+        "lineage",
+        backend,
+        def,
+    );
+    try std.fs.deleteFileAbsolute(auth_path);
+
+    var store = health_mod.HealthStore.init(allocator, .{});
+    defer store.deinit();
+    var ctx = Context.init(allocator, parsed.value, &store);
+    defer ctx.deinit();
+    ctx.provider_name = "toy";
+    ctx.account_name = "lineage";
+    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
+    try std.testing.expectEqual(
+        types.RefreshOutcome.hard_lineage_invalidated,
+        ctx.last_refresh_outcome.?,
+    );
+    try std.testing.expectEqualStrings("refresh_lineage_quarantined", ctx.last_refresh_reason.?);
+    const key = health_mod.accountKey("toy", "lineage");
+    const health = store.accounts.get(key.slice()).?;
+    switch (health.liveness) {
+        .dead => |dead| try std.testing.expectEqual(
+            types.DeadReason.auth_permanently_failed,
+            dead.reason,
+        ),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "refreshAccount proactively rotates a still-valid same-RT token — past the adopt (TIN-1825 Option B)" {
@@ -2454,8 +3380,8 @@ test "refreshAccount proactively rotates a still-valid same-RT token — past th
     // token is >30s from expiry. Option B (same RT, expiry not advanced) PROCEEDS
     // past the adopt and rotates — so it fails AT THE DEAD ENDPOINT, proving the
     // proactive rotation actually fired.
-    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
-    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+    try std.testing.expectError(error.RefreshTransientNetwork, refreshAccount(&ctx));
+    try std.testing.expectEqual(types.RefreshOutcome.transient_network, ctx.last_refresh_outcome.?);
 }
 
 test "attemptRefresh adopts on an expiry-advance with an unchanged RT (Option B belt-and-suspenders)" {
@@ -2500,7 +3426,7 @@ test "attemptRefresh adopts on an expiry-advance with an unchanged RT (Option B 
     // Same RT but the store expiry advanced → adopt (not_needed), endpoint NOT
     // contacted (it is dead; a rotation attempt would surface token_endpoint_failed).
     try attemptRefresh(&ctx, "rt-A");
-    try std.testing.expectEqualStrings("not_needed", ctx.last_refresh_outcome.?);
+    try std.testing.expectEqual(types.RefreshOutcome.refreshed, ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("concurrent_rotation_detected", ctx.last_refresh_reason.?);
     try std.testing.expectEqual(@as(i64, now + 7200), ctx.token.?.expires_at.?);
 }
@@ -2540,8 +3466,8 @@ test "refreshAccount refuses an un-admitted account at the grant gate (not_admit
 
     // The warm loop over a builtin (no grant) refuses BEFORE any lock/network —
     // safe no-op until the proactive_refresh flip + live proof.
-    try std.testing.expectError(error.TokenRefreshFailed, refreshAccount(&ctx));
-    try std.testing.expectEqualStrings("not_admitted", ctx.last_refresh_outcome.?);
+    try std.testing.expectError(error.RefreshTransientStore, refreshAccount(&ctx));
+    try std.testing.expectEqual(types.RefreshOutcome.transient_store, ctx.last_refresh_outcome.?);
 }
 
 test "readAccountExpiryMs returns the credential expiry as Unix milliseconds" {
@@ -2635,8 +3561,8 @@ test "attemptRefresh refuses lossy writeback when the store became unreadable un
     // The refresh must refuse rather than write a lossy template blob over
     // the (absent, but in production canonical) store. The endpoint is
     // never reached.
-    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
-    try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
+    try std.testing.expectError(error.RefreshTransientStore, validateToken(&ctx));
+    try std.testing.expectEqual(types.RefreshOutcome.transient_store, ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("store_unreadable_refusing_lossy_write", ctx.last_refresh_reason.?);
     // The store was not created by a fallback template write.
     try std.testing.expect(!fileExists(auth_path));
@@ -2715,8 +3641,8 @@ test "attemptRefresh defers when the identity lock is held by a sibling-identity
     {
         defer holder.close();
         // expired token + held identity lock → defer typed, fail closed (no endpoint).
-        try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
-        try std.testing.expectEqualStrings("deferred", ctx.last_refresh_outcome.?);
+        try std.testing.expectError(error.RefreshTransientLock, validateToken(&ctx));
+        try std.testing.expectEqual(types.RefreshOutcome.transient_lock, ctx.last_refresh_outcome.?);
         try std.testing.expectEqualStrings("identity_lock_held", ctx.last_refresh_reason.?);
     }
 
@@ -2724,8 +3650,8 @@ test "attemptRefresh defers when the identity lock is held by a sibling-identity
     // (closed port), proving the deferral was the identity lock.
     ctx.last_refresh_outcome = null;
     ctx.last_refresh_reason = null;
-    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
-    try std.testing.expectEqualStrings("token_endpoint_failed", ctx.last_refresh_outcome.?);
+    try std.testing.expectError(error.RefreshTransientNetwork, validateToken(&ctx));
+    try std.testing.expectEqual(types.RefreshOutcome.transient_network, ctx.last_refresh_outcome.?);
 }
 
 test "attemptRefresh refuses when an identity path is declared but the store has no id (TIN-2043 missing-id policy)" {
@@ -2779,8 +3705,8 @@ test "attemptRefresh refuses when an identity path is declared but the store has
     };
 
     // Refuses before the endpoint rather than dodging the identity guard.
-    try std.testing.expectError(error.TokenRefreshFailed, validateToken(&ctx));
-    try std.testing.expectEqualStrings("writeback_refused", ctx.last_refresh_outcome.?);
+    try std.testing.expectError(error.RefreshTransientStore, validateToken(&ctx));
+    try std.testing.expectEqual(types.RefreshOutcome.transient_store, ctx.last_refresh_outcome.?);
     try std.testing.expectEqualStrings("identity_unresolved_refusing_refresh", ctx.last_refresh_reason.?);
 }
 
@@ -2979,6 +3905,10 @@ fn expectEnvPairContains(pairs: []const [2][]const u8, key: []const u8, needle: 
 }
 
 test "refreshWritebackBackend refuses the canonical shared Claude keychain item (TIN-2054 #2)" {
+    var rt_scope = try repair_state.TestRuntimeDirScope.init(std.testing.allocator);
+    defer rt_scope.deinit(std.testing.allocator);
+    rt_scope.activate();
+
     // An account whose keychain service is the UNSUFFIXED canonical
     // `Claude Code-credentials` (the bare-Claude credential) must never be a
     // proactive-refresh target — rotating it would revoke the user's own
@@ -3016,6 +3946,15 @@ test "refreshWritebackBackend refuses the canonical shared Claude keychain item 
         ctx.account_name = "canonical";
         try std.testing.expectError(error.TokenRefreshFailed, refreshWritebackBackend(&ctx, def));
         try std.testing.expectEqualStrings("writeback_refused_canonical_keychain_item", ctx.last_refresh_reason.?);
+
+        var events = std.ArrayList(u8).init(std.testing.allocator);
+        defer events.deinit();
+        try repair_state.writeEvents(std.testing.allocator, events.writer(), true, 10);
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            events.items,
+            "\"refresh_outcome\":null,\"outcome\":\"not_admitted\",\"reason\":\"writeback_refused_canonical_keychain_item\",\"ok\":false,\"executed\":false",
+        ) != null);
     }
 
     // A per-config-dir SUFFIXED service is NOT caught by this guard — it
@@ -3032,4 +3971,24 @@ test "refreshWritebackBackend refuses the canonical shared Claude keychain item 
             try std.testing.expect(!std.mem.eql(u8, reason, "writeback_refused_canonical_keychain_item"));
         }
     }
+}
+
+test "canonical Claude keychain refusal block is byte-identical to main" {
+    const source = @embedFile("pipeline.zig");
+    const canonical_block =
+        \\    if (backend == .keychain and std.mem.eql(u8, backend.keychain.service, provider_schema.claude_keychain_service_base)) {
+        \\        const plan = secret.WritebackPlan{
+        \\            .capability = secret.writeCapability(backend),
+        \\            .automatic_refresh_admitted = false,
+        \\            .reason = "writeback_refused_canonical_keychain_item",
+        \\        };
+        \\        log.err("token: refusing refresh writeback for {s}:{s}: targets the canonical shared keychain item '{s}' (the bare-Claude credential) — use a per-config-dir suffixed service", .{ prov, acct, provider_schema.claude_keychain_service_base });
+        \\        recordRefreshEvent(ctx, plan, "not_admitted", plan.reason, false, false);
+        \\        return error.TokenRefreshFailed;
+        \\    }
+    ;
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, source, canonical_block),
+    );
 }

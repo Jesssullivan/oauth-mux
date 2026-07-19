@@ -87,10 +87,14 @@ checks remain package-lane QA and should not be used as evidence for unreleased
 worktree behavior unless the local formula has been explicitly rebuilt and
 installed.
 
-Each release artifact should be derived from the same CI release tree. The
-npm lane is retired (2026-06-12): the future single source of truth for
-package derivation is the Bazel SSOT (TIN-2046), whose derived lanes are
-Homebrew, deb/rpm, and a darwin pkg — npm is deliberately excluded.
+Each release artifact should be derived from the same release tree. The Zig
+release graph and its generated, checked `release-manifest.json` projection are
+the current v0.2 release-manifest authority; Bazel/GF packaging consumers remain
+downstream migrations rather than a replacement source of truth. The npm lane
+is retired (2026-06-12) and remains excluded. The generated v0.2 projection
+declares no Darwin `.pkg`, so none is a current authoritative lane; current
+macOS distribution is bounded to release archives and the binary-only Homebrew
+formula supported by committed release evidence.
 
 ## First User Experience
 

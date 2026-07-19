@@ -22,6 +22,7 @@ const secret_mod = @import("secret.zig");
 const trace = @import("trace.zig");
 const broker = @import("broker/mod.zig");
 const broker_loader = @import("broker_loader.zig");
+const codex_resume_index = @import("codex_resume_index.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
 const claude_verb = @import("adapters/claude/verb.zig");
 const identity_hash = @import("identity_hash.zig");
@@ -509,12 +510,19 @@ fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
 
     // Bind the scheduler to the live refresh path (proactive; refuses ungranted).
     var wr = warm_runner.WarmRunner{ .allocator = allocator, .cfg = cfg, .health = &health };
-    var binding = warm_binding.RefreshBinding{ .do_refresh = warm_runner.WarmRunner.doRefresh, .do_refresh_ctx = &wr };
+    var binding = warm_binding.RefreshBinding{
+        .do_refresh = warm_runner.WarmRunner.doRefresh,
+        .do_refresh_ctx = &wr,
+        .do_refresh_outcome = warm_runner.WarmRunner.refreshOutcome,
+        .do_refresh_quarantined = warm_runner.WarmRunner.refreshQuarantined,
+    };
     var sched = warm_scheduler.Scheduler{
         .clock = warm_runner.WarmRunner.clock,
         .clock_ctx = &wr,
         .refresh = warm_binding.RefreshBinding.refresh,
         .refresh_ctx = &binding,
+        .refresh_outcome = warm_binding.RefreshBinding.refreshOutcome,
+        .refresh_quarantined = warm_binding.RefreshBinding.refreshQuarantined,
     };
 
     // TIN-2061: opt-in desktop alerting on refresh-failure / credential-dead
@@ -531,16 +539,24 @@ fn runKeepalive(allocator: std.mem.Allocator, writer: anytype, args: cli.Command
 
     var wait_ctx = KeepaliveWait{ .remaining = args.iterations -| 1, .cap_ms = args.interval_ms };
     const report = warm_binding.runLoop(&sched, accounts, KeepaliveWait.wait, &wait_ctx);
+    try writeKeepaliveReport(writer, accounts.len, report, args.json);
+}
 
-    if (args.json) {
+fn writeKeepaliveReport(
+    writer: anytype,
+    account_count: usize,
+    report: warm_binding.LoopReport,
+    json: bool,
+) !void {
+    if (json) {
         try writer.print(
-            "{{\"accounts\":{d},\"ticks\":{d},\"refreshed\":{d},\"failed\":{d},\"died\":{d},\"drained\":{}}}\n",
-            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+            "{{\"accounts\":{d},\"ticks\":{d},\"refreshed\":{d},\"failed\":{d},\"died\":{d},\"transient\":{d},\"quarantined\":{d},\"drained\":{}}}\n",
+            .{ account_count, report.ticks, report.refreshed, report.failed, report.died, report.transient, report.quarantined, report.drained },
         );
     } else {
         try writer.print(
-            "keepalive: {d} account(s); {d} tick(s) — refreshed={d} failed={d} died={d} drained={}\n",
-            .{ accounts.len, report.ticks, report.refreshed, report.failed, report.died, report.drained },
+            "keepalive: {d} account(s); {d} tick(s) — refreshed={d} failed={d} died={d} transient={d} quarantined={d} drained={}\n",
+            .{ account_count, report.ticks, report.refreshed, report.failed, report.died, report.transient, report.quarantined, report.drained },
         );
     }
 }
@@ -561,7 +577,14 @@ fn exitCodeFromPipelineError(e: anyerror) u8 {
         error.ConfigNotFound, error.ConfigParseError, error.ConfigValidationError => types.ExitCode.config_error.int(),
         error.AllAccountsExhausted => types.ExitCode.all_accounts_exhausted.int(),
         error.SecretReadFailed, error.SecretDecryptFailed => types.ExitCode.secret_read_failed.int(),
-        error.TokenRefreshFailed => types.ExitCode.token_refresh_failed.int(),
+        error.TokenRefreshFailed,
+        error.RefreshQuarantinePersistenceFailed,
+        error.RefreshTransientLock,
+        error.RefreshTransientNetwork,
+        error.RefreshTransientStore,
+        error.RefreshTransientEndpoint,
+        error.RefreshLineageIndeterminate,
+        => types.ExitCode.token_refresh_failed.int(),
         error.NetworkError => types.ExitCode.network_error.int(),
         // TIN-2054: misconfigured account (Claude without a config_dir) — a
         // config-shaped error, surfaced as such for scripts/agents.
@@ -600,6 +623,7 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
     const now_ms = std.time.milliTimestamp();
+    const refresh_summary = loadRefreshJournalSummary(allocator);
 
     if (args.json) {
         try writer.writeAll("{\n");
@@ -616,7 +640,9 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
                 entry.value_ptr.accounts.map.count(),
             });
         }
-        try writer.writeAll("\n  },\n");
+        try writer.writeAll("\n  },\n  \"refresh_outcomes\": ");
+        try writeRefreshJournalSummaryJson(writer, refresh_summary);
+        try writer.writeAll(",\n");
         try writeAdviceJson(writer, allocator, &store, now_ms);
         try writer.writeAll("\n}\n");
     } else {
@@ -636,8 +662,77 @@ fn runStatus(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.St
             }
         }
         try writer.writeByte('\n');
+        try writeRefreshJournalSummaryText(writer, refresh_summary);
+        try writer.writeByte('\n');
         try writeAdviceText(writer, allocator, &store, now_ms);
     }
+}
+
+fn loadRefreshJournalSummary(allocator: std.mem.Allocator) repair_state.RefreshJournalSummary {
+    return repair_state.refreshJournalSummary(allocator) catch |e| {
+        log.warn("refresh outcome state is unreadable: {s}", .{@errorName(e)});
+        return .{
+            .valid = false,
+            .invalid_events = 1,
+        };
+    };
+}
+
+fn writeRefreshJournalSummaryJson(
+    writer: anytype,
+    summary: repair_state.RefreshJournalSummary,
+) !void {
+    const provider_reenroll_required =
+        summary.hard_lineage_events != 0 or
+        summary.indeterminate_lineage_markers != 0;
+    const quarantine_present = !summary.valid or provider_reenroll_required;
+    try writer.writeAll("{\"valid\":");
+    try writer.writeAll(if (summary.valid) "true" else "false");
+    try writer.print(
+        ",\"typed_events\":{d},\"invalid_events\":{d},\"hard_lineage_events\":{d},\"indeterminate_lineage_markers\":{d},\"latest_outcome\":",
+        .{ summary.typed_events, summary.invalid_events, summary.hard_lineage_events, summary.indeterminate_lineage_markers },
+    );
+    if (summary.latest_outcome) |outcome| {
+        try std.json.stringify(@tagName(outcome), .{}, writer);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeAll(",\"quarantine_present\":");
+    try writer.writeAll(if (quarantine_present) "true" else "false");
+    try writer.writeAll(",\"provider_reenroll_required\":");
+    try writer.writeAll(if (provider_reenroll_required) "true" else "false");
+    try writer.writeAll(",\"evidence_repair_required\":");
+    try writer.writeAll(if (summary.valid) "false" else "true");
+    try writer.writeAll(
+        ",\"hard_quarantine_clearance_available\":false,\"stale_backup_restore_allowed\":false}",
+    );
+}
+
+fn writeRefreshJournalSummaryText(
+    writer: anytype,
+    summary: repair_state.RefreshJournalSummary,
+) !void {
+    const provider_reenroll_required =
+        summary.hard_lineage_events != 0 or
+        summary.indeterminate_lineage_markers != 0;
+    const quarantine_present = !summary.valid or provider_reenroll_required;
+    try writer.print(
+        "refresh outcomes: valid={s} typed={d} invalid={d} hard_lineage={d} indeterminate_lineage={d} quarantine={s} provider_reenroll={s} evidence_repair={s} hard_quarantine_clearance=unimplemented stale_backup_restore=false",
+        .{
+            if (summary.valid) "true" else "false",
+            summary.typed_events,
+            summary.invalid_events,
+            summary.hard_lineage_events,
+            summary.indeterminate_lineage_markers,
+            if (quarantine_present) "true" else "false",
+            if (provider_reenroll_required) "required" else "not_required",
+            if (summary.valid) "not_required" else "required",
+        },
+    );
+    if (summary.latest_outcome) |outcome| {
+        try writer.print(" latest={s}", .{@tagName(outcome)});
+    }
+    try writer.writeByte('\n');
 }
 
 // ── valet advice rendering (TIN-2719 M0 PR2) ──────────────────────────────────
@@ -4390,7 +4485,7 @@ fn executeCodexLoginDeviceRepair(
     const expanded = try paths.expandTilde(allocator, config_dir);
     defer allocator.free(expanded);
     const ok = try runCodexCli(allocator, expanded, &.{ "login", "--device-auth" });
-    if (ok) recordCodexLoginSuccess(allocator, route.account);
+    if (ok) try recordCodexLoginSuccess(allocator, route.account, expanded);
     return ok;
 }
 
@@ -5254,6 +5349,15 @@ fn runStayAfloatNext(allocator: std.mem.Allocator, writer: anytype, args: cli.Co
 }
 
 fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.ExecArgs) !void {
+    return runStayAfloatLaunchWithResume(allocator, writer, args, null);
+}
+
+fn runStayAfloatLaunchWithResume(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.ExecArgs,
+    required_resume_id: ?[]const u8,
+) !void {
     if (args.target_argv.len == 0) {
         log.err("stay-afloat launch: no target command specified (use -- before the command)", .{});
         return error.ConfigValidationError;
@@ -5285,6 +5389,7 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
     defer attempted_routes.deinit();
 
     var last_exec_error: ?anyerror = null;
+    var last_resume_inspection: ?CodexManagedResumeInspection = null;
     // TIN-1811 Phase 2: never-halt launch. Each iteration re-evaluates the
     // requested capability and, only when no UN-ATTEMPTED selectable route
     // remains there, degrades across the profile's chain to an immediately-live
@@ -5311,22 +5416,40 @@ fn runStayAfloatLaunch(allocator: std.mem.Allocator, writer: anytype, args: cli.
         );
         const selected_index = degraded.index;
         if (selected_index == null) {
+            if (last_exec_error) |err| return err;
+            if (last_resume_inspection) |inspection| {
+                try writeCodexManagedResumeRefusalText(writer, inspection);
+                return error.ConfigValidationError;
+            }
             const candidate_index = firstActionableRoute(evaluations.items);
             try writeStayAfloatMediationText(writer, allocator, parsed.value, evaluations.items, null, candidate_index, selector, "oauth-mux stay-afloat launch");
             if (degraded.capability) |cap| try writer.print("  degraded_capability: {s}\n", .{cap});
-            if (last_exec_error) |err| return err;
             return error.AllAccountsExhausted;
         }
 
         const selected = evaluations.items[selected_index.?].route;
         try attempted_routes.append(selected);
+        if (required_resume_id) |resume_id| {
+            const inspection = try inspectCodexManagedResume(allocator, parsed.value, selected, .{
+                .resume_id = resume_id,
+            });
+            log.debug("codex managed: resume preflight {s}:{s} status={s}", .{
+                selected.provider,
+                selected.account,
+                inspection.status,
+            });
+            if (!codexManagedResumeAllowsLaunch(inspection)) {
+                last_resume_inspection = inspection;
+                continue;
+            }
+        }
 
         var exec_args = args;
         exec_args.profile = null;
         exec_args.provider = selected.provider;
         exec_args.account = selected.account;
         exec_args.capability = selected.capability orelse args.capability;
-        runExec(allocator, exec_args) catch |e| {
+        runExecWithConfigSnapshot(allocator, exec_args, parsed.value) catch |e| {
             last_exec_error = e;
             continue;
         };
@@ -8085,9 +8208,18 @@ const DoctorStats = struct {
     codex_max_configured: bool = false,
     health_file_exists: bool = false,
     health_entries: usize = 0,
+    refresh_outcomes_valid: bool = true,
+    refresh_typed_events: usize = 0,
+    refresh_invalid_events: usize = 0,
+    refresh_hard_lineage_events: usize = 0,
+    refresh_indeterminate_lineage_markers: usize = 0,
+    latest_refresh_outcome: ?types.RefreshOutcome = null,
 
     fn ok(self: DoctorStats) bool {
-        return self.configured and self.config_valid and self.provider_count > 0 and self.account_count > 0;
+        return self.configured and self.config_valid and self.provider_count > 0 and
+            self.account_count > 0 and self.refresh_outcomes_valid and
+            self.refresh_hard_lineage_events == 0 and
+            self.refresh_indeterminate_lineage_markers == 0;
     }
 };
 
@@ -8127,6 +8259,13 @@ fn runDoctor(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Do
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
     stats.health_entries = store.accounts.count();
+    const refresh_summary = loadRefreshJournalSummary(allocator);
+    stats.refresh_outcomes_valid = refresh_summary.valid;
+    stats.refresh_typed_events = refresh_summary.typed_events;
+    stats.refresh_invalid_events = refresh_summary.invalid_events;
+    stats.refresh_hard_lineage_events = refresh_summary.hard_lineage_events;
+    stats.refresh_indeterminate_lineage_markers = refresh_summary.indeterminate_lineage_markers;
+    stats.latest_refresh_outcome = refresh_summary.latest_outcome;
 
     // TIN-2723: resident-service + PATH binary truth. Gathered into an arena so
     // the many small owned strings free in one shot; any failure degrades to a
@@ -8172,6 +8311,15 @@ fn writeDoctorText(
         health_path,
         if (stats.health_file_exists) "present" else "not recorded",
         stats.health_entries,
+    });
+    try writer.writeAll("  ");
+    try writeRefreshJournalSummaryText(writer, .{
+        .valid = stats.refresh_outcomes_valid,
+        .typed_events = stats.refresh_typed_events,
+        .invalid_events = stats.refresh_invalid_events,
+        .hard_lineage_events = stats.refresh_hard_lineage_events,
+        .indeterminate_lineage_markers = stats.refresh_indeterminate_lineage_markers,
+        .latest_outcome = stats.latest_refresh_outcome,
     });
     try writer.print("  readiness: {s}\n", .{if (stats.ok()) "ready" else "action_needed"});
 
@@ -8221,7 +8369,7 @@ fn writeDoctorJson(
         try writer.writeAll("null");
     }
     try writer.print(
-        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s},\"codex_max_configured\":{s}",
+        ",\"providers\":{d},\"accounts\":{d},\"profiles\":{d},\"strategies\":{d},\"health_file_exists\":{s},\"health_entries\":{d},\"codex_configured\":{s},\"codex_max_configured\":{s},\"refresh_outcomes\":",
         .{
             stats.provider_count,
             stats.account_count,
@@ -8233,6 +8381,14 @@ fn writeDoctorJson(
             if (stats.codex_max_configured) "true" else "false",
         },
     );
+    try writeRefreshJournalSummaryJson(writer, .{
+        .valid = stats.refresh_outcomes_valid,
+        .typed_events = stats.refresh_typed_events,
+        .invalid_events = stats.refresh_invalid_events,
+        .hard_lineage_events = stats.refresh_hard_lineage_events,
+        .indeterminate_lineage_markers = stats.refresh_indeterminate_lineage_markers,
+        .latest_outcome = stats.latest_refresh_outcome,
+    });
     try writer.writeByte(',');
     try doctor_binaries.writeJson(binaries, writer);
     try writer.writeAll(",\"checks\":[");
@@ -8266,6 +8422,37 @@ fn writeDoctorChecksJson(writer: anytype, stats: DoctorStats, validation_message
         );
     }
     try writeDoctorCheckJson(writer, &first, "health_recorded", stats.health_entries > 0, if (stats.health_entries > 0) "ok" else "info", if (stats.health_entries > 0) "health state recorded" else "no health state recorded yet");
+    try writeDoctorCheckJson(
+        writer,
+        &first,
+        "refresh_outcomes_valid",
+        stats.refresh_outcomes_valid,
+        if (stats.refresh_outcomes_valid) "ok" else "error",
+        if (stats.refresh_outcomes_valid) "typed refresh outcomes validate" else "unknown or malformed typed refresh outcome; route remains quarantined",
+    );
+    try writeDoctorCheckJson(
+        writer,
+        &first,
+        "refresh_lineage_quarantine",
+        stats.refresh_hard_lineage_events == 0 and
+            stats.refresh_indeterminate_lineage_markers == 0 and
+            stats.refresh_outcomes_valid,
+        if (stats.refresh_hard_lineage_events == 0 and
+            stats.refresh_indeterminate_lineage_markers == 0 and
+            stats.refresh_outcomes_valid) "ok" else "error",
+        if (stats.refresh_hard_lineage_events == 0 and
+            stats.refresh_indeterminate_lineage_markers == 0 and
+            stats.refresh_outcomes_valid)
+            "no refresh lineage quarantine recorded"
+        else if (!stats.refresh_outcomes_valid)
+            "refresh outcome evidence is malformed; route remains quarantined and evidence repair is required before the recovery action can be determined"
+        else if (stats.refresh_hard_lineage_events != 0)
+            "provider-owned re-enrollment required; managed hard-quarantine clearance is not implemented; stale refresh-token backup restoration is disabled"
+        else if (stats.refresh_indeterminate_lineage_markers != 0)
+            "provider-owned re-enrollment required; a successful managed provider login clears indeterminate lineage; stale refresh-token backup restoration is disabled"
+        else
+            unreachable,
+    );
 }
 
 fn writeDoctorCheckJson(
@@ -9872,10 +10059,18 @@ fn runExec(allocator: std.mem.Allocator, args: cli.Command.ExecArgs) !void {
     };
     defer parsed.deinit();
 
+    return runExecWithConfigSnapshot(allocator, args, parsed.value);
+}
+
+fn runExecWithConfigSnapshot(
+    allocator: std.mem.Allocator,
+    args: cli.Command.ExecArgs,
+    cfg: config.Config,
+) !void {
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
 
-    var ctx = pipeline.Context.init(allocator, parsed.value, &store);
+    var ctx = pipeline.Context.init(allocator, cfg, &store);
     defer ctx.deinit();
 
     ctx.profile_name = args.profile;
@@ -10570,7 +10765,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             if (!try runCodexCli(allocator, dir, &.{"login"})) return error.CodexCommandFailed;
-            recordCodexLoginSuccess(allocator, account);
+            try recordCodexLoginSuccess(allocator, account, dir);
         },
         .login_device => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
@@ -10578,7 +10773,7 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
             const dir = try codexAccountDir(allocator, root, account);
             defer allocator.free(dir);
             if (!try runCodexCli(allocator, dir, &.{ "login", "--device-auth" })) return error.CodexCommandFailed;
-            recordCodexLoginSuccess(allocator, account);
+            try recordCodexLoginSuccess(allocator, account, dir);
         },
         .login_status => {
             const account = singleCodexAccount(args) orelse return error.MissingAccount;
@@ -10608,11 +10803,125 @@ fn runCodex(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.Cod
     }
 }
 
-fn recordCodexLoginSuccess(allocator: std.mem.Allocator, account: []const u8) void {
+fn codexLoginPersistedRotatingCredential(
+    allocator: std.mem.Allocator,
+    account_dir: []const u8,
+) !bool {
+    const auth_path = try std.fs.path.join(
+        allocator,
+        &.{ account_dir, "auth.json" },
+    );
+    defer allocator.free(auth_path);
+    const raw = std.fs.cwd().readFileAlloc(
+        allocator,
+        auth_path,
+        2 * 1024 * 1024,
+    ) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied => return false,
+        else => return err,
+    };
+    defer allocator.free(raw);
+    const parsed = std.json.parseFromSlice(
+        CodexBrokerAuthJson,
+        allocator,
+        raw,
+        .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+    ) catch return false;
+    defer parsed.deinit();
+    const tokens = parsed.value.tokens orelse return false;
+    return nonEmpty(tokens.access_token) != null and
+        nonEmpty(tokens.refresh_token) != null;
+}
+
+fn recordCodexLoginSuccess(
+    allocator: std.mem.Allocator,
+    account: []const u8,
+    account_dir: []const u8,
+) !void {
+    var lock = try repair_state.acquireRepairLock(
+        allocator,
+        "codex",
+        account,
+    );
+    defer lock.release();
+
+    const marker = try repair_state.refreshQuarantineForRoute(
+        allocator,
+        "codex",
+        account,
+    );
+    if (marker == .indeterminate_lineage and
+        !try codexLoginPersistedRotatingCredential(allocator, account_dir))
+    {
+        return error.CodexLoginCredentialNotPersisted;
+    }
+    _ = try repair_state.resolveIndeterminateRefreshQuarantineAfterProviderReenroll(
+        allocator,
+        "codex",
+        account,
+    );
     var store = health_mod.HealthStore.load(allocator, .{});
     defer store.deinit();
     store.recordAuthRefresh("codex", account);
     store.persist();
+}
+
+test "Codex provider login success resolves indeterminate lineage before health" {
+    const a = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(a);
+    defer scope.deinit(a);
+    scope.activate();
+
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "codex", "max-1");
+    const account_dir = try std.fs.path.join(a, &.{ scope.root, "max-1" });
+    defer a.free(account_dir);
+    try std.fs.makeDirAbsolute(account_dir);
+    const auth_path = try std.fs.path.join(a, &.{ account_dir, "auth.json" });
+    defer a.free(auth_path);
+    {
+        const auth = try std.fs.createFileAbsolute(auth_path, .{
+            .mode = 0o600,
+        });
+        defer auth.close();
+        try auth.writeAll(
+            "{\"tokens\":{\"access_token\":\"at-new\",\"refresh_token\":\"rt-new\"}}",
+        );
+        try auth.sync();
+    }
+    {
+        var store = health_mod.HealthStore.init(a, .{});
+        defer store.deinit();
+        store.recordFailure("codex:max-1", .auth_failure);
+        store.persist();
+    }
+
+    try recordCodexLoginSuccess(a, "max-1", account_dir);
+
+    try std.testing.expect(
+        (try repair_state.refreshQuarantineForRoute(a, "codex", "max-1")) == null,
+    );
+    var recovered = health_mod.HealthStore.load(a, .{});
+    defer recovered.deinit();
+    try std.testing.expectEqual(
+        types.MuxDecision.use_this,
+        recovered.muxDecision("codex:max-1"),
+    );
+
+    try repair_state.persistIndeterminateRefreshQuarantine(a, "codex", "max-2");
+    const missing_dir = try std.fs.path.join(a, &.{ scope.root, "max-2" });
+    defer a.free(missing_dir);
+    try std.testing.expectError(
+        error.CodexLoginCredentialNotPersisted,
+        recordCodexLoginSuccess(a, "max-2", missing_dir),
+    );
+    try std.testing.expectEqual(
+        repair_state.RefreshQuarantineState.indeterminate_lineage,
+        (try repair_state.refreshQuarantineForRoute(
+            a,
+            "codex",
+            "max-2",
+        )).?,
+    );
 }
 
 fn runCodexOnboard(allocator: std.mem.Allocator, writer: anytype, args: cli.Command.CodexArgs, root: []const u8) !void {
@@ -12479,25 +12788,17 @@ fn runCodexManaged(allocator: std.mem.Allocator, writer: anytype, args: cli.Comm
         return;
     }
 
-    if (args.resume_id != null) {
-        const resume_inspection = try inspectCodexManagedResumeForArgs(allocator, args);
-        if (!codexManagedResumeAllowsLaunch(resume_inspection)) {
-            try writeCodexManagedResumeRefusalText(writer, resume_inspection);
-            return error.ConfigValidationError;
-        }
-    }
-
     const target_argv = try buildCodexManagedTargetArgv(allocator, args);
     defer allocator.free(target_argv);
 
     const capability = firstCommaValue(args.capabilities);
-    try runStayAfloatLaunch(allocator, writer, .{
+    try runStayAfloatLaunchWithResume(allocator, writer, .{
         .profile = args.profile,
         .provider = if (args.profile == null) "codex" else null,
         .account = args.account,
         .capability = capability,
         .target_argv = target_argv,
-    });
+    }, args.resume_id);
 }
 
 const CodexStatusSummary = struct {
@@ -13159,9 +13460,8 @@ const CodexManagedResumeInspection = struct {
     selected_route_available: bool = false,
     store_available: bool = false,
     session_index_checked: bool = false,
+    session_index_available: bool = false,
     session_index_match: bool = false,
-    rollout_filenames_checked: bool = false,
-    rollout_filename_match: bool = false,
     state_store_checked: bool = false,
     state_store_match: bool = false,
     path_printed: bool = false,
@@ -13169,40 +13469,6 @@ const CodexManagedResumeInspection = struct {
     diagnostic: []const u8 = "no resume id requested",
     canonical_resume_entrypoint: []const u8 = "oauth-mux codex resume",
 };
-
-fn inspectCodexManagedResumeForArgs(allocator: std.mem.Allocator, args: cli.Command.CodexArgs) !CodexManagedResumeInspection {
-    const parsed = try config.load(allocator);
-    defer parsed.deinit();
-
-    var validation_messages = std.ArrayList(u8).init(allocator);
-    defer validation_messages.deinit();
-    try config.validate(parsed.value, validation_messages.writer());
-
-    var store = health_mod.HealthStore.load(allocator, .{});
-    defer store.deinit();
-
-    const capability = firstCommaValue(args.capabilities);
-    var routes = try collectRepairPlanRoutes(allocator, parsed.value, .{
-        .profile = args.profile,
-        .provider = if (args.profile == null) "codex" else null,
-        .account = args.account,
-        .capability = capability,
-    });
-    defer routes.deinit();
-
-    var evaluations = std.ArrayList(RouteEvaluation).init(allocator);
-    defer evaluations.deinit();
-    try collectRouteEvaluations(allocator, parsed.value, &store, routes.items, &evaluations);
-
-    // TODO(TIN-1811 Phase 2 follow-up): kept capability-scoped on purpose. A
-    // resume binds to a specific session/capability; cross-capability degrade
-    // here would silently rebind a resumed managed Codex session to a different
-    // capability, which intersects the TIN-1631 resume boundary. Wire only with
-    // an explicit session-continuity decision.
-    const selected_index = firstSelectableRoute(evaluations.items);
-    const selected_route = if (selected_index) |idx| evaluations.items[idx].route else null;
-    return try inspectCodexManagedResume(allocator, parsed.value, selected_route, args);
-}
 
 fn inspectCodexManagedResume(
     allocator: std.mem.Allocator,
@@ -13235,30 +13501,26 @@ fn inspectCodexManagedResume(
     };
     result.selected_route_available = true;
 
-    const store_dir = try codexManagedRouteConfigDir(allocator, cfg, route) orelse {
+    const store_dir = codexManagedRouteConfigDir(allocator, cfg, route) catch |err| switch (err) {
+        error.RelativeCodexConfigDir => {
+            result.status = "selected_route_invalid_store";
+            result.diagnostic = "selected Codex route defines a non-absolute CODEX_HOME store; route-local resume evidence is unavailable";
+            return result;
+        },
+        else => return err,
+    } orelse {
         result.status = "selected_route_missing_store";
         result.diagnostic = "selected Codex route does not define a CODEX_HOME store for this route-local resume diagnostic";
         return result;
     };
     defer allocator.free(store_dir);
-    result.store_available = true;
 
-    const index_path = try std.fs.path.join(allocator, &.{ store_dir, "session_index.jsonl" });
-    defer allocator.free(index_path);
-    result.session_index_checked = true;
-    result.session_index_match = fileContainsNeedle(allocator, index_path, resume_id) catch false;
-
-    const sessions_dir = try std.fs.path.join(allocator, &.{ store_dir, "sessions" });
-    defer allocator.free(sessions_dir);
-    result.rollout_filenames_checked = true;
-    result.rollout_filename_match = directoryFileNameContainsNeedle(allocator, sessions_dir, resume_id) catch false;
-
-    result.state_store_checked = true;
-    result.state_store_match =
-        (try codexManagedStateFileContainsNeedle(allocator, store_dir, "state_5.sqlite", resume_id)) or
-        (try codexManagedStateFileContainsNeedle(allocator, store_dir, "state_5.sqlite-wal", resume_id));
-
-    result.found = result.session_index_match or result.rollout_filename_match or result.state_store_match;
+    try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &result);
+    if (!result.session_index_available) {
+        result.status = "resume_evidence_unavailable";
+        result.diagnostic = "selected route-local Codex resume evidence is unavailable or unsafe to inspect";
+        return result;
+    }
     if (result.found) {
         result.status = "found_in_selected_store";
         result.diagnostic = "resume id was found in the selected route-local Codex store; canonical resume authority is checked by oauth-mux codex resume";
@@ -13273,7 +13535,12 @@ fn codexManagedRouteConfigDir(allocator: std.mem.Allocator, cfg: config.Config, 
     const provider_cfg = cfg.providers.map.get(route.provider) orelse return null;
     const account = provider_cfg.accounts.map.get(route.account) orelse return null;
     const config_dir = account.config_dir orelse return null;
-    return try paths.expandTilde(allocator, config_dir);
+    const expanded = try paths.expandTilde(allocator, config_dir);
+    if (!std.fs.path.isAbsolute(expanded)) {
+        allocator.free(expanded);
+        return error.RelativeCodexConfigDir;
+    }
+    return expanded;
 }
 
 fn codexManagedOverlayHomeForPlanning(allocator: std.mem.Allocator, path_value: []const u8) !bool {
@@ -13310,65 +13577,205 @@ test "codexManagedOverlayHomeForPlanning detects managed overlay homes" {
     try std.testing.expect(try codexManagedOverlayHomeForPlanning(allocator, tmp_path));
 }
 
-fn codexManagedStateFileContainsNeedle(
+fn inspectCodexManagedResumeStore(
     allocator: std.mem.Allocator,
     store_dir: []const u8,
-    filename: []const u8,
-    needle: []const u8,
-) !bool {
-    const path = try std.fs.path.join(allocator, &.{ store_dir, filename });
-    defer allocator.free(path);
-    return fileContainsNeedle(allocator, path, needle) catch false;
+    resume_id: []const u8,
+    result: *CodexManagedResumeInspection,
+) !void {
+    result.session_index_checked = true;
+    switch (try codex_resume_index.lookup(allocator, store_dir, resume_id)) {
+        .match => {
+            result.store_available = true;
+            result.session_index_available = true;
+            result.session_index_match = true;
+        },
+        .no_match => {
+            result.store_available = true;
+            result.session_index_available = true;
+            result.session_index_match = false;
+        },
+        .unavailable => {
+            result.store_available = false;
+            result.session_index_available = false;
+            result.session_index_match = false;
+        },
+    }
+
+    // Raw SQLite/WAL bytes and rollout filenames have no parsed record
+    // boundary here, so they cannot prove resume identity.
+    result.state_store_checked = false;
+    result.state_store_match = false;
+    result.found = result.session_index_match;
 }
 
-fn fileContainsNeedle(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) !bool {
-    if (needle.len == 0) return false;
-    var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
-        else => return err,
-    };
-    defer file.close();
+test "Codex managed resume ignores raw database bytes and rollout filenames" {
+    const allocator = std.testing.allocator;
+    const resume_id = "11111111-2222-4333-8444-555555555555";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var previous = std.ArrayList(u8).init(allocator);
-    defer previous.deinit();
-
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = try file.read(&buf);
-        if (n == 0) break;
-
-        var haystack = std.ArrayList(u8).init(allocator);
-        defer haystack.deinit();
-        try haystack.appendSlice(previous.items);
-        try haystack.appendSlice(buf[0..n]);
-        if (std.mem.indexOf(u8, haystack.items, needle) != null) return true;
-
-        previous.clearRetainingCapacity();
-        const keep = @min(needle.len - 1, haystack.items.len);
-        if (keep != 0) try previous.appendSlice(haystack.items[haystack.items.len - keep ..]);
+    try tmp.dir.makePath("sessions/2026/07/17");
+    {
+        const index = try tmp.dir.createFile("session_index.jsonl", .{});
+        defer index.close();
+        try index.writeAll(
+            \\{"id":"11111111-2222-4333-8444-555555555556","thread_name":"11111111-2222-4333-8444-555555555555","updated_at":"2026-07-17T00:00:00Z"}
+            \\
+        );
     }
-    return false;
+    {
+        const rollout = try tmp.dir.createFile(
+            "sessions/2026/07/17/rollout-2026-07-17T12-34-56-11111111-2222-4333-8444-555555555555.jsonl",
+            .{},
+        );
+        rollout.close();
+    }
+    {
+        const state = try tmp.dir.createFile("state_5.sqlite", .{});
+        defer state.close();
+        try state.writeAll("unparsed database bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const wal = try tmp.dir.createFile("state_5.sqlite-wal", .{});
+        defer wal.close();
+        try wal.writeAll("unparsed WAL bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const shm = try tmp.dir.createFile("state_5.sqlite-shm", .{});
+        defer shm.close();
+        try shm.writeAll("unparsed SHM bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const logs = try tmp.dir.createFile("logs_2.sqlite", .{});
+        defer logs.close();
+        try logs.writeAll("unparsed logs database bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const logs_wal = try tmp.dir.createFile("logs_2.sqlite-wal", .{});
+        defer logs_wal.close();
+        try logs_wal.writeAll("unparsed logs WAL bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+    {
+        const logs_shm = try tmp.dir.createFile("logs_2.sqlite-shm", .{});
+        defer logs_shm.close();
+        try logs_shm.writeAll("unparsed logs SHM bytes containing 11111111-2222-4333-8444-555555555555");
+    }
+
+    const store_dir = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(store_dir);
+
+    var inspection = CodexManagedResumeInspection{};
+    try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &inspection);
+    try std.testing.expect(inspection.session_index_checked);
+    try std.testing.expect(inspection.session_index_available);
+    try std.testing.expect(!inspection.session_index_match);
+    try std.testing.expect(!inspection.state_store_checked);
+    try std.testing.expect(!inspection.state_store_match);
+    try std.testing.expect(!inspection.found);
+
+    {
+        const index = try tmp.dir.createFile("session_index.jsonl", .{ .truncate = true });
+        defer index.close();
+        try index.writeAll(
+            \\{"id":"11111111-2222-4333-8444-555555555555","thread_name":"fixture","updated_at":"2026-07-17T00:00:00Z"}
+            \\
+        );
+    }
+
+    inspection = .{};
+    try inspectCodexManagedResumeStore(allocator, store_dir, resume_id, &inspection);
+    try std.testing.expect(inspection.session_index_available);
+    try std.testing.expect(inspection.session_index_match);
+    try std.testing.expect(inspection.found);
 }
 
-fn directoryFileNameContainsNeedle(allocator: std.mem.Allocator, root: []const u8, needle: []const u8) !bool {
-    if (needle.len == 0) return false;
-    var dir = std.fs.openDirAbsolute(root, .{ .iterate = true }) catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied, error.NotDir => return false,
-        else => return err,
-    };
-    defer dir.close();
+test "Codex managed resume proof is bound to the selected route store" {
+    const allocator = std.testing.allocator;
+    const resume_id = "11111111-2222-4333-8444-555555555555";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    var inspected: usize = 0;
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        inspected += 1;
-        if (inspected > 20000) return false;
-        if (std.mem.indexOf(u8, entry.basename, needle) != null) return true;
+    try tmp.dir.makePath("route-a");
+    try tmp.dir.makePath("route-b");
+    {
+        const index = try tmp.dir.createFile("route-a/session_index.jsonl", .{});
+        defer index.close();
+        try index.writeAll("{\"id\":\"11111111-2222-4333-8444-555555555555\"}\n");
     }
-    return false;
+    {
+        const index = try tmp.dir.createFile("route-b/session_index.jsonl", .{});
+        defer index.close();
+        try index.writeAll("{\"id\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\"}\n");
+    }
+
+    const route_a_dir = try tmp.dir.realpathAlloc(allocator, "route-a");
+    defer allocator.free(route_a_dir);
+    const route_b_dir = try tmp.dir.realpathAlloc(allocator, "route-b");
+    defer allocator.free(route_b_dir);
+    const config_json = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "providers": {{
+        \\    "codex": {{
+        \\      "kind": "codex",
+        \\      "accounts": {{
+        \\        "route-a": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "env", "variable": "CODEX_A" }}
+        \\        }},
+        \\        "route-b": {{
+        \\          "config_dir": "{s}",
+        \\          "secret": {{ "backend": "env", "variable": "CODEX_B" }}
+        \\        }}
+        \\      }}
+        \\    }}
+        \\  }}
+        \\}}
+    , .{ route_a_dir, route_b_dir });
+    defer allocator.free(config_json);
+    const parsed = try config.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    const route_a = RepairPlanRoute{ .provider = "codex", .account = "route-a" };
+    const route_b = RepairPlanRoute{ .provider = "codex", .account = "route-b" };
+    const args = cli.Command.CodexArgs{ .resume_id = resume_id };
+
+    const route_a_inspection = try inspectCodexManagedResume(allocator, parsed.value, route_a, args);
+    try std.testing.expect(codexManagedResumeAllowsLaunch(route_a_inspection));
+    const route_b_inspection = try inspectCodexManagedResume(allocator, parsed.value, route_b, args);
+    try std.testing.expect(!codexManagedResumeAllowsLaunch(route_b_inspection));
+}
+
+test "Codex managed resume rejects relative route stores as unavailable" {
+    const allocator = std.testing.allocator;
+    const config_json =
+        \\{
+        \\  "providers": {
+        \\    "codex": {
+        \\      "kind": "codex",
+        \\      "accounts": {
+        \\        "relative": {
+        \\          "config_dir": "relative/store",
+        \\          "secret": { "backend": "env", "variable": "CODEX_TOKEN" }
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const parsed = try config.loadFromBytes(allocator, config_json);
+    defer parsed.deinit();
+
+    const inspection = try inspectCodexManagedResume(
+        allocator,
+        parsed.value,
+        .{ .provider = "codex", .account = "relative" },
+        .{ .resume_id = "11111111-2222-4333-8444-555555555555" },
+    );
+    try std.testing.expectEqualStrings("selected_route_invalid_store", inspection.status);
+    try std.testing.expect(!inspection.store_available);
+    try std.testing.expect(!inspection.session_index_available);
+    try std.testing.expect(!codexManagedResumeAllowsLaunch(inspection));
 }
 
 fn codexManagedResumeAllowsLaunch(inspection: CodexManagedResumeInspection) bool {
@@ -13405,12 +13812,10 @@ fn writeCodexManagedResumeJson(writer: anytype, inspection: CodexManagedResumeIn
     try writer.writeAll(",\"resume_id_printed\":false,\"path_printed\":false,\"unmanaged_cross_route_resume\":false");
     try writer.writeAll(",\"evidence\":{\"session_index_checked\":");
     try writer.writeAll(if (inspection.session_index_checked) "true" else "false");
+    try writer.writeAll(",\"session_index_available\":");
+    try writer.writeAll(if (inspection.session_index_available) "true" else "false");
     try writer.writeAll(",\"session_index_match\":");
     try writer.writeAll(if (inspection.session_index_match) "true" else "false");
-    try writer.writeAll(",\"rollout_filenames_checked\":");
-    try writer.writeAll(if (inspection.rollout_filenames_checked) "true" else "false");
-    try writer.writeAll(",\"rollout_filename_match\":");
-    try writer.writeAll(if (inspection.rollout_filename_match) "true" else "false");
     try writer.writeAll(",\"state_store_checked\":");
     try writer.writeAll(if (inspection.state_store_checked) "true" else "false");
     try writer.writeAll(",\"state_store_match\":");
@@ -13424,6 +13829,7 @@ fn writeCodexManagedResumeRefusalText(writer: anytype, inspection: CodexManagedR
     try writer.writeAll("oauth-mux Codex managed resume diagnostic\n\n");
     try writer.print("  ok: false\n  status: {s}\n", .{inspection.status});
     try writer.print("  selected_route_available: {s}\n", .{if (inspection.selected_route_available) "true" else "false"});
+    try writer.print("  session_index_available: {s}\n", .{if (inspection.session_index_available) "true" else "false"});
     try writer.writeAll("  diagnostic_only: true\n");
     try writer.writeAll("  canonical_resume_authority_checked: false\n");
     try writer.print("  canonical_resume_entrypoint: {s}\n", .{inspection.canonical_resume_entrypoint});
@@ -18867,6 +19273,272 @@ test "codexMaxShapeConfigured rejects single-account Codex config" {
 
     try std.testing.expect(codexConfigured(parsed.value));
     try std.testing.expect(!codexMaxShapeConfigured(parsed.value));
+}
+
+test "keepalive report surfaces transient and quarantined counters in json and text" {
+    const report = warm_binding.LoopReport{
+        .ticks = 4,
+        .refreshed = 1,
+        .failed = 2,
+        .died = 1,
+        .transient = 3,
+        .quarantined = 1,
+        .drained = true,
+    };
+    var json = std.ArrayList(u8).init(std.testing.allocator);
+    defer json.deinit();
+    try writeKeepaliveReport(json.writer(), 5, report, true);
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"transient\":3") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"quarantined\":1") != null,
+    );
+
+    var text = std.ArrayList(u8).init(std.testing.allocator);
+    defer text.deinit();
+    try writeKeepaliveReport(text.writer(), 5, report, false);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "transient=3") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "quarantined=1") != null,
+    );
+}
+
+test "generic status refresh summary renders every closed tag without provider text" {
+    inline for (std.meta.fields(types.RefreshOutcome)) |field| {
+        const outcome: types.RefreshOutcome = @enumFromInt(field.value);
+        var buf = std.ArrayList(u8).init(std.testing.allocator);
+        defer buf.deinit();
+        try writeRefreshJournalSummaryJson(buf.writer(), .{
+            .typed_events = 1,
+            .hard_lineage_events = if (outcome == .hard_lineage_invalidated) 1 else 0,
+            .latest_outcome = outcome,
+        });
+
+        const marker = try std.fmt.allocPrint(std.testing.allocator, "\"latest_outcome\":\"{s}\"", .{field.name});
+        defer std.testing.allocator.free(marker);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, marker) != null);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, "invalid_grant") == null);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, "refresh_token") == null);
+        try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale_backup_restore_allowed\":false") != null);
+        try std.testing.expect(
+            std.mem.indexOf(
+                u8,
+                buf.items,
+                "\"hard_quarantine_clearance_available\":false",
+            ) != null,
+        );
+    }
+}
+
+fn writeHardRefreshStatusEvidenceForTest(
+    allocator: std.mem.Allocator,
+    state_root: []const u8,
+    journal_account: []const u8,
+    marker_account: []const u8,
+) !void {
+    const journal_path = try std.fs.path.join(
+        allocator,
+        &.{ state_root, "repair-events.jsonl" },
+    );
+    defer allocator.free(journal_path);
+    const journal_row = try std.fmt.allocPrint(
+        allocator,
+        "{{\"kind\":\"token_refresh\",\"provider\":\"toy\",\"account\":\"{s}\",\"refresh_outcome\":\"hard_lineage_invalidated\",\"outcome\":\"hard_lineage_invalidated\",\"ok\":false,\"executed\":true,\"mutating\":true}}\n",
+        .{journal_account},
+    );
+    defer allocator.free(journal_row);
+    {
+        const journal = try std.fs.createFileAbsolute(journal_path, .{
+            .truncate = true,
+            .mode = 0o600,
+        });
+        defer journal.close();
+        try journal.writeAll(journal_row);
+    }
+
+    const marker_path = try repair_state.refreshQuarantineMarkerPathForTest(
+        allocator,
+        "toy",
+        marker_account,
+    );
+    defer allocator.free(marker_path);
+    try std.fs.cwd().makePath(std.fs.path.dirname(marker_path).?);
+    const marker_row = try std.fmt.allocPrint(
+        allocator,
+        "{{\"version\":1,\"provider\":\"toy\",\"account\":\"{s}\",\"state\":\"hard_lineage_invalidated\",\"outcome\":\"hard_lineage_invalidated\",\"recovery\":\"provider_reenroll\",\"stale_backup_restore_allowed\":false,\"store_fingerprint\":null,\"identity_fingerprint\":null}}\n",
+        .{marker_account},
+    );
+    defer allocator.free(marker_row);
+    const marker = try std.fs.createFileAbsolute(marker_path, .{
+        .truncate = true,
+        .mode = 0o600,
+    });
+    defer marker.close();
+    try marker.writeAll(marker_row);
+}
+
+test "status sums hard quarantine evidence for disjoint routes" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+    try writeHardRefreshStatusEvidenceForTest(
+        allocator,
+        scope.root,
+        "journal-route",
+        "marker-route",
+    );
+
+    const summary = try repair_state.refreshJournalSummary(allocator);
+    try std.testing.expectEqual(@as(usize, 2), summary.hard_lineage_events);
+
+    var json = std.ArrayList(u8).init(allocator);
+    defer json.deinit();
+    try writeRefreshJournalSummaryJson(json.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"hard_lineage_events\":2") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"quarantine_present\":true") != null,
+    );
+
+    var text = std.ArrayList(u8).init(allocator);
+    defer text.deinit();
+    try writeRefreshJournalSummaryText(text.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "hard_lineage=2") != null,
+    );
+}
+
+test "status deduplicates hard journal and marker evidence for one route" {
+    const allocator = std.testing.allocator;
+    var scope = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer scope.deinit(allocator);
+    scope.activate();
+    try writeHardRefreshStatusEvidenceForTest(
+        allocator,
+        scope.root,
+        "shared-route",
+        "shared-route",
+    );
+
+    const summary = try repair_state.refreshJournalSummary(allocator);
+    try std.testing.expectEqual(@as(usize, 1), summary.hard_lineage_events);
+
+    var json = std.ArrayList(u8).init(allocator);
+    defer json.deinit();
+    try writeRefreshJournalSummaryJson(json.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, json.items, "\"hard_lineage_events\":1") != null,
+    );
+
+    var text = std.ArrayList(u8).init(allocator);
+    defer text.deinit();
+    try writeRefreshJournalSummaryText(text.writer(), summary);
+    try std.testing.expect(
+        std.mem.indexOf(u8, text.items, "hard_lineage=1") != null,
+    );
+}
+
+test "generic status and doctor fail closed on hard or unknown refresh outcomes" {
+    var status_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer status_buf.deinit();
+    try writeRefreshJournalSummaryJson(status_buf.writer(), .{
+        .valid = false,
+        .invalid_events = 1,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"valid\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"quarantine_present\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"provider_reenroll_required\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, status_buf.items, "\"evidence_repair_required\":true") != null);
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            status_buf.items,
+            "\"hard_quarantine_clearance_available\":false",
+        ) != null,
+    );
+
+    var doctor_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer doctor_buf.deinit();
+    const stats = DoctorStats{
+        .configured = true,
+        .config_valid = true,
+        .provider_count = 1,
+        .account_count = 1,
+        .refresh_hard_lineage_events = 1,
+        .latest_refresh_outcome = .hard_lineage_invalidated,
+    };
+    try writeDoctorJson(
+        doctor_buf.writer(),
+        stats,
+        "/redacted/config",
+        "/redacted/state",
+        "/redacted/health",
+        "",
+        null,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "\"ok\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "\"latest_outcome\":\"hard_lineage_invalidated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "provider-owned re-enrollment required") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "managed hard-quarantine clearance is not implemented") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctor_buf.items, "stale refresh-token backup restoration is disabled") != null);
+
+    var indeterminate_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer indeterminate_buf.deinit();
+    var indeterminate_stats = stats;
+    indeterminate_stats.refresh_hard_lineage_events = 0;
+    indeterminate_stats.refresh_indeterminate_lineage_markers = 1;
+    indeterminate_stats.latest_refresh_outcome = .transient_store;
+    try writeDoctorJson(
+        indeterminate_buf.writer(),
+        indeterminate_stats,
+        "/redacted/config",
+        "/redacted/state",
+        "/redacted/health",
+        "",
+        null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            indeterminate_buf.items,
+            "a successful managed provider login clears indeterminate lineage",
+        ) != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            indeterminate_buf.items,
+            "managed hard-quarantine clearance is not implemented",
+        ) == null,
+    );
+
+    var malformed_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer malformed_buf.deinit();
+    var malformed_stats = stats;
+    malformed_stats.refresh_outcomes_valid = false;
+    malformed_stats.refresh_hard_lineage_events = 0;
+    malformed_stats.latest_refresh_outcome = null;
+    try writeDoctorJson(
+        malformed_buf.writer(),
+        malformed_stats,
+        "/redacted/config",
+        "/redacted/state",
+        "/redacted/health",
+        "",
+        null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(
+            u8,
+            malformed_buf.items,
+            "evidence repair is required before the recovery action can be determined",
+        ) != null,
+    );
 }
 
 test "doctor json recommends Codex Max candidate for single-account drift" {
