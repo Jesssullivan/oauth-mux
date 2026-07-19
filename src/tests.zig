@@ -50,6 +50,7 @@ const AllModules = struct {
 
     pub const broker = @import("broker/mod.zig");
     pub const broker_account_pool = @import("broker/account_pool.zig");
+    pub const broker_attempt_policy = @import("broker/attempt_policy.zig");
     pub const broker_identifiers = @import("broker/identifiers.zig");
     pub const broker_methods = @import("broker/methods.zig");
     pub const broker_server = @import("broker/server.zig");
