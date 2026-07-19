@@ -46,6 +46,47 @@ const FactId = enum {
     streaming_uses_one_fake_call,
     provider_5xx_status_and_body_pass_through,
     provider_5xx_uses_one_fake_call,
+    // §2.2 single-alternate retry machine (routed synthetic seam, #494).
+    prebody_401_consumes_one_alternate,
+    alternate_success_records_two_attempts,
+    first_attempt_body_forwarded_byte_exact,
+    alternate_replay_body_byte_exact,
+    prebody_403_consumes_one_alternate,
+    prebody_429_consumes_alternate_after_wait,
+    pre_alternate_wait_within_bound,
+    wait_beyond_max_returns_local_429,
+    wait_beyond_deadline_returns_local_429,
+    presend_fault_consumes_one_same_route_retry,
+    transport_failure_never_contacts_alternate,
+    same_identity_alternate_delivers_original,
+    alternate_slot_transport_fail_adds_no_retry,
+    same_route_retry_401_adds_no_alternate,
+    alternate_failure_no_third_attempt,
+    started_response_never_replayed,
+    // §2.2 replay reservation / cancellation / stream-once.
+    cancellation_releases_reservation_to_zero,
+    cancellation_makes_no_replay,
+    streaming_cancellation_single_attempt,
+    stream_once_cancellation_keeps_latch_no_replay,
+    stream_once_cancellation_releases_reservation,
+    oversize_body_streams_once_refuses_alternate,
+    sidecar_budget_exhaustion_forces_stream_once,
+    overflow_releases_reservation_next_unaffected,
+    // Bounded all-exhausted terminal (plan §7, ladder G10).
+    all_exhausted_returns_bounded_429,
+    all_exhausted_propagates_minimum_trusted_reset,
+    all_exhausted_without_reset_omits_retry_after,
+    all_exhausted_delivers_typed_429_not_200,
+    all_exhausted_ignores_malformed_reset,
+    no_alternate_emits_single_uniform_terminal,
+    same_identity_pool_emits_single_uniform_terminal,
+    // Teardown / resident-absence (ladder §9 Stage 2, G5/G6).
+    routed_alternate_completes_with_no_resident,
+    abrupt_death_mid_alternate_reclaims_to_zero,
+    teardown_holds_then_releases_reservation,
+    teardown_converges_within_bound,
+    partial_request_teardown_no_replay_bounded,
+    sequential_routed_requests_release_each_time,
 };
 
 const fact_ids = [_]FactId{
@@ -72,6 +113,43 @@ const fact_ids = [_]FactId{
     .streaming_uses_one_fake_call,
     .provider_5xx_status_and_body_pass_through,
     .provider_5xx_uses_one_fake_call,
+    .prebody_401_consumes_one_alternate,
+    .alternate_success_records_two_attempts,
+    .first_attempt_body_forwarded_byte_exact,
+    .alternate_replay_body_byte_exact,
+    .prebody_403_consumes_one_alternate,
+    .prebody_429_consumes_alternate_after_wait,
+    .pre_alternate_wait_within_bound,
+    .wait_beyond_max_returns_local_429,
+    .wait_beyond_deadline_returns_local_429,
+    .presend_fault_consumes_one_same_route_retry,
+    .transport_failure_never_contacts_alternate,
+    .same_identity_alternate_delivers_original,
+    .alternate_slot_transport_fail_adds_no_retry,
+    .same_route_retry_401_adds_no_alternate,
+    .alternate_failure_no_third_attempt,
+    .started_response_never_replayed,
+    .cancellation_releases_reservation_to_zero,
+    .cancellation_makes_no_replay,
+    .streaming_cancellation_single_attempt,
+    .stream_once_cancellation_keeps_latch_no_replay,
+    .stream_once_cancellation_releases_reservation,
+    .oversize_body_streams_once_refuses_alternate,
+    .sidecar_budget_exhaustion_forces_stream_once,
+    .overflow_releases_reservation_next_unaffected,
+    .all_exhausted_returns_bounded_429,
+    .all_exhausted_propagates_minimum_trusted_reset,
+    .all_exhausted_without_reset_omits_retry_after,
+    .all_exhausted_delivers_typed_429_not_200,
+    .all_exhausted_ignores_malformed_reset,
+    .no_alternate_emits_single_uniform_terminal,
+    .same_identity_pool_emits_single_uniform_terminal,
+    .routed_alternate_completes_with_no_resident,
+    .abrupt_death_mid_alternate_reclaims_to_zero,
+    .teardown_holds_then_releases_reservation,
+    .teardown_converges_within_bound,
+    .partial_request_teardown_no_replay_bounded,
+    .sequential_routed_requests_release_each_time,
 };
 
 const Fact = struct {
@@ -149,6 +227,30 @@ pub fn emit(identity: BuildIdentity) !void {
     runRedirectScenario(&facts) catch {};
     runStreamingScenario(&facts) catch {};
     runProvider5xxScenario(&facts) catch {};
+    // §2.2 single-alternate retry machine + bounded terminal (routed seam #494).
+    runAlternate401Scenario(&facts) catch {};
+    runAlternate403Scenario(&facts) catch {};
+    runAlternate429WaitScenario(&facts) catch {};
+    runWaitBeyondMaxScenario(&facts) catch {};
+    runWaitBeyondDeadlineScenario(&facts) catch {};
+    runSameRouteRetryScenario(&facts) catch {};
+    runSameIdentityRefusalScenario(&facts) catch {};
+    runSlotExclusivityScenario(&facts) catch {};
+    runAlternateFailureNoThirdScenario(&facts) catch {};
+    runStartedResponseScenario(&facts) catch {};
+    runCancellationReplayableScenario(&facts) catch {};
+    runStreamOnceCancellationScenario(&facts) catch {};
+    runOverflowNoAlternateScenario(&facts) catch {};
+    runOverflowReleaseScenario(&facts) catch {};
+    runAllExhaustedMinResetScenario(&facts) catch {};
+    runAllExhaustedNoResetScenario(&facts) catch {};
+    runAllExhaustedMalformedResetScenario(&facts) catch {};
+    runNoAlternateTerminalScenario(&facts) catch {};
+    runSameIdentityTerminalScenario(&facts) catch {};
+    runResidentAbsenceScenario(&facts) catch {};
+    runAbruptDeathScenario(&facts) catch {};
+    runPartialSendTeardownScenario(&facts) catch {};
+    runSequentialReleaseScenario(&facts) catch {};
 
     const artifact = Artifact{
         .candidate_sha = identity.candidate_sha,
@@ -687,6 +789,903 @@ fn readResponseRemainder(stream: *std.net.Stream, response: *std.ArrayList(u8)) 
         if (count == 0) return;
         try response.appendSlice(buffer[0..count]);
     }
+}
+
+// ===========================================================================
+// §2.2 single-alternate retry machine + bounded terminal + teardown/resident
+// OBSERVATION (routed synthetic seam #494). Every scenario drives the routed
+// test seam over caller-supplied synthetic routes and deterministic fakes, then
+// records only value-free pass/fail facts. Production upstream selection and
+// automatic alternates stay compile-fixed and unreachable through this seam.
+// ===========================================================================
+
+const routed_model = "claude-opus-4-20250514";
+const routed_json = "{\"model\":\"" ++ routed_model ++ "\",\"max_tokens\":16}";
+const max_wait_ns_bound: u64 = 30 * std.time.ns_per_s;
+
+/// Virtual clock for the injected-wait scenarios: `sleep` advances a purely
+/// in-memory timestamp and records the wait, so no real time passes and the
+/// bounded-wait observation is deterministic.
+const VirtualClock = struct {
+    now_ns: i128 = 0,
+    sleep_calls: usize = 0,
+    last_sleep_ns: u64 = 0,
+
+    fn nowNs(ctx: ?*anyopaque) i128 {
+        const self: *VirtualClock = @ptrCast(@alignCast(ctx.?));
+        return self.now_ns;
+    }
+
+    fn sleepNs(ctx: ?*anyopaque, ns: u64) void {
+        const self: *VirtualClock = @ptrCast(@alignCast(ctx.?));
+        self.sleep_calls += 1;
+        self.last_sleep_ns = ns;
+        self.now_ns += @intCast(ns);
+    }
+
+    fn clock(self: *VirtualClock) wire_proxy.testing.Clock {
+        return .{ .ctx = self, .nowFn = nowNs, .sleepFn = sleepNs };
+    }
+};
+
+fn routedRequest(listener: *wire_proxy.Listener, carrier: []const u8) ![]u8 {
+    const request = try postRequest(listener.port(), carrier, routed_json);
+    defer std.testing.allocator.free(request);
+    return requestRawAlloc(listener.address(), request);
+}
+
+fn responseHasRetryAfter(response: []const u8) bool {
+    return std.ascii.indexOfIgnoreCase(response, "retry-after") != null;
+}
+
+fn waitForConnectionActive(listener: *wire_proxy.Listener) !void {
+    var timer = try std.time.Timer.start();
+    while (!wire_proxy.testing.connectionActive(listener)) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.yield() catch {};
+    }
+}
+
+fn waitForListenerIdle(listener: *wire_proxy.Listener) !void {
+    var timer = try std.time.Timer.start();
+    while (wire_proxy.testing.connectionActive(listener)) {
+        if (timer.read() > 5 * std.time.ns_per_s) return error.TestTimeout;
+        std.Thread.yield() catch {};
+    }
+}
+
+fn runAlternate401Scenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "{\"ok\":true}" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "route-1-secret", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "route-2-secret", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+
+    const alt_success = hasStatus(response, "200 OK") and
+        std.mem.endsWith(u8, response, "\r\n\r\n{\"ok\":true}");
+    setFact(facts, .prebody_401_consumes_one_alternate, alt_success and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
+        obs.alternate_count == 1 and obs.same_route_retry_count == 0);
+    setFact(facts, .alternate_success_records_two_attempts, obs.attempts_total == 2 and
+        obs.third_attempt_count == 0);
+
+    var first_sent: [256]u8 = undefined;
+    const first_len = primary.capturedRequestBody(&first_sent);
+    var alt_sent: [256]u8 = undefined;
+    const alt_len = alternate.capturedRequestBody(&alt_sent);
+    setFact(facts, .first_attempt_body_forwarded_byte_exact, obs.model_present and
+        std.mem.eql(u8, first_sent[0..first_len], routed_json));
+    setFact(facts, .alternate_replay_body_byte_exact,
+        std.mem.eql(u8, alt_sent[0..alt_len], routed_json) and
+            std.mem.eql(u8, alt_sent[0..alt_len], first_sent[0..first_len]));
+}
+
+fn runAlternate403Scenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .forbidden, .body = "forbidden" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "alt-ok" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .prebody_403_consumes_one_alternate,
+        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
+            obs.alternate_count == 1 and obs.attempts_total == 2 and obs.third_attempt_count == 0);
+}
+
+fn runAlternate429WaitScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "5" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "alt-ok" }});
+    defer alternate.deinit();
+
+    var vclock = VirtualClock{};
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .prebody_429_consumes_alternate_after_wait,
+        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
+            obs.alternate_count == 1 and obs.attempts_total == 2);
+    setFact(facts, .pre_alternate_wait_within_bound, vclock.sleep_calls == 1 and
+        vclock.last_sleep_ns == 5 * std.time.ns_per_s and vclock.last_sleep_ns <= max_wait_ns_bound);
+}
+
+fn runWaitBeyondMaxScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "40" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    var vclock = VirtualClock{};
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .wait_beyond_max_returns_local_429,
+        hasStatus(response, "429 Too Many Requests") and vclock.sleep_calls == 0 and
+            alternate.snapshot().isZero() and obs.alternate_count == 0);
+}
+
+fn runWaitBeyondDeadlineScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "5" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    var vclock = VirtualClock{};
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .clock = vclock.clock(),
+        .request_deadline_ns = 2 * std.time.ns_per_s,
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    setFact(facts, .wait_beyond_deadline_returns_local_429,
+        hasStatus(response, "429 Too Many Requests") and vclock.sleep_calls == 0 and
+            alternate.snapshot().isZero());
+}
+
+fn runSameRouteRetryScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "retried-ok" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "alt-must-not-run" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1", .presend_faults = 1 },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .presend_fault_consumes_one_same_route_retry,
+        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nretried-ok") and
+            primary.snapshot().call_count == 1 and obs.same_route_retry_count == 1 and
+            obs.alternate_count == 0 and obs.attempts_total == 2);
+    setFact(facts, .transport_failure_never_contacts_alternate, alternate.snapshot().isZero());
+}
+
+fn runSameIdentityRefusalScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-1" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .same_identity_alternate_delivers_original,
+        hasStatus(response, "401 Unauthorized") and std.mem.endsWith(u8, response, "\r\n\r\ndenied") and
+            alternate.snapshot().isZero() and obs.same_identity_alternate_refused and
+            obs.attempts_total == 1 and obs.alternate_count == 0);
+}
+
+fn runSlotExclusivityScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Order A: a pre-body 401 consumes the alternate slot; the alternate then
+    // transport-fails. No same-route retry may be added.
+    {
+        var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+        defer primary.deinit();
+        var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+        defer alternate.deinit();
+
+        const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+            .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+            .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2", .presend_faults = 1 },
+        });
+        defer listener.deinit();
+
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+        const obs = wire_proxy.testing.requestObservation(listener);
+        setFact(facts, .alternate_slot_transport_fail_adds_no_retry,
+            hasStatus(response, "502 Bad Gateway") and primary.snapshot().call_count == 1 and
+                alternate.snapshot().isZero() and obs.alternate_count == 1 and
+                obs.same_route_retry_count == 0 and obs.attempts_total == 2);
+    }
+
+    // Order B: a proven pre-send fault consumes the same-route retry; the retry
+    // then returns 401. No alternate may be added.
+    {
+        var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied-on-retry" }});
+        defer primary.deinit();
+        var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+        defer alternate.deinit();
+
+        const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+            .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1", .presend_faults = 1 },
+            .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        });
+        defer listener.deinit();
+
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+        const obs = wire_proxy.testing.requestObservation(listener);
+        setFact(facts, .same_route_retry_401_adds_no_alternate,
+            hasStatus(response, "401 Unauthorized") and std.mem.endsWith(u8, response, "\r\n\r\ndenied-on-retry") and
+                primary.snapshot().call_count == 1 and alternate.snapshot().isZero() and
+                obs.same_route_retry_count == 1 and obs.alternate_count == 0 and obs.attempts_total == 2);
+    }
+}
+
+fn runAlternateFailureNoThirdScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .internal_server_error, .body = "alt-boom" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .alternate_failure_no_third_attempt,
+        hasStatus(response, "500 Internal Server Error") and std.mem.endsWith(u8, response, "\r\n\r\nalt-boom") and
+            primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
+            obs.attempts_total == 2 and obs.alternate_count == 1 and obs.third_attempt_count == 0);
+}
+
+fn runStartedResponseScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const first = "event: content_block_delta\ndata: {\"delta\":{\"text\":\"partial\"}}\n\n";
+    const rest = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = first ++ rest,
+        .headers = &.{.{ .name = "Content-Type", .value = "text/event-stream" }},
+        .chunked = true,
+        .truncate_after_bytes = first.len,
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .started_response_never_replayed,
+        hasStatus(response, "200 OK") and
+            std.mem.indexOf(u8, response, first) != null and std.mem.indexOf(u8, response, rest) == null and
+            primary.snapshot().call_count == 1 and alternate.snapshot().isZero() and
+            obs.attempts_total == 1 and obs.alternate_count == 0 and obs.same_route_retry_count == 0 and
+            wire_proxy.testing.reservationOutstanding(listener) == 0);
+}
+
+fn runCancellationReplayableScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const response_body = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(response_body);
+    @memset(response_body, 'y');
+    const prefix = "streamed-prefix";
+    @memcpy(response_body[0..prefix.len], prefix);
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = response_body,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const request = try postRequest(listener.port(), &carrier, routed_json);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    var stream_live = true;
+    defer if (stream_live) stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&primary);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+    const prefix_seen = std.mem.indexOf(u8, response.items, prefix) != null;
+
+    std.posix.shutdown(stream.handle, .both) catch {};
+    stream.close();
+    stream_live = false;
+    primary.releasePausedResponse();
+    try waitForListenerIdle(listener);
+
+    setFact(facts, .cancellation_releases_reservation_to_zero,
+        wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .cancellation_makes_no_replay,
+        alternate.snapshot().isZero() and primary.snapshot().call_count == 1);
+    setFact(facts, .streaming_cancellation_single_attempt, prefix_seen and
+        primary.snapshot().call_count == 1 and primary.snapshot().attempt_count == 1);
+}
+
+fn runStreamOnceCancellationScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const response_body = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(response_body);
+    @memset(response_body, 'y');
+    const prefix = "streamed-prefix";
+    @memcpy(response_body[0..prefix.len], prefix);
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = response_body,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    // Budget below the request body: the request is IRREVOCABLY stream-once
+    // before the primary is contacted.
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .reservation_budget_bytes = 4096,
+    });
+    defer listener.deinit();
+
+    const pad = try std.testing.allocator.alloc(u8, 8 * 1024);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"model\":\"{s}\",\"pad\":\"{s}\"}}", .{ routed_model, pad });
+    defer std.testing.allocator.free(body);
+    const request = try postRequest(listener.port(), &carrier, body);
+    defer std.testing.allocator.free(request);
+
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    var stream_live = true;
+    defer if (stream_live) stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&primary);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    std.posix.shutdown(stream.handle, .both) catch {};
+    stream.close();
+    stream_live = false;
+    primary.releasePausedResponse();
+    try waitForListenerIdle(listener);
+
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .stream_once_cancellation_keeps_latch_no_replay,
+        obs.replay_mode == .stream_once and alternate.snapshot().isZero() and
+            primary.snapshot().call_count == 1);
+    setFact(facts, .stream_once_cancellation_releases_reservation,
+        wire_proxy.testing.reservationOutstanding(listener) == 0);
+}
+
+fn runOverflowNoAlternateScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .reservation_budget_bytes = 4096,
+    });
+    defer listener.deinit();
+
+    const pad = try std.testing.allocator.alloc(u8, 8 * 1024);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"pad\":\"{s}\",\"model\":\"{s}\"}}", .{ pad, routed_model });
+    defer std.testing.allocator.free(body);
+    const request = try postRequest(listener.port(), &carrier, body);
+    defer std.testing.allocator.free(request);
+    const response = try requestRawAlloc(listener.address(), request);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+
+    setFact(facts, .oversize_body_streams_once_refuses_alternate,
+        hasStatus(response, "401 Unauthorized") and alternate.snapshot().isZero() and
+            obs.replay_mode == .stream_once and obs.attempts_total == 1 and obs.alternate_count == 0 and
+            wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .sidecar_budget_exhaustion_forces_stream_once,
+        obs.replay_mode == .stream_once and wire_proxy.testing.reservationOutstanding(listener) == 0);
+}
+
+fn runOverflowReleaseScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{
+        .{ .status = .unauthorized, .body = "denied" },
+        .{ .status = .unauthorized, .body = "denied" },
+    });
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "{\"ok\":true}" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .reservation_budget_bytes = 8192,
+    });
+    defer listener.deinit();
+
+    const pad = try std.testing.allocator.alloc(u8, 32 * 1024);
+    defer std.testing.allocator.free(pad);
+    @memset(pad, 'a');
+    const overflow_body = try std.fmt.allocPrint(std.testing.allocator, "{{\"model\":\"{s}\",\"pad\":\"{s}\"}}", .{ routed_model, pad });
+    defer std.testing.allocator.free(overflow_body);
+
+    var overflow_ok = false;
+    {
+        const request = try postRequest(listener.port(), &carrier, overflow_body);
+        defer std.testing.allocator.free(request);
+        const response = try requestRawAlloc(listener.address(), request);
+        defer std.testing.allocator.free(response);
+        overflow_ok = hasStatus(response, "401 Unauthorized") and
+            wire_proxy.testing.reservationOutstanding(listener) == 0 and
+            alternate.snapshot().isZero();
+    }
+
+    var followup_ok = false;
+    {
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+        followup_ok = hasStatus(response, "200 OK") and
+            wire_proxy.testing.reservationOutstanding(listener) == 0 and
+            alternate.snapshot().call_count == 1 and primary.snapshot().call_count == 2;
+    }
+    setFact(facts, .overflow_releases_reservation_next_unaffected, overflow_ok and followup_ok);
+}
+
+fn runAllExhaustedMinResetScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "p-limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "10" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "a-limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "30" }},
+    }});
+    defer alternate.deinit();
+
+    var vclock = VirtualClock{};
+    var event_buffer: [2048]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+        .clock = vclock.clock(),
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .all_exhausted_returns_bounded_429,
+        hasStatus(response, "429 Too Many Requests") and primary.snapshot().call_count == 1 and
+            alternate.snapshot().call_count == 1 and obs.attempts_total == 2 and
+            obs.third_attempt_count == 0 and wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .all_exhausted_propagates_minimum_trusted_reset,
+        std.mem.indexOf(u8, response, "Retry-After: 10\r\n") != null and
+            std.mem.indexOf(u8, response, "Retry-After: 30\r\n") == null and
+            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
+}
+
+fn runAllExhaustedNoResetScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .forbidden, .body = "forbidden" }});
+    defer alternate.deinit();
+
+    var event_buffer: [2048]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .all_exhausted_without_reset_omits_retry_after,
+        hasStatus(response, "429 Too Many Requests") and !responseHasRetryAfter(response) and
+            obs.attempts_total == 2 and obs.alternate_count == 1);
+    setFact(facts, .all_exhausted_delivers_typed_429_not_200,
+        hasStatus(response, "429 Too Many Requests") and
+            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
+}
+
+fn runAllExhaustedMalformedResetScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "limit",
+        .headers = &.{.{ .name = "Retry-After", .value = "soon" }},
+    }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .all_exhausted_ignores_malformed_reset,
+        hasStatus(response, "429 Too Many Requests") and !responseHasRetryAfter(response) and
+            obs.attempts_total == 2 and obs.alternate_count == 1);
+}
+
+fn runNoAlternateTerminalScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "denied",
+        .headers = &.{.{ .name = "Retry-After", .value = "9" }},
+    }});
+    defer primary.deinit();
+
+    var event_buffer: [2048]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .no_alternate_emits_single_uniform_terminal,
+        hasStatus(response, "429 Too Many Requests") and obs.attempts_total == 1 and
+            obs.alternate_count == 0 and
+            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
+}
+
+fn runSameIdentityTerminalScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+
+    var event_buffer: [2048]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, event_stream.writer().any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-1" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    const written = event_stream.getWritten();
+    setFact(facts, .same_identity_pool_emits_single_uniform_terminal,
+        hasStatus(response, "401 Unauthorized") and alternate.snapshot().isZero() and
+            obs.same_identity_alternate_refused and obs.attempts_total == 1 and obs.alternate_count == 0 and
+            std.mem.count(u8, written, "claude_proxy_all_exhausted") == 1);
+}
+
+fn runResidentAbsenceScenario(facts: []Fact) !void {
+    // Behavioral leg of the G6 sidecar-half resident-absence invariant: a full
+    // routed alternate flow completes with no resident to construct or consult,
+    // so its absence cannot alter routing or the terminal outcome. (The
+    // structural grep-as-test over the sidecar State is compiled into wire_proxy.)
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "alt-ok" }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = wire_proxy.testing.requestObservation(listener);
+    setFact(facts, .routed_alternate_completes_with_no_resident,
+        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
+            obs.alternate_count == 1);
+}
+
+fn runAbruptDeathScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    // Route 1 fails pre-body 401 (buffered); the alternate is a large 2xx that
+    // pauses mid-stream, parking attempt 2 with its replay reservation live.
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .unauthorized, .body = "denied" }});
+    defer primary.deinit();
+    const big = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'y');
+    const prefix = "alt-streamed-prefix";
+    @memcpy(big[0..prefix.len], prefix);
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = big,
+        .pause_after_bytes = prefix.len,
+    }});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const request = try postRequest(listener.port(), &carrier, routed_json);
+    defer std.testing.allocator.free(request);
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    try stream.writeAll(request);
+    try waitForResponsePrefix(&alternate);
+    var response = std.ArrayList(u8).init(std.testing.allocator);
+    defer response.deinit();
+    try readUntilContains(&stream, &response, prefix);
+
+    const held = wire_proxy.testing.reservationOutstanding(listener) > 0;
+
+    var shutdown_timer = try std.time.Timer.start();
+    const outstanding = wire_proxy.testing.teardownReclaim(listener);
+    listener_live = false;
+    const bounded = shutdown_timer.read() < std.time.ns_per_s;
+
+    setFact(facts, .abrupt_death_mid_alternate_reclaims_to_zero, outstanding == 0 and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1);
+    setFact(facts, .teardown_holds_then_releases_reservation, held and outstanding == 0);
+    setFact(facts, .teardown_converges_within_bound, bounded);
+}
+
+fn runPartialSendTeardownScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{});
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    var stream = try std.net.tcpConnectToAddress(listener.address());
+    defer stream.close();
+    // A partial head parks the serve thread in receiveHead — before the
+    // capability check and before any reservation is taken. This request is
+    // never fully sent, so it can never be replayed.
+    try stream.writeAll("POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1");
+    try waitForConnectionActive(listener);
+
+    var shutdown_timer = try std.time.Timer.start();
+    const outstanding = wire_proxy.testing.teardownReclaim(listener);
+    listener_live = false;
+    const bounded = shutdown_timer.read() < std.time.ns_per_s;
+
+    setFact(facts, .partial_request_teardown_no_replay_bounded, outstanding == 0 and
+        primary.snapshot().isZero() and alternate.snapshot().isZero() and bounded);
+}
+
+fn runSequentialReleaseScenario(facts: []Fact) !void {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const iterations = 5;
+    const primary_script = [_]fake_upstream_mod.ScriptedResponse{.{ .status = .unauthorized, .body = "denied" }} ** iterations;
+    const alternate_script = [_]fake_upstream_mod.ScriptedResponse{.{ .status = .ok, .body = "ok" }} ** iterations;
+    var primary = try FakeUpstream.start(std.testing.allocator, &primary_script);
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &alternate_script);
+    defer alternate.deinit();
+
+    const listener = try wire_proxy.testing.startWithRoutes(std.testing.allocator, capability, std.io.null_writer.any(), .{
+        .primary = .{ .upstream = &primary, .bearer = "r1", .identity = "acct-1" },
+        .alternate = .{ .upstream = &alternate, .bearer = "r2", .identity = "acct-2" },
+    });
+    defer listener.deinit();
+
+    var all_ok = true;
+    var index: usize = 0;
+    while (index < iterations) : (index += 1) {
+        const response = try routedRequest(listener, &carrier);
+        defer std.testing.allocator.free(response);
+        all_ok = all_ok and hasStatus(response, "200 OK") and
+            wire_proxy.testing.reservationOutstanding(listener) == 0;
+    }
+    setFact(facts, .sequential_routed_requests_release_each_time, all_ok and
+        wire_proxy.testing.reservationOutstanding(listener) == 0 and
+        alternate.snapshot().call_count == iterations);
 }
 
 fn writeArtifactAtomic(artifact: Artifact) !void {

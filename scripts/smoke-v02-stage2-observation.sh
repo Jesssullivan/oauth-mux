@@ -60,10 +60,10 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 11 ] ||
-  fail "expected exactly eleven exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 113 ] ||
-  fail "expected exactly 113 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 36 ] ||
+  fail "expected exactly thirty-seven exercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 88 ] ||
+  fail "expected exactly 88 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
 
@@ -76,7 +76,32 @@ origin_form_request_enforcement
 redirect_ssrf_rejection
 generic_forward_proxy_rejection
 byte_preserving_streaming
+streaming_cancellation
+two_attempt_limit
+safe_same_route_retry_not_sent
+prebody_401_alternate
+prebody_403_alternate
+prebody_429_alternate
+single_retry_slot_exclusivity
 provider_5xx_pass_through
+partial_send_no_replay
+cancellation_no_replay
+started_response_no_replay
+transport_failure_no_cross_account
+replay_budget_overflow_no_alternate
+sidecar_memory_budget
+reservation_release_on_cancellation
+reservation_release_on_overflow
+reservation_release_on_teardown
+exact_model_preservation
+graceful_teardown
+abrupt_death_reclamation
+resident_absence
+bounded_reset_wait
+typed_all_exhausted_429
+trusted_retry_after
+all_exhausted_no_loop
+all_exhausted_no_invented_capacity
 accepted_rejected_counter_reconciliation'
 actual_passes=$(jq -r '.predicates[] | select(.status == "pass") | .id' "$manifest")
 [ "$actual_passes" = "$expected_passes" ] || fail "predicate reduction drifted"
