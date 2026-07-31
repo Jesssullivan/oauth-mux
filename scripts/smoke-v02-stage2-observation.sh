@@ -19,6 +19,62 @@ expect_rejected() {
   fi
 }
 
+require_unproven_predicates_missing() {
+  jq -e '
+    [
+      "provider_egress_denial",
+      "provider_call_count_zero",
+      "one_sidecar_per_managed_child",
+      "capability_memory_only",
+      "capability_constant_time_validation",
+      "capability_revocation_on_teardown",
+      "elected_oauth_credential_injection",
+      "managed_launch_fail_closed",
+      "explicit_direct_fallback_policy",
+      "fixed_origin_enforcement",
+      "system_tls_verification",
+      "resident_request_body_forwarding_rejection",
+      "evidence_allowlist_redaction",
+      "no_request_disk_spooling"
+    ] as $must_remain_missing
+    | [.predicates[] | select(.status == "missing") | .id] as $missing
+    | (($must_remain_missing - $missing) | length) == 0
+  ' "$1" >/dev/null
+}
+
+require_deferred_lease_predicates_missing() {
+  jq -e '
+    [
+      "deterministic_shared_leases",
+      "stale_lease_owner_cleanup"
+    ] as $must_remain_missing
+    | [.predicates[] | select(.status == "missing") | .id] as $missing
+    | (($must_remain_missing - $missing) | length) == 0
+  ' "$1" >/dev/null
+}
+
+lease_redaction_canaries='lease-redaction-route-z-canary
+lease-redaction-route-a-canary
+lease-redaction-identity-z-canary
+lease-redaction-identity-a-canary
+claude-lease-redaction-model-canary
+lease-session-prompt-canary
+lease-redaction-token-z-canary
+lease-redaction-token-a-canary
+42424290
+42424291
+42424292
+313371234
+313371235'
+
+require_lease_redaction_artifact_clean() {
+  while IFS= read -r canary; do
+    if LC_ALL=C grep -Fq -- "$canary" "$1"; then
+      return 1
+    fi
+  done <<<"$lease_redaction_canaries"
+}
+
 cd "$ROOT"
 candidate_sha=$(git rev-parse --verify 'HEAD^{commit}')
 candidate_tree=$(git rev-parse --verify 'HEAD^{tree}')
@@ -47,6 +103,14 @@ zig build v02-stage2-observe \
   "$workflow_run_id" \
   "$workflow_run_attempt" \
   "$gf_target_class"
+require_lease_redaction_artifact_clean "$OBSERVATION" ||
+  fail "Stage 2 artifact leaked a routed lease redaction canary"
+leaked_artifact="$TMP/lease-redaction-leaked-artifact.json"
+jq '.lease_redaction_leak = "lease-session-prompt-canary"' \
+  "$OBSERVATION" >"$leaked_artifact"
+if require_lease_redaction_artifact_clean "$leaked_artifact"; then
+  fail "lease redaction artifact scan accepted an injected prompt leak"
+fi
 
 manifest="$TMP/manifest.json"
 "$PREDICATES" reduce-stage2 \
@@ -60,12 +124,44 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 73 ] ||
-  fail "expected exactly 73 exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 51 ] ||
-  fail "expected exactly 51 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 80 ] ||
+  fail "expected exactly 80 exercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 44 ] ||
+  fail "expected exactly 44 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
+require_unproven_predicates_missing "$manifest" ||
+  fail "predicate without canonical evidence moved out of missing"
+require_deferred_lease_predicates_missing "$manifest" ||
+  fail "cross-process lease predicate moved out of missing"
+withdrawn_predicates='one_sidecar_per_managed_child
+capability_memory_only
+capability_constant_time_validation
+capability_revocation_on_teardown
+managed_launch_fail_closed
+evidence_allowlist_redaction
+no_request_disk_spooling'
+while IFS= read -r predicate_id; do
+  unproven_promoted="$TMP/${predicate_id}-promoted.json"
+  jq --arg predicate_id "$predicate_id" \
+    '(.predicates[] | select(.id == $predicate_id)).status = "pass"' \
+    "$manifest" >"$unproven_promoted"
+  if require_unproven_predicates_missing "$unproven_promoted"; then
+    fail "missing-predicate guard accepted false promotion: ${predicate_id}"
+  fi
+done <<<"$withdrawn_predicates"
+
+deferred_lease_predicates='deterministic_shared_leases
+stale_lease_owner_cleanup'
+while IFS= read -r predicate_id; do
+  deferred_promoted="$TMP/${predicate_id}-promoted.json"
+  jq --arg predicate_id "$predicate_id" \
+    '(.predicates[] | select(.id == $predicate_id)).status = "pass"' \
+    "$manifest" >"$deferred_promoted"
+  if require_deferred_lease_predicates_missing "$deferred_promoted"; then
+    fail "deferred lease guard accepted false promotion: ${predicate_id}"
+  fi
+done <<<"$deferred_lease_predicates"
 
 expected_passes='capability_carrier
 loopback_sidecar_bind
@@ -94,6 +190,13 @@ reservation_release_on_cancellation
 reservation_release_on_overflow
 reservation_release_on_teardown
 exact_model_preservation
+route_identity_admission
+identity_conflict_fail_closed
+route_readiness_ordering
+lease_state_redaction
+stale_lease_reactive_routing
+unavailable_lease_reactive_routing
+sticky_least_loaded_selection
 graceful_teardown
 abrupt_death_reclamation
 resident_absence
@@ -171,6 +274,39 @@ while IFS= read -r fact_id; do
   ' "$failed_counter_manifest" >/dev/null ||
     fail "${fact_id} did not exclusively fail counter reconciliation"
 done <<<"$counter_fact_ids"
+
+broker_mapping_fact_ids='route_identity_admission
+identity_conflict_fail_closed
+route_readiness_ordering
+lease_state_redaction
+stale_lease_reactive_routing
+unavailable_lease_reactive_routing
+sticky_least_loaded_selection'
+while IFS= read -r fact_id; do
+  failed_observation="$TMP/${fact_id}-failed.json"
+  failed_mapping_manifest="$TMP/${fact_id}-manifest.json"
+  jq --arg fact_id "$fact_id" \
+    '(.facts[] | select(.id == $fact_id)).status = "fail"' \
+    "$OBSERVATION" >"$failed_observation"
+  "$PREDICATES" reduce-stage2 \
+    "$failed_observation" \
+    "$failed_mapping_manifest" \
+    "$candidate_sha" \
+    "$candidate_tree" \
+    "$workflow_run_id" \
+    "$workflow_run_attempt" \
+    "$gf_target_class"
+  jq -e --arg predicate_id "$fact_id" --slurpfile positive_manifest "$manifest" '
+    [.predicates[] | {id: .id, status: .status}]
+    ==
+    (
+      $positive_manifest[0].predicates
+      | map({id: .id, status: .status})
+      | map(if .id == $predicate_id then .status = "fail" else . end)
+    )
+  ' "$failed_mapping_manifest" >/dev/null ||
+    fail "${fact_id} did not exclusively fail its broker mapping predicate"
+done <<<"$broker_mapping_fact_ids"
 
 expect_rejected "$VERIFY" verify \
   "$TMP/missing.json" "$candidate_sha" "$candidate_tree" \

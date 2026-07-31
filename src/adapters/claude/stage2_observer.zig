@@ -9,6 +9,10 @@ const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
 const wire_proxy = @import("wire_proxy.zig");
 const advisory_usage = @import("../../quota/advisory_usage.zig");
+const broker_decision = @import("../../broker/decision.zig");
+const broker_lease_state = @import("../../broker/lease_state.zig");
+const broker_model_demand = @import("../../broker/model_demand.zig");
+const broker_route_observation = @import("../../broker/route_observation.zig");
 // §8.8 refresh-predicate OBSERVATION family (TIN-2400, PR C). The observer
 // drives the landed TIN-2990 flock-owned locked-lineage refresh engine directly
 // over synthetic stores/credentials in isolated temp dirs. No provider-
@@ -71,6 +75,14 @@ const FactId = enum {
     same_route_retry_401_adds_no_alternate,
     alternate_failure_no_third_attempt,
     started_response_never_replayed,
+    // TIN-1790 mapping-only shared-core consumption (fake upstream only).
+    route_identity_admission,
+    identity_conflict_fail_closed,
+    route_readiness_ordering,
+    lease_state_redaction,
+    stale_lease_reactive_routing,
+    unavailable_lease_reactive_routing,
+    sticky_least_loaded_selection,
     // §2.2 replay reservation / cancellation / stream-once.
     cancellation_releases_reservation_to_zero,
     cancellation_makes_no_replay,
@@ -190,6 +202,13 @@ const fact_ids = [_]FactId{
     .same_route_retry_401_adds_no_alternate,
     .alternate_failure_no_third_attempt,
     .started_response_never_replayed,
+    .route_identity_admission,
+    .identity_conflict_fail_closed,
+    .route_readiness_ordering,
+    .lease_state_redaction,
+    .stale_lease_reactive_routing,
+    .unavailable_lease_reactive_routing,
+    .sticky_least_loaded_selection,
     .cancellation_releases_reservation_to_zero,
     .cancellation_makes_no_replay,
     .streaming_cancellation_single_attempt,
@@ -343,6 +362,7 @@ pub fn emit(identity: BuildIdentity) !void {
     runSlotExclusivityScenario(&facts) catch {};
     runAlternateFailureNoThirdScenario(&facts) catch {};
     runStartedResponseScenario(&facts) catch {};
+    runBrokerMappingScenario(&facts) catch {};
     runCancellationReplayableScenario(&facts) catch {};
     runStreamOnceCancellationScenario(&facts) catch {};
     runOverflowNoAlternateScenario(&facts) catch {};
@@ -432,6 +452,15 @@ fn setFact(facts: []Fact, id: FactId, passed: bool) void {
     for (facts) |*fact| {
         if (fact.id != id) continue;
         fact.status = if (passed) .pass else .fail;
+        return;
+    }
+    unreachable;
+}
+
+fn strengthenFact(facts: []Fact, id: FactId, passed: bool) void {
+    for (facts) |*fact| {
+        if (fact.id != id) continue;
+        fact.status = if (fact.status == .pass and passed) .pass else .fail;
         return;
     }
     unreachable;
@@ -965,10 +994,18 @@ const VirtualClock = struct {
     }
 };
 
-fn routedRequest(listener: *wire_proxy.Listener, carrier: []const u8) ![]u8 {
-    const request = try postRequest(listener.port(), carrier, routed_json);
+fn routedRequestBody(
+    listener: *wire_proxy.Listener,
+    carrier: []const u8,
+    body: []const u8,
+) ![]u8 {
+    const request = try postRequest(listener.port(), carrier, body);
     defer std.testing.allocator.free(request);
     return requestRawAlloc(listener.address(), request);
+}
+
+fn routedRequest(listener: *wire_proxy.Listener, carrier: []const u8) ![]u8 {
+    return routedRequestBody(listener, carrier, routed_json);
 }
 
 fn responseHasRetryAfter(response: []const u8) bool {
@@ -1823,6 +1860,624 @@ fn runSequentialReleaseScenario(facts: []Fact) !void {
     setFact(facts, .sequential_routed_requests_release_each_time, all_ok and
         wire_proxy.testing.reservationOutstanding(listener) == 0 and
         alternate.snapshot().call_count == iterations);
+}
+
+// ===========================================================================
+// TIN-1790 shared-core adapter mapping OBSERVATION. These cases use only the
+// optional in-process broker snapshot and deterministic fake upstreams. Every
+// positive route choice has a nearby input mutation that must change or suppress
+// selection, preventing a hardcoded fake slot from producing green evidence.
+// ===========================================================================
+
+const BrokerMappingRun = struct {
+    ok: bool,
+    bad_gateway: bool,
+    server_error: bool,
+    primary_attempts: usize,
+    primary_calls: usize,
+    alternate_attempts: usize,
+    alternate_calls: usize,
+    attempts_total: usize,
+    alternate_count: usize,
+    admitted_model_exact: bool,
+    primary_body_exact: bool,
+    alternate_body_exact: bool,
+    server_error_event_exact: bool,
+    events_value_free: bool,
+
+    fn selectedOnly(self: BrokerMappingRun, slot: enum { primary, alternate }) bool {
+        if (!self.ok or self.attempts_total != 1 or self.alternate_count != 0) return false;
+        return switch (slot) {
+            .primary => self.primary_attempts == 1 and self.primary_calls == 1 and
+                self.alternate_attempts == 0 and self.alternate_calls == 0,
+            .alternate => self.primary_attempts == 0 and self.primary_calls == 0 and
+                self.alternate_attempts == 1 and self.alternate_calls == 1,
+        };
+    }
+
+    fn refusedBeforeUpstream(self: BrokerMappingRun) bool {
+        return self.bad_gateway and self.primary_attempts == 0 and
+            self.primary_calls == 0 and self.alternate_attempts == 0 and
+            self.alternate_calls == 0 and self.attempts_total == 0;
+    }
+
+    fn failedOnly(self: BrokerMappingRun, slot: enum { primary, alternate }) bool {
+        if (!self.server_error or self.attempts_total != 1 or self.alternate_count != 0) return false;
+        return switch (slot) {
+            .primary => self.primary_attempts == 1 and self.primary_calls == 1 and
+                self.alternate_attempts == 0 and self.alternate_calls == 0,
+            .alternate => self.primary_attempts == 0 and self.primary_calls == 0 and
+                self.alternate_attempts == 1 and self.alternate_calls == 1,
+        };
+    }
+};
+
+const broker_mapping_primary_bearer = "lease-redaction-token-z-canary";
+const broker_mapping_alternate_bearer = "lease-redaction-token-a-canary";
+const broker_server_error_event = "{\"kind\":\"claude_proxy_upstream_server_error\"}\n";
+
+fn brokerRouteHandle(text: []const u8) broker_route_observation.RouteHandle {
+    return broker_route_observation.RouteHandle.parse(text) catch unreachable;
+}
+
+fn brokerRouteObservation(
+    route_text: []const u8,
+    identity: []const u8,
+    admission: broker_route_observation.RouteAdmission,
+    readiness: broker_route_observation.Readiness,
+) broker_route_observation.RouteObservation {
+    return brokerRouteObservationForModel(
+        route_text,
+        identity,
+        routed_model,
+        admission,
+        readiness,
+    );
+}
+
+fn brokerRouteObservationForModel(
+    route_text: []const u8,
+    identity: []const u8,
+    model: []const u8,
+    admission: broker_route_observation.RouteAdmission,
+    readiness: broker_route_observation.Readiness,
+) broker_route_observation.RouteObservation {
+    return .{
+        .route = brokerRouteHandle(route_text),
+        .identity = broker_route_observation.IdentityEvidence.fromBorrowed(identity),
+        .exact_model = broker_model_demand.ExactModel.init(model) catch unreachable,
+        .admission = admission,
+        .reactive = switch (readiness) {
+            .available, .exhausted => .{
+                .readiness = readiness,
+                .resets_at_s = 200,
+            },
+            .unknown => null,
+        },
+    };
+}
+
+fn brokerSnapshot(
+    observations: []const broker_route_observation.RouteObservation,
+    projection: broker_lease_state.Projection,
+) wire_proxy.testing.BrokerSnapshot {
+    return brokerSnapshotForRoutes(
+        "route-z",
+        "route-a",
+        observations,
+        projection,
+    );
+}
+
+fn brokerSnapshotForRoutes(
+    primary_route: []const u8,
+    alternate_route: []const u8,
+    observations: []const broker_route_observation.RouteObservation,
+    projection: broker_lease_state.Projection,
+) wire_proxy.testing.BrokerSnapshot {
+    return .{
+        .now_s = 100,
+        .primary_route = brokerRouteHandle(primary_route),
+        .alternate_route = brokerRouteHandle(alternate_route),
+        .observations = observations,
+        .lease_projection = projection,
+    };
+}
+
+fn runBrokerMappedRequest(
+    snapshot: wire_proxy.testing.BrokerSnapshot,
+    primary_response: fake_upstream_mod.ScriptedResponse,
+    alternate_response: fake_upstream_mod.ScriptedResponse,
+) !BrokerMappingRun {
+    return runBrokerMappedRequestBody(
+        snapshot,
+        routed_json,
+        routed_model,
+        &.{},
+        primary_response,
+        alternate_response,
+    );
+}
+
+fn runBrokerMappedRequestBody(
+    snapshot: wire_proxy.testing.BrokerSnapshot,
+    request_body: []const u8,
+    expected_model: []const u8,
+    event_canaries: []const []const u8,
+    primary_response: fake_upstream_mod.ScriptedResponse,
+    alternate_response: fake_upstream_mod.ScriptedResponse,
+) !BrokerMappingRun {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    const primary_script = [_]fake_upstream_mod.ScriptedResponse{primary_response};
+    const alternate_script = [_]fake_upstream_mod.ScriptedResponse{alternate_response};
+    var primary = try FakeUpstream.start(std.testing.allocator, &primary_script);
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &alternate_script);
+    defer alternate.deinit();
+
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try wire_proxy.testing.startWithRoutes(
+        std.testing.allocator,
+        capability,
+        event_stream.writer().any(),
+        .{
+            .primary = .{
+                .upstream = &primary,
+                .bearer = broker_mapping_primary_bearer,
+                .identity = "fake-slot-z",
+            },
+            .alternate = .{
+                .upstream = &alternate,
+                .bearer = broker_mapping_alternate_bearer,
+                .identity = "fake-slot-a",
+            },
+            .broker_snapshot = snapshot,
+        },
+    );
+    defer listener.deinit();
+
+    const response = try routedRequestBody(listener, &carrier, request_body);
+    defer std.testing.allocator.free(response);
+    const observation = wire_proxy.testing.requestObservation(listener);
+    var primary_body: [1024]u8 = undefined;
+    const primary_body_len = primary.capturedRequestBody(&primary_body);
+    var alternate_body: [1024]u8 = undefined;
+    const alternate_body_len = alternate.capturedRequestBody(&alternate_body);
+    const events = event_stream.getWritten();
+    var events_value_free = true;
+    for (event_canaries) |canary| {
+        if (std.mem.indexOf(u8, events, canary) != null) events_value_free = false;
+    }
+    const primary_snapshot = primary.snapshot();
+    const alternate_snapshot = alternate.snapshot();
+    return .{
+        .ok = hasStatus(response, "200 OK"),
+        .bad_gateway = hasStatus(response, "502 Bad Gateway"),
+        .server_error = hasStatus(response, "500 Internal Server Error"),
+        .primary_attempts = primary_snapshot.attempt_count,
+        .primary_calls = primary_snapshot.call_count,
+        .alternate_attempts = alternate_snapshot.attempt_count,
+        .alternate_calls = alternate_snapshot.call_count,
+        .attempts_total = observation.attempts_total,
+        .alternate_count = observation.alternate_count,
+        .admitted_model_exact = observation.model_present and
+            std.mem.eql(
+                u8,
+                expected_model,
+                observation.admitted_model_buf[0..observation.admitted_model_len],
+            ),
+        .primary_body_exact = std.mem.eql(u8, request_body, primary_body[0..primary_body_len]),
+        .alternate_body_exact = std.mem.eql(u8, request_body, alternate_body[0..alternate_body_len]),
+        .server_error_event_exact = std.mem.eql(u8, events, broker_server_error_event),
+        .events_value_free = events_value_free,
+    };
+}
+
+fn brokerAcquireInput(
+    lease_text: []const u8,
+    session_text: []const u8,
+    account_text: []const u8,
+    route_text: []const u8,
+    owner_pid: broker_lease_state.OwnerPid,
+    expected_revision: broker_lease_state.Revision,
+    selected_at_ms: i64,
+    expires_at_ms: i64,
+) !broker_lease_state.AcquireInput {
+    return .{
+        .lease = try broker_lease_state.LeaseHandle.parse(lease_text),
+        .session = try broker_lease_state.SessionHandle.parse(session_text),
+        .account = try broker_lease_state.AccountHandle.parse(account_text),
+        .route = try broker_lease_state.RouteHandle.parse(route_text),
+        .exact_model = try broker_model_demand.ExactModel.init(routed_model),
+        .owner_pid = owner_pid,
+        .expected_revision = expected_revision,
+        .now_ms = selected_at_ms,
+        .selected_at_ms = selected_at_ms,
+        .heartbeat_at_ms = selected_at_ms,
+        .expires_at_ms = expires_at_ms,
+    };
+}
+
+fn runBrokerMappingScenario(facts: []Fact) !void {
+    if (wire_proxy.production_forwarding_enabled) {
+        return error.ProductionForwardingUnexpectedlyEnabled;
+    }
+    const ok = fake_upstream_mod.ScriptedResponse{ .status = .ok, .body = "ok" };
+
+    // The mapped demand must come from the admitted request bytes. A distinct
+    // exact model reaches the selected fake byte-for-byte; changing only the
+    // request model makes the same snapshot ineligible before either fake.
+    const exact_model = "claude-mapping-exact-model-canary";
+    const exact_body =
+        "{\"model\":\"" ++ exact_model ++ "\",\"max_tokens\":17," ++
+        "\"metadata\":{\"trace_id\":\"mapping-body-canary\"}}";
+    const mismatch_model = "claude-mapping-mismatch-model-canary";
+    const mismatch_body =
+        "{\"model\":\"" ++ mismatch_model ++ "\",\"max_tokens\":17}";
+    const exact_rows = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservationForModel("route-z", "identity-z", exact_model, .admitted, .unknown),
+        brokerRouteObservationForModel("route-a", "identity-a", exact_model, .admitted, .available),
+    };
+    const exact_selection = try runBrokerMappedRequestBody(
+        brokerSnapshot(&exact_rows, broker_lease_state.missingProjection()),
+        exact_body,
+        exact_model,
+        &.{},
+        ok,
+        ok,
+    );
+    const exact_mismatch = try runBrokerMappedRequestBody(
+        brokerSnapshot(&exact_rows, broker_lease_state.missingProjection()),
+        mismatch_body,
+        mismatch_model,
+        &.{},
+        ok,
+        ok,
+    );
+    strengthenFact(facts, .first_attempt_body_forwarded_byte_exact, exact_selection.selectedOnly(.alternate) and
+        exact_selection.admitted_model_exact and
+        exact_selection.alternate_body_exact and
+        exact_mismatch.refusedBeforeUpstream());
+
+    // Admission must beat readiness. Making the blocked route admitted is the
+    // mutation: selection must move back to the known-good primary fake.
+    var admission_rows = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .unavailable, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const admitted = try runBrokerMappedRequest(
+        brokerSnapshot(&admission_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    admission_rows[0].admission = .admitted;
+    const admission_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&admission_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+
+    // Dead admission remains ineligible even with known-good readiness, while
+    // an admitted unknown route remains eligible. Re-admitting the dead route
+    // is the mutation and must move the wire call to the primary fake.
+    var dead_rows = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .dead, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const dead = try runBrokerMappedRequest(
+        brokerSnapshot(&dead_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    dead_rows[0].admission = .admitted;
+    const dead_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&dead_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    setFact(facts, .route_identity_admission, admitted.selectedOnly(.alternate) and
+        admission_mutation.selectedOnly(.primary) and
+        dead.selectedOnly(.alternate) and
+        dead_mutation.selectedOnly(.primary));
+
+    // Duplicate exact-model identities fail before either fake. Distinguishing
+    // the second opaque identity is the mutation and must restore one route.
+    var identity_rows = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-shared", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-shared", .admitted, .available),
+    };
+    const identity_conflict = try runBrokerMappedRequest(
+        brokerSnapshot(&identity_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    identity_rows[1].identity = broker_route_observation.IdentityEvidence.fromBorrowed("identity-a");
+    const identity_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&identity_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    setFact(facts, .identity_conflict_fail_closed, identity_conflict.refusedBeforeUpstream() and identity_mutation.selectedOnly(.alternate));
+
+    // Known-good outranks unknown; swapping readiness swaps the fake. With both
+    // known-good, reversing input rows still elects the lower opaque handle.
+    var readiness_rows = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .unknown),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+    };
+    const readiness = try runBrokerMappedRequest(
+        brokerSnapshot(&readiness_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    readiness_rows[0].reactive = readiness_rows[1].reactive;
+    readiness_rows[1].reactive = null;
+    const readiness_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&readiness_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    readiness_rows[1].reactive = readiness_rows[0].reactive;
+    const reversed_readiness = [_]broker_route_observation.RouteObservation{
+        readiness_rows[1],
+        readiness_rows[0],
+    };
+    const ordering = try runBrokerMappedRequest(
+        brokerSnapshot(&reversed_readiness, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    setFact(facts, .route_readiness_ordering, readiness.selectedOnly(.alternate) and
+        readiness_mutation.selectedOnly(.primary) and
+        ordering.selectedOnly(.alternate));
+
+    // Route a real request through a complete lease projection and force a
+    // value-free event. The load mutation must switch the only contacted fake,
+    // while neither event may contain a route, identity, lease fact, synthetic
+    // bearer, model, or request prompt canary.
+    const redaction_primary_handle = "lease-redaction-route-z-canary";
+    const redaction_alternate_handle = "lease-redaction-route-a-canary";
+    const redaction_primary_identity = "lease-redaction-identity-z-canary";
+    const redaction_alternate_identity = "lease-redaction-identity-a-canary";
+    const redaction_model = "claude-lease-redaction-model-canary";
+    const redaction_prompt = "lease-session-prompt-canary";
+    const redaction_body =
+        "{\"model\":\"" ++ redaction_model ++ "\",\"max_tokens\":16," ++
+        "\"messages\":[{\"role\":\"user\",\"content\":\"" ++ redaction_prompt ++ "\"}]}";
+    const redaction_observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservationForModel(
+            redaction_primary_handle,
+            redaction_primary_identity,
+            redaction_model,
+            .admitted,
+            .available,
+        ),
+        brokerRouteObservationForModel(
+            redaction_alternate_handle,
+            redaction_alternate_identity,
+            redaction_model,
+            .admitted,
+            .available,
+        ),
+    };
+    var redaction_lease_rows = [_]broker_decision.LeaseObservation{
+        .{
+            .route = brokerRouteHandle(redaction_primary_handle),
+            .active_leases = 0,
+            .last_selected_at = 313371234,
+        },
+        .{
+            .route = brokerRouteHandle(redaction_alternate_handle),
+            .active_leases = 42424291,
+            .last_selected_at = 313371235,
+        },
+    };
+    const redaction_canaries = [_][]const u8{
+        redaction_primary_handle,
+        redaction_alternate_handle,
+        redaction_primary_identity,
+        redaction_alternate_identity,
+        redaction_model,
+        redaction_prompt,
+        broker_mapping_primary_bearer,
+        broker_mapping_alternate_bearer,
+        "42424290",
+        "42424291",
+        "313371234",
+    };
+    const server_error = fake_upstream_mod.ScriptedResponse{
+        .status = .internal_server_error,
+        .body = "redaction-error",
+    };
+    const redaction = try runBrokerMappedRequestBody(
+        brokerSnapshotForRoutes(
+            redaction_primary_handle,
+            redaction_alternate_handle,
+            &redaction_observations,
+            .{
+                .revision = 42424290,
+                .quality = .complete,
+                .view = .{ .routes = &redaction_lease_rows },
+            },
+        ),
+        redaction_body,
+        redaction_model,
+        &redaction_canaries,
+        server_error,
+        server_error,
+    );
+    redaction_lease_rows[0].active_leases = 42424292;
+    redaction_lease_rows[1].active_leases = 0;
+    const redaction_mutation = try runBrokerMappedRequestBody(
+        brokerSnapshotForRoutes(
+            redaction_primary_handle,
+            redaction_alternate_handle,
+            &redaction_observations,
+            .{
+                .revision = 42424290,
+                .quality = .complete,
+                .view = .{ .routes = &redaction_lease_rows },
+            },
+        ),
+        redaction_body,
+        redaction_model,
+        &redaction_canaries,
+        server_error,
+        server_error,
+    );
+    setFact(facts, .lease_state_redaction, wire_proxy.testing.brokerLeaseProjectionIsRedacted() and
+        wire_proxy.testing.brokerLeaseProjectionRejectsLeakyShape() and
+        redaction.failedOnly(.primary) and
+        redaction.admitted_model_exact and
+        redaction.primary_body_exact and
+        redaction.server_error_event_exact and
+        redaction.events_value_free and
+        redaction_mutation.failedOnly(.alternate) and
+        redaction_mutation.admitted_model_exact and
+        redaction_mutation.alternate_body_exact and
+        redaction_mutation.server_error_event_exact and
+        redaction_mutation.events_value_free);
+
+    const lease_route_rows = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+    };
+
+    // Build the stale case through the actual Group 2 in-process state. The
+    // expired route-z owner is absent from projected load while live route-a
+    // contributes one. Reintroducing stale load is the negative mutation.
+    var lease_state = broker_lease_state.LeaseState(2, 2).init();
+    const demand = try broker_model_demand.ModelDemand.init(routed_model);
+    try lease_state.registerRoute(.{
+        .route = brokerRouteHandle("route-z"),
+        .exact_model = demand.exact_model,
+    });
+    try lease_state.registerRoute(.{
+        .route = brokerRouteHandle("route-a"),
+        .exact_model = demand.exact_model,
+    });
+    const owners = [_]broker_lease_state.OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
+        .{ .owner_pid = 2, .liveness = .alive },
+    };
+    _ = try lease_state.acquire(try brokerAcquireInput(
+        "lease-a",
+        "session-a",
+        "account-a",
+        "route-a",
+        1,
+        lease_state.currentRevision(),
+        1,
+        100,
+    ), &owners);
+    _ = try lease_state.acquire(try brokerAcquireInput(
+        "lease-z",
+        "session-z",
+        "account-z",
+        "route-z",
+        2,
+        lease_state.currentRevision(),
+        2,
+        10,
+    ), &owners);
+    var stale_scratch: [2]broker_decision.LeaseObservation = undefined;
+    const stale_projection = lease_state.project(
+        try broker_lease_state.SessionHandle.parse("session-observer"),
+        demand,
+        20,
+        &owners,
+        &stale_scratch,
+    );
+    const stale = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, stale_projection),
+        ok,
+        ok,
+    );
+    const stale_retained_rows = [_]broker_decision.LeaseObservation{
+        .{ .route = brokerRouteHandle("route-z"), .active_leases = 2, .last_selected_at = 2 },
+        .{ .route = brokerRouteHandle("route-a"), .active_leases = 1, .last_selected_at = 1 },
+    };
+    const stale_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, .{
+            .revision = stale_projection.revision,
+            .quality = .complete,
+            .view = .{ .routes = &stale_retained_rows },
+        }),
+        ok,
+        ok,
+    );
+    setFact(facts, .stale_lease_reactive_routing, stale.selectedOnly(.primary) and stale_mutation.selectedOnly(.alternate));
+
+    // Missing/unavailable lease state is the Group 2 empty advisory view and
+    // cannot block route election. A complete projection with unequal load is
+    // the mutation proving the adapter actually consumes lease ranking.
+    const unavailable = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, broker_lease_state.missingProjection()),
+        ok,
+        ok,
+    );
+    const complete_rows = [_]broker_decision.LeaseObservation{
+        .{ .route = brokerRouteHandle("route-z"), .active_leases = 0, .last_selected_at = null },
+        .{ .route = brokerRouteHandle("route-a"), .active_leases = 1, .last_selected_at = null },
+    };
+    const unavailable_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, .{
+            .revision = 1,
+            .quality = .complete,
+            .view = .{ .routes = &complete_rows },
+        }),
+        ok,
+        ok,
+    );
+    setFact(facts, .unavailable_lease_reactive_routing, unavailable.selectedOnly(.alternate) and unavailable_mutation.selectedOnly(.primary));
+
+    // Sticky route-a wins despite higher load, then its pre-body failure causes
+    // the same reducer to exclude attempt 1 and elect route-z exactly once. With
+    // stickiness removed, least-loaded route-z is selected first; reversing the
+    // loads moves selection back to route-a.
+    const sticky_projection = broker_lease_state.Projection{
+        .revision = 2,
+        .quality = .complete,
+        .view = .{
+            .sticky_route = brokerRouteHandle("route-a"),
+            .routes = &complete_rows,
+        },
+    };
+    const sticky = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, sticky_projection),
+        ok,
+        .{ .status = .unauthorized, .body = "denied" },
+    );
+    const least_loaded = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, .{
+            .revision = 3,
+            .quality = .complete,
+            .view = .{ .routes = &complete_rows },
+        }),
+        ok,
+        ok,
+    );
+    const reversed_load_rows = [_]broker_decision.LeaseObservation{
+        .{ .route = brokerRouteHandle("route-z"), .active_leases = 2, .last_selected_at = null },
+        .{ .route = brokerRouteHandle("route-a"), .active_leases = 1, .last_selected_at = null },
+    };
+    const load_mutation = try runBrokerMappedRequest(
+        brokerSnapshot(&lease_route_rows, .{
+            .revision = 4,
+            .quality = .complete,
+            .view = .{ .routes = &reversed_load_rows },
+        }),
+        ok,
+        ok,
+    );
+    setFact(facts, .sticky_least_loaded_selection, sticky.ok and sticky.primary_calls == 1 and sticky.alternate_calls == 1 and
+        sticky.attempts_total == 2 and sticky.alternate_count == 1 and
+        least_loaded.selectedOnly(.primary) and load_mutation.selectedOnly(.alternate));
 }
 
 // ===========================================================================

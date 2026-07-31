@@ -18,6 +18,10 @@ const builtin = @import("builtin");
 const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
 const advisory_usage = @import("../../quota/advisory_usage.zig");
+const broker_decision = @import("../../broker/decision.zig");
+const broker_lease_state = @import("../../broker/lease_state.zig");
+const broker_model_demand = @import("../../broker/model_demand.zig");
+const broker_route_observation = @import("../../broker/route_observation.zig");
 
 const SessionCapability = capability_mod.SessionCapability;
 const FakeUpstream = fake_upstream_mod.FakeUpstream;
@@ -354,6 +358,48 @@ fn startWithUpstream(
     return @ptrCast(state);
 }
 
+/// Borrowed, test-only provider-neutral input for mapping the shared broker
+/// reducer onto the two deterministic fake slots. It carries no bearer,
+/// credential, provider account label, process owner, or mutable lease state.
+/// The lease projection is exactly Group 2's redacted in-process projection;
+/// this seam neither creates nor shares lease state across processes.
+const BrokerMappingSnapshot = struct {
+    now_s: i64,
+    primary_route: broker_route_observation.RouteHandle,
+    alternate_route: ?broker_route_observation.RouteHandle = null,
+    observations: []const broker_route_observation.RouteObservation,
+    lease_projection: broker_lease_state.Projection = broker_lease_state.missingProjection(),
+};
+
+fn leaseProjectionShapeIsRedacted(
+    comptime Projection: type,
+    comptime View: type,
+    comptime Row: type,
+) bool {
+    const projection = @typeInfo(Projection).@"struct".fields;
+    const view = @typeInfo(View).@"struct".fields;
+    const row = @typeInfo(Row).@"struct".fields;
+    return projection.len == 3 and
+        std.mem.eql(u8, projection[0].name, "revision") and
+        projection[0].type == broker_lease_state.Revision and
+        std.mem.eql(u8, projection[1].name, "quality") and
+        projection[1].type == broker_lease_state.ProjectionQuality and
+        std.mem.eql(u8, projection[2].name, "view") and
+        projection[2].type == broker_decision.LeaseView and
+        view.len == 2 and
+        std.mem.eql(u8, view[0].name, "sticky_route") and
+        view[0].type == ?broker_decision.RouteHandle and
+        std.mem.eql(u8, view[1].name, "routes") and
+        view[1].type == []const broker_decision.LeaseObservation and
+        row.len == 3 and
+        std.mem.eql(u8, row[0].name, "route") and
+        row[0].type == broker_decision.RouteHandle and
+        std.mem.eql(u8, row[1].name, "active_leases") and
+        row[1].type == u64 and
+        std.mem.eql(u8, row[2].name, "last_selected_at") and
+        row[2].type == ?i64;
+}
+
 pub const testing = if (builtin.is_test) struct {
     /// Test-only composition seam. The caller supplies the repository's
     /// deterministic fake explicitly; production upstream selection remains
@@ -373,6 +419,7 @@ pub const testing = if (builtin.is_test) struct {
     }
 
     pub const Clock = WireClock;
+    pub const BrokerSnapshot = BrokerMappingSnapshot;
 
     /// A synthetic route the routed retry machine may target. The bearer is a
     /// synthetic test-only token; `identity` distinguishes accounts;
@@ -387,6 +434,9 @@ pub const testing = if (builtin.is_test) struct {
     pub const RoutedConfig = struct {
         primary: RoutedRoute,
         alternate: ?RoutedRoute = null,
+        /// Optional one-process mapping seam. `null` preserves the original
+        /// hardcoded fake primary/alternate path exactly.
+        broker_snapshot: ?BrokerSnapshot = null,
         reservation_budget_bytes: usize = default_reservation_budget_bytes,
         request_deadline_ns: u64 = default_request_deadline_ns,
         max_wait_ns: u64 = default_max_wait_ns,
@@ -418,6 +468,7 @@ pub const testing = if (builtin.is_test) struct {
                 .identity = a.identity,
                 .presend_faults = a.presend_faults,
             } else null,
+            .broker_snapshot = config.broker_snapshot,
             .reservation_budget_bytes = config.reservation_budget_bytes,
             .request_deadline_ns = config.request_deadline_ns,
             .max_wait_ns = config.max_wait_ns,
@@ -440,6 +491,28 @@ pub const testing = if (builtin.is_test) struct {
     /// nothing.
     pub fn reservationOutstanding(listener: *Listener) usize {
         return reservedBytes(listener);
+    }
+
+    pub fn brokerLeaseProjectionIsRedacted() bool {
+        return leaseProjectionShapeIsRedacted(
+            broker_lease_state.Projection,
+            broker_decision.LeaseView,
+            broker_decision.LeaseObservation,
+        );
+    }
+
+    pub fn brokerLeaseProjectionRejectsLeakyShape() bool {
+        const LeakyLeaseRow = struct {
+            route: broker_decision.RouteHandle,
+            active_leases: u64,
+            last_selected_at: ?i64,
+            owner_pid: u32,
+        };
+        return !leaseProjectionShapeIsRedacted(
+            broker_lease_state.Projection,
+            broker_decision.LeaseView,
+            LeakyLeaseRow,
+        );
     }
 
     /// True while a downstream connection is being served. Lets a test wait for
@@ -1447,6 +1520,7 @@ const Route = struct {
 const SyntheticRouting = struct {
     primary: Route,
     alternate: ?Route,
+    broker_snapshot: ?BrokerMappingSnapshot,
     reservation_budget_bytes: usize,
     request_deadline_ns: u64,
     max_wait_ns: u64,
@@ -1826,11 +1900,165 @@ fn attemptSecondTerminal(
     }
 }
 
-/// Returns the distinct-identity alternate, `null` when none is configured, or
-/// a typed refusal when the configured alternate shares the primary identity.
-fn selectAlternate(routing: *SyntheticRouting) error{SameIdentityAlternate}!?*Route {
+fn routeHandleEql(
+    a: broker_route_observation.RouteHandle,
+    b: broker_route_observation.RouteHandle,
+) bool {
+    return std.mem.eql(u8, a.text, b.text);
+}
+
+fn validateBrokerSnapshot(
+    routing: *SyntheticRouting,
+    snapshot: *const BrokerMappingSnapshot,
+) !void {
+    if ((routing.alternate == null) != (snapshot.alternate_route == null)) {
+        return error.InvalidBrokerSnapshot;
+    }
+    if (snapshot.alternate_route) |alternate| {
+        if (routeHandleEql(snapshot.primary_route, alternate)) {
+            return error.InvalidBrokerSnapshot;
+        }
+    }
+    if (snapshot.lease_projection.quality == .unavailable and
+        (snapshot.lease_projection.view.sticky_route != null or
+            snapshot.lease_projection.view.routes.len != 0))
+    {
+        return error.InvalidBrokerSnapshot;
+    }
+
+    var saw_primary = false;
+    var saw_alternate = snapshot.alternate_route == null;
+    for (snapshot.observations) |observation| {
+        if (routeHandleEql(observation.route, snapshot.primary_route)) {
+            saw_primary = true;
+            continue;
+        }
+        if (snapshot.alternate_route) |alternate| {
+            if (routeHandleEql(observation.route, alternate)) {
+                saw_alternate = true;
+                continue;
+            }
+        }
+        return error.InvalidBrokerSnapshot;
+    }
+    if (!saw_primary or !saw_alternate) return error.InvalidBrokerSnapshot;
+}
+
+fn routeForBrokerHandle(
+    routing: *SyntheticRouting,
+    snapshot: *const BrokerMappingSnapshot,
+    handle: broker_route_observation.RouteHandle,
+) !*Route {
+    if (routeHandleEql(handle, snapshot.primary_route)) return &routing.primary;
+    if (snapshot.alternate_route) |alternate_handle| {
+        if (routeHandleEql(handle, alternate_handle)) {
+            return if (routing.alternate) |*alternate|
+                alternate
+            else
+                error.InvalidBrokerSnapshot;
+        }
+    }
+    return error.UnmappedBrokerRoute;
+}
+
+fn handleForBrokerRoute(
+    routing: *SyntheticRouting,
+    snapshot: *const BrokerMappingSnapshot,
+    route: *Route,
+) !broker_route_observation.RouteHandle {
+    if (route == &routing.primary) return snapshot.primary_route;
     if (routing.alternate) |*alternate| {
-        if (std.mem.eql(u8, alternate.identity, routing.primary.identity)) {
+        if (route == alternate) {
+            return snapshot.alternate_route orelse error.InvalidBrokerSnapshot;
+        }
+    }
+    return error.UnmappedBrokerRoute;
+}
+
+/// Mapping-only consumption of the shared broker core. The admitted request
+/// model becomes exact demand, every injected route observation is projected by
+/// the provider-neutral projector, and the reducer's opaque handle is mapped
+/// back to one of the two deterministic fake slots. Excluding attempt 1 maps
+/// the existing one-alternate contract; it does not create another route.
+fn selectMappedRoute(
+    routing: *SyntheticRouting,
+    allocator: std.mem.Allocator,
+    captured_model: ?[]const u8,
+    excluded: ?broker_route_observation.RouteHandle,
+) !?*Route {
+    if (routing.broker_snapshot) |*snapshot| {
+        try validateBrokerSnapshot(routing, snapshot);
+        const demand = try broker_model_demand.ModelDemand.init(
+            captured_model orelse return null,
+        );
+        const routes = try allocator.alloc(
+            broker_route_observation.RouteEvidence,
+            snapshot.observations.len,
+        );
+        defer allocator.free(routes);
+
+        for (snapshot.observations, routes) |captured, *projected| {
+            var observation = captured;
+            if (excluded) |unavailable| {
+                if (routeHandleEql(observation.route, unavailable)) {
+                    observation.admission = .unavailable;
+                }
+            }
+            projected.* = broker_route_observation.project(observation, snapshot.now_s);
+        }
+
+        return switch (broker_decision.reduce(
+            demand,
+            routes,
+            snapshot.lease_projection.view,
+        )) {
+            .select_route => |selected| try routeForBrokerHandle(
+                routing,
+                snapshot,
+                selected,
+            ),
+            .no_route => null,
+        };
+    }
+    return error.InvalidBrokerSnapshot;
+}
+
+fn selectInitialRoute(
+    routing: *SyntheticRouting,
+    allocator: std.mem.Allocator,
+    captured_model: ?[]const u8,
+) !*Route {
+    if (routing.broker_snapshot == null) return &routing.primary;
+    return (try selectMappedRoute(routing, allocator, captured_model, null)) orelse
+        error.NoEligibleBrokerRoute;
+}
+
+/// Returns the distinct-identity alternate, `null` when none is eligible, or a
+/// typed refusal when the mapped fake slot shares attempt 1's identity marker.
+fn selectAlternate(
+    routing: *SyntheticRouting,
+    allocator: std.mem.Allocator,
+    captured_model: ?[]const u8,
+    first_route: *Route,
+) !?*Route {
+    if (routing.broker_snapshot) |*snapshot| {
+        const excluded = try handleForBrokerRoute(routing, snapshot, first_route);
+        const alternate = try selectMappedRoute(
+            routing,
+            allocator,
+            captured_model,
+            excluded,
+        );
+        if (alternate) |candidate| {
+            if (std.mem.eql(u8, candidate.identity, first_route.identity)) {
+                return error.SameIdentityAlternate;
+            }
+        }
+        return alternate;
+    }
+
+    if (routing.alternate) |*alternate| {
+        if (std.mem.eql(u8, alternate.identity, first_route.identity)) {
             return error.SameIdentityAlternate;
         }
         return alternate;
@@ -2029,12 +2257,13 @@ fn forwardRouted(
 
     // The single retry entitlement for this request.
     var slot = RetrySlot{};
+    const first_route = try selectInitialRoute(routing, allocator, captured_model);
 
     const first = try performAttempt(
         state,
         downstream,
         allocator,
-        &routing.primary,
+        first_route,
         headers,
         body,
         captured_model,
@@ -2062,7 +2291,7 @@ fn forwardRouted(
                 state,
                 downstream,
                 allocator,
-                &routing.primary,
+                first_route,
                 headers,
                 body,
                 captured_model,
@@ -2074,18 +2303,25 @@ fn forwardRouted(
             return;
         },
         .pre_body_reauth => |buffered| {
-            const alternate = selectAlternate(routing) catch {
-                // Same-identity-only pool: no eligible DISTINCT identity exists,
-                // so the distinct-identity pool is exhausted. Keep the typed
-                // refusal — deliver route 1's own pre-body result, which already
-                // carries its own trusted Retry-After — and emit the uniform
-                // all-exhausted terminal event.
-                obs.same_identity_alternate_refused = true;
-                emitEvent(state, "claude_proxy_same_identity_alternate_refused");
-                deliverBuffered(downstream, buffered);
-                emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
-                commitObservation(state, obs);
-                return;
+            const alternate = selectAlternate(
+                routing,
+                allocator,
+                captured_model,
+                first_route,
+            ) catch |err| switch (err) {
+                error.SameIdentityAlternate => {
+                    // Same-identity-only pool: no eligible DISTINCT identity
+                    // exists, so the distinct-identity pool is exhausted. Keep
+                    // the typed refusal and deliver attempt 1's own pre-body
+                    // result without another upstream call.
+                    obs.same_identity_alternate_refused = true;
+                    emitEvent(state, "claude_proxy_same_identity_alternate_refused");
+                    deliverBuffered(downstream, buffered);
+                    emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
+                    commitObservation(state, obs);
+                    return;
+                },
+                else => return err,
             } orelse {
                 // No alternate configured: route 1's pre-body result is the
                 // single-route bounded terminal. Uniform all-exhausted event.
@@ -3135,11 +3371,583 @@ test "the replay reservation pool stays bounded and coherent under concurrent re
     try std.testing.expectEqual(@as(usize, 0), pool.outstanding());
 }
 
-/// Drives one routed POST of `routed_json` and returns the raw response.
-fn routedRequest(listener: *Listener, carrier: []const u8) ![]u8 {
-    const request = try postRequestAlloc(std.testing.allocator, listener.port(), carrier, routed_json);
+fn routedRequestBody(listener: *Listener, carrier: []const u8, body: []const u8) ![]u8 {
+    const request = try postRequestAlloc(std.testing.allocator, listener.port(), carrier, body);
     defer std.testing.allocator.free(request);
     return requestRawAlloc(std.testing.allocator, listener.address(), request);
+}
+
+/// Drives one routed POST of `routed_json` and returns the raw response.
+fn routedRequest(listener: *Listener, carrier: []const u8) ![]u8 {
+    return routedRequestBody(listener, carrier, routed_json);
+}
+
+const MappedSlot = enum { primary, alternate };
+
+fn brokerRouteHandle(text: []const u8) broker_route_observation.RouteHandle {
+    return broker_route_observation.RouteHandle.parse(text) catch unreachable;
+}
+
+fn brokerRouteObservation(
+    route_text: []const u8,
+    identity: []const u8,
+    admission: broker_route_observation.RouteAdmission,
+    readiness: broker_route_observation.Readiness,
+) broker_route_observation.RouteObservation {
+    return brokerRouteObservationForModel(
+        route_text,
+        identity,
+        routed_model,
+        admission,
+        readiness,
+    );
+}
+
+fn brokerRouteObservationForModel(
+    route_text: []const u8,
+    identity: []const u8,
+    model: []const u8,
+    admission: broker_route_observation.RouteAdmission,
+    readiness: broker_route_observation.Readiness,
+) broker_route_observation.RouteObservation {
+    return .{
+        .route = brokerRouteHandle(route_text),
+        .identity = broker_route_observation.IdentityEvidence.fromBorrowed(identity),
+        .exact_model = broker_model_demand.ExactModel.init(model) catch unreachable,
+        .admission = admission,
+        .reactive = switch (readiness) {
+            .available, .exhausted => .{
+                .readiness = readiness,
+                .resets_at_s = 200,
+            },
+            .unknown => null,
+        },
+    };
+}
+
+fn brokerMappingSnapshot(
+    observations: []const broker_route_observation.RouteObservation,
+    projection: broker_lease_state.Projection,
+) BrokerMappingSnapshot {
+    return brokerMappingSnapshotForRoutes(
+        "route-z",
+        "route-a",
+        observations,
+        projection,
+    );
+}
+
+fn brokerMappingSnapshotForRoutes(
+    primary_route: []const u8,
+    alternate_route: []const u8,
+    observations: []const broker_route_observation.RouteObservation,
+    projection: broker_lease_state.Projection,
+) BrokerMappingSnapshot {
+    return .{
+        .now_s = 100,
+        .primary_route = brokerRouteHandle(primary_route),
+        .alternate_route = brokerRouteHandle(alternate_route),
+        .observations = observations,
+        .lease_projection = projection,
+    };
+}
+
+fn syntheticRoutingForBrokerTest(
+    primary: *FakeUpstream,
+    alternate: *FakeUpstream,
+    snapshot: BrokerMappingSnapshot,
+) SyntheticRouting {
+    return .{
+        .primary = .{
+            .upstream = primary,
+            .bearer = "synthetic-primary",
+            .identity = "synthetic-primary-identity",
+            .presend_faults = 0,
+        },
+        .alternate = .{
+            .upstream = alternate,
+            .bearer = "synthetic-alternate",
+            .identity = "synthetic-alternate-identity",
+            .presend_faults = 0,
+        },
+        .broker_snapshot = snapshot,
+        .reservation_budget_bytes = default_reservation_budget_bytes,
+        .request_deadline_ns = default_request_deadline_ns,
+        .max_wait_ns = default_max_wait_ns,
+        .clock = .{},
+    };
+}
+
+fn mappedSlot(
+    routing: *SyntheticRouting,
+    excluded: ?broker_route_observation.RouteHandle,
+) !?MappedSlot {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const route = try selectMappedRoute(
+        routing,
+        arena.allocator(),
+        routed_model,
+        excluded,
+    ) orelse return null;
+    if (route == &routing.primary) return .primary;
+    if (routing.alternate) |*alternate| {
+        if (route == alternate) return .alternate;
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "broker mapper enforces route admission and duplicate identity fail closed" {
+    var primary: FakeUpstream = undefined;
+    var alternate: FakeUpstream = undefined;
+    var observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .unavailable, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    var routing = syntheticRoutingForBrokerTest(
+        &primary,
+        &alternate,
+        brokerMappingSnapshot(&observations, broker_lease_state.missingProjection()),
+    );
+
+    try std.testing.expectEqual(MappedSlot.alternate, (try mappedSlot(&routing, null)).?);
+    observations[0].admission = .admitted;
+    try std.testing.expectEqual(MappedSlot.primary, (try mappedSlot(&routing, null)).?);
+
+    observations[1].reactive = observations[0].reactive;
+    observations[1].identity = broker_route_observation.IdentityEvidence.fromBorrowed("identity-z");
+    try std.testing.expect((try mappedSlot(&routing, null)) == null);
+    observations[1].identity = broker_route_observation.IdentityEvidence.fromBorrowed("identity-a");
+    try std.testing.expect((try mappedSlot(&routing, null)) != null);
+}
+
+test "broker mapper preserves readiness and opaque handle ordering under input mutation" {
+    var primary: FakeUpstream = undefined;
+    var alternate: FakeUpstream = undefined;
+    var observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .unknown),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+    };
+    var routing = syntheticRoutingForBrokerTest(
+        &primary,
+        &alternate,
+        brokerMappingSnapshot(&observations, broker_lease_state.missingProjection()),
+    );
+
+    try std.testing.expectEqual(MappedSlot.alternate, (try mappedSlot(&routing, null)).?);
+    observations[0].reactive = observations[1].reactive;
+    observations[1].reactive = null;
+    try std.testing.expectEqual(MappedSlot.primary, (try mappedSlot(&routing, null)).?);
+
+    observations[1].reactive = observations[0].reactive;
+    var reversed = [_]broker_route_observation.RouteObservation{
+        observations[1],
+        observations[0],
+    };
+    routing.broker_snapshot.?.observations = &reversed;
+    try std.testing.expectEqual(MappedSlot.alternate, (try mappedSlot(&routing, null)).?);
+}
+
+test "broker mapper consumes stale unavailable sticky and least-loaded projection facts" {
+    var primary: FakeUpstream = undefined;
+    var alternate: FakeUpstream = undefined;
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+    };
+    var rows = [_]broker_decision.LeaseObservation{
+        .{
+            .route = brokerRouteHandle("route-z"),
+            .active_leases = 0,
+            .last_selected_at = 20,
+        },
+        .{
+            .route = brokerRouteHandle("route-a"),
+            .active_leases = 1,
+            .last_selected_at = 10,
+        },
+    };
+    var routing = syntheticRoutingForBrokerTest(
+        &primary,
+        &alternate,
+        brokerMappingSnapshot(&observations, .{
+            .revision = 7,
+            .quality = .complete,
+            .view = .{ .routes = &rows },
+        }),
+    );
+
+    // A stale owner already removed from Group 2's projection contributes no
+    // load, so route-z wins. Retaining that stale load is the mutation control.
+    try std.testing.expectEqual(MappedSlot.primary, (try mappedSlot(&routing, null)).?);
+    rows[0].active_leases = 2;
+    try std.testing.expectEqual(MappedSlot.alternate, (try mappedSlot(&routing, null)).?);
+
+    // Stickiness outranks load. Removing it returns election to least-loaded.
+    routing.broker_snapshot.?.lease_projection.view.sticky_route = brokerRouteHandle("route-z");
+    try std.testing.expectEqual(MappedSlot.primary, (try mappedSlot(&routing, null)).?);
+    routing.broker_snapshot.?.lease_projection.view.sticky_route = null;
+    try std.testing.expectEqual(MappedSlot.alternate, (try mappedSlot(&routing, null)).?);
+
+    // An unavailable Group 2 projection is the documented empty advisory view;
+    // it cannot block reactive route election.
+    routing.broker_snapshot.?.lease_projection = broker_lease_state.missingProjection();
+    try std.testing.expectEqual(MappedSlot.alternate, (try mappedSlot(&routing, null)).?);
+
+    var impossible = broker_lease_state.missingProjection();
+    impossible.view.routes = &rows;
+    routing.broker_snapshot.?.lease_projection = impossible;
+    try std.testing.expectError(error.InvalidBrokerSnapshot, mappedSlot(&routing, null));
+}
+
+test "broker mapping accepts only the redacted Group 2 lease projection shape" {
+    const snapshot_fields = @typeInfo(BrokerMappingSnapshot).@"struct".fields;
+    try std.testing.expectEqual(@as(usize, 5), snapshot_fields.len);
+    try std.testing.expect(snapshot_fields[4].type == broker_lease_state.Projection);
+    try std.testing.expect(testing.brokerLeaseProjectionIsRedacted());
+    try std.testing.expect(testing.brokerLeaseProjectionRejectsLeakyShape());
+}
+
+test "broker mapping binds captured exact model and body before any fake call" {
+    const exact_model = "claude-mapping-exact-model-canary";
+    const exact_body =
+        "{\"model\":\"" ++ exact_model ++ "\",\"max_tokens\":17," ++
+        "\"metadata\":{\"trace_id\":\"mapping-body-canary\"}}";
+    const mismatched_model = "claude-mapping-mismatch-model-canary";
+    const mismatched_body =
+        "{\"model\":\"" ++ mismatched_model ++ "\",\"max_tokens\":17}";
+
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "unexpected-primary",
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "exact-alternate",
+    }});
+    defer alternate.deinit();
+
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservationForModel("route-z", "identity-z", exact_model, .admitted, .unknown),
+        brokerRouteObservationForModel("route-a", "identity-a", exact_model, .admitted, .available),
+    };
+    const listener = try testing.startWithRoutes(
+        std.testing.allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "slot-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "slot-a" },
+            .broker_snapshot = brokerMappingSnapshot(
+                &observations,
+                broker_lease_state.missingProjection(),
+            ),
+        },
+    );
+    defer listener.deinit();
+
+    const exact_response = try routedRequestBody(listener, &carrier, exact_body);
+    defer std.testing.allocator.free(exact_response);
+    try expectStatus(exact_response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, exact_response, "\r\n\r\nexact-alternate"));
+    try std.testing.expect(primary.snapshot().isZero());
+    const exact_alternate_snapshot = alternate.snapshot();
+    try std.testing.expectEqual(@as(usize, 1), exact_alternate_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), exact_alternate_snapshot.call_count);
+
+    var captured: [512]u8 = undefined;
+    const captured_len = alternate.capturedRequestBody(&captured);
+    try std.testing.expectEqualStrings(exact_body, captured[0..captured_len]);
+    const exact_observation = observationSnapshot(listener);
+    try std.testing.expectEqualStrings(exact_model, exact_observation.admittedModel());
+
+    const before_mismatch = alternate.snapshot();
+    const mismatch_response = try routedRequestBody(listener, &carrier, mismatched_body);
+    defer std.testing.allocator.free(mismatch_response);
+    try expectStatus(mismatch_response, "HTTP/1.1 502 Bad Gateway\r\n");
+    try std.testing.expect(primary.snapshot().isZero());
+    try std.testing.expectEqualDeep(before_mismatch, alternate.snapshot());
+}
+
+test "broker mapping keeps dead route ineligible while unknown route stays eligible" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "primary-after-mutation",
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "unknown-alternate",
+    }});
+    defer alternate.deinit();
+
+    var observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .dead, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try testing.startWithRoutes(
+        std.testing.allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "slot-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "slot-a" },
+            .broker_snapshot = brokerMappingSnapshot(
+                &observations,
+                broker_lease_state.missingProjection(),
+            ),
+        },
+    );
+    defer listener.deinit();
+
+    const dead_response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(dead_response);
+    try expectStatus(dead_response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, dead_response, "\r\n\r\nunknown-alternate"));
+    try std.testing.expect(primary.snapshot().isZero());
+    const dead_alternate_snapshot = alternate.snapshot();
+    try std.testing.expectEqual(@as(usize, 1), dead_alternate_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), dead_alternate_snapshot.call_count);
+
+    observations[0].admission = .admitted;
+    const admitted_response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(admitted_response);
+    try expectStatus(admitted_response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, admitted_response, "\r\n\r\nprimary-after-mutation"));
+    const admitted_primary_snapshot = primary.snapshot();
+    const admitted_alternate_snapshot = alternate.snapshot();
+    try std.testing.expectEqual(@as(usize, 1), admitted_primary_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), admitted_primary_snapshot.call_count);
+    try std.testing.expectEqual(@as(usize, 1), admitted_alternate_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), admitted_alternate_snapshot.call_count);
+}
+
+test "broker lease projection stays value-free across routed events and load mutation" {
+    const primary_handle = "lease-redaction-route-z-canary";
+    const alternate_handle = "lease-redaction-route-a-canary";
+    const primary_identity = "lease-redaction-identity-z-canary";
+    const alternate_identity = "lease-redaction-identity-a-canary";
+    const model = "claude-lease-redaction-model-canary";
+    const prompt_canary = "lease-session-prompt-canary";
+    const primary_bearer = "lease-redaction-token-z-canary";
+    const alternate_bearer = "lease-redaction-token-a-canary";
+    const body =
+        "{\"model\":\"" ++ model ++ "\",\"max_tokens\":16," ++
+        "\"messages\":[{\"role\":\"user\",\"content\":\"" ++ prompt_canary ++ "\"}]}";
+    const event = "{\"kind\":\"claude_proxy_upstream_server_error\"}\n";
+
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .internal_server_error,
+        .body = "primary-error",
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .internal_server_error,
+        .body = "alternate-error",
+    }});
+    defer alternate.deinit();
+
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservationForModel(primary_handle, primary_identity, model, .admitted, .available),
+        brokerRouteObservationForModel(alternate_handle, alternate_identity, model, .admitted, .available),
+    };
+    var lease_rows = [_]broker_decision.LeaseObservation{
+        .{
+            .route = brokerRouteHandle(primary_handle),
+            .active_leases = 0,
+            .last_selected_at = 313371234,
+        },
+        .{
+            .route = brokerRouteHandle(alternate_handle),
+            .active_leases = 42424291,
+            .last_selected_at = 313371235,
+        },
+    };
+    var event_buffer: [1024]u8 = undefined;
+    var event_stream = std.io.fixedBufferStream(&event_buffer);
+    const listener = try testing.startWithRoutes(
+        std.testing.allocator,
+        capability,
+        event_stream.writer().any(),
+        .{
+            .primary = .{
+                .upstream = &primary,
+                .bearer = primary_bearer,
+                .identity = "lease-redaction-slot-z-canary",
+            },
+            .alternate = .{
+                .upstream = &alternate,
+                .bearer = alternate_bearer,
+                .identity = "lease-redaction-slot-a-canary",
+            },
+            .broker_snapshot = brokerMappingSnapshotForRoutes(
+                primary_handle,
+                alternate_handle,
+                &observations,
+                .{
+                    .revision = 42424290,
+                    .quality = .complete,
+                    .view = .{ .routes = &lease_rows },
+                },
+            ),
+        },
+    );
+    defer listener.deinit();
+
+    const first_response = try routedRequestBody(listener, &carrier, body);
+    defer std.testing.allocator.free(first_response);
+    try expectStatus(first_response, "HTTP/1.1 500 Internal Server Error\r\n");
+    const first_primary_snapshot = primary.snapshot();
+    try std.testing.expectEqual(@as(usize, 1), first_primary_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), first_primary_snapshot.call_count);
+    try std.testing.expect(alternate.snapshot().isZero());
+    var captured: [512]u8 = undefined;
+    const primary_len = primary.capturedRequestBody(&captured);
+    try std.testing.expectEqualStrings(body, captured[0..primary_len]);
+    try std.testing.expectEqualStrings(event, event_stream.getWritten());
+
+    const canaries = [_][]const u8{
+        primary_handle,
+        alternate_handle,
+        primary_identity,
+        alternate_identity,
+        model,
+        prompt_canary,
+        primary_bearer,
+        alternate_bearer,
+        "42424291",
+        "313371234",
+    };
+    for (canaries) |canary| {
+        try std.testing.expect(std.mem.indexOf(u8, event_stream.getWritten(), canary) == null);
+    }
+
+    lease_rows[0].active_leases = 42424292;
+    lease_rows[1].active_leases = 0;
+    const mutated_response = try routedRequestBody(listener, &carrier, body);
+    defer std.testing.allocator.free(mutated_response);
+    try expectStatus(mutated_response, "HTTP/1.1 500 Internal Server Error\r\n");
+    const mutated_primary_snapshot = primary.snapshot();
+    const mutated_alternate_snapshot = alternate.snapshot();
+    try std.testing.expectEqual(@as(usize, 1), mutated_primary_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), mutated_primary_snapshot.call_count);
+    try std.testing.expectEqual(@as(usize, 1), mutated_alternate_snapshot.attempt_count);
+    try std.testing.expectEqual(@as(usize, 1), mutated_alternate_snapshot.call_count);
+    const alternate_len = alternate.capturedRequestBody(&captured);
+    try std.testing.expectEqualStrings(body, captured[0..alternate_len]);
+    try std.testing.expectEqualStrings(event ++ event, event_stream.getWritten());
+    for (canaries) |canary| {
+        try std.testing.expect(std.mem.indexOf(u8, event_stream.getWritten(), canary) == null);
+    }
+}
+
+test "broker-mapped attempt one and its sole alternate both use reducer selection" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .ok,
+        .body = "primary-ok",
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{
+        .status = .unauthorized,
+        .body = "alternate-denied",
+    }});
+    defer alternate.deinit();
+
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .unknown),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+    };
+    const rows = [_]broker_decision.LeaseObservation{
+        .{ .route = brokerRouteHandle("route-z"), .active_leases = 0, .last_selected_at = null },
+        .{ .route = brokerRouteHandle("route-a"), .active_leases = 9, .last_selected_at = 10 },
+    };
+    const snapshot = brokerMappingSnapshot(&observations, .{
+        .revision = 9,
+        .quality = .complete,
+        .view = .{
+            .sticky_route = brokerRouteHandle("route-a"),
+            .routes = &rows,
+        },
+    });
+    const listener = try testing.startWithRoutes(
+        std.testing.allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "slot-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "slot-a" },
+            .broker_snapshot = snapshot,
+        },
+    );
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    const obs = observationSnapshot(listener);
+    try expectStatus(response, "HTTP/1.1 200 OK\r\n");
+    try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\nprimary-ok"));
+    try std.testing.expectEqual(@as(usize, 1), alternate.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 1), primary.snapshot().call_count);
+    try std.testing.expectEqual(@as(usize, 2), obs.attempts_total);
+    try std.testing.expectEqual(@as(usize, 1), obs.alternate_count);
+    try std.testing.expectEqual(@as(usize, 0), obs.third_attempt_count);
+}
+
+test "broker-mapped duplicate identity refuses before either fake upstream" {
+    const capability = try SessionCapability.generate(std.testing.allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+
+    var primary = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(std.testing.allocator, &.{.{ .status = .ok, .body = "never" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-conflict", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-conflict", .admitted, .available),
+    };
+    const listener = try testing.startWithRoutes(
+        std.testing.allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "slot-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "slot-a" },
+            .broker_snapshot = brokerMappingSnapshot(
+                &observations,
+                broker_lease_state.missingProjection(),
+            ),
+        },
+    );
+    defer listener.deinit();
+
+    const response = try routedRequest(listener, &carrier);
+    defer std.testing.allocator.free(response);
+    try expectStatus(response, "HTTP/1.1 502 Bad Gateway\r\n");
+    try std.testing.expect(primary.snapshot().isZero());
+    try std.testing.expect(alternate.snapshot().isZero());
 }
 
 test "a pre-body 401 consumes the one alternate and returns the alternate success" {

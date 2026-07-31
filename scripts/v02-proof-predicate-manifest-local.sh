@@ -200,6 +200,13 @@ reservation_release_on_cancellation
 reservation_release_on_overflow
 reservation_release_on_teardown
 exact_model_preservation
+route_identity_admission
+identity_conflict_fail_closed
+route_readiness_ordering
+lease_state_redaction
+stale_lease_reactive_routing
+unavailable_lease_reactive_routing
+sticky_least_loaded_selection
 graceful_teardown
 abrupt_death_reclamation
 resident_absence
@@ -457,6 +464,20 @@ case "$mode" in
             "first_attempt_body_forwarded_byte_exact",
             "alternate_replay_body_byte_exact"
           ])
+        elif .id == "route_identity_admission" then
+          .status = reduced(["route_identity_admission"])
+        elif .id == "identity_conflict_fail_closed" then
+          .status = reduced(["identity_conflict_fail_closed"])
+        elif .id == "route_readiness_ordering" then
+          .status = reduced(["route_readiness_ordering"])
+        elif .id == "lease_state_redaction" then
+          .status = reduced(["lease_state_redaction"])
+        elif .id == "stale_lease_reactive_routing" then
+          .status = reduced(["stale_lease_reactive_routing"])
+        elif .id == "unavailable_lease_reactive_routing" then
+          .status = reduced(["unavailable_lease_reactive_routing"])
+        elif .id == "sticky_least_loaded_selection" then
+          .status = reduced(["sticky_least_loaded_selection"])
         elif .id == "graceful_teardown" then
           .status = reduced([
             "teardown_converges_within_bound",
@@ -662,9 +683,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 51)
+      and ([.predicates[] | select(.status == "missing")] | length == 44)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 73-pass/0-fail/51-missing Stage 2 slice"
+      fail "manifest is not the exact 80-pass/0-fail/44-missing Stage 2 slice"
     ;;
 
   -h|--help|help)
