@@ -25,11 +25,12 @@ for this runbook remains:
 3. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md`;
 4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md`;
 5. `docs/security/omux-v0.2-threat-model-2026-07-11.md`;
-6. `docs/spec/managed-harness-jsonrpc-v2.md`, the shipped Codex adapter
-   contract, and the session-authority contract where they do not conflict
-   with the authorities above;
-7. `CHANGELOG.md` and committed evidence for shipped claims;
-8. this runbook.
+6. this runbook;
+7. `docs/spec/managed-harness-jsonrpc-v2.md`;
+8. the shipped Codex adapter contract;
+9. the session-authority contract where it does not conflict with the
+   authorities above;
+10. `CHANGELOG.md` and committed evidence for shipped claims.
 
 Prompt 79 is an execution input, not repository design authority. Its Phase 2
 claim boundary is preserved here: deterministic fake-upstream and no-spend

@@ -300,8 +300,9 @@ remote-first-run-e2e REF="":
 remote-release-proof REF="" VERSION=release_version:
     OMUX_REMOTE_RELEASE_VERSION={{VERSION}} ./scripts/remote-validate.sh release-proof {{REF}}
 
-# v0.2 evaluation ladder. Stage 1 is diagnostic only; Stage 2 and G4 remain
-# fail-closed remote targets until their named predicate suites exist.
+# v0.2 evaluation ladder. Stage 1 is diagnostic only. Stage 2 and G4 are
+# immutable-candidate remote suites that fail closed until every required
+# predicate or measurement passes; suite existence alone earns no claim.
 v02-stage1-local CANDIDATE_SHA:
     @echo "v02-stage1-local: local_debug_only"
     ./scripts/v02-proof-provenance-local.sh assert-local-candidate "{{CANDIDATE_SHA}}"
