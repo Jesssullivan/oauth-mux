@@ -53,6 +53,7 @@ const AllModules = struct {
     pub const broker_attempt_policy = @import("broker/attempt_policy.zig");
     pub const broker_decision = @import("broker/decision.zig");
     pub const broker_identifiers = @import("broker/identifiers.zig");
+    pub const broker_lease_state = @import("broker/lease_state.zig");
     pub const broker_methods = @import("broker/methods.zig");
     pub const broker_model_demand = @import("broker/model_demand.zig");
     pub const broker_route_observation = @import("broker/route_observation.zig");
