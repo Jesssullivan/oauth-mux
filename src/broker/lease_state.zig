@@ -5,13 +5,17 @@
 //! active-v2 handles, timestamps, and owner-liveness observations; the state
 //! copies every borrowed handle before retaining it.
 //!
-//! Projection and mutation form a revision-checked serialized contract:
+//! Projection and admission mutation form a revision-checked serialized contract:
 //! `Projection.revision` must be returned as `AcquireInput.expected_revision`.
-//! A changed revision returns `StateChanged` for a new mutation, requiring
-//! re-projection and re-election. An exact retry with a currently live owner
-//! is recognized before the revision check so a lost reply is idempotent. The
-//! caller still owns synchronization around this state; this module detects
-//! stale sequential snapshots but is not the deferred cross-process
+//! A changed admission revision returns `StateChanged`, requiring re-projection
+//! and re-election. Heartbeat-only renewals advance the full mutation revision
+//! for persistence/observability, but do not invalidate a projection because
+//! they cannot change load, current eligibility at the renewal timestamp,
+//! ownership, capacity, generation, or selection history. An exact retry with a
+//! currently live owner is recognized before the revision check so a lost reply
+//! is idempotent. The caller still owns synchronization around this state; this
+//! module records one state-wide injected-time watermark and rejects regressions;
+//! it detects stale sequential snapshots but is not the deferred cross-process
 //! flock/persistence implementation.
 
 const std = @import("std");
@@ -129,6 +133,7 @@ pub const LeaseError = error{
     RevisionExhausted,
     StateChanged,
     StaleLease,
+    NonMonotonicObservation,
     NonMonotonicRenewal,
     OwnerUnavailable,
     RouteNotRegistered,
@@ -147,6 +152,16 @@ pub const Projection = struct {
     revision: Revision,
     quality: ProjectionQuality,
     view: LeaseView,
+};
+
+/// Persistence callers must hold the same serialization lock while taking
+/// this snapshot and copying the state payload. Reading the counters through
+/// separate accessors is not a persistence boundary: only this pair identifies
+/// one lock-scoped state version. `mutation` covers every persisted change,
+/// including the observed-time watermark; `admission` is the projection fence.
+pub const RevisionSnapshot = struct {
+    mutation: Revision,
+    admission: Revision,
 };
 
 fn OwnedHandle(comptime Handle: type) type {
@@ -239,7 +254,9 @@ pub fn LeaseState(
         record_count: usize = 0,
         histories: [route_capacity]RouteHistory = undefined,
         history_count: usize = 0,
-        revision_value: Revision = 0,
+        mutation_revision_value: Revision = 0,
+        admission_revision_value: Revision = 0,
+        last_observed_at_ms: ?TimestampMs = null,
         next_generation: Generation = 1,
 
         pub fn init() Self {
@@ -250,8 +267,22 @@ pub fn LeaseState(
             return self.record_count;
         }
 
+        /// Revision used by projection/acquire and projection/transition.
+        /// Kept under the original name because callers use it to construct
+        /// `expected_revision`; full persistence sequencing is exposed below.
         pub fn currentRevision(self: *const Self) Revision {
-            return self.revision_value;
+            return self.admission_revision_value;
+        }
+
+        pub fn currentMutationRevision(self: *const Self) Revision {
+            return self.mutation_revision_value;
+        }
+
+        pub fn revisionSnapshot(self: *const Self) RevisionSnapshot {
+            return .{
+                .mutation = self.mutation_revision_value,
+                .admission = self.admission_revision_value,
+            };
         }
 
         /// Register the fixed eligible route catalog for this state lifetime.
@@ -270,7 +301,7 @@ pub fn LeaseState(
             if (self.history_count == route_capacity) {
                 return error.RouteCapacityExceeded;
             }
-            try self.ensureRevisionAvailable();
+            try self.ensureAdmissionMutationAvailable();
 
             self.insertHistory(.{
                 .route = OwnedRouteHandle.init(input.route) catch
@@ -278,13 +309,16 @@ pub fn LeaseState(
                 .exact_model = input.exact_model,
                 .last_selected_at = null,
             });
-            self.bumpRevision();
+            self.bumpAdmissionMutation();
         }
 
         /// Acquire after a projection/reduction step. Definitely stale records
         /// are cleaned before revision and capacity checks. Exact retries are
-        /// idempotent with a live owner even if unrelated state changed. A
-        /// different route for the same session/model must use `transition`.
+        /// idempotent with a live owner even if unrelated state changed. Exact
+        /// means lease/session/account/route/model/owner and the selected,
+        /// heartbeat, and expiry timestamps still match; `expected_revision`
+        /// may be stale and `now_ms` may advance monotonically before expiry.
+        /// A different route for the same session/model must use `transition`.
         pub fn acquire(
             self: *Self,
             input: AcquireInput,
@@ -309,7 +343,7 @@ pub fn LeaseState(
                 }
                 return error.LeaseConflict;
             }
-            if (input.expected_revision != self.revision_value) {
+            if (input.expected_revision != self.admission_revision_value) {
                 return error.StateChanged;
             }
 
@@ -328,7 +362,7 @@ pub fn LeaseState(
             if (self.record_count == lease_capacity) {
                 return error.LeaseCapacityExceeded;
             }
-            try self.ensureRevisionAvailable();
+            try self.ensureAdmissionMutationAvailable();
             if (self.next_generation == std.math.maxInt(Generation)) {
                 return error.GenerationExhausted;
             }
@@ -344,7 +378,7 @@ pub fn LeaseState(
             self.records[self.record_count] = stored;
             self.record_count += 1;
             self.next_generation += 1;
-            self.bumpRevision();
+            self.bumpAdmissionMutation();
             return .{ .acquired = .{ .generation = generation } };
         }
 
@@ -382,7 +416,7 @@ pub fn LeaseState(
                     return error.LeaseConflict;
                 }
             }
-            if (input.next.expected_revision != self.revision_value) {
+            if (input.next.expected_revision != self.admission_revision_value) {
                 return error.StateChanged;
             }
 
@@ -403,7 +437,7 @@ pub fn LeaseState(
                 input.next.route,
                 input.next.exact_model,
             ) orelse return error.RouteNotRegistered;
-            try self.ensureRevisionAvailable();
+            try self.ensureAdmissionMutationAvailable();
             if (self.next_generation == std.math.maxInt(Generation)) {
                 return error.GenerationExhausted;
             }
@@ -423,7 +457,7 @@ pub fn LeaseState(
             }
             self.records[current_index] = stored;
             self.next_generation += 1;
-            self.bumpRevision();
+            self.bumpAdmissionMutation();
             return .{ .generation = generation };
         }
 
@@ -441,22 +475,26 @@ pub fn LeaseState(
                 return error.LeaseNotFound;
             var record = &self.records[index];
             try authorizeMutation(record, input.session, input.owner_pid, input.generation);
-            if (record.expires_at_ms <= input.now_ms) return error.StaleLease;
             if (input.heartbeat_at_ms < record.heartbeat_at_ms or
                 input.expires_at_ms < record.expires_at_ms)
             {
                 return error.NonMonotonicRenewal;
             }
+            try self.observeTime(input.now_ms);
+            if (record.expires_at_ms <= input.now_ms) return error.StaleLease;
             if (input.heartbeat_at_ms == record.heartbeat_at_ms and
                 input.expires_at_ms == record.expires_at_ms)
             {
                 return .unchanged;
             }
-            try self.ensureRevisionAvailable();
+            // A valid renewal only extends an authorized, currently unexpired
+            // lease. It cannot change admission eligibility at `now_ms`, route
+            // load, ownership, capacity, generation, or selection history.
+            try self.ensureMutationRevisionAvailable();
 
             record.heartbeat_at_ms = input.heartbeat_at_ms;
             record.expires_at_ms = input.expires_at_ms;
-            self.bumpRevision();
+            self.bumpMutationRevision();
             return .renewed;
         }
 
@@ -477,9 +515,9 @@ pub fn LeaseState(
                 input.owner_pid,
                 input.generation,
             );
-            try self.ensureRevisionAvailable();
+            try self.ensureAdmissionMutationAvailable();
             self.removeRecord(index);
-            self.bumpRevision();
+            self.bumpAdmissionMutation();
         }
 
         /// Stale means exactly `now >= expires_at` or a definitively dead
@@ -490,7 +528,7 @@ pub fn LeaseState(
             now_ms: TimestampMs,
             owners: []const OwnerObservation,
         ) LeaseError!usize {
-            if (!validTimestamp(now_ms)) return error.InvalidLease;
+            try self.observeTime(now_ms);
             if (comptime lease_capacity == 0) return 0;
 
             var stale_count: usize = 0;
@@ -498,7 +536,7 @@ pub fn LeaseState(
                 if (isStale(record, now_ms, owners)) stale_count += 1;
             }
             if (stale_count == 0) return 0;
-            try self.ensureRevisionAvailable();
+            try self.ensureAdmissionMutationAvailable();
 
             var index: usize = 0;
             while (index < self.record_count) {
@@ -508,35 +546,33 @@ pub fn LeaseState(
                 }
                 self.removeRecord(index);
             }
-            self.bumpRevision();
+            self.bumpAdmissionMutation();
             return stale_count;
         }
 
         /// Deterministic read-only projection into the group-1 reducer. Route
         /// handles borrow state-owned bytes and rows borrow caller scratch;
-        /// either the next state mutation or scratch reuse invalidates the
-        /// returned view.
+        /// either the next admission-relevant mutation or scratch reuse
+        /// invalidates the returned view.
         pub fn project(
-            self: *const Self,
+            self: *Self,
             session: SessionHandle,
             demand: ModelDemand,
             now_ms: TimestampMs,
             owners: []const OwnerObservation,
             scratch: []LeaseObservation,
-        ) Projection {
-            if (!validSessionHandle(session) or
-                !demand.isValid() or
-                !validTimestamp(now_ms))
-            {
-                return unavailableProjection(self.revision_value);
+        ) LeaseError!Projection {
+            if (!validSessionHandle(session) or !demand.isValid()) {
+                return unavailableProjection(self.admission_revision_value);
             }
+            try self.observeTime(now_ms);
 
             var required: usize = 0;
             for (self.histories[0..self.history_count]) |*history| {
                 if (demand.accepts(history.exact_model)) required += 1;
             }
             if (required > scratch.len) {
-                return unavailableProjection(self.revision_value);
+                return unavailableProjection(self.admission_revision_value);
             }
 
             var output_count: usize = 0;
@@ -567,13 +603,13 @@ pub fn LeaseState(
                 const row_index = findProjectedRoute(
                     scratch[0..output_count],
                     route,
-                ) orelse return unavailableProjection(self.revision_value);
+                ) orelse return unavailableProjection(self.admission_revision_value);
                 scratch[row_index].active_leases +|= 1;
                 if (record.session.eqlBorrowed(session)) sticky = route;
             }
 
             return .{
-                .revision = self.revision_value,
+                .revision = self.admission_revision_value,
                 .quality = quality,
                 .view = .{
                     .sticky_route = sticky,
@@ -623,14 +659,40 @@ pub fn LeaseState(
             }
         }
 
-        fn ensureRevisionAvailable(self: *const Self) LeaseError!void {
-            if (self.revision_value == std.math.maxInt(Revision)) {
+        fn ensureMutationRevisionAvailable(self: *const Self) LeaseError!void {
+            if (self.mutation_revision_value == std.math.maxInt(Revision)) {
                 return error.RevisionExhausted;
             }
         }
 
-        fn bumpRevision(self: *Self) void {
-            self.revision_value += 1;
+        fn ensureAdmissionMutationAvailable(self: *const Self) LeaseError!void {
+            try self.ensureMutationRevisionAvailable();
+            if (self.admission_revision_value == std.math.maxInt(Revision)) {
+                return error.RevisionExhausted;
+            }
+        }
+
+        fn bumpMutationRevision(self: *Self) void {
+            self.mutation_revision_value += 1;
+        }
+
+        fn bumpAdmissionMutation(self: *Self) void {
+            self.mutation_revision_value += 1;
+            self.admission_revision_value += 1;
+        }
+
+        fn observeTime(self: *Self, now_ms: TimestampMs) LeaseError!void {
+            if (!validTimestamp(now_ms)) return error.InvalidLease;
+            if (self.last_observed_at_ms) |last_observed_at_ms| {
+                if (now_ms < last_observed_at_ms) {
+                    return error.NonMonotonicObservation;
+                }
+                if (now_ms == last_observed_at_ms) return;
+            }
+
+            try self.ensureMutationRevisionAvailable();
+            self.last_observed_at_ms = now_ms;
+            self.bumpMutationRevision();
         }
     };
 }
@@ -987,7 +1049,7 @@ test "acquire renew release is bounded idempotent and ownership checked" {
         .session = first.session,
         .owner_pid = first.owner_pid,
         .generation = grant.generation,
-        .now_ms = 10,
+        .now_ms = 11,
         .heartbeat_at_ms = 10,
         .expires_at_ms = 20,
     }));
@@ -1025,7 +1087,7 @@ test "acquire renew release is bounded idempotent and ownership checked" {
     try testing.expectEqual(@as(usize, 0), state.len());
 
     var scratch: [2]LeaseObservation = undefined;
-    const projection = state.project(
+    const projection = try state.project(
         first.session,
         try ModelDemand.init("model-1"),
         16,
@@ -1058,7 +1120,7 @@ test "retained handles are owned and stickiness is demand scoped" {
     const owners = [_]OwnerObservation{
         .{ .owner_pid = 1, .liveness = .alive },
     };
-    const before = state.project(
+    const before = try state.project(
         try SessionHandle.parse(&session_bytes),
         try ModelDemand.init("model-1"),
         1,
@@ -1086,7 +1148,7 @@ test "retained handles are owned and stickiness is demand scoped" {
     @memset(&route_bytes, 'x');
 
     var scratch: [2]LeaseObservation = undefined;
-    const model_one = state.project(
+    const model_one = try state.project(
         sessionHandle("session-a"),
         try ModelDemand.init("model-1"),
         2,
@@ -1097,7 +1159,7 @@ test "retained handles are owned and stickiness is demand scoped" {
     try testing.expectEqualStrings("route-a", model_one.view.routes[0].route.text);
     try testing.expectEqual(@as(u64, 1), model_one.view.routes[0].active_leases);
 
-    const model_two = state.project(
+    const model_two = try state.project(
         sessionHandle("session-a"),
         try ModelDemand.init("model-2"),
         2,
@@ -1213,14 +1275,14 @@ test "revision conflicts and atomic transition preserve one lease per session mo
         .{ .owner_pid = 2, .liveness = .alive },
     };
     var scratch: [1]LeaseObservation = undefined;
-    const snapshot_a = state.project(
+    const snapshot_a = try state.project(
         sessionHandle("session-1"),
         model,
         1,
         &owners,
         &scratch,
     );
-    const snapshot_b = state.project(
+    const snapshot_b = try state.project(
         sessionHandle("session-2"),
         model,
         1,
@@ -1254,7 +1316,7 @@ test "revision conflicts and atomic transition preserve one lease per session mo
     try testing.expectError(error.StateChanged, state.acquire(raced_input, &owners));
     try testing.expectEqual(@as(usize, 1), state.len());
 
-    const next_snapshot = state.project(
+    const next_snapshot = try state.project(
         first_input.session,
         model,
         2,
@@ -1322,6 +1384,366 @@ test "revision conflicts and atomic transition preserve one lease per session mo
         .owner_pid = first_input.owner_pid,
         .generation = first_grant.generation,
     }));
+    try testing.expectEqual(@as(usize, 1), state.len());
+}
+
+test "unrelated heartbeat renewals cannot starve admission" {
+    var state = LeaseState(2, 2).init();
+    const demand = try ModelDemand.init("model-1");
+    try state.registerRoute(.{
+        .route = routeHandle("route-active"),
+        .exact_model = demand.exact_model,
+    });
+    try state.registerRoute(.{
+        .route = routeHandle("route-candidate"),
+        .exact_model = demand.exact_model,
+    });
+    const owners = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
+        .{ .owner_pid = 2, .liveness = .alive },
+    };
+    const active = atRevision(acquireInput(
+        "lease-active",
+        "session-active",
+        "account-active",
+        "route-active",
+        "model-1",
+        1,
+        0,
+        10_000,
+    ), state.currentRevision());
+    const active_grant = grantFromAcquire(try state.acquire(active, &owners));
+
+    var scratch: [2]LeaseObservation = undefined;
+    var admitted: usize = 0;
+    for (0..1000) |iteration| {
+        const now_ms: TimestampMs = @intCast(iteration + 1);
+        const projection = try state.project(
+            sessionHandle("session-candidate"),
+            demand,
+            now_ms,
+            &owners,
+            &scratch,
+        );
+        try testing.expectEqual(ProjectionQuality.complete, projection.quality);
+        try testing.expectEqual(
+            @as(u64, 1),
+            projectedLoad(projection.view, active.route),
+        );
+        try testing.expectEqual(
+            @as(u64, 0),
+            projectedLoad(projection.view, routeHandle("route-candidate")),
+        );
+        const revisions_before_renew = state.revisionSnapshot();
+
+        try testing.expectEqual(RenewOutcome.renewed, try state.renew(.{
+            .lease = active.lease,
+            .session = active.session,
+            .owner_pid = active.owner_pid,
+            .generation = active_grant.generation,
+            .now_ms = now_ms,
+            .heartbeat_at_ms = now_ms,
+            .expires_at_ms = 10_000 + now_ms,
+        }));
+        const revisions_after_renew = state.revisionSnapshot();
+        try testing.expectEqual(
+            revisions_before_renew.mutation + 1,
+            revisions_after_renew.mutation,
+        );
+        try testing.expectEqual(
+            revisions_before_renew.admission,
+            revisions_after_renew.admission,
+        );
+        try testing.expectEqual(projection.revision, revisions_after_renew.admission);
+        const after_renew = try state.project(
+            sessionHandle("session-candidate"),
+            demand,
+            now_ms,
+            &owners,
+            &scratch,
+        );
+        try testing.expectEqual(ProjectionQuality.complete, after_renew.quality);
+        try testing.expectEqual(projection.revision, after_renew.revision);
+        try testing.expectEqual(
+            @as(u64, 1),
+            projectedLoad(after_renew.view, active.route),
+        );
+        try testing.expectEqual(
+            @as(u64, 0),
+            projectedLoad(after_renew.view, routeHandle("route-candidate")),
+        );
+
+        const candidate = atRevision(acquireInput(
+            "lease-candidate",
+            "session-candidate",
+            "account-candidate",
+            "route-candidate",
+            "model-1",
+            2,
+            now_ms,
+            now_ms + 1000,
+        ), projection.revision);
+        const outcome = state.acquire(candidate, &owners) catch |err| {
+            if (err == error.StateChanged) continue;
+            return err;
+        };
+        const grant = grantFromAcquire(outcome);
+        admitted += 1;
+        try state.release(.{
+            .lease = candidate.lease,
+            .session = candidate.session,
+            .owner_pid = candidate.owner_pid,
+            .generation = grant.generation,
+        });
+    }
+
+    try testing.expectEqual(@as(usize, 1000), admitted);
+    const final_revisions = state.revisionSnapshot();
+    try testing.expect(final_revisions.mutation > final_revisions.admission);
+}
+
+test "observed time cannot regress and resurrect an expired projection" {
+    var state = LeaseState(1, 1).init();
+    const demand = try ModelDemand.init("model-1");
+    try state.registerRoute(.{
+        .route = routeHandle("route-1"),
+        .exact_model = demand.exact_model,
+    });
+    const owners = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
+    };
+    const input = atRevision(acquireInput(
+        "lease-1",
+        "session-1",
+        "account-1",
+        "route-1",
+        "model-1",
+        1,
+        10,
+        80,
+    ), state.currentRevision());
+    const grant = grantFromAcquire(try state.acquire(input, &owners));
+    var scratch: [1]LeaseObservation = undefined;
+    const expired = try state.project(
+        input.session,
+        demand,
+        100,
+        &owners,
+        &scratch,
+    );
+    try testing.expectEqual(@as(u64, 0), projectedLoad(expired.view, input.route));
+    const revisions_after_expiry = state.revisionSnapshot();
+
+    try testing.expectError(error.NonMonotonicObservation, state.project(
+        input.session,
+        demand,
+        90,
+        &owners,
+        &scratch,
+    ));
+    try testing.expectEqual(
+        revisions_after_expiry,
+        state.revisionSnapshot(),
+    );
+
+    try testing.expectError(error.NonMonotonicObservation, state.renew(.{
+        .lease = input.lease,
+        .session = input.session,
+        .owner_pid = input.owner_pid,
+        .generation = grant.generation,
+        .now_ms = 40,
+        .heartbeat_at_ms = 40,
+        .expires_at_ms = 200,
+    }));
+    try testing.expectEqual(
+        revisions_after_expiry,
+        state.revisionSnapshot(),
+    );
+
+    const still_expired = try state.project(
+        input.session,
+        demand,
+        100,
+        &owners,
+        &scratch,
+    );
+    try testing.expectEqual(
+        @as(u64, 0),
+        projectedLoad(still_expired.view, input.route),
+    );
+    try testing.expectEqual(@as(usize, 1), try state.cleanupStale(100, &owners));
+    try testing.expectEqual(@as(usize, 0), state.len());
+}
+
+test "transition and release each invalidate stale admission projections" {
+    var state = LeaseState(2, 2).init();
+    const demand = try ModelDemand.init("model-1");
+    try state.registerRoute(.{
+        .route = routeHandle("route-1"),
+        .exact_model = demand.exact_model,
+    });
+    try state.registerRoute(.{
+        .route = routeHandle("route-2"),
+        .exact_model = demand.exact_model,
+    });
+    const owners = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
+        .{ .owner_pid = 2, .liveness = .alive },
+    };
+    const current = atRevision(acquireInput(
+        "lease-current",
+        "session-current",
+        "account-1",
+        "route-1",
+        "model-1",
+        1,
+        1,
+        100,
+    ), state.currentRevision());
+    const current_grant = grantFromAcquire(try state.acquire(current, &owners));
+    var scratch: [2]LeaseObservation = undefined;
+    const before_transition = try state.project(
+        sessionHandle("session-candidate"),
+        demand,
+        2,
+        &owners,
+        &scratch,
+    );
+    const next = atRevision(acquireInput(
+        "lease-next",
+        "session-current",
+        "account-2",
+        "route-2",
+        "model-1",
+        1,
+        2,
+        101,
+    ), before_transition.revision);
+    const next_grant = try state.transition(.{
+        .current_lease = current.lease,
+        .current_generation = current_grant.generation,
+        .next = next,
+    }, &owners);
+
+    const candidate_after_transition = atRevision(acquireInput(
+        "lease-candidate",
+        "session-candidate",
+        "account-1",
+        "route-1",
+        "model-1",
+        2,
+        2,
+        100,
+    ), before_transition.revision);
+    try testing.expectError(
+        error.StateChanged,
+        state.acquire(candidate_after_transition, &owners),
+    );
+
+    const before_release = try state.project(
+        candidate_after_transition.session,
+        demand,
+        3,
+        &owners,
+        &scratch,
+    );
+    try state.release(.{
+        .lease = next.lease,
+        .session = next.session,
+        .owner_pid = next.owner_pid,
+        .generation = next_grant.generation,
+    });
+    var candidate_after_release = candidate_after_transition;
+    candidate_after_release.expected_revision = before_release.revision;
+    candidate_after_release.now_ms = 3;
+    candidate_after_release.selected_at_ms = 3;
+    candidate_after_release.heartbeat_at_ms = 3;
+    try testing.expectError(
+        error.StateChanged,
+        state.acquire(candidate_after_release, &owners),
+    );
+}
+
+test "exact lost acquire reply retries before the admission fence" {
+    var state = LeaseState(1, 2).init();
+    const demand = try ModelDemand.init("model-1");
+    try state.registerRoute(.{
+        .route = routeHandle("route-1"),
+        .exact_model = demand.exact_model,
+    });
+    const owners = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
+    };
+    const input = atRevision(acquireInput(
+        "lease-1",
+        "session-1",
+        "account-1",
+        "route-1",
+        "model-1",
+        1,
+        1,
+        100,
+    ), state.currentRevision());
+    const first = grantFromAcquire(try state.acquire(input, &owners));
+    try state.registerRoute(.{
+        .route = routeHandle("route-2"),
+        .exact_model = demand.exact_model,
+    });
+
+    var retry = input;
+    retry.now_ms = 2;
+    const repeated = try state.acquire(retry, &owners);
+    try testing.expect(repeated == .already_active);
+    try testing.expectEqual(first.generation, grantFromAcquire(repeated).generation);
+
+    retry.expires_at_ms += 1;
+    try testing.expectError(error.LeaseConflict, state.acquire(retry, &owners));
+}
+
+test "admission-relevant route mutation invalidates stale projection" {
+    var state = LeaseState(1, 2).init();
+    const demand = try ModelDemand.init("model-1");
+    try state.registerRoute(.{
+        .route = routeHandle("route-1"),
+        .exact_model = demand.exact_model,
+    });
+    const owners = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
+    };
+    var scratch: [2]LeaseObservation = undefined;
+    const stale_projection = try state.project(
+        sessionHandle("session-1"),
+        demand,
+        1,
+        &owners,
+        &scratch,
+    );
+
+    try state.registerRoute(.{
+        .route = routeHandle("route-2"),
+        .exact_model = demand.exact_model,
+    });
+    const input = atRevision(acquireInput(
+        "lease-1",
+        "session-1",
+        "account-1",
+        "route-1",
+        "model-1",
+        1,
+        1,
+        100,
+    ), stale_projection.revision);
+    try testing.expectError(error.StateChanged, state.acquire(input, &owners));
+    try testing.expectEqual(@as(usize, 0), state.len());
+
+    const fresh_projection = try state.project(
+        input.session,
+        demand,
+        1,
+        &owners,
+        &scratch,
+    );
+    _ = try state.acquire(atRevision(input, fresh_projection.revision), &owners);
     try testing.expectEqual(@as(usize, 1), state.len());
 }
 
@@ -1403,7 +1825,7 @@ test "negative control: erasing released route history changes least-recent choi
         .{ .owner_pid = 1, .liveness = .alive },
     };
     var scratch: [2]LeaseObservation = undefined;
-    const before = state.project(
+    const before = try state.project(
         sessionHandle("session-a"),
         demand,
         10,
@@ -1432,7 +1854,7 @@ test "negative control: erasing released route history changes least-recent choi
         routeEvidence("route-a", "identity-a", "model-1"),
         routeEvidence("route-b", "identity-b", "model-1"),
     };
-    const retained = state.project(
+    const retained = try state.project(
         sessionHandle("session-other"),
         demand,
         11,
@@ -1477,7 +1899,7 @@ test "stale dead and unknown owners cannot create load or sticky routing" {
         .{ .owner_pid = 4, .liveness = .alive },
     };
     var scratch: [4]LeaseObservation = undefined;
-    const projection = state.project(
+    const projection = try state.project(
         sessionHandle("session-c"),
         try ModelDemand.init(model),
         20,
@@ -1491,7 +1913,7 @@ test "stale dead and unknown owners cannot create load or sticky routing" {
     try testing.expectEqual(@as(u64, 0), projectedLoad(projection.view, routeHandle("route-c")));
     try testing.expectEqual(@as(u64, 1), projectedLoad(projection.view, routeHandle("route-d")));
 
-    const live_projection = state.project(
+    const live_projection = try state.project(
         sessionHandle("session-d"),
         try ModelDemand.init(model),
         20,
@@ -1512,7 +1934,7 @@ test "stale dead and unknown owners cannot create load or sticky routing" {
         routeEvidence("route-c", "identity-c", model),
         routeEvidence("route-d", "identity-d", model),
     };
-    const after_cleanup = state.project(
+    const after_cleanup = try state.project(
         sessionHandle("session-other"),
         try ModelDemand.init(model),
         20,
@@ -1526,7 +1948,7 @@ test "stale dead and unknown owners cannot create load or sticky routing" {
     ));
     try testing.expectEqualStrings("route-a", selected.text);
 
-    const unavailable = state.project(
+    const unavailable = try state.project(
         sessionHandle("session-other"),
         try ModelDemand.init(model),
         20,
@@ -1578,7 +2000,7 @@ test "duplicate owner facts fold deterministically and conflicts fail unknown" {
     var scratch_a: [1]LeaseObservation = undefined;
     var scratch_b: [1]LeaseObservation = undefined;
 
-    const live = state.project(
+    const live = try state.project(
         input.session,
         try ModelDemand.init("model-1"),
         20,
@@ -1589,14 +2011,14 @@ test "duplicate owner facts fold deterministically and conflicts fail unknown" {
     try testing.expectEqual(@as(u64, 1), live.view.routes[0].active_leases);
     try testing.expect(live.view.sticky_route != null);
 
-    const conflict_a = state.project(
+    const conflict_a = try state.project(
         input.session,
         try ModelDemand.init("model-1"),
         20,
         &conflicts_a,
         &scratch_a,
     );
-    const conflict_b = state.project(
+    const conflict_b = try state.project(
         input.session,
         try ModelDemand.init("model-1"),
         20,
@@ -1657,8 +2079,8 @@ test "capacity and timestamp extremes fail explicitly without partial mutation" 
         "route-max",
         "model-max",
         2,
-        1,
-        2,
+        max_time - 1,
+        max_time,
     );
     try testing.expectError(
         error.LeaseCapacityExceeded,
@@ -1732,7 +2154,7 @@ test "capacity and timestamp extremes fail explicitly without partial mutation" 
     ));
 
     var no_scratch: [0]LeaseObservation = .{};
-    const unavailable = state.project(
+    const unavailable = try state.project(
         first.session,
         try ModelDemand.init("model-max"),
         max_time - 1,
@@ -1754,12 +2176,51 @@ test "capacity and timestamp extremes fail explicitly without partial mutation" 
     try testing.expectEqualStrings("route-max", selected.text);
 
     var revision_exhausted = LeaseState(1, 1).init();
-    revision_exhausted.revision_value = std.math.maxInt(Revision);
+    revision_exhausted.mutation_revision_value = std.math.maxInt(Revision);
+    const exhausted_admission_revision = revision_exhausted.currentRevision();
     try testing.expectError(error.RevisionExhausted, revision_exhausted.registerRoute(.{
         .route = routeHandle("route-1"),
         .exact_model = exactModel("model-1"),
     }));
     try testing.expectEqual(@as(usize, 0), revision_exhausted.history_count);
+    try testing.expectEqual(
+        std.math.maxInt(Revision),
+        revision_exhausted.currentMutationRevision(),
+    );
+    try testing.expectEqual(
+        exhausted_admission_revision,
+        revision_exhausted.currentRevision(),
+    );
+
+    var final_mutation = LeaseState(1, 1).init();
+    final_mutation.mutation_revision_value = std.math.maxInt(Revision) - 1;
+    try final_mutation.registerRoute(.{
+        .route = routeHandle("route-1"),
+        .exact_model = exactModel("model-1"),
+    });
+    try testing.expectEqual(
+        std.math.maxInt(Revision),
+        final_mutation.currentMutationRevision(),
+    );
+    const final_admission_revision = final_mutation.currentRevision();
+    try testing.expectError(error.RevisionExhausted, final_mutation.acquire(
+        atRevision(acquireInput(
+            "lease-1",
+            "session-1",
+            "account-1",
+            "route-1",
+            "model-1",
+            1,
+            1,
+            2,
+        ), final_admission_revision),
+        &.{.{ .owner_pid = 1, .liveness = .alive }},
+    ));
+    try testing.expectEqual(@as(usize, 0), final_mutation.len());
+    try testing.expectEqual(
+        final_admission_revision,
+        final_mutation.currentRevision(),
+    );
 
     var generation_exhausted = LeaseState(1, 1).init();
     try generation_exhausted.registerRoute(.{
@@ -1895,7 +2356,7 @@ fn runPersistentWorkload(
             pending_count += 1;
 
             const now_ms: i64 = @intCast(round);
-            const projection = state.project(
+            const projection = try state.project(
                 sessions[session_index],
                 demand,
                 now_ms,
@@ -1958,7 +2419,7 @@ fn runPersistentWorkload(
         for (order, 0..) |session_index, step| {
             if (pending[session_index]) continue;
             const now_ms: i64 = @intCast(1000 + cycle * 1000 + step);
-            const projection = state.project(
+            const projection = try state.project(
                 sessions[session_index],
                 demand,
                 now_ms,
@@ -1993,7 +2454,7 @@ fn runPersistentWorkload(
 
         const checkpoint_now: i64 =
             @intCast(1000 + cycle * 1000 + persistent_session_count);
-        const checkpoint = state.project(
+        const checkpoint = try state.project(
             sessions[0],
             demand,
             checkpoint_now,
@@ -2222,7 +2683,7 @@ test "ended-session churn balances selection history without weakening stickines
                 .{ cycle, slot },
             ));
             const now_ms: i64 = @intCast(cycle * session_count + slot);
-            const projection = state.project(
+            const projection = try state.project(
                 active_sessions[slot],
                 demand,
                 now_ms,
@@ -2252,7 +2713,7 @@ test "ended-session churn balances selection history without weakening stickines
             }, &owners)).generation;
         }
 
-        const checkpoint = state.project(
+        const checkpoint = try state.project(
             active_sessions[0],
             demand,
             @intCast(cycle * session_count + session_count),
@@ -2277,7 +2738,7 @@ test "ended-session churn balances selection history without weakening stickines
             });
         }
         try testing.expectEqual(@as(usize, 0), state.len());
-        const after_release = state.project(
+        const after_release = try state.project(
             active_sessions[0],
             demand,
             @intCast(cycle * session_count + session_count),
@@ -2366,7 +2827,7 @@ test "seeded acquisition and liveness permutations preserve projection" {
         &owners,
     );
     var baseline_scratch: [route_count]LeaseObservation = undefined;
-    const baseline = baseline_state.project(
+    const baseline = try baseline_state.project(
         inputs[0].session,
         try ModelDemand.init("model-exact"),
         30,
@@ -2394,7 +2855,7 @@ test "seeded acquisition and liveness permutations preserve projection" {
         );
 
         var scratch: [route_count]LeaseObservation = undefined;
-        const actual = state.project(
+        const actual = try state.project(
             inputs[0].session,
             try ModelDemand.init("model-exact"),
             30,
@@ -2461,7 +2922,7 @@ test "negative control: cleanup disabled changes reactive election" {
     );
 
     var scratch: [2]LeaseObservation = undefined;
-    const actual = state.project(
+    const actual = try state.project(
         sessionHandle("session-other"),
         demand,
         20,
