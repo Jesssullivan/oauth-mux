@@ -81,9 +81,13 @@ claims.
   production path remains single-attempt fail-closed.
 - Candidate-bound Stage 2 observation emission (TIN-2400, #495 —
   `stage2_observer.zig` value-free facts) and request-counter
-  reconciliation (TIN-3003, #497). Canonical conformance state after
-  reduction: 11 of 124 predicates pass, 113 missing — Stage 2 remains
-  incomplete by design.
+  reconciliation (TIN-3003, #497). The initial reduction was 11 pass / 0 fail /
+  113 missing. Observer increments for routed wire behavior (#507), advisory
+  usage (#508), and flock-owned refresh outcomes (#509), plus the remote
+  runtime-dir containment fix (#510), produced the latest accepted exact-candidate
+  result: 73 pass / 0 fail / 51 missing on `976fc15`. Later source changes do
+  not inherit that packet; current `main` still needs a fresh Stage 2 recut and
+  Stage 2 remains incomplete by design.
 - Codex resume evidence hardening (TIN-2991, #496, #498): exact structured
   resume evidence and adapter resume preflight evidence are now required.
 - Bounded v0.2 prerelease profile (TIN-3005, #499) — a nonpublishing gate;
@@ -101,6 +105,31 @@ claims.
   (malformed values never propagated), comptime plus behavioral proof that
   the wire proxy holds no resident-service hooks, and deinit-mid-request
   reservation reclamation to zero.
+- Additional synthetic Claude-sidecar invariants (#504): cancellation and
+  overflow release reservations, abrupt teardown converges, and the exact
+  admitted model is preserved byte-for-byte on both bounded attempts.
+- Advisory-usage observations are wired after route decisions and remain
+  inferred, non-authoritative, value-free, and unable to alter routing
+  (TIN-2400, #505).
+- Provider-neutral attempt-budget algebra (TIN-1790, #506): at most two
+  attempts, with the second consumed by either one proven-not-sent same-route
+  retry or one pre-body 401/403/429 distinct-account alternate. Provider 5xx,
+  ambiguous sends, and started responses never authorize account replay.
+- Planning-only `omux setup` and `omux repair` front doors (TIN-3006, #511).
+  They inspect redacted metadata and emit plans; provider login, credential
+  access, service enablement, and mutation remain deliberately unimplemented.
+- Pure exact-model route core (TIN-1790, #512): typed model demand, merged
+  reactive/advisory readiness, fail-closed identity conflicts, sticky routing,
+  and deterministic least-loaded selection. It performs no adapter I/O and
+  advances neither Stage 2 nor the 0/11 golden score.
+- Pure serialized in-process lease state (TIN-1790, #513): injected clocks and
+  owner observations drive acquire, renew, release, stale cleanup, atomic route
+  transitions, exact-model pressure, and deterministic seeded schedule coverage.
+  A post-merge adversarial reproduction found that continuous unrelated renewals
+  can keep a revision-fenced admission returning `StateChanged`; no admission-
+  liveness or no-starvation claim is available until that defect is corrected.
+  Cross-process ownership, G4 fairness, adapter consumption, and Stage 2 movement
+  remain explicitly unproven.
 
 ### Changed / fixed
 

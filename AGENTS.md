@@ -86,20 +86,24 @@ prove the OpenCode conformance boundary, it is probably out of scope.
    unshipped v0.2 design authority
 4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` — v0.2 removal order
 5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` — managed broker threats
-6. `docs/spec/managed-harness-jsonrpc-v2.md` — declaration-only process adapter
+6. `docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md` — candidate,
+   conformance, performance, installed-dogfood, and golden promotion gates
+7. `docs/spec/managed-harness-jsonrpc-v2.md` — declaration-only process adapter
    compatibility contract; explicitly unshipped
-7. `docs/spec/codex-adapter-contract-2026-05-03.md` — shipped Codex adapter spec
-8. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
+8. `docs/spec/codex-adapter-contract-2026-05-03.md` — shipped Codex adapter spec
+9. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
    overlays must not hide or fork harness session authority
-9. `CHANGELOG.md` and committed evidence — shipped claim truth
-10. `justfile` — operator entrypoint for all build/test/release tasks
-11. `README.md` — public-facing current-state summary; subordinate to specs
-12. `flake.nix` — Nix devShell and package definitions
+10. `CHANGELOG.md` and committed evidence — shipped claim truth
+11. `justfile` — operator entrypoint for all build/test/release tasks
+12. `README.md` — public-facing current-state summary; subordinate to specs
 13. `build.zig.zon` plus the Zig release graph — version and release semantics;
     they emit/check the v0.2 manifest contract and currently migrated consumers.
-    Remaining packaging and Bazel/GF consumers stay sequenced under TIN-2050,
-    TIN-2046, and TIN-2105 until their own proof lands.
-14. `src/` — implementation
+    The producer landed under TIN-2046; remaining packaging and Bazel/GF
+    consumer migrations stay sequenced under TIN-2050 and TIN-2105 until their
+    own proof lands.
+14. Generated, checked `release-manifest.json` — release-graph projection for
+    packaging and build consumers
+15. `flake.nix`, packaging scripts, and `src/` — implementation
 
 ## Superseded Design Inputs (pending deletion)
 

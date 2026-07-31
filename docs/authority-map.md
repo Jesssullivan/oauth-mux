@@ -17,21 +17,24 @@ v0.2 program; trackers coordinate work but do not override repository authority.
    order and preservation gates for the v0.2 reset.
 5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` - managed sidecar,
    credential, memory, local-state, evidence, and supply-chain boundaries.
-6. `docs/spec/managed-harness-jsonrpc-v2.md` - generated, declaration-only
+6. `docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md` - immutable-candidate
+   conformance, performance, installed-dogfood, and golden promotion rules.
+7. `docs/spec/managed-harness-jsonrpc-v2.md` - generated, declaration-only
    process-adapter compatibility contract. Its methods remain unimplemented.
-7. `docs/spec/codex-adapter-contract-2026-05-03.md` and
-   `docs/spec/harness-session-authority-bridge-2026-05-05.md` - shipped Codex
-   adapter/session constraints where they do not conflict with the v0.2 program.
-8. `CHANGELOG.md`, release tags, and committed evidence - shipped claim truth.
+8. `docs/spec/codex-adapter-contract-2026-05-03.md` - shipped Codex adapter
+   constraints where they do not conflict with the v0.2 program.
+9. `docs/spec/harness-session-authority-bridge-2026-05-05.md` - session-authority
+   constraints where they do not conflict with the v0.2 program.
+10. `CHANGELOG.md`, release tags, and committed evidence - shipped claim truth.
    A plan can supersede direction but cannot retroactively broaden or erase it.
-9. `justfile` - operator entrypoint and remote-proof authority.
-10. `README.md` - public summary, subordinate to contracts and shipped evidence.
-11. `build.zig.zon` plus the Zig release graph - the human-edited version and
+11. `justfile` - operator entrypoint and remote-proof authority.
+12. `README.md` - public summary, subordinate to contracts and shipped evidence.
+13. `build.zig.zon` plus the Zig release graph - the human-edited version and
    product/release-semantics authority.
-12. Generated, checked `release-manifest.json` - the projection
-    consumed by packaging, installers, Nix, Homebrew, Bazel, and
-    GloriousFlywheel. Consumers may not duplicate its version or target graph.
-13. `flake.nix`, packaging scripts, and `src/` - implementation subordinate to
+14. Generated, checked `release-manifest.json` - the projection that records
+    each intended consumer and its migration state. Migrated consumers may not
+    duplicate its version or target graph; pending consumers remain unproven.
+15. `flake.nix`, packaging scripts, and `src/` - implementation subordinate to
     the release graph and shipped evidence.
 
 ## Evidence Rules
