@@ -136,3 +136,4 @@ jobs:
           name: live-provider-qa
           path: dist/live-qa/
           if-no-files-found: ignore
+          retention-days: 7

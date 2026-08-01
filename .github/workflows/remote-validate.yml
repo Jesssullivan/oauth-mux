@@ -354,6 +354,7 @@ jobs:
           name: v02-proof-provenance-${{ github.run_attempt }}
           path: v02-proof-provenance.json
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload v0.2 proof predicate manifest
         if: ${{ always() && (inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark') }}
@@ -362,6 +363,7 @@ jobs:
           name: v02-proof-predicates-${{ inputs.target }}-${{ github.run_attempt }}
           path: v02-proof-predicate-manifest.json
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload v0.2 Stage 2 observations
         if: ${{ always() && inputs.target == 'v02-stage2-conformance' }}
@@ -370,6 +372,7 @@ jobs:
           name: v02-stage2-observations-${{ github.run_attempt }}
           path: v02-stage2-observations.json
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload v0.2 benchmark metrics
         if: ${{ always() && inputs.target == 'v02-benchmark' }}
@@ -378,6 +381,7 @@ jobs:
           name: v02-proof-benchmark-metrics-${{ github.run_attempt }}
           path: v02-benchmark-metrics.json
           if-no-files-found: error
+          retention-days: 7
 
       - name: Upload v0.2 bounded prerelease readiness
         if: ${{ always() && inputs.target == 'v02-prerelease-readiness' }}
@@ -386,3 +390,4 @@ jobs:
           name: v02-prerelease-readiness-${{ github.run_attempt }}
           path: ${{ runner.temp }}/v02-prerelease-readiness
           if-no-files-found: error
+          retention-days: 7

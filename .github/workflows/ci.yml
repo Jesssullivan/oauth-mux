@@ -204,6 +204,7 @@ jobs:
           path: |
             zig-out/bin/omux*
             zig-out/bin/oauth-mux*
+          retention-days: 7
 
   nix:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

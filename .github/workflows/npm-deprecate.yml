@@ -100,3 +100,4 @@ jobs:
           name: npm-deprecate-${{ inputs.version }}
           path: dist/out/**/handoff/
           if-no-files-found: ignore
+          retention-days: 7
