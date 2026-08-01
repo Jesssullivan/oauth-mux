@@ -43,6 +43,7 @@ jobs:
         with:
           name: oauth-mux-release-${{ github.ref_name }}
           path: dist/out/
+          retention-days: 7
 
   release:
     needs: build
