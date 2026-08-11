@@ -100,7 +100,7 @@ pub fn resolveConfiguredAccount(
     label: []const u8,
 ) LoginError!ConfiguredAccount {
     var effective_account: ?[]u8 = null;
-    if (comptime builtin.os.tag == .macos) {
+    if (comptime builtin.os.tag == .macos or builtin.os.tag == .linux) {
         effective_account = os_account.effectiveUserNameAlloc(allocator) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.AccountAuthorityUnavailable,
