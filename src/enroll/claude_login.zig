@@ -935,13 +935,13 @@ fn systemPrepareWorkspace(
     if (!validateOwnedDirectoryStat(root_stat, true)) return error.RuntimeCustodyViolation;
     root_dir.makeDir("shim") catch return error.WorkspaceCreateFailed;
     root_dir.makeDir("profile") catch return error.WorkspaceCreateFailed;
-    var shim_dir_handle = root_dir.openDir("shim", .{ .no_follow = true }) catch
+    var shim_dir_handle = root_dir.openDir("shim", .{ .iterate = true, .no_follow = true }) catch
         return error.WorkspaceCreateFailed;
     defer shim_dir_handle.close();
     shim_dir_handle.chmod(0o700) catch return error.WorkspaceCreateFailed;
     const shim_stat = std.posix.fstat(shim_dir_handle.fd) catch return error.RuntimeCustodyViolation;
     if (!validateOwnedDirectoryStat(shim_stat, true)) return error.RuntimeCustodyViolation;
-    var profile_handle = root_dir.openDir("profile", .{ .no_follow = true }) catch
+    var profile_handle = root_dir.openDir("profile", .{ .iterate = true, .no_follow = true }) catch
         return error.WorkspaceCreateFailed;
     defer profile_handle.close();
     profile_handle.chmod(0o700) catch return error.WorkspaceCreateFailed;
@@ -1742,6 +1742,7 @@ test "runtime custody rejects 0777 ancestor and workspace stays parent-contained
     defer allocator.free(runtime);
 
     try std.posix.fchmodat(std.posix.AT.FDCWD, root, 0o777, 0);
+    defer std.posix.fchmodat(std.posix.AT.FDCWD, root, 0o700, 0) catch {};
     try std.testing.expectError(
         error.RuntimeCustodyViolation,
         validateNearestExistingRuntimeAncestor(allocator, runtime),

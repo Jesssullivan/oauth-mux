@@ -3932,8 +3932,16 @@ test "refreshWritebackBackend refuses the canonical shared Claude keychain item 
         \\  "strategies": {}
         \\}
     ;
-    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
     defer parsed.deinit();
+    if (comptime builtin.os.tag != .macos) {
+        // macOS derives the keychain account from effective passwd authority.
+        // Other platforms retain a synthetic account so this platform-neutral
+        // refusal test reaches the canonical-service guard.
+        const claude = parsed.value.providers.map.getPtr("claude").?;
+        claude.accounts.map.getPtr("canonical").?.secret.account = "test-account";
+        claude.accounts.map.getPtr("suffixed").?.secret.account = "test-account";
+    }
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
     const def = config_mod.resolveProviderDefinition(parsed.value, "claude");
