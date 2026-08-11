@@ -1,4 +1,5 @@
 const std = @import("std");
+const broker_lease_store_focus = @import("broker/lease_store.zig");
 
 // Keep this list explicit. scripts/check-zig-test-root.sh fails when a source
 // file is added without joining the test graph.
@@ -54,6 +55,7 @@ const AllModules = struct {
     pub const broker_decision = @import("broker/decision.zig");
     pub const broker_identifiers = @import("broker/identifiers.zig");
     pub const broker_lease_state = @import("broker/lease_state.zig");
+    pub const broker_lease_store = @import("broker/lease_store.zig");
     pub const broker_methods = @import("broker/methods.zig");
     pub const broker_model_demand = @import("broker/model_demand.zig");
     pub const broker_route_observation = @import("broker/route_observation.zig");
@@ -105,4 +107,8 @@ const AllModules = struct {
 
 test "every Zig source module joins the test graph" {
     std.testing.refAllDeclsRecursive(AllModules);
+}
+
+test "TIN-3320 cross-process lease store joins focused diagnostics" {
+    std.testing.refAllDeclsRecursive(broker_lease_store_focus);
 }

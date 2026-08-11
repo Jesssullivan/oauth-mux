@@ -16,6 +16,7 @@
 //!   route_observation.zig — typed route evidence projection
 //!   decision.zig      — pure deterministic route election
 //!   lease_state.zig   — pure in-process lease state and projection
+//!   lease_store.zig   — redacted cross-process lease persistence
 //!
 //! Surface version is `1` (see broker spec §2). Method shapes are stable
 //! within a major; adding optional fields is allowed.
@@ -31,6 +32,7 @@ pub const model_demand = @import("model_demand.zig");
 pub const route_observation = @import("route_observation.zig");
 pub const decision = @import("decision.zig");
 pub const lease_state = @import("lease_state.zig");
+pub const lease_store = @import("lease_store.zig");
 
 pub const SURFACE_VERSION: u32 = types.surface_version;
 pub const BUILD_TAG: []const u8 = "oauth-mux 0.2.0+broker";
@@ -45,6 +47,7 @@ pub const RouteObservation = route_observation.RouteObservation;
 pub const EvidenceProvenance = route_observation.EvidenceProvenance;
 pub const BrokerDecision = decision.BrokerDecision;
 pub const LeaseState = lease_state.LeaseState;
+pub const LeaseStore = lease_store.LeaseStore;
 
 test {
     std.testing.refAllDeclsRecursive(@This());
