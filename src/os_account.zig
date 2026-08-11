@@ -29,6 +29,7 @@ fn userNameForUidAlloc(
     passwd: []const u8,
     uid: std.posix.uid_t,
 ) AuthorityError![]u8 {
+    var matched_name: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, passwd, '\n');
     while (lines.next()) |line| {
         if (line.len == 0 or line[0] == '#') continue;
@@ -37,10 +38,17 @@ fn userNameForUidAlloc(
         _ = fields.next() orelse continue;
         const uid_text = fields.next() orelse continue;
         _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        if (fields.next() != null) continue;
         const candidate = std.fmt.parseInt(std.posix.uid_t, uid_text, 10) catch continue;
         if (candidate != uid or name.len == 0) continue;
-        return allocator.dupe(u8, name) catch error.OutOfMemory;
+        if (matched_name != null) return error.AccountAuthorityUnavailable;
+        matched_name = name;
     }
+    if (matched_name) |name|
+        return allocator.dupe(u8, name) catch error.OutOfMemory;
     return error.AccountAuthorityUnavailable;
 }
 
@@ -90,6 +98,7 @@ test "passwd lookup matches the exact uid and ignores malformed rows" {
     const passwd =
         \\prefix:x:not-a-uid:1::/tmp:/bin/false
         \\truncated:x:420
+        \\four-fields:x:421:1
         \\other:x:42:1::/tmp:/bin/false
         \\target:x:420:1::/tmp:/bin/false
         \\target-suffix:x:4200:1::/tmp:/bin/false
@@ -100,5 +109,20 @@ test "passwd lookup matches the exact uid and ignores malformed rows" {
     try std.testing.expectError(
         error.AccountAuthorityUnavailable,
         userNameForUidAlloc(std.testing.allocator, passwd, 7),
+    );
+    try std.testing.expectError(
+        error.AccountAuthorityUnavailable,
+        userNameForUidAlloc(std.testing.allocator, passwd, 421),
+    );
+}
+
+test "passwd lookup rejects duplicate uid records" {
+    const passwd =
+        \\first:x:420:1::/tmp:/bin/false
+        \\second:x:420:1::/tmp:/bin/false
+    ;
+    try std.testing.expectError(
+        error.AccountAuthorityUnavailable,
+        userNameForUidAlloc(std.testing.allocator, passwd, 420),
     );
 }
