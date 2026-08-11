@@ -66,6 +66,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const broker_types = @import("../../broker/types.zig");
 const account_pool_mod = @import("../../broker/account_pool.zig");
+const broker_attempt_policy = @import("../../broker/attempt_policy.zig");
+const broker_decision = @import("../../broker/decision.zig");
+const broker_lease_state = @import("../../broker/lease_state.zig");
+const broker_model_demand = @import("../../broker/model_demand.zig");
+const broker_route_observation = @import("../../broker/route_observation.zig");
 const health_mod = @import("../../health.zig");
 const trace = @import("../../trace.zig");
 const core_types = @import("../../types.zig");
@@ -457,6 +462,12 @@ pub const Proxy = struct {
             return;
         };
 
+        // Prompt 85 mapping-only consumption. This shadow has no route
+        // readiness evidence and its result is never consulted by live
+        // election, forwarding, retry, health, or response handling.
+        const shared_request_shadow = mapSharedCoreRequestShadow(req);
+        std.mem.doNotOptimizeAway(&shared_request_shadow);
+
         if (unsupportedResponsesGetTransport(&req)) |transport| {
             var delivered_to_codex = true;
             var write_error: ?[]const u8 = null;
@@ -647,6 +658,9 @@ pub const Proxy = struct {
                 prior_attempt_account = elected.id;
                 continue;
             };
+
+            const shared_attempt_shadow = mapSharedCoreHttpOutcomeShadow(status_and_class);
+            std.mem.doNotOptimizeAway(&shared_attempt_shadow);
 
             if (status_and_class.stream_outcome.kind == .client_disconnected) {
                 self.logEvent("proxy_client_disconnected", .{
@@ -1119,6 +1133,70 @@ pub const Proxy = struct {
         self.log_writer.writeAll(buf.items) catch {};
     }
 };
+
+const SharedCoreRequestShadow = struct {
+    demand: ?broker_model_demand.ModelDemand = null,
+    decision: broker_decision.BrokerDecision = .no_route,
+    lease_quality: broker_lease_state.ProjectionQuality = .unavailable,
+    route_evidence_count: usize = 0,
+};
+
+const ShadowModelEnvelope = struct {
+    model: []const u8,
+};
+
+/// Best-effort, allocation-bounded projection into shared request types. A
+/// request model is demand, not proof that any enrolled account can serve it.
+/// Accordingly this mapper supplies no RouteObservation rows and the shared
+/// decision must remain `no_route`. Parse failure is an absent observation and
+/// cannot reject or otherwise alter the Codex request.
+fn mapSharedCoreRequestShadow(req: Request) SharedCoreRequestShadow {
+    var shadow = SharedCoreRequestShadow{};
+    if (!std.mem.eql(u8, req.method, "POST") or
+        !std.mem.eql(u8, pathKind(req.path), "responses"))
+    {
+        return shadow;
+    }
+
+    // Fixed scratch bounds observation overhead only. It is not a request-body
+    // replay reservation and conveys no 32/64/256 MiB eligibility claim.
+    var scratch: [4096]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&scratch);
+    const parsed = std.json.parseFromSlice(
+        ShadowModelEnvelope,
+        fixed.allocator(),
+        req.body,
+        .{
+            .ignore_unknown_fields = true,
+            .duplicate_field_behavior = .@"error",
+            .max_value_len = broker_model_demand.max_model_len,
+        },
+    ) catch return shadow;
+    defer parsed.deinit();
+
+    const demand = broker_model_demand.ModelDemand.init(parsed.value.model) catch return shadow;
+    const missing_leases = broker_lease_state.missingProjection();
+    const no_route_evidence: []const broker_route_observation.RouteEvidence = &.{};
+    shadow.demand = demand;
+    shadow.decision = broker_decision.reduce(demand, no_route_evidence, missing_leases.view);
+    shadow.lease_quality = missing_leases.quality;
+    return shadow;
+}
+
+/// Map only the HTTP fact already observed by the existing proxy. This does
+/// does not reduce attempt policy: the adapter has not reserved replay memory
+/// and its legacy transport path does not expose a trustworthy SendState.
+fn mapSharedCoreHttpOutcomeShadow(
+    result: StatusAndClassification,
+) broker_attempt_policy.Outcome {
+    return .{ .upstream_status = .{
+        .status = result.status,
+        .delivery = if (result.buffered_response == null)
+            .downstream_started
+        else
+            .buffered_before_downstream,
+    } };
+}
 
 fn electProxyRouteAfterTimeRefresh(
     pool: *account_pool_mod.AccountPool,
@@ -2693,6 +2771,88 @@ test "provider signal matrix maps to route state and same-turn retry policy" {
         } else {
             try std.testing.expect(c.body_class == null);
         }
+    }
+}
+
+test "Prompt 85 Codex mapping observes demand without fabricating readiness" {
+    const headers = HeaderList.init(std.testing.allocator);
+    const request = Request{
+        .method = "POST",
+        .path = "/backend-api/codex/responses",
+        .headers = headers,
+        .body = "{\"model\":\"gpt-exact\",\"input\":\"hello\"}",
+    };
+    const shadow = mapSharedCoreRequestShadow(request);
+
+    try std.testing.expect(shadow.demand != null);
+    try std.testing.expectEqualStrings("gpt-exact", shadow.demand.?.exact_model.bytes());
+    try std.testing.expectEqual(@as(usize, 0), shadow.route_evidence_count);
+    try std.testing.expectEqual(broker_lease_state.ProjectionQuality.unavailable, shadow.lease_quality);
+    switch (shadow.decision) {
+        .no_route => {},
+        .select_route => return error.TestUnexpectedResult,
+    }
+
+    // Mapping failure is intentionally non-authoritative and fail-open. These
+    // bodies remain inputs to the unchanged legacy proxy path.
+    inline for (.{
+        "{\"input\":\"missing\"}",
+        "{\"model\":7}",
+        "{\"model\":\"a\",\"model\":\"b\"}",
+        "{\"model\":\"a\"} {}",
+    }) |body| {
+        const absent = mapSharedCoreRequestShadow(.{
+            .method = "POST",
+            .path = "/backend-api/codex/responses",
+            .headers = headers,
+            .body = body,
+        });
+        try std.testing.expect(absent.demand == null);
+        try std.testing.expectEqual(@as(usize, 0), absent.route_evidence_count);
+        switch (absent.decision) {
+            .no_route => {},
+            .select_route => return error.TestUnexpectedResult,
+        }
+    }
+}
+
+test "Prompt 85 Codex mapping represents HTTP facts without attempt policy" {
+    const buffered_headers = HeaderList.init(std.testing.allocator);
+    const buffered = StatusAndClassification{
+        .status = 503,
+        .classification = .{ .kind = .provider_5xx },
+        .streamed = false,
+        .buffered_response = .{
+            .status = 503,
+            .headers = buffered_headers,
+            .body = "upstream unavailable",
+        },
+    };
+    switch (mapSharedCoreHttpOutcomeShadow(buffered)) {
+        .upstream_status => |observed| {
+            try std.testing.expectEqual(@as(u16, 503), observed.status);
+            try std.testing.expectEqual(
+                broker_attempt_policy.Delivery.buffered_before_downstream,
+                observed.delivery,
+            );
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const streamed = StatusAndClassification{
+        .status = 200,
+        .classification = .{ .kind = .ok },
+        .streamed = true,
+    };
+    switch (mapSharedCoreHttpOutcomeShadow(streamed)) {
+        .upstream_status => |observed| {
+            try std.testing.expectEqual(@as(u16, 200), observed.status);
+            try std.testing.expectEqual(
+                broker_attempt_policy.Delivery.downstream_started,
+                observed.delivery,
+            );
+        },
+        else => return error.TestUnexpectedResult,
     }
 }
 
