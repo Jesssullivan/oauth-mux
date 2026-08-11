@@ -2386,7 +2386,7 @@ fn runBrokerMappingScenario(facts: []Fact) !void {
         10,
     ), &owners);
     var stale_scratch: [2]broker_decision.LeaseObservation = undefined;
-    const stale_projection = lease_state.project(
+    const stale_projection = try lease_state.project(
         try broker_lease_state.SessionHandle.parse("session-observer"),
         demand,
         20,
