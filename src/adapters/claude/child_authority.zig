@@ -50,7 +50,7 @@ pub fn buildChildEnv(
     var entries = inherited.iterator();
     while (entries.next()) |entry| {
         const name = entry.key_ptr.*;
-        if (isClaudeAuthoritySelector(name) or isConfiguredEnvSecret(active_config, name)) continue;
+        if (shouldScrubInheritedEnv(active_config, name)) continue;
         try child.put(name, entry.value_ptr.*);
     }
 
@@ -125,7 +125,7 @@ fn absoluteConfigDir(
     return normalized;
 }
 
-fn refuseConfigDirOverlap(
+pub fn refuseConfigDirOverlap(
     allocator: std.mem.Allocator,
     managed: []const u8,
     forbidden: []const u8,
@@ -145,7 +145,7 @@ fn refuseConfigDirOverlap(
     }
 }
 
-fn configDirPathsOverlap(a_in: []const u8, b_in: []const u8) bool {
+pub fn configDirPathsOverlap(a_in: []const u8, b_in: []const u8) bool {
     const a = a_in;
     const b = b_in;
     if (!std.fs.path.isAbsolute(a) or !std.fs.path.isAbsolute(b)) return true;
@@ -201,7 +201,7 @@ fn isFilesystemRoot(path: []const u8) bool {
 
 /// Resolve the longest existing prefix so symlink aliases cannot bypass the
 /// overlap guard while still permitting a launcher-created final component.
-fn realpathLongestExisting(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
+pub fn realpathLongestExisting(allocator: std.mem.Allocator, path: []const u8) !?[]u8 {
     if (std.fs.realpathAlloc(allocator, path)) |resolved| {
         if (!std.fs.path.isAbsolute(resolved)) {
             allocator.free(resolved);
@@ -240,6 +240,10 @@ fn buildTestChildEnv(
         loopback_url,
         capability,
     );
+}
+
+pub fn shouldScrubInheritedEnv(active_config: config_mod.Config, name: []const u8) bool {
+    return isClaudeAuthoritySelector(name) or isConfiguredEnvSecret(active_config, name);
 }
 
 fn isClaudeAuthoritySelector(name: []const u8) bool {

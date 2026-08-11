@@ -3812,8 +3812,8 @@ test "injectEnv refuses a claude account without config_dir (TIN-2054 tmpdir gua
         \\      "kind": "claude",
         \\      "config_dir_env": "CLAUDE_CONFIG_DIR",
         \\      "accounts": {
-        \\        "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
-        \\        "homed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" }, "config_dir": "~/.local/share/oauth-mux/claude/x" }
+        \\        "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials" } },
+        \\        "homed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials" }, "config_dir": "~/.local/share/oauth-mux/claude/x" }
         \\      }
         \\    }
         \\  },
@@ -3923,8 +3923,8 @@ test "refreshWritebackBackend refuses the canonical shared Claude keychain item 
         \\    "claude": {
         \\      "kind": "claude",
         \\      "accounts": {
-        \\        "canonical": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
-        \\        "suffixed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials-26ae8e92", "account": "jess" } }
+        \\        "canonical": { "secret": { "backend": "keychain", "service": "Claude Code-credentials" } },
+        \\        "suffixed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials-26ae8e92" } }
         \\      }
         \\    }
         \\  },

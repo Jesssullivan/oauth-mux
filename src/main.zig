@@ -25,6 +25,7 @@ const broker_loader = @import("broker_loader.zig");
 const codex_resume_index = @import("codex_resume_index.zig");
 const codex_adapter = @import("adapters/codex/main.zig");
 const claude_verb = @import("adapters/claude/verb.zig");
+const claude_login = @import("enroll/claude_login.zig");
 const identity_hash = @import("identity_hash.zig");
 const advise = @import("quota/advise.zig");
 const doctor_binaries = @import("doctor_binaries.zig");
@@ -257,6 +258,12 @@ pub fn main() !void {
         .setup_plan => |setup_args| {
             const ok = try runSetupPlanningFrontDoor(allocator, stdout, setup_args);
             if (!ok) std.process.exit(types.ExitCode.general_error.int());
+        },
+
+        .setup_login => |login_args| {
+            const result = try runSetupLoginFrontDoor(allocator, stdout, login_args);
+            if (!result.ok) std.process.exit(types.ExitCode.general_error.int());
+            if (result.exit_code != 0) std.process.exit(result.exit_code);
         },
 
         .repair_target_plan => |repair_args| {
@@ -2740,7 +2747,7 @@ fn writeEnrollCodexResult(writer: anytype, allocator: std.mem.Allocator, result:
 }
 
 fn writeEnrollClaudeResult(writer: anytype, allocator: std.mem.Allocator, result: EnrollClaudeResult, json: bool) !void {
-    const login_command = try enrollClaudeLoginCommand(allocator, result.account_dir);
+    const login_command = try enrollClaudeLoginCommand(allocator, result.account);
     defer allocator.free(login_command);
     const runtime_command = try enrollRuntimeCommand(allocator, "claude", result.account, "auth-status");
     defer allocator.free(runtime_command);
@@ -2886,10 +2893,14 @@ fn enrollClaudeConfirmCommand(allocator: std.mem.Allocator, account: []const u8,
     });
 }
 
-fn enrollClaudeLoginCommand(allocator: std.mem.Allocator, account_dir: []const u8) ![]const u8 {
-    const quoted_dir = try shellQuoteAlloc(allocator, account_dir);
-    defer allocator.free(quoted_dir);
-    return try std.fmt.allocPrint(allocator, "env CLAUDE_CONFIG_DIR={s} claude auth login", .{quoted_dir});
+fn enrollClaudeLoginCommand(allocator: std.mem.Allocator, account: []const u8) ![]const u8 {
+    const quoted_account = try shellCommandValueAlloc(allocator, account);
+    defer allocator.free(quoted_account);
+    return try std.fmt.allocPrint(
+        allocator,
+        "omux setup login --provider claude --label {s} --confirm-login",
+        .{quoted_account},
+    );
 }
 
 fn enrollFigmaConfirmCommand(
@@ -3810,11 +3821,7 @@ fn enrollCodexLoginCommand(allocator: std.mem.Allocator, account: ?[]const u8) !
 
 fn enrollClaudePlanLoginCommand(allocator: std.mem.Allocator, args: cli.Command.EnrollArgs) ![]const u8 {
     const account = args.account orelse return allocator.dupe(u8, "env CLAUDE_CONFIG_DIR=<account-dir> claude auth login");
-    const config_root = try claudeConfigRoot(allocator, args.store_root);
-    defer allocator.free(config_root);
-    const account_dir = try claudeAccountDir(allocator, config_root, account);
-    defer allocator.free(account_dir);
-    return enrollClaudeLoginCommand(allocator, account_dir);
+    return enrollClaudeLoginCommand(allocator, account);
 }
 
 fn enrollRuntimeCommand(
@@ -4240,6 +4247,188 @@ fn runSetupPlanningFrontDoor(
         try writePlanningFrontDoorText(allocator, writer, result);
     }
     return args.parse_error == null;
+}
+
+const SetupLoginFrontDoorResult = struct {
+    ok: bool,
+    exit_code: u8 = 0,
+};
+
+fn runSetupLoginFrontDoor(
+    allocator: std.mem.Allocator,
+    writer: anytype,
+    args: cli.Command.SetupLoginArgs,
+) !SetupLoginFrontDoorResult {
+    if (args.parse_error) |parse_error| {
+        try writeSetupLoginError(
+            writer,
+            args.json,
+            @tagName(parse_error),
+            args.provider,
+            args.label,
+            args.invalid_argument,
+        );
+        return .{ .ok = false };
+    }
+    const provider_value = args.provider orelse {
+        try writeSetupLoginError(writer, args.json, "missing_provider", null, args.label, "--provider claude");
+        return .{ .ok = false };
+    };
+    if (provider_value != .claude) {
+        try writeSetupLoginError(writer, args.json, "unsupported_provider", args.provider, args.label, "claude");
+        return .{ .ok = false };
+    }
+    const label = args.label orelse {
+        try writeSetupLoginError(writer, args.json, "missing_label", args.provider, null, "--label <label>");
+        return .{ .ok = false };
+    };
+
+    const confirm_command = try setupLoginConfirmCommandAlloc(allocator, label);
+    defer allocator.free(confirm_command);
+    if (!args.confirm_login) {
+        if (args.json) {
+            try writer.writeAll("{\"ok\":false,\"executed\":false,\"confirmation_required\":true,\"requires\":\"--confirm-login\",\"interactive\":true,\"experimental\":true,\"browser_isolation_enforced\":false,\"trusted_provider_required\":true,\"attended_proof_required\":true,\"post_spawn_cleanup\":\"preserved_manual_cleanup\",\"mutates\":false,\"reads_config\":false,\"reads_credentials\":false,\"reads_cookies\":false,\"launches_browser\":false,\"executes_provider_cli\":false,\"installs\":false,\"mutates_services\":false,\"provider\":\"claude\",\"label\":");
+            try std.json.stringify(label, .{}, writer);
+            try writer.writeAll(",\"confirm_command\":");
+            try std.json.stringify(confirm_command, .{}, writer);
+            try writer.writeAll("}\n");
+        } else {
+            try writer.writeAll("omux setup login\n\n");
+            try writer.writeAll("  preview only: no config, browser, credential, provider, install, or service access\n");
+            try writer.writeAll("  experimental trusted-provider launcher; browser isolation is not enforced\n");
+            try writer.writeAll("  confirmed runs preserve the private workspace for manual cleanup\n");
+            try writer.writeAll("  provider: claude\n  label:    ");
+            try std.json.stringify(label, .{}, writer);
+            try writer.writeAll("\n  next:     ");
+            try writer.writeAll(confirm_command);
+            try writer.writeByte('\n');
+        }
+        return .{ .ok = true };
+    }
+
+    var active = config.load(allocator) catch |err| {
+        try writeSetupLoginError(writer, false, "config_unavailable", args.provider, args.label, @errorName(err));
+        return .{ .ok = false };
+    };
+    defer active.deinit();
+    config.validate(active.value, std.io.null_writer) catch |err| {
+        try writeSetupLoginError(writer, false, "config_invalid", args.provider, args.label, @errorName(err));
+        return .{ .ok = false };
+    };
+
+    var inherited_env = std.process.getEnvMap(allocator) catch {
+        try writeSetupLoginError(writer, false, "environment_unavailable", args.provider, args.label, null);
+        return .{ .ok = false };
+    };
+    defer inherited_env.deinit();
+    const home = inherited_env.get("HOME") orelse {
+        try writeSetupLoginError(writer, false, "home_unavailable", args.provider, args.label, null);
+        return .{ .ok = false };
+    };
+    var account = claude_login.resolveConfiguredAccount(
+        allocator,
+        home,
+        active.value,
+        "claude",
+        label,
+    ) catch |err| {
+        try writeSetupLoginError(writer, false, @errorName(err), args.provider, args.label, null);
+        return .{ .ok = false };
+    };
+    defer account.deinit(allocator);
+    const inherited_path = inherited_env.get("PATH") orelse "";
+
+    try writer.writeAll("omux setup login\n\n");
+    try writer.writeAll("  experimental trusted-provider launcher; attended proof is still required\n");
+    try writer.writeAll("  official Claude must invoke the owned browser helper; isolation is not enforced against absolute opener bypass\n");
+    try writer.writeAll("  account: ");
+    try std.json.stringify(label, .{}, writer);
+    try writer.writeByte('\n');
+    var outcome = claude_login.run(
+        allocator,
+        .{
+            .label = label,
+            .config_dir = account.config_dir,
+            .canonical_dir = account.canonical_dir,
+            .store_lock_key = &account.store_lock_key,
+            .effective_account = account.effective_account,
+            .inherited_path = inherited_path,
+        },
+        &inherited_env,
+        &active.value,
+    ) catch |err| {
+        try writeSetupLoginError(writer, false, @errorName(err), args.provider, args.label, null);
+        return .{ .ok = false };
+    };
+    defer outcome.deinit(allocator);
+    try writer.writeAll("  workspace disposition: preserved_manual_cleanup\n");
+    try writer.writeAll("  workspace: ");
+    try std.json.stringify(outcome.workspace_path, .{}, writer);
+    try writer.writeByte('\n');
+    try writer.writeAll("  cleanup: after confirming no browser process uses this profile, remove the workspace manually\n");
+    if (outcome.browser_helper_observed) {
+        try writer.writeAll("  owned browser helper: observed returning; this does not prove descendant quiescence or exclude another opener\n");
+    } else {
+        try writer.writeAll("  owned browser helper: NOT observed; browser isolation was not established and provider collateral cannot be undone\n");
+    }
+    return switch (outcome.provider) {
+        .exited => |exit_code| blk: {
+            if (exit_code != 0) {
+                try writer.print("  provider login exited with status {d}; preserving the provider status and making no login claim\n", .{exit_code});
+                break :blk .{ .ok = true, .exit_code = exit_code };
+            }
+            if (!outcome.browser_helper_observed) {
+                try writer.writeAll("  refused: provider exited zero but the owned helper was not observed\n");
+                break :blk .{ .ok = false };
+            }
+            try writer.writeAll("  provider command exited zero; authentication, identity, browser isolation, and cleanup are not independently verified\n");
+            break :blk .{ .ok = true };
+        },
+        .terminated => blk: {
+            try writer.writeAll("  refused: provider process terminated without an exit status\n");
+            break :blk .{ .ok = false };
+        },
+    };
+}
+
+fn setupLoginConfirmCommandAlloc(allocator: std.mem.Allocator, label: []const u8) ![]const u8 {
+    const quoted_label = try shellCommandValueAlloc(allocator, label);
+    defer allocator.free(quoted_label);
+    return std.fmt.allocPrint(
+        allocator,
+        "omux setup login --provider claude --label {s} --confirm-login",
+        .{quoted_label},
+    );
+}
+
+fn writeSetupLoginError(
+    writer: anytype,
+    json: bool,
+    reason: []const u8,
+    provider_value: ?cli.Command.PlanningProvider,
+    label: ?[]const u8,
+    detail: ?[]const u8,
+) !void {
+    if (json) {
+        try writer.writeAll("{\"ok\":false,\"executed\":false,\"error\":");
+        try std.json.stringify(reason, .{}, writer);
+        try writer.writeAll(",\"interactive\":true,\"mutates\":false,\"reads_config\":false,\"reads_credentials\":false,\"reads_cookies\":false,\"launches_browser\":false,\"executes_provider_cli\":false,\"provider\":");
+        if (provider_value) |provider_name| try std.json.stringify(@tagName(provider_name), .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"label\":");
+        if (label) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll(",\"detail\":");
+        if (detail) |value| try std.json.stringify(value, .{}, writer) else try writer.writeAll("null");
+        try writer.writeAll("}\n");
+        return;
+    }
+    try writer.writeAll("omux setup login\n\n  refused: ");
+    try writer.writeAll(reason);
+    if (detail) |value| {
+        try writer.writeAll(" (");
+        try std.json.stringify(value, .{}, writer);
+        try writer.writeByte(')');
+    }
+    try writer.writeByte('\n');
 }
 
 fn runRepairPlanningFrontDoor(
@@ -11937,7 +12126,7 @@ fn matchesProvider(key: []const u8, provider_filter: ?[]const u8) bool {
     return key.len > filter.len and key[filter.len] == ':';
 }
 
-// TIN-2070: on macOS the real keychain item carries acct=<local username>
+// TIN-2070: on macOS the real keychain item carries acct=<effective passwd user>
 // (an explicit "default" never matches it), so the starter omits the account
 // and lets config load derive it. Elsewhere the keychain entry is
 // user-managed and keeps the historical explicit shape.

@@ -31,6 +31,7 @@ pub const BrowserTier = enum {
 };
 
 pub const BrowserLaunchError = error{
+    BrowserNotFound,
     ProcessSpawnFailed,
     TempDirCreationFailed,
     PrintFailed,
@@ -54,6 +55,14 @@ pub const WhichFn = *const fn (
     ctx: *anyopaque,
     binary: []const u8,
 ) error{OutOfMemory}!?[]const u8;
+
+/// Confirm that a resolved executable identifies itself as a Chromium-family
+/// browser. This is a compatibility check, not publisher or code-signing proof.
+pub const ValidateChromiumFn = *const fn (
+    allocator: std.mem.Allocator,
+    ctx: *anyopaque,
+    executable: []const u8,
+) error{ OutOfMemory, ValidationFailed }!bool;
 
 /// Spawn a process with the given argv. Returns the exit code. The real impl uses
 /// std.process.Child; tests record argv and return 0 without spawning.
@@ -105,7 +114,52 @@ pub const chromium_candidates = [_][]const u8{
     "chromium-browser",
     "brave-browser",
     "microsoft-edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "~/Applications/Chromium.app/Contents/MacOS/Chromium",
 };
+
+/// Resolve a Chromium-family executable for a flow that must not fall back to
+/// shared browser state. The returned path is allocator-owned.
+pub fn requireChromiumAlloc(
+    allocator: std.mem.Allocator,
+    which: WhichFn,
+    which_ctx: *anyopaque,
+) BrowserLaunchError![]const u8 {
+    for (chromium_candidates) |candidate| {
+        const found = which(allocator, which_ctx, candidate) catch
+            return error.OutOfMemory;
+        if (found) |path| return path;
+    }
+    return error.BrowserNotFound;
+}
+
+/// Resolve a browser and require an injected Chromium-family identity check.
+/// A path or executable name alone is insufficient for trusted-provider login.
+pub fn requireValidatedChromiumAlloc(
+    allocator: std.mem.Allocator,
+    which: WhichFn,
+    which_ctx: *anyopaque,
+    validate: ValidateChromiumFn,
+    validate_ctx: *anyopaque,
+) BrowserLaunchError![]const u8 {
+    for (chromium_candidates) |candidate| {
+        const found = which(allocator, which_ctx, candidate) catch
+            return error.OutOfMemory;
+        const path = found orelse continue;
+        const valid = validate(allocator, validate_ctx, path) catch |err| switch (err) {
+            error.OutOfMemory => {
+                allocator.free(path);
+                return error.OutOfMemory;
+            },
+            error.ValidationFailed => false,
+        };
+        if (valid) return path;
+        allocator.free(path);
+    }
+    return error.BrowserNotFound;
+}
 
 pub const BrowserLauncher = struct {
     allocator: std.mem.Allocator,
@@ -132,15 +186,15 @@ pub const BrowserLauncher = struct {
     /// Probe for a chromium-family binary. Returns the owned path of the first
     /// match, or null. Caller frees the returned path.
     fn findChromium(self: *const BrowserLauncher) error{OutOfMemory}!?[]const u8 {
-        for (chromium_candidates) |candidate| {
-            const found = try self.seams.which(
-                self.allocator,
-                self.seams.which_ctx,
-                candidate,
-            );
-            if (found) |path| return path;
-        }
-        return null;
+        return requireChromiumAlloc(
+            self.allocator,
+            self.seams.which,
+            self.seams.which_ctx,
+        ) catch |err| switch (err) {
+            error.BrowserNotFound => null,
+            error.OutOfMemory => error.OutOfMemory,
+            else => unreachable,
+        };
     }
 
     /// Decide which tier to use without launching anything.
@@ -239,6 +293,7 @@ const testing = std.testing;
 /// secret leaks).
 const Spy = struct {
     chrome_present: bool,
+    chromium_identity: bool = true,
 
     // Temp-dir lifecycle bookkeeping.
     temp_created: usize = 0,
@@ -290,6 +345,17 @@ const Spy = struct {
             self.captured_argv.append(dup) catch return error.OutOfMemory;
         }
         return 0;
+    }
+
+    fn validateChromium(
+        allocator: std.mem.Allocator,
+        ctx: *anyopaque,
+        executable: []const u8,
+    ) error{ OutOfMemory, ValidationFailed }!bool {
+        _ = allocator;
+        _ = executable;
+        const self: *Spy = @ptrCast(@alignCast(ctx));
+        return self.chromium_identity;
     }
 
     fn makeTempDir(
@@ -357,6 +423,39 @@ test "tier detection: chrome absent -> Tier 1" {
     const launcher = BrowserLauncher.init(arena, spy.seams(), AUTH_URL, "WXYZ-7788");
 
     try testing.expectEqual(BrowserTier.tier1_print, try launcher.detectTier());
+}
+
+test "strict browser resolution refuses fallback when chrome is absent" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var spy = Spy.init(arena, false);
+    try testing.expectError(
+        error.BrowserNotFound,
+        requireChromiumAlloc(arena, Spy.which, @ptrCast(&spy)),
+    );
+    try testing.expect(!spy.spawned);
+    try testing.expectEqual(@as(usize, 0), spy.temp_created);
+}
+
+test "validated browser resolution rejects an arbitrary executable-name shim" {
+    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var spy = Spy.init(arena, true);
+    spy.chromium_identity = false;
+    try testing.expectError(
+        error.BrowserNotFound,
+        requireValidatedChromiumAlloc(
+            arena,
+            Spy.which,
+            @ptrCast(&spy),
+            Spy.validateChromium,
+            @ptrCast(&spy),
+        ),
+    );
 }
 
 test "Tier 2: ephemeral profile dir is created then removed, and spawned" {
