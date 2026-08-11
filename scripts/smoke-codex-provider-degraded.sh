@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Provider-degraded and stream-disconnect smoke: 5xx responses are provider
-# failures, not credential failures. The proxy should retry a selectable
-# fallback before Codex sees the 5xx, pass through a no-fallback provider 5xx
-# without emitting the route-repair no-account body, and treat downstream Codex
-# socket closes as local client disconnects rather than provider degradation.
-# Upstream interruptions after partial stream delivery should be recorded as
-# provider-degraded evidence, but must not trigger same-turn retry. The
-# transport fallback cases cover the main responses endpoint plus compact and
-# memory endpoints Codex uses around long-running sessions.
+# Live-handler contract smoke for Codex provider/transport failures.
+#
+# Proves against the real managed proxy and fake upstream that:
+#   * 5xx status/body streams unchanged, including bodies over 64 KiB;
+#   * interrupted 5xx and ambiguous transport never cross accounts;
+#   * materialized OAuth identity, not stale pool hashes/labels, fences alternates;
+#   * a request gets at most one alternate and preserves exact model/body bytes.
 
 set -euo pipefail
 
@@ -16,10 +14,8 @@ BIN="$ROOT/zig-out/bin/oauth-mux"
 
 if [[ ! -x "$BIN" ]]; then
     echo "smoke-codex-provider-degraded: oauth-mux binary not built at $BIN" >&2
-    echo "  run: just build-local" >&2
     exit 64
 fi
-
 if ! command -v jq >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
     echo "smoke-codex-provider-degraded: jq and python3 required" >&2
     exit 64
@@ -36,10 +32,10 @@ cleanup() {
         fi
     done
     if [[ "${OMUX_KEEP_SMOKE_TMP:-0}" == "1" ]]; then
-        echo "smoke-codex-provider-degraded: kept temp dir $TMP" >&2
-        return
+        echo "smoke-codex-provider-degraded: kept $TMP" >&2
+    else
+        rm -rf "$TMP"
     fi
-    rm -rf "$TMP"
 }
 trap cleanup EXIT
 
@@ -48,11 +44,10 @@ ID_TOKEN="h.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUi
 assert_grep() {
     local label=$1 pattern=$2 file=$3
     if grep -q -E "$pattern" "$file"; then
-        echo "  ✓ $label"
+        echo "  ok - $label"
     else
-        echo "  ✗ $label" >&2
-        echo "    pattern: $pattern" >&2
-        cat "$file" >&2
+        echo "  FAIL - $label ($pattern)" >&2
+        cat "$file" >&2 || true
         return 1
     fi
 }
@@ -60,17 +55,16 @@ assert_grep() {
 assert_no_grep() {
     local label=$1 pattern=$2 file=$3
     if grep -q -E "$pattern" "$file"; then
-        echo "  ✗ $label (unexpected match for: $pattern)" >&2
-        cat "$file" >&2
+        echo "  FAIL - $label (unexpected $pattern)" >&2
+        cat "$file" >&2 || true
         return 1
-    else
-        echo "  ✓ $label"
     fi
+    echo "  ok - $label"
 }
 
 wait_for_port() {
     local portfile=$1
-    for _ in {1..40}; do
+    for _ in {1..80}; do
         [[ -s "$portfile" ]] && return 0
         sleep 0.05
     done
@@ -78,1123 +72,165 @@ wait_for_port() {
     return 1
 }
 
-write_two_account_fixture() {
-    local dir=$1
-    mkdir -p "$dir/account-A" "$dir/account-B" "$dir/state"
-    cat >"$dir/account-A/auth.json" <<EOF
-{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"$ID_TOKEN","refresh_token":"RT-A","account_id":"acc-A-id"},"auth_mode":"Chatgpt"}
+write_fixture() {
+    local dir=$1 count=$2
+    mkdir -p "$dir/state"
+    local accounts_json="" profile_json="" health_json=""
+    local labels=(max-1 max-2 max-3)
+    local ids=(acc-A-id acc-B-id acc-C-id)
+    local tokens=(AT-A AT-B AT-C)
+    local priorities=(30 20 10)
+    local i label identity
+    for ((i = 0; i < count; i++)); do
+        label=${labels[$i]}
+        identity=${ids[$i]}
+        mkdir -p "$dir/$label"
+        cat >"$dir/$label/auth.json" <<EOF
+{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"${tokens[$i]}","refresh_token":"RT-$i","account_id":"$identity"},"auth_mode":"Chatgpt"}
 EOF
-    cat >"$dir/account-B/auth.json" <<EOF
-{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"$ID_TOKEN","refresh_token":"RT-B","account_id":"acc-B-id"},"auth_mode":"Chatgpt"}
-EOF
-    cat >"$dir/oauth-mux.config.json" <<EOF
-{
-  "version": 1,
-  "providers": {
-    "codex": {
-      "kind": "codex",
-      "accounts": {
-        "max-1": { "priority": 30, "config_dir": "$dir/account-A", "secret": { "backend": "file", "path": "$dir/account-A/auth.json" } },
-        "max-2": { "priority": 20, "config_dir": "$dir/account-B", "secret": { "backend": "file", "path": "$dir/account-B/auth.json" } }
-      }
-    }
-  },
-  "profiles": {
-    "codex-max": { "providers": ["codex:max-1#codex-max", "codex:max-2#codex-max"] }
-  }
-}
-EOF
-    cat >"$dir/state/health.json" <<'EOF'
-{"version":2,"accounts":[
-  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}},
-  {"key":"codex:max-2#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
-]}
-EOF
-}
-
-write_one_account_fixture() {
-    local dir=$1
-    mkdir -p "$dir/account-A" "$dir/state"
-    cat >"$dir/account-A/auth.json" <<EOF
-{"OPENAI_API_KEY":null,"tokens":{"id_token":"$ID_TOKEN","access_token":"$ID_TOKEN","refresh_token":"RT-A","account_id":"acc-A-id"},"auth_mode":"Chatgpt"}
-EOF
-    cat >"$dir/oauth-mux.config.json" <<EOF
-{
-  "version": 1,
-  "providers": {
-    "codex": {
-      "kind": "codex",
-      "accounts": {
-        "max-1": { "priority": 30, "config_dir": "$dir/account-A", "secret": { "backend": "file", "path": "$dir/account-A/auth.json" } }
-      }
-    }
-  },
-  "profiles": {
-    "codex-max": { "providers": ["codex:max-1#codex-max"] }
-  }
-}
-EOF
-    cat >"$dir/state/health.json" <<'EOF'
-{"version":2,"accounts":[
-  {"key":"codex:max-1#codex-max","last_probe_source":"capability_probe","last_probe_hint_class":"none","last_probe_decision":"use_this","liveness":{"state":"live","availability":"available"}}
-]}
-EOF
-}
-
-run_fallback_case() {
-    local case_dir="$TMP/fallback"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_two_account_fixture "$case_dir"
-    mkdir -p "$case_dir/bin"
-    cat >"$case_dir/bin/codex" <<'EOF'
-#!/usr/bin/env sh
-exit 0
-EOF
-    chmod +x "$case_dir/bin/codex"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_STATUS_JSON='{"acc-A-id":503}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: fallback stub pid=$upstream_pid port=$upstream_port max-1=503 max-2=200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=3 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in fallback case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: fallback assertions"
-    assert_grep "max-1 503 classified provider_5xx" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":503.*"classification":"provider_5xx".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "provider same-turn retry fired" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
-    assert_grep "fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "provider retry did not use quota retry event" '"kind":"proxy_same_turn_retry".*"reason":"provider_5xx"' "$ndjson"
-    assert_no_grep "no route-repair body leaked on provider fallback" 'oauth_mux_no_account_selectable' "$stub_report"
-    jq -e 'select(.name == "codex.proxy.turn" and .attributes.classification == "provider_5xx" and .attributes.delivered_to_codex == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured provider 5xx turn"
-    jq -e 'select(.name == "codex.proxy.retry" and .attributes.reason == "provider_5xx" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured provider retry boundary"
-
-    local got_200
-    got_200="$(jq -r '.turns | map(select(.status == 200)) | length' "$stub_report")"
-    if [[ "$got_200" -eq 3 ]]; then
-        echo "  ✓ stub-codex saw all 3 turns return 200"
-    else
-        echo "  ✗ stub-codex saw $got_200 200s (expected 3)" >&2
-        jq .turns "$stub_report" >&2
-        exit 1
-    fi
-
-    local plan_after selected_after
-    plan_after="$(
-      PATH="$case_dir/bin:$PATH" \
-      OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      "$BIN" codex broker-session-plan --profile codex-max --capability codex-max --json
-    )"
-    selected_after="$(jq -r '.selected.account' <<<"$plan_after")"
-    if [[ "$selected_after" == "max-2" ]]; then
-        echo "  ✓ broker-session-plan avoids provider-degraded max-1"
-    else
-        echo "  ✗ broker-session-plan selected $selected_after after max-1 provider 503" >&2
-        jq . <<<"$plan_after" >&2
-        exit 1
-    fi
-}
-
-run_no_fallback_case() {
-    local case_dir="$TMP/no-fallback"
-    local portfile="$case_dir/upstream.port"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_ALWAYS_STATUS=503 \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: no-fallback stub pid=$upstream_pid port=$upstream_port always=503"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in no-fallback case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: no-fallback assertions"
-    assert_grep "single account 503 classified provider_5xx" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":503.*"classification":"provider_5xx".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "provider retry unavailable event fired" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"delivered_to_codex":true' "$ndjson"
-    assert_no_grep "no quota all-exhausted event for provider 503" '"kind":"quota_handoff_failed_no_account_selectable"' "$ndjson"
-    assert_no_grep "no route-repair response for provider 503" 'oauth_mux_no_account_selectable' "$stub_report"
-    jq -e 'select(.name == "codex.proxy.provider_unavailable" and .attributes.transport_error == "NoAccountSelectable" and .attributes.delivered_to_codex == true)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured provider-unavailable terminal boundary"
-
-    local got_503
-    got_503="$(jq -r '.turns | map(select(.status == 503 and (.body_head | contains("forced status 503")))) | length' "$stub_report")"
-    if [[ "$got_503" -eq 1 ]]; then
-        echo "  ✓ stub-codex saw original provider 503 body"
-    else
-        echo "  ✗ stub-codex did not see original provider 503 body" >&2
-        jq .turns "$stub_report" >&2
-        exit 1
-    fi
-
-    for leak in "$ID_TOKEN" RT-A acc-A-id "$case_dir/account-A/auth.json"; do
-        if grep -Fq "$leak" "$trace_file"; then
-            echo "  ✗ trace leaked sensitive value: $leak" >&2
-            cat "$trace_file" >&2
-            exit 1
-        fi
+        [[ -n "$accounts_json" ]] && accounts_json+=","
+        accounts_json+="\"$label\":{\"priority\":${priorities[$i]},\"config_dir\":\"$dir/$label\",\"secret\":{\"backend\":\"file\",\"path\":\"$dir/$label/auth.json\"}}"
+        [[ -n "$profile_json" ]] && profile_json+=","
+        profile_json+="\"codex:$label#codex-max\""
+        [[ -n "$health_json" ]] && health_json+=","
+        health_json+="{\"key\":\"codex:$label#codex-max\",\"last_probe_source\":\"capability_probe\",\"last_probe_hint_class\":\"none\",\"last_probe_decision\":\"use_this\",\"liveness\":{\"state\":\"live\",\"availability\":\"available\"}}"
     done
-    echo "  ✓ trace did not leak provider-degraded auth material"
+    printf '{"version":1,"providers":{"codex":{"kind":"codex","accounts":{%s}}},"profiles":{"codex-max":{"providers":[%s]}}}\n' \
+        "$accounts_json" "$profile_json" >"$dir/oauth-mux.config.json"
+    printf '{"version":2,"accounts":[%s]}\n' "$health_json" >"$dir/state/health.json"
 }
 
-run_transport_failure_case() {
-    local case_dir="$TMP/transport-failure"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    local closed_port
-    closed_port="$(
-      python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-print(s.getsockname()[1])
-s.close()
-PY
-    )"
-    echo "smoke-codex-provider-degraded: transport-failure closed_port=$closed_port"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$closed_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
+run_adapter() {
+    local dir=$1 port=$2 turns=$3 codex_bin=${4:-$ROOT/scripts/test-stub-codex.py}
+    OMUX_CONFIG="$dir/oauth-mux.config.json" \
+      OMUX_STATE_DIR="$dir/state" \
+      OMUX_UPSTREAM_HOST="127.0.0.1:$port" \
+      OMUX_UPSTREAM_SCHEME=http \
+      OMUX_CODEX_BIN="$codex_bin" \
       OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in transport-failure case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: transport-failure assertions"
-    assert_grep "transport failure recorded upstream failure" '"kind":"proxy_upstream_failed".*"account":"codex:max-1"' "$ndjson"
-    assert_grep "transport failure delivered provider unavailable" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"delivered_to_codex":true' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured upstream transport failure"
-    jq -e 'select(.name == "codex.proxy.provider_unavailable" and .attributes.delivered_to_codex == true)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured provider-unavailable transport boundary"
-
-    local got_503
-    got_503="$(jq -r '[.turns[] | select(.status == 503 and (.body_head | contains("oauth_mux_provider_unavailable")))] | length' "$stub_report")"
-    if [[ "$got_503" -eq 1 ]]; then
-        echo "  ✓ stub-codex saw oauth_mux_provider_unavailable body"
-    else
-        echo "  ✗ stub-codex did not see provider-unavailable body" >&2
-        jq .turns "$stub_report" >&2
-        exit 1
-    fi
+      OMUX_TRACE_FILE="$dir/trace.ndjson" \
+      OMUX_STUB_CODEX_TURNS="$turns" \
+      OMUX_STUB_CODEX_REPORT="$dir/stub-report.json" \
+      "$BIN" codex run --profile codex-max --isolated-session-store \
+        --json-status-file "$dir/status.ndjson" 2>"$dir/adapter.stderr"
 }
 
-run_tls_transport_failure_case() {
-    local case_dir="$TMP/tls-transport-failure"
-    local portfile="$case_dir/upstream.port"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: tls-transport-failure stub pid=$upstream_pid port=$upstream_port scheme=https-to-plain-http"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="https" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in tls-transport-failure case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: tls-transport-failure assertions"
-    assert_grep "TLS setup failure retried locally before route mutation" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"TlsInitializationFailed".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "TLS setup failure recorded upstream failure after bounded retries" '"kind":"proxy_upstream_failed".*"account":"codex:max-1".*"err":"TlsInitializationFailed"' "$ndjson"
-    assert_grep "TLS setup failure delivered provider unavailable" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"delivered_to_codex":true' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.transport_error == "TlsInitializationFailed" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured TLS setup retry without raw account ids"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured terminal TLS setup failure"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ unrecovered TLS setup failure recorded provider-degraded route evidence"
-}
-
-run_local_transport_retry_case() {
-    local case_dir="$TMP/local-transport-retry"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_RESET_JSON='{"acc-A-id":"before_response"}' \
-      OMUX_STUB_ACCOUNT_RESET_COUNT_JSON='{"acc-A-id":1}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: local-transport-retry stub pid=$upstream_pid port=$upstream_port first=max-1-reset second=max-1-200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in local-transport-retry case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: local-transport-retry assertions"
-    assert_grep "local retry recorded first transport failure" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "local retry recovered on same account" '"kind":"proxy_transport_local_retry_recovered".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_grep "same account returned 200 after local retry" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "local retry did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
-    assert_no_grep "local retry did not switch accounts" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured local transport retry without raw account ids"
-    jq -e 'select(.name == "codex.proxy.transport_local_retry_recovered" and .attributes.status == 200)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured local transport recovery"
-    jq -e '([.turns[] | select(.status == 200)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and saw the turn recover"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by recovered local retry"
-}
-
-run_upstream_request_write_reset_retry_case() {
-    local case_dir="$TMP/upstream-request-write-reset-retry"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_JSON='{"acc-A-id":true}' \
-      OMUX_STUB_ACCOUNT_CLOSE_DURING_REQUEST_COUNT_JSON='{"acc-A-id":1}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: upstream-request-write-reset-retry stub pid=$upstream_pid port=$upstream_port first=max-1-request-write-reset second=max-1-200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_BODY_BYTES=8388608 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in upstream-request-write-reset-retry case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        cat "$uplog" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: upstream-request-write-reset-retry assertions"
-    assert_grep "request-write reset retried before delivery" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"(BrokenPipe|ConnectionResetByPeer|UnexpectedWriteFailure)".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "request-write reset recovered on same account" '"kind":"proxy_transport_local_retry_recovered".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_grep "same account returned 200 after request-write reset" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "request-write reset did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
-    assert_no_grep "request-write reset did not switch accounts" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.path_kind == "responses" and (.attributes.transport_error == "BrokenPipe" or .attributes.transport_error == "ConnectionResetByPeer" or .attributes.transport_error == "UnexpectedWriteFailure") and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured request-write reset without raw account ids"
-    jq -s -e '[.[] | select(.response_classification == "transport_request_write_reset" and .account_id == "acc-A-id")] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture reset once while the proxy wrote the request body"
-    jq -s -e '[.[] | select(.account_id == "acc-A-id" and .status_returned == 200)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ retry on the same account completed after request-write reset"
-    jq -e '([.turns[] | select(.status == 200 and .payload_bytes >= 8388608)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and sent a large request body"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by recovered request-write reset"
-}
-
-run_upstream_header_stall_retry_case() {
-    local case_dir="$TMP/upstream-header-stall-retry"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_STALL_MS_JSON='{"acc-A-id":1000}' \
-      OMUX_STUB_ACCOUNT_STALL_COUNT_JSON='{"acc-A-id":1}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: upstream-header-stall-retry stub pid=$upstream_pid port=$upstream_port first=max-1-stall second=max-1-200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_UPSTREAM_RESPONSE_TIMEOUT_MS=250 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in upstream-header-stall-retry case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: upstream-header-stall-retry assertions"
-    assert_grep "header stall recorded local retry" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "header stall recovered on same account" '"kind":"proxy_transport_local_retry_recovered".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_grep "same account returned 200 after header stall" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "header stall did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
-    assert_no_grep "header stall did not switch accounts" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured header-stall retry without raw account ids"
-    jq -s -e '[.[] | select(.response_classification == "transport_stall" and .account_id == "acc-A-id" and .stall_ms == 1000)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture stalled the first account once before headers"
-    jq -e '([.turns[] | select(.status == 200)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and saw the turn recover"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by recovered header stall"
-}
-
-run_upstream_partial_header_stall_retry_case() {
-    local case_dir="$TMP/upstream-partial-header-stall-retry"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_MS_JSON='{"acc-A-id":1000}' \
-      OMUX_STUB_ACCOUNT_PARTIAL_HEADER_STALL_COUNT_JSON='{"acc-A-id":1}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: upstream-partial-header-stall-retry stub pid=$upstream_pid port=$upstream_port first=max-1-partial-header-stall second=max-1-200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_UPSTREAM_RESPONSE_TIMEOUT_MS=250 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in upstream-partial-header-stall-retry case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: upstream-partial-header-stall-retry assertions"
-    assert_grep "partial header stall recorded local retry" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "partial header stall recovered on same account" '"kind":"proxy_transport_local_retry_recovered".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_grep "same account returned 200 after partial header stall" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "partial header stall did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
-    assert_no_grep "partial header stall did not switch accounts" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.transport_local_retry" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured partial-header retry without raw account ids"
-    jq -s -e '[.[] | select(.response_classification == "transport_partial_header_stall" and .account_id == "acc-A-id" and .stall_ms == 1000)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture stalled once after partial headers"
-    jq -e '([.turns[] | select(.status == 200)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and saw the turn recover"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by recovered partial-header stall"
-}
-
-run_transport_fallback_case() {
-    local case_dir="$TMP/transport-fallback"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_two_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_RESET_JSON='{"acc-A-id":"before_response"}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: transport-fallback stub pid=$upstream_pid port=$upstream_port max-1=reset max-2=200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=3 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in transport-fallback case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: transport-fallback assertions"
-    assert_grep "transport reset recorded upstream failure" '"kind":"proxy_upstream_failed".*"account":"codex:max-1"' "$ndjson"
-    assert_grep "transport reset retried fallback account" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
-    assert_grep "transport fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "transport fallback did not emit terminal provider unavailable" '"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    assert_no_grep "transport fallback did not leak route-repair body" 'oauth_mux_no_account_selectable' "$stub_report"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured transport reset without raw account ids"
-    jq -s -e '[.[] | select(.response_classification == "transport_reset" and .account_id == "acc-A-id")] | length == 3' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture reset the first account only during the bounded retry window"
-    jq -s -e '[.[] | select(.account_id == "acc-B-id" and .status_returned == 200)] | length == 3' "$uplog" >/dev/null
-    echo "  ✓ later turns stayed on fallback while max-1 was provider-degraded"
-    jq -e '([.turns[] | select(.status == 200)] | length == 3) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and saw all turns recover"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ transport reset recorded provider-degraded route evidence"
-}
-
-run_endpoint_transport_fallback_case() {
-    local endpoint=$1
-    local path_kind=$2
-    local suffix=$3
-    local expected_upstream_path="/backend-api/codex/$endpoint"
-    local case_dir="$TMP/transport-fallback-$suffix"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_two_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_RESET_JSON='{"acc-A-id":"before_response"}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: transport-fallback-$suffix stub pid=$upstream_pid port=$upstream_port max-1=reset max-2=200"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_ENDPOINTS="$endpoint" \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in transport-fallback-$suffix case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: transport-fallback-$suffix assertions"
-    assert_grep "$path_kind transport reset recorded upstream failure" '"kind":"proxy_upstream_failed".*"account":"codex:max-1"' "$ndjson"
-    assert_grep "$path_kind transport reset retried fallback account" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
-    assert_grep "$path_kind fallback account returned 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"method":"POST".*"path_kind":"'"$path_kind"'".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "$path_kind transport fallback did not emit terminal provider unavailable" '"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    assert_no_grep "$path_kind transport fallback did not leak route-repair body" 'oauth_mux_no_account_selectable' "$stub_report"
-    jq -e --arg path_kind "$path_kind" 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == $path_kind and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured $path_kind transport reset without raw account ids"
-    jq -s -e --arg path "$expected_upstream_path" '[.[] | select(.response_classification == "transport_reset" and .account_id == "acc-A-id" and .path == $path)] | length == 3' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture reset max-1 on $expected_upstream_path during the bounded retry window"
-    jq -s -e --arg path "$expected_upstream_path" '[.[] | select(.account_id == "acc-B-id" and .status_returned == 200 and .path == $path)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ fallback account completed $expected_upstream_path"
-    jq -e --arg endpoint "$endpoint" '([.turns[] | select(.status == 200 and .endpoint == $endpoint)] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and saw $endpoint recover"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ $path_kind transport reset recorded provider-degraded route evidence"
-}
-
-run_upstream_interrupted_case() {
-    local case_dir="$TMP/upstream-interrupted"
-    local portfile="$case_dir/upstream.port"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_200_BODY_REPEAT=4096 \
-      OMUX_STUB_TRUNCATE_200_AFTER_BYTES=128 \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: upstream-interrupted stub pid=$upstream_pid port=$upstream_port"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in upstream-interrupted case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: upstream-interrupted assertions"
-    jq -e 'select(.kind == "proxy_stream_interrupted" and .account == "codex:max-1" and .status == 200 and .bytes_streamed > 0 and .delivered_to_codex == true and .retry_attempted == false)' "$ndjson" >/dev/null
-    echo "  ✓ upstream partial stream classified as interrupted"
-    assert_no_grep "partial upstream stream did not same-turn retry" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured interrupted upstream stream"
-    jq -e '[.turns[] | select(.status == 200 and (.body_head | contains("response.created")))] | length == 1' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex saw partial 200 stream"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ interrupted upstream stream recorded provider-degraded route health"
-}
-
-run_upstream_body_idle_timeout_case() {
-    local case_dir="$TMP/upstream-body-idle-timeout"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_200_BODY_REPEAT=4096 \
-      OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":1000}' \
-      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":128}' \
-      OMUX_STUB_ACCOUNT_BODY_STALL_COUNT_JSON='{"acc-A-id":1}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: upstream-body-idle-timeout stub pid=$upstream_pid port=$upstream_port"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=250 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in upstream-body-idle-timeout case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: upstream-body-idle-timeout assertions"
-    jq -e 'select(.kind == "proxy_stream_interrupted" and .account == "codex:max-1" and .status == 200 and .err == "ConnectionTimedOut" and .bytes_streamed > 0 and .delivered_to_codex == true and .retry_attempted == false)' "$ndjson" >/dev/null
-    echo "  ✓ idle upstream body classified as interrupted"
-    assert_no_grep "idle upstream body did not same-turn retry" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    assert_no_grep "idle upstream body did not become pre-response failure" '"kind":"proxy_upstream_failed"' "$ndjson"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured body-idle timeout"
-    jq -s -e '[.[] | select(.response_classification == "transport_body_stall" and .account_id == "acc-A-id" and .stall_ms == 1000 and .bytes_before_stall == 128)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture stalled the body after partial delivery"
-    jq -e '[.turns[] | select(.status == 200 and (.body_head | contains("response.created")))] | length == 1' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex saw partial 200 stream"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ idle upstream body recorded provider-degraded route health"
-}
-
-run_upstream_body_idle_recovery_case() {
-    local case_dir="$TMP/upstream-body-idle-recovery"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_200_BODY_REPEAT=8 \
-      OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":100}' \
-      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":128}' \
-      OMUX_STUB_ACCOUNT_BODY_STALL_COUNT_JSON='{"acc-A-id":1}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: upstream-body-idle-recovery stub pid=$upstream_pid port=$upstream_port"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=1000 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in upstream-body-idle-recovery case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: upstream-body-idle-recovery assertions"
-    assert_grep "body stall below idle timeout completed normally" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "short body stall did not mark stream interrupted" '"kind":"proxy_stream_interrupted"' "$ndjson"
-    assert_no_grep "short body stall did not mark upstream failed" '"kind":"proxy_upstream_failed"' "$ndjson"
-    jq -s -e '[.[] | select(.response_classification == "transport_body_stall_completed" and .account_id == "acc-A-id" and .stall_ms == 100 and .bytes_before_stall == 128 and .completed == true)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture resumed before the idle deadline"
-    jq -e '[.turns[] | select(.status == 200 and (.body_head | contains("response.created")))] | length == 1' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex saw the completed 200 stream"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by a short body pause"
-}
-
-run_buffered_error_body_idle_timeout_case() {
-    local case_dir="$TMP/buffered-error-body-idle-timeout"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=0 \
-      OMUX_STUB_LOGFILE="$uplog" \
-      OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":1000}' \
-      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":0}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
-    wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: buffered-error-body-idle-timeout stub pid=$upstream_pid port=$upstream_port"
-
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=250 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in buffered-error-body-idle-timeout case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: buffered-error-body-idle-timeout assertions"
-    assert_grep "buffered error body timeout retried locally" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "buffered error body timeout became upstream failure after bounded retries" '"kind":"proxy_upstream_failed".*"account":"codex:max-1".*"err":"ConnectionTimedOut"' "$ndjson"
-    assert_grep "buffered error body timeout delivered provider unavailable" '"kind":"proxy_provider_retry_unavailable".*"from":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":true' "$ndjson"
-    assert_no_grep "incomplete 429 body did not become quota proof" '"kind":"quota_handoff_failed_no_account_selectable"|"classification":"quota_exhausted"' "$ndjson"
-    assert_no_grep "incomplete 429 body did not same-turn quota retry" '"kind":"proxy_same_turn_retry"' "$ndjson"
-    assert_no_grep "incomplete 429 body did not leak no-account body" 'oauth_mux_no_account_selectable' "$stub_report"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured buffered error body-idle timeout"
-    jq -s -e '[.[] | select(.response_classification == "transport_body_stall" and .account_id == "acc-A-id" and .status_returned == 429 and .stall_ms == 1000 and .bytes_before_stall == 0)] | length >= 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture stalled 429 bodies before any body bytes"
-    jq -e '[.turns[] | select(.status == 503 and (.body_head | contains("oauth_mux_provider_unavailable")))] | length == 1' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex saw provider-unavailable response, not the incomplete 429"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ buffered error body timeout recorded provider-degraded route health"
-}
-
-run_partial_buffered_error_body_fallback_case() {
-    local case_dir="$TMP/partial-buffered-error-body-fallback"
-    local portfile="$case_dir/upstream.port"
-    local uplog="$case_dir/upstream.log"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_two_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_LOGFILE="$uplog" \
+run_large_5xx_passthrough() {
+    local dir="$TMP/large-5xx" portfile="$TMP/large-5xx/upstream.port"
+    mkdir -p "$dir"
+    write_fixture "$dir" 2
+    OMUX_STUB_PORT=0 OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_LOGFILE="$dir/upstream.ndjson" \
       OMUX_STUB_ACCOUNT_STATUS_JSON='{"acc-A-id":503}' \
+      OMUX_STUB_FORCED_BODY_BYTES=131072 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$dir/upstream.stderr" &
+    UPSTREAM_PIDS+=("$!")
+    wait_for_port "$portfile"
+    run_adapter "$dir" "$(tr -d '[:space:]' <"$portfile")" 1
+
+    echo "smoke-codex-provider-degraded: large 5xx pass-through"
+    assert_grep "503 streamed directly to Codex" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":503.*"classification":"provider_5xx".*"streamed":true.*"delivered_to_codex":true' "$dir/status.ndjson"
+    assert_no_grep "5xx never invokes an alternate" 'proxy_same_turn_retry|proxy_auth_same_turn_retry|proxy_materialized_identity_refused' "$dir/status.ndjson"
+    jq -e '.turns | length == 1 and .[0].status == 503 and .[0].response_bytes > 65536 and (.[0].body_head | contains("forced status 503"))' "$dir/stub-report.json" >/dev/null
+    echo "  ok - body larger than 64 KiB reached Codex"
+    jq -s -e 'length == 1 and .[0].account_id == "acc-A-id"' "$dir/upstream.ndjson" >/dev/null
+    echo "  ok - upstream saw no cross-account request"
+    assert_no_grep "5xx did not poison route health" 'provider_degraded' "$dir/state/health.json"
+}
+
+run_interrupted_5xx() {
+    local dir="$TMP/interrupted-5xx" portfile="$TMP/interrupted-5xx/upstream.port"
+    mkdir -p "$dir"
+    write_fixture "$dir" 2
+    OMUX_STUB_PORT=0 OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_LOGFILE="$dir/upstream.ndjson" \
+      OMUX_STUB_ACCOUNT_STATUS_JSON='{"acc-A-id":503}' \
+      OMUX_STUB_FORCED_BODY_BYTES=131072 \
       OMUX_STUB_ACCOUNT_BODY_STALL_MS_JSON='{"acc-A-id":1000}' \
-      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":8}' \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
+      OMUX_STUB_ACCOUNT_BODY_STALL_AFTER_BYTES_JSON='{"acc-A-id":128}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$dir/upstream.stderr" &
+    UPSTREAM_PIDS+=("$!")
     wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: partial-buffered-error-body-fallback stub pid=$upstream_pid port=$upstream_port"
+    OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=250 run_adapter "$dir" "$(tr -d '[:space:]' <"$portfile")" 1 || true
 
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_UPSTREAM_BODY_IDLE_TIMEOUT_MS=250 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in partial-buffered-error-body-fallback case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: partial-buffered-error-body-fallback assertions"
-    assert_grep "partial buffered error body retried locally" '"kind":"proxy_transport_local_retry".*"account":"codex:max-1".*"err":"ConnectionTimedOut".*"delivered_to_codex":false' "$ndjson"
-    assert_grep "partial buffered error body recorded upstream failure after bounded retries" '"kind":"proxy_upstream_failed".*"account":"codex:max-1".*"err":"ConnectionTimedOut"' "$ndjson"
-    assert_grep "partial buffered error body retried fallback account" '"kind":"proxy_provider_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"provider_5xx"' "$ndjson"
-    assert_grep "fallback account returned 200 after partial buffered error body" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "partial buffered error body did not become quota proof" '"kind":"quota_handoff_failed_no_account_selectable"|"classification":"quota_exhausted"|"kind":"proxy_same_turn_retry"' "$ndjson"
-    assert_no_grep "partial buffered error body did not leak provider-unavailable body" 'oauth_mux_provider_unavailable|oauth_mux_no_account_selectable' "$stub_report"
-    jq -e 'select(.name == "codex.proxy.upstream_failure" and .attributes.path_kind == "responses" and .attributes.transport_error == "ConnectionTimedOut" and .attributes.raw_account_id_printed == false)' "$trace_file" >/dev/null
-    echo "  ✓ trace captured partial buffered error body timeout"
-    jq -s -e '[.[] | select(.response_classification == "transport_body_stall" and .account_id == "acc-A-id" and .status_returned == 503 and .bytes_before_stall == 8)] | length >= 1' "$uplog" >/dev/null
-    echo "  ✓ upstream fixture stalled after partial 503 body bytes"
-    jq -s -e '[.[] | select(.account_id == "acc-B-id" and .status_returned == 200)] | length == 1' "$uplog" >/dev/null
-    echo "  ✓ fallback account completed the turn"
-    jq -e '([.turns[] | select(.status == 200 and (.body_head | contains("response.completed")))] | length == 1) and (.pid_stable == true)' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex stayed in one process and saw recovered 200"
-    jq -e '[.accounts[] | select(.key == "codex:max-1#codex-max" and .last_probe_hint_class == "provider_degraded")] | length == 1' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ partial buffered error body timeout recorded provider-degraded route health"
+    echo "smoke-codex-provider-degraded: interrupted 5xx"
+    assert_grep "started 503 interruption is terminal" '"kind":"proxy_stream_interrupted".*"account":"codex:max-1".*"status":503.*"bytes_streamed":[1-9][0-9]*.*"retry_attempted":false' "$dir/status.ndjson"
+    assert_no_grep "interrupted 5xx never crosses accounts" 'proxy_same_turn_retry|proxy_auth_same_turn_retry' "$dir/status.ndjson"
+    jq -s -e 'map(select(.account_id == "acc-B-id")) | length == 0' "$dir/upstream.ndjson" >/dev/null
+    echo "  ok - alternate account was not called"
 }
 
-run_client_disconnect_case() {
-    local case_dir="$TMP/client-disconnect"
-    local portfile="$case_dir/upstream.port"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    local trace_file="$case_dir/trace.ndjson"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      OMUX_STUB_200_BODY_REPEAT=4096 \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
+run_ambiguous_transport_terminal() {
+    local dir="$TMP/ambiguous" portfile="$TMP/ambiguous/upstream.port"
+    mkdir -p "$dir"
+    write_fixture "$dir" 2
+    OMUX_STUB_PORT=0 OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_LOGFILE="$dir/upstream.ndjson" \
+      OMUX_STUB_ACCOUNT_RESET_JSON='{"acc-A-id":"before_response"}' \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$dir/upstream.stderr" &
+    UPSTREAM_PIDS+=("$!")
     wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: client-disconnect stub pid=$upstream_pid port=$upstream_port"
+    run_adapter "$dir" "$(tr -d '[:space:]' <"$portfile")" 1
 
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_DISCONNECT_TURNS=0 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in client-disconnect case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: client-disconnect assertions"
-    assert_grep "downstream close classified as client disconnect" '"kind":"proxy_client_disconnected".*"account":"codex:max-1".*"status":200.*"retry_attempted":false' "$ndjson"
-    assert_no_grep "downstream close did not record upstream failure" '"kind":"proxy_upstream_failed"' "$ndjson"
-    assert_no_grep "downstream close did not same-turn retry" '"kind":"proxy_provider_same_turn_retry"|"kind":"proxy_same_turn_retry"|"kind":"proxy_provider_retry_unavailable"' "$ndjson"
-    assert_no_grep "adapter stderr suppresses benign proxy close" 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream)' "$adapter_stderr"
-    jq -e '[.turns[] | select(.status == 0 and (.body_head | contains("client_disconnected_before_response")))] | length == 1' "$stub_report" >/dev/null
-    echo "  ✓ stub-codex intentionally closed the turn socket"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by downstream disconnect"
+    echo "smoke-codex-provider-degraded: ambiguous transport"
+    assert_grep "ambiguous transport recorded" '"kind":"proxy_upstream_failed".*"account":"codex:max-1".*"send_state":"ambiguous"' "$dir/status.ndjson"
+    assert_no_grep "ambiguous transport never retries" 'proxy_same_route_transport_retry|proxy_same_turn_retry|proxy_auth_same_turn_retry' "$dir/status.ndjson"
+    jq -s -e 'length == 1 and .[0].account_id == "acc-A-id"' "$dir/upstream.ndjson" >/dev/null
+    echo "  ok - ambiguous request used one account and one attempt"
 }
 
-run_buffered_error_client_disconnect_case() {
-    local case_dir="$TMP/buffered-error-client-disconnect"
-    local portfile="$case_dir/upstream.port"
-    local ndjson="$case_dir/adapter.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-codex.report"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_ALWAYS_STATUS=503 \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
+run_stale_hash_identity_fence() {
+    local dir="$TMP/stale-hash" portfile="$TMP/stale-hash/upstream.port"
+    mkdir -p "$dir"
+    write_fixture "$dir" 2
+    cat >"$dir/rewrite-and-run-codex" <<EOF
+#!/usr/bin/env bash
+python3 - '$dir/max-2/auth.json' <<'PY'
+import json, sys
+p = sys.argv[1]
+doc = json.load(open(p))
+doc['tokens']['account_id'] = 'acc-A-id'
+json.dump(doc, open(p, 'w'))
+PY
+exec '$ROOT/scripts/test-stub-codex.py' "\$@"
+EOF
+    chmod +x "$dir/rewrite-and-run-codex"
+    OMUX_STUB_PORT=0 OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_LOGFILE="$dir/upstream.ndjson" OMUX_STUB_ALWAYS_STATUS=429 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$dir/upstream.stderr" &
+    UPSTREAM_PIDS+=("$!")
     wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: buffered-error-client-disconnect stub pid=$upstream_pid port=$upstream_port"
+    run_adapter "$dir" "$(tr -d '[:space:]' <"$portfile")" 1 "$dir/rewrite-and-run-codex"
 
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_DISCONNECT_TURNS=0 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in buffered-error-client-disconnect case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: buffered-error-client-disconnect assertions"
-    assert_grep "buffered error close classified as client disconnect" '"kind":"proxy_client_disconnected".*"account":"codex:max-1".*"status":503.*"err":"(BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)".*"retry_attempted":true' "$ndjson"
-    assert_no_grep "buffered error close did not leak benign proxy write failure" 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)' "$adapter_stderr"
-    jq -e '[.turns[] | select(.status == 0 and (.body_head | contains("client_disconnected_before_response")))] | length == 1' "$stub_report" >/dev/null
-    echo "  ✓ buffered error write failure was classified as downstream disconnect"
+    echo "smoke-codex-provider-degraded: authoritative identity fence"
+    assert_grep "same materialized identity refused before upstream" '"kind":"proxy_materialized_identity_refused".*"err":"SameMaterializedIdentityAlternate".*"alternate":true.*"upstream_called":false' "$dir/status.ndjson"
+    assert_no_grep "refused alias never reports a completed retry" 'proxy_same_turn_retry|proxy_auth_same_turn_retry' "$dir/status.ndjson"
+    jq -s -e 'length == 1 and .[0].account_id == "acc-A-id"' "$dir/upstream.ndjson" >/dev/null
+    echo "  ok - stale distinct pool hashes could not create fake capacity"
 }
 
-run_local_client_stall_case() {
-    local case_dir="$TMP/local-client-stall"
-    local portfile="$case_dir/upstream.port"
-    local ndjson="$case_dir/status.ndjson"
-    local trace_file="$case_dir/trace.ndjson"
-    local adapter_stderr="$case_dir/adapter.stderr"
-    local stub_report="$case_dir/stub-report.json"
-    mkdir -p "$case_dir"
-    write_one_account_fixture "$case_dir"
-
-    OMUX_STUB_PORT=0 \
-      OMUX_STUB_PORTFILE="$portfile" \
-      OMUX_STUB_OK_BEFORE_429=99 \
-      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$case_dir/upstream.stderr" &
-    local upstream_pid=$!
-    UPSTREAM_PIDS+=("$upstream_pid")
+run_two_attempt_exact_body() {
+    local dir="$TMP/two-attempt" portfile="$TMP/two-attempt/upstream.port"
+    mkdir -p "$dir"
+    write_fixture "$dir" 3
+    OMUX_STUB_PORT=0 OMUX_STUB_PORTFILE="$portfile" \
+      OMUX_STUB_LOGFILE="$dir/upstream.ndjson" OMUX_STUB_ALWAYS_STATUS=429 \
+      python3 "$ROOT/scripts/test-stub-upstream.py" 2>"$dir/upstream.stderr" &
+    UPSTREAM_PIDS+=("$!")
     wait_for_port "$portfile"
-    local upstream_port
-    upstream_port="$(cat "$portfile" | tr -d '[:space:]')"
-    echo "smoke-codex-provider-degraded: local-client-stall stub pid=$upstream_pid port=$upstream_port"
+    run_adapter "$dir" "$(tr -d '[:space:]' <"$portfile")" 1
 
-    OMUX_CONFIG="$case_dir/oauth-mux.config.json" \
-      OMUX_STATE_DIR="$case_dir/state" \
-      OMUX_UPSTREAM_HOST="127.0.0.1:$upstream_port" \
-      OMUX_UPSTREAM_SCHEME="http" \
-      OMUX_PROXY_IO_TIMEOUT_MS=250 \
-      OMUX_CODEX_BIN="$ROOT/scripts/test-stub-codex.py" \
-      OMUX_TRACE=1 \
-      OMUX_TRACE_FILE="$trace_file" \
-      OMUX_STUB_CODEX_TURNS=1 \
-      OMUX_STUB_CODEX_PARTIAL_STALL_MS=3000 \
-      OMUX_STUB_CODEX_REPORT="$stub_report" \
-      "$BIN" codex run --profile codex-max --isolated-session-store --json-status-file "$ndjson" 2>"$adapter_stderr" || {
-        echo "adapter exited nonzero in local-client-stall case" >&2
-        cat "$ndjson" >&2 || true
-        cat "$adapter_stderr" >&2 || true
-        exit 1
-    }
-
-    echo "smoke-codex-provider-degraded: local-client-stall assertions"
-    assert_grep "partial request timed out locally" '"kind":"proxy_request_parse_error","err":"ConnectionTimedOut"' "$ndjson"
-    assert_grep "queued valid turn still completed" '"kind":"proxy_turn".*"account":"codex:max-1".*"status":200.*"classification":"ok"' "$ndjson"
-    assert_no_grep "local stall did not record upstream failure" '"kind":"proxy_upstream_failed"' "$ndjson"
-    assert_no_grep "adapter stderr suppresses local timeout" 'proxy: serveOne: ConnectionTimedOut' "$adapter_stderr"
-    jq -e '.partial_stall.enabled == true and .partial_stall.hold_ms == 3000 and .duration_s < 2.0' "$stub_report" >/dev/null
-    echo "  ✓ half-open local socket did not pin the proxy loop"
-    jq -e '[.accounts[] | select(.last_probe_hint_class == "provider_degraded")] | length == 0' "$case_dir/state/health.json" >/dev/null
-    echo "  ✓ route health was not polluted by local client stall"
+    echo "smoke-codex-provider-degraded: two-attempt immutable request"
+    jq -s -e 'length == 2 and (map(.account_id) | unique | length) == 2 and (map(.request_body_sha256) | unique | length) == 1 and (map(.request_model) | unique) == ["gpt-5.3-codex"]' "$dir/upstream.ndjson" >/dev/null
+    echo "  ok - exactly two distinct-account attempts preserved model/body"
+    assert_grep "one alternate event" '"kind":"proxy_same_turn_retry".*"reason":"rate_limited"' "$dir/status.ndjson"
+    assert_no_grep "no third attempt" 'proxy_attempt_budget_exhausted' "$dir/status.ndjson"
 }
 
-run_fallback_case
-run_no_fallback_case
-run_transport_failure_case
-run_tls_transport_failure_case
-run_local_transport_retry_case
-run_upstream_request_write_reset_retry_case
-run_upstream_header_stall_retry_case
-run_upstream_partial_header_stall_retry_case
-run_transport_fallback_case
-run_endpoint_transport_fallback_case "responses/compact" "responses_compact" "compact"
-run_endpoint_transport_fallback_case "memories/trace_summarize" "memories_trace_summarize" "memory"
-run_upstream_interrupted_case
-run_upstream_body_idle_timeout_case
-run_upstream_body_idle_recovery_case
-run_buffered_error_body_idle_timeout_case
-run_partial_buffered_error_body_fallback_case
-run_client_disconnect_case
-run_buffered_error_client_disconnect_case
-run_local_client_stall_case
+run_large_5xx_passthrough
+run_interrupted_5xx
+run_ambiguous_transport_terminal
+run_stale_hash_identity_fence
+run_two_attempt_exact_body
 
-echo
-echo "smoke-codex-provider-degraded: all assertions passed."
+echo "smoke-codex-provider-degraded: all live-handler assertions passed."

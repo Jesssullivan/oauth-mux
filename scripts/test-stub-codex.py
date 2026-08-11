@@ -44,6 +44,8 @@ Env (set by the smoke harness):
   OMUX_STUB_CODEX_BODY_BYTES — optional approximate JSON request body size for
                             each POST turn. Used to force proxy->upstream
                             request writes across multiple socket writes.
+  OMUX_STUB_CODEX_MODEL — exact public model carried by each synthetic turn
+                            (default "gpt-5.3-codex").
   OMUX_STUB_CODEX_DISCONNECT_TURNS — optional comma-separated turn indexes that
                             should send the request then close the proxy socket
                             before reading the streamed response.
@@ -155,10 +157,11 @@ def _endpoint_for_turn(turn: int) -> str:
 
 def _payload_for_turn(turn: int) -> bytes:
     target_bytes = int(os.environ.get("OMUX_STUB_CODEX_BODY_BYTES", "0"))
+    model = os.environ.get("OMUX_STUB_CODEX_MODEL", "gpt-5.3-codex")
     if target_bytes <= 0:
-        return json.dumps({"input": f"stub turn {turn}"}).encode("utf-8")
+        return json.dumps({"model": model, "input": f"stub turn {turn}"}).encode("utf-8")
 
-    payload = {"input": f"stub turn {turn}", "padding": ""}
+    payload = {"model": model, "input": f"stub turn {turn}", "padding": ""}
     base_len = len(json.dumps(payload).encode("utf-8"))
     if target_bytes > base_len:
         payload["padding"] = "x" * (target_bytes - base_len)
@@ -515,6 +518,7 @@ def main() -> int:
             "endpoint": endpoint,
             "status": status,
             "payload_bytes": len(payload),
+            "response_bytes": len(body.encode("utf-8")),
             "body_head": body[:120],
         })
         print(f"stub-codex: turn {i} -> {status}", file=sys.stderr, flush=True)

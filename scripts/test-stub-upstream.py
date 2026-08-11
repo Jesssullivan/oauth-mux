@@ -18,6 +18,9 @@ Behavior (configurable via env):
   OMUX_STUB_200_BODY_REPEAT — repeat the tiny SSE 200 response this many
                         times (default 1). Used by disconnect smokes to
                         force multiple streamed proxy writes.
+  OMUX_STUB_FORCED_BODY_BYTES — minimum JSON body size for forced non-200
+                        responses. Used to prove 5xx is streamed beyond the
+                        proxy's 64 KiB retry-classification buffer.
   OMUX_STUB_TRUNCATE_200_AFTER_BYTES — if positive, send only this many bytes
                         of a 200 response body, then reset the connection.
                         Used to model upstream network interruption after a
@@ -82,12 +85,14 @@ PORTFILE = Path(os.environ.get("OMUX_STUB_PORTFILE", "/tmp/omux-stub-upstream.po
 OK_BEFORE_429 = int(os.environ.get("OMUX_STUB_OK_BEFORE_429", "2"))
 LOGFILE = Path(os.environ.get("OMUX_STUB_LOGFILE", "/tmp/omux-stub-upstream.log"))
 BODY_REPEAT = int(os.environ.get("OMUX_STUB_200_BODY_REPEAT", "1"))
+FORCED_BODY_BYTES = int(os.environ.get("OMUX_STUB_FORCED_BODY_BYTES", "0"))
 TRUNCATE_200_AFTER_BYTES = int(os.environ.get("OMUX_STUB_TRUNCATE_200_AFTER_BYTES", "0"))
 
 # OMUX_STUB_429_TYPE chooses what the stub returns once an account
 # crosses OK_BEFORE_429:
 #   "usage_limit_reached" (default) — the swap-eligible quota path
-#   "usage_not_included"           — the plan-tier path; MUST NOT swap
+#   "usage_not_included"           — explicit pre-body tier failure; one
+#                                     distinct-account alternate is permitted
 #   "rate_limited"                 — bare 429 with no error.type body
 ERROR_TYPE = os.environ.get("OMUX_STUB_429_TYPE", "usage_limit_reached")
 
@@ -249,7 +254,10 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 code = 500
             ACCOUNT_REQ_COUNT[acct] = ACCOUNT_REQ_COUNT.get(acct, 0) + 1
-            return code, {"detail": f"forced status {code} for account"}
+            body = {"detail": f"forced status {code} for account"}
+            if FORCED_BODY_BYTES > 0:
+                body["padding"] = "x" * FORCED_BODY_BYTES
+            return code, body
 
         # OMUX_STUB_ALWAYS_STATUS short-circuits everything: return
         # this exact status with a minimal JSON body. Counters still
@@ -260,7 +268,10 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             except ValueError:
                 code = 500
             ACCOUNT_REQ_COUNT[acct] = ACCOUNT_REQ_COUNT.get(acct, 0) + 1
-            return code, {"detail": f"forced status {code}"}
+            body = {"detail": f"forced status {code}"}
+            if FORCED_BODY_BYTES > 0:
+                body["padding"] = "x" * FORCED_BODY_BYTES
+            return code, body
 
         n = ACCOUNT_REQ_COUNT.get(acct, 0)
         ACCOUNT_REQ_COUNT[acct] = n + 1
@@ -275,9 +286,8 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             body = body * max(1, BODY_REPEAT)
             return 200, {"_text": body, "_ct": "text/event-stream"}
         # 429 path. Body shape selected by OMUX_STUB_429_TYPE so the
-        # harness can drive the swap-eligible (usage_limit_reached)
-        # vs non-swap (usage_not_included, rate_limited) paths through
-        # the same fixture surface.
+        # harness can drive each typed 429 through the shared one-alternate
+        # contract.
         if ERROR_TYPE == "usage_not_included":
             body = {
                 "error": {
@@ -504,7 +514,14 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             return
 
         body_bytes = self._read_body()
-        _ = body_bytes  # request bodies are unused; we don't echo
+        request_body_sha256 = hashlib.sha256(body_bytes).hexdigest()
+        request_model = None
+        try:
+            parsed_request = json.loads(body_bytes)
+            if isinstance(parsed_request, dict) and isinstance(parsed_request.get("model"), str):
+                request_model = parsed_request["model"]
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
         if self._reset_before_response_if_configured(path):
             return
         self._stall_before_response_if_configured(path)
@@ -563,6 +580,9 @@ class StubHandler(http.server.BaseHTTPRequestHandler):
             "auth_prefix": self._auth_prefix(),
             "status_returned": status,
             "response_classification": "ok" if status == 200 else "quota_exhausted" if status == 429 else "other",
+            "request_body_bytes": len(body_bytes),
+            "request_body_sha256": request_body_sha256,
+            "request_model": request_model,
         })
 
     def do_POST(self):  # noqa: N802
