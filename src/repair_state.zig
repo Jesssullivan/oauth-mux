@@ -771,11 +771,35 @@ fn digestHex(hasher: *std.crypto.hash.sha2.Sha256) [64]u8 {
     return std.fmt.bytesToHex(digest, .lower);
 }
 
-fn refreshStoreFingerprint(
+fn realpathLongestExistingAlloc(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+) error{OutOfMemory}!?[]u8 {
+    if (std.fs.realpathAlloc(allocator, path)) |resolved| {
+        return resolved;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    }
+    const parent = std.fs.path.dirname(path) orelse return null;
+    if (parent.len == path.len) return null;
+    const tail = path[parent.len..];
+    const resolved_parent = (try realpathLongestExistingAlloc(allocator, parent)) orelse
+        return null;
+    defer allocator.free(resolved_parent);
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ resolved_parent, tail }) catch
+        error.OutOfMemory;
+}
+
+/// Canonical identity used by every writer of a credential backend. Account
+/// labels are deliberately excluded so aliases serialize on one refresh-store
+/// lock. This function reads no credential material.
+pub fn refreshStoreFingerprint(
     allocator: std.mem.Allocator,
     provider: []const u8,
     backend: types.SecretBackend,
-) ![64]u8 {
+) error{OutOfMemory}![64]u8 {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hashFingerprintPart(&hasher, provider);
     hashFingerprintPart(&hasher, @tagName(std.meta.activeTag(backend)));
@@ -794,11 +818,15 @@ fn refreshStoreFingerprint(
         },
         .env => |ref| hashFingerprintPart(&hasher, ref.variable),
         .file => |ref| {
-            const expanded = try paths.expandTilde(allocator, ref.path);
+            const expanded = paths.expandTilde(allocator, ref.path) catch
+                return error.OutOfMemory;
             defer allocator.free(expanded);
-            const canonical = std.fs.realpathAlloc(allocator, expanded) catch null;
+            const normalized = std.fs.path.resolve(allocator, &.{expanded}) catch
+                return error.OutOfMemory;
+            defer allocator.free(normalized);
+            const canonical = try realpathLongestExistingAlloc(allocator, normalized);
             defer if (canonical) |path| allocator.free(path);
-            hashFingerprintPart(&hasher, canonical orelse expanded);
+            hashFingerprintPart(&hasher, canonical orelse normalized);
         },
         .command => |ref| for (ref.argv) |arg| hashFingerprintPart(&hasher, arg),
         .stdin => {},

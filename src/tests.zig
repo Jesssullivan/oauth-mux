@@ -21,6 +21,7 @@ const AllModules = struct {
     pub const managed_harness_contract = @import("managed_harness_contract.zig");
     pub const notify = @import("notify.zig");
     pub const oauth = @import("oauth.zig");
+    pub const os_account = @import("os_account.zig");
     pub const paths = @import("paths.zig");
     pub const pipeline = @import("pipeline.zig");
     pub const probe = @import("probe.zig");
@@ -67,6 +68,7 @@ const AllModules = struct {
     pub const claude_oauth_cassette_tests = @import("cassettes/claude_oauth_cassette_tests.zig");
 
     pub const enroll_browser_launch = @import("enroll/browser_launch.zig");
+    pub const enroll_claude_login = @import("enroll/claude_login.zig");
     pub const enroll_callback_server = @import("enroll/callback_server.zig");
     pub const enroll_callback_server_tests = @import("enroll/callback_server_tests.zig");
     pub const enroll_claude_reauth = @import("enroll/claude_reauth.zig");

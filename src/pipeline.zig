@@ -3812,8 +3812,8 @@ test "injectEnv refuses a claude account without config_dir (TIN-2054 tmpdir gua
         \\      "kind": "claude",
         \\      "config_dir_env": "CLAUDE_CONFIG_DIR",
         \\      "accounts": {
-        \\        "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
-        \\        "homed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" }, "config_dir": "~/.local/share/oauth-mux/claude/x" }
+        \\        "nodir": { "secret": { "backend": "keychain", "service": "Claude Code-credentials" } },
+        \\        "homed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials" }, "config_dir": "~/.local/share/oauth-mux/claude/x" }
         \\      }
         \\    }
         \\  },
@@ -3923,8 +3923,8 @@ test "refreshWritebackBackend refuses the canonical shared Claude keychain item 
         \\    "claude": {
         \\      "kind": "claude",
         \\      "accounts": {
-        \\        "canonical": { "secret": { "backend": "keychain", "service": "Claude Code-credentials", "account": "jess" } },
-        \\        "suffixed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials-26ae8e92", "account": "jess" } }
+        \\        "canonical": { "secret": { "backend": "keychain", "service": "Claude Code-credentials" } },
+        \\        "suffixed": { "secret": { "backend": "keychain", "service": "Claude Code-credentials-26ae8e92" } }
         \\      }
         \\    }
         \\  },
@@ -3932,8 +3932,16 @@ test "refreshWritebackBackend refuses the canonical shared Claude keychain item 
         \\  "strategies": {}
         \\}
     ;
-    const parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
+    var parsed = try config_mod.loadFromBytes(std.testing.allocator, json);
     defer parsed.deinit();
+    if (comptime builtin.os.tag != .macos) {
+        // macOS derives the keychain account from effective passwd authority.
+        // Other platforms retain a synthetic account so this platform-neutral
+        // refusal test reaches the canonical-service guard.
+        const claude = parsed.value.providers.map.getPtr("claude").?;
+        claude.accounts.map.getPtr("canonical").?.secret.account = "test-account";
+        claude.accounts.map.getPtr("suffixed").?.secret.account = "test-account";
+    }
     var store = health_mod.HealthStore.init(std.testing.allocator, .{});
     defer store.deinit();
     const def = config_mod.resolveProviderDefinition(parsed.value, "claude");

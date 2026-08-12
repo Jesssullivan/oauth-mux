@@ -19,6 +19,7 @@ pub const Command = union(enum) {
     health: HealthArgs,
     discover: DiscoverArgs,
     setup_plan: SetupPlanArgs,
+    setup_login: SetupLoginArgs,
     repair_target_plan: RepairTargetPlanArgs,
     repair_plan: RepairPlanArgs,
     repair_run: RepairRunArgs,
@@ -216,11 +217,21 @@ pub const Command = union(enum) {
         empty_label,
         reserved_character,
         reserved_subcommand,
+        interactive_json_conflict,
     };
 
     pub const SetupPlanArgs = struct {
         provider: ?PlanningProvider = null,
         label: ?[]const u8 = null,
+        json: bool = false,
+        parse_error: ?PlanningParseError = null,
+        invalid_argument: ?[]const u8 = null,
+    };
+
+    pub const SetupLoginArgs = struct {
+        provider: ?PlanningProvider = null,
+        label: ?[]const u8 = null,
+        confirm_login: bool = false,
         json: bool = false,
         parse_error: ?PlanningParseError = null,
         invalid_argument: ?[]const u8 = null,
@@ -1321,6 +1332,10 @@ fn parseInit(args: []const []const u8) Command {
 }
 
 fn parseSetup(args: []const []const u8) Command {
+    if (args.len > 0 and eql(args[0], "login")) {
+        if (setupPlanningHelpRequested(args[1..])) return .help;
+        return parseSetupLogin(args[1..]);
+    }
     if (args.len > 0 and eql(args[0], "codex")) {
         if (codexHelpRequested(args[1..])) return .codex_help;
         var result = Command.CodexArgs{ .action = .onboard };
@@ -1401,6 +1416,107 @@ fn parseSetup(args: []const []const u8) Command {
     return .{ .setup_plan = result };
 }
 
+fn parseSetupLogin(args: []const []const u8) Command {
+    var result = Command.SetupLoginArgs{};
+    var provider_seen = false;
+    var label_seen = false;
+    var confirm_seen = false;
+    var json_seen = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.startsWith(u8, arg, "--provider=")) {
+            if (provider_seen) {
+                setSetupLoginError(&result, .duplicate_option, "--provider");
+                continue;
+            }
+            provider_seen = true;
+            const value = arg["--provider=".len..];
+            if (!eql(value, "claude")) {
+                setSetupLoginError(&result, if (value.len == 0) .missing_value else .unsupported_provider, value);
+            } else {
+                result.provider = .claude;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--label=")) {
+            if (label_seen) {
+                setSetupLoginError(&result, .duplicate_option, "--label");
+                continue;
+            }
+            label_seen = true;
+            setSetupLoginLabel(&result, arg["--label=".len..]);
+        } else if (eql(arg, "--provider")) {
+            if (provider_seen) {
+                setSetupLoginError(&result, .duplicate_option, arg);
+                if (i + 1 < args.len and !isSetupLoginFlag(args[i + 1])) i += 1;
+                continue;
+            }
+            provider_seen = true;
+            if (i + 1 >= args.len or isSetupLoginFlag(args[i + 1])) {
+                setSetupLoginError(&result, .missing_value, arg);
+                continue;
+            }
+            i += 1;
+            if (!eql(args[i], "claude")) {
+                setSetupLoginError(&result, .unsupported_provider, args[i]);
+            } else {
+                result.provider = .claude;
+            }
+        } else if (eql(arg, "--label")) {
+            if (label_seen) {
+                setSetupLoginError(&result, .duplicate_option, arg);
+                if (i + 1 < args.len and !isSetupLoginFlag(args[i + 1])) i += 1;
+                continue;
+            }
+            label_seen = true;
+            if (i + 1 >= args.len or isSetupLoginFlag(args[i + 1])) {
+                setSetupLoginError(&result, .missing_value, arg);
+                continue;
+            }
+            i += 1;
+            setSetupLoginLabel(&result, args[i]);
+        } else if (eql(arg, "--confirm-login")) {
+            if (confirm_seen) {
+                setSetupLoginError(&result, .duplicate_option, arg);
+            } else {
+                confirm_seen = true;
+                result.confirm_login = true;
+            }
+        } else if (eql(arg, "--json")) {
+            if (json_seen) {
+                setSetupLoginError(&result, .duplicate_option, arg);
+            } else {
+                json_seen = true;
+                result.json = true;
+            }
+        } else {
+            setSetupLoginError(&result, .unexpected_argument, arg);
+        }
+    }
+    if (result.parse_error == null and result.confirm_login and result.json) {
+        setSetupLoginError(&result, .interactive_json_conflict, "--json");
+    }
+    return .{ .setup_login = result };
+}
+
+fn setSetupLoginLabel(result: *Command.SetupLoginArgs, value: []const u8) void {
+    if (value.len == 0) {
+        setSetupLoginError(result, .empty_label, value);
+    } else if (std.mem.indexOfScalar(u8, value, '#') != null) {
+        setSetupLoginError(result, .reserved_character, value);
+    } else {
+        result.label = value;
+    }
+}
+
+fn isSetupLoginFlag(value: []const u8) bool {
+    return eql(value, "--provider") or
+        eql(value, "--label") or
+        eql(value, "--confirm-login") or
+        eql(value, "--json") or
+        eql(value, "--help") or
+        eql(value, "-h");
+}
+
 fn setSetupPlanningLabel(result: *Command.SetupPlanArgs, value: []const u8) void {
     if (value.len == 0) {
         setSetupPlanningError(result, .empty_label, value);
@@ -1461,6 +1577,16 @@ fn parseRepairPlanningTarget(result: *Command.RepairTargetPlanArgs, target: []co
 
 fn setSetupPlanningError(
     result: *Command.SetupPlanArgs,
+    err: Command.PlanningParseError,
+    invalid_argument: ?[]const u8,
+) void {
+    if (result.parse_error != null) return;
+    result.parse_error = err;
+    result.invalid_argument = invalid_argument;
+}
+
+fn setSetupLoginError(
+    result: *Command.SetupLoginArgs,
     err: Command.PlanningParseError,
     invalid_argument: ?[]const u8,
 ) void {
@@ -1819,6 +1945,11 @@ pub fn printUsage(writer: anytype) !void {
         \\
         \\  setup [--provider claude|codex] [--label <label>] [--json]
         \\      Plan first-run setup without credential, provider, install, or service access.
+        \\
+        \\  setup login --provider claude --label <label> [--confirm-login]
+        \\      Preview or explicitly run experimental provider-owned Claude login with an owned browser helper.
+        \\      Browser isolation and automatic post-spawn cleanup are not claimed; attended proof is required.
+        \\      Confirmed login is interactive and rejects --json.
         \\
         \\  setup codex [--accounts a,b,c] [--device|--status-only] [--live]
         \\      Legacy effectful Codex onboarding; may create stores and execute Codex login/status.
@@ -2552,6 +2683,63 @@ test "parse setup planning errors stay structured" {
             try std.testing.expectEqualStrings("--json", setup.label.?);
             try std.testing.expect(setup.json);
             try std.testing.expect(setup.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse setup login preview and confirmed action" {
+    const preview = [_][]const u8{ "setup", "login", "--provider", "claude", "--label", "work", "--json" };
+    switch (parse(&preview)) {
+        .setup_login => |login| {
+            try std.testing.expect(login.provider == .claude);
+            try std.testing.expectEqualStrings("work", login.label.?);
+            try std.testing.expect(login.json);
+            try std.testing.expect(!login.confirm_login);
+            try std.testing.expect(login.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+
+    const confirmed = [_][]const u8{ "setup", "login", "--provider=claude", "--label=work;echo-not-run", "--confirm-login" };
+    switch (parse(&confirmed)) {
+        .setup_login => |login| {
+            try std.testing.expect(login.provider == .claude);
+            try std.testing.expectEqualStrings("work;echo-not-run", login.label.?);
+            try std.testing.expect(login.confirm_login);
+            try std.testing.expect(!login.json);
+            try std.testing.expect(login.parse_error == null);
+        },
+        else => return error.Unexpected,
+    }
+}
+
+test "parse setup login rejects unsupported providers and interactive json" {
+    const unsupported = [_][]const u8{ "setup", "login", "--provider", "codex", "--label", "work" };
+    switch (parse(&unsupported)) {
+        .setup_login => |login| {
+            try std.testing.expect(login.parse_error == .unsupported_provider);
+            try std.testing.expectEqualStrings("codex", login.invalid_argument.?);
+        },
+        else => return error.Unexpected,
+    }
+
+    const interactive_json = [_][]const u8{ "setup", "login", "--provider", "claude", "--label", "work", "--confirm-login", "--json" };
+    switch (parse(&interactive_json)) {
+        .setup_login => |login| {
+            try std.testing.expect(login.confirm_login);
+            try std.testing.expect(login.json);
+            try std.testing.expect(login.parse_error == .interactive_json_conflict);
+        },
+        else => return error.Unexpected,
+    }
+
+    const missing_label = [_][]const u8{ "setup", "login", "--provider", "claude", "--label", "--confirm-login" };
+    switch (parse(&missing_label)) {
+        .setup_login => |login| {
+            try std.testing.expect(login.parse_error == .missing_value);
+            try std.testing.expectEqualStrings("--label", login.invalid_argument.?);
+            try std.testing.expect(login.confirm_login);
         },
         else => return error.Unexpected,
     }
@@ -3384,7 +3572,7 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\    set -l tokens (commandline -opc)
             \\    test (count $tokens) -ge 2; or return 1
             \\    test "$tokens[2]" = setup; or return 1
-            \\    if test (count $tokens) -ge 3; and test "$tokens[3]" = codex
+            \\    if test (count $tokens) -ge 3; and contains -- "$tokens[3]" codex login
             \\        return 1
             \\    end
             \\    return 0
@@ -3477,7 +3665,12 @@ pub fn printCompletions(writer: anytype, shell_name: []const u8) !void {
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l classify-codex-usage-limit -d 'Classify captured Codex usage-limit text'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from stay-afloat' -l stream-capture -d 'Tee captured child output while retaining classifier buffers'
             \\complete -c oauth-mux -n '__fish_seen_subcommand_from init' -l codex-max -d 'Generate Codex Max scaffold'
+            \\complete -c oauth-mux -n '__omux_command_root setup' -a 'login' -d 'Isolated provider-owned login'
             \\complete -c oauth-mux -n '__omux_command_root setup' -a 'codex' -d 'Legacy Codex onboarding target'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair setup login' -l provider -d 'Login provider (claude)' -r -a 'claude'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair setup login' -l label -d 'Configured account label' -r
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair setup login' -l confirm-login -d 'Confirm interactive provider login'
+            \\complete -c oauth-mux -n '__omux_exact_subcommand_pair setup login' -l json -d 'JSON preview output'
             \\complete -c oauth-mux -n '__omux_setup_planning' -l provider -d 'Planning provider (claude or codex)' -r
             \\complete -c oauth-mux -n '__omux_setup_planning' -l label -d 'Account label' -r
             \\complete -c oauth-mux -n '__omux_setup_planning' -l json -d 'JSON output'
@@ -3585,6 +3778,11 @@ test "fish completions distinguish planning from legacy positional verbs" {
         u8,
         output.items,
         "__omux_command_root setup' -a 'codex'",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        output.items,
+        "__omux_exact_subcommand_pair setup login' -l confirm-login",
     ) != null);
     try std.testing.expect(std.mem.indexOf(
         u8,

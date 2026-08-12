@@ -223,6 +223,8 @@ setup_before="$tmp/tin3006-setup-before.json"
 repair_before="$tmp/tin3006-repair-before.json"
 planning_omux setup --provider claude --label work --json >"$setup_before"
 planning_omux repair claude:work --json >"$repair_before"
+setup_login_preview="$tmp/tin2071-setup-login-preview.json"
+planning_omux setup login --provider claude --label work --json >"$setup_login_preview"
 assert_planning_truth "$setup_before"
 assert_planning_truth "$repair_before"
 planning_omux setup --provider claude --label work --json >"$tmp/tin3006-setup-before-repeat.json"
@@ -233,6 +235,7 @@ jq -e '
   .command == "setup"
   and .provider == "claude"
   and .label == "work"
+  and .mutates == false
   and .status == "config_missing"
   and .config.state == "missing"
   and .next_action.command == "omux init"
@@ -246,6 +249,39 @@ jq -e '
   and .status == "config_missing"
   and .config.state == "missing"
 ' "$repair_before" >/dev/null
+jq -e '
+  .ok == false
+  and .executed == false
+  and .confirmation_required == true
+  and .requires == "--confirm-login"
+  and .experimental == true
+  and .browser_isolation_enforced == false
+  and .trusted_provider_required == true
+  and .attended_proof_required == true
+  and .post_spawn_cleanup == "preserved_manual_cleanup"
+  and .provider == "claude"
+  and .label == "work"
+  and .mutates == false
+  and .reads_config == false
+  and .reads_credentials == false
+  and .reads_cookies == false
+  and .launches_browser == false
+  and .executes_provider_cli == false
+  and (.confirm_command | contains("omux setup login --provider claude"))
+' "$setup_login_preview" >/dev/null
+
+setup_login_json_confirm="$tmp/tin2071-setup-login-json-confirm.json"
+if planning_omux setup login --provider claude --label work --confirm-login --json >"$setup_login_json_confirm"; then
+  printf 'first-run e2e assertion failed: interactive setup login accepted --json\n' >&2
+  exit 1
+fi
+jq -e '
+  .ok == false
+  and .executed == false
+  and .error == "interactive_json_conflict"
+  and .launches_browser == false
+  and .executes_provider_cli == false
+' "$setup_login_json_confirm" >/dev/null
 
 help_label_setup="$tmp/tin3006-help-label-setup.json"
 planning_omux setup --provider codex --label --help --json >"$help_label_setup"
@@ -1431,7 +1467,7 @@ jq -e '
   and .ran_provider_login == false
   and .spends_provider_calls == false
   and .backup_config != null
-  and any(.next_commands[]; startswith("env CLAUDE_CONFIG_DIR=") and contains("claude auth login"))
+  and any(.next_commands[]; startswith("omux setup login --provider claude") and contains("--confirm-login"))
   and (.next_commands | index("oauth-mux doctor runtime --provider claude --account work --capability auth-status --json") != null)
 ' "$enroll_claude_confirmed_json" >/dev/null
 test -d "$claude_config_root/work"
@@ -1454,6 +1490,84 @@ jq -e --arg backend "$expected_claude_secret_backend" '
   (.accounts | length) == 1
   and any(.accounts[]; .account == "work" and .secret_backend == $backend)
 ' "$accounts_after_claude_json" >/dev/null
+
+printf 'first-run e2e: confirmed Claude setup login uses an owned synthetic helper and retained profile workspace\n'
+login_bin="$tmp/tin2071-login-bin"
+login_trace="$home/tin2071-login-trace"
+browser_trace="$home/tin2071-browser-trace"
+profile_trace="$home/tin2071-profile-trace"
+mkdir -p "$login_bin"
+cat >"$login_bin/claude" <<'CLAUDE_SENTINEL'
+#!/usr/bin/env bash
+set -euo pipefail
+effective_user="$(id -un)"
+test "${USER:?}" = "$effective_user"
+test "${LOGNAME:?}" = "$effective_user"
+printf 'argv=%q %q %q\n' "$1" "$2" "${3-}" >"${HOME:?}/tin2071-login-trace"
+printf '%s\n' "${CLAUDE_CONFIG_DIR:?}" >"${HOME:?}/tin2071-profile-trace.config"
+printf '%s\n' "${OMUX_CLAUDE_BROWSER_PROFILE:?}" >"${HOME:?}/tin2071-profile-trace"
+open 'https://example.invalid/claude-oauth'
+i=0
+while [ "$i" -lt 100000 ]; do
+  [ -s "${HOME:?}/tin2071-browser-trace" ] && exit 0
+  i=$((i + 1))
+done
+printf 'synthetic browser shim did not execute\n' >&2
+exit 98
+CLAUDE_SENTINEL
+cat >"$login_bin/google-chrome" <<'BROWSER_SENTINEL'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1-}" = "--version" ]; then
+  printf 'Google Chrome synthetic-test-only\n'
+  exit 0
+fi
+test -d "${OMUX_CLAUDE_BROWSER_PROFILE:?}"
+printf '%s\n' "$@" >"${HOME:?}/tin2071-browser-trace"
+BROWSER_SENTINEL
+chmod 0755 "$login_bin/claude" "$login_bin/google-chrome"
+
+login_out="$(
+  export PATH="$login_bin:/usr/bin:/bin"
+  export USER="spoofed-login-user"
+  export LOGNAME="spoofed-login-logname"
+  omux setup login --provider claude --label work --confirm-login
+)"
+expect_contains "$login_out" "experimental trusted-provider launcher" "login remains explicitly experimental"
+expect_contains "$login_out" "workspace disposition: preserved_manual_cleanup" "post-spawn cleanup stays manual"
+expect_contains "$login_out" "owned browser helper: observed returning" "owned helper observation is reported narrowly"
+expect_contains "$login_out" "browser isolation, and cleanup are not independently verified" "successful provider exit does not overclaim"
+expect_contains "$(cat "$login_trace")" "argv=auth login" "provider argv is fixed data"
+test "$(cat "$profile_trace.config")" = "$claude_config_root/work"
+isolated_profile="$(cat "$profile_trace")"
+test -d "$isolated_profile"
+expect_contains "$login_out" "${isolated_profile%/profile}" "preserved workspace path is explicit"
+grep -Fx -- '--incognito' "$browser_trace" >/dev/null
+grep -Fx -- '--new-window' "$browser_trace" >/dev/null
+grep -Fx -- '--disable-background-mode' "$browser_trace" >/dev/null
+grep -Fx -- 'https://example.invalid/claude-oauth' "$browser_trace" >/dev/null
+
+printf 'first-run e2e: provider nonzero status survives missing owned-helper marker\n'
+cat >"$login_bin/claude" <<'CLAUDE_NONZERO_SENTINEL'
+#!/usr/bin/env bash
+set -euo pipefail
+test "$1" = auth
+test "$2" = login
+exit 37
+CLAUDE_NONZERO_SENTINEL
+chmod 0755 "$login_bin/claude"
+set +e
+login_nonzero_out="$(
+  export PATH="$login_bin:/usr/bin:/bin"
+  omux setup login --provider claude --label work --confirm-login
+  exit $?
+)"
+login_nonzero_status=$?
+set -e
+test "$login_nonzero_status" -eq 37
+expect_contains "$login_nonzero_out" "owned browser helper: NOT observed" "missing helper observation is explicit"
+expect_contains "$login_nonzero_out" "provider login exited with status 37" "provider nonzero status is preserved"
+expect_contains "$login_nonzero_out" "workspace disposition: preserved_manual_cleanup" "failed run workspace remains quarantined"
 
 printf 'first-run e2e: enroll figma requires explicit confirmation and mode truth\n'
 enroll_figma_preview_json="$tmp/enroll-figma-preview.json"
