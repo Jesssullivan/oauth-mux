@@ -1485,6 +1485,7 @@ pub fn run(allocator: std.mem.Allocator, opts: RunOptions) !void {
     defer proxy.deinit();
     proxy.profile = launch_defaults.profile;
     proxy.capability = route_capability;
+    proxy.launch_account = elected.id;
     const proxy_port = proxy.port();
     try launch_timer.mark(status_writer, emit_status, "proxy_bind");
     const managed_frame_id = try std.fmt.allocPrint(allocator, "omux-codex-{d}-{d}", .{ std.time.milliTimestamp(), proxy_port });

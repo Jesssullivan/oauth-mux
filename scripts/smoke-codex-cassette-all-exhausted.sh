@@ -185,8 +185,8 @@ assert_grep "account A saw replayed quota 429" '"kind":"proxy_turn".*"account":"
 assert_grep "same-turn retry fired" '"kind":"proxy_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"quota_exhausted"' "$NDJSON"
 assert_grep "fallback account saw replayed 200" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "fallback account saw replayed quota 429" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":429.*"classification":"quota_exhausted".*"body_class":"usage_limit_reached".*"delivered_to_codex":false' "$NDJSON"
-assert_grep "same-turn retry unavailable after both cassette quota turns" '"kind":"proxy_same_turn_retry_unavailable"' "$NDJSON"
-assert_grep "terminal no-account event fired" '"kind":"quota_handoff_failed_no_account_selectable".*"reason":"quota_exhausted"' "$NDJSON"
+assert_grep "distinct alternate unavailable after both cassette quota turns" '"kind":"proxy_alternate_unavailable".*"err":"NoAccountSelectable"' "$NDJSON"
+assert_grep "terminal no-account event fired" '"kind":"proxy_no_account_selectable".*"err":"NoAccountSelectable"' "$NDJSON"
 assert_grep "session ended as broker-owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
 
 python3 - "$UPLOG" <<'PY'

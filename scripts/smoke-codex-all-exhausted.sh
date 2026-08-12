@@ -126,9 +126,9 @@ assert_grep "account A returned 429 quota_exhausted" '"kind":"proxy_turn".*"acco
 assert_grep "account B returned 429 quota_exhausted" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":429.*"classification":"quota_exhausted"' "$NDJSON"
 assert_grep "proxy_same_turn_retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
 assert_grep "fallback quota 429 was not delivered before no-account failure" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":429.*"delivered_to_codex":false' "$NDJSON"
-assert_grep "same-turn retry unavailable after all accounts exhausted" '"kind":"proxy_same_turn_retry_unavailable"' "$NDJSON"
+assert_grep "alternate unavailable after all accounts exhausted" '"kind":"proxy_alternate_unavailable".*"err":"NoAccountSelectable"' "$NDJSON"
 assert_grep "proxy_no_account_selectable event fired" '"kind":"proxy_no_account_selectable"' "$NDJSON"
-assert_grep "no-account response disconnect classified as client disconnect" '"kind":"proxy_client_disconnected".*"status":503.*"err":"(BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)".*"retry_attempted":true' "$NDJSON"
+assert_grep "buffered original 429 disconnect classified as client disconnect" '"kind":"proxy_client_disconnected".*"status":429.*"err":"(BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)".*"retry_attempted":true' "$NDJSON"
 if grep -q -E 'proxy: serveOne: (BrokenPipe|ConnectionResetByPeer|EndOfStream|ConnectionTimedOut)' "$ADAPTER_STDERR"; then
     echo "  ✗ no-account disconnect leaked benign proxy close" >&2
     cat "$ADAPTER_STDERR" >&2

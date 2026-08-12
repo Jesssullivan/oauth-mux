@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Negative-path smoke: usage_not_included is a plan-tier problem, not a
-# quota handoff signal. The proxy must classify it as tier_insufficient
-# and must not rotate accounts or promote the claim.
+# Shared-policy smoke: usage_not_included is a typed pre-body tier failure.
+# The proxy must classify it as tier_insufficient and may consume exactly one
+# distinct-account alternate while preserving the exact request model/body.
 
 set -euo pipefail
 
@@ -130,8 +130,9 @@ assert_grep "session_started redacts CODEX_HOME path" '"codex_home_path_printed"
 assert_grep "proxy_turn 200 ok at least once" '"kind":"proxy_turn".*"status":200.*"classification":"ok"' "$NDJSON"
 assert_grep "proxy_turn 429 classified tier_insufficient" '"kind":"proxy_turn".*"status":429.*"classification":"tier_insufficient"' "$NDJSON"
 
-assert_no_grep "no swap fired" '"kind":"proxy_post_swap_turn"' "$NDJSON"
-assert_no_grep "no same-turn retry fired" '"kind":"proxy_same_turn_retry"' "$NDJSON"
+assert_grep "one tier alternate fired" '"kind":"proxy_same_turn_retry".*"from":"codex:max-1".*"to":"codex:max-2".*"reason":"tier_insufficient"' "$NDJSON"
+assert_grep "alternate account completed" '"kind":"proxy_turn".*"account":"codex:max-2".*"status":200.*"classification":"ok"' "$NDJSON"
+assert_no_grep "no third attempt or provider retry" '"kind":"proxy_attempt_budget_exhausted"|"kind":"proxy_provider_same_turn_retry"' "$NDJSON"
 assert_no_grep "no quota_exhausted misclassification" '"classification":"quota_exhausted"' "$NDJSON"
 assert_no_grep "claim_level not promoted" '"claim_level":"next_turn_seamless"' "$NDJSON"
 assert_grep "session_ended final_claim_level remains broker_owned" '"kind":"session_ended".*"final_claim_level":"broker_owned"' "$NDJSON"
@@ -144,23 +145,23 @@ else
 fi
 
 DISTINCT_ACCT=$(grep -oE '"account":"codex:max-[12]"' "$NDJSON" | sort -u | wc -l | tr -d ' ')
-if [[ "$DISTINCT_ACCT" -eq 1 ]]; then
-    echo "  ✓ exactly one account elected throughout"
+if [[ "$DISTINCT_ACCT" -eq 2 ]]; then
+    echo "  ✓ exactly two distinct route labels observed"
 else
-    echo "  ✗ tier_insufficient triggered rotation across $DISTINCT_ACCT accounts" >&2
+    echo "  ✗ expected exactly two route labels, saw $DISTINCT_ACCT" >&2
     grep -oE '"account":"codex:max-[12]"' "$NDJSON" | sort -u >&2
     exit 1
 fi
 
 UP_DISTINCT=$(jq -r .account_id "$UPLOG" | sort -u | wc -l | tr -d ' ')
-if [[ "$UP_DISTINCT" -eq 1 ]]; then
-    echo "  ✓ stub upstream saw exactly 1 ChatGPT-Account-ID"
+if [[ "$UP_DISTINCT" -eq 2 ]]; then
+    echo "  ✓ stub upstream saw one distinct-account alternate"
 else
-    echo "  ✗ upstream saw $UP_DISTINCT distinct account ids" >&2
+    echo "  ✗ upstream saw $UP_DISTINCT distinct account ids (expected 2)" >&2
     cat "$UPLOG" >&2
     exit 1
 fi
 
 echo
-echo "smoke-codex-tier-insufficient: all 11 assertions passed."
+echo "smoke-codex-tier-insufficient: all assertions passed."
 echo "  full ndjson: $NDJSON"
