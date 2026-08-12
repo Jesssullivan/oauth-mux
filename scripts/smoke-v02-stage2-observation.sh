@@ -42,17 +42,6 @@ require_unproven_predicates_missing() {
   ' "$1" >/dev/null
 }
 
-require_deferred_lease_predicates_missing() {
-  jq -e '
-    [
-      "deterministic_shared_leases",
-      "stale_lease_owner_cleanup"
-    ] as $must_remain_missing
-    | [.predicates[] | select(.status == "missing") | .id] as $missing
-    | (($must_remain_missing - $missing) | length) == 0
-  ' "$1" >/dev/null
-}
-
 lease_redaction_canaries='lease-redaction-route-z-canary
 lease-redaction-route-a-canary
 lease-redaction-identity-z-canary
@@ -124,16 +113,14 @@ manifest="$TMP/manifest.json"
 "$PREDICATES" require-incomplete v02-stage2-conformance "$manifest"
 "$PREDICATES" require-stage2-slice v02-stage2-conformance "$manifest"
 
-[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 80 ] ||
-  fail "expected exactly 80 exercised predicates"
-[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 44 ] ||
-  fail "expected exactly 44 unexercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "pass")] | length' "$manifest")" -eq 82 ] ||
+  fail "expected exactly 82 exercised predicates"
+[ "$(jq '[.predicates[] | select(.status == "missing")] | length' "$manifest")" -eq 42 ] ||
+  fail "expected exactly 42 unexercised predicates"
 [ "$(jq '[.predicates[] | select(.status == "fail")] | length' "$manifest")" -eq 0 ] ||
   fail "successful fake-upstream scenarios must not emit failed predicates"
 require_unproven_predicates_missing "$manifest" ||
   fail "predicate without canonical evidence moved out of missing"
-require_deferred_lease_predicates_missing "$manifest" ||
-  fail "cross-process lease predicate moved out of missing"
 withdrawn_predicates='one_sidecar_per_managed_child
 capability_memory_only
 capability_constant_time_validation
@@ -150,18 +137,6 @@ while IFS= read -r predicate_id; do
     fail "missing-predicate guard accepted false promotion: ${predicate_id}"
   fi
 done <<<"$withdrawn_predicates"
-
-deferred_lease_predicates='deterministic_shared_leases
-stale_lease_owner_cleanup'
-while IFS= read -r predicate_id; do
-  deferred_promoted="$TMP/${predicate_id}-promoted.json"
-  jq --arg predicate_id "$predicate_id" \
-    '(.predicates[] | select(.id == $predicate_id)).status = "pass"' \
-    "$manifest" >"$deferred_promoted"
-  if require_deferred_lease_predicates_missing "$deferred_promoted"; then
-    fail "deferred lease guard accepted false promotion: ${predicate_id}"
-  fi
-done <<<"$deferred_lease_predicates"
 
 expected_passes='capability_carrier
 loopback_sidecar_bind
@@ -193,7 +168,9 @@ exact_model_preservation
 route_identity_admission
 identity_conflict_fail_closed
 route_readiness_ordering
+deterministic_shared_leases
 lease_state_redaction
+stale_lease_owner_cleanup
 stale_lease_reactive_routing
 unavailable_lease_reactive_routing
 sticky_least_loaded_selection
@@ -278,7 +255,9 @@ done <<<"$counter_fact_ids"
 broker_mapping_fact_ids='route_identity_admission
 identity_conflict_fail_closed
 route_readiness_ordering
+deterministic_shared_leases
 lease_state_redaction
+stale_lease_owner_cleanup
 stale_lease_reactive_routing
 unavailable_lease_reactive_routing
 sticky_least_loaded_selection'

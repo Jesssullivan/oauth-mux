@@ -20,6 +20,7 @@ const fake_upstream_mod = @import("fake_upstream.zig");
 const advisory_usage = @import("../../quota/advisory_usage.zig");
 const broker_decision = @import("../../broker/decision.zig");
 const broker_lease_state = @import("../../broker/lease_state.zig");
+const broker_lease_runtime = @import("../../broker/lease_runtime.zig");
 const broker_model_demand = @import("../../broker/model_demand.zig");
 const broker_route_observation = @import("../../broker/route_observation.zig");
 
@@ -76,6 +77,16 @@ const Upstream = union(enum) {
     synthetic: *SyntheticRouting,
 };
 
+const ThreadExitHook = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque) void,
+};
+
+const ListenerOptions = struct {
+    teardown_clock: ?broker_lease_runtime.WorkClock = null,
+    before_thread_exit: ?ThreadExitHook = null,
+};
+
 const State = struct {
     allocator: std.mem.Allocator,
     capability: *SessionCapability,
@@ -101,6 +112,12 @@ const State = struct {
     /// seam reserves against it; the single-attempt `.fake`/`.production` paths
     /// never touch it, so the accounting stays at zero for those.
     reservation: Reservation = .{},
+    /// Borrowed per-session lease runtime. The managed launcher owns it and
+    /// outlives this listener. Teardown joins the request thread before asking
+    /// the runtime to release its session leases.
+    lease_runtime: ?*broker_lease_runtime.LeaseRuntime,
+    teardown_clock: ?broker_lease_runtime.WorkClock = null,
+    before_thread_exit: ?ThreadExitHook = null,
 };
 
 pub const RequestOutcome = enum {
@@ -271,7 +288,22 @@ pub const Listener = opaque {
         capability: *SessionCapability,
         event_writer: std.io.AnyWriter,
     ) !*Listener {
-        return startWithUpstream(allocator, capability, event_writer, .production);
+        return startWithUpstream(allocator, capability, event_writer, .production, null);
+    }
+
+    pub fn startManaged(
+        allocator: std.mem.Allocator,
+        capability: *SessionCapability,
+        event_writer: std.io.AnyWriter,
+        lease_runtime: ?*broker_lease_runtime.LeaseRuntime,
+    ) !*Listener {
+        return startWithUpstream(
+            allocator,
+            capability,
+            event_writer,
+            .production,
+            lease_runtime,
+        );
     }
 
     pub fn address(self: *const Listener) std.net.Address {
@@ -285,7 +317,21 @@ pub const Listener = opaque {
     /// Interrupts an accepted inbound connection, joins the listener thread,
     /// and only then releases the socket and listener state.
     pub fn deinit(self: *Listener) void {
-        _ = teardown(self);
+        _ = self.deinitChecked() catch {};
+    }
+
+    /// Checked teardown for managed launchers. The listener is always joined
+    /// and freed; lease-release integrity failures are emitted before returning
+    /// `LeaseReleaseFailed`.
+    pub fn deinitChecked(self: *Listener) !usize {
+        return teardown(self);
+    }
+
+    pub fn deinitCheckedWithBudget(
+        self: *Listener,
+        budget: *broker_lease_runtime.WorkBudget,
+    ) !usize {
+        return teardownWithBudget(self, budget);
     }
 };
 
@@ -295,14 +341,44 @@ pub const Listener = opaque {
 /// reservation via its `defer guard.release()` — and BEFORE the state is freed.
 /// This is the abrupt-death reclamation seam (ladder §9 Stage 2): a live request
 /// killed mid-attempt or mid-stream must return the pool to zero.
-fn teardown(self: *Listener) usize {
+fn teardown(self: *Listener) !usize {
+    const state = statePtr(self);
+    var budget = if (state.lease_runtime) |runtime|
+        try runtime.beginTeardownBudget()
+    else
+        try broker_lease_runtime.startTeardownBudget(state.teardown_clock);
+    return teardownWithBudget(self, &budget);
+}
+
+fn teardownWithBudget(self: *Listener, budget: *broker_lease_runtime.WorkBudget) !usize {
     const state = statePtr(self);
     state.stopping.store(true, .release);
     state.active.interrupt();
     state.upstream_active.interrupt();
     if (state.thread) |thread| thread.join();
+    var listener_deadline_failure = false;
+    _ = budget.remainingNs() catch |err| {
+        listener_deadline_failure = true;
+        state.event_writer.print(
+            "{{\"kind\":\"claude_proxy_listener_teardown_deadline_exceeded\",\"error\":\"ListenerTeardownDeadlineExceeded\",\"cause\":\"{s}\"}}\n",
+            .{@errorName(err)},
+        ) catch {};
+    };
     // Post-join: the request path (if any) has run its exactly-once release.
     const outstanding = state.reservation.outstanding();
+    var release_failure: ?anyerror = null;
+    if (state.lease_runtime) |runtime| runtime.releaseAllWithBudget(budget) catch |err| {
+        release_failure = err;
+        state.event_writer.print(
+            "{{\"kind\":\"claude_proxy_lease_release_failed\",\"error\":\"{s}\"}}\n",
+            .{@errorName(err)},
+        ) catch {};
+        if (builtin.is_test) {
+            std.log.warn("claude proxy lease release failed after listener join: {s}", .{@errorName(err)});
+        } else {
+            std.log.err("claude proxy lease release failed after listener join: {s}", .{@errorName(err)});
+        }
+    };
     state.server.deinit();
     const allocator = state.allocator;
     // The synthetic routing struct is sidecar-owned; its `FakeUpstream`
@@ -312,6 +388,8 @@ fn teardown(self: *Listener) usize {
         else => {},
     }
     allocator.destroy(state);
+    if (listener_deadline_failure) return error.ListenerTeardownDeadlineExceeded;
+    if (release_failure != null) return error.LeaseReleaseFailed;
     return outstanding;
 }
 
@@ -336,6 +414,25 @@ fn startWithUpstream(
     capability: *SessionCapability,
     event_writer: std.io.AnyWriter,
     upstream: Upstream,
+    lease_runtime: ?*broker_lease_runtime.LeaseRuntime,
+) !*Listener {
+    return startWithUpstreamOptions(
+        allocator,
+        capability,
+        event_writer,
+        upstream,
+        lease_runtime,
+        .{},
+    );
+}
+
+fn startWithUpstreamOptions(
+    allocator: std.mem.Allocator,
+    capability: *SessionCapability,
+    event_writer: std.io.AnyWriter,
+    upstream: Upstream,
+    lease_runtime: ?*broker_lease_runtime.LeaseRuntime,
+    options: ListenerOptions,
 ) !*Listener {
     const loopback = try std.net.Address.parseIp("127.0.0.1", 0);
     var server = try loopback.listen(.{ .reuse_address = true });
@@ -349,6 +446,9 @@ fn startWithUpstream(
         .server = server,
         .upstream = upstream,
         .event_writer = event_writer,
+        .lease_runtime = lease_runtime,
+        .teardown_clock = options.teardown_clock,
+        .before_thread_exit = options.before_thread_exit,
     };
     switch (upstream) {
         .synthetic => |routing| state.reservation.budget_bytes = routing.reservation_budget_bytes,
@@ -401,6 +501,44 @@ fn leaseProjectionShapeIsRedacted(
 }
 
 pub const testing = if (builtin.is_test) struct {
+    const TeardownClock = struct {
+        now_ns: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+
+        fn now(raw: ?*anyopaque) i128 {
+            const self: *TeardownClock = @ptrCast(@alignCast(raw.?));
+            return self.now_ns.load(.acquire);
+        }
+
+        fn clock(self: *TeardownClock) broker_lease_runtime.WorkClock {
+            return .{ .ctx = @ptrCast(self), .nowFn = now };
+        }
+    };
+
+    const DelayedListenerExit = struct {
+        entered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        finished: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn wait(raw: *anyopaque) void {
+            const self: *DelayedListenerExit = @ptrCast(@alignCast(raw));
+            self.entered.store(true, .release);
+            while (!self.release.load(.acquire)) std.Thread.yield() catch {};
+            self.finished.store(true, .release);
+        }
+    };
+
+    const TeardownJob = struct {
+        listener: *Listener,
+        failure: ?anyerror = null,
+
+        fn run(self: *TeardownJob) void {
+            _ = self.listener.deinitChecked() catch |err| {
+                self.failure = err;
+                return;
+            };
+        }
+    };
+
     /// Test-only composition seam. The caller supplies the repository's
     /// deterministic fake explicitly; production upstream selection remains
     /// compile-fixed and unavailable through this API.
@@ -415,6 +553,7 @@ pub const testing = if (builtin.is_test) struct {
             capability,
             event_writer,
             .{ .fake = upstream },
+            null,
         );
     }
 
@@ -441,6 +580,7 @@ pub const testing = if (builtin.is_test) struct {
         request_deadline_ns: u64 = default_request_deadline_ns,
         max_wait_ns: u64 = default_max_wait_ns,
         clock: WireClock = .{},
+        lease_runtime: ?*broker_lease_runtime.LeaseRuntime = null,
     };
 
     /// Test-only routed seam (mirrors `startWithFake` gating). It composes the
@@ -473,12 +613,14 @@ pub const testing = if (builtin.is_test) struct {
             .request_deadline_ns = config.request_deadline_ns,
             .max_wait_ns = config.max_wait_ns,
             .clock = config.clock,
+            .lease_runtime = config.lease_runtime,
         };
         return startWithUpstream(
             allocator,
             capability,
             event_writer,
             .{ .synthetic = routing },
+            config.lease_runtime,
         );
     }
 
@@ -491,6 +633,10 @@ pub const testing = if (builtin.is_test) struct {
     /// nothing.
     pub fn reservationOutstanding(listener: *Listener) usize {
         return reservedBytes(listener);
+    }
+
+    pub fn defaultRequestDeadlineNs() u64 {
+        return default_request_deadline_ns;
     }
 
     pub fn brokerLeaseProjectionIsRedacted() bool {
@@ -526,8 +672,64 @@ pub const testing = if (builtin.is_test) struct {
     /// still outstanding once the serve thread has joined — the abrupt-death
     /// reclamation seam (ladder §9 Stage 2). The listener must not be used
     /// afterward. This only exposes the value `deinit` already discards.
-    pub fn teardownReclaim(listener: *Listener) usize {
+    pub fn teardownReclaim(listener: *Listener) !usize {
         return teardown(listener);
+    }
+
+    /// A real loopback listener with no lease runtime blocks at its thread-exit
+    /// seam until the injected monotonic clock crosses the shared 500 ms bound.
+    /// Teardown must still join the thread and free the listener before
+    /// returning its typed, value-free diagnostic.
+    pub fn runFocusedListenerTeardownDiagnostics() !void {
+        if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
+        const capability = try SessionCapability.generate(std.testing.allocator);
+        defer capability.deinit();
+        var clock = TeardownClock{};
+        var delayed = DelayedListenerExit{};
+        var event_buffer: [512]u8 = undefined;
+        var events = std.io.fixedBufferStream(&event_buffer);
+        const listener = try startWithUpstreamOptions(
+            std.testing.allocator,
+            capability,
+            events.writer().any(),
+            .production,
+            null,
+            .{
+                .teardown_clock = clock.clock(),
+                .before_thread_exit = .{ .ctx = @ptrCast(&delayed), .run = DelayedListenerExit.wait },
+            },
+        );
+
+        var job = TeardownJob{ .listener = listener };
+        const teardown_thread = try std.Thread.spawn(.{}, TeardownJob.run, .{&job});
+        var wait_timer = try std.time.Timer.start();
+        while (!delayed.entered.load(.acquire)) {
+            if (wait_timer.read() >= std.time.ns_per_s) {
+                delayed.release.store(true, .release);
+                teardown_thread.join();
+                return error.TestTimeout;
+            }
+            std.Thread.yield() catch {};
+        }
+        clock.now_ns.store(@intCast(broker_lease_runtime.advisory_lock_timeout_ns + 1), .release);
+        delayed.release.store(true, .release);
+        teardown_thread.join();
+
+        try std.testing.expect(delayed.finished.load(.acquire));
+        try std.testing.expectEqual(
+            error.ListenerTeardownDeadlineExceeded,
+            job.failure orelse return error.ExpectedListenerTeardownDeadlineExceeded,
+        );
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            events.getWritten(),
+            "\"kind\":\"claude_proxy_listener_teardown_deadline_exceeded\"",
+        ) != null);
+        try std.testing.expect(std.mem.indexOf(
+            u8,
+            events.getWritten(),
+            "\"error\":\"ListenerTeardownDeadlineExceeded\"",
+        ) != null);
     }
 } else struct {};
 
@@ -602,6 +804,7 @@ const ActiveConnection = struct {
 };
 
 fn run(state: *State) void {
+    defer if (state.before_thread_exit) |hook| hook.run(hook.ctx);
     while (!state.stopping.load(.acquire)) {
         var fds = [_]std.posix.pollfd{.{
             .fd = state.server.stream.handle,
@@ -1525,6 +1728,7 @@ const SyntheticRouting = struct {
     request_deadline_ns: u64,
     max_wait_ns: u64,
     clock: WireClock,
+    lease_runtime: ?*broker_lease_runtime.LeaseRuntime = null,
 };
 
 /// Injected clock (house style: fn-pointer + opaque ctx, default real). The
@@ -1961,6 +2165,47 @@ fn routeForBrokerHandle(
     return error.UnmappedBrokerRoute;
 }
 
+fn bindRuntimeRouteIdentity(
+    snapshot: *const BrokerMappingSnapshot,
+    handle: broker_route_observation.RouteHandle,
+    route: *Route,
+) !void {
+    var observed_identity: ?[]const u8 = null;
+    for (snapshot.observations) |observation| {
+        if (!routeHandleEql(observation.route, handle)) continue;
+        const identity = observation.identity orelse return error.InvalidBrokerSnapshot;
+        if (!identity.isValid()) return error.InvalidBrokerSnapshot;
+        if (observed_identity) |previous| {
+            if (!std.mem.eql(u8, previous, identity.bytes)) {
+                return error.InvalidBrokerSnapshot;
+            }
+        } else {
+            observed_identity = identity.bytes;
+        }
+    }
+    const expected = observed_identity orelse return error.InvalidBrokerSnapshot;
+    if (!std.mem.eql(u8, expected, route.identity)) {
+        return error.BrokerRouteIdentityMismatch;
+    }
+}
+
+const RuntimeChoiceValidation = struct {
+    routing: *SyntheticRouting,
+    snapshot: *const BrokerMappingSnapshot,
+    first_identity: ?[]const u8 = null,
+
+    fn validate(raw: *anyopaque, handle: broker_route_observation.RouteHandle) !void {
+        const self: *RuntimeChoiceValidation = @ptrCast(@alignCast(raw));
+        const route = try routeForBrokerHandle(self.routing, self.snapshot, handle);
+        try bindRuntimeRouteIdentity(self.snapshot, handle, route);
+        if (self.first_identity) |first| {
+            if (std.mem.eql(u8, route.identity, first)) {
+                return error.SameIdentityAlternate;
+            }
+        }
+    }
+};
+
 fn handleForBrokerRoute(
     routing: *SyntheticRouting,
     snapshot: *const BrokerMappingSnapshot,
@@ -2027,8 +2272,30 @@ fn selectInitialRoute(
     routing: *SyntheticRouting,
     allocator: std.mem.Allocator,
     captured_model: ?[]const u8,
+    lease_budget: ?*broker_lease_runtime.WorkBudget,
 ) !*Route {
     if (routing.broker_snapshot == null) return &routing.primary;
+    if (routing.lease_runtime) |runtime| {
+        const snapshot = &routing.broker_snapshot.?;
+        try validateBrokerSnapshot(routing, snapshot);
+        const demand = try broker_model_demand.ModelDemand.init(captured_model orelse return error.NoEligibleBrokerRoute);
+        var candidates: [2]broker_lease_runtime.Candidate = undefined;
+        const candidate_slice = try runtimeCandidates(snapshot, &candidates);
+        var validation = RuntimeChoiceValidation{
+            .routing = routing,
+            .snapshot = snapshot,
+        };
+        const budget = lease_budget orelse return error.MissingLeaseWorkBudget;
+        const selected = try runtime.selectAndAcquireValidatedWithBudget(
+            candidate_slice,
+            demand,
+            try brokerSnapshotNowMs(snapshot),
+            .{ .ctx = @ptrCast(&validation), .validate = RuntimeChoiceValidation.validate },
+            budget,
+        );
+        const route = try routeForBrokerHandle(routing, snapshot, selected.route());
+        return route;
+    }
     return (try selectMappedRoute(routing, allocator, captured_model, null)) orelse
         error.NoEligibleBrokerRoute;
 }
@@ -2040,9 +2307,56 @@ fn selectAlternate(
     allocator: std.mem.Allocator,
     captured_model: ?[]const u8,
     first_route: *Route,
+    lease_budget: ?*broker_lease_runtime.WorkBudget,
 ) !?*Route {
     if (routing.broker_snapshot) |*snapshot| {
         const excluded = try handleForBrokerRoute(routing, snapshot, first_route);
+        if (routing.lease_runtime) |runtime| {
+            // With the current two-slot contract, the only possible alternate
+            // is knowable before touching shared lease state. Credential-slot
+            // identity is authoritative: refuse a duplicate before cleanup,
+            // projection, or transition can persist anything. The runtime
+            // validator below remains the defense for every reprojected choice.
+            if (snapshot.alternate_route) |declared_alternate| {
+                const candidate_handle = if (routeHandleEql(excluded, snapshot.primary_route))
+                    declared_alternate
+                else
+                    snapshot.primary_route;
+                const alternate_slot = try routeForBrokerHandle(routing, snapshot, candidate_handle);
+                if (std.mem.eql(u8, alternate_slot.identity, first_route.identity)) {
+                    return error.SameIdentityAlternate;
+                }
+                try bindRuntimeRouteIdentity(snapshot, candidate_handle, alternate_slot);
+            }
+            const demand = try broker_model_demand.ModelDemand.init(captured_model orelse return null);
+            var candidates: [2]broker_lease_runtime.Candidate = undefined;
+            const candidate_slice = try runtimeCandidates(snapshot, &candidates);
+            var validation = RuntimeChoiceValidation{
+                .routing = routing,
+                .snapshot = snapshot,
+                .first_identity = first_route.identity,
+            };
+            const budget = lease_budget orelse return error.MissingLeaseWorkBudget;
+            const selected = try runtime.selectAndTransitionValidatedWithBudget(
+                candidate_slice,
+                demand,
+                excluded,
+                try brokerSnapshotNowMs(snapshot),
+                .{ .ctx = @ptrCast(&validation), .validate = RuntimeChoiceValidation.validate },
+                budget,
+            );
+            if (selected) |choice| {
+                const candidate = try routeForBrokerHandle(routing, snapshot, choice.route());
+                // The final boundary compares the actual credential slots. The
+                // reducer's redacted identity evidence cannot authorize two
+                // slots backed by the same account.
+                if (std.mem.eql(u8, candidate.identity, first_route.identity)) {
+                    return error.SameIdentityAlternate;
+                }
+                return candidate;
+            }
+            return null;
+        }
         const alternate = try selectMappedRoute(
             routing,
             allocator,
@@ -2064,6 +2378,28 @@ fn selectAlternate(
         return alternate;
     }
     return null;
+}
+
+fn runtimeCandidates(
+    snapshot: *const BrokerMappingSnapshot,
+    buffer: *[2]broker_lease_runtime.Candidate,
+) ![]const broker_lease_runtime.Candidate {
+    if (snapshot.observations.len > buffer.len) return error.InvalidBrokerSnapshot;
+    for (snapshot.observations, 0..) |observation, index| {
+        buffer[index] = .{
+            .observation = observation,
+            // Synthetic Stage-2 routes are already opaque active-v2 handles. The
+            // runtime needs no provider account label; using the same opaque
+            // handle preserves the value-free boundary.
+            .account = try broker_lease_state.AccountHandle.parse(observation.route.text),
+        };
+    }
+    return buffer[0..snapshot.observations.len];
+}
+
+fn brokerSnapshotNowMs(snapshot: *const BrokerMappingSnapshot) !broker_lease_state.TimestampMs {
+    if (snapshot.now_s < 0) return error.InvalidBrokerSnapshot;
+    return std.math.mul(i64, snapshot.now_s, 1000) catch error.InvalidBrokerSnapshot;
 }
 
 const WaitDecision = enum { proceed, exceeds_bound };
@@ -2253,11 +2589,21 @@ fn forwardRouted(
     defer guard.release();
     obs.replay_mode = latch.mode;
 
-    const start_ns = routing.clock.now();
-
     // The single retry entitlement for this request.
     var slot = RetrySlot{};
-    const first_route = try selectInitialRoute(routing, allocator, captured_model);
+    var lease_budget = if (routing.lease_runtime) |runtime|
+        try runtime.beginRequestBudget()
+    else
+        null;
+    const first_route = try selectInitialRoute(
+        routing,
+        allocator,
+        captured_model,
+        if (lease_budget) |*budget| budget else null,
+    );
+    // Provider wait accounting begins only after advisory lease admission.
+    // The lease budget is independent and may not steal provider retry time.
+    const provider_start_ns = routing.clock.now();
 
     const first = try performAttempt(
         state,
@@ -2303,33 +2649,35 @@ fn forwardRouted(
             return;
         },
         .pre_body_reauth => |buffered| {
-            const alternate = selectAlternate(
-                routing,
-                allocator,
-                captured_model,
-                first_route,
-            ) catch |err| switch (err) {
-                error.SameIdentityAlternate => {
-                    // Same-identity-only pool: no eligible DISTINCT identity
-                    // exists, so the distinct-identity pool is exhausted. Keep
-                    // the typed refusal and deliver attempt 1's own pre-body
-                    // result without another upstream call.
-                    obs.same_identity_alternate_refused = true;
-                    emitEvent(state, "claude_proxy_same_identity_alternate_refused");
+            // The legacy synthetic path may preview its immutable alternate.
+            // A shared runtime may not transition yet: replayability and the
+            // bounded wait must both be accepted before the persisted move.
+            var alternate: ?*Route = null;
+            if (routing.lease_runtime == null) {
+                alternate = selectAlternate(
+                    routing,
+                    allocator,
+                    captured_model,
+                    first_route,
+                    null,
+                ) catch |err| switch (err) {
+                    error.SameIdentityAlternate => {
+                        obs.same_identity_alternate_refused = true;
+                        emitEvent(state, "claude_proxy_same_identity_alternate_refused");
+                        deliverBuffered(downstream, buffered);
+                        emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
+                        commitObservation(state, obs);
+                        return;
+                    },
+                    else => return err,
+                };
+                if (alternate == null) {
                     deliverBuffered(downstream, buffered);
                     emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
                     commitObservation(state, obs);
                     return;
-                },
-                else => return err,
-            } orelse {
-                // No alternate configured: route 1's pre-body result is the
-                // single-route bounded terminal. Uniform all-exhausted event.
-                deliverBuffered(downstream, buffered);
-                emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
-                commitObservation(state, obs);
-                return;
-            };
+                }
+            }
             if (!latch.isReplayable()) {
                 // Stream-once degradation (not identity exhaustion): the body
                 // could not be reserved for replay, so the eligible alternate is
@@ -2338,7 +2686,7 @@ fn forwardRouted(
                 deliverBuffered(downstream, buffered);
                 return;
             }
-            switch (waitBeforeAlternate(routing, start_ns, retryAfterNs(buffered.headers))) {
+            switch (waitBeforeAlternate(routing, provider_start_ns, retryAfterNs(buffered.headers))) {
                 .proceed => {},
                 .exceeds_bound => {
                     emitEvent(state, "claude_proxy_local_rate_limited");
@@ -2346,12 +2694,37 @@ fn forwardRouted(
                     return;
                 },
             }
+            if (routing.lease_runtime != null) {
+                alternate = selectAlternate(
+                    routing,
+                    allocator,
+                    captured_model,
+                    first_route,
+                    if (lease_budget) |*budget| budget else null,
+                ) catch |err| switch (err) {
+                    error.SameIdentityAlternate => {
+                        obs.same_identity_alternate_refused = true;
+                        emitEvent(state, "claude_proxy_same_identity_alternate_refused");
+                        deliverBuffered(downstream, buffered);
+                        emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
+                        commitObservation(state, obs);
+                        return;
+                    },
+                    else => return err,
+                };
+                if (alternate == null) {
+                    deliverBuffered(downstream, buffered);
+                    emitAllExhausted(state, obs.attempts_total, trustedRetryAfterSeconds(buffered.headers) != null);
+                    commitObservation(state, obs);
+                    return;
+                }
+            }
             slot.consume();
             attemptSecondTerminal(
                 state,
                 downstream,
                 allocator,
-                alternate,
+                alternate.?,
                 headers,
                 body,
                 captured_model,
@@ -2463,6 +2836,7 @@ test "missing malformed and wrong capabilities return 401 with zero upstream cal
         capability,
         event_stream.writer().any(),
         .{ .fake = &upstream },
+        null,
     );
     defer listener.deinit();
 
@@ -2936,6 +3310,7 @@ test "truncated chunked upstream remains detectably incomplete downstream" {
         capability,
         event_stream.writer().any(),
         .{ .fake = &upstream },
+        null,
     );
     defer listener.deinit();
 
@@ -2984,6 +3359,7 @@ test "truncated content-length upstream remains shorter than its downstream decl
         capability,
         event_stream.writer().any(),
         .{ .fake = &upstream },
+        null,
     );
     defer listener.deinit();
 
@@ -3076,6 +3452,7 @@ test "client disconnect after a streamed prefix ends the single upstream attempt
         capability,
         event_stream.writer().any(),
         .{ .fake = &upstream },
+        null,
     );
     defer listener.deinit();
 
@@ -3131,6 +3508,7 @@ test "provider 5xx passes through unchanged as a single classified attempt" {
             capability,
             event_stream.writer().any(),
             .{ .fake = &upstream },
+            null,
         );
         defer listener.deinit();
 

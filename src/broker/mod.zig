@@ -17,6 +17,8 @@
 //!   decision.zig      — pure deterministic route election
 //!   lease_state.zig   — pure in-process lease state and projection
 //!   lease_store.zig   — redacted cross-process lease persistence
+//!   lease_owner.zig   — exact process-incarnation flock custody
+//!   lease_runtime.zig — per-sidecar persisted lease lifecycle
 //!
 //! Surface version is `1` (see broker spec §2). Method shapes are stable
 //! within a major; adding optional fields is allowed.
@@ -33,6 +35,8 @@ pub const route_observation = @import("route_observation.zig");
 pub const decision = @import("decision.zig");
 pub const lease_state = @import("lease_state.zig");
 pub const lease_store = @import("lease_store.zig");
+pub const lease_owner = @import("lease_owner.zig");
+pub const lease_runtime = @import("lease_runtime.zig");
 
 pub const SURFACE_VERSION: u32 = types.surface_version;
 pub const BUILD_TAG: []const u8 = "oauth-mux 0.2.0+broker";
