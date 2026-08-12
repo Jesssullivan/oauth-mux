@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[ "$#" -eq 0 ] || {
+  printf 'generated inner contract accepts no arguments\n' >&2
+  exit 2
+}
+
+repo_root="$(pwd -P)"
+candidate_tool="$repo_root/scripts/v02_posix_candidate.py"
+version="${OMUX_V02_CONTRACT_VERSION:-0.2.0-rc.0}"
+build_id="${OMUX_V02_CONTRACT_BUILD_ID:-source-contract-local}"
+wrapper_root="${OMUX_V02_WRAPPER_TEMP_ROOT:?generated helper must own the wrapper root}"
+tmp="${OMUX_V02_CONTRACT_TEMP_ROOT:?generated helper must own the contract root}"
+python_bin="@python@"
+git_bin="@git@"
+zig_bin="@zig@"
+readonly repo_root candidate_tool wrapper_root tmp python_bin git_bin zig_bin
+
+[ -f "$candidate_tool" ] && [ ! -L "$candidate_tool" ] || {
+  printf 'candidate source tool is unavailable from the repository root\n' >&2
+  exit 2
+}
+for tool in "$python_bin" "$git_bin" "$zig_bin"; do
+  [ -x "$tool" ] || {
+    printf 'flake-embedded contract tool is not executable: %s\n' "$tool" >&2
+    exit 2
+  }
+done
+
+resolved_wrapper_root="$(realpath "$wrapper_root")"
+resolved_tmp="$(realpath "$tmp")"
+[ "$resolved_wrapper_root" = "$wrapper_root" ] &&
+  [ "$resolved_tmp" = "$tmp" ] &&
+  [ -d "$wrapper_root" ] && [ ! -L "$wrapper_root" ] &&
+  [ -d "$tmp" ] && [ ! -L "$tmp" ] || {
+  printf 'generated contract temporary-root validation failed\n' >&2
+  exit 2
+}
+case "$tmp/" in
+  "$wrapper_root"/*) ;;
+  *)
+    printf 'generated contract root is outside its wrapper root\n' >&2
+    exit 2
+    ;;
+esac
+
+wrapper_sentinel="$wrapper_root/.omux-v02-wrapper-root"
+tmp_sentinel="$tmp/.omux-v02-contract-root"
+printf 'omux-v02-posix-wrapper-v2\n' >"$wrapper_sentinel"
+printf 'omux-v02-posix-contract-v2\n' >"$tmp_sentinel"
+chmod 0600 "$wrapper_sentinel" "$tmp_sentinel"
+
+zig_local_cache="$tmp/zig-local-cache"
+zig_global_cache="$tmp/zig-global-cache"
+python_cache="$tmp/python-cache"
+xdg_cache="$tmp/xdg-cache"
+runtime_tmp="$tmp/tmp"
+readonly zig_local_cache zig_global_cache python_cache xdg_cache runtime_tmp
+mkdir -m 0700 \
+  "$zig_local_cache" \
+  "$zig_global_cache" \
+  "$python_cache" \
+  "$xdg_cache" \
+  "$runtime_tmp"
+export XDG_CACHE_HOME="$xdg_cache"
+export ZIG_LOCAL_CACHE_DIR="$zig_local_cache"
+export ZIG_GLOBAL_CACHE_DIR="$zig_global_cache"
+export PYTHONPYCACHEPREFIX="$python_cache"
+export TMPDIR="$runtime_tmp"
+readonly XDG_CACHE_HOME ZIG_LOCAL_CACHE_DIR ZIG_GLOBAL_CACHE_DIR PYTHONPYCACHEPREFIX TMPDIR
+
+run_zig() {
+  "$zig_bin" "$@" \
+    --cache-dir "$zig_local_cache" \
+    --global-cache-dir "$zig_global_cache"
+}
+
+bundle="$tmp/bundle"
+archive="$bundle/omux-posix-source-contract.tar.gz"
+metadata="$bundle/candidate.json"
+build_provenance="$bundle/build-provenance.json"
+candidate_root="$tmp/candidate-root"
+stable_bin="$tmp/stable-bin"
+stable_graph_prefix="$tmp/stable-graph-prefix"
+stable_release_prefix="$tmp/stable-release-prefix"
+unreachable_candidate_output="$tmp/default-graph-must-not-materialize-candidate"
+mkdir -m 0700 "$bundle" "$candidate_root" "$stable_bin"
+chmod 0700 "$candidate_root"
+printf 'omux-v0.2-source-contract-v1\n' >"$candidate_root/.omux-v02-candidate-root"
+chmod 0600 "$candidate_root/.omux-v02-candidate-root"
+
+printf 'nix omux 0.1.15 sentinel\n' >"$stable_bin/omux"
+printf 'homebrew oauth-mux 0.1.14 sentinel\n' >"$stable_bin/oauth-mux"
+printf 'native codex sentinel\n' >"$stable_bin/codex"
+chmod 0751 "$stable_bin/omux" "$stable_bin/oauth-mux" "$stable_bin/codex"
+"$python_bin" -I -B - "$stable_bin" "$tmp/stable-before.json" <<'PY'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+result = {}
+for name in ("omux", "oauth-mux", "codex"):
+    path = root / name
+    info = path.stat()
+    result[name] = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+    }
+Path(sys.argv[2]).write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+printf 'proving candidate options cannot influence the ordinary install graph...\n'
+(
+  cd "$repo_root"
+  run_zig build \
+    -Doptimize=ReleaseSafe \
+    -Dv02-source-version="$version" \
+    -Dv02-source-build-id="$build_id" \
+    -Dv02-source-python="$python_bin" \
+    -Dv02-source-output="$unreachable_candidate_output" \
+    --prefix "$stable_graph_prefix"
+)
+stable_version="$(jq -r '.release.version' "$repo_root/release-manifest.json")"
+[ "$(jq -r '.release.version' "$stable_graph_prefix/release-manifest.json")" = "$stable_version" ]
+for executable in "$stable_graph_prefix/bin/omux" "$stable_graph_prefix/bin/oauth-mux"; do
+  "$executable" version --json | jq -e --arg version "$stable_version" \
+    '.version == $version and (has("source_provenance") | not)' >/dev/null
+done
+[ ! -e "$unreachable_candidate_output" ]
+
+printf 'proving candidate options cannot influence the ordinary release graph...\n'
+(
+  cd "$repo_root"
+  run_zig build release \
+    -Dv02-source-version="$version" \
+    -Dv02-source-build-id="$build_id" \
+    -Dv02-source-python="$python_bin" \
+    -Dv02-source-output="$unreachable_candidate_output" \
+    --prefix "$stable_release_prefix"
+)
+"$python_bin" -I -B - "$repo_root/release-manifest.json" "$stable_release_prefix" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+authority = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+prefix = Path(sys.argv[2])
+emitted = json.loads((prefix / "release-manifest.json").read_text(encoding="utf-8"))
+if emitted != authority or emitted["release"]["version"] != "0.1.15":
+    raise SystemExit("ordinary release graph changed stable v0.1.15 authority")
+for target in authority["targets"]:
+    suffix = ".exe" if target["os"] == "windows" else ""
+    primary = prefix / target["id"] / f"omux{suffix}"
+    compatibility = prefix / target["id"] / f"oauth-mux{suffix}"
+    for path in (primary, compatibility):
+        if not path.is_file() or path.is_symlink():
+            raise SystemExit(f"ordinary release graph member missing or non-regular: {path}")
+    if primary.read_bytes() != compatibility.read_bytes():
+        raise SystemExit(f"ordinary release graph product identities diverge: {target['id']}")
+PY
+[ ! -e "$unreachable_candidate_output" ]
+
+printf 'building named noninstalling v0.2 LazyPath candidate...\n'
+(
+  cd "$repo_root"
+  run_zig build v02-posix-source-candidate \
+    -Dv02-source-version="$version" \
+    -Dv02-source-build-id="$build_id" \
+    -Dv02-source-python="$python_bin" \
+    -Dv02-source-output="$bundle"
+)
+
+primary="$bundle/built/omux"
+compatibility="$bundle/built/oauth-mux"
+[ -f "$primary" ] && [ ! -L "$primary" ] && [ -x "$primary" ]
+[ -f "$compatibility" ] && [ ! -L "$compatibility" ] && [ -x "$compatibility" ]
+cmp "$primary" "$compatibility"
+[ -f "$build_provenance" ] && [ ! -L "$build_provenance" ]
+for executable in "$primary" "$compatibility"; do
+  "$executable" version --json | jq -e \
+    --arg version "$version" \
+    --arg build_id "$build_id" \
+    '.version == $version
+     and .runtime_identity.version == $version
+     and .runtime_identity.build_id == $build_id
+     and .runtime_identity.path_printed == true' >/dev/null
+done
+"$python_bin" -I -B "$candidate_tool" verify \
+  --archive "$archive" \
+  --metadata "$metadata" \
+  --authority "$repo_root/release-manifest.json" >/dev/null
+archive_sha256="$(jq -r '.artifact.sha256' "$metadata")"
+
+"$python_bin" -I -B "$candidate_tool" install \
+  --archive "$archive" \
+  --metadata "$metadata" \
+  --authority "$repo_root/release-manifest.json" \
+  --expected-archive-sha256 "$archive_sha256" \
+  --root "$candidate_root" \
+  --temporary-parent "$tmp" \
+  --candidate-id "$build_id" >/dev/null
+"$python_bin" -I -B "$candidate_tool" install \
+  --archive "$archive" \
+  --metadata "$metadata" \
+  --authority "$repo_root/release-manifest.json" \
+  --expected-archive-sha256 "$archive_sha256" \
+  --root "$candidate_root" \
+  --temporary-parent "$tmp" \
+  --candidate-id "$build_id" >/dev/null
+
+[ "$(readlink "$candidate_root/current")" = "generations/$build_id" ]
+cmp "$candidate_root/current/omux" "$candidate_root/current/oauth-mux"
+for executable in "$candidate_root/current/omux" "$candidate_root/current/oauth-mux"; do
+  "$executable" version --json | jq -e \
+    --arg version "$version" \
+    --arg build_id "$build_id" \
+    '.version == $version and .runtime_identity.build_id == $build_id' >/dev/null
+done
+
+"$python_bin" -I -B - "$stable_bin" "$tmp/stable-before.json" <<'PY'
+import hashlib, json, stat, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+before = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for name in ("omux", "oauth-mux", "codex"):
+    path = root / name
+    info = path.stat()
+    actual = {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "mode": stat.S_IMODE(info.st_mode),
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+    }
+    if actual != before[name]:
+        raise SystemExit(f"stable sentinel changed: {name}")
+PY
+
+(
+  cd "$repo_root"
+  "$python_bin" -I -B -m unittest discover -s test -p 'test_v02_posix_candidate.py'
+)
+
+printf 'v02-posix-install-contract-local: PASS (source-only, nonpublishing, temporary-root)\n'

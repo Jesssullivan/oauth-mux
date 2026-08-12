@@ -6,6 +6,11 @@ const product_identity = @import("product_identity.zig");
 pub const schema_version: u32 = 1;
 pub const compatibility_materialization = "same_bytes";
 
+pub fn isV02Prerelease(version: []const u8) bool {
+    const parsed = std.SemanticVersion.parse(version) catch return false;
+    return parsed.major == 0 and parsed.minor == 2 and parsed.pre != null;
+}
+
 pub const ReleaseTarget = struct {
     id: []const u8,
     cpu_arch: std.Target.Cpu.Arch,
@@ -150,11 +155,14 @@ pub const release_targets = [_]ReleaseTarget{
 };
 
 const current_posix_archive_members = [_][]const u8{ "oauth-mux", "codex" };
-const declared_posix_archive_members = [_][]const u8{ "omux", "oauth-mux", "codex" };
+pub const v0_2_posix_archive_members = [_][]const u8{
+    product_identity.primary_executable_name,
+    product_identity.compatibility_executable_names[0],
+};
 const current_windows_archive_members = [_][]const u8{"oauth-mux.exe"};
 const declared_windows_archive_members = [_][]const u8{ "omux.exe", "oauth-mux.exe" };
 const current_system_package_members = [_][]const u8{ "/usr/bin/oauth-mux", "/usr/bin/codex" };
-const declared_system_package_members = [_][]const u8{ "/usr/bin/omux", "/usr/bin/oauth-mux", "/usr/bin/codex" };
+const declared_system_package_members = [_][]const u8{ "/usr/bin/omux", "/usr/bin/oauth-mux" };
 const no_members = [_][]const u8{};
 
 pub const service_assets = [_]ServiceAsset{
@@ -356,7 +364,7 @@ pub fn renderDeclaration(allocator: std.mem.Allocator, version: []const u8) ![]u
             target.archive_asset,
             .v0_1_15_present_v0_2_pending_tin_2050,
             if (target.os_tag == .windows) &current_windows_archive_members else &current_posix_archive_members,
-            if (target.os_tag == .windows) &declared_windows_archive_members else &declared_posix_archive_members,
+            if (target.os_tag == .windows) &declared_windows_archive_members else &v0_2_posix_archive_members,
         );
         asset_index += 1;
     }
@@ -1112,6 +1120,35 @@ test "declaration manifest is deterministic, parseable, and claim bounded" {
         }
     }
 
+    for (assets) |asset_value| {
+        const asset = asset_value.object;
+        const kind = asset.get("kind").?.string;
+        if (std.mem.eql(u8, kind, "archive")) {
+            const target_id = asset.get("target_id").?.string;
+            if (std.mem.indexOf(u8, target_id, "windows") != null) continue;
+
+            const current = asset.get("current_v0_1_15_members").?.array.items;
+            try std.testing.expectEqual(@as(usize, 2), current.len);
+            try std.testing.expectEqualStrings("oauth-mux", current[0].string);
+            try std.testing.expectEqualStrings("codex", current[1].string);
+
+            const future = asset.get("declared_v0_2_members").?.array.items;
+            try std.testing.expectEqual(@as(usize, v0_2_posix_archive_members.len), future.len);
+            try std.testing.expectEqualStrings("omux", future[0].string);
+            try std.testing.expectEqualStrings("oauth-mux", future[1].string);
+        } else if (std.mem.eql(u8, kind, "deb") or std.mem.eql(u8, kind, "rpm")) {
+            const current = asset.get("current_v0_1_15_members").?.array.items;
+            try std.testing.expectEqual(@as(usize, 2), current.len);
+            try std.testing.expectEqualStrings("/usr/bin/oauth-mux", current[0].string);
+            try std.testing.expectEqualStrings("/usr/bin/codex", current[1].string);
+
+            const future = asset.get("declared_v0_2_members").?.array.items;
+            try std.testing.expectEqual(@as(usize, 2), future.len);
+            try std.testing.expectEqualStrings("/usr/bin/omux", future[0].string);
+            try std.testing.expectEqualStrings("/usr/bin/oauth-mux", future[1].string);
+        }
+    }
+
     const product = root.get("product").?.object;
     try std.testing.expectEqualStrings("omux", product.get("primary_executable").?.string);
     try std.testing.expectEqualStrings("oauth-mux", product.get("storage_namespace").?.string);
@@ -1130,6 +1167,34 @@ test "declaration manifest is deterministic, parseable, and claim bounded" {
     try std.testing.expect(std.mem.indexOf(u8, first, ".dmg") == null);
     try std.testing.expect(std.mem.indexOf(u8, first, "AppImage") == null);
     try std.testing.expect(std.mem.indexOf(u8, first, "not_emitted") != null);
+}
+
+test "v0.2 candidate versions follow Zig SemanticVersion prerelease semantics" {
+    for ([_][]const u8{
+        "0.2.0-rc.0",
+        "0.2.1-beta",
+        "0.2.0-0",
+        "0.2.3-rc-1+build.001",
+        "0.2.999-alpha.1+build-7",
+    }) |version| {
+        try std.testing.expect(isV02Prerelease(version));
+    }
+    for ([_][]const u8{
+        "0.2.0",
+        "0.2.0+build",
+        "0.3.0-rc.1",
+        "1.2.0-rc.1",
+        "0.2-rc.1",
+        "00.2.0-rc.1",
+        "0.02.0-rc.1",
+        "0.2.00-rc.1",
+        "0.2.0-01",
+        "0.2.0-rc..1",
+        "0.2.0-rc_1",
+        "0.2.0-rc+",
+    }) |version| {
+        try std.testing.expect(!isV02Prerelease(version));
+    }
 }
 
 test "service asset declarations point at tracked source files" {

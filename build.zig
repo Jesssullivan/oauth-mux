@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     };
     const project_build_id = b.option([]const u8, "build-id", "Build provenance id") orelse
         readBuildId(b, project_version);
-    const source_manifest = release_manifest.renderDeclaration(
+    const checked_source_manifest = release_manifest.renderDeclaration(
         b.allocator,
         project_version,
     ) catch @panic("failed to render source release manifest");
@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     ) catch @panic("failed to render managed-harness JSON-RPC schema");
 
     const update_manifest_files = b.addUpdateSourceFiles();
-    update_manifest_files.addBytesToSource(source_manifest, "release-manifest.json");
+    update_manifest_files.addBytesToSource(checked_source_manifest, "release-manifest.json");
     const update_manifest_step = b.step(
         "update-release-manifest",
         "Regenerate the checked release-manifest.json projection",
@@ -36,7 +36,9 @@ pub fn build(b: *std.Build) void {
         "release-manifest.json",
         1024 * 1024,
     ) catch null;
-    if (committed_manifest == null or !std.mem.eql(u8, committed_manifest.?, source_manifest)) {
+    if (committed_manifest == null or
+        !std.mem.eql(u8, committed_manifest.?, checked_source_manifest))
+    {
         const fail = b.addFail(
             "release-manifest.json is stale; run `just release-manifest-update` and commit the result",
         );
@@ -84,7 +86,7 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(check_managed_schema_step);
 
     const manifest_files = b.addWriteFiles();
-    const emitted_manifest_path = manifest_files.add("release-manifest.json", source_manifest);
+    const emitted_manifest_path = manifest_files.add("release-manifest.json", checked_source_manifest);
     const install_manifest = b.addInstallFile(emitted_manifest_path, "release-manifest.json");
     install_manifest.step.dependOn(check_manifest_step);
     b.getInstallStep().dependOn(&install_manifest.step);
@@ -110,6 +112,72 @@ pub fn build(b: *std.Build) void {
         );
         compatibility_install.step.dependOn(check_manifest_step);
         b.getInstallStep().dependOn(&compatibility_install.step);
+    }
+
+    const v02_source_step = b.step(
+        "v02-posix-source-candidate",
+        "Build and attest a source-only v0.2 POSIX candidate without installing",
+    );
+    const v02_output_dir = b.option(
+        []const u8,
+        "v02-source-output",
+        "Injected output directory for the source-only v0.2 candidate bundle",
+    );
+    const v02_version = b.option(
+        []const u8,
+        "v02-source-version",
+        "Source-only v0.2 prerelease version",
+    );
+    const v02_build_id = b.option(
+        []const u8,
+        "v02-source-build-id",
+        "Source-only v0.2 build id",
+    );
+    const v02_python = b.option(
+        []const u8,
+        "v02-source-python",
+        "Nix-provided Python source/test oracle",
+    );
+    if (v02_output_dir == null or v02_version == null or v02_build_id == null or v02_python == null) {
+        const fail = b.addFail(
+            "v02-posix-source-candidate requires -Dv02-source-output, -Dv02-source-version, " ++
+                "-Dv02-source-build-id, and -Dv02-source-python",
+        );
+        v02_source_step.dependOn(&fail.step);
+    } else if (!release_manifest.isV02Prerelease(v02_version.?)) {
+        const fail = b.addFail("-Dv02-source-version must be a v0.2 prerelease");
+        v02_source_step.dependOn(&fail.step);
+    } else {
+        const candidate_options = b.addOptions();
+        candidate_options.addOption([]const u8, "version", v02_version.?);
+        candidate_options.addOption([]const u8, "build_id", v02_build_id.?);
+        const candidate_exe = b.addExecutable(.{
+            .name = product_identity.primary_executable_name,
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+            .strip = true,
+        });
+        candidate_exe.root_module.addOptions("build_options", candidate_options);
+
+        const materialize = b.addSystemCommand(&.{ v02_python.?, "-I", "-B" });
+        materialize.addFileArg(b.path("scripts/v02_posix_candidate.py"));
+        materialize.addArg("_pack-zig-lazy-path");
+        materialize.addArg("--authority");
+        materialize.addFileArg(b.path("release-manifest.json"));
+        materialize.addArg("--binary");
+        materialize.addFileArg(candidate_exe.getEmittedBin());
+        materialize.addArgs(&.{
+            "--output-dir",
+            v02_output_dir.?,
+            "--version",
+            v02_version.?,
+            "--build-id",
+            v02_build_id.?,
+        });
+        materialize.step.dependOn(check_manifest_step);
+        materialize.step.dependOn(check_managed_schema_step);
+        v02_source_step.dependOn(&materialize.step);
     }
 
     const run_cmd = b.addRunArtifact(exe);

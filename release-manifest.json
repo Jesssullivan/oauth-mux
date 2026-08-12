@@ -163,8 +163,7 @@
       ],
       "declared_v0_2_members": [
         "omux",
-        "oauth-mux",
-        "codex"
+        "oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -185,8 +184,7 @@
       ],
       "declared_v0_2_members": [
         "omux",
-        "oauth-mux",
-        "codex"
+        "oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -207,8 +205,7 @@
       ],
       "declared_v0_2_members": [
         "omux",
-        "oauth-mux",
-        "codex"
+        "oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -229,8 +226,7 @@
       ],
       "declared_v0_2_members": [
         "omux",
-        "oauth-mux",
-        "codex"
+        "oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -291,8 +287,7 @@
       ],
       "declared_v0_2_members": [
         "/usr/bin/omux",
-        "/usr/bin/oauth-mux",
-        "/usr/bin/codex"
+        "/usr/bin/oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -313,8 +308,7 @@
       ],
       "declared_v0_2_members": [
         "/usr/bin/omux",
-        "/usr/bin/oauth-mux",
-        "/usr/bin/codex"
+        "/usr/bin/oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -335,8 +329,7 @@
       ],
       "declared_v0_2_members": [
         "/usr/bin/omux",
-        "/usr/bin/oauth-mux",
-        "/usr/bin/codex"
+        "/usr/bin/oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,
@@ -357,8 +350,7 @@
       ],
       "declared_v0_2_members": [
         "/usr/bin/omux",
-        "/usr/bin/oauth-mux",
-        "/usr/bin/codex"
+        "/usr/bin/oauth-mux"
       ],
       "sha256": null,
       "signature_ref": null,

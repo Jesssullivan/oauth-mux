@@ -124,6 +124,107 @@ Neither mode installs artifacts, contacts providers, publishes a release, or
 mutates tags or registries. Publication and migrated release consumers remain
 owned by TIN-2050.
 
+## Source-Built v0.2 POSIX Install Contract
+
+The real-artifact source contract is separate from the synthetic bounded
+manifest gate above. Its named, noninstalling Zig step builds one v0.2
+prerelease `LazyPath` artifact, packages exactly two top-level regular
+executables (`omux` and `oauth-mux`), installs them under a sentinel temporary
+candidate root, and proves both names are byte-identical and report one
+version/build identity:
+
+```bash
+just v02-posix-install-contract-local
+```
+
+The supported macOS/Linux source entrypoint uses the fixed `/usr/bin/env -S`
+launcher to supply a machine-profile-only `PATH` and start Bash in privileged
+mode before the script body is read. This prevents ambient Bash startup hooks,
+exported functions, or tool-path injection from acquiring proof authority while
+remaining valid on Bash- and Dash-backed Linux systems.
+
+The source/test installer oracle uses immutable generation directories plus an
+atomic `current` pointer. Concurrent updates serialize on a root-local flock, and
+failure/TERM injection proves the visible generation is either the complete
+old pair or the complete new pair. The next serialized run removes private
+`.staging-*` residue from an interrupted write and private `.current-*`
+residue from a TERM before pointer publication; complete unreferenced
+generations remain side-by-side for inspection. No rollback command or end-user
+rollback behavior is implemented or claimed by this source contract.
+Archive parsing accepts only one canonical gzip/USTAR encoding and rejects
+duplicate, extra, nested, absolute, traversal, symlink, hardlink, FIFO,
+directory, non-executable, truncated, and trailing bytes. Install requires the
+candidate metadata plus its expected archive SHA-256. The archive is opened
+once without symlink following; that pinned descriptor supplies both digest
+verification and extraction. Installed members remain descriptor-pinned, and
+their pathname inodes, sizes, and digests are revalidated immediately before
+the atomic pointer swap. An `exact_git_object` source binding is emitted only
+when Git verifies that both object ids exist, the commit and tree equal
+`HEAD`/`HEAD^{tree}`, the release authority and exact-rebuild graph are tracked,
+and the index and worktree are clean. Ambient Git worktree, index,
+object-directory, alternate, replacement-ref, and config controls are removed
+from the proof subprocess; Git is pinned to the resolved candidate repository
+with system/global config disabled. The verifier materializes that commit with
+`git archive`, rebuilds `src/main.zig` through
+`build.v02-exact-rebuild.zig` using the Nix-store Zig toolchain, and
+byte-compares the independent output with the descriptor-pinned candidate.
+Metadata verification repeats the clean-tree rebuild and comparison against the
+opened archive member. Executable output, self-reported hashes, and environment
+markers confer no source authority. The raw named Zig graph and public Python
+oracle can emit only `local_debug_only`; they accept no commit/tree promotion
+inputs. Exact packing and verification are available only through the
+Nix-generated `omux-v02-posix-exact-promote` helper, whose Python, Git, and Zig
+paths are embedded by flake evaluation. A bare commit/tree beside an arbitrary
+`--binary` therefore cannot request exact mode, and ambient tools cannot select
+the exact toolchain. A requested exact claim fails closed instead of being
+downgraded.
+
+Descriptor-relative no-follow operations reject symlinked destination roots
+and parents. Every invocation must inject a private temporary parent and a
+proper child candidate root. The temporary parent, candidate root,
+`generations` directory, sentinel, and flock must retain current-user
+ownership, private modes, and valid link counts; the flock pathname is
+inode-revalidated after lock acquisition. Stale-stage cleanup similarly pins
+and rechecks the `generations` parent, stage name, and member names before
+deletion, and refuses a replacement rather than deleting it. Contract-root
+contents are removed descriptor-relative; the empty top root is intentionally
+leaked because no pathname `rmdir` can remain bound to the opened directory
+across a final same-UID swap.
+
+These descriptor, no-follow, custody, and inode checks are best-effort race
+hardening for accidental replacement and untrusted archive input. A malicious
+same-UID process that already has write authority over the injected private
+root is outside this source contract's active threat model; this lane does not
+claim complete protection against that actor or hostile filesystem semantics.
+
+This recipe creates only source-built fixtures and injected temporary roots.
+The public wrapper creates no contract-owned state before the pinned Nix
+closure starts; the generated `omux-owned-temp-runner` creates every wrapper
+and nested root with descriptor-relative cleanup and rejects writable,
+non-sticky temporary parents. Each child receives the opened root descriptor
+alongside its path; the generated contract helper verifies descriptor/path
+identity and re-adopts that descriptor before it creates the nested root.
+Its Python, Git, and Zig implementations are supplied explicitly by the Nix
+development tool graph. Python is a source/test oracle for the contract, not
+the end-user POSIX installer; stock macOS availability of Python is not
+assumed. No v0.2 candidate `release-manifest.json` is emitted: candidate
+version, build id, source binding, and binary digest live only in the private
+bundle's build-provenance and candidate-metadata files. The archive itself
+contains only the two executable members.
+
+Candidate options are inert for ordinary `zig build`, install, and release
+steps. Those graphs continue to use the checked v0.1.15 version and assets. A
+candidate executable, provenance statement, or archive is materialized only
+when `v02-posix-source-candidate` is selected; the recipe builds both the
+ordinary install and six-target release graphs with candidate options present,
+then proves their stable manifest and product pair remain unchanged.
+It never resolves or replaces PATH-winning `omux`/`oauth-mux`, never touches a
+native `codex`, and never mutates configuration, credentials, or services. It
+is local diagnostic coverage until an exact candidate passes the remote check,
+Public Source, and a separately authorized immutable-candidate install-contract
+lane. It does not prove publication, signing, Homebrew, deb/rpm, live host
+installation, setup execution, or managed continuity.
+
 ## Local Release Proof
 
 Run the full local release staging path:
