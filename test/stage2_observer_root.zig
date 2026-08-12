@@ -2,6 +2,7 @@ const observer = @import("stage2_observer");
 const build_options = @import("stage2_build_options");
 
 test "emit candidate-bound Claude fake-upstream observations" {
+    if (try observer.runLeaseChildSubprocessIfRequested()) return;
     try observer.emit(.{
         .candidate_sha = build_options.candidate_sha,
         .candidate_tree = build_options.candidate_tree,

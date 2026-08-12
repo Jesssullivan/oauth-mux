@@ -2,9 +2,10 @@
 //!
 //! The file is advisory routing state, never credential authority. Callers
 //! inject an absolute runtime/state root, time, and exact process-incarnation
-//! liveness. Missing state remains unavailable until a mutation initializes
-//! the store. Corrupt, incompatible, locked, or unreadable state remains
-//! unavailable; it never becomes invented capacity.
+//! liveness. Missing state is an empty advisory view until a mutation
+//! initializes the store. Lock contention may degrade to reactive routing at
+//! the runtime boundary; corrupt, incompatible, or custody-uncertain state
+//! fails closed and never becomes invented capacity.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -71,6 +72,11 @@ pub const TimeSource = struct {
 
 pub const MonotonicStartFn = *const fn () anyerror!std.time.Timer;
 
+pub const PostRenameHook = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque) anyerror!void,
+};
+
 pub const Options = struct {
     wait: lock_wait.WaitOptions = .{},
     time: TimeSource = .{},
@@ -78,6 +84,9 @@ pub const Options = struct {
     /// Null uses stderr, matching the resident lock convention. Tests inject a
     /// temporary file so no operator log or real runtime path is touched.
     log_file: ?std.fs.File = null,
+    /// Test-only persistence fault seam. It runs after the canonical rename,
+    /// where any failure has commit-uncertain semantics.
+    post_rename_hook: ?PostRenameHook = null,
 };
 
 pub const AcquireInput = struct {
@@ -121,6 +130,42 @@ pub const AcquireOutcome = lease_state.AcquireOutcome;
 pub const RenewOutcome = lease_state.RenewOutcome;
 pub const LeaseGrant = lease_state.LeaseGrant;
 pub const ProjectionQuality = lease_state.ProjectionQuality;
+
+/// Custody-validated canonical lease used only to reconcile a mutation whose
+/// post-rename durability acknowledgement was lost. The fixed buffers keep the
+/// result allocator-free and prevent borrowed snapshot memory escaping.
+pub const ReconciledLease = struct {
+    lease_buf: [identifiers.max_handle_len]u8 = [_]u8{0} ** identifiers.max_handle_len,
+    lease_len: u16 = 0,
+    account_buf: [identifiers.max_handle_len]u8 = [_]u8{0} ** identifiers.max_handle_len,
+    account_len: u16 = 0,
+    route_buf: [identifiers.max_handle_len]u8 = [_]u8{0} ** identifiers.max_handle_len,
+    route_len: u16 = 0,
+    exact_model: lease_state.ExactModel,
+    generation: lease_state.Generation,
+    transition_origin_lease_buf: [identifiers.max_handle_len]u8 = [_]u8{0} ** identifiers.max_handle_len,
+    transition_origin_lease_len: u16 = 0,
+    transition_origin_generation: ?lease_state.Generation = null,
+
+    pub fn lease(self: *const ReconciledLease) lease_state.LeaseHandle {
+        return lease_state.LeaseHandle.parse(self.lease_buf[0..self.lease_len]) catch unreachable;
+    }
+
+    pub fn account(self: *const ReconciledLease) lease_state.AccountHandle {
+        return lease_state.AccountHandle.parse(self.account_buf[0..self.account_len]) catch unreachable;
+    }
+
+    pub fn route(self: *const ReconciledLease) lease_state.RouteHandle {
+        return lease_state.RouteHandle.parse(self.route_buf[0..self.route_len]) catch unreachable;
+    }
+
+    pub fn transitionOriginLease(self: *const ReconciledLease) ?lease_state.LeaseHandle {
+        if (self.transition_origin_generation == null) return null;
+        return lease_state.LeaseHandle.parse(
+            self.transition_origin_lease_buf[0..self.transition_origin_lease_len],
+        ) catch unreachable;
+    }
+};
 
 const snapshot_version: u8 = 2;
 const snapshot_contract_fingerprint =
@@ -232,7 +277,7 @@ const WireSnapshot = struct {
     leases: []const WireLease,
 };
 
-const LoadQuality = enum { present, missing, unavailable };
+const LoadQuality = enum { present, missing };
 
 const FileIdentity = struct {
     device: u64,
@@ -294,15 +339,28 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             leases: [lease_capacity]StoredLease = undefined,
             lease_count: usize = 0,
 
-            fn empty() Snapshot {
-                return .{};
+            fn initInPlace(self: *Snapshot) void {
+                @memset(std.mem.asBytes(&self.routes), 0);
+                @memset(std.mem.asBytes(&self.leases), 0);
+                self.mutation_revision = 0;
+                self.admission_revision = 0;
+                self.last_observed_at_ms = null;
+                self.clock_recovery_until_ms = null;
+                self.next_generation = 1;
+                self.route_count = 0;
+                self.lease_count = 0;
             }
         };
 
         const Loaded = struct {
             quality: LoadQuality,
-            snapshot: Snapshot,
+            snapshot: *Snapshot,
             identity: ?FileIdentity = null,
+
+            fn deinit(self: *Loaded, allocator: std.mem.Allocator) void {
+                allocator.destroy(self.snapshot);
+                self.* = undefined;
+            }
         };
 
         pub const ProjectionRow = struct {
@@ -330,6 +388,11 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                 if (self.sticky_route) |*sticky| return sticky.bytes();
                 return null;
             }
+        };
+
+        pub const CleanupReport = struct {
+            removed_count: usize,
+            owner_count: usize,
         };
 
         const Rebuilt = struct {
@@ -379,28 +442,79 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             self.* = undefined;
         }
 
+        /// The request runtime narrows each flock wait to the remaining
+        /// request-scoped advisory budget. The runtime serializes access to its
+        /// store instance and restores the configured wait after the request.
+        pub fn replaceWaitOptions(
+            self: *Self,
+            wait: lock_wait.WaitOptions,
+        ) lock_wait.WaitOptions {
+            const previous = self.options.wait;
+            self.options.wait = wait;
+            return previous;
+        }
+
         pub fn registerRoute(self: *Self, input: lease_state.RouteRegistration) !void {
+            return self.registerRoutes(&.{input});
+        }
+
+        /// Registers one complete adapter route catalog under a single flock and
+        /// persists it as one admission mutation. Validation and capacity checks
+        /// finish before the snapshot changes, so readers never observe a partial
+        /// first-use catalog.
+        pub fn registerRoutes(self: *Self, inputs: []const lease_state.RouteRegistration) !void {
+            if (inputs.len == 0) return;
             var lock = try self.acquireLock();
             defer lock.deinit();
             var loaded = try self.loadForMutation();
-            if (loaded.quality == .unavailable) return error.LeaseStateUnavailable;
+            defer loaded.deinit(self.allocator);
             _ = try self.observeAndPersist(&loaded, null);
-            var snapshot = &loaded.snapshot;
+            const snapshot = loaded.snapshot;
 
-            _ = try lease_state.RouteHandle.parse(input.route.text);
-            if (!input.exact_model.isValid()) return error.InvalidLease;
-            if (findRoute(snapshot, input.route, input.exact_model) != null) return;
-            if (snapshot.route_count == route_capacity) return error.RouteCapacityExceeded;
+            var missing_count: usize = 0;
+            for (inputs, 0..) |input, input_index| {
+                _ = try lease_state.RouteHandle.parse(input.route.text);
+                if (!input.exact_model.isValid()) return error.InvalidLease;
+                if (findRoute(snapshot, input.route, input.exact_model) != null) continue;
+                var duplicate = false;
+                for (inputs[0..input_index]) |earlier| {
+                    if (std.mem.eql(u8, earlier.route.text, input.route.text) and
+                        earlier.exact_model.eql(input.exact_model))
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) missing_count += 1;
+            }
+            if (missing_count == 0) return;
+            if (missing_count > route_capacity - snapshot.route_count) {
+                return error.RouteCapacityExceeded;
+            }
             try ensureAdmissionMutationAvailable(snapshot);
 
-            var pure = try rebuild(snapshot);
-            try pure.state.registerRoute(input);
-            snapshot.routes[snapshot.route_count] = .{
-                .route = try ownedHandle(input.route.text),
-                .exact_model = input.exact_model,
-                .last_selected_at_ms = null,
-            };
-            snapshot.route_count += 1;
+            const pure = try rebuildAlloc(self.allocator, snapshot);
+            defer self.allocator.destroy(pure);
+            for (inputs, 0..) |input, input_index| {
+                if (findRoute(snapshot, input.route, input.exact_model) != null) continue;
+                var duplicate = false;
+                for (inputs[0..input_index]) |earlier| {
+                    if (std.mem.eql(u8, earlier.route.text, input.route.text) and
+                        earlier.exact_model.eql(input.exact_model))
+                    {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+                try pure.state.registerRoute(input);
+                snapshot.routes[snapshot.route_count] = .{
+                    .route = try ownedHandle(input.route.text),
+                    .exact_model = input.exact_model,
+                    .last_selected_at_ms = null,
+                };
+                snapshot.route_count += 1;
+            }
             sortRoutes(snapshot);
             bumpAdmissionMutation(snapshot);
             loaded.identity = try self.persist(snapshot, loaded.identity);
@@ -414,12 +528,19 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             var lock = try self.acquireLock();
             defer lock.deinit();
             var loaded = try self.loadForMutation();
-            if (loaded.quality == .unavailable) return error.LeaseStateUnavailable;
+            defer loaded.deinit(self.allocator);
             const now_ms = try self.observeAndPersist(&loaded, input.now_ms);
-            var snapshot = &loaded.snapshot;
+            const snapshot = loaded.snapshot;
 
             try validateAcquire(input, now_ms);
-            const stale_removed = try pruneStale(snapshot, now_ms, liveness);
+            var ignored_owner_count: usize = 0;
+            const stale_removed = try pruneStale(
+                snapshot,
+                now_ms,
+                liveness,
+                null,
+                &ignored_owner_count,
+            );
             if (stale_removed != 0) {
                 loaded.identity = try self.persist(snapshot, loaded.identity);
             }
@@ -448,7 +569,8 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             try ensureGenerationAvailable(snapshot);
             try ensureAdmissionMutationAvailable(snapshot);
 
-            var pure = try rebuild(snapshot);
+            const pure = try rebuildAlloc(self.allocator, snapshot);
+            defer self.allocator.destroy(pure);
             const pure_owner = try syntheticPidForOwner(snapshot, input.owner);
             var owners: [lease_capacity]lease_state.OwnerObservation = undefined;
             var owner_count = aliveOwnerObservations(snapshot, &owners);
@@ -486,19 +608,28 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             return .{ .acquired = .{ .generation = generation } };
         }
 
-        pub fn renew(self: *Self, input: RenewInput) !RenewOutcome {
+        pub fn renew(
+            self: *Self,
+            input: RenewInput,
+            liveness: LivenessSource,
+        ) !RenewOutcome {
             var lock = try self.acquireLock();
             defer lock.deinit();
             var loaded = try self.loadForMutation();
-            if (loaded.quality == .unavailable) return error.LeaseStateUnavailable;
+            defer loaded.deinit(self.allocator);
             const now_ms = try self.observeAndPersist(&loaded, input.now_ms);
-            var snapshot = &loaded.snapshot;
+            const snapshot = loaded.snapshot;
             try validateRenew(input, now_ms);
 
             const index = findLease(snapshot, input.lease) orelse return error.LeaseNotFound;
             var stored = &snapshot.leases[index];
             try authorizeStored(stored, input.session, input.owner, input.generation);
-            if (stored.expires_at_ms <= now_ms) return error.StaleLease;
+            // Expiry is the fallback for an owner whose exact incarnation can
+            // no longer be proven alive. A live owner may renew after an idle
+            // interval without losing its sticky route.
+            if (ownerStatus(liveness, stored.owner) != .alive) {
+                return error.OwnerUnavailable;
+            }
             if (input.heartbeat_at_ms < stored.heartbeat_at_ms or
                 input.expires_at_ms < stored.expires_at_ms)
             {
@@ -511,7 +642,8 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             }
             try ensureMutationRevisionAvailable(snapshot);
 
-            var rebuilt = try rebuild(snapshot);
+            const rebuilt = try rebuildAlloc(self.allocator, snapshot);
+            defer self.allocator.destroy(rebuilt);
             _ = try rebuilt.state.renew(.{
                 .lease = input.lease,
                 .session = input.session,
@@ -532,9 +664,9 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             var lock = try self.acquireLock();
             defer lock.deinit();
             var loaded = try self.loadForMutation();
-            if (loaded.quality == .unavailable) return error.LeaseStateUnavailable;
+            defer loaded.deinit(self.allocator);
             const now_ms = try self.observeAndPersist(&loaded, null);
-            var snapshot = &loaded.snapshot;
+            const snapshot = loaded.snapshot;
             const index = findLease(snapshot, input.lease) orelse return error.LeaseNotFound;
             try authorizeStored(&snapshot.leases[index], input.session, input.owner, input.generation);
             try ensureAdmissionMutationAvailable(snapshot);
@@ -549,7 +681,8 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                 return;
             }
 
-            var rebuilt = try rebuild(snapshot);
+            const rebuilt = try rebuildAlloc(self.allocator, snapshot);
+            defer self.allocator.destroy(rebuilt);
             try rebuilt.state.release(.{
                 .lease = input.lease,
                 .session = input.session,
@@ -569,15 +702,22 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             var lock = try self.acquireLock();
             defer lock.deinit();
             var loaded = try self.loadForMutation();
-            if (loaded.quality == .unavailable) return error.LeaseStateUnavailable;
+            defer loaded.deinit(self.allocator);
             const now_ms = try self.observeAndPersist(&loaded, input.next.now_ms);
-            var snapshot = &loaded.snapshot;
+            const snapshot = loaded.snapshot;
             try validateAcquire(input.next, now_ms);
             if (input.current_generation == 0) return error.InvalidLease;
             if (std.mem.eql(u8, input.current_lease.text, input.next.lease.text)) {
                 return error.LeaseConflict;
             }
-            const stale_removed = try pruneStale(snapshot, now_ms, liveness);
+            var ignored_owner_count: usize = 0;
+            const stale_removed = try pruneStale(
+                snapshot,
+                now_ms,
+                liveness,
+                null,
+                &ignored_owner_count,
+            );
             if (stale_removed != 0) {
                 loaded.identity = try self.persist(snapshot, loaded.identity);
             }
@@ -611,7 +751,8 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             try ensureGenerationAvailable(snapshot);
             try ensureAdmissionMutationAvailable(snapshot);
 
-            var rebuilt = try rebuild(snapshot);
+            const rebuilt = try rebuildAlloc(self.allocator, snapshot);
+            defer self.allocator.destroy(rebuilt);
             const pure_owner = rebuilt.synthetic_pids[current_index];
             var owners: [lease_capacity]lease_state.OwnerObservation = undefined;
             const owner_count = aliveOwnerObservations(snapshot, &owners);
@@ -652,41 +793,73 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             now_ms: lease_state.TimestampMs,
             liveness: LivenessSource,
         ) !usize {
+            return (try self.cleanupStaleInternal(now_ms, liveness, null)).removed_count;
+        }
+
+        /// Reports the exact owner incarnations whose final stale records were
+        /// durably removed. Callers may retire their custody files only after
+        /// this method returns successfully.
+        pub fn cleanupStaleReportingOwners(
+            self: *Self,
+            now_ms: lease_state.TimestampMs,
+            liveness: LivenessSource,
+            removed_owners: []OwnerIdentity,
+        ) !CleanupReport {
+            return self.cleanupStaleInternal(now_ms, liveness, removed_owners);
+        }
+
+        fn cleanupStaleInternal(
+            self: *Self,
+            now_ms: lease_state.TimestampMs,
+            liveness: LivenessSource,
+            removed_owners: ?[]OwnerIdentity,
+        ) !CleanupReport {
             var lock = try self.acquireLock();
             defer lock.deinit();
             var loaded = try self.loadForMutation();
-            if (loaded.quality == .unavailable) return error.LeaseStateUnavailable;
+            defer loaded.deinit(self.allocator);
             const sampled_now_ms = try self.observeAndPersist(&loaded, now_ms);
-            const removed = try pruneStale(&loaded.snapshot, sampled_now_ms, liveness);
+            var owner_count: usize = 0;
+            const removed = try pruneStale(
+                loaded.snapshot,
+                sampled_now_ms,
+                liveness,
+                removed_owners,
+                &owner_count,
+            );
             if (removed != 0) {
-                loaded.identity = try self.persist(&loaded.snapshot, loaded.identity);
+                loaded.identity = try self.persist(loaded.snapshot, loaded.identity);
             }
-            return removed;
+            return .{ .removed_count = removed, .owner_count = owner_count };
         }
 
-        /// Read failures are intentionally collapsed to unavailable advisory
-        /// state. Callers still have request-path reactive routing and must not
-        /// infer readiness or credential authority from this result.
+        /// Missing state is an empty advisory view. Contention is surfaced as
+        /// `LockWaitTimeout` so the request runtime may degrade deliberately;
+        /// custody, parse, clock, and persistence failures remain typed and
+        /// fail closed.
         pub fn project(
             self: *Self,
             session: lease_state.SessionHandle,
             demand: lease_state.ModelDemand,
             now_ms: lease_state.TimestampMs,
             liveness: LivenessSource,
-        ) Projection {
-            if (!timestampValid(now_ms) or !demand.isValid()) return .{};
-            _ = lease_state.SessionHandle.parse(session.text) catch return .{};
+        ) !Projection {
+            if (!timestampValid(now_ms)) return error.InvalidClockSample;
+            if (!demand.isValid()) return error.InvalidExactModel;
+            _ = try lease_state.SessionHandle.parse(session.text);
 
-            var lock = self.acquireLock() catch return .{};
+            var lock = try self.acquireLock();
             defer lock.deinit();
-            var loaded = self.loadSnapshot() catch return .{};
+            var loaded = try self.loadSnapshot();
+            defer loaded.deinit(self.allocator);
             if (loaded.quality != .present) return .{};
             // The persisted wall-clock watermark makes this read a serialized
             // write whenever time advances. This is deliberate until G4 can
             // justify a different cross-process clock authority.
-            const sampled_now_ms = self.observeAndPersist(&loaded, now_ms) catch return .{};
-            const snapshot = &loaded.snapshot;
-            var rebuilt = rebuild(snapshot) catch return .{};
+            const sampled_now_ms = try self.observeAndPersist(&loaded, now_ms);
+            const snapshot = loaded.snapshot;
+            const rebuilt = try rebuildAlloc(self.allocator, snapshot);
+            defer self.allocator.destroy(rebuilt);
 
             var owner_observations: [lease_capacity]lease_state.OwnerObservation = undefined;
             var owner_count: usize = 0;
@@ -700,13 +873,13 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                 owner_count += 1;
             }
             var scratch: [route_capacity]lease_state.LeaseObservation = undefined;
-            const pure_projection = rebuilt.state.project(
+            const pure_projection = try rebuilt.state.project(
                 session,
                 demand,
                 sampled_now_ms,
                 owner_observations[0..owner_count],
                 &scratch,
-            ) catch return .{};
+            );
             if (pure_projection.quality == .unavailable) return .{};
 
             var result = Projection{
@@ -715,16 +888,71 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             };
             for (pure_projection.view.routes) |row| {
                 result.rows[result.row_count] = .{
-                    .route = ownedHandle(row.route.text) catch return .{},
+                    .route = try ownedHandle(row.route.text),
                     .active_leases = row.active_leases,
                     .last_selected_at = row.last_selected_at,
                 };
                 result.row_count += 1;
             }
             if (pure_projection.view.sticky_route) |sticky| {
-                result.sticky_route = ownedHandle(sticky.text) catch return .{};
+                result.sticky_route = try ownedHandle(sticky.text);
             }
             return result;
+        }
+
+        /// Reads the one canonical lease for an exact session/model/owner
+        /// tuple. This is deliberately narrower than a general snapshot API:
+        /// callers may use it only to recover from `LeaseStateCommitUncertain`.
+        /// A lease owned by another incarnation is a conflict, never something
+        /// the request runtime may guess through.
+        pub fn reconcileSessionLease(
+            self: *Self,
+            session: lease_state.SessionHandle,
+            exact_model: lease_state.ExactModel,
+            owner: OwnerIdentity,
+        ) !?ReconciledLease {
+            _ = try lease_state.SessionHandle.parse(session.text);
+            if (!exact_model.isValid()) return error.InvalidExactModel;
+            if (!owner.isValid()) return error.InvalidOwnerIdentity;
+
+            var lock = try self.acquireLock();
+            defer lock.deinit();
+            var loaded = try self.loadSnapshot();
+            defer loaded.deinit(self.allocator);
+            if (loaded.quality != .present) return null;
+
+            var found: ?ReconciledLease = null;
+            for (loaded.snapshot.leases[0..loaded.snapshot.lease_count]) |*stored| {
+                if (!stored.session.eql(session.text) or
+                    !stored.exact_model.eql(exact_model)) continue;
+                if (!stored.owner.eql(owner)) return error.OwnerMismatch;
+                if (found != null) return error.InvalidLeaseState;
+
+                var recovered = ReconciledLease{
+                    .exact_model = stored.exact_model,
+                    .generation = stored.generation,
+                };
+                const lease_text = stored.lease.bytes();
+                const account_text = stored.account.bytes();
+                const route_text = stored.route.bytes();
+                @memcpy(recovered.lease_buf[0..lease_text.len], lease_text);
+                recovered.lease_len = @intCast(lease_text.len);
+                @memcpy(recovered.account_buf[0..account_text.len], account_text);
+                recovered.account_len = @intCast(account_text.len);
+                @memcpy(recovered.route_buf[0..route_text.len], route_text);
+                recovered.route_len = @intCast(route_text.len);
+                if (stored.transition_from) |origin| {
+                    const origin_text = origin.lease.bytes();
+                    @memcpy(
+                        recovered.transition_origin_lease_buf[0..origin_text.len],
+                        origin_text,
+                    );
+                    recovered.transition_origin_lease_len = @intCast(origin_text.len);
+                    recovered.transition_origin_generation = origin.generation;
+                }
+                found = recovered;
+            }
+            return found;
         }
 
         /// Explicitly discard a syntactically or semantically invalid advisory
@@ -747,12 +975,13 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             if (std.json.parseFromSlice(WireSnapshot, self.allocator, bytes, .{})) |parsed_value| {
                 var parsed = parsed_value;
                 defer parsed.deinit();
-                _ = snapshotFromWire(parsed.value) catch |err| switch (err) {
+                if (snapshotFromWire(self.allocator, parsed.value)) |snapshot| {
+                    self.allocator.destroy(snapshot);
+                } else |err| switch (err) {
+                    error.OutOfMemory => return err,
                     error.IncompatibleLeaseState => return error.IncompatibleLeaseState,
-                    else => {
-                        invalid = true;
-                    },
-                };
+                    else => invalid = true,
+                }
             } else |err| {
                 if (err == error.OutOfMemory) return err;
                 invalid = true;
@@ -798,9 +1027,9 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             const now_ms = try self.options.time.sample(
                 requested_ms orelse loaded.snapshot.last_observed_at_ms,
             );
-            const observation = try observeSnapshotTime(&loaded.snapshot, now_ms);
+            const observation = try observeSnapshotTime(loaded.snapshot, now_ms);
             if (observation.changed) {
-                loaded.identity = try self.persist(&loaded.snapshot, loaded.identity);
+                loaded.identity = try self.persist(loaded.snapshot, loaded.identity);
                 loaded.quality = .present;
             }
             if (observation.outcome == .quarantined) {
@@ -909,64 +1138,32 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
         }
 
         fn loadForMutation(self: *Self) !Loaded {
-            const loaded = try self.loadSnapshot();
-            if (loaded.quality == .missing) {
-                return .{
-                    .quality = .missing,
-                    .snapshot = Snapshot.empty(),
-                    .identity = null,
-                };
-            }
-            return loaded;
+            return self.loadSnapshot();
         }
 
         fn loadSnapshot(self: *Self) !Loaded {
+            if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {
+                return error.UnsupportedLeaseStorePlatform;
+            }
             const file = self.openCustodiedFile(state_file_name, .state, false) catch |err| switch (err) {
                 error.FileNotFound => return .{
                     .quality = .missing,
-                    .snapshot = Snapshot.empty(),
+                    .snapshot = try allocEmptySnapshot(self.allocator),
                     .identity = null,
                 },
-                else => return .{
-                    .quality = .unavailable,
-                    .snapshot = Snapshot.empty(),
-                    .identity = null,
-                },
+                else => return err,
             };
             defer file.close();
-            const identity = self.validateFileCustody(file, .state) catch return .{
-                .quality = .unavailable,
-                .snapshot = Snapshot.empty(),
-                .identity = null,
-            };
-            const bytes = file.readToEndAlloc(self.allocator, max_snapshot_bytes) catch {
-                return .{
-                    .quality = .unavailable,
-                    .snapshot = Snapshot.empty(),
-                    .identity = null,
-                };
-            };
+            const identity = try self.validateFileCustody(file, .state);
+            const bytes = try file.readToEndAlloc(self.allocator, max_snapshot_bytes);
             defer self.allocator.free(bytes);
-            self.verifyCanonicalIdentity(state_file_name, identity) catch return .{
-                .quality = .unavailable,
-                .snapshot = Snapshot.empty(),
-                .identity = null,
-            };
-            var parsed = std.json.parseFromSlice(WireSnapshot, self.allocator, bytes, .{}) catch {
-                return .{
-                    .quality = .unavailable,
-                    .snapshot = Snapshot.empty(),
-                    .identity = null,
-                };
+            try self.verifyCanonicalIdentity(state_file_name, identity);
+            var parsed = std.json.parseFromSlice(WireSnapshot, self.allocator, bytes, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return error.InvalidLeaseState,
             };
             defer parsed.deinit();
-            const snapshot = snapshotFromWire(parsed.value) catch {
-                return .{
-                    .quality = .unavailable,
-                    .snapshot = Snapshot.empty(),
-                    .identity = null,
-                };
-            };
+            const snapshot = try snapshotFromWire(self.allocator, parsed.value);
             return .{
                 .quality = .present,
                 .snapshot = snapshot,
@@ -1002,16 +1199,28 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             try self.verifyExpectedCanonicalIdentity(state_file_name, expected_identity);
             try self.renameRelative(tmp_name, state_file_name);
             renamed = true;
-            try syncDirectoryHandle(self.dir);
+            if (self.options.post_rename_hook) |hook| {
+                hook.run(hook.ctx) catch return error.LeaseStateCommitUncertain;
+            }
+            syncDirectoryHandle(self.dir) catch return error.LeaseStateCommitUncertain;
 
-            const state = try self.openCustodiedFile(state_file_name, .state, false);
+            const state = self.openCustodiedFile(state_file_name, .state, false) catch
+                return error.LeaseStateCommitUncertain;
             defer state.close();
-            const identity = try self.validateFileCustody(state, .state);
-            try self.verifyCanonicalIdentity(state_file_name, identity);
+            const identity = self.validateFileCustody(state, .state) catch
+                return error.LeaseStateCommitUncertain;
+            self.verifyCanonicalIdentity(state_file_name, identity) catch
+                return error.LeaseStateCommitUncertain;
             return identity;
         }
 
-        fn snapshotFromWire(wire: WireSnapshot) !Snapshot {
+        fn allocEmptySnapshot(allocator: std.mem.Allocator) !*Snapshot {
+            const snapshot = try allocator.create(Snapshot);
+            snapshot.initInPlace();
+            return snapshot;
+        }
+
+        fn snapshotFromWire(allocator: std.mem.Allocator, wire: WireSnapshot) !*Snapshot {
             if (wire.version != snapshot_version or
                 !std.mem.eql(u8, wire.contract_fingerprint, snapshot_contract_fingerprint) or
                 wire.lease_capacity != lease_capacity or
@@ -1044,7 +1253,8 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                     return error.InvalidLeaseState;
                 }
             }
-            var snapshot = Snapshot.empty();
+            const snapshot = try allocEmptySnapshot(allocator);
+            errdefer allocator.destroy(snapshot);
             snapshot.mutation_revision = wire.mutation_revision;
             snapshot.admission_revision = wire.admission_revision;
             snapshot.last_observed_at_ms = wire.last_observed_at_ms;
@@ -1063,7 +1273,7 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                         return error.InvalidLeaseState;
                     }
                 }
-                if (findRoute(&snapshot, parsed_route, model) != null) {
+                if (findRoute(snapshot, parsed_route, model) != null) {
                     return error.InvalidLeaseState;
                 }
                 snapshot.routes[snapshot.route_count] = .{
@@ -1099,8 +1309,8 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                     record.heartbeat_at_ms >= record.expires_at_ms or
                     (snapshot.last_observed_at_ms != null and
                         record.heartbeat_at_ms > snapshot.last_observed_at_ms.?) or
-                    findLease(&snapshot, lease) != null or
-                    findRoute(&snapshot, route, model) == null)
+                    findLease(snapshot, lease) != null or
+                    findRoute(snapshot, route, model) == null)
                 {
                     return error.InvalidLeaseState;
                 }
@@ -1142,18 +1352,19 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
                 };
                 snapshot.lease_count += 1;
             }
-            sortRoutes(&snapshot);
-            sortLeases(&snapshot);
-            _ = try rebuild(&snapshot);
+            sortRoutes(snapshot);
+            sortLeases(snapshot);
+            const rebuilt = try rebuildAlloc(allocator, snapshot);
+            allocator.destroy(rebuilt);
             return snapshot;
         }
 
-        fn rebuild(snapshot: *const Snapshot) !Rebuilt {
-            var result = Rebuilt{
-                .state = PureState.init(),
-                .pure_generations = [_]lease_state.Generation{0} ** lease_capacity,
-                .synthetic_pids = [_]lease_state.OwnerPid{0} ** lease_capacity,
-            };
+        fn rebuildAlloc(allocator: std.mem.Allocator, snapshot: *const Snapshot) !*Rebuilt {
+            const result = try allocator.create(Rebuilt);
+            errdefer allocator.destroy(result);
+            result.state.initInPlace();
+            @memset(std.mem.asBytes(&result.pure_generations), 0);
+            @memset(std.mem.asBytes(&result.synthetic_pids), 0);
             for (snapshot.routes[0..snapshot.route_count]) |*route| {
                 try result.state.registerRoute(.{
                     .route = try lease_state.RouteHandle.parse(route.route.bytes()),
@@ -1331,15 +1542,32 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
             snapshot: *Snapshot,
             now_ms: lease_state.TimestampMs,
             liveness: LivenessSource,
+            removed_owners: ?[]OwnerIdentity,
+            owner_count: *usize,
         ) !usize {
             if (!timestampValid(now_ms)) return error.InvalidLease;
             var write_index: usize = 0;
             var removed: usize = 0;
             const previous_count = snapshot.lease_count;
             for (snapshot.leases[0..previous_count]) |record| {
-                const stale = record.expires_at_ms <= now_ms or
-                    ownerStatus(liveness, record.owner) == .dead;
+                const owner = ownerStatus(liveness, record.owner);
+                const stale = owner == .dead or
+                    (owner != .alive and record.expires_at_ms <= now_ms);
                 if (stale) {
+                    if (removed_owners) |owners| {
+                        var seen = false;
+                        for (owners[0..owner_count.*]) |reported_owner| {
+                            if (reported_owner.eql(record.owner)) {
+                                seen = true;
+                                break;
+                            }
+                        }
+                        if (!seen) {
+                            if (owner_count.* == owners.len) return error.OwnerReportCapacityExceeded;
+                            owners[owner_count.*] = record.owner;
+                            owner_count.* += 1;
+                        }
+                    }
                     removed += 1;
                     continue;
                 }
@@ -1396,6 +1624,7 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
         }
 
         fn sortRoutes(snapshot: *Snapshot) void {
+            if (snapshot.route_count < 2) return;
             std.mem.sort(StoredRoute, snapshot.routes[0..snapshot.route_count], {}, struct {
                 fn lessThan(_: void, a: StoredRoute, b: StoredRoute) bool {
                     const route_order = std.mem.order(u8, a.route.bytes(), b.route.bytes());
@@ -1406,6 +1635,7 @@ pub fn LeaseStore(comptime lease_capacity: usize, comptime route_capacity: usize
         }
 
         fn sortLeases(snapshot: *Snapshot) void {
+            if (snapshot.lease_count < 2) return;
             std.mem.sort(StoredLease, snapshot.leases[0..snapshot.lease_count], {}, struct {
                 fn lessThan(_: void, a: StoredLease, b: StoredLease) bool {
                     return std.mem.order(u8, a.lease.bytes(), b.lease.bytes()) == .lt;
@@ -1916,7 +2146,7 @@ test "TIN-3320 persisted lease view is redacted closed and reusable across store
     try first.registerRoute(.{ .route = routeHandle("route-a"), .exact_model = exactModel("claude-opus-4") });
     const live: LivenessSource = .{ .ctx = @ptrCast(&first), .resolve = alwaysAlive };
     const owner: OwnerIdentity = .{ .pid = 101, .incarnation = 7001, .generation = 1 };
-    const before = first.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, live);
+    const before = try first.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, live);
     const acquired = try first.acquire(
         acquireInput("lease-a", "session-a", "account-a", "route-a", owner, before.revision),
         live,
@@ -1925,7 +2155,7 @@ test "TIN-3320 persisted lease view is redacted closed and reusable across store
 
     var second = try Store.init(testing.allocator, root, testOptions(log));
     defer second.deinit();
-    const projection = second.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 101, live);
+    const projection = try second.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 101, live);
     try testing.expectEqual(ProjectionQuality.complete, projection.quality);
     try testing.expectEqual(@as(usize, 1), projection.row_count);
     try testing.expectEqual(@as(u64, 1), projection.rows[0].active_leases);
@@ -1986,7 +2216,7 @@ test "TIN-3320 PID reuse and predecessor generation cannot inherit or mutate a l
     const old_owner: OwnerIdentity = .{ .pid = 202, .incarnation = 9001, .generation = 1 };
     const reused_pid: OwnerIdentity = .{ .pid = 202, .incarnation = 9002, .generation = 1 };
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    const projection = store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, live);
+    const projection = try store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, live);
     const acquired = try store.acquire(
         acquireInput("lease-a", "session-a", "account-a", "route-a", old_owner, projection.revision),
         live,
@@ -2012,7 +2242,7 @@ test "TIN-3320 PID reuse and predecessor generation cannot inherit or mutate a l
         .now_ms = 110,
         .heartbeat_at_ms = 110,
         .expires_at_ms = 1_100,
-    }));
+    }, live));
 }
 
 test "TIN-3320 renew advances mutation revision without starving stale admission" {
@@ -2029,7 +2259,7 @@ test "TIN-3320 renew advances mutation revision without starving stale admission
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
     const owner_a: OwnerIdentity = .{ .pid = 211, .incarnation = 1, .generation = 1 };
     const owner_b: OwnerIdentity = .{ .pid = 212, .incarnation = 1, .generation = 1 };
-    var projection = store.project(
+    var projection = try store.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         100,
@@ -2039,7 +2269,7 @@ test "TIN-3320 renew advances mutation revision without starving stale admission
         acquireInput("lease-a", "session-a", "account-a", "route-a", owner_a, projection.revision),
         live,
     );
-    projection = store.project(
+    projection = try store.project(
         sessionHandle("session-b"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         101,
@@ -2054,9 +2284,10 @@ test "TIN-3320 renew advances mutation revision without starving stale admission
         .now_ms = 110,
         .heartbeat_at_ms = 110,
         .expires_at_ms = 1_100,
-    }));
+    }, live));
 
-    const after_renew = try store.loadSnapshot();
+    var after_renew = try store.loadSnapshot();
+    defer after_renew.deinit(testing.allocator);
     try testing.expectEqual(admission_before_renew, after_renew.snapshot.admission_revision);
     try testing.expect(after_renew.snapshot.mutation_revision > after_renew.snapshot.admission_revision);
     var second = acquireInput(
@@ -2088,7 +2319,7 @@ test "TIN-3320 authorized release removes an expired lease after sibling time ad
     const owner_a: OwnerIdentity = .{ .pid = 213, .incarnation = 1, .generation = 1 };
     const owner_b: OwnerIdentity = .{ .pid = 214, .incarnation = 1, .generation = 1 };
 
-    var projection = store.project(
+    var projection = try store.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         100,
@@ -2105,7 +2336,7 @@ test "TIN-3320 authorized release removes an expired lease after sibling time ad
     first_input.expires_at_ms = 105;
     const first = try store.acquire(first_input, live);
 
-    projection = store.project(
+    projection = try store.project(
         sessionHandle("session-b"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         100,
@@ -2123,13 +2354,14 @@ test "TIN-3320 authorized release removes an expired lease after sibling time ad
         .now_ms = 110,
         .heartbeat_at_ms = 110,
         .expires_at_ms = 1_100,
-    }));
+    }, live));
 
     const state_bytes = try tmp.dir.readFileAlloc(testing.allocator, state_file_name, max_snapshot_bytes);
     defer testing.allocator.free(state_bytes);
     var parsed = try std.json.parseFromSlice(WireSnapshot, testing.allocator, state_bytes, .{});
     defer parsed.deinit();
-    _ = try Store.snapshotFromWire(parsed.value);
+    const decoded = try Store.snapshotFromWire(testing.allocator, parsed.value);
+    testing.allocator.destroy(decoded);
 
     try store.release(.{
         .lease = leaseHandle("lease-a"),
@@ -2137,7 +2369,8 @@ test "TIN-3320 authorized release removes an expired lease after sibling time ad
         .owner = owner_a,
         .generation = leaseGeneration(first),
     });
-    const loaded = try store.loadSnapshot();
+    var loaded = try store.loadSnapshot();
+    defer loaded.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), loaded.snapshot.lease_count);
     try testing.expect(loaded.snapshot.leases[0].lease.eql("lease-b"));
 }
@@ -2155,7 +2388,7 @@ test "TIN-3320 future watermark fails closed across restart then recovers bounde
     try first.registerRoute(.{ .route = routeHandle("route-a"), .exact_model = exactModel("claude-opus-4") });
     const owner: OwnerIdentity = .{ .pid = 221, .incarnation = 2, .generation = 1 };
     const first_live: LivenessSource = .{ .ctx = @ptrCast(&first), .resolve = alwaysAlive };
-    const before = first.project(
+    const before = try first.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         100,
@@ -2172,7 +2405,8 @@ test "TIN-3320 future watermark fails closed across restart then recovers bounde
     active.expires_at_ms = 100_000;
     active.selected_at_ms = 1;
     _ = try first.acquire(active, first_live);
-    const initial = try first.loadSnapshot();
+    var initial = try first.loadSnapshot();
+    defer initial.deinit(testing.allocator);
     const initial_admission = initial.snapshot.admission_revision;
     const initial_mutation = initial.snapshot.mutation_revision;
     try testing.expectEqual(@as(usize, 1), initial.snapshot.lease_count);
@@ -2182,14 +2416,14 @@ test "TIN-3320 future watermark fails closed across restart then recovers bounde
     clock.now_ms = 90;
     var skewed = try Store.init(testing.allocator, root, mutableClockOptions(log, &clock));
     const live: LivenessSource = .{ .ctx = @ptrCast(&skewed), .resolve = alwaysAlive };
-    const unavailable = skewed.project(
+    try testing.expectError(error.ClockSkewQuarantined, skewed.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         999,
         live,
-    );
-    try testing.expectEqual(ProjectionQuality.unavailable, unavailable.quality);
-    const quarantined = try skewed.loadSnapshot();
+    ));
+    var quarantined = try skewed.loadSnapshot();
+    defer quarantined.deinit(testing.allocator);
     try testing.expect(quarantined.snapshot.admission_revision > initial_admission);
     try testing.expect(quarantined.snapshot.mutation_revision > initial_mutation);
     try testing.expectEqual(@as(?i64, 90), quarantined.snapshot.last_observed_at_ms);
@@ -2206,21 +2440,21 @@ test "TIN-3320 future watermark fails closed across restart then recovers bounde
 
     clock.now_ms = 90 + clock_recovery_window_ms - 1;
     var waiting = try Store.init(testing.allocator, root, mutableClockOptions(log, &clock));
-    try testing.expectEqual(
-        ProjectionQuality.unavailable,
+    try testing.expectError(
+        error.ClockSkewQuarantined,
         waiting.project(
             sessionHandle("session-a"),
             try lease_state.ModelDemand.init("claude-opus-4"),
             0,
             .{ .ctx = @ptrCast(&waiting), .resolve = alwaysAlive },
-        ).quality,
+        ),
     );
     waiting.deinit();
 
     clock.now_ms = 90 + clock_recovery_window_ms;
     var recovered = try Store.init(testing.allocator, root, mutableClockOptions(log, &clock));
     defer recovered.deinit();
-    const projection = recovered.project(
+    const projection = try recovered.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         0,
@@ -2228,7 +2462,8 @@ test "TIN-3320 future watermark fails closed across restart then recovers bounde
     );
     try testing.expectEqual(ProjectionQuality.complete, projection.quality);
     try testing.expectEqual(@as(u64, 1), projection.rows[0].active_leases);
-    const final = try recovered.loadSnapshot();
+    var final = try recovered.loadSnapshot();
+    defer final.deinit(testing.allocator);
     try testing.expect(final.snapshot.clock_recovery_until_ms == null);
     try testing.expectEqual(@as(?i64, clock.now_ms), final.snapshot.last_observed_at_ms);
     try testing.expect(final.snapshot.admission_revision > quarantined.snapshot.admission_revision);
@@ -2262,19 +2497,20 @@ test "TIN-3320 stale dead owners are removed deterministically and cleanup is id
     const owner_a: OwnerIdentity = .{ .pid = 301, .incarnation = 1, .generation = 1 };
     const owner_b: OwnerIdentity = .{ .pid = 301, .incarnation = 2, .generation = 1 };
     const all_live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    var p = store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, all_live);
+    var p = try store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, all_live);
     _ = try store.acquire(acquireInput("lease-a", "session-a", "account-a", "route-a", owner_a, p.revision), all_live);
-    p = store.project(sessionHandle("session-b"), try lease_state.ModelDemand.init("claude-opus-4"), 100, all_live);
+    p = try store.project(sessionHandle("session-b"), try lease_state.ModelDemand.init("claude-opus-4"), 100, all_live);
     _ = try store.acquire(acquireInput("lease-b", "session-b", "account-b", "route-a", owner_b, p.revision), all_live);
 
     const exact = ExactLiveness{ .alive_owner = owner_b };
     const one_live: LivenessSource = .{ .ctx = @ptrCast(&exact), .resolve = ExactLiveness.resolve };
     try testing.expectEqual(@as(usize, 1), try store.cleanupStale(101, one_live));
     try testing.expectEqual(@as(usize, 0), try store.cleanupStale(101, one_live));
-    const after = store.project(sessionHandle("session-b"), try lease_state.ModelDemand.init("claude-opus-4"), 101, one_live);
+    const after = try store.project(sessionHandle("session-b"), try lease_state.ModelDemand.init("claude-opus-4"), 101, one_live);
     try testing.expectEqual(@as(u64, 1), after.rows[0].active_leases);
     try testing.expectEqualStrings("route-a", after.sticky_route.?.bytes());
-    const persisted = try store.loadSnapshot();
+    var persisted = try store.loadSnapshot();
+    defer persisted.deinit(testing.allocator);
     try testing.expectEqual(LoadQuality.present, persisted.quality);
     try testing.expectEqual(@as(usize, 1), persisted.snapshot.lease_count);
     for (std.mem.asBytes(&persisted.snapshot.leases[1])) |byte| {
@@ -2295,14 +2531,14 @@ test "TIN-3320 unknown owners contribute neither load nor stickiness" {
     try store.registerRoute(.{ .route = routeHandle("route-a"), .exact_model = exactModel("claude-opus-4") });
     const owner: OwnerIdentity = .{ .pid = 401, .incarnation = 4, .generation = 1 };
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    const before = store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, live);
+    const before = try store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 100, live);
     _ = try store.acquire(
         acquireInput("lease-a", "session-a", "account-a", "route-a", owner, before.revision),
         live,
     );
 
     const unknown: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysUnknown };
-    const projection = store.project(
+    const projection = try store.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         101,
@@ -2327,7 +2563,7 @@ test "TIN-3320 atomic transition survives reload and exact retry is idempotent" 
     try store.registerRoute(.{ .route = routeHandle("route-b"), .exact_model = exactModel("claude-opus-4") });
     const owner: OwnerIdentity = .{ .pid = 501, .incarnation = 5, .generation = 1 };
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    var projection = store.project(
+    var projection = try store.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         100,
@@ -2337,7 +2573,7 @@ test "TIN-3320 atomic transition survives reload and exact retry is idempotent" 
         acquireInput("lease-a", "session-a", "account-a", "route-a", owner, projection.revision),
         live,
     );
-    projection = store.project(
+    projection = try store.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         100,
@@ -2384,7 +2620,7 @@ test "TIN-3320 atomic transition survives reload and exact retry is idempotent" 
 
     var reopened = try Store.init(testing.allocator, root, testOptions(log));
     defer reopened.deinit();
-    const after = reopened.project(
+    const after = try reopened.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         101,
@@ -2396,7 +2632,7 @@ test "TIN-3320 atomic transition survives reload and exact retry is idempotent" 
     try testing.expectEqual(@as(u64, 1), after.rows[1].active_leases);
 }
 
-test "TIN-3320 corrupt state remains unavailable and requires explicit repair" {
+test "TIN-3320 corrupt state fails closed and requires explicit repair" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testRoot(&tmp);
@@ -2411,12 +2647,14 @@ test "TIN-3320 corrupt state remains unavailable and requires explicit repair" {
     try malformed.writeAll(corrupt_bytes);
     malformed.close();
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    const unavailable = store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live);
-    try testing.expectEqual(ProjectionQuality.unavailable, unavailable.quality);
+    try testing.expectError(
+        error.InvalidLeaseState,
+        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live),
+    );
     const preserved = try tmp.dir.readFileAlloc(testing.allocator, state_file_name, max_snapshot_bytes);
     defer testing.allocator.free(preserved);
     try testing.expectEqualStrings(corrupt_bytes, preserved);
-    try testing.expectError(error.LeaseStateUnavailable, store.registerRoute(.{
+    try testing.expectError(error.InvalidLeaseState, store.registerRoute(.{
         .route = routeHandle("route-a"),
         .exact_model = exactModel("claude-opus-4"),
     }));
@@ -2429,9 +2667,9 @@ test "TIN-3320 corrupt state remains unavailable and requires explicit repair" {
     const incompatible = try tmp.dir.createFile(state_file_name, .{ .truncate = true, .mode = 0o600 });
     try incompatible.writeAll(wrong_contract);
     incompatible.close();
-    try testing.expectEqual(
-        ProjectionQuality.unavailable,
-        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live).quality,
+    try testing.expectError(
+        error.IncompatibleLeaseState,
+        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live),
     );
     const incompatible_preserved = try tmp.dir.readFileAlloc(testing.allocator, state_file_name, max_snapshot_bytes);
     defer testing.allocator.free(incompatible_preserved);
@@ -2447,7 +2685,7 @@ test "TIN-3320 corrupt state remains unavailable and requires explicit repair" {
     try tmp.dir.deleteFile(state_file_name);
 
     try store.registerRoute(.{ .route = routeHandle("route-a"), .exact_model = exactModel("claude-opus-4") });
-    const recovered = store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live);
+    const recovered = try store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live);
     try testing.expectEqual(ProjectionQuality.complete, recovered.quality);
     try testing.expectEqual(@as(usize, 1), recovered.row_count);
 
@@ -2457,7 +2695,7 @@ test "TIN-3320 corrupt state remains unavailable and requires explicit repair" {
     );
     try interrupted.writeAll("{malformed:oat01-secret-canary}");
     interrupted.close();
-    const after_interruption = store.project(
+    const after_interruption = try store.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         10,
@@ -2468,7 +2706,56 @@ test "TIN-3320 corrupt state remains unavailable and requires explicit repair" {
     try testing.expect(!(try store.repairUnavailableState()));
 }
 
-test "TIN-3320 capacity and contract drift preserve canonical state unavailable" {
+test "TIN-3320 repair preserves valid state across allocator exhaustion" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try testRoot(&tmp);
+    defer testing.allocator.free(root);
+    var log = try testLog(&tmp);
+    defer log.close();
+    const Store = LeaseStore(2, 2);
+    var store = try Store.init(testing.allocator, root, testOptions(log));
+    defer store.deinit();
+    try store.registerRoute(.{
+        .route = routeHandle("route-a"),
+        .exact_model = exactModel("claude-opus-4"),
+    });
+    const before = try tmp.dir.readFileAlloc(testing.allocator, state_file_name, max_snapshot_bytes);
+    defer testing.allocator.free(before);
+
+    var fail_index: usize = 0;
+    var reached_success = false;
+    while (fail_index < 64) : (fail_index += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        const original_allocator = store.allocator;
+        store.allocator = failing.allocator();
+        const repair_result = store.repairUnavailableState();
+        store.allocator = original_allocator;
+
+        if (repair_result) |removed| {
+            try testing.expect(!removed);
+            try testing.expect(!failing.has_induced_failure);
+            reached_success = true;
+        } else |err| {
+            try testing.expect(err == error.OutOfMemory);
+            try testing.expect(failing.has_induced_failure);
+        }
+
+        const after = try tmp.dir.readFileAlloc(
+            testing.allocator,
+            state_file_name,
+            max_snapshot_bytes,
+        );
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+        if (reached_success) break;
+    }
+    try testing.expect(reached_success);
+}
+
+test "TIN-3320 capacity and contract drift fail closed without changing canonical state" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testRoot(&tmp);
@@ -2485,14 +2772,13 @@ test "TIN-3320 capacity and contract drift preserve canonical state unavailable"
     const Narrow = LeaseStore(2, 2);
     var narrow = try Narrow.init(testing.allocator, root, testOptions(log));
     defer narrow.deinit();
-    const unavailable = narrow.project(
+    try testing.expectError(error.IncompatibleLeaseState, narrow.project(
         sessionHandle("session-a"),
         try lease_state.ModelDemand.init("claude-opus-4"),
         10,
         .{ .ctx = @ptrCast(&narrow), .resolve = alwaysAlive },
-    );
-    try testing.expectEqual(ProjectionQuality.unavailable, unavailable.quality);
-    try testing.expectError(error.LeaseStateUnavailable, narrow.registerRoute(.{
+    ));
+    try testing.expectError(error.IncompatibleLeaseState, narrow.registerRoute(.{
         .route = routeHandle("route-b"),
         .exact_model = exactModel("claude-opus-4"),
     }));
@@ -2521,22 +2807,22 @@ test "TIN-3320 symlink special and insecure canonical files fail closed" {
     try target.writeAll("not-state");
     target.close();
     try tmp.dir.symLink("state-target", state_file_name, .{});
-    try testing.expectEqual(
-        ProjectionQuality.unavailable,
-        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live).quality,
+    try testing.expectError(
+        error.SymLinkLoop,
+        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live),
     );
-    try testing.expectError(error.LeaseStateUnavailable, store.registerRoute(.{
+    try testing.expectError(error.SymLinkLoop, store.registerRoute(.{
         .route = routeHandle("route-a"),
         .exact_model = exactModel("claude-opus-4"),
     }));
     try tmp.dir.deleteFile(state_file_name);
 
     try tmp.dir.makeDir(state_file_name);
-    try testing.expectEqual(
-        ProjectionQuality.unavailable,
-        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live).quality,
+    try testing.expectError(
+        error.NonRegularLeaseState,
+        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live),
     );
-    try testing.expectError(error.LeaseStateUnavailable, store.registerRoute(.{
+    try testing.expectError(error.NonRegularLeaseState, store.registerRoute(.{
         .route = routeHandle("route-a"),
         .exact_model = exactModel("claude-opus-4"),
     }));
@@ -2545,9 +2831,9 @@ test "TIN-3320 symlink special and insecure canonical files fail closed" {
     const insecure = try tmp.dir.createFile(state_file_name, .{ .truncate = true, .mode = 0o644 });
     try insecure.writeAll("{}");
     insecure.close();
-    try testing.expectEqual(
-        ProjectionQuality.unavailable,
-        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live).quality,
+    try testing.expectError(
+        error.InsecureLeaseStateCustody,
+        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live),
     );
     try tmp.dir.deleteFile(state_file_name);
 }
@@ -2563,7 +2849,8 @@ test "TIN-3320 canonical replacement race cannot overwrite a new inode" {
     var store = try Store.init(testing.allocator, root, testOptions(log));
     defer store.deinit();
     try store.registerRoute(.{ .route = routeHandle("route-a"), .exact_model = exactModel("claude-opus-4") });
-    const loaded = try store.loadSnapshot();
+    var loaded = try store.loadSnapshot();
+    defer loaded.deinit(testing.allocator);
     try testing.expect(loaded.identity != null);
     const original = try tmp.dir.readFileAlloc(testing.allocator, state_file_name, max_snapshot_bytes);
     defer testing.allocator.free(original);
@@ -2574,11 +2861,60 @@ test "TIN-3320 canonical replacement race cannot overwrite a new inode" {
 
     try testing.expectError(
         error.LeaseStatePathChanged,
-        store.persist(&loaded.snapshot, loaded.identity),
+        store.persist(loaded.snapshot, loaded.identity),
     );
     const after = try tmp.dir.readFileAlloc(testing.allocator, state_file_name, max_snapshot_bytes);
     defer testing.allocator.free(after);
     try testing.expectEqualSlices(u8, original, after);
+}
+
+const ArmedPostRenameFailure = struct {
+    armed: bool = false,
+
+    fn run(raw: *anyopaque) !void {
+        const self: *ArmedPostRenameFailure = @ptrCast(@alignCast(raw));
+        if (self.armed) return error.InjectedPostRenameFailure;
+    }
+};
+
+test "TIN-3320 post-rename failure is commit-uncertain and canonical state remains readable" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try testRoot(&tmp);
+    defer testing.allocator.free(root);
+    var log = try testLog(&tmp);
+    defer log.close();
+    var failure = ArmedPostRenameFailure{};
+    const Store = LeaseStore(2, 2);
+    var store = try Store.init(testing.allocator, root, .{
+        .log_file = log,
+        .time = .{ .read = requestedTestTime },
+        .post_rename_hook = .{
+            .ctx = @ptrCast(&failure),
+            .run = ArmedPostRenameFailure.run,
+        },
+    });
+    defer store.deinit();
+    try store.registerRoute(.{
+        .route = routeHandle("route-a"),
+        .exact_model = exactModel("claude-opus-4"),
+    });
+
+    failure.armed = true;
+    try testing.expectError(error.LeaseStateCommitUncertain, store.registerRoute(.{
+        .route = routeHandle("route-b"),
+        .exact_model = exactModel("claude-opus-4"),
+    }));
+    failure.armed = false;
+
+    const projection = try store.project(
+        sessionHandle("observer"),
+        try lease_state.ModelDemand.init("claude-opus-4"),
+        0,
+        .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive },
+    );
+    try testing.expectEqual(ProjectionQuality.complete, projection.quality);
+    try testing.expectEqual(@as(usize, 2), projection.row_count);
 }
 
 test "TIN-3320 lock path symlink and special file never block" {
@@ -2609,7 +2945,7 @@ test "TIN-3320 lock path symlink and special file never block" {
     }));
 }
 
-test "TIN-3320 bounded lock timeout projects unavailable and mutation fails loudly" {
+test "TIN-3320 bounded lock timeout is the precise advisory fallback class" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const root = try testRoot(&tmp);
@@ -2634,8 +2970,10 @@ test "TIN-3320 bounded lock timeout projects unavailable and mutation fails loud
     });
     defer store.deinit();
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    const projection = store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live);
-    try testing.expectEqual(ProjectionQuality.unavailable, projection.quality);
+    try testing.expectError(
+        error.LockWaitTimeout,
+        store.project(sessionHandle("session-a"), try lease_state.ModelDemand.init("claude-opus-4"), 10, live),
+    );
     try testing.expectError(error.LockWaitTimeout, store.registerRoute(.{
         .route = routeHandle("route-a"),
         .exact_model = exactModel("claude-opus-4"),
@@ -2652,14 +2990,14 @@ test "TIN-3320 bounded lock timeout projects unavailable and mutation fails loud
         },
     });
     defer no_clock.deinit();
-    try testing.expectEqual(
-        ProjectionQuality.unavailable,
+    try testing.expectError(
+        error.MonotonicClockUnavailable,
         no_clock.project(
             sessionHandle("session-a"),
             try lease_state.ModelDemand.init("claude-opus-4"),
             10,
             .{ .ctx = @ptrCast(&no_clock), .resolve = alwaysAlive },
-        ).quality,
+        ),
     );
     try testing.expectError(error.MonotonicClockUnavailable, no_clock.registerRoute(.{
         .route = routeHandle("route-a"),
@@ -2687,7 +3025,7 @@ fn childAcquire(root: []const u8, owner: OwnerIdentity, suffix: u8) !void {
     const account_text = try std.fmt.bufPrint(&account_buf, "account-{c}", .{suffix});
     var attempts: usize = 0;
     while (attempts < 8) : (attempts += 1) {
-        const projection = store.project(
+        const projection = try store.project(
             sessionHandle(session_text),
             try lease_state.ModelDemand.init("claude-opus-4"),
             100,
@@ -2769,7 +3107,7 @@ test "TIN-3320 two real processes contend on one store without lost updates or c
     try testing.expectEqual(@as(u32, 0), second_status.status);
 
     const live: LivenessSource = .{ .ctx = @ptrCast(&store), .resolve = alwaysAlive };
-    const projection = store.project(sessionHandle("observer"), try lease_state.ModelDemand.init("claude-opus-4"), 101, live);
+    const projection = try store.project(sessionHandle("observer"), try lease_state.ModelDemand.init("claude-opus-4"), 101, live);
     try testing.expectEqual(ProjectionQuality.complete, projection.quality);
     try testing.expectEqual(@as(usize, 1), projection.row_count);
     try testing.expectEqual(@as(u64, 2), projection.rows[0].active_leases);

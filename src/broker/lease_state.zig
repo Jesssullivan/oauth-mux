@@ -263,6 +263,19 @@ pub fn LeaseState(
             return .{};
         }
 
+        /// Initializes only the live scalar state, leaving fixed-capacity
+        /// backing arrays untouched until their corresponding counts grow.
+        /// This supports heap-owned states without materializing a multi-MiB
+        /// aggregate temporary on a request thread's stack.
+        pub fn initInPlace(self: *Self) void {
+            self.record_count = 0;
+            self.history_count = 0;
+            self.mutation_revision_value = 0;
+            self.admission_revision_value = 0;
+            self.last_observed_at_ms = null;
+            self.next_generation = 1;
+        }
+
         pub fn len(self: *const Self) usize {
             return self.record_count;
         }
@@ -481,14 +494,13 @@ pub fn LeaseState(
                 return error.NonMonotonicRenewal;
             }
             try self.observeTime(input.now_ms);
-            if (record.expires_at_ms <= input.now_ms) return error.StaleLease;
             if (input.heartbeat_at_ms == record.heartbeat_at_ms and
                 input.expires_at_ms == record.expires_at_ms)
             {
                 return .unchanged;
             }
-            // A valid renewal only extends an authorized, currently unexpired
-            // lease. It cannot change admission eligibility at `now_ms`, route
+            // The custody layer proves the exact owner is alive before calling
+            // this pure mutation. A valid renewal cannot change route
             // load, ownership, capacity, generation, or selection history.
             try self.ensureMutationRevisionAvailable();
 
@@ -520,9 +532,9 @@ pub fn LeaseState(
             self.bumpAdmissionMutation();
         }
 
-        /// Stale means exactly `now >= expires_at` or a definitively dead
-        /// injected owner. Unknown/conflicting liveness is retained but cannot
-        /// contribute load or stickiness.
+        /// Dead owners are stale immediately. Expiry is only the fallback for
+        /// unknown/conflicting owner liveness; a proven-live owner remains
+        /// active and sticky across an idle interval.
         pub fn cleanupStale(
             self: *Self,
             now_ms: TimestampMs,
@@ -590,7 +602,6 @@ pub fn LeaseState(
             var sticky: ?RouteHandle = null;
             for (self.records[0..self.record_count]) |*record| {
                 if (!demand.accepts(record.exact_model)) continue;
-                if (record.expires_at_ms <= now_ms) continue;
 
                 const owner = resolveOwner(record.owner_pid, owners);
                 if (owner == .unknown) {
@@ -797,8 +808,9 @@ fn isStale(
     now_ms: TimestampMs,
     owners: []const OwnerObservation,
 ) bool {
-    return now_ms >= record.expires_at_ms or
-        resolveOwner(record.owner_pid, owners) == .dead;
+    const owner = resolveOwner(record.owner_pid, owners);
+    return owner == .dead or
+        (owner != .alive and now_ms >= record.expires_at_ms);
 }
 
 fn historyOrder(a: *const RouteHistory, b: *const RouteHistory) std.math.Order {
@@ -1528,7 +1540,7 @@ test "observed time cannot regress and resurrect an expired projection" {
         input.session,
         demand,
         100,
-        &owners,
+        &.{},
         &scratch,
     );
     try testing.expectEqual(@as(u64, 0), projectedLoad(expired.view, input.route));
@@ -1538,7 +1550,7 @@ test "observed time cannot regress and resurrect an expired projection" {
         input.session,
         demand,
         90,
-        &owners,
+        &.{},
         &scratch,
     ));
     try testing.expectEqual(
@@ -1564,14 +1576,14 @@ test "observed time cannot regress and resurrect an expired projection" {
         input.session,
         demand,
         100,
-        &owners,
+        &.{},
         &scratch,
     );
     try testing.expectEqual(
         @as(u64, 0),
         projectedLoad(still_expired.view, input.route),
     );
-    try testing.expectEqual(@as(usize, 1), try state.cleanupStale(100, &owners));
+    try testing.expectEqual(@as(usize, 1), try state.cleanupStale(100, &.{}));
     try testing.expectEqual(@as(usize, 0), state.len());
 }
 
@@ -1747,7 +1759,7 @@ test "admission-relevant route mutation invalidates stale projection" {
     try testing.expectEqual(@as(usize, 1), state.len());
 }
 
-test "expiry boundary cleanup precedes capacity and renewal cannot resurrect" {
+test "live owners renew after idle expiry and dead owners are reclaimed" {
     var state = LeaseState(1, 2).init();
     try state.registerRoute(.{
         .route = routeHandle("route-1"),
@@ -1788,7 +1800,7 @@ test "expiry boundary cleanup precedes capacity and renewal cannot resurrect" {
     try testing.expectEqual(full_revision, state.currentRevision());
     try testing.expectEqual(@as(usize, 1), state.len());
 
-    try testing.expectError(error.StaleLease, state.renew(.{
+    try testing.expectEqual(RenewOutcome.renewed, try state.renew(.{
         .lease = first.lease,
         .session = first.session,
         .owner_pid = first.owner_pid,
@@ -1802,11 +1814,18 @@ test "expiry boundary cleanup precedes capacity and renewal cannot resurrect" {
     at_boundary.now_ms = 10;
     at_boundary.heartbeat_at_ms = 10;
     at_boundary.expected_revision = state.currentRevision();
-    try testing.expectError(error.StateChanged, state.acquire(at_boundary, &owners));
+    try testing.expectError(error.LeaseCapacityExceeded, state.acquire(at_boundary, &owners));
+    try testing.expectEqual(@as(usize, 1), state.len());
+
+    const dead_owner = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .dead },
+        .{ .owner_pid = 2, .liveness = .alive },
+    };
+    try testing.expectError(error.StateChanged, state.acquire(at_boundary, &dead_owner));
     try testing.expectEqual(@as(usize, 0), state.len());
 
     at_boundary.expected_revision = state.currentRevision();
-    _ = try state.acquire(at_boundary, &owners);
+    _ = try state.acquire(at_boundary, &dead_owner);
     try testing.expectEqual(@as(usize, 1), state.len());
 }
 
@@ -2887,6 +2906,10 @@ test "negative control: cleanup disabled changes reactive election" {
         .{ .owner_pid = 1, .liveness = .alive },
         .{ .owner_pid = 2, .liveness = .alive },
     };
+    const projected_owners = [_]OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .dead },
+        .{ .owner_pid = 2, .liveness = .alive },
+    };
     try state.registerRoute(.{
         .route = routeHandle("route-a"),
         .exact_model = demand.exact_model,
@@ -2926,7 +2949,7 @@ test "negative control: cleanup disabled changes reactive election" {
         sessionHandle("session-other"),
         demand,
         20,
-        &owners,
+        &projected_owners,
         &scratch,
     );
     try testing.expectEqual(@as(u64, 0), projectedLoad(actual.view, routeHandle("route-a")));

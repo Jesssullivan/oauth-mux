@@ -5,14 +5,18 @@
 //! account identifiers, or provider data.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
 const wire_proxy = @import("wire_proxy.zig");
 const advisory_usage = @import("../../quota/advisory_usage.zig");
 const broker_decision = @import("../../broker/decision.zig");
 const broker_lease_state = @import("../../broker/lease_state.zig");
+const broker_lease_store = @import("../../broker/lease_store.zig");
+const broker_lease_runtime = @import("../../broker/lease_runtime.zig");
 const broker_model_demand = @import("../../broker/model_demand.zig");
 const broker_route_observation = @import("../../broker/route_observation.zig");
+const lock_wait = @import("../../lock_wait.zig");
 // §8.8 refresh-predicate OBSERVATION family (TIN-2400, PR C). The observer
 // drives the landed TIN-2990 flock-owned locked-lineage refresh engine directly
 // over synthetic stores/credentials in isolated temp dirs. No provider-
@@ -83,6 +87,8 @@ const FactId = enum {
     stale_lease_reactive_routing,
     unavailable_lease_reactive_routing,
     sticky_least_loaded_selection,
+    deterministic_shared_leases,
+    stale_lease_owner_cleanup,
     // §2.2 replay reservation / cancellation / stream-once.
     cancellation_releases_reservation_to_zero,
     cancellation_makes_no_replay,
@@ -209,6 +215,8 @@ const fact_ids = [_]FactId{
     .stale_lease_reactive_routing,
     .unavailable_lease_reactive_routing,
     .sticky_least_loaded_selection,
+    .deterministic_shared_leases,
+    .stale_lease_owner_cleanup,
     .cancellation_releases_reservation_to_zero,
     .cancellation_makes_no_replay,
     .streaming_cancellation_single_attempt,
@@ -341,6 +349,7 @@ const Artifact = struct {
 
 pub fn emit(identity: BuildIdentity) !void {
     try validateBuildIdentity(identity);
+    try runLeaseChildDeadlineControl();
 
     var facts: [fact_ids.len]Fact = undefined;
     for (&facts, fact_ids) |*fact, id| fact.* = .{ .id = id, .status = .fail };
@@ -363,6 +372,7 @@ pub fn emit(identity: BuildIdentity) !void {
     runAlternateFailureNoThirdScenario(&facts) catch {};
     runStartedResponseScenario(&facts) catch {};
     runBrokerMappingScenario(&facts) catch {};
+    runCrossProcessLeaseScenario(&facts) catch {};
     runCancellationReplayableScenario(&facts) catch {};
     runStreamOnceCancellationScenario(&facts) catch {};
     runOverflowNoAlternateScenario(&facts) catch {};
@@ -420,7 +430,10 @@ pub fn emit(identity: BuildIdentity) !void {
     try writeArtifactAtomic(artifact);
 
     for (facts) |fact| {
-        if (fact.status != .pass) return error.Stage2ObservationFailed;
+        if (fact.status != .pass) {
+            std.log.err("Stage 2 fact failed: {s}", .{@tagName(fact.id)});
+            return error.Stage2ObservationFailed;
+        }
     }
 }
 
@@ -992,6 +1005,10 @@ const VirtualClock = struct {
     fn clock(self: *VirtualClock) wire_proxy.testing.Clock {
         return .{ .ctx = self, .nowFn = nowNs, .sleepFn = sleepNs };
     }
+
+    fn leaseWorkClock(self: *VirtualClock) broker_lease_runtime.WorkClock {
+        return .{ .ctx = self, .nowFn = nowNs };
+    }
 };
 
 fn routedRequestBody(
@@ -1063,9 +1080,8 @@ fn runAlternate401Scenario(facts: []Fact) !void {
     const alt_len = alternate.capturedRequestBody(&alt_sent);
     setFact(facts, .first_attempt_body_forwarded_byte_exact, obs.model_present and
         std.mem.eql(u8, first_sent[0..first_len], routed_json));
-    setFact(facts, .alternate_replay_body_byte_exact,
-        std.mem.eql(u8, alt_sent[0..alt_len], routed_json) and
-            std.mem.eql(u8, alt_sent[0..alt_len], first_sent[0..first_len]));
+    setFact(facts, .alternate_replay_body_byte_exact, std.mem.eql(u8, alt_sent[0..alt_len], routed_json) and
+        std.mem.eql(u8, alt_sent[0..alt_len], first_sent[0..first_len]));
 }
 
 fn runAlternate403Scenario(facts: []Fact) !void {
@@ -1088,9 +1104,8 @@ fn runAlternate403Scenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .prebody_403_consumes_one_alternate,
-        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
-            obs.alternate_count == 1 and obs.attempts_total == 2 and obs.third_attempt_count == 0);
+    setFact(facts, .prebody_403_consumes_one_alternate, hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
+        obs.alternate_count == 1 and obs.attempts_total == 2 and obs.third_attempt_count == 0);
 }
 
 fn runAlternate429WaitScenario(facts: []Fact) !void {
@@ -1119,9 +1134,8 @@ fn runAlternate429WaitScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .prebody_429_consumes_alternate_after_wait,
-        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
-            obs.alternate_count == 1 and obs.attempts_total == 2);
+    setFact(facts, .prebody_429_consumes_alternate_after_wait, hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
+        obs.alternate_count == 1 and obs.attempts_total == 2);
     setFact(facts, .pre_alternate_wait_within_bound, vclock.sleep_calls == 1 and
         vclock.last_sleep_ns == 5 * std.time.ns_per_s and vclock.last_sleep_ns <= max_wait_ns_bound);
 }
@@ -1152,9 +1166,8 @@ fn runWaitBeyondMaxScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .wait_beyond_max_returns_local_429,
-        hasStatus(response, "429 Too Many Requests") and vclock.sleep_calls == 0 and
-            alternate.snapshot().isZero() and obs.alternate_count == 0);
+    setFact(facts, .wait_beyond_max_returns_local_429, hasStatus(response, "429 Too Many Requests") and vclock.sleep_calls == 0 and
+        alternate.snapshot().isZero() and obs.alternate_count == 0);
 }
 
 fn runWaitBeyondDeadlineScenario(facts: []Fact) !void {
@@ -1183,9 +1196,8 @@ fn runWaitBeyondDeadlineScenario(facts: []Fact) !void {
 
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
-    setFact(facts, .wait_beyond_deadline_returns_local_429,
-        hasStatus(response, "429 Too Many Requests") and vclock.sleep_calls == 0 and
-            alternate.snapshot().isZero());
+    setFact(facts, .wait_beyond_deadline_returns_local_429, hasStatus(response, "429 Too Many Requests") and vclock.sleep_calls == 0 and
+        alternate.snapshot().isZero());
 }
 
 fn runSameRouteRetryScenario(facts: []Fact) !void {
@@ -1208,10 +1220,9 @@ fn runSameRouteRetryScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .presend_fault_consumes_one_same_route_retry,
-        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nretried-ok") and
-            primary.snapshot().call_count == 1 and obs.same_route_retry_count == 1 and
-            obs.alternate_count == 0 and obs.attempts_total == 2);
+    setFact(facts, .presend_fault_consumes_one_same_route_retry, hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nretried-ok") and
+        primary.snapshot().call_count == 1 and obs.same_route_retry_count == 1 and
+        obs.alternate_count == 0 and obs.attempts_total == 2);
     setFact(facts, .transport_failure_never_contacts_alternate, alternate.snapshot().isZero());
 }
 
@@ -1235,10 +1246,9 @@ fn runSameIdentityRefusalScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .same_identity_alternate_delivers_original,
-        hasStatus(response, "401 Unauthorized") and std.mem.endsWith(u8, response, "\r\n\r\ndenied") and
-            alternate.snapshot().isZero() and obs.same_identity_alternate_refused and
-            obs.attempts_total == 1 and obs.alternate_count == 0);
+    setFact(facts, .same_identity_alternate_delivers_original, hasStatus(response, "401 Unauthorized") and std.mem.endsWith(u8, response, "\r\n\r\ndenied") and
+        alternate.snapshot().isZero() and obs.same_identity_alternate_refused and
+        obs.attempts_total == 1 and obs.alternate_count == 0);
 }
 
 fn runSlotExclusivityScenario(facts: []Fact) !void {
@@ -1264,10 +1274,9 @@ fn runSlotExclusivityScenario(facts: []Fact) !void {
         const response = try routedRequest(listener, &carrier);
         defer std.testing.allocator.free(response);
         const obs = wire_proxy.testing.requestObservation(listener);
-        setFact(facts, .alternate_slot_transport_fail_adds_no_retry,
-            hasStatus(response, "502 Bad Gateway") and primary.snapshot().call_count == 1 and
-                alternate.snapshot().isZero() and obs.alternate_count == 1 and
-                obs.same_route_retry_count == 0 and obs.attempts_total == 2);
+        setFact(facts, .alternate_slot_transport_fail_adds_no_retry, hasStatus(response, "502 Bad Gateway") and primary.snapshot().call_count == 1 and
+            alternate.snapshot().isZero() and obs.alternate_count == 1 and
+            obs.same_route_retry_count == 0 and obs.attempts_total == 2);
     }
 
     // Order B: a proven pre-send fault consumes the same-route retry; the retry
@@ -1287,10 +1296,9 @@ fn runSlotExclusivityScenario(facts: []Fact) !void {
         const response = try routedRequest(listener, &carrier);
         defer std.testing.allocator.free(response);
         const obs = wire_proxy.testing.requestObservation(listener);
-        setFact(facts, .same_route_retry_401_adds_no_alternate,
-            hasStatus(response, "401 Unauthorized") and std.mem.endsWith(u8, response, "\r\n\r\ndenied-on-retry") and
-                primary.snapshot().call_count == 1 and alternate.snapshot().isZero() and
-                obs.same_route_retry_count == 1 and obs.alternate_count == 0 and obs.attempts_total == 2);
+        setFact(facts, .same_route_retry_401_adds_no_alternate, hasStatus(response, "401 Unauthorized") and std.mem.endsWith(u8, response, "\r\n\r\ndenied-on-retry") and
+            primary.snapshot().call_count == 1 and alternate.snapshot().isZero() and
+            obs.same_route_retry_count == 1 and obs.alternate_count == 0 and obs.attempts_total == 2);
     }
 }
 
@@ -1314,10 +1322,9 @@ fn runAlternateFailureNoThirdScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .alternate_failure_no_third_attempt,
-        hasStatus(response, "500 Internal Server Error") and std.mem.endsWith(u8, response, "\r\n\r\nalt-boom") and
-            primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
-            obs.attempts_total == 2 and obs.alternate_count == 1 and obs.third_attempt_count == 0);
+    setFact(facts, .alternate_failure_no_third_attempt, hasStatus(response, "500 Internal Server Error") and std.mem.endsWith(u8, response, "\r\n\r\nalt-boom") and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
+        obs.attempts_total == 2 and obs.alternate_count == 1 and obs.third_attempt_count == 0);
 }
 
 fn runStartedResponseScenario(facts: []Fact) !void {
@@ -1348,12 +1355,11 @@ fn runStartedResponseScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .started_response_never_replayed,
-        hasStatus(response, "200 OK") and
-            std.mem.indexOf(u8, response, first) != null and std.mem.indexOf(u8, response, rest) == null and
-            primary.snapshot().call_count == 1 and alternate.snapshot().isZero() and
-            obs.attempts_total == 1 and obs.alternate_count == 0 and obs.same_route_retry_count == 0 and
-            wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .started_response_never_replayed, hasStatus(response, "200 OK") and
+        std.mem.indexOf(u8, response, first) != null and std.mem.indexOf(u8, response, rest) == null and
+        primary.snapshot().call_count == 1 and alternate.snapshot().isZero() and
+        obs.attempts_total == 1 and obs.alternate_count == 0 and obs.same_route_retry_count == 0 and
+        wire_proxy.testing.reservationOutstanding(listener) == 0);
 }
 
 fn runCancellationReplayableScenario(facts: []Fact) !void {
@@ -1400,10 +1406,8 @@ fn runCancellationReplayableScenario(facts: []Fact) !void {
     primary.releasePausedResponse();
     try waitForListenerIdle(listener);
 
-    setFact(facts, .cancellation_releases_reservation_to_zero,
-        wire_proxy.testing.reservationOutstanding(listener) == 0);
-    setFact(facts, .cancellation_makes_no_replay,
-        alternate.snapshot().isZero() and primary.snapshot().call_count == 1);
+    setFact(facts, .cancellation_releases_reservation_to_zero, wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .cancellation_makes_no_replay, alternate.snapshot().isZero() and primary.snapshot().call_count == 1);
     setFact(facts, .streaming_cancellation_single_attempt, prefix_seen and
         primary.snapshot().call_count == 1 and primary.snapshot().attempt_count == 1);
 }
@@ -1461,11 +1465,9 @@ fn runStreamOnceCancellationScenario(facts: []Fact) !void {
     try waitForListenerIdle(listener);
 
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .stream_once_cancellation_keeps_latch_no_replay,
-        obs.replay_mode == .stream_once and alternate.snapshot().isZero() and
-            primary.snapshot().call_count == 1);
-    setFact(facts, .stream_once_cancellation_releases_reservation,
-        wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .stream_once_cancellation_keeps_latch_no_replay, obs.replay_mode == .stream_once and alternate.snapshot().isZero() and
+        primary.snapshot().call_count == 1);
+    setFact(facts, .stream_once_cancellation_releases_reservation, wire_proxy.testing.reservationOutstanding(listener) == 0);
 }
 
 fn runOverflowNoAlternateScenario(facts: []Fact) !void {
@@ -1497,12 +1499,10 @@ fn runOverflowNoAlternateScenario(facts: []Fact) !void {
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
 
-    setFact(facts, .oversize_body_streams_once_refuses_alternate,
-        hasStatus(response, "401 Unauthorized") and alternate.snapshot().isZero() and
-            obs.replay_mode == .stream_once and obs.attempts_total == 1 and obs.alternate_count == 0 and
-            wire_proxy.testing.reservationOutstanding(listener) == 0);
-    setFact(facts, .sidecar_budget_exhaustion_forces_stream_once,
-        obs.replay_mode == .stream_once and wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .oversize_body_streams_once_refuses_alternate, hasStatus(response, "401 Unauthorized") and alternate.snapshot().isZero() and
+        obs.replay_mode == .stream_once and obs.attempts_total == 1 and obs.alternate_count == 0 and
+        wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .sidecar_budget_exhaustion_forces_stream_once, obs.replay_mode == .stream_once and wire_proxy.testing.reservationOutstanding(listener) == 0);
 }
 
 fn runOverflowReleaseScenario(facts: []Fact) !void {
@@ -1586,14 +1586,12 @@ fn runAllExhaustedMinResetScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .all_exhausted_returns_bounded_429,
-        hasStatus(response, "429 Too Many Requests") and primary.snapshot().call_count == 1 and
-            alternate.snapshot().call_count == 1 and obs.attempts_total == 2 and
-            obs.third_attempt_count == 0 and wire_proxy.testing.reservationOutstanding(listener) == 0);
-    setFact(facts, .all_exhausted_propagates_minimum_trusted_reset,
-        std.mem.indexOf(u8, response, "Retry-After: 10\r\n") != null and
-            std.mem.indexOf(u8, response, "Retry-After: 30\r\n") == null and
-            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
+    setFact(facts, .all_exhausted_returns_bounded_429, hasStatus(response, "429 Too Many Requests") and primary.snapshot().call_count == 1 and
+        alternate.snapshot().call_count == 1 and obs.attempts_total == 2 and
+        obs.third_attempt_count == 0 and wire_proxy.testing.reservationOutstanding(listener) == 0);
+    setFact(facts, .all_exhausted_propagates_minimum_trusted_reset, std.mem.indexOf(u8, response, "Retry-After: 10\r\n") != null and
+        std.mem.indexOf(u8, response, "Retry-After: 30\r\n") == null and
+        std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
 }
 
 fn runAllExhaustedNoResetScenario(facts: []Fact) !void {
@@ -1618,12 +1616,10 @@ fn runAllExhaustedNoResetScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .all_exhausted_without_reset_omits_retry_after,
-        hasStatus(response, "429 Too Many Requests") and !responseHasRetryAfter(response) and
-            obs.attempts_total == 2 and obs.alternate_count == 1);
-    setFact(facts, .all_exhausted_delivers_typed_429_not_200,
-        hasStatus(response, "429 Too Many Requests") and
-            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
+    setFact(facts, .all_exhausted_without_reset_omits_retry_after, hasStatus(response, "429 Too Many Requests") and !responseHasRetryAfter(response) and
+        obs.attempts_total == 2 and obs.alternate_count == 1);
+    setFact(facts, .all_exhausted_delivers_typed_429_not_200, hasStatus(response, "429 Too Many Requests") and
+        std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
 }
 
 fn runAllExhaustedMalformedResetScenario(facts: []Fact) !void {
@@ -1650,9 +1646,8 @@ fn runAllExhaustedMalformedResetScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .all_exhausted_ignores_malformed_reset,
-        hasStatus(response, "429 Too Many Requests") and !responseHasRetryAfter(response) and
-            obs.attempts_total == 2 and obs.alternate_count == 1);
+    setFact(facts, .all_exhausted_ignores_malformed_reset, hasStatus(response, "429 Too Many Requests") and !responseHasRetryAfter(response) and
+        obs.attempts_total == 2 and obs.alternate_count == 1);
 }
 
 fn runNoAlternateTerminalScenario(facts: []Fact) !void {
@@ -1678,10 +1673,9 @@ fn runNoAlternateTerminalScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .no_alternate_emits_single_uniform_terminal,
-        hasStatus(response, "429 Too Many Requests") and obs.attempts_total == 1 and
-            obs.alternate_count == 0 and
-            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
+    setFact(facts, .no_alternate_emits_single_uniform_terminal, hasStatus(response, "429 Too Many Requests") and obs.attempts_total == 1 and
+        obs.alternate_count == 0 and
+        std.mem.count(u8, event_stream.getWritten(), "claude_proxy_all_exhausted") == 1);
 }
 
 fn runSameIdentityTerminalScenario(facts: []Fact) !void {
@@ -1707,10 +1701,9 @@ fn runSameIdentityTerminalScenario(facts: []Fact) !void {
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
     const written = event_stream.getWritten();
-    setFact(facts, .same_identity_pool_emits_single_uniform_terminal,
-        hasStatus(response, "401 Unauthorized") and alternate.snapshot().isZero() and
-            obs.same_identity_alternate_refused and obs.attempts_total == 1 and obs.alternate_count == 0 and
-            std.mem.count(u8, written, "claude_proxy_all_exhausted") == 1);
+    setFact(facts, .same_identity_pool_emits_single_uniform_terminal, hasStatus(response, "401 Unauthorized") and alternate.snapshot().isZero() and
+        obs.same_identity_alternate_refused and obs.attempts_total == 1 and obs.alternate_count == 0 and
+        std.mem.count(u8, written, "claude_proxy_all_exhausted") == 1);
 }
 
 fn runResidentAbsenceScenario(facts: []Fact) !void {
@@ -1737,9 +1730,8 @@ fn runResidentAbsenceScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const obs = wire_proxy.testing.requestObservation(listener);
-    setFact(facts, .routed_alternate_completes_with_no_resident,
-        hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
-            obs.alternate_count == 1);
+    setFact(facts, .routed_alternate_completes_with_no_resident, hasStatus(response, "200 OK") and std.mem.endsWith(u8, response, "\r\n\r\nalt-ok") and
+        obs.alternate_count == 1);
 }
 
 fn runAbruptDeathScenario(facts: []Fact) !void {
@@ -1784,7 +1776,7 @@ fn runAbruptDeathScenario(facts: []Fact) !void {
     const held = wire_proxy.testing.reservationOutstanding(listener) > 0;
 
     var shutdown_timer = try std.time.Timer.start();
-    const outstanding = wire_proxy.testing.teardownReclaim(listener);
+    const outstanding = try wire_proxy.testing.teardownReclaim(listener);
     listener_live = false;
     const bounded = shutdown_timer.read() < std.time.ns_per_s;
 
@@ -1821,7 +1813,7 @@ fn runPartialSendTeardownScenario(facts: []Fact) !void {
     try waitForConnectionActive(listener);
 
     var shutdown_timer = try std.time.Timer.start();
-    const outstanding = wire_proxy.testing.teardownReclaim(listener);
+    const outstanding = try wire_proxy.testing.teardownReclaim(listener);
     listener_live = false;
     const bounded = shutdown_timer.read() < std.time.ns_per_s;
 
@@ -2349,8 +2341,9 @@ fn runBrokerMappingScenario(facts: []Fact) !void {
     };
 
     // Build the stale case through the actual Group 2 in-process state. The
-    // expired route-z owner is absent from projected load while live route-a
-    // contributes one. Reintroducing stale load is the negative mutation.
+    // expired route-z owner has unknown liveness and is absent from projected
+    // load while live route-a contributes one. A proven-live owner would remain
+    // sticky beyond this timestamp. Reintroducing stale load is the mutation.
     var lease_state = broker_lease_state.LeaseState(2, 2).init();
     const demand = try broker_model_demand.ModelDemand.init(routed_model);
     try lease_state.registerRoute(.{
@@ -2364,6 +2357,9 @@ fn runBrokerMappingScenario(facts: []Fact) !void {
     const owners = [_]broker_lease_state.OwnerObservation{
         .{ .owner_pid = 1, .liveness = .alive },
         .{ .owner_pid = 2, .liveness = .alive },
+    };
+    const projected_owners = [_]broker_lease_state.OwnerObservation{
+        .{ .owner_pid = 1, .liveness = .alive },
     };
     _ = try lease_state.acquire(try brokerAcquireInput(
         "lease-a",
@@ -2390,7 +2386,7 @@ fn runBrokerMappingScenario(facts: []Fact) !void {
         try broker_lease_state.SessionHandle.parse("session-observer"),
         demand,
         20,
-        &owners,
+        &projected_owners,
         &stale_scratch,
     );
     const stale = try runBrokerMappedRequest(
@@ -2478,6 +2474,1400 @@ fn runBrokerMappingScenario(facts: []Fact) !void {
     setFact(facts, .sticky_least_loaded_selection, sticky.ok and sticky.primary_calls == 1 and sticky.alternate_calls == 1 and
         sticky.attempts_total == 2 and sticky.alternate_count == 1 and
         least_loaded.selectedOnly(.primary) and load_mutation.selectedOnly(.alternate));
+}
+
+const LeaseChildReport = extern struct {
+    selected_slot: u8 = 0,
+    exact_model_preserved: u8 = 0,
+    exactly_one_fake: u8 = 0,
+    reprojected: u8 = 0,
+    pre_projection_present: u8 = 0,
+    pre_route_z_load: u16 = 0,
+    pre_route_a_load: u16 = 0,
+    pid: u32 = 0,
+    incarnation: u64 = 0,
+    generation: u64 = 0,
+};
+
+const SpawnedLeaseChild = struct {
+    process: std.process.Child,
+};
+
+const lease_child_deadline_ns: u64 = 5 * std.time.ns_per_s;
+
+const LeaseChildMode = enum {
+    once,
+    revision,
+    hold,
+    wedge,
+
+    fn text(self: LeaseChildMode) []const u8 {
+        return switch (self) {
+            .once => "once",
+            .revision => "revision",
+            .hold => "hold",
+            .wedge => "wedge",
+        };
+    }
+};
+
+const LeaseAdmissionHookContext = struct {
+    root: []const u8,
+
+    fn run(raw: *anyopaque) !void {
+        const self: *LeaseAdmissionHookContext = @ptrCast(@alignCast(raw));
+        try writeLeaseGate(self.root, "revision-ready");
+        try waitForLeaseGate(self.root, "revision-continue");
+    }
+};
+
+fn requestedLeaseTime(
+    _: ?*const anyopaque,
+    requested_ms: ?broker_lease_state.TimestampMs,
+) !broker_lease_state.TimestampMs {
+    return requested_ms orelse 0;
+}
+
+fn leaseRuntimeOptions(hook: ?broker_lease_runtime.AdmissionHook) broker_lease_runtime.Options {
+    return .{
+        .store = .{ .time = .{ .read = requestedLeaseTime } },
+        .before_first_admission = hook,
+    };
+}
+
+fn leaseRuntimeAttemptOptions(
+    hook: broker_lease_runtime.AdmissionHook,
+) broker_lease_runtime.Options {
+    return .{
+        .store = .{ .time = .{ .read = requestedLeaseTime } },
+        .before_admission_attempt = hook,
+    };
+}
+
+fn runLeaseChildFallible(
+    root: []const u8,
+    report_fd: std.posix.fd_t,
+    with_hook: bool,
+    hold_forever: bool,
+) !void {
+    const allocator = std.heap.page_allocator;
+    var hook_context: LeaseAdmissionHookContext = undefined;
+    const hook: ?broker_lease_runtime.AdmissionHook = if (with_hook) .{
+        .ctx = @ptrCast(&hook_context),
+        .run = LeaseAdmissionHookContext.run,
+    } else null;
+    if (with_hook) hook_context = .{ .root = root };
+
+    var runtime = broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        root,
+        leaseRuntimeOptions(hook),
+    ) catch return error.LeaseChildRuntimeInitFailed;
+    var runtime_live = true;
+    defer if (runtime_live) runtime.deinit();
+    const owner = runtime.ownerIdentityForTest();
+    const demand = try broker_model_demand.ModelDemand.init(routed_model);
+    const preloads = try projectedRuntimeLoadsForProof(&runtime, demand, 100_000);
+
+    const capability = try SessionCapability.generate(allocator);
+    var capability_live = true;
+    defer if (capability_live) capability.deinit();
+    var carrier = try copyCarrier(capability);
+    var carrier_live = true;
+    defer if (carrier_live) std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "ok" }});
+    var primary_live = true;
+    defer if (primary_live) primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "ok" }});
+    var alternate_live = true;
+    defer if (alternate_live) alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+    };
+    const listener = wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .bearer = "synthetic-z", .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .bearer = "synthetic-a", .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    ) catch return error.LeaseChildListenerStartFailed;
+    var listener_live = true;
+    defer if (listener_live) listener.deinit();
+
+    const response = routedRequestBody(listener, &carrier, routed_json) catch
+        return error.LeaseChildRequestFailed;
+    defer std.testing.allocator.free(response);
+    if (!hasStatus(response, "200 OK")) return error.LeaseChildRequestFailed;
+    const primary_snapshot = primary.snapshot();
+    const alternate_snapshot = alternate.snapshot();
+    const observation = wire_proxy.testing.requestObservation(listener);
+    var primary_body: [1024]u8 = undefined;
+    const primary_len = primary.capturedRequestBody(&primary_body);
+    var alternate_body: [1024]u8 = undefined;
+    const alternate_len = alternate.capturedRequestBody(&alternate_body);
+    const selected_slot: u8 = if (primary_snapshot.call_count == 1 and alternate_snapshot.call_count == 0)
+        'z'
+    else if (primary_snapshot.call_count == 0 and alternate_snapshot.call_count == 1)
+        'a'
+    else
+        0;
+    const selected_body = if (selected_slot == 'z') primary_body[0..primary_len] else alternate_body[0..alternate_len];
+    var report = LeaseChildReport{
+        .selected_slot = selected_slot,
+        .exact_model_preserved = @intFromBool(observation.model_present and
+            std.mem.eql(u8, observation.admitted_model_buf[0..observation.admitted_model_len], routed_model) and
+            std.mem.eql(u8, selected_body, routed_json)),
+        .exactly_one_fake = @intFromBool(primary_snapshot.call_count + alternate_snapshot.call_count == 1),
+        .reprojected = @intFromBool(runtime.reprojectionCount() != 0),
+        .pre_projection_present = @intFromBool(preloads != null),
+        .pre_route_z_load = @intCast(if (preloads) |loads| loads[0] else 0),
+        .pre_route_a_load = @intCast(if (preloads) |loads| loads[1] else 0),
+        .pid = owner.pid,
+        .incarnation = owner.incarnation,
+        .generation = owner.generation,
+    };
+    if (hold_forever) {
+        writeAllFd(report_fd, std.mem.asBytes(&report)) catch
+            return error.LeaseChildReportFailed;
+        var parked = std.atomic.Value(u32).init(0);
+        while (true) std.Thread.Futex.wait(&parked, 0);
+    }
+
+    listener.deinit();
+    listener_live = false;
+    alternate.deinit();
+    alternate_live = false;
+    primary.deinit();
+    primary_live = false;
+    std.crypto.secureZero(u8, &carrier);
+    carrier_live = false;
+    capability.deinit();
+    capability_live = false;
+    runtime.deinit();
+    runtime_live = false;
+    writeAllFd(report_fd, std.mem.asBytes(&report)) catch
+        return error.LeaseChildReportFailed;
+}
+
+pub fn runLeaseChildSubprocessIfRequested() !bool {
+    const allocator = std.testing.allocator;
+    const root = std.process.getEnvVarOwned(allocator, "OMUX_STAGE2_LEASE_CHILD_ROOT") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return err,
+    };
+    defer allocator.free(root);
+    const mode = try std.process.getEnvVarOwned(allocator, "OMUX_STAGE2_LEASE_CHILD_MODE");
+    defer allocator.free(mode);
+    const child_mode: LeaseChildMode = if (std.mem.eql(u8, mode, "revision"))
+        .revision
+    else if (std.mem.eql(u8, mode, "hold"))
+        .hold
+    else if (std.mem.eql(u8, mode, "once"))
+        .once
+    else if (std.mem.eql(u8, mode, "wedge"))
+        .wedge
+    else
+        return error.InvalidLeaseChildMode;
+    if (child_mode == .wedge) {
+        var parked = std.atomic.Value(u32).init(0);
+        while (true) std.Thread.Futex.wait(&parked, 0);
+    }
+    const stdout = std.io.getStdOut();
+    runLeaseChildFallible(
+        root,
+        stdout.handle,
+        child_mode == .revision,
+        child_mode == .hold,
+    ) catch |err| {
+        std.debug.print("local lease child diagnostic: {s}\n", .{@errorName(err)});
+        std.process.exit(91);
+    };
+    std.process.exit(0);
+}
+
+fn spawnLeaseChild(root: []const u8, with_hook: bool, hold_forever: bool) !SpawnedLeaseChild {
+    return spawnLeaseChildMode(
+        root,
+        if (with_hook) .revision else if (hold_forever) .hold else .once,
+    );
+}
+
+fn spawnLeaseChildMode(root: []const u8, mode: LeaseChildMode) !SpawnedLeaseChild {
+    const allocator = std.testing.allocator;
+    const executable = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(executable);
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+    try env_map.put("OMUX_STAGE2_LEASE_CHILD_ROOT", root);
+    try env_map.put("OMUX_STAGE2_LEASE_CHILD_MODE", mode.text());
+    const argv = [_][]const u8{executable};
+    var process = std.process.Child.init(&argv, allocator);
+    process.stdin_behavior = .Ignore;
+    process.stdout_behavior = .Pipe;
+    process.stderr_behavior = .Inherit;
+    process.env_map = &env_map;
+    try process.spawn();
+    return .{ .process = process };
+}
+
+fn readLeaseChildReport(child: *SpawnedLeaseChild) !LeaseChildReport {
+    return readLeaseChildReportWithin(child, lease_child_deadline_ns);
+}
+
+fn readLeaseChildReportWithin(
+    child: *SpawnedLeaseChild,
+    timeout_ns: u64,
+) !LeaseChildReport {
+    var report = std.mem.zeroes(LeaseChildReport);
+    var watchdog = LeaseChildWatchdog{ .child = &child.process, .timeout_ns = timeout_ns };
+    const watchdog_thread = try std.Thread.spawn(.{}, LeaseChildWatchdog.run, .{&watchdog});
+    const read_result: anyerror!void = readExactFd(
+        child.process.stdout.?.handle,
+        std.mem.asBytes(&report),
+    );
+    watchdog.done.set();
+    watchdog_thread.join();
+    if (watchdog.timed_out.load(.acquire)) return error.LeaseChildReportTimeout;
+    try read_result;
+    return report;
+}
+
+fn finishLeaseChild(child: *SpawnedLeaseChild) !void {
+    return finishLeaseChildWithin(child, lease_child_deadline_ns);
+}
+
+fn finishLeaseChildWithin(child: *SpawnedLeaseChild, timeout_ns: u64) !void {
+    var watchdog = LeaseChildWatchdog{ .child = &child.process, .timeout_ns = timeout_ns };
+    const watchdog_thread = try std.Thread.spawn(.{}, LeaseChildWatchdog.run, .{&watchdog});
+    const term_result: anyerror!std.process.Child.Term = child.process.wait();
+    watchdog.done.set();
+    watchdog_thread.join();
+    if (watchdog.timed_out.load(.acquire)) return error.LeaseChildWaitTimeout;
+    const term = try term_result;
+    switch (term) {
+        .Exited => |code| if (code != 0) return error.LeaseChildFailed,
+        else => return error.LeaseChildFailed,
+    }
+}
+
+const LeaseChildWatchdog = struct {
+    child: *std.process.Child,
+    timeout_ns: u64,
+    done: std.Thread.ResetEvent = .{},
+    timed_out: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn run(self: *LeaseChildWatchdog) void {
+        self.done.timedWait(self.timeout_ns) catch {
+            self.timed_out.store(true, .release);
+            switch (builtin.os.tag) {
+                .macos, .linux => std.posix.kill(self.child.id, std.posix.SIG.KILL) catch {},
+                else => {},
+            }
+        };
+    }
+};
+
+fn runLeaseChildDeadlineControl() !void {
+    if (comptime builtin.os.tag != .macos and builtin.os.tag != .linux) return;
+    const allocator = std.testing.allocator;
+    var tmp = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer tmp.deinit(allocator);
+    const root = tmp.root;
+
+    var report_wedge = try spawnLeaseChildMode(root, .wedge);
+    try std.testing.expectError(
+        error.LeaseChildReportTimeout,
+        readLeaseChildReportWithin(&report_wedge, 200 * std.time.ns_per_ms),
+    );
+    _ = report_wedge.process.wait() catch {};
+
+    var wait_wedge = try spawnLeaseChildMode(root, .hold);
+    _ = try readLeaseChildReport(&wait_wedge);
+    try std.testing.expectError(
+        error.LeaseChildWaitTimeout,
+        finishLeaseChildWithin(&wait_wedge, 200 * std.time.ns_per_ms),
+    );
+}
+
+fn killLeaseChild(child: *SpawnedLeaseChild) void {
+    _ = child.process.kill() catch {
+        _ = child.process.wait() catch {};
+    };
+}
+
+fn readExactFd(fd: std.posix.fd_t, destination: []u8) !void {
+    var offset: usize = 0;
+    while (offset < destination.len) {
+        const count = try std.posix.read(fd, destination[offset..]);
+        if (count == 0) return error.UnexpectedEndOfStream;
+        offset += count;
+    }
+}
+
+fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) offset += try std.posix.write(fd, bytes[offset..]);
+}
+
+fn leaseGatePath(allocator: std.mem.Allocator, root: []const u8, name: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ root, name });
+}
+
+fn writeLeaseGate(root: []const u8, name: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const path = try leaseGatePath(allocator, root, name);
+    defer allocator.free(path);
+    const file = try std.fs.createFileAbsolute(path, .{ .exclusive = true, .mode = 0o600 });
+    defer file.close();
+    try file.sync();
+}
+
+fn waitForLeaseGate(root: []const u8, name: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const path = try leaseGatePath(allocator, root, name);
+    defer allocator.free(path);
+    var timer = try std.time.Timer.start();
+    while (true) {
+        std.fs.accessAbsolute(path, .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                if (timer.read() > 5 * std.time.ns_per_s) return error.LeaseGateTimeout;
+                std.Thread.yield() catch {};
+                continue;
+            },
+            else => return err,
+        };
+        return;
+    }
+}
+
+fn childRoot(allocator: std.mem.Allocator, parent: []const u8, name: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ parent, name });
+}
+
+const RuntimeSelectJob = struct {
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    candidates: []const broker_lease_runtime.Candidate,
+    demand: broker_model_demand.ModelDemand,
+    now_ms: broker_lease_state.TimestampMs,
+    result: ?broker_lease_runtime.Selection = null,
+    failure: ?anyerror = null,
+
+    fn run(self: *RuntimeSelectJob) void {
+        self.result = self.runtime.selectAndAcquire(self.candidates, self.demand, self.now_ms) catch |err| {
+            self.failure = err;
+            return;
+        };
+    }
+};
+
+fn selectRuntimeForProof(
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    candidates: []const broker_lease_runtime.Candidate,
+    demand: broker_model_demand.ModelDemand,
+    now_ms: broker_lease_state.TimestampMs,
+) !broker_lease_runtime.Selection {
+    var job = RuntimeSelectJob{
+        .runtime = runtime,
+        .candidates = candidates,
+        .demand = demand,
+        .now_ms = now_ms,
+    };
+    const thread = try std.Thread.spawn(.{ .stack_size = 32 * 1024 * 1024 }, RuntimeSelectJob.run, .{&job});
+    thread.join();
+    if (job.failure) |err| return err;
+    return job.result orelse error.LeaseProofSelectionMissing;
+}
+
+const RuntimeReleaseJob = struct {
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    failure: ?anyerror = null,
+
+    fn run(self: *RuntimeReleaseJob) void {
+        self.runtime.releaseAll() catch |err| {
+            self.failure = err;
+        };
+    }
+};
+
+fn releaseRuntimeForProof(runtime: *broker_lease_runtime.LeaseRuntime) !void {
+    var job = RuntimeReleaseJob{ .runtime = runtime };
+    const thread = try std.Thread.spawn(.{ .stack_size = 32 * 1024 * 1024 }, RuntimeReleaseJob.run, .{&job});
+    thread.join();
+    if (job.failure) |err| return err;
+}
+
+const RuntimeProjectionJob = struct {
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    demand: broker_model_demand.ModelDemand,
+    now_ms: broker_lease_state.TimestampMs,
+    result: ?u64 = null,
+
+    fn run(self: *RuntimeProjectionJob) void {
+        self.result = self.runtime.projectedActiveLeaseCount(self.demand, self.now_ms);
+    }
+};
+
+const RuntimeRouteLoadsJob = struct {
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    demand: broker_model_demand.ModelDemand,
+    now_ms: broker_lease_state.TimestampMs,
+    result: ?[2]u64 = null,
+
+    fn run(self: *RuntimeRouteLoadsJob) void {
+        self.result = broker_lease_runtime.testing.projectedLoadsForRoutes(
+            self.runtime,
+            self.demand,
+            self.now_ms,
+            .{
+                brokerRouteHandle("route-z"),
+                brokerRouteHandle("route-a"),
+            },
+        );
+    }
+};
+
+fn projectedRuntimeLoadsForProof(
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    demand: broker_model_demand.ModelDemand,
+    now_ms: broker_lease_state.TimestampMs,
+) !?[2]u64 {
+    var job = RuntimeRouteLoadsJob{ .runtime = runtime, .demand = demand, .now_ms = now_ms };
+    const thread = try std.Thread.spawn(.{ .stack_size = 32 * 1024 * 1024 }, RuntimeRouteLoadsJob.run, .{&job});
+    thread.join();
+    return job.result;
+}
+
+const RuntimeCleanupJob = struct {
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    now_ms: broker_lease_state.TimestampMs,
+    result: ?usize = null,
+    failure: ?anyerror = null,
+
+    fn run(self: *RuntimeCleanupJob) void {
+        self.result = self.runtime.cleanupStale(self.now_ms) catch |err| {
+            self.failure = err;
+            return;
+        };
+    }
+};
+
+const RevisionMutationJob = struct {
+    root: []const u8,
+    demand: broker_model_demand.ModelDemand,
+    failure: ?anyerror = null,
+
+    fn run(self: *RevisionMutationJob) void {
+        var store = broker_lease_runtime.Store.init(
+            std.heap.page_allocator,
+            self.root,
+            leaseRuntimeOptions(null).store,
+        ) catch |err| {
+            self.failure = err;
+            return;
+        };
+        defer store.deinit();
+        store.registerRoute(.{
+            .route = broker_lease_state.RouteHandle.parse("route-revision-fence") catch unreachable,
+            .exact_model = self.demand.exact_model,
+        }) catch |err| {
+            self.failure = err;
+        };
+    }
+};
+
+fn registerRevisionMutationForProof(
+    root: []const u8,
+    demand: broker_model_demand.ModelDemand,
+) !void {
+    var job = RevisionMutationJob{ .root = root, .demand = demand };
+    const thread = try std.Thread.spawn(.{ .stack_size = 32 * 1024 * 1024 }, RevisionMutationJob.run, .{&job});
+    thread.join();
+    if (job.failure) |err| return err;
+}
+
+fn cleanupRuntimeForProof(
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    now_ms: broker_lease_state.TimestampMs,
+) !usize {
+    var job = RuntimeCleanupJob{ .runtime = runtime, .now_ms = now_ms };
+    const thread = try std.Thread.spawn(.{ .stack_size = 32 * 1024 * 1024 }, RuntimeCleanupJob.run, .{&job});
+    thread.join();
+    if (job.failure) |err| return err;
+    return job.result orelse error.LeaseProofCleanupMissing;
+}
+
+fn projectedRuntimeCountForProof(
+    runtime: *broker_lease_runtime.LeaseRuntime,
+    demand: broker_model_demand.ModelDemand,
+    now_ms: broker_lease_state.TimestampMs,
+) !?u64 {
+    var job = RuntimeProjectionJob{ .runtime = runtime, .demand = demand, .now_ms = now_ms };
+    const thread = try std.Thread.spawn(.{ .stack_size = 32 * 1024 * 1024 }, RuntimeProjectionJob.run, .{&job});
+    thread.join();
+    return job.result;
+}
+
+fn runCrossProcessLeaseScenario(facts: []Fact) !void {
+    if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) return;
+    const allocator = std.testing.allocator;
+    var tmp = try repair_state.TestRuntimeDirScope.init(allocator);
+    defer tmp.deinit(allocator);
+    const root = tmp.root;
+    const demand = try broker_model_demand.ModelDemand.init(routed_model);
+
+    const shared = try runSharedLeaseControl(allocator, root, demand);
+    const reprojection = try runRevisionReprojectionControl(allocator, root, demand);
+    const locked_fallback = try runLockedLeaseFallbackControl(allocator, root);
+    const contention_races = try runLeaseContentionRaceControls(allocator, root);
+    const cumulative_budget = try runCumulativeLeaseBudgetControl(allocator, root);
+    const focused_diagnostics = try broker_lease_runtime.testing.runFocusedDiagnostics(root);
+    const duplicate_identity = try runDuplicateSlotIdentityControl(allocator, root);
+    const corrupt_snapshot = try runCorruptLeaseSnapshotControl(allocator, root);
+    const idle_live_owner = try runIdleLiveOwnerControl(allocator, root, demand);
+    const teardown_release = try runTeardownReleaseFailureControl(allocator, root);
+    const controls = [_]struct { name: []const u8, passed: bool }{
+        .{ .name = "cross_process_pressure", .passed = shared },
+        .{ .name = "bounded_reprojection", .passed = reprojection },
+        .{ .name = "locked_advisory_fallback", .passed = locked_fallback },
+        .{ .name = "contention_race_fallback", .passed = contention_races },
+        .{ .name = "cumulative_budget_deadline_separation", .passed = cumulative_budget },
+        .{ .name = "mutation_sensitive_second_review", .passed = focused_diagnostics },
+        .{ .name = "credential_slot_identity", .passed = duplicate_identity },
+        .{ .name = "corrupt_snapshot_fail_closed", .passed = corrupt_snapshot },
+        .{ .name = "idle_live_owner_sticky", .passed = idle_live_owner },
+        .{ .name = "teardown_release_diagnostic", .passed = teardown_release },
+    };
+    var deterministic = true;
+    for (controls) |control| {
+        if (!control.passed) {
+            std.log.err("Stage 2 shared-lease control failed: {s}", .{control.name});
+            deterministic = false;
+        }
+    }
+    setFact(facts, .deterministic_shared_leases, deterministic);
+    setFact(
+        facts,
+        .stale_lease_owner_cleanup,
+        try runStaleOwnerControl(allocator, root, demand),
+    );
+}
+
+fn runSharedLeaseControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    demand: broker_model_demand.ModelDemand,
+) !bool {
+    const shared_root = try childRoot(allocator, root, "shared");
+    defer allocator.free(shared_root);
+    var shared_a = try spawnLeaseChild(shared_root, false, true);
+    errdefer killLeaseChild(&shared_a);
+    const report_a = try readLeaseChildReport(&shared_a);
+    var shared_b = try spawnLeaseChild(shared_root, false, false);
+    errdefer killLeaseChild(&shared_b);
+    const report_b = try readLeaseChildReport(&shared_b);
+    try finishLeaseChild(&shared_b);
+    killLeaseChild(&shared_a);
+
+    const shared_observer = try allocator.create(broker_lease_runtime.LeaseRuntime);
+    shared_observer.* = broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        shared_root,
+        leaseRuntimeOptions(null),
+    ) catch |err| {
+        allocator.destroy(shared_observer);
+        return err;
+    };
+    defer {
+        shared_observer.deinit();
+        allocator.destroy(shared_observer);
+    }
+    const shared_removed = try cleanupRuntimeForProof(shared_observer, 100_010);
+    const shared_clean = try projectedRuntimeCountForProof(shared_observer, demand, 100_011) == 0;
+
+    const isolated_a_root = try childRoot(allocator, root, "isolated-a");
+    defer allocator.free(isolated_a_root);
+    const isolated_b_root = try childRoot(allocator, root, "isolated-b");
+    defer allocator.free(isolated_b_root);
+    var isolated_a = try spawnLeaseChild(isolated_a_root, false, false);
+    errdefer killLeaseChild(&isolated_a);
+    const isolated_report_a = try readLeaseChildReport(&isolated_a);
+    try finishLeaseChild(&isolated_a);
+    var isolated_b = try spawnLeaseChild(isolated_b_root, false, false);
+    errdefer killLeaseChild(&isolated_b);
+    const isolated_report_b = try readLeaseChildReport(&isolated_b);
+    try finishLeaseChild(&isolated_b);
+
+    const shared_selected_load = if (report_a.selected_slot == 'z')
+        report_b.pre_route_z_load
+    else
+        report_b.pre_route_a_load;
+    const shared_other_load = if (report_a.selected_slot == 'z')
+        report_b.pre_route_a_load
+    else
+        report_b.pre_route_z_load;
+    const shared_pressure_mapped = report_b.pre_projection_present == 1 and
+        shared_selected_load == 1 and shared_other_load == 0;
+    const isolated_pressure_absent = isolated_report_a.pre_projection_present == 0 and
+        isolated_report_b.pre_projection_present == 0;
+    const actual_spread = sharedSelectionSpreads(report_a.selected_slot, report_b.selected_slot);
+    // Targeted broken form: a load-blind second process repeats the first
+    // lexical choice. The promoted fact is invalid unless this mutation fails.
+    const load_blind_spread = sharedSelectionSpreads(report_a.selected_slot, report_a.selected_slot);
+    return actual_spread and !load_blind_spread and
+        shared_pressure_mapped and isolated_pressure_absent and
+        isolated_report_a.selected_slot != 0 and
+        isolated_report_a.selected_slot == isolated_report_b.selected_slot and
+        report_a.exact_model_preserved == 1 and report_b.exact_model_preserved == 1 and
+        isolated_report_a.exact_model_preserved == 1 and isolated_report_b.exact_model_preserved == 1 and
+        report_a.exactly_one_fake == 1 and report_b.exactly_one_fake == 1 and
+        shared_removed == 1 and shared_clean;
+}
+
+fn sharedSelectionSpreads(first: u8, second: u8) bool {
+    return first != 0 and second != 0 and first != second;
+}
+
+fn runRevisionReprojectionControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    demand: broker_model_demand.ModelDemand,
+) !bool {
+    const revision_root = try childRoot(allocator, root, "revision");
+    defer allocator.free(revision_root);
+    var revision_child = try spawnLeaseChild(revision_root, true, false);
+    errdefer killLeaseChild(&revision_child);
+    try waitForLeaseGate(revision_root, "revision-ready");
+    try registerRevisionMutationForProof(revision_root, demand);
+    try writeLeaseGate(revision_root, "revision-continue");
+    const revision_report = try readLeaseChildReport(&revision_child);
+    try finishLeaseChild(&revision_child);
+
+    return revision_report.reprojected == 1 and
+        revision_report.exactly_one_fake == 1 and
+        revision_report.exact_model_preserved == 1 and
+        try runReprojectionLimitControl(allocator, root);
+}
+
+fn runLockedLeaseFallbackControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const locked_root = try childRoot(allocator, root, "locked-fallback");
+    defer allocator.free(locked_root);
+    std.fs.makeDirAbsolute(locked_root) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    const log_path = try std.fs.path.join(allocator, &.{ locked_root, "lock-wait.log" });
+    defer allocator.free(log_path);
+    const log_file = try std.fs.createFileAbsolute(log_path, .{ .read = true, .mode = 0o600 });
+    defer log_file.close();
+    var options = leaseRuntimeOptions(null);
+    options.store.log_file = log_file;
+    options.advisory_wait = .{
+        .poll_interval_ns = 0,
+        .heartbeat_ns = std.time.ns_per_hour,
+        .timeout_ns = 0,
+    };
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(allocator, locked_root, options);
+    defer runtime.deinit();
+
+    const lock_path = try std.fs.path.join(allocator, &.{ locked_root, "broker-leases-v2.lock" });
+    defer allocator.free(lock_path);
+    var holder = try std.fs.createFileAbsolute(lock_path, .{ .read = true, .truncate = false, .mode = 0o600 });
+    defer holder.close();
+    if (!(try lock_wait.tryLockFile(holder))) return false;
+    defer holder.unlock();
+
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "locked-reactive" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "locked-reactive" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    return hasStatus(response, "200 OK") and
+        primary.snapshot().call_count + alternate.snapshot().call_count == 1 and
+        runtime.activeLeaseCount() == 0 and
+        options.advisory_wait.timeout_ns == 0 and
+        broker_lease_runtime.advisory_lock_timeout_ns < wire_proxy.testing.defaultRequestDeadlineNs();
+}
+
+const LeaseLockRaceHook = struct {
+    root: []const u8,
+    target_call: usize,
+    calls: usize = 0,
+    holder: ?std.fs.File = null,
+
+    fn run(raw: *anyopaque) !void {
+        const self: *LeaseLockRaceHook = @ptrCast(@alignCast(raw));
+        self.calls += 1;
+        if (self.calls != self.target_call) return;
+        if (self.holder != null) return error.LeaseRaceHookAlreadyArmed;
+        const allocator = std.heap.page_allocator;
+        const path = try std.fs.path.join(allocator, &.{ self.root, "broker-leases-v2.lock" });
+        defer allocator.free(path);
+        var holder = try std.fs.createFileAbsolute(path, .{
+            .read = true,
+            .truncate = false,
+            .mode = 0o600,
+        });
+        errdefer holder.close();
+        if (!(try lock_wait.tryLockFile(holder))) return error.LeaseRaceHookLockUnavailable;
+        self.holder = holder;
+    }
+
+    fn release(self: *LeaseLockRaceHook) void {
+        if (self.holder) |holder| {
+            holder.unlock();
+            holder.close();
+            self.holder = null;
+        }
+    }
+};
+
+fn immediateLeaseOptions() broker_lease_runtime.Options {
+    var options = leaseRuntimeOptions(null);
+    options.advisory_wait = .{
+        .poll_interval_ns = 0,
+        .heartbeat_ns = std.time.ns_per_hour,
+        .timeout_ns = 0,
+    };
+    return options;
+}
+
+fn runLeaseContentionRaceControls(allocator: std.mem.Allocator, root: []const u8) !bool {
+    return try runInitialProjectionContentionControl(allocator, root) and
+        try runAlternateContentionControl(allocator, root, true) and
+        try runAlternateContentionControl(allocator, root, false);
+}
+
+fn runInitialProjectionContentionControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+) !bool {
+    const race_root = try childRoot(allocator, root, "projection-contention");
+    defer allocator.free(race_root);
+    var hook = LeaseLockRaceHook{ .root = race_root, .target_call = 1 };
+    defer hook.release();
+    var options = immediateLeaseOptions();
+    options.before_projection = .{ .ctx = @ptrCast(&hook), .run = LeaseLockRaceHook.run };
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(allocator, race_root, options);
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "projection-reactive" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "unused" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    errdefer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    const passed = hasStatus(response, "200 OK") and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 0 and
+        runtime.activeLeaseCount() == 0 and hook.holder != null;
+    hook.release();
+    _ = try listener.deinitChecked();
+    return passed;
+}
+
+fn runAlternateContentionControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    during_projection: bool,
+) !bool {
+    const name = if (during_projection) "alternate-projection-contention" else "transition-contention";
+    const race_root = try childRoot(allocator, root, name);
+    defer allocator.free(race_root);
+    var hook = LeaseLockRaceHook{ .root = race_root, .target_call = 2 };
+    defer hook.release();
+    var options = immediateLeaseOptions();
+    if (during_projection) {
+        options.before_projection = .{ .ctx = @ptrCast(&hook), .run = LeaseLockRaceHook.run };
+    } else {
+        options.before_admission_attempt = .{ .ctx = @ptrCast(&hook), .run = LeaseLockRaceHook.run };
+    }
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(allocator, race_root, options);
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .unauthorized, .body = "route-z-exhausted" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "alternate-reactive" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    errdefer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    const observed = wire_proxy.testing.requestObservation(listener);
+    const passed = hasStatus(response, "200 OK") and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
+        observed.alternate_count == 1 and runtime.activeLeaseCount() == 1 and
+        hook.holder != null;
+    hook.release();
+    _ = try listener.deinitChecked();
+    return passed;
+}
+
+const LeaseBudgetAdvanceHook = struct {
+    clock: *VirtualClock,
+    amount_ns: u64,
+    calls: usize = 0,
+
+    fn run(raw: *anyopaque) !void {
+        const self: *LeaseBudgetAdvanceHook = @ptrCast(@alignCast(raw));
+        self.calls += 1;
+        self.clock.now_ns += @intCast(self.amount_ns);
+    }
+};
+
+fn runCumulativeLeaseBudgetControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    return try runExactLeaseBudgetExhaustionControl(allocator, root) and
+        try runProviderTimeExcludedFromLeaseBudgetControl(allocator, root);
+}
+
+fn runExactLeaseBudgetExhaustionControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const budget_root = try childRoot(allocator, root, "cumulative-lease-budget");
+    defer allocator.free(budget_root);
+    var vclock = VirtualClock{};
+    var hook = LeaseBudgetAdvanceHook{
+        .clock = &vclock,
+        .amount_ns = broker_lease_runtime.advisory_lock_timeout_ns,
+    };
+    var options = leaseRuntimeOptions(.{ .ctx = @ptrCast(&hook), .run = LeaseBudgetAdvanceHook.run });
+    options.work_clock = vclock.leaseWorkClock();
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(allocator, budget_root, options);
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "route-z-exhausted",
+        .headers = &.{.{ .name = "Retry-After", .value = "5" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "budget-separated" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .request_deadline_ns = 5 * std.time.ns_per_s,
+            .clock = vclock.clock(),
+            .lease_runtime = &runtime,
+        },
+    );
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    const observed = wire_proxy.testing.requestObservation(listener);
+    return hasStatus(response, "200 OK") and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
+        observed.alternate_count == 1 and runtime.activeLeaseCount() == 0 and
+        hook.calls == 1 and vclock.sleep_calls == 1 and
+        vclock.last_sleep_ns == 5 * std.time.ns_per_s and
+        vclock.now_ns == @as(i128, @intCast(broker_lease_runtime.advisory_lock_timeout_ns +
+            5 * std.time.ns_per_s));
+}
+
+fn runProviderTimeExcludedFromLeaseBudgetControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+) !bool {
+    const budget_root = try childRoot(allocator, root, "paused-lease-budget");
+    defer allocator.free(budget_root);
+    var vclock = VirtualClock{};
+    const initial_lease_work_ns = 100 * std.time.ns_per_ms;
+    var hook = LeaseBudgetAdvanceHook{
+        .clock = &vclock,
+        .amount_ns = initial_lease_work_ns,
+    };
+    var options = leaseRuntimeOptions(.{ .ctx = @ptrCast(&hook), .run = LeaseBudgetAdvanceHook.run });
+    options.work_clock = vclock.leaseWorkClock();
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(allocator, budget_root, options);
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{
+        .status = .too_many_requests,
+        .body = "route-z-exhausted",
+        .headers = &.{.{ .name = "Retry-After", .value = "5" }},
+    }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "budget-paused" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .request_deadline_ns = 5 * std.time.ns_per_s,
+            .clock = vclock.clock(),
+            .lease_runtime = &runtime,
+        },
+    );
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    const demand = try broker_model_demand.ModelDemand.init(routed_model);
+    const loads = try projectedRuntimeLoadsForProof(&runtime, demand, 100_000);
+    return hasStatus(response, "200 OK") and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 1 and
+        runtime.activeLeaseCount() == 1 and hook.calls == 1 and
+        vclock.sleep_calls == 1 and vclock.last_sleep_ns == 5 * std.time.ns_per_s and
+        vclock.now_ns == @as(i128, initial_lease_work_ns + 5 * std.time.ns_per_s) and
+        loads != null and loads.?[0] == 0 and loads.?[1] == 1;
+}
+
+fn runDuplicateSlotIdentityControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const identity_root = try childRoot(allocator, root, "duplicate-slot-identity");
+    defer allocator.free(identity_root);
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        identity_root,
+        leaseRuntimeOptions(null),
+    );
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .unauthorized, .body = "account-a-exhausted" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "must-not-run" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-shared", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-claimed-distinct", .admitted, .unknown),
+    };
+    const demand = try broker_model_demand.ModelDemand.init(routed_model);
+    const seed_candidates = [_]broker_lease_runtime.Candidate{
+        .{
+            .observation = observations[0],
+            .account = try broker_lease_state.AccountHandle.parse("account-z"),
+        },
+        .{
+            .observation = observations[1],
+            .account = try broker_lease_state.AccountHandle.parse("account-a"),
+        },
+    };
+    const seeded = try selectRuntimeForProof(&runtime, &seed_candidates, demand, 100_000);
+    if (!std.mem.eql(u8, seeded.route().text, "route-z")) return false;
+    const before = try broker_lease_runtime.testing.snapshotBytesAlloc(&runtime, allocator);
+    defer allocator.free(before);
+    var events = std.ArrayList(u8).init(allocator);
+    defer events.deinit();
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        events.writer().any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-shared" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-shared" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    const observed = wire_proxy.testing.requestObservation(listener);
+    const after = try broker_lease_runtime.testing.snapshotBytesAlloc(&runtime, allocator);
+    defer allocator.free(after);
+    return hasStatus(response, "401 Unauthorized") and
+        primary.snapshot().call_count == 1 and alternate.snapshot().call_count == 0 and
+        observed.same_identity_alternate_refused and observed.alternate_count == 0 and
+        runtime.activeLeaseCount() == 1 and std.mem.eql(u8, before, after);
+}
+
+fn runCorruptLeaseSnapshotControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const corrupt_root = try childRoot(allocator, root, "corrupt-snapshot");
+    defer allocator.free(corrupt_root);
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        corrupt_root,
+        leaseRuntimeOptions(null),
+    );
+    defer runtime.deinit();
+    const state_path = try std.fs.path.join(allocator, &.{ corrupt_root, "broker-leases-v2.json" });
+    defer allocator.free(state_path);
+    const state = try std.fs.createFileAbsolute(state_path, .{ .truncate = true, .mode = 0o600 });
+    try state.writeAll("{malformed-lease-state}");
+    state.close();
+
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "must-not-run" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "must-not-run" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    return hasStatus(response, "502 Bad Gateway") and
+        primary.snapshot().isZero() and alternate.snapshot().isZero() and
+        runtime.activeLeaseCount() == 0;
+}
+
+fn runIdleLiveOwnerControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    demand: broker_model_demand.ModelDemand,
+) !bool {
+    const idle_root = try childRoot(allocator, root, "idle-live-owner");
+    defer allocator.free(idle_root);
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        idle_root,
+        leaseRuntimeOptions(null),
+    );
+    defer runtime.deinit();
+    const candidates = [_]broker_lease_runtime.Candidate{
+        .{
+            .observation = brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+            .account = try broker_lease_state.AccountHandle.parse("account-z"),
+        },
+        .{
+            .observation = brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+            .account = try broker_lease_state.AccountHandle.parse("account-a"),
+        },
+    };
+    const initial = try selectRuntimeForProof(&runtime, &candidates, demand, 100_000);
+    const after_idle = try selectRuntimeForProof(&runtime, &candidates, demand, 220_001);
+    return initial.persisted and after_idle.persisted and
+        std.mem.eql(u8, initial.route().text, after_idle.route().text) and
+        runtime.activeLeaseCount() == 1 and
+        try projectedRuntimeCountForProof(&runtime, demand, 220_001) == 1;
+}
+
+const ArmedPostRenameFailure = struct {
+    armed: bool = false,
+
+    fn run(raw: *anyopaque) !void {
+        const self: *ArmedPostRenameFailure = @ptrCast(@alignCast(raw));
+        if (self.armed) return error.InjectedPostRenameFailure;
+    }
+};
+
+fn runTeardownReleaseFailureControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const teardown_root = try childRoot(allocator, root, "teardown-release-failure");
+    defer allocator.free(teardown_root);
+    var failure = ArmedPostRenameFailure{};
+    var options = leaseRuntimeOptions(null);
+    options.store.post_rename_hook = .{
+        .ctx = @ptrCast(&failure),
+        .run = ArmedPostRenameFailure.run,
+    };
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(allocator, teardown_root, options);
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "release-proof" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "unused" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    var events = std.ArrayList(u8).init(allocator);
+    defer events.deinit();
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        events.writer().any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    failure.armed = true;
+    const failed_closed = if (listener.deinitChecked()) |_| false else |err| err == error.LeaseReleaseFailed;
+    failure.armed = false;
+    return hasStatus(response, "200 OK") and failed_closed and
+        std.mem.indexOf(u8, events.items, "claude_proxy_lease_release_failed") != null;
+}
+
+const ReprojectionLimitHook = struct {
+    store: *broker_lease_runtime.Store,
+    demand: broker_model_demand.ModelDemand,
+    calls: usize = 0,
+
+    fn run(raw: *anyopaque) !void {
+        const self: *ReprojectionLimitHook = @ptrCast(@alignCast(raw));
+        self.calls += 1;
+        if (self.calls > 4) return;
+        var route_buf: [64]u8 = undefined;
+        const route = try std.fmt.bufPrint(&route_buf, "route-reprojection-limit-{d}", .{self.calls});
+        try self.store.registerRoute(.{
+            .route = try broker_lease_state.RouteHandle.parse(route),
+            .exact_model = self.demand.exact_model,
+        });
+    }
+};
+
+fn runReprojectionLimitControl(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const limit_root = try childRoot(allocator, root, "reprojection-limit");
+    defer allocator.free(limit_root);
+    const demand = try broker_model_demand.ModelDemand.init(routed_model);
+    var mutator = try broker_lease_runtime.Store.init(
+        allocator,
+        limit_root,
+        leaseRuntimeOptions(null).store,
+    );
+    defer mutator.deinit();
+    var hook = ReprojectionLimitHook{ .store = &mutator, .demand = demand };
+    var runtime = try broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        limit_root,
+        leaseRuntimeAttemptOptions(.{ .ctx = @ptrCast(&hook), .run = ReprojectionLimitHook.run }),
+    );
+    defer runtime.deinit();
+    const capability = try SessionCapability.generate(allocator);
+    defer capability.deinit();
+    var carrier = try copyCarrier(capability);
+    defer std.crypto.secureZero(u8, &carrier);
+    var primary = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "must-not-run" }});
+    defer primary.deinit();
+    var alternate = try FakeUpstream.start(allocator, &.{.{ .status = .ok, .body = "must-not-run" }});
+    defer alternate.deinit();
+    const observations = [_]broker_route_observation.RouteObservation{
+        brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+        brokerRouteObservation("route-a", "identity-a", .admitted, .unknown),
+    };
+    const listener = try wire_proxy.testing.startWithRoutes(
+        allocator,
+        capability,
+        std.io.null_writer.any(),
+        .{
+            .primary = .{ .upstream = &primary, .identity = "identity-z" },
+            .alternate = .{ .upstream = &alternate, .identity = "identity-a" },
+            .broker_snapshot = brokerSnapshot(&observations, broker_lease_state.missingProjection()),
+            .lease_runtime = &runtime,
+        },
+    );
+    defer listener.deinit();
+    const response = try routedRequest(listener, &carrier);
+    defer allocator.free(response);
+    return hasStatus(response, "502 Bad Gateway") and
+        primary.snapshot().isZero() and alternate.snapshot().isZero() and
+        hook.calls == 4 and runtime.reprojectionCount() == 4 and
+        runtime.activeLeaseCount() == 0;
+}
+
+fn runStaleOwnerControl(
+    allocator: std.mem.Allocator,
+    root: []const u8,
+    demand: broker_model_demand.ModelDemand,
+) !bool {
+    const stale_root = try childRoot(allocator, root, "stale");
+    defer allocator.free(stale_root);
+    var stale_child = try spawnLeaseChild(stale_root, false, true);
+    errdefer killLeaseChild(&stale_child);
+    const stale_report = try readLeaseChildReport(&stale_child);
+    const stale_owner = broker_lease_store.OwnerIdentity{
+        .pid = stale_report.pid,
+        .incarnation = stale_report.incarnation,
+        .generation = stale_report.generation,
+    };
+    const stale_observer = try allocator.create(broker_lease_runtime.LeaseRuntime);
+    stale_observer.* = broker_lease_runtime.LeaseRuntime.init(
+        allocator,
+        stale_root,
+        leaseRuntimeOptions(null),
+    ) catch |err| {
+        allocator.destroy(stale_observer);
+        return err;
+    };
+    defer {
+        stale_observer.deinit();
+        allocator.destroy(stale_observer);
+    }
+    const custody_before = try broker_lease_runtime.testing.ownerCustodyExists(stale_observer, stale_owner);
+    const alive_removed = try cleanupRuntimeForProof(stale_observer, 100_001);
+    const custody_while_alive = try broker_lease_runtime.testing.ownerCustodyExists(stale_observer, stale_owner);
+    killLeaseChild(&stale_child);
+    const dead_removed = try cleanupRuntimeForProof(stale_observer, 100_002);
+    const dead_custody_removed = !(try broker_lease_runtime.testing.ownerCustodyExists(stale_observer, stale_owner));
+    const repeated_removed = try cleanupRuntimeForProof(stale_observer, 100_003);
+    const reclaimed = try projectedRuntimeCountForProof(stale_observer, demand, 100_004) == 0;
+
+    const max_generation: u64 = @intCast(broker_lease_state.max_timestamp_ms);
+    const replacement_incarnation = if (stale_report.incarnation < max_generation)
+        stale_report.incarnation + 1
+    else
+        stale_report.incarnation - 1;
+    const replacement_generation = if (stale_report.generation < max_generation)
+        stale_report.generation + 1
+    else
+        stale_report.generation - 1;
+    const replacement = try allocator.create(broker_lease_runtime.LeaseRuntime);
+    replacement.* = broker_lease_runtime.testing.initWithOwner(
+        allocator,
+        stale_root,
+        leaseRuntimeOptions(null),
+        .{
+            .pid = stale_report.pid,
+            .incarnation = replacement_incarnation,
+            .generation = replacement_generation,
+        },
+        "replacement-session",
+    ) catch |err| {
+        allocator.destroy(replacement);
+        return err;
+    };
+    defer {
+        replacement.deinit();
+        allocator.destroy(replacement);
+    }
+    const replacement_started_empty = replacement.activeLeaseCount() == 0;
+    const replacement_candidates = [_]broker_lease_runtime.Candidate{
+        .{
+            .observation = brokerRouteObservation("route-z", "identity-z", .admitted, .available),
+            .account = try broker_lease_state.AccountHandle.parse("account-z"),
+        },
+        .{
+            .observation = brokerRouteObservation("route-a", "identity-a", .admitted, .available),
+            .account = try broker_lease_state.AccountHandle.parse("account-a"),
+        },
+    };
+    const replacement_selection = try selectRuntimeForProof(
+        replacement,
+        &replacement_candidates,
+        demand,
+        100_005,
+    );
+    const replacement_fresh = replacement_selection.persisted and replacement.activeLeaseCount() == 1;
+    try releaseRuntimeForProof(replacement);
+    const replacement_clean = try projectedRuntimeCountForProof(replacement, demand, 100_006) == 0;
+    const actual_cleanup = staleOwnerCleanupOutcome(
+        custody_before,
+        custody_while_alive,
+        dead_custody_removed,
+        alive_removed,
+        dead_removed,
+        repeated_removed,
+    );
+    // Targeted broken form: canonical lease cleanup succeeds but exact-owner
+    // custody retirement is skipped. The fact must become false.
+    const skipped_retirement = staleOwnerCleanupOutcome(
+        custody_before,
+        custody_while_alive,
+        false,
+        alive_removed,
+        0,
+        repeated_removed,
+    );
+    return actual_cleanup and !skipped_retirement and
+        reclaimed and replacement_started_empty and replacement_fresh and replacement_clean;
+}
+
+fn staleOwnerCleanupOutcome(
+    custody_before: bool,
+    custody_while_alive: bool,
+    dead_custody_removed: bool,
+    alive_removed: usize,
+    dead_removed: usize,
+    repeated_removed: usize,
+) bool {
+    return custody_before and custody_while_alive and dead_custody_removed and
+        alive_removed == 0 and dead_removed == 1 and repeated_removed == 0;
 }
 
 // ===========================================================================
@@ -2602,15 +3992,13 @@ fn runAdvisoryNonAuthoritativeScenario(facts: []Fact) !void {
     const a = wire_proxy.testing.requestObservation(listener_a);
     const b = wire_proxy.testing.requestObservation(listener_b);
 
-    setFact(facts, .advisory_capped_at_inferred_never_proven,
-        a.advisory.present and a.advisory.provenance == .inferred and a.advisory.provenance != .proven);
-    setFact(facts, .advisory_changes_no_routing_decision,
-        a.advisory.present and !b.advisory.present and
-            a.attempts_total == b.attempts_total and a.alternate_count == b.alternate_count and
-            a.same_route_retry_count == b.same_route_retry_count and
-            a.third_attempt_count == b.third_attempt_count and
-            a.upstream_status == b.upstream_status and a.replay_mode == b.replay_mode and
-            with_adv.snapshot().call_count == without_adv.snapshot().call_count);
+    setFact(facts, .advisory_capped_at_inferred_never_proven, a.advisory.present and a.advisory.provenance == .inferred and a.advisory.provenance != .proven);
+    setFact(facts, .advisory_changes_no_routing_decision, a.advisory.present and !b.advisory.present and
+        a.attempts_total == b.attempts_total and a.alternate_count == b.alternate_count and
+        a.same_route_retry_count == b.same_route_retry_count and
+        a.third_attempt_count == b.third_attempt_count and
+        a.upstream_status == b.upstream_status and a.replay_mode == b.replay_mode and
+        with_adv.snapshot().call_count == without_adv.snapshot().call_count);
 }
 
 /// advisory_usage_five_minute_freshness: fresh WHILE age < 300 s (reused with no
@@ -2710,16 +4098,14 @@ fn runAdvisoryNormalizedValueFreeScenario(facts: []Fact) !void {
     const adv = advisoryObs(listener);
     const written = event_stream.getWritten();
 
-    setFact(facts, .advisory_records_normalized_typed_observation,
-        adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
-            adv.provenance == .inferred and !adv.killed and adv.reactive_present);
-    setFact(facts, .advisory_surface_and_event_value_free,
-        std.mem.indexOf(u8, written, "claude_proxy_advisory_observed") != null and
-            std.mem.indexOf(u8, written, "1783652400") == null and
-            std.mem.indexOf(u8, written, "0.42") == null and
-            std.mem.indexOf(u8, written, "utilization") == null and
-            std.mem.indexOf(u8, written, "resets_at") == null and
-            std.mem.indexOf(u8, written, "schema_version") == null);
+    setFact(facts, .advisory_records_normalized_typed_observation, adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
+        adv.provenance == .inferred and !adv.killed and adv.reactive_present);
+    setFact(facts, .advisory_surface_and_event_value_free, std.mem.indexOf(u8, written, "claude_proxy_advisory_observed") != null and
+        std.mem.indexOf(u8, written, "1783652400") == null and
+        std.mem.indexOf(u8, written, "0.42") == null and
+        std.mem.indexOf(u8, written, "utilization") == null and
+        std.mem.indexOf(u8, written, "resets_at") == null and
+        std.mem.indexOf(u8, written, "schema_version") == null);
 }
 
 /// advisory_usage_unknown_field_tolerance: unknown JSON fields (top-level and
@@ -2743,9 +4129,8 @@ fn runAdvisoryUnknownFieldToleranceScenario(facts: []Fact) !void {
 
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_tolerates_unknown_fields,
-        adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
-            adv.provenance == .inferred and !adv.killed);
+    setFact(facts, .advisory_tolerates_unknown_fields, adv.present and adv.freshness == .populated_fresh and adv.readiness == .available and
+        adv.provenance == .inferred and !adv.killed);
 }
 
 /// Drive one advisory doc and return its value-free observation at now_s = 1000.
@@ -2780,14 +4165,10 @@ fn runAdvisoryRequiredFieldExclusionScenario(facts: []Fact) !void {
         }
     }.ok;
 
-    setFact(facts, .advisory_excludes_row_missing_scope,
-        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_missing_scope)));
-    setFact(facts, .advisory_excludes_row_missing_window,
-        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_missing_window)));
-    setFact(facts, .advisory_excludes_row_unbounded_value,
-        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_unbounded_value)));
-    setFact(facts, .advisory_excludes_row_non_absolute_reset,
-        excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_non_absolute_reset)));
+    setFact(facts, .advisory_excludes_row_missing_scope, excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_missing_scope)));
+    setFact(facts, .advisory_excludes_row_missing_window, excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_missing_window)));
+    setFact(facts, .advisory_excludes_row_unbounded_value, excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_unbounded_value)));
+    setFact(facts, .advisory_excludes_row_non_absolute_reset, excluded(try observeAdvisoryDoc(capability, &carrier, adv_row_non_absolute_reset)));
 }
 
 /// advisory_usage_exact_model_scope: a model-scoped row applies ONLY to its exact
@@ -2801,11 +4182,10 @@ fn runAdvisoryExactModelScopeScenario(facts: []Fact) !void {
 
     const match = try observeAdvisoryDoc(capability, &carrier, adv_model_match);
     const missing_id = try observeAdvisoryDoc(capability, &carrier, adv_model_missing_id);
-    setFact(facts, .advisory_model_scope_requires_exact_model,
-        match.present and match.freshness == .populated_fresh and match.readiness == .available and
-            match.provenance == .inferred and
-            missing_id.present and missing_id.freshness == .negative_active and
-            missing_id.readiness == .unknown and missing_id.provenance == .unobserved);
+    setFact(facts, .advisory_model_scope_requires_exact_model, match.present and match.freshness == .populated_fresh and match.readiness == .available and
+        match.provenance == .inferred and
+        missing_id.present and missing_id.freshness == .negative_active and
+        missing_id.readiness == .unknown and missing_id.provenance == .unobserved);
 }
 
 /// advisory_usage_invalid_row_exclusion: an invalid row is never fabricated into
@@ -2817,9 +4197,8 @@ fn runAdvisoryInvalidRowExclusionScenario(facts: []Fact) !void {
     defer std.crypto.secureZero(u8, &carrier);
 
     const adv = try observeAdvisoryDoc(capability, &carrier, adv_row_missing_scope);
-    setFact(facts, .advisory_invalid_row_excluded_never_fabricated,
-        adv.present and adv.freshness == .negative_active and adv.readiness == .unknown and
-            adv.provenance == .unobserved and !adv.killed);
+    setFact(facts, .advisory_invalid_row_excluded_never_fabricated, adv.present and adv.freshness == .negative_active and adv.readiness == .unknown and
+        adv.provenance == .unobserved and !adv.killed);
 }
 
 /// advisory_usage_schema_event_{redaction,deduplication} + the two kill switches:
@@ -2848,13 +4227,11 @@ fn runAdvisorySchemaKillScenario(facts: []Fact) !void {
         std.testing.allocator.free(try routedRequest(listener, &carrier));
         const adv = advisoryObs(listener);
         const written = event_stream.getWritten();
-        setFact(facts, .advisory_unsupported_schema_trips_kill,
-            adv.present and adv.killed and adv.freshness == .killed and
-                std.mem.count(u8, written, "claude_proxy_advisory_schema_rejected") == 1);
-        setFact(facts, .advisory_schema_event_redacted_value_free,
-            std.mem.indexOf(u8, written, "claude_proxy_advisory_schema_rejected") != null and
-                std.mem.indexOf(u8, written, "schema_version") == null and
-                std.mem.indexOf(u8, written, "usage") == null);
+        setFact(facts, .advisory_unsupported_schema_trips_kill, adv.present and adv.killed and adv.freshness == .killed and
+            std.mem.count(u8, written, "claude_proxy_advisory_schema_rejected") == 1);
+        setFact(facts, .advisory_schema_event_redacted_value_free, std.mem.indexOf(u8, written, "claude_proxy_advisory_schema_rejected") != null and
+            std.mem.indexOf(u8, written, "schema_version") == null and
+            std.mem.indexOf(u8, written, "usage") == null);
     }
 
     // Missing top-level structure (no `usage` array) kill.
@@ -2872,9 +4249,8 @@ fn runAdvisorySchemaKillScenario(facts: []Fact) !void {
         defer listener.deinit();
         std.testing.allocator.free(try routedRequest(listener, &carrier));
         const adv = advisoryObs(listener);
-        setFact(facts, .advisory_missing_structure_trips_kill,
-            adv.present and adv.killed and adv.freshness == .killed and
-                std.mem.count(u8, event_stream.getWritten(), "claude_proxy_advisory_schema_rejected") == 1);
+        setFact(facts, .advisory_missing_structure_trips_kill, adv.present and adv.killed and adv.freshness == .killed and
+            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_advisory_schema_rejected") == 1);
     }
 
     // Dedup: two distinct fingerprints (v2, v3), each seen twice → exactly 2.
@@ -2893,8 +4269,7 @@ fn runAdvisorySchemaKillScenario(facts: []Fact) !void {
         defer listener.deinit();
         var i: usize = 0;
         while (i < 4) : (i += 1) std.testing.allocator.free(try routedRequest(listener, &carrier));
-        setFact(facts, .advisory_one_schema_event_per_fingerprint,
-            std.mem.count(u8, event_stream.getWritten(), "claude_proxy_advisory_schema_rejected") == 2);
+        setFact(facts, .advisory_one_schema_event_per_fingerprint, std.mem.count(u8, event_stream.getWritten(), "claude_proxy_advisory_schema_rejected") == 2);
     }
 }
 
@@ -2920,10 +4295,9 @@ fn runAdvisoryStaleFallbackScenario(facts: []Fact) !void {
     vclock.now_ns = 1300 * std.time.ns_per_s;
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_stale_falls_back_to_reactive,
-        adv.freshness == .populated_stale and adv.provenance == .unobserved and
-            adv.reactive_present and adv.elected_provenance == .proven and
-            adv.elected_readiness == .available);
+    setFact(facts, .advisory_stale_falls_back_to_reactive, adv.freshness == .populated_stale and adv.provenance == .unobserved and
+        adv.reactive_present and adv.elected_provenance == .proven and
+        adv.elected_readiness == .available);
 }
 
 /// advisory_missing_reactive_fallback: with no advisory header the election comes
@@ -2943,10 +4317,9 @@ fn runAdvisoryMissingFallbackScenario(facts: []Fact) !void {
 
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_missing_falls_back_to_reactive,
-        !adv.present and adv.freshness == .never and adv.provenance == .unobserved and
-            adv.reactive_present and adv.elected_provenance == .proven and
-            adv.elected_readiness == .available);
+    setFact(facts, .advisory_missing_falls_back_to_reactive, !adv.present and adv.freshness == .never and adv.provenance == .unobserved and
+        adv.reactive_present and adv.elected_provenance == .proven and
+        adv.elected_readiness == .available);
 }
 
 /// advisory_contradictory_reactive_fallback: two same-key rows disagreeing on
@@ -2970,10 +4343,9 @@ fn runAdvisoryContradictoryFallbackScenario(facts: []Fact) !void {
 
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_contradictory_falls_back_to_reactive,
-        adv.present and adv.freshness == .populated_fresh and adv.readiness == .unknown and
-            adv.provenance == .unobserved and adv.reactive_present and
-            adv.elected_provenance == .proven and adv.elected_readiness == .available);
+    setFact(facts, .advisory_contradictory_falls_back_to_reactive, adv.present and adv.freshness == .populated_fresh and adv.readiness == .unknown and
+        adv.provenance == .unobserved and adv.reactive_present and
+        adv.elected_provenance == .proven and adv.elected_readiness == .available);
 }
 
 /// advisory_killed_reactive_fallback: a killed account still yields honest
@@ -2997,10 +4369,9 @@ fn runAdvisoryKilledFallbackScenario(facts: []Fact) !void {
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_killed_falls_back_to_reactive,
-        adv.killed and adv.freshness == .killed and adv.provenance == .unobserved and
-            adv.reactive_present and adv.elected_provenance == .proven and
-            adv.elected_readiness == .available);
+    setFact(facts, .advisory_killed_falls_back_to_reactive, adv.killed and adv.freshness == .killed and adv.provenance == .unobserved and
+        adv.reactive_present and adv.elected_provenance == .proven and
+        adv.elected_readiness == .available);
 }
 
 /// advisory_failure_nonblocking: a per-account kill NEVER stops the harness — the
@@ -3032,9 +4403,8 @@ fn runAdvisoryNonBlockingScenario(facts: []Fact) !void {
         all_served = all_served and hasStatus(response, "200 OK");
     }
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_failure_never_blocks_serving,
-        all_served and adv.killed and adv.elected_provenance == .proven and
-            primary.snapshot().call_count == iterations);
+    setFact(facts, .advisory_failure_never_blocks_serving, all_served and adv.killed and adv.elected_provenance == .proven and
+        primary.snapshot().call_count == iterations);
 }
 
 /// advisory_no_invented_route_readiness: with no advisory and a response class
@@ -3059,11 +4429,10 @@ fn runAdvisoryNoInventedRouteScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_absent_invents_no_route_readiness,
-        hasStatus(response, "500 Internal Server Error") and !adv.present and
-            adv.freshness == .never and !adv.reactive_present and
-            adv.provenance == .unobserved and adv.elected_provenance == .unobserved and
-            adv.elected_readiness == .unknown);
+    setFact(facts, .advisory_absent_invents_no_route_readiness, hasStatus(response, "500 Internal Server Error") and !adv.present and
+        adv.freshness == .never and !adv.reactive_present and
+        adv.provenance == .unobserved and adv.elected_provenance == .unobserved and
+        adv.elected_readiness == .unknown);
 }
 
 /// advisory_no_invented_model_readiness: a fresh advisory row for a DIFFERENT
@@ -3075,9 +4444,8 @@ fn runAdvisoryNoInventedModelScenario(facts: []Fact) !void {
     defer std.crypto.secureZero(u8, &carrier);
 
     const adv = try observeAdvisoryDoc(capability, &carrier, adv_model_mismatch);
-    setFact(facts, .advisory_mismatch_invents_no_model_readiness,
-        adv.present and adv.freshness == .populated_fresh and adv.readiness == .unknown and
-            adv.provenance == .unobserved);
+    setFact(facts, .advisory_mismatch_invents_no_model_readiness, adv.present and adv.freshness == .populated_fresh and adv.readiness == .unknown and
+        adv.provenance == .unobserved);
 }
 
 /// request_path_evidence_precedence: a direct request-path 429 OUTRANKS a fresh
@@ -3102,11 +4470,10 @@ fn runAdvisoryReactivePrecedenceScenario(facts: []Fact) !void {
     const response = try routedRequest(listener, &carrier);
     defer std.testing.allocator.free(response);
     const adv = advisoryObs(listener);
-    setFact(facts, .reactive_outranks_fresh_advisory,
-        hasStatus(response, "429 Too Many Requests") and adv.present and
-            adv.readiness == .available and adv.provenance == .inferred and
-            adv.reactive_present and adv.elected_readiness == .exhausted and
-            adv.elected_provenance == .proven);
+    setFact(facts, .reactive_outranks_fresh_advisory, hasStatus(response, "429 Too Many Requests") and adv.present and
+        adv.readiness == .available and adv.provenance == .inferred and
+        adv.reactive_present and adv.elected_readiness == .exhausted and
+        adv.elected_provenance == .proven);
 }
 
 /// sidecar_no_proactive_usage_polling: the observation is response-driven only —
@@ -3130,8 +4497,7 @@ fn runAdvisoryNoPollScenario(facts: []Fact) !void {
 
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const adv = advisoryObs(listener);
-    setFact(facts, .advisory_observation_adds_no_upstream_call,
-        adv.present and primary.snapshot().call_count == 1 and primary.snapshot().attempt_count == 1);
+    setFact(facts, .advisory_observation_adds_no_upstream_call, adv.present and primary.snapshot().call_count == 1 and primary.snapshot().attempt_count == 1);
 }
 
 /// observed_exhaustion_trusted_through_reset: an observed exhaustion is trusted
@@ -3207,11 +4573,10 @@ fn runAdvisoryDeadlineScenario(facts: []Fact) !void {
     std.testing.allocator.free(try routedRequest(listener, &carrier));
     const at_deadline = advisoryObs(listener);
 
-    setFact(facts, .advisory_availability_expires_at_deadline,
-        at_observe.freshness == .populated_fresh and at_observe.readiness == .available and
-            at_observe.provenance == .inferred and
-            before_deadline.freshness == .populated_fresh and before_deadline.provenance == .inferred and
-            at_deadline.freshness == .populated_fresh and at_deadline.provenance == .unobserved);
+    setFact(facts, .advisory_availability_expires_at_deadline, at_observe.freshness == .populated_fresh and at_observe.readiness == .available and
+        at_observe.provenance == .inferred and
+        before_deadline.freshness == .populated_fresh and before_deadline.provenance == .inferred and
+        at_deadline.freshness == .populated_fresh and at_deadline.provenance == .unobserved);
 }
 
 fn writeArtifactAtomic(artifact: Artifact) !void {

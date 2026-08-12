@@ -6,3 +6,4 @@ const observer = @import("adapters/claude/stage2_observer.zig");
 
 pub const BuildIdentity = observer.BuildIdentity;
 pub const emit = observer.emit;
+pub const runLeaseChildSubprocessIfRequested = observer.runLeaseChildSubprocessIfRequested;

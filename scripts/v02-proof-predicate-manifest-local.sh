@@ -203,7 +203,9 @@ exact_model_preservation
 route_identity_admission
 identity_conflict_fail_closed
 route_readiness_ordering
+deterministic_shared_leases
 lease_state_redaction
+stale_lease_owner_cleanup
 stale_lease_reactive_routing
 unavailable_lease_reactive_routing
 sticky_least_loaded_selection
@@ -478,6 +480,10 @@ case "$mode" in
           .status = reduced(["unavailable_lease_reactive_routing"])
         elif .id == "sticky_least_loaded_selection" then
           .status = reduced(["sticky_least_loaded_selection"])
+        elif .id == "deterministic_shared_leases" then
+          .status = reduced(["deterministic_shared_leases"])
+        elif .id == "stale_lease_owner_cleanup" then
+          .status = reduced(["stale_lease_owner_cleanup"])
         elif .id == "graceful_teardown" then
           .status = reduced([
             "teardown_converges_within_bound",
@@ -683,9 +689,9 @@ case "$mode" in
     jq -e --argjson expected_slice "$expected_slice" '
       ([.predicates[] | select(.status == "pass") | .id] == $expected_slice)
       and ([.predicates[] | select(.status == "fail")] | length == 0)
-      and ([.predicates[] | select(.status == "missing")] | length == 44)
+      and ([.predicates[] | select(.status == "missing")] | length == 42)
     ' "$manifest" >/dev/null ||
-      fail "manifest is not the exact 80-pass/0-fail/44-missing Stage 2 slice"
+      fail "manifest is not the exact 82-pass/0-fail/42-missing Stage 2 slice"
     ;;
 
   -h|--help|help)

@@ -7,6 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const config_mod = @import("../../config.zig");
 const paths = @import("../../paths.zig");
+const lease_runtime_mod = @import("../../broker/lease_runtime.zig");
 const child_authority = @import("child_authority.zig");
 const capability_mod = @import("session_capability.zig");
 const fake_upstream_mod = @import("fake_upstream.zig");
@@ -14,6 +15,7 @@ const wire_proxy = @import("wire_proxy.zig");
 
 const FakeUpstream = fake_upstream_mod.FakeUpstream;
 const SessionCapability = capability_mod.SessionCapability;
+const LeaseRuntime = lease_runtime_mod.LeaseRuntime;
 const neutral_dir_prefix = "claude-neutral-";
 const neutral_dir_entropy_len = 16;
 const neutral_dir_token_len = std.base64.url_safe_no_pad.Encoder.calcSize(neutral_dir_entropy_len);
@@ -35,6 +37,7 @@ pub const RunError = error{
     ChildSpawnFailed,
     ChildWaitFailed,
     ChildCleanupFailed,
+    LeaseTeardownFailed,
     NeutralConfigCleanupFailed,
 };
 
@@ -304,7 +307,7 @@ fn runWithSeams(options: RunOptions, seams: anytype) RunError!std.process.Child.
         return error.PreflightFailed;
     defer managed_config.deinit();
 
-    const result = runPrepared(resolved_options, managed_config.path, seams);
+    const result = runPrepared(resolved_options, managed_config.path, runtime_dir, seams);
     managed_config.remove() catch return error.NeutralConfigCleanupFailed;
     return result;
 }
@@ -312,6 +315,7 @@ fn runWithSeams(options: RunOptions, seams: anytype) RunError!std.process.Child.
 fn runPrepared(
     options: RunOptions,
     managed_config_dir: []const u8,
+    runtime_dir: []const u8,
     seams: anytype,
 ) RunError!std.process.Child.Term {
     const capability = seams.generateCapability(options.allocator) catch
@@ -326,24 +330,34 @@ fn runPrepared(
     defer capability.revoke();
     capability.copyCarrier(&carrier) catch return error.PreflightFailed;
 
+    const lease_runtime = seams.startLeaseRuntime(options.allocator, runtime_dir) catch
+        return error.PreflightFailed;
+
     const listener = seams.startListener(
         options.allocator,
         capability,
         options.event_writer,
-    ) catch return error.PreflightFailed;
+        lease_runtime,
+    ) catch {
+        var teardown_budget = seams.beginTeardownBudget(lease_runtime) catch
+            return error.LeaseTeardownFailed;
+        seams.stopLeaseRuntime(lease_runtime, &teardown_budget) catch
+            return error.LeaseTeardownFailed;
+        return error.PreflightFailed;
+    };
     // Unexpected listener-death monitoring is deferred and is not claimed by
     // this internal slice.
-    var listener_live = true;
-    defer if (listener_live) {
-        capability.revoke();
-        seams.stopListener(listener);
-    };
 
     const loopback_url = std.fmt.allocPrint(
         options.allocator,
         "http://127.0.0.1:{d}",
         .{seams.listenerPort(listener)},
-    ) catch return error.PreflightFailed;
+    ) catch {
+        if (!stopManagedBoundary(capability, listener, lease_runtime, seams)) {
+            return error.LeaseTeardownFailed;
+        }
+        return error.PreflightFailed;
+    };
     defer options.allocator.free(loopback_url);
 
     var child_env = child_authority.buildChildEnv(
@@ -353,7 +367,12 @@ fn runPrepared(
         managed_config_dir,
         loopback_url,
         &carrier,
-    ) catch return error.PreflightFailed;
+    ) catch {
+        if (!stopManagedBoundary(capability, listener, lease_runtime, seams)) {
+            return error.LeaseTeardownFailed;
+        }
+        return error.PreflightFailed;
+    };
     var child_env_live = true;
     defer if (child_env_live) {
         child_env.deinit();
@@ -362,13 +381,43 @@ fn runPrepared(
 
     const outcome = spawnAndWait(options, &child_env.map, seams);
 
-    capability.revoke();
-    seams.stopListener(listener);
-    listener_live = false;
+    const teardown_clean = stopManagedBoundary(capability, listener, lease_runtime, seams);
     child_env.deinit();
     seams.childEnvCleared();
     child_env_live = false;
+    if (!teardown_clean) return error.LeaseTeardownFailed;
     return outcome;
+}
+
+fn stopManagedBoundary(
+    capability: anytype,
+    listener: anytype,
+    lease_runtime: anytype,
+    seams: anytype,
+) bool {
+    capability.revoke();
+    var budget = seams.beginTeardownBudget(lease_runtime) catch {
+        logManagedTeardownFailure("budget", error.LeaseTeardownBudgetUnavailable);
+        return false;
+    };
+    var teardown_failed = false;
+    seams.stopListener(listener, &budget) catch |err| {
+        logManagedTeardownFailure("listener", err);
+        teardown_failed = true;
+    };
+    seams.stopLeaseRuntime(lease_runtime, &budget) catch |err| {
+        logManagedTeardownFailure("lease_runtime", err);
+        teardown_failed = true;
+    };
+    return !teardown_failed;
+}
+
+fn logManagedTeardownFailure(component: []const u8, err: anyerror) void {
+    if (builtin.is_test) {
+        std.log.warn("managed Claude {s} teardown failed: {s}", .{ component, @errorName(err) });
+    } else {
+        std.log.err("managed Claude {s} teardown failed: {s}", .{ component, @errorName(err) });
+    }
 }
 
 fn spawnAndWait(
@@ -410,21 +459,62 @@ const SystemSeams = struct {
         return SessionCapability.generate(allocator);
     }
 
+    fn startLeaseRuntime(
+        _: *SystemSeams,
+        allocator: std.mem.Allocator,
+        runtime_dir: []const u8,
+    ) !?*LeaseRuntime {
+        const broker_root = try std.fs.path.join(allocator, &.{ runtime_dir, "broker" });
+        defer allocator.free(broker_root);
+        const runtime = try allocator.create(LeaseRuntime);
+        runtime.* = LeaseRuntime.init(allocator, broker_root, .{}) catch |err| {
+            allocator.destroy(runtime);
+            if (lease_runtime_mod.isAdvisoryUnavailableError(err)) return null;
+            return err;
+        };
+        return runtime;
+    }
+
+    fn beginTeardownBudget(
+        _: *SystemSeams,
+        maybe_runtime: ?*LeaseRuntime,
+    ) !lease_runtime_mod.WorkBudget {
+        if (maybe_runtime) |runtime| return runtime.beginTeardownBudget();
+        return lease_runtime_mod.startTeardownBudget(null);
+    }
+
+    fn stopLeaseRuntime(
+        _: *SystemSeams,
+        maybe_runtime: ?*LeaseRuntime,
+        budget: *lease_runtime_mod.WorkBudget,
+    ) !void {
+        const runtime = maybe_runtime orelse return;
+        const allocator = runtime.allocator;
+        const result = runtime.deinitCheckedWithBudget(budget);
+        allocator.destroy(runtime);
+        try result;
+    }
+
     fn startListener(
         _: *SystemSeams,
         allocator: std.mem.Allocator,
         capability: *SessionCapability,
         event_writer: std.io.AnyWriter,
+        lease_runtime: ?*LeaseRuntime,
     ) !*wire_proxy.Listener {
-        return wire_proxy.Listener.start(allocator, capability, event_writer);
+        return wire_proxy.Listener.startManaged(allocator, capability, event_writer, lease_runtime);
     }
 
     fn listenerPort(_: *SystemSeams, listener: *wire_proxy.Listener) u16 {
         return listener.port();
     }
 
-    fn stopListener(_: *SystemSeams, listener: *wire_proxy.Listener) void {
-        listener.deinit();
+    fn stopListener(
+        _: *SystemSeams,
+        listener: *wire_proxy.Listener,
+        budget: *lease_runtime_mod.WorkBudget,
+    ) !void {
+        _ = try listener.deinitCheckedWithBudget(budget);
     }
 
     fn spawn(
@@ -494,10 +584,16 @@ const FakeState = struct {
     fail_capability_generation: bool = false,
     fail_capability_copy: bool = false,
     fail_listener: bool = false,
+    fail_listener_stop: bool = false,
+    fail_runtime_stop: bool = false,
     fail_spawn: bool = false,
     fail_deferred_spawn: bool = false,
     fail_wait: bool = false,
     fail_cleanup: bool = false,
+    listener_teardown_cost_ns: i128 = 0,
+    runtime_teardown_cost_ns: i128 = 0,
+    teardown_clock_ns: i128 = 0,
+    teardown_budget_exhausted: bool = false,
 
     executable_resolution_count: usize = 0,
     runtime_dir_count: usize = 0,
@@ -510,6 +606,9 @@ const FakeState = struct {
     listener_started: bool = false,
     listener_stopped: bool = false,
     listener_stopped_after_revoke: bool = false,
+    lease_runtime_started: bool = false,
+    lease_runtime_stopped: bool = false,
+    lease_runtime_stopped_after_listener: bool = false,
     spawn_count: usize = 0,
     wait_count: usize = 0,
     abort_count: usize = 0,
@@ -606,6 +705,11 @@ const FakeChild = struct {
     state: *FakeState,
 };
 
+const FakeLeaseRuntime = struct {
+    allocator: std.mem.Allocator,
+    state: *FakeState,
+};
+
 const FakeSeams = struct {
     state: *FakeState,
 
@@ -637,11 +741,59 @@ const FakeSeams = struct {
         return capability;
     }
 
+    fn startLeaseRuntime(
+        self: *FakeSeams,
+        allocator: std.mem.Allocator,
+        _: []const u8,
+    ) !*FakeLeaseRuntime {
+        const runtime = try allocator.create(FakeLeaseRuntime);
+        runtime.* = .{ .allocator = allocator, .state = self.state };
+        self.state.lease_runtime_started = true;
+        return runtime;
+    }
+
+    fn teardownNow(raw: ?*anyopaque) i128 {
+        const state: *FakeState = @ptrCast(@alignCast(raw.?));
+        return state.teardown_clock_ns;
+    }
+
+    fn beginTeardownBudget(
+        self: *FakeSeams,
+        _: *FakeLeaseRuntime,
+    ) !lease_runtime_mod.WorkBudget {
+        self.state.teardown_clock_ns = 0;
+        return lease_runtime_mod.startTeardownBudget(.{
+            .ctx = @ptrCast(self.state),
+            .nowFn = teardownNow,
+        });
+    }
+
+    fn stopLeaseRuntime(
+        _: *FakeSeams,
+        runtime: *FakeLeaseRuntime,
+        budget: *lease_runtime_mod.WorkBudget,
+    ) !void {
+        const state = runtime.state;
+        state.lease_runtime_stopped = true;
+        state.lease_runtime_stopped_after_listener = state.listener_stopped;
+        state.teardown_clock_ns += state.runtime_teardown_cost_ns;
+        const budget_result = budget.remainingNs();
+        const fail = state.fail_runtime_stop;
+        const allocator = runtime.allocator;
+        allocator.destroy(runtime);
+        if (fail) return error.SyntheticRuntimeStopFailure;
+        _ = budget_result catch |err| {
+            state.teardown_budget_exhausted = true;
+            return err;
+        };
+    }
+
     fn startListener(
         self: *FakeSeams,
         allocator: std.mem.Allocator,
         capability: *FakeCapability,
         _: std.io.AnyWriter,
+        _: *FakeLeaseRuntime,
     ) !*FakeListener {
         if (self.state.fail_listener) return error.SyntheticListenerStartFailure;
         const listener = try allocator.create(FakeListener);
@@ -658,11 +810,24 @@ const FakeSeams = struct {
         return 43123;
     }
 
-    fn stopListener(_: *FakeSeams, listener: *FakeListener) void {
+    fn stopListener(
+        _: *FakeSeams,
+        listener: *FakeListener,
+        budget: *lease_runtime_mod.WorkBudget,
+    ) !void {
         listener.state.listener_stopped = true;
         listener.state.listener_stopped_after_revoke = listener.capability.revoked;
+        listener.state.teardown_clock_ns += listener.state.listener_teardown_cost_ns;
+        const budget_result = budget.remainingNs();
+        const fail = listener.state.fail_listener_stop;
+        const state = listener.state;
         const allocator = listener.allocator;
         allocator.destroy(listener);
+        if (fail) return error.SyntheticListenerStopFailure;
+        _ = budget_result catch |err| {
+            state.teardown_budget_exhausted = true;
+            return err;
+        };
     }
 
     fn spawn(
@@ -731,9 +896,17 @@ const Stage2CapabilityProbeState = if (builtin.is_test) struct {
     missing_rejected: bool = false,
     wrong_rejected: bool = false,
     valid_accepted: bool = false,
+    lease_runtime_started: bool = false,
+    lease_runtime_stopped: bool = false,
+    lease_runtime_stopped_after_listener: bool = false,
 } else struct {};
 
 const Stage2CapabilityProbeChild = if (builtin.is_test) struct {
+    state: *Stage2CapabilityProbeState,
+} else struct {};
+
+const Stage2CapabilityProbeLeaseRuntime = if (builtin.is_test) struct {
+    allocator: std.mem.Allocator,
     state: *Stage2CapabilityProbeState,
 } else struct {};
 
@@ -762,11 +935,41 @@ const Stage2CapabilityProbeSeams = if (builtin.is_test) struct {
         return capability;
     }
 
+    fn startLeaseRuntime(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        _: []const u8,
+    ) !*Stage2CapabilityProbeLeaseRuntime {
+        const runtime = try allocator.create(Stage2CapabilityProbeLeaseRuntime);
+        runtime.* = .{ .allocator = allocator, .state = self.state };
+        self.state.lease_runtime_started = true;
+        return runtime;
+    }
+
+    fn beginTeardownBudget(
+        _: *@This(),
+        _: *Stage2CapabilityProbeLeaseRuntime,
+    ) !lease_runtime_mod.WorkBudget {
+        return lease_runtime_mod.startTeardownBudget(null);
+    }
+
+    fn stopLeaseRuntime(
+        _: *@This(),
+        runtime: *Stage2CapabilityProbeLeaseRuntime,
+        _: *lease_runtime_mod.WorkBudget,
+    ) !void {
+        runtime.state.lease_runtime_stopped = true;
+        runtime.state.lease_runtime_stopped_after_listener = runtime.state.listener_stopped;
+        const allocator = runtime.allocator;
+        allocator.destroy(runtime);
+    }
+
     fn startListener(
         self: *@This(),
         allocator: std.mem.Allocator,
         capability: *SessionCapability,
         event_writer: std.io.AnyWriter,
+        _: *Stage2CapabilityProbeLeaseRuntime,
     ) !*wire_proxy.Listener {
         const listener = try wire_proxy.testing.startWithFake(
             allocator,
@@ -782,10 +985,14 @@ const Stage2CapabilityProbeSeams = if (builtin.is_test) struct {
         return listener.port();
     }
 
-    fn stopListener(self: *@This(), listener: *wire_proxy.Listener) void {
+    fn stopListener(
+        self: *@This(),
+        listener: *wire_proxy.Listener,
+        budget: *lease_runtime_mod.WorkBudget,
+    ) !void {
         const capability = self.state.capability orelse unreachable;
         self.state.listener_stopped_after_revoke = capability.isRevoked();
-        listener.deinit();
+        _ = try listener.deinitCheckedWithBudget(budget);
         self.state.capability = null;
         self.state.listener_stopped = true;
     }
@@ -1013,6 +1220,11 @@ fn expectCleanLifecycle(state: *const FakeState, expect_listener: bool) !void {
     try std.testing.expectEqual(expect_listener, state.listener_started);
     try std.testing.expectEqual(expect_listener, state.listener_stopped);
     if (expect_listener) try std.testing.expect(state.listener_stopped_after_revoke);
+    if (expect_listener) try std.testing.expect(state.lease_runtime_started);
+    if (state.lease_runtime_started) {
+        try std.testing.expect(state.lease_runtime_stopped);
+        if (expect_listener) try std.testing.expect(state.lease_runtime_stopped_after_listener);
+    }
     try expectRuntimeEmpty(state.runtime_dir);
 }
 
@@ -1020,6 +1232,7 @@ fn expectNoPreparedResources(state: *const FakeState) !void {
     try std.testing.expectEqual(@as(usize, 0), state.spawn_count);
     try std.testing.expect(!state.capability_generated);
     try std.testing.expect(!state.listener_started);
+    try std.testing.expect(!state.lease_runtime_started);
 }
 
 test "managed child preserves argv cwd stdio and scrubbed environment with one spawn" {
@@ -1076,6 +1289,148 @@ test "managed child preserves argv cwd stdio and scrubbed environment with one s
     try std.testing.expectEqual(@as(usize, 0), state.upstream_calls);
     try expectCleanLifecycle(&state, true);
 }
+
+fn runOrderlyListenerTeardownFailureDiagnostic() !void {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try tmp.dir.makeDir("home");
+    const home = try tmp.dir.realpathAlloc(allocator, "home");
+    defer allocator.free(home);
+    const runtime_dir = try std.fs.path.join(allocator, &.{ root, "runtime" });
+    defer allocator.free(runtime_dir);
+    var inherited = try testInheritedEnv(allocator, home);
+    defer inherited.deinit();
+    var active_config = config_mod.Config{};
+    const argv = &.{"synthetic-claude"};
+    var state = FakeState{
+        .allocator = allocator,
+        .runtime_dir = runtime_dir,
+        .expected_argv = argv,
+        .expected_home = home,
+        .fail_listener_stop = true,
+    };
+    defer state.deinit();
+    var seams = FakeSeams{ .state = &state };
+
+    try std.testing.expectError(error.LeaseTeardownFailed, runWithSeams(.{
+        .allocator = allocator,
+        .argv = argv,
+        .inherited_env = &inherited,
+        .active_config = &active_config,
+    }, &seams));
+    try std.testing.expectEqual(@as(usize, 1), state.spawn_count);
+    try std.testing.expectEqual(@as(usize, 1), state.wait_count);
+    try std.testing.expectEqual(@as(usize, 0), state.provider_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.credential_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.upstream_calls);
+    try expectCleanLifecycle(&state, true);
+}
+
+test "managed child propagates a typed listener teardown failure after orderly cleanup" {
+    try runOrderlyListenerTeardownFailureDiagnostic();
+}
+
+fn runListenerStartTeardownFailureDiagnostic() !void {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try tmp.dir.makeDir("home");
+    const home = try tmp.dir.realpathAlloc(allocator, "home");
+    defer allocator.free(home);
+    const runtime_dir = try std.fs.path.join(allocator, &.{ root, "runtime" });
+    defer allocator.free(runtime_dir);
+    var inherited = try testInheritedEnv(allocator, home);
+    defer inherited.deinit();
+    var active_config = config_mod.Config{};
+    const argv = &.{"synthetic-claude"};
+    var state = FakeState{
+        .allocator = allocator,
+        .runtime_dir = runtime_dir,
+        .expected_argv = argv,
+        .expected_home = home,
+        .fail_listener = true,
+        .fail_runtime_stop = true,
+    };
+    defer state.deinit();
+    var seams = FakeSeams{ .state = &state };
+
+    try std.testing.expectError(error.LeaseTeardownFailed, runWithSeams(.{
+        .allocator = allocator,
+        .argv = argv,
+        .inherited_env = &inherited,
+        .active_config = &active_config,
+    }, &seams));
+    try std.testing.expectEqual(@as(usize, 0), state.spawn_count);
+    try std.testing.expectEqual(@as(usize, 0), state.provider_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.credential_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.upstream_calls);
+    try expectCleanLifecycle(&state, false);
+}
+
+test "listener-start failure cannot suppress lease runtime teardown failure" {
+    try runListenerStartTeardownFailureDiagnostic();
+}
+
+fn runCumulativeTeardownBudgetDiagnostic() !void {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+    try tmp.dir.makeDir("home");
+    const home = try tmp.dir.realpathAlloc(allocator, "home");
+    defer allocator.free(home);
+    const runtime_dir = try std.fs.path.join(allocator, &.{ root, "runtime" });
+    defer allocator.free(runtime_dir);
+    var inherited = try testInheritedEnv(allocator, home);
+    defer inherited.deinit();
+    var active_config = config_mod.Config{};
+    const argv = &.{"synthetic-claude"};
+    var state = FakeState{
+        .allocator = allocator,
+        .runtime_dir = runtime_dir,
+        .expected_argv = argv,
+        .expected_home = home,
+        .listener_teardown_cost_ns = 300 * std.time.ns_per_ms,
+        .runtime_teardown_cost_ns = 300 * std.time.ns_per_ms,
+    };
+    defer state.deinit();
+    var seams = FakeSeams{ .state = &state };
+
+    try std.testing.expectError(error.LeaseTeardownFailed, runWithSeams(.{
+        .allocator = allocator,
+        .argv = argv,
+        .inherited_env = &inherited,
+        .active_config = &active_config,
+    }, &seams));
+    try std.testing.expect(state.listener_stopped);
+    try std.testing.expect(state.lease_runtime_stopped);
+    try std.testing.expect(state.lease_runtime_stopped_after_listener);
+    try std.testing.expect(state.teardown_budget_exhausted);
+    try std.testing.expectEqual(@as(usize, 0), state.provider_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.credential_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.upstream_calls);
+}
+
+test "listener and lease runtime share one cumulative teardown budget" {
+    try runCumulativeTeardownBudgetDiagnostic();
+}
+
+pub const testing = if (builtin.is_test) struct {
+    /// Source-only launcher teardown diagnostics for the focused TIN-3320 root.
+    /// Fake seams assert that no provider, credential, install, or service path
+    /// is reachable.
+    pub fn runFocusedTeardownDiagnostics() !void {
+        try runOrderlyListenerTeardownFailureDiagnostic();
+        try runListenerStartTeardownFailureDiagnostic();
+        try runCumulativeTeardownBudgetDiagnostic();
+    }
+} else struct {};
 
 test "stage2 synthetic managed capability round trip reconciles accepted and rejected requests" {
     if (comptime builtin.os.tag == .windows or builtin.os.tag == .wasi) {

@@ -1,5 +1,9 @@
 const std = @import("std");
 const broker_lease_store_focus = @import("broker/lease_store.zig");
+const broker_lease_runtime_focus = @import("broker/lease_runtime.zig");
+const claude_launcher_focus = @import("adapters/claude/main.zig");
+const claude_wire_proxy_focus = @import("adapters/claude/wire_proxy.zig");
+const repair_state_focus = @import("repair_state.zig");
 
 // Keep this list explicit. scripts/check-zig-test-root.sh fails when a source
 // file is added without joining the test graph.
@@ -57,6 +61,8 @@ const AllModules = struct {
     pub const broker_identifiers = @import("broker/identifiers.zig");
     pub const broker_lease_state = @import("broker/lease_state.zig");
     pub const broker_lease_store = @import("broker/lease_store.zig");
+    pub const broker_lease_owner = @import("broker/lease_owner.zig");
+    pub const broker_lease_runtime = @import("broker/lease_runtime.zig");
     pub const broker_methods = @import("broker/methods.zig");
     pub const broker_model_demand = @import("broker/model_demand.zig");
     pub const broker_route_observation = @import("broker/route_observation.zig");
@@ -112,5 +118,10 @@ test "every Zig source module joins the test graph" {
 }
 
 test "TIN-3320 cross-process lease store joins focused diagnostics" {
+    var scope = try repair_state_focus.TestRuntimeDirScope.init(std.testing.allocator);
+    defer scope.deinit(std.testing.allocator);
     std.testing.refAllDeclsRecursive(broker_lease_store_focus);
+    try std.testing.expect(try broker_lease_runtime_focus.testing.runFocusedDiagnostics(scope.root));
+    try claude_launcher_focus.testing.runFocusedTeardownDiagnostics();
+    try claude_wire_proxy_focus.testing.runFocusedListenerTeardownDiagnostics();
 }
