@@ -23,6 +23,7 @@ grep -F 'cachix/install-nix-action@v30' "$WORKFLOW" >/dev/null || fail 'workflow
 grep -F 'nix develop --command just public-source-check-local' "$WORKFLOW" >/dev/null || fail 'workflow must use the checked Just/Nix entrypoint'
 grep -F 'public-source-check-local:' "$JUSTFILE" >/dev/null || fail 'Just entrypoint is missing'
 grep -F './scripts/public-source-check.sh' "$JUSTFILE" >/dev/null || fail 'Just entrypoint must call the checked script'
+grep -F 'export PYTHONDONTWRITEBYTECODE=1' "$SCRIPT" >/dev/null || fail 'public-source validation must not write Python bytecode into the source tree'
 
 if grep -E '(tinyland-nix|checkout-gloriousflywheel|\.gloriousflywheel|secrets\.|ATTIC_|GF_ACTIONS_|BAZEL_REMOTE_)' "$WORKFLOW" >/dev/null; then
   fail 'workflow contains a private runner, checkout, secret, or endpoint input'
@@ -35,5 +36,9 @@ done
 grep -F 'GF_ACTIONS_TOKEN' "$SCRIPT" >/dev/null || fail 'retired static GF token must be rejected'
 grep -F 'tinyland-nix' "$ACTIONLINT_CONFIG" >/dev/null || fail 'actionlint must recognize the repository self-hosted runner class'
 grep -F 'PYTHONPYCACHEPREFIX' "$CHECK_LOCAL" >/dev/null || fail 'local checks must keep Python bytecode outside the source tree'
+grep -F 'check_python_source()' "$CHECK_LOCAL" >/dev/null || fail 'Python syntax checks must compile in memory'
+if grep -F -- '-m py_compile' "$CHECK_LOCAL" >/dev/null; then
+  fail 'Python syntax checks must not materialize bytecode beside source files'
+fi
 
 printf '%s\n' 'public source workflow contract: ok'

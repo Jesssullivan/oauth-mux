@@ -173,6 +173,9 @@ v02-prerelease-readiness-local:
 v02-prerelease-manifest-check-local $MANIFEST $ARTIFACT_ROOT $EXPECTED_COMMIT $EXPECTED_TREE:
     {{zig}} build v02-prerelease-manifest-check -Doptimize=Debug -- "$MANIFEST" "$ARTIFACT_ROOT" "$EXPECTED_COMMIT" "$EXPECTED_TREE"
 
+v02-posix-install-contract-local:
+    ./scripts/v02-posix-install-contract-local.sh
+
 managed-harness-schema-update:
     {{zig}} build update-managed-harness-schema
 
@@ -246,7 +249,7 @@ check REF="":
     ./scripts/remote-validate.sh check {{REF}}
 
 check-local:
-    ./scripts/check-local.sh
+    omux-owned-temp-runner --root PYTHON_CACHE_ROOT:oauth-mux-pycache -- /bin/sh ./scripts/check-local.sh
     @echo "all checks passed"
 
 # Unprivileged FOSS source path. Authoritative proof is the Public Source

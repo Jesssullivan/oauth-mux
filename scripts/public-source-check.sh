@@ -2,6 +2,7 @@
 # Public-source build contract: no Tinyland/GF credential or endpoint input.
 
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 private_names=(
   ATTIC_TOKEN
