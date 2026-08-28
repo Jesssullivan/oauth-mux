@@ -1,9 +1,41 @@
 # oauth-mux Release Runbook
 
-Updated: 2026-07-17
+Updated: 2026-08-28
 
 Release discipline (2026-07-04): cuts are evidence-bound per `CHANGELOG.md`;
-cadence + tag-drift warning tracked in TIN-2462.
+cadence + tag-drift warning delivered under TIN-2462.
+
+## Cadence Rule (TIN-2462)
+
+A cut is owed whenever a flagship `docs/evidence/` dir lands — not on a
+calendar schedule. Two mechanical signals back that rule up so drift is
+visible instead of discovered mid-dogfood (the original TIN-2462 incident:
+61 PRs sat unreleased for 22 days between v0.1.13 and v0.1.14 with zero
+signal):
+
+* **CI tag-drift warning** (`scripts/tag-drift-check.sh`, wired into
+  `.github/workflows/ci.yml`'s `tag-drift-warning` job on every PR) computes
+  commits-ahead and days-ahead of `main` vs the newest `v*` tag and prints a
+  `::warning::` when either crosses a threshold (default: 20 commits or 14
+  days; override via `OMUX_TAG_DRIFT_COMMITS_THRESHOLD` /
+  `OMUX_TAG_DRIFT_DAYS_THRESHOLD`). It is advisory only — it never fails a
+  PR — because the underlying rule is evidence-bound, not calendar-bound;
+  the warning just makes drift visible before it becomes a stale-binary
+  incident.
+* **CHANGELOG gate** (`scripts/check-changelog-entry.sh`, wired into
+  `scripts/release-local.sh` right after the version-match check) fails the
+  *cut*, not PRs: `release-local.sh <version>` refuses to stage a release
+  unless `CHANGELOG.md` already has a `## v<version>` heading. Set
+  `OMUX_RELEASE_SKIP_CHANGELOG_GATE=1` only for a deliberate debug run that
+  is not going to be tagged.
+
+## CHANGELOG Maintenance
+
+`CHANGELOG.md`'s own header states the evidence-bound rule; keep entries
+under `## Unreleased` as work lands, and move them under a new `## v<version>
+— <date> — "<codename>"` heading as part of cutting that version — before
+running `release-local.sh`/`release-proof.yml`, since the CHANGELOG gate
+above will otherwise refuse the cut.
 
 ## Remote And Public Quality Gates
 

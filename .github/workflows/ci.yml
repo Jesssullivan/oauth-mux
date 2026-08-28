@@ -257,3 +257,36 @@ jobs:
 
             run_with_timeout "remote nix build" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix build .#
             run_with_timeout "remote nix check" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix flake check
+
+  contract-guards:
+    name: no-FFI surface + v0.2 manifest schema guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No-FFI surface guard (TIN-1798)
+        run: ./scripts/no-ffi-surface-guard.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install pytest
+        run: pip install --quiet pytest
+
+      - name: v0.2 release-manifest consumer schema (TIN-2799 / TIN-2050)
+        run: python3 -m pytest test/test_release_manifest_v02_consumer_schema.py -v
+
+  tag-drift-warning:
+    name: Release tag-drift warning (TIN-2462)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Warn if the release channel has drifted from main
+        run: ./scripts/tag-drift-check.sh "${{ github.sha }}"
