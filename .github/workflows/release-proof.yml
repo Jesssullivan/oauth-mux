@@ -17,53 +17,47 @@ env:
 jobs:
   cache-first-release-proof:
     name: GloriousFlywheel release proof
-    runs-on: tinyland-nix
+    # R331: tinyland-inc/GloriousFlywheel is private now, and the shared
+    # tinyland-nix org pool is unreachable from this personal, out-of-org
+    # repo. jesssullivan-nix is the owner-overlay capability class that
+    # actually serves this account's repos — see ci.yml for the full note.
+    runs-on: jesssullivan-nix
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
-        with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+      - name: Set up Nix (ci-templates)
+        uses: tinyland-inc/ci-templates/.github/actions/nix-setup@d8d178c022a0f84853d53a2c8fe0fc90115f0949 # v3.1.0
 
       - name: Run cache-first release proof
-        uses: ./.gloriousflywheel/.github/actions/nix-job
+        shell: bash
         env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
           OMUX_REQUESTED_RELEASE_VERSION: ${{ inputs.version || '' }}
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: "false"
-          command: |
-            set -euxo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
+        run: |
+          set -euxo pipefail
 
-            run_with_timeout() {
-              local label="$1"
-              local duration="$2"
-              shift 2
+          run_with_timeout() {
+            local label="$1"
+            local duration="$2"
+            shift 2
 
-              if ! command -v timeout >/dev/null 2>&1; then
-                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
-                "$@"
-                return
-              fi
+            if ! command -v timeout >/dev/null 2>&1; then
+              echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+              "$@"
+              return
+            fi
 
-              set +e
-              timeout --foreground "${duration}" "$@"
-              local status=$?
-              set -e
+            set +e
+            timeout --foreground "${duration}" "$@"
+            local status=$?
+            set -e
 
-              if [ "${status}" -eq 124 ]; then
-                echo "::error::${label} timed out after ${duration}"
-              fi
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::${label} timed out after ${duration}"
+            fi
 
-              return "${status}"
-            }
+            return "${status}"
+          }
 
-            release_version="$(./scripts/resolve-release-version.sh "${OMUX_REQUESTED_RELEASE_VERSION}")"
-            run_with_timeout "GloriousFlywheel release proof" "${OMUX_GF_RELEASE_PROOF_TIMEOUT:-40m}" nix develop --command just release-proof-local "${release_version}"
+          release_version="$(./scripts/resolve-release-version.sh "${OMUX_REQUESTED_RELEASE_VERSION}")"
+          run_with_timeout "GloriousFlywheel release proof" "${OMUX_GF_RELEASE_PROOF_TIMEOUT:-40m}" nix develop --command just release-proof-local "${release_version}"

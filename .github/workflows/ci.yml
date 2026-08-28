@@ -21,121 +21,114 @@ jobs:
   cache-first:
     name: GloriousFlywheel cache-first check
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: tinyland-nix
+    # R331: tinyland-inc/GloriousFlywheel is private now, so the App-token
+    # checkout-and-local-path dance this job used to reach its private
+    # nix-job action is retired. tinyland-nix (the shared tinyland-inc org
+    # pool) is also unreachable from this personal, out-of-org repo — GitHub
+    # self-hosted runner groups do not cross an org/personal-account
+    # boundary. jesssullivan-nix is the owner-overlay capability class
+    # (jesssullivan-infra) that actually serves this account's repos.
+    runs-on: jesssullivan-nix
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
-        with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+      - name: Set up Nix (ci-templates)
+        uses: tinyland-inc/ci-templates/.github/actions/nix-setup@d8d178c022a0f84853d53a2c8fe0fc90115f0949 # v3.1.0
 
+      # NOTE (R331): cache-push on trusted main-branch pushes (the old
+      # `push-cache: github.event_name == 'push'` behavior) is not carried
+      # forward here. ci-templates' nix-setup is read-only cache-hint
+      # detection; there is no drop-in equivalent for GF nix-job's
+      # attic-token-gated push in this repo's Bazel-free Zig build. Restoring
+      # write-side caching is tracked as follow-up, not invented here.
       - name: Run cache-first validation
-        uses: ./.gloriousflywheel/.github/actions/nix-job
-        env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
-          command: |
-            set -euxo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-            run_with_timeout() {
-              local label="$1"
-              local duration="$2"
-              shift 2
+          run_with_timeout() {
+            local label="$1"
+            local duration="$2"
+            shift 2
 
-              if ! command -v timeout >/dev/null 2>&1; then
-                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
-                "$@"
-                return
-              fi
+            if ! command -v timeout >/dev/null 2>&1; then
+              echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+              "$@"
+              return
+            fi
 
-              set +e
-              timeout --foreground "${duration}" "$@"
-              local status=$?
-              set -e
+            set +e
+            timeout --foreground "${duration}" "$@"
+            local status=$?
+            set -e
 
-              if [ "${status}" -eq 124 ]; then
-                echo "::error::${label} timed out after ${duration}"
-              fi
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::${label} timed out after ${duration}"
+            fi
 
-              return "${status}"
-            }
+            return "${status}"
+          }
 
-            run_with_timeout "GloriousFlywheel cache-first validation" "${OMUX_GF_CHECK_TIMEOUT:-25m}" nix develop --command just check-local
+          run_with_timeout "GloriousFlywheel cache-first validation" "${OMUX_GF_CHECK_TIMEOUT:-25m}" nix develop --command just check-local
 
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: tinyland-nix
+    # R331: see cache-first above.
+    runs-on: jesssullivan-nix
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
-        with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+      - name: Set up Nix (ci-templates)
+        uses: tinyland-inc/ci-templates/.github/actions/nix-setup@d8d178c022a0f84853d53a2c8fe0fc90115f0949 # v3.1.0
 
-      - name: Run test lane on GloriousFlywheel
-        uses: ./.gloriousflywheel/.github/actions/nix-job
-        env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
-          command: |
+      - name: Run test lane
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          run_with_timeout() {
+            local label="$1"
+            local duration="$2"
+            shift 2
+
+            if ! command -v timeout >/dev/null 2>&1; then
+              echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+              "$@"
+              return
+            fi
+
+            set +e
+            timeout --foreground "${duration}" "$@"
+            local status=$?
+            set -e
+
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::${label} timed out after ${duration}"
+            fi
+
+            return "${status}"
+          }
+
+          run_with_timeout "remote test lane" "${OMUX_GF_TEST_TIMEOUT:-25m}" nix develop --command bash -lc '
             set -euxo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
-
-            run_with_timeout() {
-              local label="$1"
-              local duration="$2"
-              shift 2
-
-              if ! command -v timeout >/dev/null 2>&1; then
-                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
-                "$@"
-                return
-              fi
-
-              set +e
-              timeout --foreground "${duration}" "$@"
-              local status=$?
-              set -e
-
-              if [ "${status}" -eq 124 ]; then
-                echo "::error::${label} timed out after ${duration}"
-              fi
-
-              return "${status}"
-            }
-
-            run_with_timeout "remote test lane" "${OMUX_GF_TEST_TIMEOUT:-25m}" nix develop --command bash -lc '
-              set -euxo pipefail
-              zig build
-              zig build test
-              for cfg in examples/*.config.json; do
-                OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
-              done
-              ./scripts/e2e-local.sh
-              zig build -Doptimize=ReleaseSafe
-              ls -lh zig-out/bin/oauth-mux
-            '
+            zig build
+            zig build test
+            for cfg in examples/*.config.json; do
+              OMUX_CONFIG="$PWD/$cfg" ./zig-out/bin/oauth-mux config validate
+            done
+            ./scripts/e2e-local.sh
+            zig build -Doptimize=ReleaseSafe
+            ls -lh zig-out/bin/oauth-mux
+          '
 
   cross-compile:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: tinyland-nix
+    # R331: see cache-first above.
+    runs-on: jesssullivan-nix
     timeout-minutes: 30
     strategy:
       matrix:
@@ -149,54 +142,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
-        with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+      - name: Set up Nix (ci-templates)
+        uses: tinyland-inc/ci-templates/.github/actions/nix-setup@d8d178c022a0f84853d53a2c8fe0fc90115f0949 # v3.1.0
 
-      - name: Build ${{ matrix.target }} on GloriousFlywheel
-        uses: ./.gloriousflywheel/.github/actions/nix-job
-        env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
-          command: |
+      - name: Build ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          run_with_timeout() {
+            local label="$1"
+            local duration="$2"
+            shift 2
+
+            if ! command -v timeout >/dev/null 2>&1; then
+              echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+              "$@"
+              return
+            fi
+
+            set +e
+            timeout --foreground "${duration}" "$@"
+            local status=$?
+            set -e
+
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::${label} timed out after ${duration}"
+            fi
+
+            return "${status}"
+          }
+
+          run_with_timeout "remote cross-compile ${{ matrix.target }}" "${OMUX_GF_CROSS_TIMEOUT:-20m}" nix develop --command bash -lc '
             set -euxo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
-
-            run_with_timeout() {
-              local label="$1"
-              local duration="$2"
-              shift 2
-
-              if ! command -v timeout >/dev/null 2>&1; then
-                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
-                "$@"
-                return
-              fi
-
-              set +e
-              timeout --foreground "${duration}" "$@"
-              local status=$?
-              set -e
-
-              if [ "${status}" -eq 124 ]; then
-                echo "::error::${label} timed out after ${duration}"
-              fi
-
-              return "${status}"
-            }
-
-            run_with_timeout "remote cross-compile ${{ matrix.target }}" "${OMUX_GF_CROSS_TIMEOUT:-20m}" nix develop --command bash -lc '
-              set -euxo pipefail
-              zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
-              ls -lh zig-out/bin/omux* zig-out/bin/oauth-mux*
-              file zig-out/bin/omux* zig-out/bin/oauth-mux*
-            '
+            zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+            ls -lh zig-out/bin/omux* zig-out/bin/oauth-mux*
+            file zig-out/bin/omux* zig-out/bin/oauth-mux*
+          '
 
       - uses: actions/upload-artifact@v4
         with:
@@ -208,52 +190,42 @@ jobs:
 
   nix:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: tinyland-nix
+    # R331: see cache-first above.
+    runs-on: jesssullivan-nix
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
-        with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+      - name: Set up Nix (ci-templates)
+        uses: tinyland-inc/ci-templates/.github/actions/nix-setup@d8d178c022a0f84853d53a2c8fe0fc90115f0949 # v3.1.0
 
-      - name: Run Nix lane on GloriousFlywheel
-        uses: ./.gloriousflywheel/.github/actions/nix-job
-        env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: ${{ github.event_name == 'push' && 'true' || 'false' }}
-          command: |
-            set -euxo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
+      - name: Run Nix lane
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-            run_with_timeout() {
-              local label="$1"
-              local duration="$2"
-              shift 2
+          run_with_timeout() {
+            local label="$1"
+            local duration="$2"
+            shift 2
 
-              if ! command -v timeout >/dev/null 2>&1; then
-                echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
-                "$@"
-                return
-              fi
+            if ! command -v timeout >/dev/null 2>&1; then
+              echo "::warning::GNU timeout is unavailable; running ${label} without an inner timeout"
+              "$@"
+              return
+            fi
 
-              set +e
-              timeout --foreground "${duration}" "$@"
-              local status=$?
-              set -e
+            set +e
+            timeout --foreground "${duration}" "$@"
+            local status=$?
+            set -e
 
-              if [ "${status}" -eq 124 ]; then
-                echo "::error::${label} timed out after ${duration}"
-              fi
+            if [ "${status}" -eq 124 ]; then
+              echo "::error::${label} timed out after ${duration}"
+            fi
 
-              return "${status}"
-            }
+            return "${status}"
+          }
 
-            run_with_timeout "remote nix build" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix build .#
-            run_with_timeout "remote nix check" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix flake check
+          run_with_timeout "remote nix build" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix build .#
+          run_with_timeout "remote nix check" "${OMUX_GF_NIX_TIMEOUT:-25m}" nix flake check
