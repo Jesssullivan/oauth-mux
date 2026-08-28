@@ -48,9 +48,9 @@ jobs:
         shell: bash
         run: |
           # shellcheck disable=SC2016
-# GH ${{ }} expressions inside the single-quoted bash -lc wrapper are
-          # bash -lc wrapper are substituted by Actions BEFORE the shell parses them;
-          # the quoting is correct (review: oauth-mux #526).
+          # GH expressions inside the single-quoted bash -lc wrapper are
+          # substituted by Actions BEFORE the shell parses them; the
+          # quoting is correct (review: oauth-mux #526).
           set -euxo pipefail
 
           run_with_timeout() {
@@ -93,9 +93,9 @@ jobs:
         shell: bash
         run: |
           # shellcheck disable=SC2016
-# GH ${{ }} expressions inside the single-quoted bash -lc wrapper are
-          # bash -lc wrapper are substituted by Actions BEFORE the shell parses them;
-          # the quoting is correct (review: oauth-mux #526).
+          # GH expressions inside the single-quoted bash -lc wrapper are
+          # substituted by Actions BEFORE the shell parses them; the
+          # quoting is correct (review: oauth-mux #526).
           set -euxo pipefail
 
           run_with_timeout() {
@@ -121,6 +121,7 @@ jobs:
             return "${status}"
           }
 
+          # shellcheck disable=SC2016
           run_with_timeout "remote test lane" "${OMUX_GF_TEST_TIMEOUT:-25m}" nix develop --command bash -lc '
             set -euxo pipefail
             zig build
@@ -157,9 +158,9 @@ jobs:
         shell: bash
         run: |
           # shellcheck disable=SC2016
-# GH ${{ }} expressions inside the single-quoted bash -lc wrapper are
-          # bash -lc wrapper are substituted by Actions BEFORE the shell parses them;
-          # the quoting is correct (review: oauth-mux #526).
+          # GH expressions inside the single-quoted bash -lc wrapper are
+          # substituted by Actions BEFORE the shell parses them; the
+          # quoting is correct (review: oauth-mux #526).
           set -euxo pipefail
 
           run_with_timeout() {
@@ -185,6 +186,7 @@ jobs:
             return "${status}"
           }
 
+          # shellcheck disable=SC2016
           run_with_timeout "remote cross-compile ${{ matrix.target }}" "${OMUX_GF_CROSS_TIMEOUT:-20m}" nix develop --command bash -lc '
             set -euxo pipefail
             zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
