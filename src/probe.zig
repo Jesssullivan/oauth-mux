@@ -466,6 +466,42 @@ fn headerValue(response: std.http.Client.Response, name: []const u8) ?[]const u8
     return null;
 }
 
+/// TIN-863 optional discovery leg: pull the RFC 9728 `resource_metadata`
+/// parameter out of a `WWW-Authenticate` challenge header, e.g.
+///   `Bearer error="invalid_token", resource_metadata="https://example.com/.well-known/oauth-protected-resource"`
+/// Returns the quoted value verbatim (no unescaping beyond the surrounding
+/// quotes: RFC 9728 doesn't permit backslash-escapes inside this param, and
+/// a value that tried to smuggle a `"` would simply truncate here rather
+/// than parse as something else). Pure string parsing, no I/O -- this is the
+/// same "hint" text `executeHttp` already extracts via `hint_header` for the
+/// MCP "resource" capability, offered as a decoded convenience on top of it.
+pub fn parseWwwAuthenticateResourceMetadataUrl(header: []const u8) ?[]const u8 {
+    const needle = "resource_metadata=";
+    const start = std.mem.indexOf(u8, header, needle) orelse return null;
+    var rest = header[start + needle.len ..];
+    if (rest.len == 0 or rest[0] != '"') return null;
+    rest = rest[1..];
+    const end = std.mem.indexOfScalar(u8, rest, '"') orelse return null;
+    const value = rest[0..end];
+    return if (value.len == 0) null else value;
+}
+
+test "parseWwwAuthenticateResourceMetadataUrl extracts the quoted metadata URL" {
+    const header = "Bearer error=\"invalid_token\", error_description=\"resource mismatch\", " ++
+        "resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource\"";
+    try std.testing.expectEqualStrings(
+        "https://mcp.example.com/.well-known/oauth-protected-resource",
+        parseWwwAuthenticateResourceMetadataUrl(header).?,
+    );
+}
+
+test "parseWwwAuthenticateResourceMetadataUrl is null-safe on absent/malformed params" {
+    try std.testing.expect(parseWwwAuthenticateResourceMetadataUrl("Bearer error=\"invalid_token\"") == null);
+    try std.testing.expect(parseWwwAuthenticateResourceMetadataUrl("Bearer resource_metadata=") == null);
+    try std.testing.expect(parseWwwAuthenticateResourceMetadataUrl("Bearer resource_metadata=\"\"") == null);
+    try std.testing.expect(parseWwwAuthenticateResourceMetadataUrl("Bearer resource_metadata=\"unterminated") == null);
+}
+
 test "classifyResult honors probe success range" {
     const plan = provider_schema.ProbePlan{
         .capability = "chat:max",
@@ -669,4 +705,102 @@ test "execute command probe enforces timeout" {
 
     try std.testing.expectEqual(@as(u16, 408), result.status);
     try std.testing.expect(std.mem.indexOf(u8, result.hint.?, "timed out") != null);
+}
+
+// ── TIN-863 fake-resource cassette: MCP "resource" capability ──────────────
+//
+// These drive the REAL "resource" capability ProbePlan (as returned by
+// provider_schema.probePlanForCapability, not a hand-built stand-in) through
+// the real classifyResult/classifyHttp classification path with synthetic
+// wire outcomes standing in for a resource server's response. No network,
+// no secrets: every "token" string here is an inert placeholder that is
+// never sent anywhere, and every ProbeResult below is data one of these
+// outcomes would produce, not a live capture.
+//
+//   * success            -- a bearer token minted for the correct resource
+//   * wrong-audience      -- RFC 9728 audience/resource mismatch (401/403 +
+//                            an `invalid_target` / "audience" / "resource
+//                            mismatch" hint), which MUST classify distinctly
+//                            from a plain revoked token
+//   * revoked             -- a bare `Bearer error="invalid_token"` with no
+//                            audience-shaped hint, the negative control that
+//                            proves wrong-audience isn't just "any 401"
+//   * insufficient_scope  -- the plan's hint_header wiring also carries
+//                            non-audience RFC 9728/9750-ish challenges
+//
+// A live token minted against a real MCP resource remains operator-only
+// proof (the credential is account-bound); this cassette proves the
+// oauth-mux-side wiring is correct for whatever the resource server says.
+test "fake-resource cassette: correct-resource bearer token classifies success" {
+    const plan = provider_schema.probePlanForCapability(provider_schema.mcp_def, "resource").?;
+    try std.testing.expectEqual(provider_schema.ProbeAuth.bearer, plan.auth);
+    try std.testing.expectEqualStrings("www-authenticate", plan.hint_header.?);
+
+    const classified = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 200,
+        .hint = null,
+    });
+    try std.testing.expectEqual(types.HttpClassification.success, classified);
+}
+
+test "fake-resource cassette: wrong-audience token classifies as audience_mismatch, not revoked" {
+    const plan = provider_schema.probePlanForCapability(provider_schema.mcp_def, "resource").?;
+
+    // RFC 9728-shaped challenge for a token bound to a different resource.
+    const challenge = "Bearer error=\"invalid_target\", error_description=\"resource mismatch\", " ++
+        "resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource\"";
+    // The hint the harness actually sees is whatever executeHttp extracted from
+    // the www-authenticate header -- prove the discovery parser agrees before
+    // asserting the classification it feeds.
+    try std.testing.expectEqualStrings(
+        "https://mcp.example.com/.well-known/oauth-protected-resource",
+        parseWwwAuthenticateResourceMetadataUrl(challenge).?,
+    );
+
+    const via_401 = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 401,
+        .hint = challenge,
+    });
+    switch (via_401) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.audience_mismatch, reason),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const via_403 = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 403,
+        .hint = "Bearer error=\"invalid_token\", error_description=\"audience mismatch\"",
+    });
+    switch (via_403) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.audience_mismatch, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "fake-resource cassette: bare revoked bearer token stays dead.token_revoked" {
+    const plan = provider_schema.probePlanForCapability(provider_schema.mcp_def, "resource").?;
+
+    // No audience/resource/invalid_target shape in the challenge -- the
+    // negative control. If this ever classified as audience_mismatch instead,
+    // every revoked MCP token would misreport as a routing problem.
+    const classified = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 401,
+        .hint = "Bearer error=\"invalid_token\"",
+    });
+    switch (classified) {
+        .dead => |reason| try std.testing.expectEqual(types.DeadReason.token_revoked, reason),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "fake-resource cassette: insufficient_scope challenge still routes through the same plan" {
+    const plan = provider_schema.probePlanForCapability(provider_schema.mcp_def, "resource").?;
+
+    const classified = classifyResult(std.testing.allocator, provider_schema.mcp_def, plan, .{
+        .status = 403,
+        .hint = "Bearer error=\"insufficient_scope\", scope=\"mcp:connect\"",
+    });
+    switch (classified) {
+        .degraded => |reason| try std.testing.expectEqual(types.DegradedReason.scope_insufficient, reason),
+        else => return error.TestUnexpectedResult,
+    }
 }
