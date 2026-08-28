@@ -47,6 +47,10 @@ jobs:
       - name: Run cache-first validation
         shell: bash
         run: |
+          # shellcheck disable=SC2016
+# GH ${{ }} expressions inside the single-quoted bash -lc wrapper are
+          # bash -lc wrapper are substituted by Actions BEFORE the shell parses them;
+          # the quoting is correct (review: oauth-mux #526).
           set -euxo pipefail
 
           run_with_timeout() {
@@ -88,6 +92,10 @@ jobs:
       - name: Run test lane
         shell: bash
         run: |
+          # shellcheck disable=SC2016
+# GH ${{ }} expressions inside the single-quoted bash -lc wrapper are
+          # bash -lc wrapper are substituted by Actions BEFORE the shell parses them;
+          # the quoting is correct (review: oauth-mux #526).
           set -euxo pipefail
 
           run_with_timeout() {
@@ -148,6 +156,10 @@ jobs:
       - name: Build ${{ matrix.target }}
         shell: bash
         run: |
+          # shellcheck disable=SC2016
+# GH ${{ }} expressions inside the single-quoted bash -lc wrapper are
+          # bash -lc wrapper are substituted by Actions BEFORE the shell parses them;
+          # the quoting is correct (review: oauth-mux #526).
           set -euxo pipefail
 
           run_with_timeout() {
