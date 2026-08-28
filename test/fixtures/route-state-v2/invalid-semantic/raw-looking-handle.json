@@ -1,0 +1,8 @@
+{
+  "route_handle": "user@example.com",
+  "state": "known_good",
+  "provenance": "credential_validation",
+  "freshness_deadline_ms": 1783966100000,
+  "active_lease_count": 1,
+  "action_class": "none"
+}

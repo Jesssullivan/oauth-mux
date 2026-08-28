@@ -1,0 +1,8 @@
+{
+  "route_handle": "route_e",
+  "state": "tier_insufficient",
+  "provenance": "broker_run_live",
+  "freshness_deadline_ms": 1783966100000,
+  "active_lease_count": 0,
+  "action_class": "operator_repair"
+}
