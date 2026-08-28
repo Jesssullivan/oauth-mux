@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://omux.dev/schemas/route-state-v2.schema.json",
+  "title": "omux redacted route-state v0.2 (TIN-1803)",
+  "description": "No-spend, token-free route readiness envelope shared by status, statusline, and doctor. Declaration-only: no reducer projects this yet (see docs/spec/2026-08-28-redacted-route-state-truth-design.md). Forbids raw account ids, emails, tokens, and request bodies -- only opaque handles.",
+  "type": "object",
+  "required": ["route_handle", "state", "provenance", "freshness_deadline_ms", "active_lease_count", "action_class"],
+  "additionalProperties": false,
+  "properties": {
+    "route_handle": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque handle, never a raw account id/email. Matches the managed-harness-v2 handle idiom."
+    },
+    "state": {
+      "$ref": "#/$defs/route_state"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "freshness_deadline_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Epoch ms after which this record must be re-probed rather than trusted as-is."
+    },
+    "trusted_reset_at_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Present only for rate_limited/quota_exhausted -- when the provider-declared window is expected to clear."
+    },
+    "active_lease_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "action_class": {
+      "$ref": "#/$defs/action_class"
+    }
+  },
+  "$defs": {
+    "route_state": {
+      "type": "string",
+      "enum": [
+        "known_good",
+        "unknown",
+        "quota_exhausted",
+        "rate_limited",
+        "tier_insufficient",
+        "revalidation_needed",
+        "auth_permanently_failed",
+        "credential_unavailable",
+        "quarantined"
+      ]
+    },
+    "provenance": {
+      "type": "string",
+      "enum": [
+        "credential_validation",
+        "capability_probe",
+        "broker_run_live",
+        "observed_child_output",
+        "supervised_child_output",
+        "http_status",
+        "never_probed"
+      ],
+      "description": "never_probed is the only provenance value legal for state=unknown; every other state requires one of health.zig's existing ProbeEvidenceSource values."
+    },
+    "action_class": {
+      "type": "string",
+      "enum": [
+        "none",
+        "wait_for_reset",
+        "reauth_user_mediated",
+        "operator_repair",
+        "do_not_select"
+      ],
+      "description": "Coarse next-step class only -- never a raw remediation URL, token, or request body."
+    }
+  }
+}

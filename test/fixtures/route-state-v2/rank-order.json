@@ -1,0 +1,14 @@
+{
+  "comment": "Not a route-state record. Encodes the total order from docs/spec/2026-08-28-redacted-route-state-truth-design.md as data so a future reducer's tests can assert against it directly.",
+  "rank_order_best_to_worst": [
+    "known_good",
+    "unknown",
+    "rate_limited",
+    "quota_exhausted",
+    "tier_insufficient",
+    "revalidation_needed",
+    "credential_unavailable",
+    "auth_permanently_failed",
+    "quarantined"
+  ]
+}

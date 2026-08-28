@@ -1,0 +1,8 @@
+{
+  "route_handle": "route_f",
+  "state": "revalidation_needed",
+  "provenance": "observed_child_output",
+  "freshness_deadline_ms": 1783966100000,
+  "active_lease_count": 0,
+  "action_class": "reauth_user_mediated"
+}

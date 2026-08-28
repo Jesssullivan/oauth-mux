@@ -1,0 +1,9 @@
+{
+  "route_handle": "route_d",
+  "state": "quota_exhausted",
+  "provenance": "capability_probe",
+  "freshness_deadline_ms": 1783966100000,
+  "trusted_reset_at_ms": 1783980000000,
+  "active_lease_count": 0,
+  "action_class": "wait_for_reset"
+}
