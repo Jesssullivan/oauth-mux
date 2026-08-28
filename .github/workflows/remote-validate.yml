@@ -54,7 +54,25 @@ env:
 jobs:
   remote-validate:
     name: ${{ inputs.target || 'e2e' }} on GloriousFlywheel
-    runs-on: tinyland-nix
+    # R331: tinyland-inc/GloriousFlywheel is private now, and the shared
+    # tinyland-nix org pool is unreachable from this personal, out-of-org
+    # repo (self-hosted runner groups don't cross an org/personal-account
+    # boundary). Ordinary targets move to jesssullivan-nix, the owner-overlay
+    # capability class that actually serves this account's repos.
+    #
+    # The three v0.2 proof targets stay pinned to tinyland-nix on purpose:
+    # scripts/v02-proof-provenance-local.sh and friends hard-assert
+    # gf_target_class == "tinyland-nix" as a trust anchor (they prove the
+    # candidate built on the SHARED GloriousFlywheel product, not merely on
+    # this account's own infra), and that assertion logic is out of this
+    # workflow-file-only change's scope. Retargeting those three inputs would
+    # either fabricate provenance or hard-fail the assertion; today they
+    # remain honestly non-functional for this out-of-org repo pending a real
+    # cross-org/enterprise runner-group decision. Every other target
+    # (including the weekly scheduled e2e cron, which never sets inputs.target
+    # and so always falls into the jesssullivan-nix arm) is fully restored.
+    runs-on: >-
+      ${{ (inputs.target == 'v02-stage2-conformance' || inputs.target == 'v02-benchmark' || inputs.target == 'v02-prerelease-readiness') && 'tinyland-nix' || 'jesssullivan-nix' }}
     timeout-minutes: 45
     steps:
       - name: Validate dispatch envelope
@@ -122,16 +140,12 @@ jobs:
             "${OMUX_V02_CANDIDATE_SHA}" \
             "${OMUX_V02_WORKFLOW_EVENT_SHA}"
 
-      - name: Checkout GloriousFlywheel action
-        uses: ./.github/actions/checkout-gloriousflywheel
-        with:
-          app-id: ${{ secrets.GF_ACTIONS_APP_ID }}
-          private-key: ${{ secrets.GF_ACTIONS_APP_PRIVATE_KEY }}
+      - name: Set up Nix (ci-templates)
+        uses: tinyland-inc/ci-templates/.github/actions/nix-setup@d8d178c022a0f84853d53a2c8fe0fc90115f0949 # v3.1.0
 
       - name: Run selected target
-        uses: ./.gloriousflywheel/.github/actions/nix-job
+        shell: bash
         env:
-          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN || '' }}
           OMUX_REMOTE_REQUEST_ID: ${{ inputs.request_id || github.run_id }}
           OMUX_REMOTE_TARGET: ${{ inputs.target || 'e2e' }}
           OMUX_REQUESTED_RELEASE_VERSION: ${{ inputs.version || '' }}
@@ -141,14 +155,8 @@ jobs:
           OMUX_V02_WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
           OMUX_V02_GF_TARGET_CLASS: tinyland-nix
           OMUX_V02_GF_ACTION_SHA: 2357988536f1f6258291c363e1428962b6cced1b
-        with:
-          attic-public-key: ${{ vars.ATTIC_PUBLIC_KEY || '' }}
-          push-cache: "false"
-          command: |
+        run: |
             set -euo pipefail
-            test -n "${ATTIC_SERVER:-}"
-            test -n "${ATTIC_CACHE:-}"
-            test -n "${NIX_CONFIG:-}"
 
             run_with_timeout() {
               local label="$1"
