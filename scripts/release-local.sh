@@ -17,6 +17,12 @@ if [ "$version" != "$project_version" ]; then
 fi
 release_manifest_require_current_v0_1_15 "$version"
 
+# TIN-2462: a release cut is not proof-complete without a CHANGELOG entry
+# for the version being cut. Fail the cut here, not on every PR.
+if [ "${OMUX_RELEASE_SKIP_CHANGELOG_GATE:-0}" != "1" ]; then
+  "$repo_root/scripts/check-changelog-entry.sh" "$version"
+fi
+
 out_dir="$repo_root/dist/out/v${version}"
 artifacts_dir="$out_dir/artifacts"
 homebrew_dir="$out_dir/homebrew"
