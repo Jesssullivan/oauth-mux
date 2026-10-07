@@ -378,6 +378,95 @@ class RegistryMetadataAdmissionTests(unittest.TestCase):
                 Path(folder).chmod(0o755)
 
 
+class FixedCoreCodegenModels(unittest.TestCase):
+    SETTING = '@rules_rust//rust/settings:experimental_per_crate_rustc_flag'
+    OPTIONS = ('-Copt-level=0', '-Clto=off', '-Ccodegen-units=16',
+        '-Cdebug-assertions=off', '-Coverflow-checks=off')
+
+    def command(self, root, mode=native.COMBINED_MODE):
+        run = root / ('run-' + mode)
+        run.mkdir(mode=0o700)
+        source = root / 'sealed-source'
+        source.mkdir(mode=0o700, exist_ok=True)
+        selected = {'MODULE.bazel': b'locked-module-bytes\n',
+            'MODULE.bazel.lock': b'locked-extension-bytes\n',
+            'codex-rs/core/src/lib.rs': b'qualified-maintained-source\n'}
+        for name, raw in selected.items():
+            path = source / name
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_bytes(raw)
+                path.chmod(0o444)
+        args = SimpleNamespace(native_source_root=root/'input',
+            native_export_root=root/'export', native_deadline=None,
+            native_mode=mode)
+        exported = {'registry_cache':str(args.native_export_root/'registry-cache'),
+            'inventory_sha256':'2'*64, 'mapping_sha256':'3'*64,
+            'repositories':{}, 'module_overrides':{}}
+        candidate = SimpleNamespace(source=source, root=root/'candidate',
+            lease=SimpleNamespace(output_base=root/'output-base'))
+        with patch.object(native, 'verify_inputs',
+                return_value=({'inventory_sha256':'1'*64}, exported)):
+            result = native.command(args, run, '/nix/store/locked-tool/bin',
+                '/nix/store/i27rhb3nr65rkrwz36bchkwmav6ggsmn-bash-5.3p9/bin/bash',
+                candidate)
+        for name, raw in selected.items():
+            self.assertEqual((source/name).read_bytes(), raw)
+            self.assertEqual((source/name).stat().st_mode & 0o777, 0o444)
+        return result
+
+    def test_actual_plan_emits_only_exact_core_tuple_and_keeps14_targets_controls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            plan = self.command(Path(temp))
+        expected = ['--'+self.SETTING+'=codex-rs/core/src/lib.rs@'+flag
+            for flag in self.OPTIONS]
+        actual = [arg for arg in plan['argv'] if arg.startswith('--'+self.SETTING+'=')]
+        self.assertEqual(actual, expected)
+        self.assertEqual(plan['argv'][-4:], list(native.MODES[native.COMBINED_MODE][1]))
+        for name in (name for names in native.QUALIFICATION_GATES.values() for name in names):
+            self.assertEqual(plan['argv'].count('--test_arg='+name), 1)
+        self.assertEqual(sum(map(len, native.QUALIFICATION_GATES.values())), 14)
+        for flag in ('--compilation_mode=opt', '--lockfile_mode=error',
+                '--repository_disable_download', '--sandbox_default_allow_network=false',
+                '--jobs=1', '--host_jvm_args=-Xmx768m',
+                '--repo_contents_cache=', '--disk_cache=', '--remote_executor=',
+                '--remote_cache=', '--local_test_jobs=1'):
+            self.assertIn(flag, plan['argv'])
+        self.assertEqual(plan['candidate_output_base'], str(Path(temp)/'output-base'))
+        self.assertEqual(plan['environment']['USE_BAZEL_VERSION'], '9.0.1')
+
+    def test_recorded_tuple_digest_is_derived_and_returned_mutations_cannot_change_next_plan(self):
+        expected = {'kind':'omux-native-fixed-core-codegen-v1',
+            'configuration':'opt', 'setting':self.SETTING,
+            'crate_root_prefix':'codex-rs/core/src/lib.rs', 'options':list(self.OPTIONS),
+            'applies_to':'target-configuration-only', 'rust_version':'1.95.0',
+            'rules_rust_repository':'rules_rs++rules_rust+rules_rust'}
+        pin = hashlib.sha256(json.dumps(expected,
+            sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        selected = native.core_codegen_policy()
+        self.assertEqual(selected, {'policy':expected, 'sha256':pin})
+        selected['policy']['options'].append('-Copt-level=3')
+        selected['policy']['crate_root_prefix'] = ''
+        with tempfile.TemporaryDirectory() as temp:
+            plan = self.command(Path(temp))
+        self.assertEqual(plan['core_codegen'], {'policy':expected, 'sha256':pin})
+        self.assertNotIn('--'+self.SETTING+'=@-Copt-level=3', plan['argv'])
+
+    def test_ambient_compiler_flags_cannot_select_options_and_schema_keeps_same_policy(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+                'RUSTFLAGS':'-Copt-level=3 -Clto=fat',
+                'CARGO_ENCODED_RUSTFLAGS':'-Cdebug-assertions=on',
+                'OMUX_NATIVE_CORE_CODEGEN':'foreign'}):
+            plan = self.command(Path(temp), 'schema')
+        self.assertEqual(plan['argv'][-2:], list(native.MODES['schema'][1]))
+        self.assertEqual(plan['core_codegen'], native.core_codegen_policy())
+        self.assertFalse(any(name in plan['environment'] for name in
+            ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'OMUX_NATIVE_CORE_CODEGEN')))
+        self.assertFalse(any('fat' in value for value in plan['argv']))
+        self.assertEqual([value for value in plan['argv']
+            if value.startswith('--'+self.SETTING+'=')], native.core_codegen_arguments())
+
+
 class NativeCompletionBudgetModels(unittest.TestCase):
     def request(self, phase2=True):
         return SimpleNamespace(profile='codex-native', manager='system',

@@ -17,6 +17,41 @@ from codex_live_source import BASE_RECEIPT_SHA, BASE_INVENTORY, COMMIT, GRAPH, w
 BAZEL = '/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel'
 BAZEL_VERSION = '9.0.1'
 MODULE_RESOLUTION_POLICY = 'locked-registry-module-identities-with-sealed-repository-overrides-v1'
+CORE_CODEGEN_SETTING = '@rules_rust//rust/settings:experimental_per_crate_rustc_flag'
+CORE_CODEGEN_ROOT = 'codex-rs/core/src/lib.rs'
+CORE_CODEGEN_OPTIONS = (
+    '-Copt-level=0',
+    '-Clto=off',
+    '-Ccodegen-units=16',
+    '-Cdebug-assertions=off',
+    '-Coverflow-checks=off',
+)
+
+
+def core_codegen_policy():
+    """Fixed target-only tuple; no caller/env-selected compiler options."""
+    policy = {
+        'kind': 'omux-native-fixed-core-codegen-v1',
+        'configuration': 'opt',
+        'setting': CORE_CODEGEN_SETTING,
+        'crate_root_prefix': CORE_CODEGEN_ROOT,
+        'options': list(CORE_CODEGEN_OPTIONS),
+        'applies_to': 'target-configuration-only',
+        'rust_version': '1.95.0',
+        'rules_rust_repository': 'rules_rs++rules_rust+rules_rust',
+    }
+    raw = json.dumps(policy, sort_keys=True, separators=(',', ':')).encode()
+    return {'policy': policy, 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def core_codegen_arguments():
+    # Pinned rules_rust applies this literal crate-root prefix only in target
+    # configuration and appends the options after mode/LTO/codegen defaults.
+    # The same root compiles both codex-core and its actual unit-test binary.
+    return ['--' + CORE_CODEGEN_SETTING + '=' + CORE_CODEGEN_ROOT + '@' + flag
+        for flag in CORE_CODEGEN_OPTIONS]
+
+
 STATE = Path('/srv/fast-local/jess/state/codex/omux-native-candidate-20261007')
 CORE = '//codex-rs/core:core-unit-tests'
 CONFIG = '//codex-rs/config:config-unit-tests'
@@ -154,6 +189,7 @@ def command(args, run, locked_path, bash, candidate=None):
         '--platforms=//codex-rs/core:owner-linux', '--extra_toolchains=//codex-rs/core:owner-local-test-toolchain',
         '--workspace_status_command=' + str(status), '--symlink_prefix=' + str(run / 'bazel-'),
         '--noenable_runfiles', '--nobuild_runfile_links']
+    argv += core_codegen_arguments()
     for name, directory in sorted(exported['repositories'].items()):
         require(re.fullmatch(r'[A-Za-z0-9._+~-]{1,256}', name) and Path(directory) == args.native_export_root / 'repositories' / name, 'repository mapping refused')
         argv.append('--override_repository=' + name + '=' + str(directory))
@@ -177,6 +213,7 @@ def command(args, run, locked_path, bash, candidate=None):
         'candidate_cache_root': str(candidate.root) if candidate is not None else None,
         'candidate_output_base': str(candidate.lease.output_base) if candidate is not None else None,
         'export_inventory_sha256': exported['inventory_sha256'], 'mapping_sha256': exported['mapping_sha256'],
+        'core_codegen': core_codegen_policy(),
         'environment': {'PATH': locked_path, 'USE_BAZEL_VERSION': BAZEL_VERSION,
             'HOME': str(run / 'home'), 'XDG_CACHE_HOME': str(run / 'home/cache'),
             'XDG_CONFIG_HOME': str(run / 'home/config'), 'XDG_STATE_HOME': str(run / 'home/state')}}
