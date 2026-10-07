@@ -1211,6 +1211,31 @@ class GuardTest(unittest.TestCase):
                     service.admit()
                 service.actual[key] = old
 
+
+    def test_native_phase2_readback_keeps_actual_memory_tasks_cpu_and_remaining_deadline_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service=FakeService(Path(directory))
+            service.actual['RuntimeMaxUSec']='45min'
+            verify(service.actual,service.root,profile='codex-native',
+                runtime_seconds=2700,native_phase2=True)
+            for profile,selected in (('codex-native',False),('standard',True),
+                    ('yoga-controller-delivery',True)):
+                with self.subTest(profile=profile,selected=selected),self.assertRaises(ValueError):
+                    verify(service.actual,service.root,profile=profile,
+                        runtime_seconds=2700,native_phase2=selected)
+            for value in ('46min','infinity','2700'):
+                with self.subTest(value=value),self.assertRaises(ValueError):
+                    verify({**service.actual,'RuntimeMaxUSec':value},service.root,
+                        profile='codex-native',runtime_seconds=2700,native_phase2=True)
+            for key in ('MemoryMax','TasksMax','CPUQuotaPerSecUSec'):
+                with self.subTest(key=key),self.assertRaises(ValueError):
+                    verify({**service.actual,key:'max'},service.root,
+                        profile='codex-native',runtime_seconds=2700,native_phase2=True)
+            (service.root/'cpu.max').write_text('300000 100000')
+            with self.assertRaises(ValueError):
+                verify(service.actual,service.root,profile='codex-native',
+                    runtime_seconds=2700,native_phase2=True)
+
     def test_kernel_limits_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             service = FakeService(Path(directory))

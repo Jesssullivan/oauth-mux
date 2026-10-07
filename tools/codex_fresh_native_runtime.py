@@ -38,6 +38,22 @@ MAX_PROTOCOL = 128 * 1024 * 1024
 MAX_RUNTIME_FILES = 64
 HASH = re.compile(r'[0-9a-f]{64}')
 DEADLINE = None
+PHASE2_PRIOR_TRANSITION = {
+    'schema_version': 1,
+    'amendment_sha256': 'dcc9aa881b415d041e582e0271efc6e0fca7dff2d35918de5e65848c5b9ce6f5',
+    'prior_epoch': '34f674c0-9705-4135-b07d-7375fad6aa48',
+    'prior_cleanup_receipt_sha256': '589b8f7c13e7c0d46393b40fb4fd377a4788ad4a5777721a99ee6c41cc514e9c',
+    'from_controller_graph_sha256': '3fd85968c22ea532a2612a680c8ec8d1bfbe7e750f17e10805e2945a98468159',
+    'to_controller_graph_sha256': '76dd5eda91e2ead7a131cb27d88c6cca6fecb48a2013a8ffb4e56adcf1a4d603',
+    'from_provenance_sha256': '70d7fad0f82f7883e38ddfec2d343845f036dea4a6171ee213637e0b37669595',
+    'to_provenance_sha256': 'fe79bd14702570ea829266247e858a8449ef5030f166f969675746f5f5adffb7',
+    'from_attempt': 4,
+    'first_attempt': 5,
+    'aggregate_before': 6,
+    'aggregate_max': 8,
+}
+PHASE2_FAILED_EPOCH = '275e4094-af7e-4c26-a390-bf8aa960310e'
+PHASE2_FAILED_RECEIPT = '960f154b3ddcc7b05c9ea11b054dc6ddc329782eb9f14d50301e966dfa97b260'
 
 
 def require(ok, message='fresh runtime contract refused'):
@@ -264,6 +280,12 @@ def validate_action_receipts(selection, values, source, exported):
     receipts = {}
     cache = None
     combined = selection['files']['compile'] == selection['files']['qualification_run']
+    history = parse(values['qualification_run'])['native_candidate_cache'].get('transition_history') if combined else None
+    phase2 = combined and isinstance(history, list) and len(history) == 2
+    maximum = 7 if phase2 else 6
+    first_attempt = 6 if phase2 else 5
+    aggregate_before = 7 if phase2 else 6
+    aggregate_max = 9 if phase2 else 8
     if combined:
         require(values['compile'] == values['qualification_run'],
             'combined compile and qualification must select the same actual receipt bytes')
@@ -283,8 +305,8 @@ def validate_action_receipts(selection, values, source, exported):
             and set(value['targets']) == set(targets) and len(value['targets']) == len(targets),
             'fresh runtime successful guarded action join differs')
         candidate = value['native_candidate_cache']
-        require(candidate is not None and candidate['max_attempts'] == 6
-            and type(candidate['attempt']) is int and 1 <= candidate['attempt'] <= 6
+        require(candidate is not None and candidate['max_attempts'] == maximum
+            and type(candidate['attempt']) is int and 1 <= candidate['attempt'] <= maximum
             and HASH.fullmatch(candidate['key']) and HASH.fullmatch(candidate['provenance_sha256']),
             'fresh runtime owned candidate provenance missing')
         key = (candidate['key'], candidate['provenance_sha256'], candidate['workspace'], candidate['output_base'])
@@ -305,22 +327,22 @@ def validate_action_receipts(selection, values, source, exported):
     if combined:
         qualification, schema = receipts['qualification_run'], receipts['schema_run']
         require(qualification['graph_sha256'] == schema['graph_sha256']
-            and qualification['native_candidate_cache']['attempt'] == 5
-            and schema['native_candidate_cache']['attempt'] == 6,
+            and qualification['native_candidate_cache']['attempt'] == first_attempt
+            and schema['native_candidate_cache']['attempt'] == first_attempt + 1,
             'combined actual graph and final two attempts required')
         history = qualification['native_candidate_cache'].get('transition_history')
-        require(isinstance(history, list) and len(history) == 1
+        require(isinstance(history, list) and len(history) == (2 if phase2 else 1)
             and history == schema['native_candidate_cache'].get('transition_history'),
             'combined explicit identical cache transition required')
-        transition = history[0]
+        transition = history[-1]
         required = {'schema_version', 'amendment_sha256', 'prior_epoch',
             'prior_cleanup_receipt_sha256', 'from_controller_graph_sha256',
             'to_controller_graph_sha256', 'from_provenance_sha256', 'to_provenance_sha256',
             'from_attempt', 'first_attempt', 'aggregate_before', 'aggregate_max'}
-        require(set(transition) == required and transition['schema_version'] == 1
-            and transition['from_attempt'] == 4 and transition['first_attempt'] == 5
-            and transition['aggregate_before'] == 6 and transition['aggregate_max'] == 8
-            and transition['from_provenance_sha256'] == cache[0]
+        require(set(transition) == required and transition['schema_version'] == (2 if phase2 else 1)
+            and transition['from_attempt'] == first_attempt - 1 and transition['first_attempt'] == first_attempt
+            and transition['aggregate_before'] == aggregate_before and transition['aggregate_max'] == aggregate_max
+            and transition['from_provenance_sha256'] == (PHASE2_PRIOR_TRANSITION['to_provenance_sha256'] if phase2 else cache[0])
             and transition['to_provenance_sha256'] == cache[1]
             and transition['to_controller_graph_sha256'] == qualification['graph_sha256']
             and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
@@ -328,28 +350,47 @@ def validate_action_receipts(selection, values, source, exported):
             and all(isinstance(transition[k], str) and HASH.fullmatch(transition[k])
                 for k in required if k.endswith('_sha256')),
             'combined closed cache transition provenance differs')
+        if phase2:
+            require(encoded(history[0]) == encoded(PHASE2_PRIOR_TRANSITION)
+                and cache[0] == PHASE2_PRIOR_TRANSITION['from_provenance_sha256']
+                and transition['from_controller_graph_sha256'] == PHASE2_PRIOR_TRANSITION['to_controller_graph_sha256']
+                and transition['prior_epoch'] == PHASE2_FAILED_EPOCH
+                and transition['prior_cleanup_receipt_sha256'] == PHASE2_FAILED_RECEIPT,
+                'phase2 must preserve exact phase1 amendment and actual failed fifth attempt')
         for receipt in receipts.values():
             candidate = receipt['native_candidate_cache']
+            if phase2:
+                budget = receipt['native_sdk']
+                require(candidate.get('phase2_verified_before_launch') is True
+                    and type(budget.get('aggregate_seconds')) is int and budget['aggregate_seconds'] == 3600
+                    and type(budget.get('original_entry_monotonic_ns')) is int
+                    and budget['original_entry_monotonic_ns'] >= 0
+                    and type(budget.get('original_deadline_monotonic_ns')) is int
+                    and budget['original_deadline_monotonic_ns'] == budget['original_entry_monotonic_ns'] + 3600 * 10**9,
+                    'phase2 actual receipt must retain original-entry native deadline')
             require(candidate.get('origin_provenance_sha256') == cache[0]
                 and candidate.get('aggregate_attempt') == candidate['attempt'] + 2
-                and candidate.get('aggregate_max_attempts') == 8
+                and candidate.get('aggregate_max_attempts') == aggregate_max
                 and candidate.get('transition_verified_after_cleanup') is True,
                 'combined counters/origin and final transition readback required')
         previous = qualification['native_candidate_cache'].get('aggregate_previous_dispatches')
         after = schema['native_candidate_cache'].get('aggregate_previous_dispatches')
-        require(isinstance(previous, list) and len(previous) == 6
-            and isinstance(after, list) and len(after) == 7 and after[:6] == previous
-            and after[6] == {'id':qualification['id'],
+        require(isinstance(previous, list) and len(previous) == aggregate_before
+            and isinstance(after, list) and len(after) == aggregate_before + 1 and after[:aggregate_before] == previous
+            and after[aggregate_before] == {'id':qualification['id'],
                 'sha256':selection['files']['qualification_run']['sha256'],
-                'cache_key':cache[0], 'attempt':5},
+                'cache_key':cache[0], 'attempt':first_attempt},
             'combined global predecessor history must preserve all consumed dispatches')
-        require(len({row['id'] for row in previous}) == 6,
+        require(len({row['id'] for row in previous}) == aggregate_before,
             'combined global predecessor invocations must be distinct')
+        if phase2:
+            require(previous[-1] == {'id':PHASE2_FAILED_EPOCH, 'sha256':PHASE2_FAILED_RECEIPT,
+                'cache_key':cache[0], 'attempt':5}, 'phase2 cannot drop or rewrite failed fifth dispatch')
         for row in previous:
             require(set(row) == {'id','sha256','cache_key','attempt'}
                 and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',row['id'])
                 and HASH.fullmatch(row['sha256']) and HASH.fullmatch(row['cache_key'])
-                and type(row['attempt']) is int and 1 <= row['attempt'] <= 6,
+                and type(row['attempt']) is int and 1 <= row['attempt'] <= maximum,
                 'combined exact historical dispatch evidence required')
         receipts['compile'] = qualification
     return receipts, cache, combined

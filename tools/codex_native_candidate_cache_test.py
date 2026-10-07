@@ -222,5 +222,336 @@ class TransitionAmendmentModels(unittest.TestCase):
                 cache.Candidate(args, Path('/run/model-epoch'), {}, (), '', 'system', lambda prior: True)
             lease.assert_not_called()
 
+
+class Phase2AmendmentModels(unittest.TestCase):
+    def model(self):
+        import copy
+        import hashlib
+        import codex_native_candidate_cache as cache
+        names = sorted(cache.TRANSITION_CHANGED | {'BUILD.bazel', 'tools/guard_cache.py'})
+        old_inventory = {name: hashlib.sha256(('n3:' + name).encode()).hexdigest()
+                         for name in names}
+        inventory = copy.deepcopy(old_inventory)
+        for name in cache.TRANSITION_REQUIRED:
+            inventory[name] = hashlib.sha256(('phase2:' + name).encode()).hexdigest()
+        before = {'controller_graph': list(cache.transition_graph(old_inventory)),
+            'modes': {'qualification-cli': ['test',
+                [native.CORE, native.CONFIG, native.LOGIN, native.CLI], None],
+                'schema': ['build', ['//bazel/schema:native-config-schema',
+                                    '//bazel/schema:public-schema-bundle'], None]},
+            'limits': {'memory': 4294967296, 'tasks': 512, 'cpu_percent': 200,
+                'aggregate_seconds': 1200, 'postcheck_reserve_seconds': 120,
+                'heap_mib': 768, 'jobs': 1},
+            'source_inventory_sha256': '1' * 64, 'export_inventory_sha256': '2' * 64,
+            'tools': {'bazel': native.BAZEL}, 'network': 'private', 'remote': False}
+        after = copy.deepcopy(before)
+        after['controller_graph'] = list(cache.transition_graph(inventory))
+        after['limits']['aggregate_seconds'] = 3600
+        retained = copy.deepcopy(cache.PHASE2_PRIOR_HISTORY)
+        retained[0]['to_controller_graph_sha256'] = before['controller_graph'][0]
+        retained[0]['to_provenance_sha256'] = cache.transition_digest(before)
+        document = {'schema_version': 2, 'scope': 'c26-native-budget-phase2',
+            'origin_key': cache.TRANSITION_KEY,
+            'old_bindings': before, 'new_bindings': after,
+            'old_controller_inventory': old_inventory, 'new_controller_inventory': inventory,
+            'reviewed_file_changes': [{'path': name,
+                'before_sha256': old_inventory[name], 'after_sha256': inventory[name]}
+                for name in sorted(cache.TRANSITION_REQUIRED)],
+            'old_source_commit': cache.PHASE2_OLD_COMMIT, 'new_source_commit': '8' * 40,
+            'prior_epoch': cache.PHASE2_PRIOR_EPOCH,
+            'prior_receipt_sha256': cache.PHASE2_PRIOR_RECEIPT,
+            'prior_amendment_sha256': cache.PHASE2_PRIOR_AMENDMENT,
+            'prior_transition_history': retained,
+            'previous_dispatches': copy.deepcopy(cache.PHASE2_PREVIOUS_DISPATCHES),
+            'from_attempt': 5, 'first_attempt': 6, 'max_attempts': 7,
+            'aggregate_before': 7, 'aggregate_max': 9}
+        args = SimpleNamespace(source_commit='8' * 40, source_dirty='false',
+            native_owned_candidate_cache=True, manager='system',
+            native_cache_attempt=6, native_mode='qualification-cli',
+            native_cache_phase2=Path('/private/phase2.json'),
+            native_cache_phase2_sha256='7' * 64,
+            native_cache_transition=None, native_cache_transition_sha256=None,
+            native_aggregate_seconds=3600, native_deadline=None,
+            native_source_root=Path('/declared/source'),
+            native_source_sha256='1' * 64, native_patch_sha256=['2' * 64] * 3)
+        return document, args, inventory
+
+    def frozen(self, document):
+        import codex_native_candidate_cache as cache
+        return patch.multiple(cache,
+            PHASE2_OLD_PROVENANCE=cache.transition_digest(document['old_bindings']),
+            PHASE2_OLD_GRAPH=document['old_bindings']['controller_graph'][0],
+            PHASE2_PRIOR_HISTORY=document['prior_transition_history'])
+
+    def test_closed_phase2_preserves_origin_history_and_only_native_wallclock(self):
+        import copy
+        import codex_native_candidate_cache as cache
+        document, args, inventory = self.model()
+        original = copy.deepcopy(document)
+        with self.frozen(document):
+            self.assertIs(cache.validate_phase2_document(
+                document, document['new_bindings'], inventory, args), document)
+            rows = cache.phase2_history(document, args.native_cache_phase2_sha256)
+            self.assertEqual(rows[0], document['prior_transition_history'][0])
+            self.assertEqual(rows[1]['from_provenance_sha256'],
+                             rows[0]['to_provenance_sha256'])
+            self.assertEqual((rows[1]['from_attempt'], rows[1]['first_attempt'],
+                              rows[1]['aggregate_before'], rows[1]['aggregate_max']),
+                             (5, 6, 7, 9))
+        self.assertEqual(document, original)
+        with self.assertRaises(ValueError):
+            cache.valid_attempt(7, 6)
+        cache.valid_attempt(7, 6, max_attempts=7)
+        with self.assertRaises(ValueError):
+            cache.valid_attempt(8, 7, max_attempts=8)
+
+    def test_phase2_refuses_counter_reset_missing_failed_epoch_and_relabelled_prior(self):
+        import copy
+        import codex_native_candidate_cache as cache
+        document, args, inventory = self.model()
+        mutations = [
+            ('from_attempt', 4), ('first_attempt', 5), ('max_attempts', 8),
+            ('aggregate_before', 6), ('aggregate_max', 10), ('schema_version', True),
+            ('prior_epoch', '00000000-0000-0000-0000-000000000000'),
+            ('prior_receipt_sha256', '0' * 64),
+            ('prior_amendment_sha256', '0' * 64),
+            ('previous_dispatches', document['previous_dispatches'][:-1]),
+            ('previous_dispatches', document['previous_dispatches'][1:]),
+            ('prior_transition_history', []),
+        ]
+        with self.frozen(document):
+            for field, value in mutations:
+                mutated = copy.deepcopy(document)
+                mutated[field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    cache.validate_phase2_document(
+                        mutated, document['new_bindings'], inventory, args)
+            mutated = copy.deepcopy(document)
+            mutated['unreviewed_extension'] = True
+            with self.assertRaises(ValueError):
+                cache.validate_phase2_document(
+                    mutated, document['new_bindings'], inventory, args)
+
+    def test_phase2_refuses_resource_network_tools_modes_and_unreviewed_graph_changes(self):
+        import copy
+        import hashlib
+        import codex_native_candidate_cache as cache
+        document, args, inventory = self.model()
+        with self.frozen(document):
+            for field, value in (('memory', 8589934592), ('tasks', 1024),
+                                 ('cpu_percent', 400), ('heap_mib', 1536),
+                                 ('jobs', 2), ('postcheck_reserve_seconds', 0),
+                                 ('aggregate_seconds', 7200)):
+                mutated = copy.deepcopy(document)
+                mutated['new_bindings']['limits'][field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    cache.validate_phase2_document(
+                        mutated, mutated['new_bindings'], inventory, args)
+            for field, value in (('network', 'public'), ('remote', True),
+                                 ('tools', {'bazel': '/ambient/bazel'}),
+                                 ('modes', {'qualification-cli': ['build', [], None]})):
+                mutated = copy.deepcopy(document)
+                mutated['new_bindings'][field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    cache.validate_phase2_document(
+                        mutated, mutated['new_bindings'], inventory, args)
+            for name in ('BUILD.bazel', 'tools/guard_cache.py'):
+                mutated = copy.deepcopy(document)
+                changed = copy.deepcopy(inventory)
+                changed[name] = hashlib.sha256(b'unreviewed change').hexdigest()
+                mutated['new_controller_inventory'] = changed
+                mutated['new_bindings']['controller_graph'] = list(cache.transition_graph(changed))
+                mutated['reviewed_file_changes'].append({'path': name,
+                    'before_sha256': mutated['old_controller_inventory'][name],
+                    'after_sha256': changed[name]})
+                mutated['reviewed_file_changes'].sort(key=lambda row: row['path'])
+                with self.subTest(path=name), self.assertRaises(ValueError):
+                    cache.validate_phase2_document(
+                        mutated, mutated['new_bindings'], changed, args)
+
+    def test_phase2_selector_is_paired_and_exclusive(self):
+        import codex_native_candidate_cache as cache
+        document, args, _ = self.model()
+        self.assertTrue(cache.phase2_requested(args))
+        for field, value in (('native_cache_phase2_sha256', None),
+                             ('native_cache_phase2', None),
+                             ('native_cache_transition', Path('/other/v1.json')),
+                             ('native_cache_transition_sha256', '1' * 64)):
+            with patch.object(args, field, value), self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    cache.phase2_requested(args)
+
+    def previous(self, document):
+        import copy
+        import codex_native_candidate_cache as cache
+        return {'id': cache.PHASE2_PRIOR_EPOCH, 'profile': 'codex-native',
+            'source_commit': cache.PHASE2_OLD_COMMIT,
+            'graph_sha256': document['old_bindings']['controller_graph'][0],
+            'exit': 125, 'workload_exit': 124, 'controller_failure': None,
+            'descendants_empty': True,
+            'native_sdk': {'mode': 'qualification-cli',
+                          'source_and_export_verified_after_cleanup': True},
+            'native_candidate_cache': {'key': cache.TRANSITION_KEY, 'attempt': 5,
+                'max_attempts': 6, 'origin_provenance_sha256': cache.TRANSITION_KEY,
+                'provenance_sha256': cache.transition_digest(document['old_bindings']),
+                'transition_history': copy.deepcopy(document['prior_transition_history']),
+                'transition_verified_after_cleanup': True,
+                'aggregate_attempt': 7, 'aggregate_max_attempts': 8,
+                'aggregate_previous_dispatches': document['previous_dispatches'][:-1]}}
+
+    def reads(self, document, latest):
+        import copy
+        records = {}
+        for row in document['previous_dispatches']:
+            records[row['id']] = {'id': row['id'], 'profile': 'codex-native',
+                'native_candidate_cache': {'key': row['cache_key'], 'attempt': row['attempt']},
+                'descendants_empty': True,
+                'native_sdk': {'source_and_export_verified_after_cleanup': True}}
+        records[latest['id']] = copy.deepcopy(latest)
+        pins = {row['id']: row['sha256'] for row in document['previous_dispatches']}
+        def read(parent, name, digest, **kwargs):
+            self.assertEqual(name, 'receipt.json')
+            self.assertEqual(digest, pins[parent.name])
+            return copy.deepcopy(records[parent.name])
+        return read
+
+    def test_phase2_rehashes_all_seven_prior_receipts_before_accepting_failed_fifth(self):
+        import codex_native_candidate_cache as cache
+        document, args, _ = self.model()
+        previous = self.previous(document)
+        with self.frozen(document), patch.object(cache, 'trusted_parent', side_effect=lambda p: p), \
+                patch.object(cache.os, 'close'), \
+                patch.object(cache, 'metadata', side_effect=self.reads(document, previous)) as read:
+            self.assertEqual(cache.verify_phase2_previous(
+                args, document, previous, args.native_cache_phase2_sha256),
+                document['previous_dispatches'])
+            self.assertEqual(read.call_count, 7)
+            previous['exit'] = 0
+            with self.assertRaises(ValueError):
+                cache.verify_phase2_previous(
+                    args, document, previous, args.native_cache_phase2_sha256)
+
+    def test_phase2_schema_requires_successful_sixth_and_exact_final_clean_marker(self):
+        import copy
+        import codex_native_candidate_cache as cache
+        document, args, _ = self.model()
+        previous = self.previous(document)
+        previous.update(id='00000000-0000-0000-0000-000000000006',
+            source_commit=args.source_commit, graph_sha256=document['new_bindings']['controller_graph'][0],
+            exit=0, workload_exit=0)
+        candidate = previous['native_candidate_cache']
+        candidate.update(attempt=6, max_attempts=7,
+            provenance_sha256=cache.transition_digest(document['new_bindings']),
+            aggregate_attempt=8, aggregate_max_attempts=9,
+            aggregate_previous_dispatches=document['previous_dispatches'],
+            phase2_verified_before_launch=True)
+        args.native_cache_attempt, args.native_mode = 7, 'schema'
+        digest = '6' * 64
+        with self.frozen(document):
+            candidate['transition_history'] = cache.phase2_history(document, args.native_cache_phase2_sha256)
+            read_historical = self.reads(document, self.previous(document))
+            def read(parent, name, pin, **kwargs):
+                if parent.name == previous['id']:
+                    self.assertEqual(pin, digest)
+                    return copy.deepcopy(previous)
+                return read_historical(parent, name, pin, **kwargs)
+            marker = {'clean': True, 'key': cache.TRANSITION_KEY, 'schema': 2,
+                'last_run': previous['id'], 'cleanup_receipt_sha256': digest}
+            with patch.object(cache, 'trusted_parent', side_effect=lambda p: p), \
+                    patch.object(cache, 'trusted_directory', return_value=123), \
+                    patch.object(cache.os, 'close'), patch.object(cache, 'metadata', side_effect=read), \
+                    patch.object(cache, 'read_marker', return_value=marker):
+                actual = cache.verify_phase2_previous(
+                    args, document, previous, args.native_cache_phase2_sha256)
+                self.assertEqual(actual[:-1], document['previous_dispatches'])
+                self.assertEqual(actual[-1], {'id': previous['id'], 'sha256': digest,
+                    'cache_key': cache.TRANSITION_KEY, 'attempt': 6})
+                for field, value in (('exit', 125), ('workload_exit', 124),
+                                     ('controller_failure', {'error': 'failed'}),
+                                     ('source_commit', '0' * 40)):
+                    with patch.dict(previous, {field: value}), self.subTest(field=field):
+                        with self.assertRaises(ValueError):
+                            cache.verify_phase2_previous(
+                                args, document, previous, args.native_cache_phase2_sha256)
+                with patch.dict(marker, {'clean': False}):
+                    with self.assertRaises(ValueError):
+                        cache.verify_phase2_previous(
+                            args, document, previous, args.native_cache_phase2_sha256)
+
+    def test_phase2_readonly_launch_predicate_cannot_be_assigned(self):
+        import codex_native_candidate_cache as cache
+        instance = cache.Candidate.__new__(cache.Candidate)
+        instance._phase2_verified_before_launch = False
+        self.assertFalse(instance.phase2_verified_before_launch)
+        with self.assertRaises(AttributeError):
+            instance.phase2_verified_before_launch = True
+        instance._phase2_verified_before_launch = 1
+        self.assertFalse(instance.phase2_verified_before_launch)
+
+    def test_phase2_actual_constructor_waits_for_retained_native_inventory_and_cleanup_readback(self):
+        import copy
+        import codex_native_candidate_cache as cache
+        document, args, _ = self.model()
+        for integrity_error in (True, False):
+            with self.subTest(integrity_error=integrity_error), tempfile.TemporaryDirectory() as temp, \
+                    self.frozen(document), \
+                    patch.object(cache, 'bindings', return_value=document['new_bindings']), \
+                    patch.object(cache, 'read_transition', return_value=None), \
+                    patch.object(cache, 'read_phase2', return_value=document) as observed, \
+                    patch.object(cache, 'prior_receipt', return_value=self.previous(document)) as previous, \
+                    patch.object(cache, 'verify_phase2_previous', return_value=document['previous_dispatches']), \
+                    patch.object(cache, 'CacheLease') as lease, \
+                    patch.object(native, 'validate_source', return_value={'source_inventory': {}}), \
+                    patch.object(native.source_io, 'DEADLINE', None), \
+                    patch.object(cache, 'trusted_parent', return_value=123), \
+                    patch.object(cache.os, 'close'), \
+                    patch.object(cache, 'verify_inventory',
+                        side_effect=ValueError('retained inventory changed') if integrity_error else None):
+                owned = lease.return_value
+                owned.output_base = Path(temp) / 'output-base'
+                instance = cache.Candidate.__new__(cache.Candidate)
+                if integrity_error:
+                    with self.assertRaisesRegex(ValueError, 'retained inventory changed'):
+                        instance.__init__(args, Path('/new/epoch'), {}, (), '', 'system', lambda p: True)
+                    self.assertFalse(instance.phase2_verified_before_launch)
+                    owned.close.assert_called_once()
+                    continue
+                instance.__init__(args, Path('/new/epoch'), {}, (), '', 'system', lambda p: True)
+                self.assertIs(instance.phase2_verified_before_launch, True)
+                previous.assert_called_once_with(native.STATE, instance.root, cache.TRANSITION_KEY, 6,
+                    max_attempts=7, previous_max_attempts=6)
+                facts = instance.facts()
+                self.assertEqual((facts['attempt'], facts['max_attempts'],
+                                  facts['aggregate_attempt'], facts['aggregate_max_attempts']),
+                                 (6, 7, 8, 9))
+                self.assertEqual(facts['transition_history'][0],
+                                 document['prior_transition_history'][0])
+                self.assertFalse(instance.may_complete(True, True))
+                changed = copy.deepcopy(document)
+                changed['aggregate_max'] = 10
+                observed.return_value = changed
+                with self.assertRaisesRegex(ValueError, 'changed before terminal'):
+                    instance.verify_transition_after_cleanup()
+                self.assertFalse(instance.may_complete(True, True))
+                observed.return_value = document
+                instance.verify_transition_after_cleanup()
+                self.assertTrue(instance.may_complete(True, True))
+                self.assertFalse(instance.may_complete(False, True))
+
+    def test_phase2_constructor_owned_empty_refusal_precedes_cache_lease(self):
+        import codex_native_candidate_cache as cache
+        document, args, _ = self.model()
+        with patch.object(cache, 'bindings', return_value=document['new_bindings']), \
+                patch.object(cache, 'read_transition', return_value=None), \
+                patch.object(cache, 'read_phase2', return_value=document), \
+                patch.object(cache, 'prior_receipt', return_value=self.previous(document)), \
+                patch.object(cache, 'CacheLease') as lease:
+            instance = cache.Candidate.__new__(cache.Candidate)
+            with self.assertRaisesRegex(ValueError, 'cgroup is not empty'):
+                instance.__init__(args, Path('/new/epoch'), {}, (), '', 'system', lambda p: False)
+            self.assertFalse(instance.phase2_verified_before_launch)
+            lease.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
