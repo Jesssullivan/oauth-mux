@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-native-browser-continuation-2026-10-06.md",
+  "session_note": "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md",
+  "parent_goal": ".goal/omux-integrated-delivery-2026-10-05.json",
+  "start": "2026-10-07T05:48:41Z",
+  "due": "2026-10-07T10:48:41Z",
+  "duration_hours": 5,
+  "status": "in_progress",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "user_authority": "Latest user requests actual work and real-account handoff in the next five hours; live model IO is authorized without a token-spend cap. Omux must discover/enroll authorized sources rather than require users to know profile paths.",
+  "provider_evaluation_authorized": true,
+  "provider_usage_policy": "Use an available small model; begin with short text turns and finite engineering deadlines. No user token-spend cap. No credentials/PII in evidence.",
+  "publication_authorized": false,
+  "current_owned_execution": null,
+  "source_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+  "source_branch": "codex/omux-real-account-continuity-20261007",
+  "tracker_receipt": "docs/tracker-updates/live-account-proof-2026-10-07.json",
+  "historical_parent_gates": {
+    "passed": 5,
+    "open": 6
+  },
+  "checkpoints": [
+    {
+      "id": "one-hour-capability",
+      "due": "2026-10-07T06:48:41Z",
+      "scope": "Identify and implement minimal enrollment, live execution and native portability gaps."
+    },
+    {
+      "id": "two-hour-account-launch",
+      "due": "2026-10-07T07:48:41Z",
+      "scope": "Two provider-verified usable accounts and ordinary maintained-candidate launch/resume; record actual blockers if unpassed."
+    },
+    {
+      "id": "five-hour-real-substitution",
+      "due": "2026-10-07T10:48:41Z",
+      "scope": "Successful real A and B requests at completed-turn operator-drain boundary with same PID/thread/native history; provider-failure fallback remains independently scoped."
+    }
+  ],
+  "acceptance": [
+    {
+      "id": "LIVE-ENROLL",
+      "status": "in_progress",
+      "issues": [
+        "TIN-1818",
+        "TIN-1798",
+        "TIN-5338"
+      ],
+      "scope": "Discover the explicitly authorized native source and independently verify two distinct real identities; retain encrypted access-only grants with external renewal ownership.",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-NATIVE",
+      "status": "in_progress",
+      "issues": [
+        "TIN-5338",
+        "TIN-5421"
+      ],
+      "scope": "Exact maintained candidate ordinary launch and cold resume preserve native configuration/history and owner custody.",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-SUBSTITUTE",
+      "status": "in_progress",
+      "issues": [
+        "TIN-5338",
+        "TIN-2057"
+      ],
+      "scope": "Real successful completed text turn A then deliberate drain and successful B, same native process/thread, accepted history preserved and no replay. This alone does not close provider-originated automatic fallback or concurrency acceptance.",
+      "evidence": []
+    },
+    {
+      "id": "LIVE-DELIVERY",
+      "status": "in_progress",
+      "issues": [
+        "TIN-2057",
+        "TIN-2063"
+      ],
+      "scope": "Reviewed implementation and exact local model/native/live evidence delivered with signed source and factual tracker readbacks.",
+      "evidence": []
+    }
+  ],
+  "remaining_independent_gates": [
+    "Provider-originated pre-acceptance failure and automatic alternate retry",
+    "Concurrent-binding isolation",
+    "Accepted tool/approval behavior beyond observed no-tool text proof",
+    "Authorize-once renewal and refresh-writer transfer",
+    "Browser consent, Home Manager activation, Darwin and general support",
+    "Signing, store publication, website publication and achieved SLOs"
+  ],
+  "next_action": "Run privacy models and one retained native diagnostic while completing explicit live execution/account enrollment and text portability."
+}

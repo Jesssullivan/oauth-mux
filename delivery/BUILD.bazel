@@ -656,6 +656,25 @@ python_test(
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 
+# Failure-only PTY recognition and cleanup models; no native process execution.
+python_test(
+    name = "native_terminal_failure_test",
+    main = "test_native_terminal_failure.py",
+    srcs = [
+        "native_thread_census.py",
+        "test_installed_legacy_native_tui.py", "test_installed_native_tui.py",
+        "test_installed_native_interop.py", "test_installed_custody.py",
+        "native_run_cli_failure.py", "native_resumed_checkpoint.py",
+        "native_history_diagnostic.py", "native_fd2_observer.py", "native_cli_stderr.py",
+        "codex_runtime_selection.py", "pack.py", "install.py", "portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py",
+        "//integrations/codex-upstream:restore_source.py",
+    ],
+    timeout = "short",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
 python_test(
     name = "native_run_cli_failure_test",
     main = "test_native_run_cli_failure.py",

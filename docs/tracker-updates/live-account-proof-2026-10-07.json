@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "live_account_proof_checkpoint",
+  "authority": [
+    "User real-account five-hour sprint and uncapped model IO",
+    "AGENTS.md",
+    "R-HOOK-CONVERGENCE-20261004/R-N13"
+  ],
+  "goal": ".goal/omux-live-account-proof-2026-10-07.json",
+  "note": "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md",
+  "start": "2026-10-07T05:48:41Z",
+  "due": "2026-10-07T10:48:41Z",
+  "prior_receipt": "docs/tracker-updates/bounded-proof-diagnostics-2026-10-07.json",
+  "reviewed_source_delivery": {
+    "pr": 531,
+    "merge": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+    "tree": "91b543ef711d7069aa75cfa72ef6ad9f4d7d98fd",
+    "scope": "Bounded diagnostics and source; no live proof"
+  },
+  "prior_native_checkpoint": {
+    "epoch": "e761fae3-bbf4-4c68-af4c-23075c43bab7",
+    "result": "failed",
+    "boundary": "cold-native-resume/resume-owner-endpoint/resume-terminal-exited",
+    "accepted_history_proven": false,
+    "live_handoff_proven": false
+  },
+  "current_execution": {
+    "state": "none"
+  },
+  "account_discovery": {
+    "scope": "Selected conventional native source metadata only; no credential content read",
+    "file_regular": true,
+    "file_mode": "0600",
+    "directory_mode": "0700",
+    "owned_by_current_user": true,
+    "provider_identity_verified": false,
+    "durable_real_enrollment_established": false,
+    "second_source": "one-time native OAuth enrollment or authorized extant source; no location prerequisite imposed on user"
+  },
+  "workstreams": [
+    "Native cold-resume boundary",
+    "Real source enrollment/custody",
+    "Live request auth and completion ordering",
+    "Native text portability",
+    "Declared live fixture and redacted ledger audit",
+    "Contained live execution",
+    "Qualified maintained-candidate build",
+    "Independent safety review"
+  ],
+  "claim": "Experimental unshipped; real account enrollment/resume/handoff unpassed",
+  "model_pre_action": {
+    "source_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+    "targets": [
+      "//delivery:native_terminal_failure_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "reviews": [
+      "native_resume_fix",
+      "live_security_review"
+    ],
+    "source_scope": "Failure-only closed exit/message recognition; actual privacy/liveness/cleanup models; five-hour checkpoint",
+    "resource_limits": {
+      "memory_bytes": 4294967296,
+      "swap_bytes": 0,
+      "tasks": 512,
+      "cpu": 2,
+      "runtime_seconds": 1200
+    },
+    "native_acceptance_changed": false
+  }
+}

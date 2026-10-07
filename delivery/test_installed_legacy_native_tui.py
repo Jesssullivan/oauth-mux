@@ -55,6 +55,58 @@ CLI_OBSERVATION = None
 DETACH_CLI_FAILURE_RECORD = None
 CLI_EXITS = ("exit-zero-stderr", "exit-one", "exit-two", "exit-positive-other",
              "exit-signal", "unclassified")
+TERMINAL_EXITS = ("exit-zero", "exit-one", "exit-two", "exit-101",
+                  "exit-positive-other", "exit-signal", "exit-core", "exit-unavailable")
+TERMINAL_MESSAGES = (
+    ("runtime-thread-spawn", (b"failed to spawn thread", b"failed to spawn scoped thread",
+                              b"OS can't spawn worker thread")),
+    ("os-resource-unavailable", (b"Resource temporarily unavailable (os error 11)",)),
+    ("config-load", (b"Error loading configuration:", b"Error parsing -c overrides:",
+                     b"Error finding codex home:")),
+    ("terminal-not-tty", (b"stdin is not a terminal", b"stdout is not a terminal")),
+    ("resume-session-missing", (b"No saved session found with ID ",)),
+    ("daemon-startup", (b"To work without the background server, rerun the same command",)),
+    ("rust-panic", (b"panicked at ",)),
+    ("python-bootstrap", (b"Traceback (most recent call last):",)),
+)
+TERMINAL_CATEGORIES = tuple(value[0] for value in TERMINAL_MESSAGES) + ("unrecognized",)
+TERMINAL_MARKER = "installed legacy native terminal exit "
+
+
+class TerminalFailureObservation:
+    """Private literal recognition; no native bytes or interpolated text emitted.
+
+    Rank recognition only as a diagnostic, never as native error authority or
+    evidence of continuity. Keep a bounded suffix to recognize split packets.
+    The original terminal output bound, liveness and cleanup remain mandatory.
+    """
+
+    def __init__(self):
+        self.suffix = b""
+        self.seen = set()
+
+    def observe(self, packet):
+        observed = self.suffix + packet
+        for category, literals in TERMINAL_MESSAGES:
+            if any(literal in observed for literal in literals):
+                self.seen.add(category)
+        self.suffix = observed[-127:]
+
+    def record(self, terminal):
+        self.suffix = b""
+        info = terminal.exited()  # WNOWAIT preserves the owned cleanup anchor.
+        category = next((value for value, _ in TERMINAL_MESSAGES if value in self.seen), "unrecognized")
+        exit_category = "exit-unavailable"
+        if info is not None:
+            if info.si_code == os.CLD_EXITED:
+                exit_category = {0: "exit-zero", 1: "exit-one", 2: "exit-two",
+                                 101: "exit-101"}.get(info.si_status, "exit-positive-other")
+            elif info.si_code == os.CLD_KILLED:
+                exit_category = "exit-signal"
+            elif info.si_code == os.CLD_DUMPED:
+                exit_category = "exit-core"
+        return TERMINAL_MARKER + exit_category + "/" + category + "\n"
+
 STATUS_REFUSALS = {
     (-32000, "CustodyUnavailable"): "status-custody-unavailable",
     (-32000, "UnknownOperation"): "status-unknown-operation",
@@ -719,6 +771,7 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
     socket_path = Path(environment["XDG_RUNTIME_DIR"]) / ("omux-" + hashlib.sha256(str(state).encode()).hexdigest()[:32]) / "control.sock"
     require(len(os.fsencode(socket_path)) <= 107, "installed control path too long")
     keyring_process = daemon = bootstrap_native = terminal = None
+    terminal_failure = TerminalFailureObservation()
     drains = []
     try:
         census = native_threads.Census(census_deadline_ns)
@@ -854,7 +907,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
         PHASE = "cold-native-resume"
         DIAGNOSTIC = "resume-terminal-spawn"
         terminal = tui.TerminalProcess(binary, environment, work, resume=thread,
-                                       popen_factory=native_threads.factory(census, "native-resume"))
+                                       popen_factory=native_threads.factory(census, "native-resume"),
+                                       failure_observer=terminal_failure)
         native_threads.checkpoint(census)
         DIAGNOSTIC = "resume-new-process-predicate"
         require(terminal.process.pid != first_pid, "legacy cold resume reused original process")
@@ -900,6 +954,13 @@ def inside(bundle, candidate, receipt, keyring, root, *, census_deadline_ns=None
     except BaseException:
         # This hook runs once before the original cleanup. Diagnostic failures,
         # cancellation or exit never replace the primary exception or predicates.
+        if terminal is not None:
+            try:
+                # No extra read, drain or deadline extension. The original alive()
+                # call already pumped output; inspect only its finite recognition.
+                sys.stderr.write(terminal_failure.record(terminal))
+            except BaseException:
+                pass
         try:
             native_threads.emit_failure(census, lambda value: sys.stderr.write(value.decode("ascii")))
         except BaseException:
@@ -978,6 +1039,14 @@ def main():
             require(output == expected_marker, "legacy ordinary TUI proof marker missing")
             print(expected_marker.decode("ascii"), end="")
         else:
+            for line in diagnostics.splitlines():
+                if not line.startswith(TERMINAL_MARKER.encode("ascii")):
+                    continue
+                parts = line[len(TERMINAL_MARKER):].split(b"/")
+                if (len(parts) == 2 and parts[0] in tuple(value.encode("ascii") for value in TERMINAL_EXITS)
+                        and parts[1] in tuple(value.encode("ascii") for value in TERMINAL_CATEGORIES)):
+                    print(line.decode("ascii"), file=sys.stderr)
+                    break
             seen_thread_roles = set()
             for line in diagnostics.splitlines():
                 try:

@@ -123,7 +123,7 @@ class TerminalProcess:
     No poll/wait may reap the child before exact owned process-group cleanup.
     """
 
-    def __init__(self, candidate, environment, cwd, resume=None, *, popen_factory=None):
+    def __init__(self, candidate, environment, cwd, resume=None, *, popen_factory=None, failure_observer=None):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         bootstrap = ("import os,runpy,sys;p=sys.argv.pop(1);sys.path.insert(0,os.path.dirname(p));"
@@ -136,6 +136,7 @@ class TerminalProcess:
         self.closed = False
         self.total = 0
         self.suffix = b""
+        self.failure_observer = failure_observer
         try:
             os.set_blocking(self.master, False)
             self.selector.register(self.master, selectors.EVENT_READ)
@@ -162,6 +163,8 @@ class TerminalProcess:
                 raise
             self.total += len(packet)
             require(self.total <= OUTPUT_LIMIT, "native terminal output exceeded bound")
+            if self.failure_observer is not None:
+                self.failure_observer.observe(packet)
             observed = self.suffix + packet
             # A terminal-emulator reply only: this never submits application
             # input or a provider prompt. Account/model output is not retained.
