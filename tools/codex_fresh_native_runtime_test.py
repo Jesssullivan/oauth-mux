@@ -161,5 +161,117 @@ class FreshRuntimeModels(unittest.TestCase):
                     fresh.validate_public_receipt_path(role,path)
 
 
+
+class CombinedActionChainModels(unittest.TestCase):
+    def fixture(self, combined=True):
+        origin='a'*64; provenance='b'*64 if combined else origin; graph='c'*64
+        base=fresh.STATE/('cache-v2-'+origin)/'output-base'
+        source={'inventory_sha256':'1'*64}; exported={'inventory_sha256':'2'*64}
+        files={'source':{'sha256':'3'*64},'export':{'sha256':'4'*64}}
+        transition={'schema_version':1,'amendment_sha256':'d'*64,
+            'prior_epoch':'12345678-1234-4234-8234-123456789aaa','prior_cleanup_receipt_sha256':'e'*64,
+            'from_controller_graph_sha256':'f'*64,'to_controller_graph_sha256':graph,
+            'from_provenance_sha256':origin,'to_provenance_sha256':provenance,
+            'from_attempt':4,'first_attempt':5,'aggregate_before':6,'aggregate_max':8}
+        specs=(('qualification_run',fresh.COMBINED_MODE,(*tuple(fresh.QUALIFICATION_GATES),fresh.CLI),5),
+            ('schema_run','schema',('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'),6)) if combined else (
+            ('compile','cli-opt',(fresh.CLI,),1),
+            ('qualification_run','qualification',tuple(fresh.QUALIFICATION_GATES),2),
+            ('schema_run','schema',('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'),3))
+        previous=[{'id':'87654321-1234-4234-8234-%012d'%n,
+            'sha256':hashlib.sha256(('prior%d'%n).encode()).hexdigest(),
+            'cache_key':origin,'attempt':min(n,4)} for n in range(1,7)]
+        values={}
+        for role,mode,targets,attempt in specs:
+            epoch='12345678-1234-4234-8234-%012d'%attempt
+            candidate={'key':origin,'provenance_sha256':provenance,'workspace':str(base.parent/'native-input/source'),
+                'output_base':str(base),'max_attempts':6,'attempt':attempt}
+            if combined:
+                history=list(previous)
+                if role=='schema_run':
+                    prior=fresh.parse(values['qualification_run'])
+                    history.append({'id':prior['id'],'sha256':files['qualification_run']['sha256'],
+                        'cache_key':origin,'attempt':5})
+                candidate.update(origin_provenance_sha256=origin,transition_history=[transition],
+                    aggregate_attempt=attempt+2,aggregate_max_attempts=8,
+                    transition_verified_after_cleanup=True,aggregate_previous_dispatches=history)
+            receipt={'id':epoch,'profile':'codex-native','exit':0,'workload_exit':0,
+                'descendants_empty':True,'controller_failure':None,'graph_sha256':graph,
+                'targets':list(targets),'native_candidate_cache':candidate,
+                'native_sdk':{'mode':mode,'source_and_export_verified_after_cleanup':True,
+                    'source_receipt_sha256':files['source']['sha256'],'export_receipt_sha256':files['export']['sha256'],
+                    'plan':{'candidate_output_base':str(base),'source_inventory_sha256':source['inventory_sha256'],
+                        'export_inventory_sha256':exported['inventory_sha256'],'argv':[fresh.BAZEL]}}}
+            raw=fresh.encoded(receipt); values[role]=raw
+            files[role]={'path':str(fresh.STATE/epoch/'receipt.json'),'sha256':fresh.digest(raw),'bytes':len(raw)}
+        if combined:
+            files['compile']=dict(files['qualification_run']); values['compile']=values['qualification_run']
+        return {'files':files},values,source,exported
+
+    def change(self, selection, values, role, mutate):
+        receipt=fresh.parse(values[role]); mutate(receipt); values[role]=fresh.encoded(receipt)
+        if role=='qualification_run' and selection['files']['compile']==selection['files'][role]:
+            values['compile']=values[role]
+
+    def test_two_actual_combined_and_schema_receipts_and_old_three_actions_both_join(self):
+        for combined in (True,False):
+            selection,values,source,exported=self.fixture(combined)
+            receipts,cache,observed=fresh.validate_action_receipts(selection,values,source,exported)
+            self.assertEqual(observed,combined)
+            self.assertEqual(len({row['id'] for row in receipts.values()}),2 if combined else 3)
+            self.assertEqual(receipts['compile']['native_sdk']['mode'],fresh.COMBINED_MODE if combined else 'cli-opt')
+
+    def test_failed_role_wrong_targets_cleanup_graph_key_counter_or_fake_cli_opt_refuses(self):
+        mutations=(
+            ('schema_run',lambda r:r.update(exit=1)),
+            ('schema_run',lambda r:r.update(descendants_empty=False)),
+            ('qualification_run',lambda r:r['native_sdk'].update(mode='cli-opt')),
+            ('qualification_run',lambda r:r.update(targets=list(fresh.QUALIFICATION_GATES))),
+            ('schema_run',lambda r:r.update(graph_sha256='9'*64)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(provenance_sha256='9'*64)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(aggregate_attempt=7)),
+            ('qualification_run',lambda r:r['native_candidate_cache'].update(transition_history=[])),
+            ('qualification_run',lambda r:r['native_candidate_cache'].update(attempt=6)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(attempt=5)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(transition_verified_after_cleanup=False)),
+            ('qualification_run',lambda r:r['native_candidate_cache'].pop('transition_verified_after_cleanup')),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(aggregate_max_attempts=9)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(aggregate_previous_dispatches=[])),
+            ('schema_run',lambda r:r['native_sdk'].update(source_and_export_verified_after_cleanup=False)))
+        for role,mutate in mutations:
+            selection,values,source,exported=self.fixture()
+            self.change(selection,values,role,mutate)
+            with self.subTest(role=role,mutate=mutate),self.assertRaises(ValueError):
+                fresh.validate_action_receipts(selection,values,source,exported)
+
+    def test_combined_cli_actual_bytes_and_context_must_match_same_guarded_receipt(self):
+        selection,values,source,exported=self.fixture()
+        receipt=fresh.parse(values['qualification_run'])
+        raw=b'\x7fELFactual-model'; values['codex']=raw
+        path=Path(receipt['native_candidate_cache']['output_base'])/'execroot/_main/bazel-out/k8-opt/bin/codex-rs/cli/codex'
+        pin={'path':str(path),'sha256':fresh.digest(raw),'bytes':len(raw)}; selection['files']['codex']=pin
+        context={'invocation_id':receipt['id'],'output_base':receipt['native_candidate_cache']['output_base'],
+            'source_receipt_sha256':selection['files']['source']['sha256'],
+            'export_receipt_sha256':selection['files']['export']['sha256'],
+            'source_inventory_sha256':source['inventory_sha256'],'export_inventory_sha256':exported['inventory_sha256'],
+            'candidate_cache_key':receipt['native_candidate_cache']['key'],
+            'candidate_provenance_sha256':receipt['native_candidate_cache']['provenance_sha256'],
+            'controller_graph_sha256':receipt['graph_sha256'],'bazel':fresh.BAZEL,
+            'workload_exit':0,'descendants_empty':True,'source_and_export_verified_after_cleanup':True}
+        group={'cli_context':context,'cli_artifact':{'kind':'actual-explicit-cli-target-v1',
+            'target':fresh.CLI,'configuration':'k8-opt',**pin}}
+        fresh.validate_combined_cli(group,selection,values,receipt,source,exported)
+        for field in ('invocation_id','candidate_provenance_sha256','controller_graph_sha256','bazel'):
+            changed=copy.deepcopy(group); changed['cli_context'][field]='foreign'
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                fresh.validate_combined_cli(changed,selection,values,receipt,source,exported)
+        for field,value in (('target','//foreign:cli'),('sha256','9'*64),('configuration','wrong-opt'),('bytes',len(raw)+1)):
+            changed=copy.deepcopy(group); changed['cli_artifact'][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                fresh.validate_combined_cli(changed,selection,values,receipt,source,exported)
+        values['codex']=raw+b'changed'
+        with self.assertRaises(ValueError):
+            fresh.validate_combined_cli(group,selection,values,receipt,source,exported)
+
 if __name__ == '__main__':
     unittest.main()

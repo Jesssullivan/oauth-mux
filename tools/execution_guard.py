@@ -1075,6 +1075,8 @@ def _main(argv, admission_resources):
     parser.add_argument('--native-patch-sha256', action='append')
     parser.add_argument('--native-owned-candidate-cache', action='store_true')
     parser.add_argument('--native-cache-attempt', type=int)
+    parser.add_argument('--native-cache-transition', type=Path)
+    parser.add_argument('--native-cache-transition-sha256')
     parser.add_argument('--yoga-delivery-epoch')
     parser.add_argument('--yoga-qualification', type=Path)
     parser.add_argument('--yoga-qualification-sha256')
@@ -1116,6 +1118,12 @@ def _main(argv, admission_resources):
     if args.profile == 'codex-native':
         if args.native_owned_candidate_cache != (args.native_cache_attempt is not None):
             raise ValueError('native continuation requires explicit finite attempt')
+        if (args.native_cache_transition is None) != (args.native_cache_transition_sha256 is None):
+            raise ValueError('native transition requires one exact reviewed amendment pin')
+        if args.native_cache_transition is not None and (not args.native_owned_candidate_cache
+            or args.manager != 'system' or args.native_cache_attempt not in (5, 6)
+            or args.native_mode not in ('qualification-cli', 'schema')):
+            raise ValueError('native transition restricted to final C26 combined and schema invocations')
         if args.native_cache_attempt is not None and not 1 <= args.native_cache_attempt <= 6:
             raise ValueError('native continuation is limited to six attempts')
         import codex_native_profile as native_sdk
@@ -1137,7 +1145,7 @@ def _main(argv, admission_resources):
         if args.state_dir != native_sdk.STATE:
             raise ValueError('native profile requires fixed fresh fast state')
         arguments = [native_sdk.MODES[args.native_mode][0], *native_sdk.MODES[args.native_mode][1]]
-    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None:
+    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None or args.native_cache_transition is not None or args.native_cache_transition_sha256 is not None:
         raise ValueError('native inputs are exclusive to native profile')
     site = None
     site_qualification = None
@@ -1923,6 +1931,8 @@ def _main(argv, admission_resources):
                         native_sdk.verify_inventory(fd, receipt['source_inventory'], native_sdk.EXPORT_MODE_POLICY, on_read=lambda count: native_sdk.tick(args.native_deadline))
                     finally:
                         os.close(fd)
+                    if native_cache is not None:
+                        native_cache.verify_transition_after_cleanup()
                     native_verified_after = True
                 except (OSError, ValueError, KeyError, TypeError):
                     native_verified_after = False
@@ -1975,7 +1985,25 @@ def _main(argv, admission_resources):
                     manifest = capture_test_evidence(lease.output_base if lease else run / 'output-base',
                                                      run, arguments[1:], result, epoch_start_ns)
                     if native_sdk:
-                        native_sdk.meaningful_tests(run, manifest, args.native_mode)
+                        qualification_context = None
+                        if args.native_mode == 'qualification-cli':
+                            if native_cache is None or native_plan['candidate_output_base'] is None:
+                                raise ValueError('combined qualification requires exact owned output base')
+                            qualification_context = {
+                                'invocation_id': run.name,
+                                'output_base': native_plan['candidate_output_base'],
+                                'source_receipt_sha256': args.native_source_sha256,
+                                'export_receipt_sha256': args.native_export_sha256,
+                                'source_inventory_sha256': native_plan['source_inventory_sha256'],
+                                'export_inventory_sha256': native_plan['export_inventory_sha256'],
+                                'candidate_cache_key': native_cache.facts()['key'],
+                                'candidate_provenance_sha256': native_cache.facts()['provenance_sha256'],
+                                'controller_graph_sha256': native_controller_graph[0],
+                                'bazel': native_sdk.BAZEL, 'workload_exit': result,
+                                'descendants_empty': cleanup,
+                                'source_and_export_verified_after_cleanup': native_verified_after,
+                            }
+                        native_sdk.meaningful_tests(run, manifest, args.native_mode, qualification_context)
                     refused = {'copy-refused', 'directory-refused', 'over-budget', 'unsupported-label',
                                'file-budget-exhausted', 'changed-during-copy'}
                     evidence_ok = not any(row.get('state') in refused or
