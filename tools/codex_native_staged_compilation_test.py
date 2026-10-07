@@ -77,7 +77,7 @@ class StagedAdmissionModels(unittest.TestCase):
         parent=target/'native-input';parent.mkdir(mode=0o700)
         source=parent/'source';source.mkdir(mode=0o700)
         (source/'fixture.rs').write_bytes(b'qualified model source\n')
-        (source/'fixture.rs').chmod(0o444)
+        (source/'fixture.rs').chmod(0o555)
         source.chmod(0o555);parent.chmod(0o555)
         return source
 
@@ -315,7 +315,7 @@ class StagedAdmissionModels(unittest.TestCase):
     def test_changed_held_source_or_policy_anchor_refuses(self):
         with self.fixture():
             first=self.admit()
-            path=first.source/'fixture.rs';path.chmod(0o644);path.write_bytes(b'changed source\n');path.chmod(0o444)
+            path=first.source/'fixture.rs';path.chmod(0o644);path.write_bytes(b'changed source\n');path.chmod(0o555)
             with self.assertRaises(ValueError):first.authorize_native_mode(first.args)
             staged.CHAIN.chmod(0o600);staged.CHAIN.write_bytes(b'changed reservation\n');staged.CHAIN.chmod(0o400)
             with self.assertRaises(ValueError):first.check_chain()

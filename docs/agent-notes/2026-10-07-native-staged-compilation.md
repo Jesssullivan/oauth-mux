@@ -58,7 +58,31 @@ The exact producer source SHA256 is
 `c90c6317c05169ef6c953677761ed0f3fae5aa0d047f2649c0cbf5375bec7134`;
 its model source is
 `94990ca6679c431db3689261b594d6f404fdfa64b64778621d6faef06dd1c838`.
-The package consumer is a separate implementation/review gate. Static clearance
+That model pin identifies the initial reviewed proposal. The first guarded
+qualification on signed commit `d2277a0e7245852992bf33152e08f37d1802a313`
+ended with five passing targets and two failures: the synthetic copied source
+used mode 0444 while the existing sealed-source verifier requires 0555, and
+this note lacked its authority-map classification. The minimal fixture and
+classification corrections preserve the verifier and are independently reviewed.
+The corrected producer-model SHA256 is
+`2da486b4f27af7c9209a5252757be7e4a0ec1853a2d1c4d51a3b8f8d85e54275`.
+Receipt `f6925bee-cee1-43c1-bbee-9d64797b6be0`, SHA256
+`9a93daa4a1d1b0ae692e63e7dac9459c4025796b080615836566906f4c5957d1`,
+records exit 3, workload 3, preserved test evidence and empty descendants.
+
+The separate package consumer is now implemented with static clearance. It
+requires all four distinct successful stage receipts, their common custody
+identities, the immutable chain's actual bytes, three declared libraries,
+all fourteen named qualification results and complete schema inventories.
+The consumer source is
+`e86c094f641e9ad1d1dcf589cc1ef351e94a9cb21f11eb935d17e1df759c3b32`;
+its nine-model source is
+`c89d96e6e3a88b34245a6bbf00f6bbbab97ab997942fef9b44eb072aa6bcbb96`.
+The historical package reader remains separate. Declared Python closures include
+the consumer's transitive cache dependency. The actual-input visibility regression
+is manual and awaits genuine stage artifacts; it has not run on a fabricated tuple.
+
+Corrected producer and consumer execution remain pending. Static clearance
 does not establish model results or genuine A–D receipts.
 
 No new native invocation or private selector is created. Phase feasibility,

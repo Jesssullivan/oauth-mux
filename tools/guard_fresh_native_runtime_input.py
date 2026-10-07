@@ -131,20 +131,31 @@ class Admission:
         graph_inputs = producer_run['graph_inputs']
         fresh.require('tools/codex_fresh_native_runtime.py' in graph_inputs
             and fresh.HASH.fullmatch(selected['producer_source_sha256']))
-        fresh.require(set(package['files']) == fresh.ROLES)
-        values = {name:read(pin, fresh.runtime.MAX_ORIGINAL_BYTES if name == 'codex'
-            else fresh.MAX_METADATA) for name,pin in package['files'].items()}
+        if package.get('kind') == 'omux-staged-native-package-selection-v1':
+            from codex_staged_native_package_consumer import validate_producer_graph
+            validate_producer_graph(graph_inputs)
+        fresh.require(set(package['files']) == fresh.package_roles(package))
+        staged_values = None
+        if package.get('kind') == 'omux-staged-native-package-selection-v1':
+            from codex_staged_native_package_consumer import load_inputs
+            values,protocol_values,staged_values = load_inputs(package,
+                lambda role,pin,maximum:read(pin,maximum))
+        else:
+            values = {name:read(pin, fresh.runtime.MAX_ORIGINAL_BYTES if name == 'codex'
+                else fresh.MAX_METADATA) for name,pin in package['files'].items()}
         protocol = package['protocol_schema_files']
         fresh.require(isinstance(protocol,dict) and 0 < len(protocol) <= 4096)
-        total, protocol_values = 0, {}
-        for name, pin in protocol.items():
+        total = 0
+        if staged_values is None:
+            protocol_values = {}
+        for name, pin in (() if staged_values is not None else protocol.items()):
             raw = read(pin, fresh.MAX_PROTOCOL)
             total += len(raw)
             fresh.require(total <= fresh.MAX_PROTOCOL)
             fresh.parse(raw)
             protocol_values[name] = raw
         fresh.validate_protocol_inventory(package)
-        chain = fresh.validate_chain(package, values, protocol_values)
+        chain = fresh.validate_chain(package, values, protocol_values,staged_values)
         receipt_raw = read(selected['receipt'], fresh.MAX_METADATA)
         receipt = fresh.parse(receipt_raw)
         payload = read(selected['archive'], fresh.runtime.MAX_ARCHIVE_BYTES)

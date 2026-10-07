@@ -9,8 +9,10 @@ load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_ma
 load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
 load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_scope_test")
 load(":codex_fresh_runtime_repository_selector_test.bzl", "codex_fresh_runtime_repository_selector_test")
+load(":codex_fresh_native_package_visibility_test.bzl", "codex_fresh_native_package_visibility_test")
 
 _CODEX_SDK_SOURCES = [
+    "codex_staged_native_package_consumer.py",
     "codex_native_candidate_cache.py",
     "codex_native_fresh_completion.py",
     "codex_native_staged_compilation.py",
@@ -38,6 +40,14 @@ _YOGA_GUARD_SOURCES = [
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.json", "*.zig", "*.h"], allow_empty = True), visibility = ["//visibility:public"])
 
 codex_fresh_native_receipt_scope_test(name = "codex_fresh_native_receipt_scope_test")
+
+# Admit only the genuine independently pinned package inputs. The selected
+# repository must exist before this analysis regression can run.
+codex_fresh_native_package_visibility_test(
+    name = "codex_fresh_native_package_visibility_test",
+    inputs = "@omux_fresh_native_package_data//:inputs",
+    tags = ["manual"],
+)
 
 # Finite copy of the existing declared retained proof input; no execution claim.
 python_test(
@@ -1479,6 +1489,7 @@ python_test(
     name = "codex_fresh_native_runtime_package",
     main = "codex_fresh_native_runtime.py",
     srcs = [
+        "guard_cache.py",
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//delivery:portable.py",
     ] + _CODEX_SDK_SOURCES,
@@ -1504,9 +1515,16 @@ python_test(
 )
 exports_files(["codex_fresh_native_package_inputs.bzl", "codex_fresh_native_runtime.py"])
 python_test(
+    name = "codex_staged_native_package_consumer_test",
+    main = "codex_staged_native_package_consumer_test.py",
+    srcs = ["codex_fresh_native_runtime.py", "codex_native_staged_compilation_test.py", "guard_cache.py", "//delivery:portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py"] + _CODEX_SDK_SOURCES,
+)
+python_test(
     name = "codex_fresh_native_runtime_test",
     main = "codex_fresh_native_runtime_test.py",
     srcs = [
+        "guard_cache.py",
         "codex_fresh_native_runtime.py",
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//delivery:portable.py",
@@ -1522,7 +1540,7 @@ python_test(
 # Pure shared fresh validators; the packaging action remains separate and manual.
 filegroup(
     name = "codex_fresh_live_support",
-    srcs = ["codex_fresh_native_runtime.py","guard_fresh_native_runtime_input.py",
+    srcs = ["codex_fresh_native_runtime.py","guard_fresh_native_runtime_input.py","guard_cache.py",
         "//integrations/codex-owner-runtime:runtime_package.py","//delivery:portable.py"] + _CODEX_SDK_SOURCES,
     visibility = ["//visibility:public"],
 )
