@@ -777,6 +777,21 @@ def main():
         selection = load(args.selection,args.selection_sha256,budget)
         current_selection = qualify(budget)
         if selection != current_selection:
+            # Inert diagnostic evidence only; never create an export on drift.
+            need(current_selection.get('qualification_only') is True,'refused selection must remain qualification only')
+            raw = canonical(current_selection)
+            need(len(raw)<=256*1024*1024,'refused selection diagnostic metadata bound')
+            budget.check(len(raw))
+            diagnostic = os.open('sdk-refused-current-selection.json',
+                os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=fd)
+            with os.fdopen(diagnostic,'wb') as stream:
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            diagnostic = os.open('sdk-refused-current-selection.sha256',
+                os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400,dir_fd=fd)
+            with os.fdopen(diagnostic,'wb') as stream:
+                stream.write((digest(raw)+'\n').encode()); stream.flush(); os.fsync(stream.fileno())
+            os.fsync(fd)
+            budget.check()
             raise ValueError('retained selection changed or has unreviewed fields'+selection_drift(selection,current_selection))
         budget.authorize_export_passes()
         os.mkdir('sdk-export',0o700,dir_fd=fd)
