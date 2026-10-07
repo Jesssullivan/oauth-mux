@@ -172,7 +172,7 @@ class ResidentModels(unittest.TestCase):
                 repository_cache=resident.REPOSITORY_CACHE,nixpkgs_source=resident.NIXPKGS_SOURCE)
             for flag in ("--repository_cache="+str(resident.REPOSITORY_CACHE),
                     "--repo_env=OMUX_NIXPKGS_EVALUATION_SOURCE="+str(resident.NIXPKGS_SOURCE),
-                    "--repository_disable_download","--output_base=/private/run/output-base",
+                    "--repository_disable_download","--repo_contents_cache=","--output_base=/private/run/output-base",
                     "--jobs=2","--host_jvm_args=-Xmx1536m","--host_jvm_args=-XX:ActiveProcessorCount=2",
                     "--remote_executor=","--remote_cache=","--disk_cache=","--lockfile_mode=error",
                     "--sandbox_default_allow_network=false","--spawn_strategy=linux-sandbox"):

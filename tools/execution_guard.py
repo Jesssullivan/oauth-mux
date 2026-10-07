@@ -1061,7 +1061,10 @@ def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=No
         repository_cache=repository_cache,nixpkgs_source=nixpkgs_source)
     command[command.index('build')] = 'run'
     if repository_cache is not None:
-        command.insert(command.index('run')+1,'--repository_disable_download')
+        # Bazel9 defaults the writable contents cache beneath repository_cache.
+        # Keep hash-addressed inputs readonly and extract into this fresh output base.
+        command[command.index('run')+1:command.index('run')+1] = [
+            '--repository_disable_download', '--repo_contents_cache=']
     command[command.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
     command[-1:-1] = ['--run_env='+key+'='+value for key,value in admission.environment().items()]
     if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
