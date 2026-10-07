@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "kind": "fixed_system_nix_qualified_destination_verification_refused",
+  "authority": "User-ratified provider-free October6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "qualification_epoch": "d47f8637-69b2-48c5-a948-a6a2533a16dd",
+  "qualification_sha256": "7646a18c0007ea87a1f71cfc0a0f14e1023e5fc6fbf8dc14bd1061718b1f1d4c",
+  "qualification_custody": "Guard-owned regular0600 single-link file retained in private0700 epoch; actual stat and producer-guard binding checked",
+  "epochs": [
+    {
+      "mode": "qualify",
+      "epoch": "d47f8637-69b2-48c5-a948-a6a2533a16dd",
+      "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/d47f8637-69b2-48c5-a948-a6a2533a16dd/receipt.json",
+      "raw_receipt_sha256": "1edf7de94a38d6dc96408321589316e076183f5983f98528da9904fd398337d6",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "cleanup": {
+        "ownership": "unproved",
+        "readback_attempts": 0,
+        "state": "empty",
+        "stop": "not-requested"
+      },
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "source_verified_after_cleanup": true,
+      "prior_qualification_epoch": null,
+      "qualification": {
+        "path": "qualification.json",
+        "sha256": "7646a18c0007ea87a1f71cfc0a0f14e1023e5fc6fbf8dc14bd1061718b1f1d4c"
+      },
+      "scope": "Authenticated OS/user/HOME/HM marker and immutable fixed-system Nix executable bytes only."
+    },
+    {
+      "mode": "inspect",
+      "epoch": "f0c7dfbd-cc19-408b-ab6c-8a45f8e5fb37",
+      "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/f0c7dfbd-cc19-408b-ab6c-8a45f8e5fb37/receipt.json",
+      "raw_receipt_sha256": "1247fb097506983b0ef145fe84e6a7cc55c101c3b6389fd65bd313e07063054a",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "cleanup": {
+        "ownership": "unproved",
+        "readback_attempts": 0,
+        "state": "empty",
+        "stop": "not-requested"
+      },
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "source_verified_after_cleanup": true,
+      "prior_qualification_epoch": "d47f8637-69b2-48c5-a948-a6a2533a16dd",
+      "qualification": null,
+      "scope": "Readonly qualified Nix daemon inspection only."
+    },
+    {
+      "mode": "verify",
+      "epoch": "c7f6e7d4-eab1-4812-858b-0ba473c4ccc6",
+      "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/c7f6e7d4-eab1-4812-858b-0ba473c4ccc6/receipt.json",
+      "raw_receipt_sha256": "6fbe49e1645b12c8bd5c2916aacef2f4c404afbe3825b8edebad2bbc13c00adf",
+      "controller_exit": 2,
+      "workload_exit": 2,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "cleanup": {
+        "ownership": "unproved",
+        "readback_attempts": 0,
+        "state": "empty",
+        "stop": "not-requested"
+      },
+      "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+      "source_verified_after_cleanup": true,
+      "prior_qualification_epoch": "d47f8637-69b2-48c5-a948-a6a2533a16dd",
+      "qualification": null,
+      "scope": "Readonly exact472 registration/content predicate refused; no missing-vs-mismatch conclusion.",
+      "gate": "destination-registration-content"
+    }
+  ],
+  "remote_nix": {
+    "path": "/nix/store/mvrybd7i4mga2l0044wy9hhhp997rd19-determinate-nix-3.22.3/bin/nix",
+    "sha256": "46aee469b3aa03298230ad255533bb6a09fc11fc16597f91d2ae89bb9a5330e3",
+    "bytes": 5287200
+  },
+  "inventory_sha256": "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+  "selected_store_paths": 472,
+  "selected_nar_bytes": 2829689512,
+  "destination_inspect": {
+    "passed": true,
+    "daemon_client_trusted": true,
+    "available_bytes": null
+  },
+  "destination_registration_verified": false,
+  "destination_content_rehashed": false,
+  "copy_performed": false,
+  "remote_owned_containment_verified": false,
+  "remote_cleanup": "unknown",
+  "offline_graph_verified": false,
+  "wrapper_execution_authority": false,
+  "toolbar_consent_proved": false,
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false,
+  "next": "Prepare independently reviewed bounded destination diagnosis/transfer authority; qualify browser and wrapper inputs plus actual local Wayland seat before operator toolbar proof. No automatic retry, PATH fallback or fleet activation."
+}

@@ -1,0 +1,99 @@
+diff --git a/delivery/native_cli_stderr.py b/delivery/native_cli_stderr.py
+--- a/delivery/native_cli_stderr.py
++++ b/delivery/native_cli_stderr.py
+@@ -27,4 +27,8 @@ CATEGORIES = (
+     "stderr-unrecognized-whitespace-leading",
++    "stderr-shell-init-current-directory-format",
++    "stderr-shell-working-directory-format",
++    "stderr-loader-version-information-format",
++    "stderr-loader-symbol-size-format",
+ )
+ # Only exact codes emitted by pinned Zig 0.17 log.defaultLogFileTerminal.
+ COLOR_CODES = (b"\x1b[0m", b"\x1b[1m", b"\x1b[2m", b"\x1b[31m",
+@@ -46,2 +50,36 @@
+ 
++# Read-only catalogue from selected glibc 2.42 ld-linux and this host's /bin/sh
++# (Bash). A matched format never proves that binary or a removed cwd caused it.
++SHELL_CWD_PREFIXES = (
++    (b"shell-init: error retrieving current directory: getcwd: cannot access parent directories: ",
++     "stderr-shell-init-current-directory-format"),
++    (b"job-working-directory: error retrieving current directory: getcwd: cannot access parent directories: ",
++     "stderr-shell-working-directory-format"),
++)
++
++
++def platform_stderr_shape(diagnostics):
++    # Examine one complete bounded ASCII line only. Paths, strerror text, symbol
++    # names and all following private lines remain local and are never returned.
++    line, newline, _ = diagnostics.partition(b"\n")
++    if (not newline or len(line) > 3 * 4096 + 128
++            or any(byte < 0x20 or byte > 0x7e for byte in line)):
++        return None
++    for prefix, category in SHELL_CWD_PREFIXES:
++        if line.startswith(prefix) and len(line) > len(prefix):
++            return category
++    def field(value):
++        return 0 < len(value) <= 4096 and all(0x20 <= byte <= 0x7e for byte in value)
++    head, marker, tail = line.partition(b": no version information available (required by ")
++    if marker and tail.endswith(b")"):
++        executable, separator, library = head.partition(b": ")
++        if separator and field(executable) and field(library) and field(tail[:-1]):
++            return "stderr-loader-version-information-format"
++    executable, marker, symbol_tail = line.partition(b": Symbol `")
++    suffix = b"' has different size in shared object, consider re-linking"
++    if marker and symbol_tail.endswith(suffix) and field(executable) and field(symbol_tail[:-len(suffix)]):
++        return "stderr-loader-symbol-size-format"
++    return None
++
++
+ def classify(diagnostics, params, strict_object):
+@@ -89,4 +127,7 @@ def classify(diagnostics, params, strict_object):
+         if diagnostics[0] in b" \t\r\n":
+             return "stderr-unrecognized-whitespace-leading"
++        platform = platform_stderr_shape(diagnostics)
++        if platform is not None:
++            return platform
+         if diagnostics[0] < 0x80:
+             return "stderr-unrecognized-ascii-leading"
+diff --git a/delivery/test_native_cli_stderr.py b/delivery/test_native_cli_stderr.py
+--- a/delivery/test_native_cli_stderr.py
++++ b/delivery/test_native_cli_stderr.py
+@@ -143,3 +143,38 @@ class StderrTests(unittest.TestCase):
++
++    def test_available_shell_cwd_formats_discard_private_details(self):
++        for prefix, expected in (
++                (b"shell-init: error retrieving current directory: getcwd: cannot access parent directories: ",
++                 "stderr-shell-init-current-directory-format"),
++                (b"job-working-directory: error retrieving current directory: getcwd: cannot access parent directories: ",
++                 "stderr-shell-working-directory-format")):
++            self.assertEqual(self.classify(prefix + PRIVATE + b"\n" + PRIVATE), expected)
++            for malformed in (prefix + PRIVATE, PRIVATE + b"\n" + prefix + PRIVATE + b"\n",
++                              prefix[:-2] + PRIVATE + b"\n", prefix + b"\n"):
++                self.assertEqual(self.classify(malformed), "stderr-unrecognized-ascii-leading")
++
++    def test_available_loader_formats_match_complete_bounded_lines(self):
++        version = (b"/synthetic/private/omux: /synthetic/private/lib.so: no version information available "
++                   b"(required by /synthetic/private/backend)\n")
++        symbol = b"/synthetic/private/omux: Symbol `synthetic_private_name' has different size in shared object, consider re-linking\n"
++        self.assertEqual(self.classify(version + PRIVATE), "stderr-loader-version-information-format")
++        self.assertEqual(self.classify(symbol + PRIVATE), "stderr-loader-symbol-size-format")
++        for malformed in (version[:-1], version.replace(b")\n", b")ignored\n"),
++                version.replace(b"/synthetic/private/backend", b"x" * 4097),
++                version.replace(b"/synthetic/private/lib.so", b""),
++                version.replace(b"/synthetic/private/lib.so", b"\x00private"),
++                symbol[:-1], symbol.replace(b"re-linking", b"re-linking-ignored"),
++                symbol.replace(b"synthetic_private_name", b"x" * 4097),
++                symbol.replace(b"synthetic_private_name", b"")):
++            self.assertEqual(self.classify(malformed), "stderr-unrecognized-ascii-leading")
++
++    def test_platform_shapes_keep_old_log_priority_and_stream_bound(self):
++        prefix = b"shell-init: error retrieving current directory: getcwd: cannot access parent directories: "
++        self.assertEqual(self.classify(prefix + PRIVATE + b"\nerror(SafeAllocator): leaked " + PRIVATE),
++                         "stderr-safe-allocator-leak-after-preamble")
++        self.assertEqual(self.classify(prefix + PRIVATE + b"x" * stderr.MAX_BYTES + b"\n"),
++                         "stderr-unrecognized")
++        self.assertEqual(self.classify(b" " + prefix + PRIVATE + b"\n"), "stderr-unrecognized-whitespace-leading")
++        self.assertEqual(self.classify(b"\x1b[999m" + prefix + PRIVATE + b"\n"), "stderr-unrecognized-escape-leading")
+ 
+ if __name__ == "__main__":
+     unittest.main()

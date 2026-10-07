@@ -1,64 +1,123 @@
-# oauth-mux Authority Map
+# Omux authority map
 
-This map separates immutable product intent, active unshipped design, shipped
-truth, implementation, and evidence. GitHub #463 and Linear TIN-2057 track the
-v0.2 program; trackers coordinate work but do not override repository authority.
+The October 2 native account-lifecycle reset governs the experimental successor.
+Ratification records existing user decisions and reviewed implementation choices;
+it does not mean shipped, supported or proven live.
 
-## Authority Order
+The [October 5 integrated delivery sprint](plans/omux-integrated-delivery-sprint-2026-10-05.md)
+is the current implementation sequence. Its original fifteen-hour window ran
+from `2026-10-05T04:03:36Z` to `2026-10-05T19:03:36Z`; resumed work preserves
+that clock and all historical results. The user-resumed five-hour continuation
+has a review checkpoint at **06:30 UTC**; elapsed time closes no acceptance gate.
+Five historical scoped gates pass and six remain open. Its
+[durable session receipt](agent-notes/2026-10-05-sess-omux-integrated-delivery.md)
+records workstream custody and outcomes. The reset remains the architecture SSOT.
+Omux owns each application's adapter contract and implementation; no
+vendor-provided Codex hook is an assumed prerequisite. Existing extension points,
+upstream contributions or maintained application modifications are delivery
+choices to prove per application and version. Missing implemented capability
+remains a gate; waiting for a vendor to supply an Omux integration is not the plan.
 
-1. `AGENTS.md` - repository operating rules and authority order.
-2. Section 0 of `docs/spec/broker-mcp-contract-2026-05-03.md` - immutable
-   product anchor: a managed harness stays in the same process and hands off
-   without prompting. The document's later daemon, MCP surface-v1, adapter, and
-   phase-plan sections are historical design inputs, not v0.2 authority.
-3. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` - active
-   v0.2 design authority. It is future/unshipped until golden proof.
-4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` - normative removal
-   order and preservation gates for the v0.2 reset.
-5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` - managed sidecar,
-   credential, memory, local-state, evidence, and supply-chain boundaries.
-6. `docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md` - immutable-candidate
-   conformance, performance, installed-dogfood, and golden promotion rules.
-7. `docs/spec/managed-harness-jsonrpc-v2.md` - generated, declaration-only
-   process-adapter compatibility contract. Its methods remain unimplemented.
-8. `docs/spec/codex-adapter-contract-2026-05-03.md` - shipped Codex adapter
-   constraints where they do not conflict with the v0.2 program.
-9. `docs/spec/harness-session-authority-bridge-2026-05-05.md` - session-authority
-   constraints where they do not conflict with the v0.2 program.
-10. `CHANGELOG.md`, release tags, and committed evidence - shipped claim truth.
-   A plan can supersede direction but cannot retroactively broaden or erase it.
-11. `justfile` - operator entrypoint and remote-proof authority.
-12. `README.md` - public summary, subordinate to contracts and shipped evidence.
-13. `build.zig.zon` plus the Zig release graph - the human-edited version and
-   product/release-semantics authority.
-14. Generated, checked `release-manifest.json` - the projection that records
-    each intended consumer and its migration state. Migrated consumers may not
-    duplicate its version or target graph; pending consumers remain unproven.
-15. `flake.nix`, packaging scripts, and `src/` - implementation subordinate to
-    the release graph and shipped evidence.
+The [inert NAR byte-proof note](agent-notes/2026-10-05-inert-nar-byteproof.md)
+records that workstream's original source proposal and custody boundaries.
+Subsequent executed predicates belong to the integrated session receipt above;
+document classification grants neither executable admission nor browser proof.
 
-## Evidence Rules
+The [Sting storage operator handoff](agent-notes/2026-10-05-sting-omux-storage-handoff.md)
+records the user-authorized written request and protected input custody. It is
+not a sent operator query or evidence of quota, mount, service or cleanup changes.
 
-- `docs/evidence/` and `test/evidence/` are immutable claim-bounded records.
-- Synthetic, schema-only, local, and live evidence remain distinct. A narrower
-  artifact cannot satisfy a broader acceptance gate.
-- Remote GloriousFlywheel lanes are required completion proof. Local checks are
-  debugging or cheap documentation hygiene only.
-- Current stable behavior is v0.1.15. v0.2 plans and prereleases remain unshipped
-  until the program's golden gate passes.
+The [FD2 observer note](agent-notes/2026-10-06-native-fd2-observer.md)
+is a current implementation diagnostic note with scoped observation and custody
+limits. Classification does not prove an executed observation, native support or
+seamless handoff; instrumented success cannot replace ordinary installed proof.
 
-## Superseded Inputs
+## Authority order
 
-The following are useful historical inputs but no longer active design
-authority and are pending sequenced deletion under the ledger:
+1. User instructions and [AGENTS.md](../AGENTS.md).
+2. [Native account-lifecycle reset](plans/omux-native-account-lifecycle-reset-2026-10-02.md): active outcome, architecture, lifecycle, custody and execution direction.
+3. This map and [machine-readable classification](authority.json): active versus historical documents and conflict handling.
+4. [CHANGELOG.md](../CHANGELOG.md), release tags and committed evidence: shipped claim truth.
+5. Implemented source, generated API/capability facts, Bazel action graph and locked Nix inputs: actual behavior and execution custody.
+6. [README.md](../README.md) and the separate SPA: public summaries, subordinate to those sources.
 
-- `docs/spec/model-quota-granularity-2026-07-03.md`;
-- `docs/spec/stay-afloat-valet-and-browser-evidence-2026-07-09.md`;
-- `docs/spec/claude-managed-hotswap-experiment-2026-07-14.md`;
-- runtime-daemon, supervisor/restart, prepared-fallback, federation, and FFI
-  plans that conflict with the full-broker program.
+The [charter](product/charter.md), [user stories](product/user-stories.md),
+[support gates](product/support-and-completeness.md) and
+[recorded ADRs](decisions/README.md) elaborate the reset. The
+[lifecycle/custody contract](spec/native-lifecycle-and-custody.md),
+[native adapter contract](spec/native-adapter-contract.md),
+[threat model](security/native-account-threat-model.md),
+[service objectives](reliability/service-objectives.md),
+[operations runbook](runbooks/native-operations.md) and
+[repository duties](governance/repository-roles.md) make its acceptance reviewable.
+They confer no evidence beyond their explicitly cited receipts.
 
-When sources disagree, preserve shipped evidence, follow the immutable Section
-0 product metric, then apply the v0.2 program. Do not revive the anchor's
-historical implementation sections or resolve conflict by claiming planned
-behavior has shipped.
+The same-process, no-routine-prompt outcome in Section 0 of the historical
+[broker contract](spec/broker-mcp-contract-2026-05-03.md) remains the product bar.
+Its launch-through-wrapper requirement is superseded. Normal native launch and
+verified attachment replace managed launch. Restart, prepared fallback, warming
+and synthetic admission never establish live continuity.
+
+## Historical retention and subtraction
+
+[The retirement inventory](history/retired-design-inventory.md) records the
+disposition of predecessor documents: 90 deleted, 27 retained at original paths
+for evidence/reference provenance and three research packets moved into history.
+Retained July program, deletion ledger, threat model and evaluation machinery are
+inert historical context, never current implementation or validation authority.
+Earlier provider proof notes describe their exact observation and version only.
+Deleted text remains recoverable from baseline
+`f5f83c1ad99c2920de6759791b327a99a02a2ec5` and release history.
+
+Reviewed data under `docs/evidence/`, `test/evidence/` and `test/fixtures/` remains
+unchanged. The historical stable release is v0.1.15; this uncommitted reset does
+not replace its published artifacts. Removed Just, Zig-build, wrapper and GF
+dispatch commands are not actionable. Every current execution uses locked Nix
+tools through Bazel/Bazelisk, locally by default.
+
+## Conflict and promotion rules
+
+An earlier design cannot reinstate managed-launch, optional-daemon, LLM-only,
+zero-native-library, remote-first or automatic CI requirements. A tracker status
+cannot overrule the reset or supply proof. Resolve actual behavior from source
+and evidence, and retain a missing implementation gate instead of changing an
+acceptance sentence to conceal it.
+
+Keep declarations, candidate patches, fixtures, local relocation, platform
+installation and live provider continuity separate. A support claim names the
+exact platform/artifact/application/hook/provider/credential/operation tuple.
+Old proof cannot promote rewritten code. Control clients receive redacted
+metadata; accepted streams and tools are never replayed.
+
+The historical [weekend checkpoints](plans/omux-ratification-weekend-push-2026-10-02.md) and
+[Linear reconciliation receipt](tracker-updates/native-ratification-2026-10-02.md)
+track ratification and remaining acceptance. Deadline passage is not proof.
+The [five-hour native safety sprint](plans/omux-native-safety-sprint-2026-10-03.md)
+and its [implementation evidence](implementation/native-safety-evidence-2026-10-03.md)
+record the subsequent implementation work and distinct checkpoint.
+`//:docs_check` validates current document classification, links, acceptance IDs
+and checkpoint consistency through the same local Nix/Bazel graph.
+
+The [native owner checkpoint](../.goal/omux-native-owner-2026-10-04.json) is
+bounded and complete. Its live-provider, automatic-discovery, installed-Codex
+interoperation and daemon-replacement gaps remain separate. The historical
+[installed interoperability continuation](plans/omux-native-interop-continuation-2026-10-04.md)
+records user-authorized resumed source/proof work after advisory hook convergence,
+without changing the prior goal clock, independent product holds or historical
+artifact claims. Its [evidence](implementation/native-interop-evidence-2026-10-04.md)
+reports the exact compiled candidate/runtime/daemon/protocol tuple and a passing
+provider-free installed checkpoint. That closes this configured app-server,
+initialized zero-turn history and zero-acquire removal slice without broadening
+historical proofs or the remaining native resume/live/stock capability boundary.
+
+The superseded [discovery and resume sprint](plans/omux-native-discovery-resume-sprint-2026-10-04.md)
+recorded a five-hour clock and conditional ten-hour checkpoint. It targeted
+bounded authenticated inventory, owner-qualified selection and ordinary native
+entrypoint proof. Its ledgers report new predicates independently of the passing
+interop epoch. The [Darwin carrier proposal](spec/darwin-native-peer-carrier-proposal-2026-10-04.md)
+is a reviewed design target; it does not establish a Darwin runtime or qualified
+PZM worker. Dedicated provider resource details remain pending.
+Its goal was cleared after becoming blocked with all eight ND gates unpassed.
+Those ledgers and incident receipts retain their original clocks and results;
+the integrated sprint neither resumes that clock nor treats its failed or
+unrun gates as passing.

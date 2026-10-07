@@ -1,0 +1,31 @@
+load("//tools:rules.bzl", "python_binary", "python_test")
+
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.patch", "*.txt"], allow_empty = True))
+
+exports_files(["retirement_delta.py"])
+
+filegroup(
+    name = "public_sources",
+    srcs = glob(["*.md", "*.patch", "*.py", "*.bazel", "*.txt"]),
+)
+
+python_test(
+    name = "retirement_delta_test",
+    main = "retirement_delta_test.py",
+    srcs = ["retirement_delta.py"],
+    tags = ["manual"],
+)
+
+python_binary(
+    name = "prepare_retirement",
+    main = "prepare_retirement.py",
+    srcs = ["retirement_delta.py"],
+)
+
+python_test(
+    name = "prepare_retirement_test",
+    main = "prepare_retirement_test.py",
+    srcs = ["prepare_retirement.py", "retirement_delta.py"],
+    tags = ["manual"],
+)

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "ruling_id": "R-N13",
+  "additional_ruling_id": "R-HOOK-CONVERGENCE-20261004",
+  "status": "native-owner-runtime-proof-candidate",
+  "native_support": false,
+  "candidate": {
+    "upstream_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+    "patch_sha256": "2e5542c5f6a44e3a8dd38b4a4093d1735ff19771721b05fc51f55b475b1a8d46",
+    "base_sha256": "a794a67af4b6aecd9e91aeb4281354b90d10e10134e7cf6a6028b33f26a2f9d9",
+    "binary_overlay_sha256": "9d47862cd9e7e1a911d8512dad0ad0f124c928e139b778cd1e89ecfce17c5703",
+    "validation_sha256": "1e0f27681a57f4c7d2102d69d01f73586d743341b9baea306e863069c74fc86a",
+    "complete_source_inventory_sha256": "3400115fae8ef204f2ce085880b40887bcb14e2080236ba87a34be9b14fe7d3b",
+    "compile_invocation_id": "185ffba7-9b08-450f-ab29-1d405810892a",
+    "source_verification_invocation_id": "5a9d8326-5327-4052-8a6e-946dcc4d18ac",
+    "current_compile_invocation_id": "c9757a04-8de8-4a61-9029-6c312e153ac6",
+    "current_configuration": "owner-linux-opt",
+    "current_source_verification_invocation_id": "fe794e5f-a4ae-4edb-8496-7df5b14c8c77",
+    "current_source_receipt_sha256": "e3c6d45bc93119ddf1da8bee6e02de3c7c3a3bbe52bb6d2664eb4b7b3d7b5273"
+  },
+  "executable": {
+    "backend_max_bytes": 536870912,
+    "original_sha256": "4635bbee6d7f19ddcdbaa3247fe197c11c7169f191255baaaa41579f54ca2695",
+    "original_bytes": 405575744,
+    "stripped_sha256": "37e8eaafa9e83e90bc4e804bad37ccdb4660252a1a4804946b776d1e1fe132a3",
+    "stripped_bytes": 318558680,
+    "packaged_sha256": "0b82d7f1535ab98ca2854dad0ac908912c9df56f29bb70c664e18e9956dc4a3f",
+    "packaged_bytes": 318579008
+  },
+  "archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "archive_bytes": 119923125,
+  "manifest_sha256": "5626b375f0f3c1818340345c952394ef44b59acbc177ab83f7b910c6fb105678",
+  "scope": "Declared transformed runtime proof input; no SDK execution, installation or continuity proof."
+}

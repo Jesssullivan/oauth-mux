@@ -1,250 +1,154 @@
-# oauth-mux — Agent Instructions
+# Omux — Agent Instructions
 
-## Product Anchor (read first)
+## Product outcome and active authority
 
-The product success metric is in `docs/spec/broker-mcp-contract-2026-05-03.md`:
+Install Omux, authorize account sources once, and keep using ordinary terminal
+applications. Supported integrations substitute compatible authorization when
+account, quota, entitlement or credential state changes, without restarting the
+application, changing its native session/history, or prompting for routine
+handoff. Applications do **not** have to launch through Omux.
 
-> The user runs `oauth-mux <harness>` (e.g. `oauth-mux codex`). The harness
-> behaves like the real one. The active subscription account exhausts its
-> quota. Another credited account is **seamlessly substituted in place**.
-> The harness process is not restarted. The user is not prompted.
+The active architecture is
+[the native account-lifecycle reset](docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md).
+It supersedes the managed-launch restriction, optional-daemon architecture,
+LLM-only resource assumptions, remote-first validation, and Just/Zig-build
+execution paths in earlier documents. The preservation rule is unchanged:
+plans cannot broaden historical release claims or erase their evidence.
 
-Only Section 0 of that document is the immutable product anchor. Its later
-daemon, MCP surface-v1, adapter, and phase-plan sections are May 2026 design
-history and do not define v0.2 implementation. Where those sections disagree
-with the active v0.2 plan, the v0.2 plan wins.
+The seamless, same-process outcome in Section 0 of
+`docs/spec/broker-mcp-contract-2026-05-03.md` remains the product bar. Its wrapper
+invocation is superseded. Restart, supervised relaunch, prepared fallback,
+route warming and synthetic admission tests never prove seamless handoff.
 
-The Codex implementation of that bar is in
-`docs/spec/codex-adapter-contract-2026-05-03.md`. Restart, supervised
-relaunch, and `prepared_fallback` are NOT the product — they are
-diagnostic / Level 1–2 infrastructure. If a spec sentence, ticket goal,
-commit message, or PR description frames any of those as "the success" or
-"the fallback if seamless mux is hard," it is wrong by construction;
-delete and re-anchor on the broker contract.
+## Authority order
 
-## Active v0.2 Design Authority (unshipped)
+1. User instructions and this file.
+2. `docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md` — active,
+   unshipped architecture, lifecycle, security and deletion contract.
+3. `docs/authority-map.md` and `docs/authority.json` — historical/current
+   document classification. `docs/README.md` indexes the current product,
+   decisions, lifecycle, native-adapter, security, reliability and repo-role
+   contracts. Their acceptance criteria elaborate the reset; they are not proof.
+4. `CHANGELOG.md`, release tags and committed evidence — shipped claim truth.
+5. Source definitions, generated API/capability documentation, `BUILD.bazel`,
+   `MODULE.bazel`, `.bazelrc`, `flake.nix` and `flake.lock` — implemented behavior
+   and pinned tool/execution inputs.
+6. `README.md` — current public summary; subordinate to implementation/evidence.
 
-Immediately after the immutable product anchor, the active design authority is
-`docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` (GitHub #463;
-Linear TIN-2057). Its sequenced removal contract is
-`docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md`; the complete authority
-order is `docs/authority-map.md`, and the managed-boundary security contract is
-`docs/security/omux-v0.2-threat-model-2026-07-11.md`. The declaration-only
-process compatibility contract is `docs/spec/managed-harness-jsonrpc-v2.md`;
-its methods remain unimplemented until adapter proof lands.
+Select earlier records remain historical evidence references; obsolete operational
+and unshipped design content is deleted under `docs/history/retired-design-inventory.md`.
+Do not implement their conflicting managed-launch, GF-only, zero-C
+library, or provider-specific constraints as current policy. Reuse a security
+invariant only when it agrees with the reset; rewrite it against new types.
 
-v0.2 is a full-broker hard contract reset, beginning with a managed Claude
-request proxy. It is future/unshipped direction until its golden proof passes;
-v0.1.15 remains stable and shipped claims remain bounded by the changelog and
-committed evidence.
+## Product boundary
 
-The durable v0.2 evaluation, dogfood, and evidence-promotion contract is
-`docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md`.
+Omux is a per-user account-continuity daemon with thin clients, not a generic
+browser scraper or a universal process interceptor. Codex is the first native
+integration proof; Claude and Git HTTPS/GitHub follow. Generic resource demand
+covers calls, bytes, uploads, duration, rates and provider-specific capacity.
+Each application/provider capability needs version-bound evidence.
 
-## Product Guardrail
+Omux owns the authentication integration contract and implementation for each
+adapted application. There is no OpenAI-provided Omux/Codex hook to wait for.
+Use adequate existing extension mechanisms or implement the necessary native
+boundary; delivery may be a plugin, configuration, upstream contribution or an
+explicitly maintained application modification. Delivery and evidence are
+qualified per application. Current Codex candidates remain experimental;
+unmodified Codex has no established Omux continuity support.
 
-oauth-mux is a harness continuity layer, not a general auth diagnostics
-toolkit. The product is:
+Product delivery proceeds through install/activation, Chromium source connection,
+verified identity and usable authority, renewal maintenance, ordinary application
+integration, then same-process handoff proof. Home Manager owns fleet packages,
+service definitions and exact-ID browser host registration; Omux owns live
+custody and user-authorized enrollment. Never overwrite declaratively owned files.
 
-> Install omux, enroll the engineer's agent accounts, run `omux <harness>`,
-> and keep that harness usable when auth, quota, tier,
-> or local runtime state changes, with little to no extra user interaction.
+One-time native integration setup is reversible. Existing processes are
+attachable only where a verified native hook supports attachment. Unsupported
+applications report the missing capability; interception or restart must not be
+presented as transparent continuity. Preserve native session stores in place.
+Never replay accepted streams or repeat tool execution.
 
-Treat work as core only when it directly improves one of these surfaces:
+Cross-host federation, Windows, Safari, arbitrary-provider support and speculative
+mid-stream recovery are deferred. `omux.xoxd.ai` is the separate project SPA for
+downloads and documentation; it derives API, CLI, capability and release facts
+from this repository and never owns runtime claims. The npm distribution lane
+remains retired.
 
-- `omux claude` as the v0.2 golden managed request-broker flow.
-- Codex as the shipped reference adapter and OpenCode as the conformance proof.
-- Account enrollment and route-health truth across multiple engineer identities.
-- Managed in-session quota/rate/auth/tier handoff.
-- Native-feeling UX for install, preflight, login/pass-through, resume, status,
-  and repair.
-- Redacted diagnostic AX so agents can inspect state and request safe next actions
-  without reading tokens or spending provider calls.
-- A reusable harness adapter contract for future Claude, OpenCode, and other
-  harness integrations.
+## Architecture and custody
 
-Broker MCP methods, daemon status, route diagnostics, trace flags, cassette
-capture, packaging, and website/docs updates are support infrastructure. They
-matter only when they make the managed harness experience more reliable, easier
-to repair, safer for agents, or easier to generalize into the next real harness
-adapter.
+- Fresh Zig runtime pinned to the latest verified official release (0.17.0 for
+  this reset). Do not restore legacy runtime modules or build entrypoints.
+- One resident per-user daemon owns lifecycle, grants, policy and routing;
+  supervised adapters own application protocol boundaries. Use bounded
+  `std.Io.Threaded` work, a libcurl multi owner and a SQLite writer queue.
+- Identity, account, source, grant, resource, observation, binding and lease are
+  distinct types. Authentication factors are not OAuth grants. Labels are not
+  identity authority; browser read authorization is not API-call authorization.
+- SQLite stores metadata and ciphertext grants. Encrypt payloads before insertion,
+  including before journal/backup writes. Hold the wrapping key in macOS Keychain
+  or Linux Secret Service. An unavailable key never regenerates over an existing
+  database. Never provide a plaintext fallback.
+- Each adopted refresh grant has one renewal writer. A native/browser import does
+  not transfer renewal ownership. Verify identity and adoption authority before
+  activation; quarantine ambiguous rotation rather than restore spent tokens.
+- Automatically enroll verified identities within authorized sources. Detachment
+  retains history and independently valid grants; forget removes retained secrets
+  and leaves a re-enrollment tombstone. Pause, drain, forget and upstream revoke
+  have separate effects.
+- Make technically compatible accounts eligible by default. Keep active routes
+  sticky and alternatives ready. Aggregate only compatible units, scopes and
+  windows; grants sharing a quota bucket never multiply available capacity.
+- Chromium/Firefox acquisition uses narrow provider-specific permissions and
+  native messaging. Import only declared cookie/storage fields, preserve context
+  metadata and verify provider identity. Browser-bound grants stay browser-bound.
+  No browser automation is part of the product architecture.
+- Control clients receive redacted metadata and opaque handles. Only trusted
+  adapter channels may materialize narrowly scoped credentials when the native
+  protocol requires them. Keep local sockets private with peer-user checks,
+  bounded frames and revisioned snapshots.
 
-Defer or contain work that primarily chases universal provider support, hidden
-daemon dependency, unmanaged harness hot-swap, same-thread cross-provider continuity,
-mid-turn streaming recovery, or broad adapter claims without live proof.
+## Execution and validation
 
-Feature-creep test: if a change does not make `omux claude` more reliable,
-preserve the Codex reference contract, improve setup/repair/agent inspection, or
-prove the OpenCode conformance boundary, it is probably out of scope.
-
-## Source of Truth Hierarchy
-
-1. This file (AGENTS.md)
-2. Section 0 of `docs/spec/broker-mcp-contract-2026-05-03.md` — the immutable
-   product success metric; later sections are historical design input
-3. `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` — active,
-   unshipped v0.2 design authority
-4. `docs/plans/oauth-mux-v0.2-deletion-ledger-2026-07-11.md` — v0.2 removal order
-5. `docs/security/omux-v0.2-threat-model-2026-07-11.md` — managed broker threats
-6. `docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md` — candidate,
-   conformance, performance, installed-dogfood, and golden promotion gates
-7. `docs/spec/managed-harness-jsonrpc-v2.md` — declaration-only process adapter
-   compatibility contract; explicitly unshipped
-8. `docs/spec/codex-adapter-contract-2026-05-03.md` — shipped Codex adapter spec
-9. `docs/spec/harness-session-authority-bridge-2026-05-05.md` — auth/config
-   overlays must not hide or fork harness session authority
-10. `CHANGELOG.md` and committed evidence — shipped claim truth
-11. `justfile` — operator entrypoint for all build/test/release tasks
-12. `README.md` — public-facing current-state summary; subordinate to specs
-13. `build.zig.zon` plus the Zig release graph — version and release semantics;
-    they emit/check the v0.2 manifest contract and currently migrated consumers.
-    The producer landed under TIN-2046; remaining packaging and Bazel/GF
-    consumer migrations stay sequenced under TIN-2050 and TIN-2105 until their
-    own proof lands.
-14. Generated, checked `release-manifest.json` — release-graph projection for
-    packaging and build consumers
-15. `flake.nix`, packaging scripts, and `src/` — implementation
-
-## Superseded Design Inputs (pending deletion)
-
-These notes are no longer design authority. They are historical inputs to the
-v0.2 program and are pending safe deletion under its deletion ledger. Do not
-implement against them or cite them as current direction; preserve their shipped
-evidence references and v0.1.15 history until replacement proof exists.
-
-- `docs/spec/model-quota-granularity-2026-07-03.md` is superseded by the exact-model
-  route-readiness and evidence rules in the v0.2 program (TIN-2400 / GitHub #436).
-  Its pure quota algebra and committed evidence remain reusable until migrated.
-- `docs/spec/stay-afloat-valet-and-browser-evidence-2026-07-09.md` and
-  `docs/spec/claude-managed-hotswap-experiment-2026-07-14.md` are superseded.
-  The per-session request proxy is the product mechanism; E1 canonical-keychain
-  mutation is canceled. Browser/cookie-picker tooling remains evidence-only and
-  may never commit cookies, tokens, raw account ids, raw emails, or PII screenshots.
-
-## Build And Validation
-
-Remote-first rule: proof builds, test gates, release checks, and agent validation
-must use the GloriousFlywheel remote lanes. The bare proof recipes dispatch
-remote by default:
+**Every build, test, generator, package, executable invocation and check runs
+through Bazel/Bazelisk, with tools provided by the locked Nix flake.** Reading
+files and ordinary repository inspection are not build/test execution.
 
 ```bash
-just build          # build on the GloriousFlywheel runner
-just test           # test on the GloriousFlywheel runner
-just check          # full check on the GloriousFlywheel runner
-just e2e            # e2e on the GloriousFlywheel runner
-
-just remote-build   # build on the GloriousFlywheel runner
-just remote-test    # test on the GloriousFlywheel runner
-just remote-check   # full check on the GloriousFlywheel runner
-just remote-e2e     # e2e on the GloriousFlywheel runner
+nix develop --command bazelisk build //...
+nix develop --command bazelisk test //...
+nix develop --command bazelisk test //:docs_check
 ```
 
-Do not use local `zig build`, `just build-local`, `just test-local`,
-`just check-local`, or `just e2e-local` as the completion proof on a developer
-laptop. Local build commands remain available only for narrow debugging of a
-local toolchain, generated binary, or installer issue. If a local build is used
-for debugging, state that it is not validation and follow with the remote lane
-before making a completion or merge claim.
+Local sandboxed execution is the proof default. Automatic CI test/build/check
+workflows are removed for the reset. Do not invoke Just, local `zig build`,
+standalone test scripts or the former GF proof dispatchers. Future RBE/REAPI must
+use the same declared action graph and digest-addressed execution inputs;
+endpoints and credentials belong in operator configuration, never source.
 
-The independent FOSS gate is the unprivileged `Public Source` workflow. It runs
-`nix develop --command just public-source-check-local` on a GitHub-hosted runner
-with Tinyland/GF credentials and endpoints absent. This proves the public
-Just/Nix source path; it complements and never replaces required GF proof.
+A passing unit/synthetic suite proves its stated predicates. A live continuity
+claim additionally requires exact application/version/commit evidence of ordinary
+launch, native resume, same-process handoff and preserved native state. Report
+unrun gates and missing native hooks plainly. No future capability becomes
+shipped because a schema, stub, fixture or generated page names it.
 
-Generic GF build/test/check and Public Source prove source predicates only;
-they do not satisfy the v0.2 Stage 2 conformance matrix or G4 benchmark.
-TIN-2989 owns the immutable-candidate dispatch, named Stage 2/G4 recipes,
-predicate manifest, and provenance reconciliation required before either
-claim is available.
+Reliability targets and error budgets are defined in
+`docs/reliability/service-objectives.md`; they require measured baselines and
+do not create a contractual SLA or staffed support promise. Repo roles are
+defined in `docs/governance/repository-roles.md`, without appointing human owners.
+The user-authorized October 2 Linear reconciliation is recorded in
+`docs/tracker-updates/native-ratification-2026-10-02.md`. Publication and provider
+access still require their own applicable authorization.
 
-Private GloriousFlywheel action checkout is authenticated by
-`.github/actions/checkout-gloriousflywheel`, which mints a short-lived token
-from the dedicated `omux-gf-checkout` App, restricted to
-`tinyland-inc/GloriousFlywheel` with `contents: read`. Do not restore the static
-`GF_ACTIONS_TOKEN` path for GloriousFlywheel checkout, substitute a broad PAT,
-or weaken the fail-closed proof behavior when App custody is unavailable.
-Separate legacy checkout uses in registry-keeper workflows are not GF proof
-authority and must migrate under their own repository-scoped credential names.
+## Hard rules
 
-## Architecture
-
-Pure Zig, zero external dependencies. All capabilities from `std`:
-- `std.http.Client` — HTTP/HTTPS
-- `std.crypto.tls` — TLS 1.3
-- `std.json` — JSON parsing/serialization
-- `std.crypto` — age decryption (X25519 + ChaCha20-Poly1305)
-
-### Monadic Pipeline
-
-The core is a linear pipeline where each stage transforms `PipelineContext` or
-short-circuits via Zig error unions (`PipelineError!void`). `try` is the bind operator:
-
-```
-Config → Resolve Provider → Select Account → Read Secret →
-Validate Token → Refresh if Needed → Inject Env → Exec
-```
-
-### Provider Adapters
-
-`src/providers/` contains shipped and legacy provider implementations. The v0.2
-product surface is managed Claude plus the Codex reference adapter and OpenCode
-conformance. Other built-ins are pending deletion under the v0.2 ledger and may
-not be presented as managed-continuity support.
-
-### Secret Backends
-
-`src/secret/` — keychain (macOS/Linux), SOPS/age, env vars, files, commands, stdin.
-Keychain access shells out to `/usr/bin/security` (macOS) or `secret-tool` (Linux)
-to avoid framework linking and keep the binary static.
-
-## Hard Rules
-
-- No external Zig dependencies. Everything from `std`.
-- No hardcoded secrets or `.env` commits.
-- Exhaustive switch on all tagged unions — compiler enforces this.
-- All pipeline errors propagate via error unions, never silently swallowed.
-- Shell out for platform services (Keychain, secret-tool) rather than FFI.
-- JSON for config (Zig `std.json` provides zero-code struct deserialization).
-- XDG Base Directory compliant on Linux; ~/Library/ on macOS.
-
-## Testing
-
-```bash
-just remote-test    # unit tests on the GloriousFlywheel runner
-just remote-check   # full validation on the GloriousFlywheel runner
-```
-
-Tests are in-file `test` blocks (Zig convention) plus `test/fixtures/` for
-provider token format samples. `just test` is a remote proof lane. Local
-`just test-local` and `just test-verbose` are debugging tools only; do not use
-them as completion proof.
-
-## Current v0.1.15 Distribution
-
-Current binary name: `oauth-mux`. Distributed as static binaries for 6 targets:
-- x86_64-linux-musl, aarch64-linux-musl
-- x86_64-macos, aarch64-macos
-- x86_64-windows, aarch64-windows
-
-Packaging (real lanes, 2026-07-02): 6 CLI tarballs + curl installer + rpm/deb (nfpm) +
-the `Jesssullivan/homebrew-omux` tap (binary-only Formula) + nix source flake, all off
-GitHub Releases. **npm is RETIRED** — `npm-deprecate.yml` exists to keep it dead; never
-recommend the npm lane. There is no `.app`/`.dmg`/AppImage; systemd/launchd exist only
-as user-wrapper templates.
-
-## Repo Boundary Map
-
-This repo is the **broker runtime authority**. Full matrix with proof anchors:
-`docs/research/omux-foundation-2026-07-02T0532Z.md` (boundary map section).
-
-- `Jesssullivan/oauth-mux` (here): broker/OAuth runtime logic, locks, refresh, resume,
-  provider truth (`src/provider_schema.zig` `proof_status` +
-  `docs/spec/provider-truth-matrix-2026-07-02.md`), release lane and versioning
-  (`build.zig.zon` is the version SSOT).
-- `tinyland-inc/omux.xoxd.ai`: static docs/marketing rendering ONLY. It never owns
-  runtime claims; its provider page must derive from the truth matrix here and may
-  never show a capability as live from another capability's local proof.
-- `Jesssullivan/homebrew-omux`: the brew release surface (binary-only Formula).
-- GloriousFlywheel + `tinyland-inc/ci-templates`: build/cache/RBE and CI-shape
-  authority. Endpoints are environment authority — never baked into rc files.
-- `lab` (sops/age fleet repo): secrets. No secret material ever lands in any omux repo.
+- No secrets, raw tokens, passwords, cookies, OTPs, private keys, raw account IDs,
+  email addresses or PII screenshots in source, fixtures, logs or evidence.
+- Pin all external libraries and tools in Nix/Bazel inputs. SQLite, libcurl and
+  the required transport/native UI dependencies are intentional dependencies.
+- Exhaustive tagged-union switches and propagated error unions; no silent failure.
+- OS vault integrations must keep secrets out of argv and diagnostic output.
+- Follow XDG directories on Linux and `~/Library/` on macOS. Thin client closure
+  does not stop the daemon; disconnect, uninstall and restoration are explicit.
+- Preserve release history and reviewed evidence. New code does not inherit
+  old live proofs; legacy code may survive in tags only, outside the build graph.

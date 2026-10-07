@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Omux accounts</title><link rel="stylesheet" href="popup.css"></head>
+  <body>
+    <main>
+      <h1>Omux browser sources</h1>
+      <p>Open your provider tab to select the browser context you want to connect.</p>
+      <label for="adapter">Provider</label>
+      <select id="adapter"><option value="codex">Codex / ChatGPT</option><option value="claude">Claude</option><option value="github">GitHub</option></select>
+      <section aria-label="Selected context readiness">
+        <h2>Selected browser context</h2>
+        <dl id="readiness"><dt>Connection</dt><dd id="connection">Checking…</dd><dt>Identity</dt><dd id="identity">Not verified</dd><dt>Account access</dt><dd id="grant">Not available</dd><dt>Omux</dt><dd id="health">Checking…</dd><dt>Secure storage</dt><dd id="custody">Checking…</dd><dt>Browser connection</dt><dd id="bridge">Checking…</dd><dt>Provider requests</dt><dd id="provider-access">Checking…</dd><dt>Application support</dt><dd id="capability">Not established</dd></dl>
+        <p id="availability">Account import is not yet available for this provider. Connecting a source does not make account access ready.</p>
+      </section>
+      <label class="consent"><input type="checkbox" id="consent"> <span>Allow Omux to read this provider in the selected browser context and automatically enroll identities it verifies there. This permission does not authorize application requests.</span></label>
+      <div class="actions"><button type="button" data-command="connect">Connect context</button><button type="button" data-command="reconcile">Refresh context</button><button type="button" data-command="disconnect">Disconnect context</button></div>
+      <p class="help">Disconnect ends acquisition from this context and removes its retained access credentials. Other sources and native history are preserved. It does not revoke access at the provider.</p>
+      <p id="status" role="status" aria-live="polite">Checking selected context…</p>
+    </main>
+    <script type="module" src="popup.mjs"></script>
+  </body>
+</html>

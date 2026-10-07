@@ -1,0 +1,744 @@
+# UNAPPLIED third artifact, after controller-delivery base and executable supplement.
+# Source review only; no tool, guard, build, test, SSH or provider execution occurred.
+# Apply/reconstruct with --recount. Actual source/graph remain frozen.
+diff --git a/tools/yoga_delivery_settings.py b/tools/yoga_delivery_settings.py
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_delivery_settings.py
+@@ -0,0 +1,1 @@
++"""Guard-owned Yoga qualification custody and finite original-deadline settings."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import stat
++import sys
++import time
++import guard_yoga_delivery_profile as profile
++import yoga_executable_qualification as executable
++
++UUID = re.compile('[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
++INVENTORY = '2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8'
++SOURCE_RECEIPT = 'f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a'
++NATIVE = 'b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0'
++TOOLS = {
++    # execution_guard.immutable resolves this generation's python3 -> python3.13.
++    # The store root/bootstrap manifest/inventory generation remain unchanged.
++    'python': '/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/bin/python3.13',
++    'systemd_run': '/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemd-run',
++    'systemctl': '/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemctl',
++    'bazel': '/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel',
++    'closure': '/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure',
++    'bootstrap_closure': executable.BOOTSTRAP_ROOT,
++    'zig_sdk': '/nix/store/vv1k6176b445ln4dphbx1k29wagrin3z-zig-sdk-0.17.0',
++    'java_home': '/nix/store/siln89j8b6k5wdzw4asl69bma0k96nns-openjdk-headless-21.0.10+7',
++}
++QUALIFICATION_FIELDS = frozenset(('schemaVersion', 'scope', 'bootstrapManifestSha256',
++    'inventorySha256', 'sourceReceiptSha256', 'sshPath', 'sshSha256', 'remote'))
++CLEANUP_RESERVE_NS = 15 * 10**9
++DIRECTORY_PINS = {}
++
++def require(value, reason):
++    if not value:
++        raise ValueError(reason)
++
++def decode(data):
++    def unique(pairs):
++        result = {}
++        for key, value in pairs:
++            require(key not in result, 'duplicate-guard-qualification-field')
++            result[key] = value
++        return result
++    return json.loads(data, object_pairs_hook=unique,
++        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite-guard-qualification')))
++
++def canonical(value):
++    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
++
++def budget(deadline_ns, reserve_ns=0):
++    require(type(deadline_ns) is int and type(reserve_ns) is int and reserve_ns >= 0,
++            'invalid-original-delivery-deadline')
++    remaining = deadline_ns - time.monotonic_ns() - reserve_ns
++    require(remaining > 0, 'original-delivery-deadline-exhausted')
++    return remaining / 10**9
++
++def finite(arguments, manager, epoch, unrelated):
++    profile.selected(arguments)
++    require(manager == 'system' and not any(unrelated), 'fixed-system-delivery-without-unrelated-inputs-required')
++    mode = profile.MODES[arguments[1]]
++    require(epoch is None if mode == 'qualify' else type(epoch) is str and UUID.fullmatch(epoch),
++            'inspect-verify-require-one-prior-qualify-epoch')
++
++def tools(actual, native_sha256, bootstrap_sha256):
++    require(actual == TOOLS and native_sha256 == NATIVE and bootstrap_sha256 == executable.BOOTSTRAP_SHA,
++            'unchanged-d631-controller-tools-required')
++
++def qualification(value):
++    require(type(value) is dict and set(value) == QUALIFICATION_FIELDS
++            and type(value['schemaVersion']) is int and value['schemaVersion'] == 1
++            and value['scope'] == 'yoga-authenticated-OS-executable-qualification-v1'
++            and value['bootstrapManifestSha256'] == executable.BOOTSTRAP_SHA
++            and value['inventorySha256'] == INVENTORY and value['sourceReceiptSha256'] == SOURCE_RECEIPT
++            and value['sshPath'] == executable.SSH and type(value['sshSha256']) is str
++            and executable.SHA.fullmatch(value['sshSha256']), 'fixed-qualification-binding-required')
++    executable.remote_schema(value['remote'])
++    return value
++
++def witness(info):
++    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
++            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
++
++def release(descriptors):
++    """Attempt every release; retain a primary exception independently."""
++    primary = sys.exc_info()[1]
++    failed = False
++    for descriptor in descriptors:
++        try:
++            os.close(descriptor)
++        except BaseException:
++            failed = True
++    if failed:
++        if primary is not None:
++            primary.add_note('qualification-custody-release-incomplete')
++        else:
++            raise ValueError('qualification-custody-release-incomplete')
++
++def directory_identity(info):
++    return (info.st_dev, info.st_ino, info.st_uid, stat.S_IMODE(info.st_mode))
++
++def trusted_directory(path, deadline_ns):
++    """Hold the whole nofollow ancestor chain; no close-before-transfer gap."""
++    path = Path(path)
++    require(path.is_absolute() and '..' not in path.parts and len(path.parts) <= 32, 'exact-owned-directory-required')
++    descriptors, identities, names = [], [], []
++    try:
++        budget(deadline_ns)
++        descriptors.append(os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
++        identities.append(directory_identity(os.fstat(descriptors[-1])))
++        for component in path.parts[1:]:
++            budget(deadline_ns)
++            descriptors.append(os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
++                                       dir_fd=descriptors[-1]))
++            names.append(component)
++            info = os.fstat(descriptors[-1])
++            require(info.st_uid in (0, os.getuid()) and not info.st_mode & 0o022, 'owned-directory-ancestor-custody')
++            identities.append(directory_identity(info))
++        info = os.fstat(descriptors[-1])
++        require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, 'private-owned-directory-required')
++        DIRECTORY_PINS[descriptors[-1]] = (descriptors, identities, names)
++        return descriptors[-1]
++    except BaseException:
++        release(reversed(descriptors))
++        raise
++
++def check_directory(descriptor, deadline_ns):
++    require(descriptor in DIRECTORY_PINS, 'retained-directory-custody-required')
++    descriptors, identities, names = DIRECTORY_PINS[descriptor]
++    for index, held in enumerate(descriptors):
++        budget(deadline_ns)
++        require(directory_identity(os.fstat(held)) == identities[index], 'held-directory-custody-changed')
++        if index:
++            current = os.stat(names[index - 1], dir_fd=descriptors[index - 1], follow_symlinks=False)
++            require(directory_identity(current) == identities[index], 'owned-directory-ancestor-rebound')
++    return [list(value) for value in identities]
++
++def close_directory(descriptor):
++    pin = DIRECTORY_PINS.pop(descriptor, None)
++    release(reversed(pin[0]) if pin else [descriptor])
++
++def lock_witness(descriptor, deadline_ns):
++    directory = trusted_directory(profile.COORDINATION, deadline_ns)
++    try:
++        held = os.fstat(descriptor)
++        current = os.stat('execution.lock', dir_fd=directory, follow_symlinks=False)
++        fields = lambda info: (info.st_dev, info.st_ino, info.st_uid, stat.S_IMODE(info.st_mode), info.st_nlink)
++        require(stat.S_ISREG(held.st_mode) and held.st_uid == os.getuid() and stat.S_IMODE(held.st_mode) == 0o600
++                and held.st_nlink == 1 and fields(held) == fields(current), 'original-home-lock-custody-changed')
++        return {'device': held.st_dev, 'inode': held.st_ino, 'uid': held.st_uid,
++                'mode': 0o600, 'links': 1, 'ancestors': check_directory(directory, deadline_ns)}
++    finally:
++        close_directory(directory)
++
++def read_owned(directory, name, maximum, deadline_ns, *, capture=False):
++    budget(deadline_ns)
++    require('/' not in name and name not in ('.', '..'), 'exact-qualification-filename-required')
++    descriptor = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
++    try:
++        before = os.fstat(descriptor)
++        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and before.st_nlink == 1
++                and stat.S_IMODE(before.st_mode) == 0o600 and 0 < before.st_size <= maximum,
++                'private-qualification-file-custody')
++        data = bytearray()
++        while True:
++            budget(deadline_ns)
++            piece = os.read(descriptor, min(65536, maximum + 1 - len(data)))
++            if not piece:
++                break
++            data.extend(piece)
++            require(len(data) <= maximum, 'qualification-file-bound')
++        require(len(data) == before.st_size and witness(before) == witness(os.fstat(descriptor))
++                == witness(os.stat(name, dir_fd=directory, follow_symlinks=False)), 'qualification-file-changed')
++        return (bytes(data), witness(before)) if capture else bytes(data)
++    finally:
++        release([descriptor])
++
++def prior_receipt(receipt, epoch, graph_sha256, expected_limits, expected_lock):
++    require(type(receipt) is dict and receipt.get('id') == receipt.get('artifact_epoch') == epoch
++            and type(receipt.get('exit')) is int and receipt['exit'] == 0
++            and type(receipt.get('workload_exit')) is int and receipt['workload_exit'] == 0
++            and receipt.get('descendants_empty') is True and 'controller_failure' in receipt
++            and receipt['controller_failure'] is None and 'rejection' in receipt and receipt['rejection'] is None
++            and type(receipt.get('cleanup')) is dict and receipt['cleanup'].get('state') == 'empty'
++            and receipt.get('verb') == 'run' and receipt.get('targets') == ['//tools:yoga_controller_qualify']
++            and receipt.get('profile') == profile.PROFILE and receipt.get('manager') == 'system'
++            and receipt.get('coordination_directory') == str(profile.COORDINATION)
++            and receipt.get('coordination_lock') == str(profile.COORDINATION / 'execution.lock')
++            and receipt.get('graph_sha256') == graph_sha256 and receipt.get('limits') == expected_limits
++            and receipt.get('closure_manifest_sha256') == NATIVE
++            and receipt.get('bootstrap_manifest_sha256') == executable.BOOTSTRAP_SHA,
++            'successful-same-graph-qualify-guard-epoch-required')
++    record = receipt.get('yoga_delivery')
++    require(type(record) is dict and record.get('source_verified_after_cleanup') is True
++            and record.get('controller_tools') == TOOLS and record.get('mode') == 'qualify'
++            and record.get('coordination_lock_witness') == expected_lock
++            and record.get('remote_owned_containment_verified') is False
++            and record.get('copy_performed') is False and record.get('remote_cleanup') == 'unknown'
++            and type(record.get('qualification')) is dict
++            and set(record['qualification']) == {'path', 'sha256'}
++            and record['qualification']['path'] == 'qualification.json'
++            and type(record['qualification']['sha256']) is str
++            and executable.SHA.fullmatch(record['qualification']['sha256']), 'guard-owned-qualification-extraction-required')
++    return record['qualification']['sha256']
++
++def select_prior(epoch, graph_sha256, expected_limits, deadline_ns, expected_lock):
++    """Called only under existing HOME execution lock; no caller path/hash."""
++    require(type(epoch) is str and UUID.fullmatch(epoch), 'exact-prior-qualify-epoch-required')
++    directory = trusted_directory(profile.STATE / epoch, deadline_ns)
++    try:
++        directory_identity = witness(os.fstat(directory))
++        receipt_data, receipt_identity = read_owned(directory, 'receipt.json', 1024 * 1024, deadline_ns, capture=True)
++        receipt = decode(receipt_data)
++        approved = prior_receipt(receipt, epoch, graph_sha256, expected_limits, expected_lock)
++        content, content_identity = read_owned(directory, 'qualification.json', 16384, deadline_ns, capture=True)
++        require(hashlib.sha256(content).hexdigest() == approved, 'guard-extraction-digest-differs')
++        require(canonical(qualification(decode(content))) == content, 'guard-extraction-not-canonical')
++        ancestors = check_directory(directory, deadline_ns)
++        named = trusted_directory(profile.STATE / epoch, deadline_ns)
++        try:
++            require(witness(os.fstat(named)) == directory_identity == witness(os.fstat(directory)),
++                    'prior-qualification-directory-rebound')
++        finally:
++            close_directory(named)
++        # Preserve independently checked terminal receipt lineage in the new epoch.
++        return {'path': str(profile.STATE / epoch / 'qualification.json'), 'sha256': approved,
++                'producer_epoch': epoch, 'producer_receipt_sha256': hashlib.sha256(receipt_data).hexdigest(),
++                'directory_identity': list(directory_identity), 'receipt_identity': list(receipt_identity),
++                'qualification_identity': list(content_identity), 'ancestor_identities': ancestors}
++    finally:
++        close_directory(directory)
++
++def recheck(prior, graph_sha256, expected_limits, deadline_ns, expected_lock):
++    require(select_prior(prior['producer_epoch'], graph_sha256, expected_limits, deadline_ns, expected_lock) == prior,
++            'prior-guard-qualification-chain-changed-before-launch')
++
++def extract(log, deadline_ns):
++    budget(deadline_ns)
++    candidates = []
++    require(type(log) is bytes and 0 < len(log) <= 8 * 1024 * 1024, 'bounded-owned-delivery-log-required')
++    for line in log.splitlines():
++        budget(deadline_ns)
++        if not line.startswith(b'{'):
++            continue
++        value = decode(line)
++        if type(value) is dict and value.get('scope') == 'yoga-controller-destination-readonly-v1':
++            candidates.append(value)
++    require(len(candidates) == 1, 'one-exact-qualify-result-required')
++    result = candidates[0]
++    require(result.get('schemaVersion') == 1 and type(result.get('schemaVersion')) is int
++            and result.get('mode') == 'qualify' and result.get('passed') is True
++            and result.get('inventorySha256') == INVENTORY and result.get('sourceReceiptSha256') == SOURCE_RECEIPT
++            and result.get('copyPerformed') is False and result.get('remoteCleanup') == 'unknown'
++            and result.get('remoteOwnedContainmentVerified') is False
++            and result.get('destinationRegistrationVerified') is False
++            and result.get('destinationContentRehashed') is False
++            and result.get('offlineGraphVerified') is False and result.get('wrapperExecutionAuthority') is False,
++            'successful-readonly-qualify-result-required')
++    return canonical(qualification(result['qualification']))
++
++def publish(run, content, deadline_ns):
++    budget(deadline_ns)
++    directory = trusted_directory(run, deadline_ns)
++    try:
++        descriptor = os.open('qualification.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
++                             0o600, dir_fd=directory)
++        try:
++            view = memoryview(content)
++            while view:
++                budget(deadline_ns)
++                written = os.write(descriptor, view)
++                require(written > 0, 'guard-extraction-short-write')
++                view = view[written:]
++            os.fsync(descriptor)
++        finally:
++            release([descriptor])
++        os.fsync(directory)
++        require(read_owned(directory, 'qualification.json', 16384, deadline_ns) == content,
++                'guard-extraction-publication-differs')
++        check_directory(directory, deadline_ns)
++        return {'path': 'qualification.json', 'sha256': hashlib.sha256(content).hexdigest()}
++    finally:
++        close_directory(directory)
++
++def finish(run, arguments, workload_exit, empty, source_verified, deadline_ns, lock):
++    record = {'mode': profile.MODES[arguments[1]], 'controller_tools': TOOLS,
++              'source_verified_after_cleanup': source_verified, 'qualification': None,
++              'coordination_lock_witness': lock,
++              'copy_performed': False, 'remote_owned_containment_verified': False, 'remote_cleanup': 'unknown'}
++    if record['mode'] == 'qualify' and workload_exit == 0 and empty and source_verified:
++        directory = trusted_directory(run, deadline_ns)
++        try:
++            log = read_owned(directory, 'workload.log', 8 * 1024 * 1024, deadline_ns)
++            check_directory(directory, deadline_ns)
++        finally:
++            close_directory(directory)
++        record['qualification'] = publish(run, extract(log, deadline_ns), deadline_ns)
++    return record
++
++def runtime_seconds(deadline_ns):
++    seconds = int(budget(deadline_ns, CLEANUP_RESERVE_NS))
++    require(seconds > 0, 'delivery-runtime-reserve-exhausted')
++    return min(1200, seconds)
++
++def effective_runtime(value, maximum):
++    """Finite systemctl duration parser; no unitless or infinite values."""
++    require(type(value) is str and len(value) <= 64 and type(maximum) is int and 0 < maximum <= 1200,
++            'delivery-effective-runtime-invalid')
++    matches = list(re.finditer(r'([0-9]+(?:\.[0-9]{1,6})?)(us|ms|s|min|h)', value))
++    require(matches and ''.join(match.group(0) for match in matches) == value.replace(' ', ''),
++            'delivery-effective-runtime-invalid')
++    scales = {'us': 1, 'ms': 1000, 's': 1000000, 'min': 60000000, 'h': 3600000000}
++    total = sum(int(float(match.group(1)) * scales[match.group(2)]) for match in matches)
++    require(0 < total <= maximum * 1000000, 'delivery-effective-runtime-exceeds-original-budget')
++    return total
+diff --git a/tools/execution_guard.py b/tools/execution_guard.py
+--- a/tools/execution_guard.py
++++ b/tools/execution_guard.py
+@@ -322,2 +322,2 @@
+ def blocked_paths(profile='standard'):
+-    if profile not in ('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'site', 'yoga-toolbar'):
++    if profile not in ('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'site', 'yoga-toolbar', 'yoga-controller-delivery'):
+@@ -624,4 +624,9 @@
+-def verify(actual, cgroup, manager='user', isolation=None, profile='standard'):
++def verify(actual, cgroup, manager='user', isolation=None, profile='standard', runtime_seconds=None):
+     for key, value in {**PROPERTIES, **(isolation or SANDBOX)}.items():
++        if profile == 'yoga-controller-delivery' and key == 'RuntimeMaxUSec':
++            import yoga_delivery_settings as delivery_settings
++            delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
++            continue
+         if actual.get(key) != value:
+@@ -634,1 +639,1 @@
+-            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile == 'codex-sdk' else profile)
++            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'yoga-controller-delivery') else profile)
+@@ -730,1 +735,22 @@
++def yoga_delivery_command(bazel, run, arguments, deadline_ns, prior=None, *, source_commit=None, source_dirty=None):
++    import guard_yoga_delivery_profile as delivery_profile
++    delivery_profile.selected(arguments)
++    # The standard constructor keeps rejecting general run verbs. Its fixed
++    # local build options are reused, then one exact reviewed run replaces build.
++    command = bazel_command(bazel, run, ['build', arguments[1]],
++                            source_commit=source_commit, source_dirty=source_dirty)
++    command[command.index('build')] = 'run'
++    values = delivery_profile.envelope(deadline_ns, arguments, prior['sha256'] if prior else None)
++    options = delivery_profile.run_options(values)
++    if prior is None:
++        options += ['--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256=']
++    # Empty repo_env clears an inherited qualification selection for qualify.
++    options += ['--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=' + (prior['path'] if prior else ''),
++                '--symlink_prefix=' + str(Path(run) / 'bazel-')]
++    command[-1:-1] = options
++    return command, values
++
+ def worker(run, command):
+@@ -765,2 +791,5 @@
+ def _main(argv, admission_resources):
++    # Delivery's one deadline begins before parsing/tool validation/bootstrap.
++    # Other profiles keep their existing deadlines and execution behavior.
++    delivery_entry_deadline_ns = time.monotonic_ns() + 1200 * 10**9
+     global DIAGNOSTIC_STAGE
+@@ -792,1 +821,2 @@
+-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'site', 'yoga-toolbar'), default='standard')
++    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'site', 'yoga-toolbar', 'yoga-controller-delivery'), default='standard')
++    parser.add_argument('--yoga-delivery-epoch')
+@@ -835,1 +865,24 @@
++    delivery_settings = None
++    delivery_prior = None
++    delivery_summary = None
++    delivery_verified_after = None
++    delivery_runtime_seconds = None
++    delivery_lock = None
++    delivery_lock_verified_before_cleanup = None
++    if args.profile == 'yoga-controller-delivery':
++        import yoga_delivery_settings as delivery_settings
++        delivery_settings.finite(arguments, args.manager, args.yoga_delivery_epoch,
++            (args.reuse_owned_cache, args.repository_cache, args.nixpkgs_source, args.site_source,
++             args.site_nixpkgs_source, args.site_inventory, args.site_inventory_sha256, args.site_phase,
++             args.site_qualification, args.site_qualification_sha256, args.site_delivery_manifest,
++             args.site_delivery_manifest_sha256, args.codex_pack_directory, args.codex_recovery_source,
++             args.codex_pristine_directory, args.codex_recovery_delta_directory, args.yoga_qualification,
++             args.yoga_qualification_sha256, args.yoga_deadline_monotonic_ns, args.sdk_lane, args.sdk_source_root,
++             args.sdk_source_receipt_sha256, args.sdk_settings_root, args.sdk_settings_receipt_sha256,
++             args.sdk_bundle, args.sdk_bundle_receipt_sha256))
++        delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
++    elif args.yoga_delivery_epoch is not None:
++        raise ValueError('prior Yoga delivery epoch is exclusive to its fixed read-only profile')
+     if args.profile == 'yoga-toolbar':
+@@ -898,1 +951,1 @@
+-    mask_profile = 'installed-browser' if yoga else 'standard' if sdk else args.profile
++    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or delivery_settings else args.profile
+@@ -930,1 +983,9 @@
++    if delivery_settings:
++        delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
++        delivery_settings.tools({'python': python, 'systemd_run': runner, 'systemctl': control, 'bazel': bazel,
++            'closure': str(closure), 'bootstrap_closure': str(bootstrap), 'zig_sdk': str(zig), 'java_home': str(java)},
++            closure_digest, bootstrap_digest)
++        # HOME is the same inspected user's native SSH configuration boundary.
++        environment['HOME'] = pwd.getpwuid(os.getuid()).pw_dir
+     if yoga:
+@@ -991,1 +1052,4 @@
++        if delivery_settings:
++            delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
++            delivery_lock = delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns)
++            delivery_initial_graph = graph_digest(Path.cwd())[0]
++            delivery_prior = delivery_settings.select_prior(args.yoga_delivery_epoch, delivery_initial_graph,
++                PROPERTIES, delivery_entry_deadline_ns, delivery_lock) if args.yoga_delivery_epoch else None
+         identifier = yoga_admission['receipt']['proofId'] if yoga else str(uuid.uuid4())
+@@ -1014,1 +1079,7 @@
++        if delivery_settings:
++            command, delivery_envelope = yoga_delivery_command(bazel, run, arguments, delivery_entry_deadline_ns,
++                delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty)
++            environment.update(delivery_envelope)
++        elif yoga:
+-        if yoga:
+             yoga.publish_repository_inventory(yoga_admission, run)
+@@ -1091,3 +1164,5 @@
++                if delivery_settings:
++                    deadline = min(deadline, delivery_entry_deadline_ns / 10**9) if deadline is not None else delivery_entry_deadline_ns / 10**9
+                 return controller_run(parts, operation=operation, phase=phase, diagnose=diagnose,
+                     stdin=descriptor if descriptor is not None else subprocess.DEVNULL,
+                     timeout=timeout, deadline=deadline)
+@@ -1102,1 +1176,4 @@
++            if delivery_settings:
++                delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
++                require_delivery_graph = graph_sha256 == delivery_initial_graph
++                if not require_delivery_graph: raise ValueError('delivery graph changed before dispatch')
++                if delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns) != delivery_lock:
++                    raise ValueError('original-home-lock-changed-before-launch')
++                if delivery_prior:
++                    delivery_settings.recheck(delivery_prior, graph_sha256, PROPERTIES, delivery_entry_deadline_ns, delivery_lock)
+             if yoga:
+@@ -1212,1 +1289,4 @@
+             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
++            if delivery_settings:
++                delivery_runtime_seconds = delivery_settings.runtime_seconds(delivery_entry_deadline_ns)
++                settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
+@@ -1244,1 +1324,2 @@
+-            verify(actual, cgroup, args.manager, isolation, args.profile)
++            verify(actual, cgroup, args.manager, isolation, args.profile,
++                   runtime_seconds=delivery_runtime_seconds)
+@@ -1292,1 +1373,3 @@
+                         if yoga else time.monotonic() + 1200)
++            if delivery_settings:
++                deadline = (delivery_entry_deadline_ns - delivery_settings.CLEANUP_RESERVE_NS) / 10**9
+@@ -1308,1 +1391,7 @@
+             if started:
++                if delivery_settings:
++                    try:
++                        delivery_lock_verified_before_cleanup = delivery_settings.lock_witness(lock.fileno(),
++                            delivery_entry_deadline_ns) == delivery_lock
++                    except (OSError, ValueError):
++                        delivery_lock_verified_before_cleanup = False
+@@ -1309,1 +1398,3 @@
+                 cleanup_deadline = time.monotonic() + CLEANUP_SECONDS
++                if delivery_settings:
++                    cleanup_deadline = min(cleanup_deadline, delivery_entry_deadline_ns / 10**9)
+@@ -1339,1 +1424,12 @@
++            if delivery_settings:
++                try:
++                    delivery_settings.budget(delivery_entry_deadline_ns)
++                    delivery_verified_after = graph_digest(Path.cwd())[0] == delivery_initial_graph
++                    delivery_verified_after = delivery_verified_after and delivery_lock_verified_before_cleanup is not False
++                    delivery_settings.budget(delivery_entry_deadline_ns)
++                    if delivery_settings.lock_witness(lock.fileno(), delivery_entry_deadline_ns) != delivery_lock:
++                        raise ValueError('original-home-lock-changed-after-cleanup')
++                    delivery_summary = delivery_settings.finish(run, arguments, result, cleanup,
++                        delivery_verified_after, delivery_entry_deadline_ns, delivery_lock)
++                except (OSError, ValueError, KeyError, TypeError, UnicodeError):
++                    delivery_verified_after = False
++                    delivery_summary = {'mode': 'unproved', 'source_verified_after_cleanup': False,
++                                        'qualification': None, 'copy_performed': False,
++                                        'remote_owned_containment_verified': False, 'remote_cleanup': 'unknown'}
+             if sdk:
+@@ -1406,1 +1502,1 @@
+-            final_status = result if cleanup and evidence_ok and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
++            final_status = result if cleanup and evidence_ok and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+@@ -1414,1 +1510,4 @@
+                        'profile': args.profile, 'coordination_directory': str(coordination),
++                       'yoga_delivery': dict(delivery_summary, prior_qualification=delivery_prior,
++                           original_deadline_monotonic_ns=delivery_entry_deadline_ns,
++                           runtime_seconds=delivery_runtime_seconds) if delivery_settings else None,
+diff --git a/tools/yoga_delivery_settings_test.py b/tools/yoga_delivery_settings_test.py
+new file mode 100644
+--- /dev/null
++++ b/tools/yoga_delivery_settings_test.py
+@@ -0,0 +1,1 @@
++import copy
++import hashlib
++import json
++import os
++from pathlib import Path
++import tempfile
++import stat
++from types import SimpleNamespace
++import unittest
++from unittest.mock import patch
++import yoga_delivery_settings as settings
++
++class SettingsTests(unittest.TestCase):
++    epoch = '12345678-1234-4123-8123-123456789012'
++    deadline = 1200 * 10**9
++    lock = {'lock':'fixture'}
++    def qualification(self):
++        return {'schemaVersion':1,'scope':'yoga-authenticated-OS-executable-qualification-v1',
++            'bootstrapManifestSha256':settings.executable.BOOTSTRAP_SHA,'inventorySha256':settings.INVENTORY,
++            'sourceReceiptSha256':settings.SOURCE_RECEIPT,'sshPath':settings.executable.SSH,'sshSha256':'a'*64,
++            'remote':dict(schemaVersion=1,hostAlias='yoga',system='x86_64-linux',bootstrapTrust=settings.executable.TRUST,
++                machineIdSha256='a'*64,bootIdSha256='b'*64,uid=1000,labSourceRevision='f'*40,
++                labGenerationMarkerSha256='a'*64,labDeploymentIdSha256='b'*64,
++                homeManagerGeneration='/nix/store/'+'c'*32+'-home-manager-generation',
++                remoteNixPath='/nix/store/'+'d'*32+'-nix/bin/nix',remoteNixSha256='e'*64,remoteNixBytes=42)}
++
++    def receipt(self, qualification_sha256):
++        return dict(id=self.epoch,artifact_epoch=self.epoch,exit=0,workload_exit=0,descendants_empty=True,
++            controller_failure=None,rejection=None,cleanup={'state':'empty'},verb='run',
++            targets=['//tools:yoga_controller_qualify'],profile=settings.profile.PROFILE,manager='system',
++            coordination_directory=str(settings.profile.COORDINATION),
++            coordination_lock=str(settings.profile.COORDINATION/'execution.lock'),graph_sha256='f'*64,
++            limits={'fixed':'fixture'},closure_manifest_sha256=settings.NATIVE,
++            bootstrap_manifest_sha256=settings.executable.BOOTSTRAP_SHA,
++            yoga_delivery=dict(source_verified_after_cleanup=True,controller_tools=settings.TOOLS,mode='qualify',
++                coordination_lock_witness=self.lock,
++                remote_owned_containment_verified=False,copy_performed=False,remote_cleanup='unknown',
++                qualification={'path':'qualification.json','sha256':qualification_sha256}))
++
++    def result(self):
++        return dict(schemaVersion=1,scope='yoga-controller-destination-readonly-v1',mode='qualify',passed=True,
++            inventorySha256=settings.INVENTORY,sourceReceiptSha256=settings.SOURCE_RECEIPT,copyPerformed=False,
++            remoteCleanup='unknown',remoteOwnedContainmentVerified=False,destinationRegistrationVerified=False,
++            destinationContentRehashed=False,offlineGraphVerified=False,wrapperExecutionAuthority=False,
++            qualification=self.qualification())
++
++    def fixture_open(self,path,*unused):
++        descriptor = os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
++        settings.DIRECTORY_PINS[descriptor] = ([descriptor],[settings.directory_identity(os.fstat(descriptor))],[])
++        return descriptor
++
++    def write(self,path,data):
++        path.write_bytes(data); path.chmod(0o600)
++
++    def test_finite_scope_refuses_authority_for_qualify_and_unrelated_routes(self):
++        settings.finite(['run','//tools:yoga_controller_qualify'],'system',None,[])
++        for args,manager,epoch,other in ((['run','//tools:yoga_controller_qualify'],'system',self.epoch,[]),
++                (['run','//tools:yoga_controller_inspect'],'system',None,[]),
++                (['run','//tools:yoga_controller_verify'],'user',self.epoch,[]),
++                (['run','//tools:yoga_controller_verify'],'system',self.epoch,['provider-config'])):
++            with self.assertRaises(ValueError): settings.finite(args,manager,epoch,other)
++
++    def test_original_deadline_and_residual_runtime_do_not_restart(self):
++        with patch.object(settings.time,'monotonic_ns',return_value=100*10**9):
++            self.assertEqual(settings.runtime_seconds(self.deadline),1085)
++        with patch.object(settings.time,'monotonic_ns',return_value=self.deadline):
++            with self.assertRaises(ValueError): settings.runtime_seconds(self.deadline)
++        self.assertEqual(settings.effective_runtime('18min 5s',1085),1085*10**6)
++        for value in ('20min','infinity','1086s','-1s','0s','20garbage'):
++            with self.assertRaises(ValueError): settings.effective_runtime(value,1085)
++
++    def test_terminal_epoch_chain_refuses_graph_result_cleanup_label_and_pin_drift(self):
++        original = self.receipt('a'*64)
++        self.assertEqual(settings.prior_receipt(original,self.epoch,'f'*64,{'fixed':'fixture'},self.lock),'a'*64)
++        for key,value in (('exit',True),('workload_exit',1),('descendants_empty',False),('graph_sha256','a'*64),
++                          ('targets',['//tools:yoga_controller_inspect']),('bootstrap_manifest_sha256','0'*64)):
++            changed = copy.deepcopy(original); changed[key] = value
++            with self.assertRaises(ValueError): settings.prior_receipt(changed,self.epoch,'f'*64,{'fixed':'fixture'},self.lock)
++        changed = copy.deepcopy(original); changed['yoga_delivery']['source_verified_after_cleanup'] = False
++        with self.assertRaises(ValueError): settings.prior_receipt(changed,self.epoch,'f'*64,{'fixed':'fixture'},self.lock)
++        changed = copy.deepcopy(original); changed['cleanup'] = []
++        with self.assertRaises(ValueError): settings.prior_receipt(changed,self.epoch,'f'*64,{'fixed':'fixture'},self.lock)
++        for key in ('controller_failure','rejection'):
++            changed = copy.deepcopy(original); del changed[key]
++            with self.assertRaises(ValueError): settings.prior_receipt(changed,self.epoch,'f'*64,{'fixed':'fixture'},self.lock)
++
++    def test_guard_extracts_one_canonical_result_and_refuses_duplicate_or_failed_result(self):
++        result = self.result()
++        with patch.object(settings.time,'monotonic_ns',return_value=0):
++            data = settings.canonical(result)
++            self.assertEqual(settings.extract(b'INFO: fake declared Bazel output\n'+data+b'\n',self.deadline),
++                             settings.canonical(result['qualification']))
++            for log in (data+b'\n'+data+b'\n',b'INFO: no proof\n'):
++                with self.assertRaises(ValueError): settings.extract(log,self.deadline)
++            result['passed'] = False
++            with self.assertRaises(ValueError): settings.extract(settings.canonical(result),self.deadline)
++
++    def test_closed_file_chain_rechecks_bytes_and_custody_before_launch(self):
++        with tempfile.TemporaryDirectory() as temporary:
++            state = Path(temporary); run = state/self.epoch; run.mkdir(mode=0o700)
++            content = settings.canonical(self.qualification())
++            receipt = self.receipt(hashlib.sha256(content).hexdigest())
++            self.write(run/'receipt.json',settings.canonical(receipt)); self.write(run/'qualification.json',content)
++            with patch.object(settings.profile,'STATE',state), \
++                    patch.object(settings,'trusted_directory',side_effect=self.fixture_open), \
++                    patch.object(settings.time,'monotonic_ns',return_value=0):
++                prior = settings.select_prior(self.epoch,'f'*64,{'fixed':'fixture'},self.deadline,self.lock)
++                settings.recheck(prior,'f'*64,{'fixed':'fixture'},self.deadline,self.lock)
++                self.assertIn('receipt_identity',prior); self.assertIn('qualification_identity',prior)
++                changed = dict(receipt,source_dirty='true')
++                self.write(run/'receipt.json',settings.canonical(changed))
++                with self.assertRaisesRegex(ValueError,'changed-before-launch'):
++                    settings.recheck(prior,'f'*64,{'fixed':'fixture'},self.deadline,self.lock)
++                (run/'qualification.json').chmod(0o644)
++                with self.assertRaisesRegex(ValueError,'custody'):
++                    settings.select_prior(self.epoch,'f'*64,{'fixed':'fixture'},self.deadline,self.lock)
++
++    def test_symlink_and_hardlink_prior_extractions_are_refused(self):
++        with tempfile.TemporaryDirectory() as temporary:
++            directory = Path(temporary); self.write(directory/'source',b'{}')
++            descriptor = self.fixture_open(directory)
++            try:
++                (directory/'qualification.json').symlink_to('source')
++                with patch.object(settings.time,'monotonic_ns',return_value=0),self.assertRaises(OSError):
++                    settings.read_owned(descriptor,'qualification.json',16384,self.deadline)
++                (directory/'qualification.json').unlink(); os.link(directory/'source',directory/'qualification.json')
++                with patch.object(settings.time,'monotonic_ns',return_value=0),self.assertRaisesRegex(ValueError,'custody'):
++                    settings.read_owned(descriptor,'qualification.json',16384,self.deadline)
++            finally: settings.close_directory(descriptor)
++
++    def test_publication_is_exclusive_and_only_follows_verified_terminal_result(self):
++        args = ['run','//tools:yoga_controller_qualify']
++        with patch.object(settings,'trusted_directory') as opened,patch.object(settings.time,'monotonic_ns',return_value=0):
++            record = settings.finish(Path('/unused'),args,0,False,True,self.deadline,self.lock)
++            self.assertIsNone(record['qualification']); opened.assert_not_called()
++        with tempfile.TemporaryDirectory() as temporary:
++            run = Path(temporary); self.write(run/'workload.log',settings.canonical(self.result())+b'\n')
++            with patch.object(settings,'trusted_directory',side_effect=self.fixture_open), \
++                    patch.object(settings.time,'monotonic_ns',return_value=0):
++                record = settings.finish(run,args,0,True,True,self.deadline,self.lock)
++                self.assertEqual(record['qualification']['sha256'],hashlib.sha256((run/'qualification.json').read_bytes()).hexdigest())
++                self.assertEqual((run/'qualification.json').stat().st_mode & 0o777,0o600)
++                with self.assertRaises(FileExistsError): settings.publish(run,b'new',self.deadline)
++
++    def test_ancestor_open_failure_attempts_every_release_and_preserves_primary(self):
++        good = SimpleNamespace(st_dev=1,st_ino=2,st_uid=os.getuid(),st_mode=stat.S_IFDIR|0o700)
++        calls = []
++        def close(descriptor):
++            calls.append(descriptor)
++            if descriptor == 12: raise OSError('close')
++        with patch.object(settings.time,'monotonic_ns',return_value=0), \
++                patch.object(settings.os,'open',side_effect=[11,12,13]), \
++                patch.object(settings.os,'fstat',side_effect=[good,good,ValueError('primary-custody')]), \
++                patch.object(settings.os,'close',side_effect=close):
++            with self.assertRaisesRegex(ValueError,'primary-custody') as captured:
++                settings.trusted_directory('/first/second',self.deadline)
++        self.assertEqual(calls,[13,12,11])
++        self.assertIn('qualification-custody-release-incomplete',captured.exception.__notes__)
++
++    def test_prior_lock_replacement_does_not_inherit_qualification(self):
++        receipt = self.receipt('a'*64)
++        with self.assertRaisesRegex(ValueError,'extraction-required'):
++            settings.prior_receipt(receipt,self.epoch,'f'*64,{'fixed':'fixture'},{'replacement':'lock'})
++
++    def test_actual_named_home_lock_replacement_is_refused_while_original_fd_remains_held(self):
++        with tempfile.TemporaryDirectory() as temporary:
++            directory = Path(temporary)
++            held = os.open(directory/'execution.lock',os.O_RDWR|os.O_CREAT|os.O_EXCL,0o600)
++            try:
++                with patch.object(settings.profile,'COORDINATION',directory), \
++                        patch.object(settings,'trusted_directory',side_effect=self.fixture_open), \
++                        patch.object(settings.time,'monotonic_ns',return_value=0):
++                    original = settings.lock_witness(held,self.deadline)
++                    (directory/'execution.lock').rename(directory/'held-lock')
++                    self.write(directory/'execution.lock',b'replacement')
++                    with self.assertRaisesRegex(ValueError,'lock-custody-changed'):
++                        settings.lock_witness(held,self.deadline)
++                    self.assertEqual(os.fstat(held).st_ino,original['inode'])
++            finally: os.close(held)
++
++if __name__ == '__main__': unittest.main()
+diff --git a/tools/execution_guard_test.py b/tools/execution_guard_test.py
+--- a/tools/execution_guard_test.py
++++ b/tools/execution_guard_test.py
+@@ -52,1 +52,41 @@
+ class GuardTest(unittest.TestCase):
++    def test_yoga_delivery_command_binds_original_deadline_and_clears_prior_authority(self):
++        from execution_guard import yoga_delivery_command
++        args = ['run','//tools:yoga_controller_qualify']
++        with patch('time.monotonic_ns',return_value=100*10**9):
++            command,values = yoga_delivery_command('/nix/store/fixed-bazel',Path('/owned/epoch'),args,1200*10**9)
++        self.assertEqual(command[-1],args[-1]); self.assertEqual(command.count('run'),1)
++        self.assertIn('--run_env=OMUX_YOGA_DELIVERY_DEADLINE_NS='+str(1200*10**9),command)
++        self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256=',command)
++        self.assertIn('--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=',command)
++        for flag in ('--batch','--nosystem_rc','--nohome_rc','--noworkspace_rc','--jobs=2',
++                     '--remote_executor=','--remote_cache=','--disk_cache=','--lockfile_mode=error'):
++            self.assertIn(flag,command)
++        prior = {'path':'/home/jess/.local/state/omux-yoga-delivery-20261006/prior/qualification.json','sha256':'a'*64}
++        with patch('time.monotonic_ns',return_value=100*10**9):
++            command,_ = yoga_delivery_command('/nix/store/fixed-bazel',Path('/owned/epoch'),
++                ['run','//tools:yoga_controller_verify'],1200*10**9,prior)
++        self.assertIn('--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION='+prior['path'],command)
++        self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256='+prior['sha256'],command)
++        self.assertEqual(blocked_paths('yoga-controller-delivery'),blocked_paths('standard'))
++        # General run and unrelated dependency producers remain refused.
++        for arguments in (['run','//tools:yoga_controller_qualify'],['run','//...']):
++            with self.assertRaises(ValueError): bazel_command('/nix/store/fixed-bazel',Path('/owned/epoch'),arguments)
++
++    def test_delivery_scope_rejects_unrelated_inputs_before_tool_reads(self):
++        import execution_guard as guard
++        common = ['--profile','yoga-controller-delivery','--manager','system',
++            '--state-dir','/home/jess/.local/state/omux-yoga-delivery-20261006',
++            '--coordination-dir','/home/jess/.local/state/omux-execution-20261005']
++        with patch.object(guard,'immutable') as tools:
++            for addition in (['--reuse-owned-cache'],['--yoga-delivery-epoch','12345678-1234-4123-8123-123456789012'],
++                             ['--repository-cache','/unrelated']):
++                with self.assertRaises(ValueError): guard.main(common+addition+['--','run','//tools:yoga_controller_qualify'])
++            tools.assert_not_called()
++        with patch.object(guard,'immutable') as tools:
++            with self.assertRaises(ValueError): guard.main(['--yoga-delivery-epoch','12345678-1234-4123-8123-123456789012',
++                '--','test','//:docs_check'])
++            tools.assert_not_called()
+diff --git a/tools/BUILD.bazel b/tools/BUILD.bazel
+--- a/tools/BUILD.bazel
++++ b/tools/BUILD.bazel
+@@ -21,1 +21,4 @@
++_YOGA_DELIVERY_GUARD_SOURCES = ['guard_yoga_delivery_profile.py', 'yoga_delivery_settings.py',
++                                'yoga_executable_qualification.py']
++
+ _YOGA_GUARD_SOURCES = [
+@@ -842,1 +845,1 @@
+-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _YOGA_GUARD_SOURCES,
++            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+@@ -851,1 +854,1 @@
+-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES,
++            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+@@ -857,1 +860,9 @@
+-    srcs = ["guard_dependency_profile.py"] + _CODEX_SDK_SOURCES,
++    srcs = ["guard_dependency_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
+ )
++python_test(
++    name = "yoga_delivery_settings_test",
++    main = "yoga_delivery_settings_test.py",
++    srcs = _YOGA_DELIVERY_GUARD_SOURCES + ['guard_cache.py'],
++)
+# Proposed regression targets (not executed): //tools:execution_guard_test,
+# //tools:guard_dependency_profile_test, //tools:yoga_delivery_settings_test,
+# //tools:guard_yoga_delivery_profile_test, //tools:yoga_executable_qualification_test,
+# //tools:yoga_controller_delivery_test. Actual dispatch remains root-owned.

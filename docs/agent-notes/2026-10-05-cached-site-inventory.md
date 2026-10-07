@@ -1,0 +1,11 @@
+# Cached site tool inventory
+
+Authority: October 5 user-authorized parallel implementation; runtime AGENTS.md and R-HOOK-CONVERGENCE-20261004. Source-only workstream owns `tools/cached_nix_inventory.py` and its test source; root owns target wiring and contained execution.
+
+The SPA's previously recorded locked closure linkFarm is absent, while selected Node, PNPM and Chromium outputs remain present. Public selected roots are declared in neighboring `omux.xoxd.ai/tools/offline-site-roots.json`. Inventory accepts that explicitly supplied file plus the exact site `flake.lock`; expected SHA256 digests bind both bytes, and the locked nixpkgs revision must be `1c3fe55ad329cbcb28471bb30f05c9827f724c76`. This validates declared provenance, not a fresh evaluation of root derivation mapping.
+
+The [official Nix local-store documentation](https://releases.nixos.org/nix/nix-2.34.8/manual/store/types/local-store.html) states that `read-only` opens SQLite with `immutable`, and warns against using it while another process can modify the database. A live daemon can do that. The allowed alternative reads the explicit store database with SQLite `mode=ro`, `query_only`, and a normal read transaction. It queries only registered path/hash/size metadata and exact references. It never invokes Nix, contacts the daemon, evaluates a flake, creates a missing database, restores a path or fabricates a closure.
+
+Bounds: 128 KiB per declared input, 4,096 paths, 65,536 reference edges, 30-second query deadline and 8 MiB serialized output. Every root and descendant must be registered, lexically a store path and present. Missing or dangling references fail closed. Public failures omit raw diagnostics. A pinned site-tool mapping evaluation and separately declared streaming NAR byte verification remain independent gates; stored NAR hashes are explicitly metadata (`contentRehashed: false`).
+
+Root should declare the source/test through Bazel, supply the approved files as operator inputs, and run under its exclusive bounded guard. No build, test, script execution or metadata import was performed by this workstream. Tests are authored for recursive completeness, missing descendants, non-store roots, unchanged database bytes and absent-database refusal; they remain unrun.

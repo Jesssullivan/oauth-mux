@@ -1,0 +1,1086 @@
+# Authority: R-N13; parent-authorized patch artifact only, 2026-10-06.
+# Status: UNTESTED AND UNAPPLIED. No build, test, subprocess or acquisition run.
+# Scope: only tools/codex_git_inputs.py and tools/codex_git_inputs_test.py.
+# Historical 49a5bc98 Bazel timeout remains a failed separate epoch.
+# Acquisition: one module-start clock, clipped to min(900, TEST_TIMEOUT, 1200),
+# less 60s completion reserve; 10s child cleanup stays inside that deadline.
+# Offline/default library budget, 1200s declared cap, 600s command cap, strict
+# receipts, mandatory inventories, object checks and custody predicates remain.
+# Diagnostics: sixteen fixed phase labels, ten fixed categories, flushed and
+# bounded; no raw exception, argv, path, remote, commit or diagnostic bytes.
+# Failure unwind: independent selector, termination, reap and pipe-release
+# attempts retain the first work category and first cleanup category. Closed
+# diagnostic streams cannot skip owned termination or the bounded wait.
+# Startup state and buffers are initialized before spawn; every post-spawn
+# operation immediately lies inside owned-child cleanup and pipe-release scope.
+# Group signaling is prohibited after exact WNOWAIT exit and owned-group drain,
+# before the final wait can internally reap and then rethrow interruption.
+# Authored coverage: nineteen new modeled test methods (forty-eight total).
+# Existing timeout assertions now expect the closed primary/cleanup refusal
+# and no signal after proven group drain; selector mocks use explicit close.
+# No real subprocess or PASS execution receipt is claimed.
+# Limits: synchronous kernel reads/fsync and a single bounded sort/hash/copy
+# cannot be preempted internally. Owned controller containment remains needed.
+# Per-object subprocess batching and mandatory scans are intentionally unchanged.
+#
+diff --git a/tools/codex_git_inputs.py b/tools/codex_git_inputs.py
+--- a/tools/codex_git_inputs.py
++++ b/tools/codex_git_inputs.py
+@@ -9,7 +9,7 @@
+ """
+ 
+ import argparse
+-from contextlib import ExitStack
++from contextlib import ExitStack, contextmanager
+ import hashlib
+ import io
+ import json
+@@ -21,9 +21,13 @@
+ import stat
+ import struct
+ import subprocess
++import sys
+ import tarfile
+ import time
+ 
++# Start before importing source-verification helpers; no phase renews this clock.
++PRODUCER_STARTED = time.monotonic()
++
+ from codex_dependency_bundle import Budget, HASH, MAX_METADATA, SOURCE_RECEIPT_SHA, encoded, require
+ from codex_dependency_union import OutputCustody
+ from codex_repository_inputs import git_requirements, source_graph
+@@ -46,6 +50,158 @@
+ FREE_FLOOR = 4 * 1024 * 1024 * 1024
+ MAGIC = b"OMUX-GIT-TREE-PROOF-1\n"
+ TREE_POLICY = "Git raw-object SHA1 identity; sorted USTAR, uid/gid/mtime0, files0444/0555, dirs0555, links0777"
++# The owned Bazel target remains timeout="long" (900 seconds). These are
++# tighter execution limits; declared_budgets() preserves its historical caps.
++ENCLOSING_SECONDS = 900
++COMPLETION_RESERVE = 60
++CLEANUP_RESERVE = 10
++PHASES = ("arguments", "producer-context", "source-authority", "tool-authority",
++          "worker-custody", "git-init", "git-fetch", "object-inventory",
++          "source-revalidation", "tar-encode", "tree-proof-verify",
++          "output-custody", "output-artifacts", "output-publication",
++          "offline-verification", "git-cleanup")
++CATEGORIES = ("arguments", "deadline", "bound", "permission", "missing-input",
++              "io", "contract", "schema", "process", "cleanup-deadline")
++
++
++class ArgumentRefusal(ValueError):
++    pass
++
++
++class DeadlineRefusal(ValueError):
++    pass
++
++
++class GitRefusal(ValueError):
++    def __init__(self, phase, category, cleanup=None):
++        require(phase in PHASES and category in CATEGORIES
++                and cleanup in (None, *CATEGORIES), "invalid refusal category")
++        self.phase, self.category, self.cleanup = phase, category, cleanup
++        super().__init__("categorical Git input refusal")
++
++
++class Progress:
++    def __init__(self, stream=None):
++        self.stream = sys.stderr if stream is None else stream
++        self.phase = "arguments"
++        self.emitted = set()
++
++    def enter(self, phase):
++        require(phase in PHASES, "invalid progress phase")
++        self.phase = phase
++        if phase not in self.emitted:
++            self.emitted.add(phase)
++            print(json.dumps({"git_input_phase": phase}), file=self.stream, flush=True)
++
++
++def enter(budget, phase):
++    progress = getattr(budget, "progress", None)
++    if progress is not None:
++        progress.enter(phase)
++    budget.tick()
++
++
++def tick(budget):
++    if budget is not None:
++        budget.tick()
++
++
++def refusal_category(error):
++    if isinstance(error, ArgumentRefusal):
++        return "arguments"
++    if isinstance(error, DeadlineRefusal):
++        return "deadline"
++    if isinstance(error, subprocess.TimeoutExpired):
++        return "cleanup-deadline"
++    if isinstance(error, PermissionError):
++        return "permission"
++    if isinstance(error, FileNotFoundError):
++        return "missing-input"
++    if isinstance(error, OSError):
++        return "io"
++    if isinstance(error, (json.JSONDecodeError, UnicodeError, RecursionError, tarfile.TarError)):
++        return "schema"
++    if isinstance(error, subprocess.SubprocessError):
++        return "process"
++    if isinstance(error, ValueError):
++        # Literal implementation messages are compared privately. No exception
++        # text, command, path, remote or object identity enters diagnostics.
++        if str(error) == "bundle deadline exceeded":
++            return "deadline"
++        if str(error) in ("bundle read budget exceeded", "Git task bound exceeded",
++                          "Git stdout bound exceeded", "Git diagnostic bound exceeded",
++                          "worker bytes exceed bound", "worker inventory exceeds bound",
++                          "worker free floor differs", "Git command count exceeds bound"):
++            return "bound"
++    return "contract"
++
++
++def emit_refusal(progress, error):
++    refusal = error if isinstance(error, GitRefusal) else GitRefusal(progress.phase, refusal_category(error))
++    print(json.dumps({"status": "git-input-refused", "phase": refusal.phase,
++                      "category": refusal.category, "cleanup": refusal.cleanup}),
++          file=progress.stream, flush=True)
++
++
++def cleanup_refusal(phase, primary, cleanup):
++    # Preserve the first work category and first cleanup category across every
++    # release boundary. Later cleanup faults never replace existing evidence.
++    if isinstance(primary, GitRefusal):
++        return GitRefusal(primary.phase, primary.category,
++                          primary.cleanup or refusal_category(cleanup))
++    return GitRefusal(phase, refusal_category(primary), refusal_category(cleanup))
++
++
++@contextmanager
++def owned_selector(phase):
++    selector = selectors.DefaultSelector()
++    primary = None
++    try:
++        yield selector
++    except BaseException as error:
++        primary = error
++        raise
++    finally:
++        try:
++            selector.close()
++        except BaseException as cleanup:
++            if primary is not None:
++                raise cleanup_refusal(phase, primary, cleanup) from None
++            raise GitRefusal(phase, refusal_category(cleanup)) from None
++
++
++class ProducerBudget(Budget):
++    def __init__(self, environment, started, progress):
++        observed = environment.get("TEST_TIMEOUT")
++        if not isinstance(observed, str) or re.fullmatch(r"[1-9][0-9]{0,5}", observed) is None:
++            raise ArgumentRefusal("enclosing timeout shape differs")
++        enclosing = min(ENCLOSING_SECONDS, 1200, int(observed))
++        if enclosing <= COMPLETION_RESERVE + CLEANUP_RESERVE:
++            raise ArgumentRefusal("enclosing timeout lacks reserves")
++        self.deadline = started + enclosing - COMPLETION_RESERVE
++        self.read_bytes = self.export_bytes = 0
++        self.progress = progress
++        self.tick()
++
++    def tick(self, count=0):
++        if time.monotonic() >= self.deadline:
++            raise DeadlineRefusal("producer deadline exhausted")
++        super().tick(count)
++
++
++class CommandBudget:
++    """Share byte accounting but stop scans at the command's original deadline."""
++    def __init__(self, parent, deadline):
++        self.parent, self.deadline = parent, deadline
++
++    def tick(self, count=0):
++        if time.monotonic() >= self.deadline:
++            raise DeadlineRefusal("command deadline exhausted")
++        self.parent.tick(count)
++        if time.monotonic() >= self.deadline:
++            raise DeadlineRefusal("command deadline exhausted")
++
++
+ REQUIREMENTS = (
+     ("https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc.git", "9309c117ebae84dd2f9df1ef99de4782162527d5"),
+     ("https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx.git", "5abc7f839700f0f17338434e1c1c6a8c87c00c11"),
+@@ -82,10 +238,12 @@
+     return name.decode("utf-8", "strict")
+ 
+ 
+-def tree_entries(value):
++def tree_entries(value, budget=None):
++    tick(budget)
+     require(len(value) <= MAX_TREE, "tree object exceeds bound")
+     rows, names, cursor = [], set(), 0
+     while cursor < len(value):
++        tick(budget)
+         space = value.find(b" ", cursor)
+         end = value.find(b"\0", space + 1)
+         require(space > cursor and end > space and end + 21 <= len(value), "malformed Git tree")
+@@ -104,6 +262,7 @@
+ 
+ def checked_object(reader, oid, expected, budget):
+     require(isinstance(oid, str) and OID.fullmatch(oid), "invalid Git object identity")
++    budget.tick()
+     kind, value = reader(oid)
+     require(kind == expected and isinstance(value, bytes)
+             and len(value) <= (MAX_BLOB if kind == "blob" else MAX_TREE), "object type or length differs")
+@@ -112,9 +271,11 @@
+     return value
+ 
+ 
+-def resolve_links(records, blobs):
++def resolve_links(records, blobs, budget=None):
++    tick(budget)
+     entries = {row["path"]: row for row in records}
+     for row in records:
++        tick(budget)
+         if row["git_mode"] != "120000":
+             continue
+         value = blobs[row["git_oid"]]
+@@ -124,6 +285,7 @@
+         require(not target.startswith("/") and "\\" not in target, "escaping symlink")
+         parts = row["path"].split("/")[:-1]
+         for part in target.split("/"):
++            tick(budget)
+             if parts:
+                 parent = entries.get("/".join(parts))
+                 require(parent is not None and parent["git_mode"] == "40000", "symlink traverses non-directory")
+@@ -137,6 +299,7 @@
+                 parts.append(part)
+         require(parts and "/".join(parts) in entries, "dangling or root symlink unsupported")
+         for end in range(1, len(parts) + 1):
++            tick(budget)
+             referenced = entries.get("/".join(parts[:end]))
+             require(referenced is not None and referenced["git_mode"] != "120000",
+                     "nested symlink unsupported")
+@@ -163,7 +326,7 @@
+         value = checked_object(reader, tree, "tree", budget)
+         proof[tree] = ("tree", value)
+         require(sum(len(item[1]) for item in proof.values()) <= MAX_PROOF, "object proof exceeds bound")
+-        for mode, name, oid in tree_entries(value):
++        for mode, name, oid in tree_entries(value, budget):
+             budget.tick()
+             path = prefix + name
+             require(len(path.encode()) <= 240 and len(records) < MAX_ENTRIES, "export inventory exceeds bound")
+@@ -180,25 +343,32 @@
+                 records.append({"path": path, "git_mode": mode, "git_oid": oid, "bytes": len(payload),
+                                 "sha256": hashlib.sha256(payload).hexdigest()})
+     walk(root_tree, "", set())
++    budget.tick()
+     records.sort(key=lambda row: row["path"].encode())
++    budget.tick()
+     require(len({row["path"] for row in records}) == len(records), "duplicate export path")
+-    resolve_links(records, blobs)
++    resolve_links(records, blobs, budget)
+     return root_tree, records, proof, blobs
+ 
+ 
+-def proof_bytes(proof):
++def proof_bytes(proof, budget=None):
++    tick(budget)
+     result = bytearray(MAGIC)
+     for oid, (kind, value) in sorted(proof.items()):
++        tick(budget)
+         require(kind == "tree" and object_id(kind, value) == oid, "proof identity differs")
+         result.extend(bytes.fromhex(oid) + b"t" + struct.pack(">Q", len(value)) + value)
+         require(len(result) <= MAX_PROOF, "proof framing exceeds bound")
++    tick(budget)
+     return bytes(result)
+ 
+ 
+-def parse_proof(value):
++def parse_proof(value, budget=None):
++    tick(budget)
+     require(len(value) <= MAX_PROOF and value.startswith(MAGIC), "proof format differs")
+     result, cursor, last = {}, len(MAGIC), ""
+     while cursor < len(value):
++        tick(budget)
+         require(cursor + 29 <= len(value), "truncated proof header")
+         oid, code = value[cursor:cursor + 20].hex(), value[cursor + 20:cursor + 21]
+         length = struct.unpack(">Q", value[cursor + 21:cursor + 29])[0]
+@@ -215,10 +385,12 @@
+     return result
+ 
+ 
+-def canonical_tar(records, blobs):
++def canonical_tar(records, blobs, budget=None):
++    tick(budget)
+     stream = io.BytesIO()
+     with tarfile.open(fileobj=stream, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+         for row in records:
++            tick(budget)
+             info = tarfile.TarInfo(row["path"])
+             info.uid = info.gid = info.mtime = 0
+             info.uname = info.gname = ""
+@@ -234,8 +406,11 @@
+                 info.mode = 0o555 if mode == "100755" else 0o444
+                 info.size = row["bytes"]
+                 archive.addfile(info, io.BytesIO(blobs[row["git_oid"]]))
++            tick(budget)
+             require(stream.tell() <= MAX_TAR, "tar export exceeds bound")
++    tick(budget)
+     result = stream.getvalue()
++    tick(budget)
+     require(len(result) <= MAX_TAR, "tar framing exceeds bound")
+     return result
+ 
+@@ -243,7 +418,7 @@
+ def verify_artifacts(root_tree, tar_value, proof_value, budget):
+     """Reconstruct the Git tree from proof objects and unextracted tar payloads."""
+     require(len(tar_value) <= MAX_TAR, "tar input exceeds bound")
+-    proof = parse_proof(proof_value)
++    proof = parse_proof(proof_value, budget)
+     blobs, names, count, payload_bytes = {}, set(), 0, 0
+     with tarfile.open(fileobj=io.BytesIO(tar_value), mode="r:") as archive:
+         for member in archive:
+@@ -279,8 +454,8 @@
+         require(oid in blobs, "Git blob missing from tar")
+         return "blob", blobs[oid]
+     tree, records, used, verified_blobs = snapshot_tree(root_tree, reader, budget)
+-    require(set(used) == set(proof) and proof_bytes(used) == proof_value, "undeclared proof objects")
+-    require(canonical_tar(records, verified_blobs) == tar_value, "noncanonical or substituted tar bytes")
++    require(set(used) == set(proof) and proof_bytes(used, budget) == proof_value, "undeclared proof objects")
++    require(canonical_tar(records, verified_blobs, budget) == tar_value, "noncanonical or substituted tar bytes")
+     return tree, records
+ 
+ 
+@@ -326,6 +501,7 @@
+     def walk(parent, depth=0):
+         nonlocal total, entries
+         require(depth <= 64, "worker nesting exceeds bound")
++        budget.tick()
+         for name in os.listdir(parent):
+             budget.tick()
+             entries += 1
+@@ -345,7 +521,9 @@
+             else:
+                 require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "worker file type differs")
+     walk(fd)
++    budget.tick()
+     space = os.fstatvfs(fd)
++    budget.tick()
+     require(space.f_bavail * space.f_frsize >= FREE_FLOOR, "worker free floor differs")
+ 
+ 
+@@ -377,6 +555,7 @@
+ def owned_group(group, start, budget, *, proc_root=Path("/proc")):
+     """Count threads in the newly created session; never select another session."""
+     tasks, members = 0, []
++    budget.tick()
+     for entry in proc_root.iterdir():
+         budget.tick()
+         if not entry.name.isdigit():
+@@ -390,8 +569,11 @@
+                 continue
+             require(info.st_uid == os.getuid() and record[1] == group and record[2] >= start,
+                     "owned process group identity differs")
+-            tasks += len(list((entry / "task").iterdir()))
+-            require(tasks <= MAX_TASKS, "Git task bound exceeded")
++            for task in (entry / "task").iterdir():
++                budget.tick()
++                tasks += 1
++                require(tasks <= MAX_TASKS, "Git task bound exceeded")
++            budget.tick()
+             members.append(int(entry.name))
+         except (FileNotFoundError, ProcessLookupError):
+             # A disappearing process cannot receive a signal or add live tasks.
+@@ -403,40 +585,47 @@
+     """Only owned child process groups are signalled; diagnostic bytes never escape."""
+     budget.tick()
+     # Reserve cleanup inside the original shared deadline; a command cannot
+-    # spend this interval and then extend the controller's 20-minute budget.
+-    deadline = min(budget.deadline - 10, time.monotonic() + 600)
+-    require(deadline > time.monotonic(), "Git cleanup reserve exhausted")
++    # spend this interval and then renew the enclosing execution budget.
++    deadline = min(budget.deadline - CLEANUP_RESERVE, time.monotonic() + 600)
++    if deadline <= time.monotonic():
++        raise DeadlineRefusal("Git cleanup reserve exhausted")
++    command_budget = CommandBudget(budget, deadline)
+     command = [str(GIT)] + GIT_OPTIONS + ["-c", "core.hooksPath=" + root + "/templates",
+                                        "--git-dir=" + root + "/repo"] + arguments
++    # Allocate buffers and initialize all startup state before owning a child.
++    # A failed allocation here cannot strand a spawned process outside cleanup.
++    progress = getattr(budget, "progress", None)
++    original_phase = progress.phase if progress is not None else "git-cleanup"
++    output, errors = bytearray(), 0
++    completed = False
++    may_signal = True
++    primary = escaping = None
+     child = subprocess.Popen(command, cwd=root, env=git_environment(root, ca), stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, umask=0o077)
+     try:
+-        output, errors = bytearray(), 0
+-        # The leader is our unreaped child, so its PID cannot be reused before
+-        # this witness is acquired. poll/wait is postponed until cleanup.
+-        completed = False
+         try:
++            # The leader is our unreaped child, so its PID cannot be reused
++            # before this witness. Cleanup encloses every post-spawn operation.
+             record = process_record(Path("/proc", str(child.pid), "stat").read_text())
+             require(record[:2] == (child.pid, child.pid), "Git session identity differs")
+             start = record[2]
+             if input_value is not None:
+                 child.stdin.write(input_value)
+             child.stdin.close()
+-            with selectors.DefaultSelector() as selector:
++            with owned_selector(original_phase) as selector:
+                 selector.register(child.stdout, selectors.EVENT_READ, True)
+                 selector.register(child.stderr, selectors.EVENT_READ, False)
+                 while selector.get_map():
+-                    budget.tick()
+-                    require(time.monotonic() < deadline, "Git subprocess deadline exceeded")
+-                    tasks, _ = owned_group(child.pid, start, budget)
++                    command_budget.tick()
++                    tasks, _ = owned_group(child.pid, start, command_budget)
+                     require(tasks <= MAX_TASKS, "Git task bound exceeded")
+-                    worker_disk(worker_fd, budget)
++                    worker_disk(worker_fd, command_budget)
+                     for key, _ in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
+                         value = os.read(key.fileobj.fileno(), 65536)
+                         if not value:
+                             selector.unregister(key.fileobj)
+                         elif key.data:
+-                            budget.tick(len(value))
++                            command_budget.tick(len(value))
+                             output.extend(value)
+                             require(len(output) <= limit, "Git stdout bound exceeded")
+                         else:
+@@ -447,40 +636,78 @@
+             # exact child PID/group anchor until all fork-capable members are
+             # absent. WNOWAIT is required in this native Linux-only lane.
+             while True:
+-                budget.tick()
+-                require(time.monotonic() < deadline, "Git exit observation deadline exceeded")
++                command_budget.tick()
+                 observed = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                 if observed is not None:
+                     require(observed.si_pid == child.pid, "Git exit observation identity differs")
+                     break
+-                tasks, _ = owned_group(child.pid, start, budget)
++                tasks, _ = owned_group(child.pid, start, command_budget)
+                 require(tasks <= MAX_TASKS, "Git task bound exceeded")
+-                worker_disk(worker_fd, budget)
++                worker_disk(worker_fd, command_budget)
+                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+             # The leader is now irreversibly exited but still unreaped. Other
+             # group members cause refusal and anchored group termination.
+-            tasks, members = owned_group(child.pid, start, budget)
++            command_budget.tick()
++            tasks, members = owned_group(child.pid, start, command_budget)
+             require(tasks <= MAX_TASKS and all(pid == child.pid for pid in members), "Git child group not drained")
+-            returncode = child.wait(timeout=max(0, min(10, budget.deadline - time.monotonic())))
++            # Popen.wait may reap while handling KeyboardInterrupt and then
++            # rethrow. Once this exact exit/drain proof holds, prohibit group
++            # signaling before any potentially reaping wait is entered.
++            may_signal = False
++            returncode = child.wait(timeout=max(0, min(CLEANUP_RESERVE, budget.deadline - time.monotonic())))
+             completed = True
+             require(returncode == 0, "Git subprocess failed")
+             return bytes(output)
++        except BaseException as error:
++            primary = error
++            raise
+         finally:
+             if not completed:
+                 # Popen creates this new session/process group; no external
+-                # process/session can be selected by caller input. The leader
+-                # has not yet been reaped, even if helpers outlive its exit.
++                # process/session can be selected by caller input. Signals are
++                # permitted only before the final potentially reaping wait.
++                # Log a fixed cleanup phase without ticking expired work time.
++                cleanup_error = None
++                if progress is not None:
++                    try:
++                        progress.enter("git-cleanup")
++                    except BaseException as error:
++                        cleanup_error = error
++                if may_signal:
++                    try:
++                        os.killpg(child.pid, signal.SIGKILL)
++                    except ProcessLookupError:
++                        pass
++                    except BaseException as error:
++                        cleanup_error = cleanup_error or error
+                 try:
+-                    os.killpg(child.pid, signal.SIGKILL)
+-                except ProcessLookupError:
+-                    pass
+-                child.wait(timeout=max(0, min(10, budget.deadline - time.monotonic())))
++                    child.wait(timeout=max(0, min(CLEANUP_RESERVE, budget.deadline - time.monotonic())))
++                except BaseException as error:
++                    cleanup_error = cleanup_error or error
++                finally:
++                    if progress is not None:
++                        progress.phase = original_phase
++                if cleanup_error is not None:
++                    if primary is not None:
++                        raise cleanup_refusal(original_phase, primary, cleanup_error) from None
++                    raise GitRefusal(original_phase, refusal_category(cleanup_error)) from None
++    except BaseException as error:
++        escaping = error
++        raise
+     finally:
+-        # Popen's context manager would perform an unbounded wait on failure.
+-        # A refused bounded wait leaves controller containment responsible for
+-        # an uninterruptible task; it cannot become successful source proof.
++        # Every descriptor gets an independent release attempt. Neither an
++        # earlier cleanup refusal nor a pipe-close error can skip the others.
++        # No context manager may introduce an unbounded child wait here.
++        release_error = None
+         for channel in (child.stdin, child.stdout, child.stderr):
+-            channel.close()
++            try:
++                channel.close()
++            except BaseException as error:
++                release_error = release_error or error
++        if release_error is not None:
++            if escaping is not None:
++                raise cleanup_refusal(original_phase, escaping, release_error) from None
++            raise GitRefusal(original_phase, refusal_category(release_error)) from None
+ 
+ 
+ def acquire(requirement, worker, budget, ca, runner=run_git):
+@@ -501,7 +728,9 @@
+         result = runner(arguments, root, worker.artifacts_fd, budget, ca, input_value, limit)
+         worker.check()
+         return result
++    enter(budget, "git-init")
+     run(["init", "--bare", "--template=" + root + "/templates", root + "/repo"], limit=65536)
++    enter(budget, "git-fetch")
+     run(["fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head",
+          requirement["remote"], requirement["commit"]], limit=65536)
+     def reader(oid):
+@@ -514,6 +743,7 @@
+         require(length <= MAX_BLOB and len(payload) == length + 1 and payload[-1:] == b"\n",
+                 "Git object frame length differs")
+         return fields[1].decode("ascii"), payload[:-1]
++    enter(budget, "object-inventory")
+     return snapshot(requirement["commit"], reader, budget)
+ 
+ 
+@@ -529,9 +759,12 @@
+     tree, records, proof, blobs, witness = material
+     require(witness.get("oid") == requirement["commit"] and witness.get("tree_oid") == tree,
+             "acquisition witness is not the selected commit/tree")
+-    tar_value, proof_value = canonical_tar(records, blobs), proof_bytes(proof)
++    enter(budget, "tar-encode")
++    tar_value, proof_value = canonical_tar(records, blobs, budget), proof_bytes(proof, budget)
++    enter(budget, "tree-proof-verify")
+     verified_tree, verified_records = verify_artifacts(tree, tar_value, proof_value, budget)
+     require((tree, records) == (verified_tree, verified_records), "independent tree export differs")
++    enter(budget, "output-artifacts")
+     destination.write_artifact("source.tar", tar_value)
+     destination.write_artifact("objects.proof", proof_value)
+     inventory_sha = hashlib.sha256(encoded(records)).hexdigest()
+@@ -548,6 +781,7 @@
+               "native_support": False, "provider_evaluation": False, "archive_sha256": None,
+               "budgets": declared_budgets()}
+     receipt = encoded(report)
++    enter(budget, "output-publication")
+     destination.write_artifact("git-input-receipt.json", receipt)
+     destination.check()
+     require(set(os.listdir(destination.artifacts_fd)) == set(destination.artifacts), "output inventory differs")
+@@ -686,45 +920,65 @@
+ 
+ class SafeParser(argparse.ArgumentParser):
+     def error(self, message):
+-        raise ValueError("argument shape differs")
++        raise ArgumentRefusal("argument shape differs")
+ 
+ 
+ def main(arguments=None):
+-    parser = SafeParser(allow_abbrev=False)
+-    parser.add_argument("--mode", choices=("acquire", "verify"), required=True)
+-    parser.add_argument("--requirement-index", type=int, required=True)
+-    parser.add_argument("--git", type=Path)
+-    parser.add_argument("--ca-file", type=Path)
+-    parser.add_argument("--bundle-root", type=Path)
+-    parser.add_argument("--receipt-sha256")
+-    args = parser.parse_args(arguments)
+-    require(os.environ.get("OMUX_EXECUTION_GUARD"), "contained Git input context required")
+-    budget = Budget()
+-    requirement = selected_requirement(args.requirement_index, budget)
+-    if args.mode == "verify":
+-        require(args.git is None and args.ca_file is None and args.bundle_root is not None
+-                and args.receipt_sha256 is not None, "offline verification arguments differ")
+-        offline_verify(retained_git_location(args.bundle_root), args.receipt_sha256, requirement, budget)
+-        print(json.dumps({"status": "verified-git-tree-input", "sdk_compilation_admitted": False}))
+-        return
+-    require(args.bundle_root is None and args.receipt_sha256 is None and args.git is not None
+-            and args.ca_file is not None and immutable_file(args.git) == GIT
+-            and immutable_file(args.ca_file) == PINNED_CA, "Git acquisition tool or argument pins differ")
+-    with ExitStack() as stack:
+-        worker = GitOutput(Path(os.environ["TEST_TMPDIR"]), budget, "private-worker")
+-        stack.callback(worker.close)
+-        material = acquire(requirement, worker, budget, PINNED_CA)
+-        require(selected_requirement(args.requirement_index, budget) == requirement,
+-                "source-derived requirement changed during acquisition")
+-        destination = GitOutput(Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]), budget)
+-        stack.callback(destination.close)
+-        report, digest = export(requirement, material, destination, budget)
+-    print(json.dumps({"receipt_sha256": digest, "files": len(report["inventory"]), "sdk_compilation_admitted": False}))
++    progress = Progress()
++    progress.enter("arguments")
++    try:
++        parser = SafeParser(prog="codex-git-inputs", allow_abbrev=False)
++        parser.add_argument("--mode", choices=("acquire", "verify"), required=True)
++        parser.add_argument("--requirement-index", type=int, required=True)
++        parser.add_argument("--git", type=Path)
++        parser.add_argument("--ca-file", type=Path)
++        parser.add_argument("--bundle-root", type=Path)
++        parser.add_argument("--receipt-sha256")
++        args = parser.parse_args(arguments)
++        require(os.environ.get("OMUX_EXECUTION_GUARD"), "contained Git input context required")
++        progress.enter("producer-context")
++        # Acquisition alone is clipped to its independently declared Bazel
++        # target. The offline verifier keeps the prior library budget policy.
++        budget = (ProducerBudget(os.environ, PRODUCER_STARTED, progress)
++                  if args.mode == "acquire" else Budget())
++        budget.progress = progress
++        enter(budget, "source-authority")
++        requirement = selected_requirement(args.requirement_index, budget)
++        if args.mode == "verify":
++            require(args.git is None and args.ca_file is None and args.bundle_root is not None
++                    and args.receipt_sha256 is not None, "offline verification arguments differ")
++            enter(budget, "offline-verification")
++            offline_verify(retained_git_location(args.bundle_root), args.receipt_sha256, requirement, budget)
++            print(json.dumps({"status": "verified-git-tree-input", "sdk_compilation_admitted": False}))
++            return
++        enter(budget, "tool-authority")
++        require(args.bundle_root is None and args.receipt_sha256 is None and args.git is not None
++                and args.ca_file is not None and immutable_file(args.git) == GIT
++                and immutable_file(args.ca_file) == PINNED_CA, "Git acquisition tool or argument pins differ")
++        with ExitStack() as stack:
++            enter(budget, "worker-custody")
++            worker = GitOutput(Path(os.environ["TEST_TMPDIR"]), budget, "private-worker")
++            stack.callback(worker.close)
++            material = acquire(requirement, worker, budget, PINNED_CA)
++            enter(budget, "source-revalidation")
++            require(selected_requirement(args.requirement_index, budget) == requirement,
++                    "source-derived requirement changed during acquisition")
++            enter(budget, "output-custody")
++            destination = GitOutput(Path(os.environ["TEST_UNDECLARED_OUTPUTS_DIR"]), budget)
++            stack.callback(destination.close)
++            report, digest = export(requirement, material, destination, budget)
++        print(json.dumps({"receipt_sha256": digest, "files": len(report["inventory"]), "sdk_compilation_admitted": False}))
+ 
++    except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError, OverflowError,
++            tarfile.TarError, subprocess.SubprocessError) as error:
++        if isinstance(error, GitRefusal):
++            raise
++        raise GitRefusal(progress.phase, refusal_category(error)) from None
+ 
++
+ if __name__ == "__main__":
+     try:
+         main()
+-    except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError, OverflowError,
+-            tarfile.TarError, subprocess.SubprocessError):
+-        raise SystemExit("Git input refused: source selection, object proof, custody or bound mismatch")
++    except GitRefusal as error:
++        emit_refusal(Progress(), error)
++        raise SystemExit(1)
+diff --git a/tools/codex_git_inputs_test.py b/tools/codex_git_inputs_test.py
+--- a/tools/codex_git_inputs_test.py
++++ b/tools/codex_git_inputs_test.py
+@@ -1,6 +1,6 @@
+ """Modeled acquisition and real SHA1 object/tar invariants; no subprocess runs."""
+ 
+-from contextlib import ExitStack
++from contextlib import ExitStack, contextmanager
+ import hashlib
+ import io
+ import json
+@@ -497,7 +497,7 @@
+         self.assertNotIn("GIT_CONFIG_COUNT", environment)
+         self.assertEqual(environment["GIT_SSL_CAINFO"], str(git.PINNED_CA))
+ 
+-    def test_modeled_child_failure_kills_only_new_owned_group(self):
++    def test_drained_final_wait_timeout_never_signals_group(self):
+         child = MagicMock()
+         child.pid = 123
+         child.wait.side_effect = subprocess.TimeoutExpired("fixed command", 1)
+@@ -509,10 +509,13 @@
+                 git, "owned_group", return_value=(1, [123])), patch.object(
+                 git.os, "waitid", return_value=SimpleNamespace(si_pid=123)), patch.object(git.os, "killpg") as kill:
+             popen.return_value = child
+-            selectors.return_value.__enter__.return_value = selector
+-            with self.assertRaises(subprocess.TimeoutExpired):
++            selectors.return_value = selector
++            with self.assertRaises(git.GitRefusal) as raised:
+                 git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
+-            kill.assert_called_once_with(123, git.signal.SIGKILL)
++            self.assertEqual((raised.exception.category, raised.exception.cleanup),
++                             ("cleanup-deadline", "cleanup-deadline"))
++            kill.assert_not_called()
++            self.assertEqual(child.wait.call_count, 2)
+             kwargs = popen.call_args.kwargs
+             self.assertTrue(kwargs["start_new_session"])
+             self.assertEqual(kwargs["umask"], 0o077)
+@@ -542,7 +545,7 @@
+                 Path, "read_text", return_value=stat_text(123, 123, 50)), patch.object(
+                 git, "owned_group", group), patch.object(git.os, "waitid", observe), patch.object(
+                 git, "worker_disk"), patch.object(git.time, "sleep"), patch.object(git.os, "killpg") as kill:
+-            selectors.return_value.__enter__.return_value = selector
++            selectors.return_value = selector
+             kill.side_effect = lambda *args: events.append("kill-owned-group")
+             with self.assertRaises(ValueError):
+                 git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
+@@ -552,5 +555,351 @@
+             child.poll.assert_not_called()
+ 
+ 
++
++class DeadlineAndDiagnosticTests(unittest.TestCase):
++    @contextmanager
++    def modeled_transport(self):
++        child, selector = MagicMock(), MagicMock()
++        child.pid = 123
++        child.wait.return_value = 0
++        selector.get_map.return_value = {}
++        with ExitStack() as stack:
++            stack.enter_context(patch.object(git.subprocess, "Popen", return_value=child))
++            factory = stack.enter_context(patch.object(
++                git.selectors, "DefaultSelector", return_value=selector))
++            stack.enter_context(patch.object(
++                Path, "read_text", return_value=stat_text(123, 123, 50)))
++            stack.enter_context(patch.object(git, "owned_group", return_value=(1, [123])))
++            stack.enter_context(patch.object(
++                git.os, "waitid", return_value=SimpleNamespace(si_pid=123)))
++            stack.enter_context(patch.object(git, "worker_disk"))
++            kill = stack.enter_context(patch.object(git.os, "killpg"))
++            yield child, selector, factory, kill
++
++    def test_buffer_allocation_failure_precedes_spawn(self):
++        with self.modeled_transport() as (child, selector, factory, kill), patch.object(
++                git, "bytearray", side_effect=MemoryError(), create=True):
++            with self.assertRaises(MemoryError):
++                git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++            git.subprocess.Popen.assert_not_called()
++            factory.assert_not_called()
++            kill.assert_not_called()
++            child.wait.assert_not_called()
++            child.stdin.close.assert_not_called()
++            child.stdout.close.assert_not_called()
++            child.stderr.close.assert_not_called()
++
++    def test_immediate_postspawn_setup_failure_terminates_reaps_and_releases_all_pipes(self):
++        with self.modeled_transport() as (child, selector, factory, kill), patch.object(
++                git, "process_record", side_effect=MemoryError()):
++            with self.assertRaises(MemoryError):
++                git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++            git.subprocess.Popen.assert_called_once()
++            kill.assert_called_once_with(123, git.signal.SIGKILL)
++            child.wait.assert_called_once()
++            timeout = child.wait.call_args.kwargs["timeout"]
++            self.assertGreaterEqual(timeout, 0)
++            self.assertLessEqual(timeout, git.CLEANUP_RESERVE)
++            child.stdin.close.assert_called_once()
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++            factory.assert_not_called()
++            child.poll.assert_not_called()
++
++    def test_interrupt_after_internal_reap_never_signals_and_releases_every_descriptor(self):
++        with self.modeled_transport() as (child, selector, factory, kill):
++            events = []
++            child.returncode = None
++            def wait(*, timeout):
++                self.assertGreaterEqual(timeout, 0)
++                self.assertLessEqual(timeout, git.CLEANUP_RESERVE)
++                events.append("bounded-wait")
++                if child.returncode is None:
++                    child.returncode = 0
++                    events.append("internally-reaped")
++                    raise KeyboardInterrupt()
++                self.assertEqual(child.returncode, 0)
++                return child.returncode
++            child.wait.side_effect = wait
++            with self.assertRaises(KeyboardInterrupt):
++                git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++            self.assertEqual(events, ["bounded-wait", "internally-reaped", "bounded-wait"])
++            kill.assert_not_called()
++            self.assertEqual(child.wait.call_count, 2)
++            self.assertEqual(child.stdin.close.call_count, 2)
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++            selector.close.assert_called_once()
++            child.poll.assert_not_called()
++
++    def test_pipe_release_errors_preserve_deadline_and_prior_cleanup_failure(self):
++        with self.modeled_transport() as (child, selector, factory, kill), patch.object(
++                git, "owned_group", side_effect=git.DeadlineRefusal("synthetic private work")):
++            child.wait.side_effect = subprocess.TimeoutExpired("synthetic private argv", 1)
++            child.stdout.close.side_effect = OSError("synthetic private stdout")
++            child.stderr.close.side_effect = OSError("synthetic private stderr")
++            with self.assertRaises(git.GitRefusal) as raised:
++                git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++            self.assertEqual((raised.exception.category, raised.exception.cleanup),
++                             ("deadline", "cleanup-deadline"))
++            kill.assert_called_once_with(123, git.signal.SIGKILL)
++            child.wait.assert_called_once()
++            self.assertEqual(child.stdin.close.call_count, 2)
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++            selector.close.assert_called_once()
++            self.assertNotIn("synthetic", str(raised.exception))
++
++    def test_pipe_release_failure_refuses_success_and_attempts_every_descriptor(self):
++        with self.modeled_transport() as (child, selector, factory, kill):
++            child.stdin.close.side_effect = [None, OSError("synthetic private stdin")]
++            child.stdout.close.side_effect = OSError("synthetic private stdout")
++            child.stderr.close.side_effect = OSError("synthetic private stderr")
++            with self.assertRaises(git.GitRefusal) as raised:
++                git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++            self.assertEqual((raised.exception.category, raised.exception.cleanup), ("io", None))
++            kill.assert_not_called()
++            child.wait.assert_called_once()
++            self.assertEqual(child.stdin.close.call_count, 2)
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++            selector.close.assert_called_once()
++
++    def test_closed_diagnostic_stream_cannot_skip_owned_termination_or_reap(self):
++        stream = io.StringIO()
++        progress = git.Progress(stream)
++        progress.phase = "git-fetch"
++        stream.close()
++        budget = git.Budget()
++        budget.progress = progress
++        with self.modeled_transport() as (child, selector, factory, kill), patch.object(
++                git, "owned_group", side_effect=git.DeadlineRefusal("fixed")):
++            with self.assertRaises(git.GitRefusal) as raised:
++                git.run_git(["fetch"], "/owned", 999, budget, git.PINNED_CA)
++            self.assertEqual((raised.exception.phase, raised.exception.category,
++                              raised.exception.cleanup), ("git-fetch", "deadline", "contract"))
++            kill.assert_called_once_with(123, git.signal.SIGKILL)
++            child.wait.assert_called_once()
++            self.assertEqual(child.stdin.close.call_count, 2)
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++            self.assertEqual(progress.phase, "git-fetch")
++
++    def test_selector_constructor_register_and_release_failures_unwind_owned_resources(self):
++        for boundary in ("constructor", "register", "release"):
++            with self.subTest(boundary=boundary), self.modeled_transport() as (
++                    child, selector, factory, kill):
++                if boundary == "constructor":
++                    factory.side_effect = OSError("synthetic private constructor")
++                elif boundary == "register":
++                    selector.register.side_effect = OSError("synthetic private registration")
++                else:
++                    selector.get_map.side_effect = git.DeadlineRefusal("synthetic private work")
++                    selector.close.side_effect = OSError("synthetic private release")
++                    child.stdout.close.side_effect = PermissionError("synthetic private pipe")
++                expected = git.GitRefusal if boundary == "release" else OSError
++                with self.assertRaises(expected) as raised:
++                    git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++                if boundary == "release":
++                    self.assertEqual((raised.exception.category, raised.exception.cleanup),
++                                     ("deadline", "io"))
++                else:
++                    self.assertEqual(git.refusal_category(raised.exception), "io")
++                kill.assert_called_once_with(123, git.signal.SIGKILL)
++                child.wait.assert_called_once()
++                self.assertEqual(child.stdin.close.call_count, 2)
++                child.stdout.close.assert_called_once()
++                child.stderr.close.assert_called_once()
++                if boundary == "constructor":
++                    selector.close.assert_not_called()
++                else:
++                    selector.close.assert_called_once()
++
++    def test_owned_signal_failure_still_attempts_original_bounded_wait_and_pipe_release(self):
++        with self.modeled_transport() as (child, selector, factory, kill), patch.object(
++                git, "owned_group", side_effect=git.DeadlineRefusal("fixed")):
++            kill.side_effect = PermissionError("synthetic private signal")
++            child.wait.side_effect = subprocess.TimeoutExpired("synthetic private argv", 1)
++            with self.assertRaises(git.GitRefusal) as raised:
++                git.run_git(["fetch"], "/owned", 999, git.Budget(), git.PINNED_CA)
++            self.assertEqual((raised.exception.category, raised.exception.cleanup),
++                             ("deadline", "permission"))
++            kill.assert_called_once_with(123, git.signal.SIGKILL)
++            child.wait.assert_called_once()
++            self.assertEqual(child.stdin.close.call_count, 2)
++            child.stdout.close.assert_called_once()
++            child.stderr.close.assert_called_once()
++
++    def test_producer_deadline_clips_observed_and_declared_limits(self):
++        with patch.object(git.time, "monotonic", return_value=101):
++            for observed, deadline in (("900", 940), ("1200", 940), ("600", 640)):
++                budget = git.ProducerBudget({"TEST_TIMEOUT": observed}, 100, git.Progress(io.StringIO()))
++                self.assertEqual(budget.deadline, deadline)
++                self.assertEqual(budget.read_bytes, 0)
++                self.assertEqual(git.declared_budgets()["seconds"], 1200)
++                self.assertEqual(git.declared_budgets()["per_command_seconds"], 600)
++
++    def test_missing_malformed_or_reserveless_timeout_refuses(self):
++        with patch.object(git.time, "monotonic", return_value=100):
++            for observed in (None, "", "0", "-1", "0900", "900.0", "1e3", "9999999", 900, "70"):
++                environment = {} if observed is None else {"TEST_TIMEOUT": observed}
++                with self.subTest(kind=type(observed).__name__), self.assertRaises(git.ArgumentRefusal):
++                    git.ProducerBudget(environment, 100, git.Progress(io.StringIO()))
++
++    def test_elapsed_import_time_does_not_renew_producer_clock(self):
++        with patch.object(git.time, "monotonic", return_value=941):
++            with self.assertRaises(git.DeadlineRefusal):
++                git.ProducerBudget({"TEST_TIMEOUT": "900"}, 100, git.Progress(io.StringIO()))
++
++    def test_command_budget_shares_accounting_and_refuses_original_deadline(self):
++        now = [100]
++        with patch.object(git.time, "monotonic", side_effect=lambda: now[0]):
++            parent = git.Budget(seconds=50)
++            command = git.CommandBudget(parent, 140)
++            command.tick(7)
++            self.assertEqual(parent.read_bytes, 7)
++            now[0] = 141
++            with self.assertRaises(git.DeadlineRefusal):
++                command.tick(9)
++            self.assertEqual(parent.read_bytes, 7)
++            self.assertEqual(parent.deadline, 150)
++
++    def test_expired_pure_helpers_refuse_before_processing(self):
++        repository = MiniRepository()
++        material = repository.material()
++        tree, records, proof, blobs, _ = material
++        for function, arguments in (
++                (git.tree_entries, (b"",)),
++                (git.resolve_links, (records, blobs)),
++                (git.proof_bytes, (proof,)),
++                (git.parse_proof, (git.proof_bytes(proof),)),
++                (git.canonical_tar, (records, blobs))):
++            budget = SimpleNamespace(tick=MagicMock(side_effect=git.DeadlineRefusal("fixed")))
++            with self.subTest(helper=function.__name__), self.assertRaises(git.DeadlineRefusal):
++                function(*arguments, budget=budget)
++            budget.tick.assert_called_once_with()
++
++    def test_original_command_deadline_clips_cleanup_wait(self):
++        child, selector = MagicMock(), MagicMock()
++        child.pid = 123
++        child.wait.return_value = 0
++        selector.get_map.return_value = {}
++        now = [100]
++        def observe(*unused):
++            now[0] = 141
++            return SimpleNamespace(si_pid=123)
++        def group(group_id, start, budget):
++            budget.tick()
++            return 1, [123]
++        with patch.object(git.time, "monotonic", side_effect=lambda: now[0]):
++            budget = git.Budget(seconds=50)
++            with patch.object(git.subprocess, "Popen", return_value=child), patch.object(
++                    git.selectors, "DefaultSelector") as selectors, patch.object(
++                    Path, "read_text", return_value=stat_text(123, 123, 50)), patch.object(
++                    git, "owned_group", group), patch.object(git.os, "waitid", observe), patch.object(
++                    git, "worker_disk"), patch.object(git.os, "killpg") as kill:
++                selectors.return_value = selector
++                with self.assertRaises(git.DeadlineRefusal):
++                    git.run_git(["fetch"], "/owned", 999, budget, git.PINNED_CA)
++                kill.assert_called_once_with(123, git.signal.SIGKILL)
++                child.wait.assert_called_once_with(timeout=9)
++                child.poll.assert_not_called()
++                self.assertEqual(budget.deadline, 150)
++
++    def test_cleanup_logging_failure_cannot_skip_owned_termination(self):
++        child, selector = MagicMock(), MagicMock()
++        child.pid = 123
++        child.wait.return_value = 0
++        selector.get_map.return_value = {}
++        progress = MagicMock()
++        progress.phase = "git-fetch"
++        progress.enter.side_effect = OSError("synthetic private diagnostic")
++        def group(*unused):
++            raise git.DeadlineRefusal("fixed")
++        with patch.object(git.time, "monotonic", return_value=100):
++            budget = git.Budget(seconds=50)
++            budget.progress = progress
++            with patch.object(git.subprocess, "Popen", return_value=child), patch.object(
++                    git.selectors, "DefaultSelector") as selectors, patch.object(
++                    Path, "read_text", return_value=stat_text(123, 123, 50)), patch.object(
++                    git, "owned_group", group), patch.object(git.os, "waitid",
++                    return_value=SimpleNamespace(si_pid=123)), patch.object(git.os, "killpg") as kill:
++                selectors.return_value = selector
++                with self.assertRaises(git.GitRefusal) as raised:
++                    git.run_git(["fetch"], "/owned", 999, budget, git.PINNED_CA)
++                self.assertEqual((raised.exception.phase, raised.exception.category,
++                                  raised.exception.cleanup), ("git-fetch", "deadline", "io"))
++                kill.assert_called_once_with(123, git.signal.SIGKILL)
++                child.wait.assert_called_once_with(timeout=10)
++                self.assertEqual(progress.phase, "git-fetch")
++
++    def test_progress_is_closed_bounded_and_refusals_are_private(self):
++        stream = io.StringIO()
++        progress = git.Progress(stream)
++        for phase in git.PHASES:
++            progress.enter(phase)
++            progress.enter(phase)
++        git.emit_refusal(progress, ValueError("synthetic private path remote and object"))
++        lines = [json.loads(line) for line in stream.getvalue().splitlines()]
++        self.assertEqual(lines[:-1], [{"git_input_phase": phase} for phase in git.PHASES])
++        self.assertEqual(lines[-1], {"status": "git-input-refused", "phase": "git-cleanup",
++                                    "category": "contract", "cleanup": None})
++        self.assertNotIn("synthetic", stream.getvalue())
++        original = stream.getvalue()
++        with self.assertRaises(ValueError):
++            progress.enter("synthetic private invalid phase")
++        self.assertEqual(stream.getvalue(), original)
++
++    def test_primary_and_cleanup_categories_do_not_emit_exception_text(self):
++        stream = io.StringIO()
++        error = git.GitRefusal("object-inventory", "deadline", "cleanup-deadline")
++        git.emit_refusal(git.Progress(stream), error)
++        self.assertEqual(json.loads(stream.getvalue()), {
++            "status": "git-input-refused", "phase": "object-inventory",
++            "category": "deadline", "cleanup": "cleanup-deadline"})
++        for value, category in ((git.ArgumentRefusal("private"), "arguments"),
++                                (git.DeadlineRefusal("private"), "deadline"),
++                                (subprocess.TimeoutExpired("private argv", 1), "cleanup-deadline"),
++                                (PermissionError("private path"), "permission"),
++                                (FileNotFoundError("private path"), "missing-input"),
++                                (OSError("private"), "io")):
++            self.assertEqual(git.refusal_category(value), category)
++
++    def test_offline_verifier_keeps_existing_budget_without_producer_timeout(self):
++        requirement = {"remote": "synthetic", "commit": "synthetic"}
++        with patch.dict(os.environ, {"OMUX_EXECUTION_GUARD": "synthetic"}), patch.object(
++                git, "ProducerBudget") as producer_budget, patch.object(
++                git, "selected_requirement", return_value=requirement), patch.object(
++                git, "retained_git_location", return_value=Path("/retained")), patch.object(
++                git, "offline_verify") as verify, patch.object(
++                git.sys, "stderr", io.StringIO()), patch("sys.stdout", io.StringIO()):
++            git.main(["--mode", "verify", "--requirement-index", "0",
++                      "--bundle-root", "/retained", "--receipt-sha256", "0" * 64])
++            producer_budget.assert_not_called()
++            verify.assert_called_once()
++            self.assertIsInstance(verify.call_args.args[3], git.Budget)
++
++    def test_argument_and_source_refusals_never_start_acquisition(self):
++        with patch.dict(os.environ, {"OMUX_EXECUTION_GUARD": "synthetic",
++                                    "TEST_TIMEOUT": "900"}), patch.object(
++                git, "PRODUCER_STARTED", 100), patch.object(
++                git.time, "monotonic", return_value=101), patch.object(
++                git.sys, "stderr", io.StringIO()) as stream, patch.object(
++                git, "acquire") as acquire, patch.object(
++                git, "selected_requirement", side_effect=ValueError("synthetic private source")) as selected:
++            with self.assertRaises(git.GitRefusal) as raised:
++                git.main(["--mode", "acquire", "--requirement-index", "0"])
++            self.assertEqual((raised.exception.phase, raised.exception.category),
++                             ("source-authority", "contract"))
++            selected.assert_called_once()
++            acquire.assert_not_called()
++            self.assertNotIn("synthetic", stream.getvalue())
++            with self.assertRaises(git.GitRefusal) as raised:
++                git.main(["--unknown-synthetic-private-argument"])
++            self.assertEqual((raised.exception.phase, raised.exception.category),
++                             ("arguments", "arguments"))
++
++
++
+ if __name__ == "__main__":
+     unittest.main()

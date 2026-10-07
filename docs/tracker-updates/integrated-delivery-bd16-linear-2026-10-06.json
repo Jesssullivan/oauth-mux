@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "pre_action_factual_tracker_reconciliation",
+  "authority": "User-authorized factual Linear reconciliation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "evidence": "docs/tracker-updates/integrated-delivery-bd16-2026-10-06.json",
+  "issues": [
+    {
+      "issue": "TIN-2057",
+      "before_status": "In Progress",
+      "body": "2026-10-06 19:01 UTC factual implementation checkpoint. Actual contained epoch bd163b20-775b-440e-9be5-484bcad20767 finished controller/workload3/3 with empty descendants and preserved evidence:15 of16 targets PASS, including mutation/storage/reliability commits, docs, format and all247 existing source-lifecycle actor cases (Debug,224.7s). The new250-case native-removal Debug suite TIMEOUT300s; six of its eight new cases reported OK, while zero-owner pressure reported NativeTimeout and registered pressure TestUnexpectedResult. Full native-removal proof remains unpassed. A subsequent source epoch adds bounded pressure diagnostics and declares that new actor test in ReleaseSafe, matching omuxd/CLI; assertions, native/test deadlines and aggregate resource limits are unchanged and that rerun is pending. No installed resume/handoff, achieved SLO/SLA, support promotion or acceptance closure. Exact evidence: docs/tracker-updates/integrated-delivery-bd16-2026-10-06.json; implementation: src/reliability_lifecycle_native_removal_witness.zig, src/reliability_lifecycle_native_removal.zig, src/engine.zig, src/mutation_authority.zig. Original objective stays active/incomplete with five historical scoped gates passed/six open. No issue scope/state change."
+    },
+    {
+      "issue": "TIN-2063",
+      "before_status": "In Progress",
+      "body": "2026-10-06 factual installation/dependency checkpoint. Actual bd163b20-775b-440e-9be5-484bcad20767 passed15/16 fresh targets: shared evaluator enclosing-deadline/independent-unwind fixes and exact HOME HTTP successor-shard admission/retention are unit-verified, as are storage/source-lifecycle regressions; the separate new native Debug suite timed out, so the whole batch is not a success. Source capture is a finite selected inventory only and does not verify caller Git metadata or a compiled artifact/source closure. Sole actual HM600 measurement e3b9e0bc-f473-49f5-be46-4f23e2776a1f is live in the previously initialized HOME allocation and original coordinator under unchanged600/1200 bounds; no successful source pair/evaluation/activation is inferred. First pinned Git0 acquisition49a5bc98 ended BazelTIMEOUT900.1s with empty descendants and no usable input receipt; source review identified its1200-vs900 enclosing deadline mismatch, with a separate unapplied correction under review. Yoga transport remains unapplied/unqualified; destination and human toolbar proof are unrun. Receipts: docs/tracker-updates/integrated-delivery-bd16-2026-10-06.json and integrated-delivery-git49-2026-10-06.json. No acceptance gate or issue state/scope change."
+    }
+  ],
+  "writes_completed": true,
+  "new_acceptance_gate_closed": false,
+  "readbacks": [
+    {
+      "issue": "TIN-2057",
+      "comment_id": "860ab243-3b33-4573-b281-0b4e236c92d5",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-2063",
+      "comment_id": "42823a1e-ab83-4498-b2e2-42df3f0bffc8",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    }
+  ],
+  "readbacks_at": "2026-10-06 19:14:50 UTC"
+}

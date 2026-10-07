@@ -1,0 +1,755 @@
+diff --git a/delivery/codex_direct_exec.py b/delivery/codex_direct_exec.py
+new file mode 100644
+--- /dev/null
++++ b/delivery/codex_direct_exec.py
+@@ -0,0 +1,481 @@
++"""Installed direct-exec relocation observation; never actor selection authority.
++
++R-HOOK-CONVERGENCE-20261004 / R-N13. Independently selected raw input digests and
++byte counts are checked, then the existing artifact-byte/reference oracle runs,
++then copied into an exclusive owned root. Every changed ELF byte has a new
++receipt. The old runtime verifier/profile is unchanged. No native home, grant,
++session or history is read. Actor selection and live peer attribution remain
++absent; callers must retain their independently selected input/action authority.
++"""
++from __future__ import annotations
++
++import ctypes
++import hashlib
++import json
++import os
++from pathlib import Path
++import select
++import shlex
++import stat
++import subprocess
++
++import codex_runtime_selection as selection
++
++runtime = selection.runtime
++PROFILE = "linux-installed-direct-exec-v1"
++RECEIPT = "codex-installed-runtime.json"
++BACKEND = runtime.BACKEND
++LOADER = selection.LOADER
++LAUNCHER = selection.LAUNCHER
++MAX_TOOL_BYTES = 128 * 1024 * 1024
++
++
++def require(condition, message):
++    if not condition:
++        raise ValueError(message)
++
++
++def digest(payload):
++    return hashlib.sha256(payload).hexdigest()
++
++
++def device(info):
++    # Match src/platform/file_metadata.zig normalized Linux major/minor encoding.
++    return (os.major(info.st_dev) << 32) | os.minor(info.st_dev)
++
++
++def file_state(info):
++    return (device(info), info.st_ino, info.st_uid, info.st_gid,
++            stat.S_IMODE(info.st_mode), info.st_nlink, info.st_size,
++            info.st_mtime_ns, info.st_ctime_ns)
++
++
++def root_identity(info):
++    return (device(info), info.st_ino, info.st_uid, info.st_gid,
++            stat.S_IMODE(info.st_mode))
++
++
++def read_fd(fd, maximum):
++    before = os.fstat(fd)
++    require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
++            and 0 < before.st_size <= maximum, "direct-exec file custody differs")
++    result = bytearray()
++    while len(result) < before.st_size:
++        chunk = os.pread(fd, min(65536, before.st_size - len(result)), len(result))
++        require(chunk, "direct-exec file changed")
++        result.extend(chunk)
++    require(not os.pread(fd, 1, len(result))
++            and file_state(before) == file_state(os.fstat(fd)), "direct-exec file changed")
++    return bytes(result), before
++
++
++def open_member(root, name):
++    runtime.safe_name(name)
++    parts = name.split("/")
++    parent = os.dup(root)
++    try:
++        for part in parts[:-1]:
++            following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
++                                dir_fd=parent)
++            os.close(parent)
++            parent = following
++            info = os.fstat(parent)
++            require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
++                    "direct-exec installed directory differs")
++        return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
++                       dir_fd=parent)
++    finally:
++        os.close(parent)
++
++
++def walk_directory(path):
++    require(path.is_absolute() and str(path) == os.path.normpath(str(path))
++            and ".." not in path.parts, "direct-exec root must be canonical absolute")
++    current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
++    try:
++        for part in path.parts[1:]:
++            following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
++                                dir_fd=current)
++            os.close(current)
++            current = following
++            info = os.fstat(current)
++            sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
++            require(info.st_uid in (0, os.getuid())
++                    and (not info.st_mode & 0o022 or sticky_root),
++                    "direct-exec ancestor ownership differs")
++        result = current
++        current = -1
++        return result
++    finally:
++        if current >= 0:
++            os.close(current)
++
++
++def create_root(path):
++    parent = walk_directory(path.parent)
++    try:
++        os.mkdir(path.name, 0o700, dir_fd=parent)  # Exclusive: never replace an existing install.
++        descriptor = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
++                             dir_fd=parent)
++    finally:
++        os.close(parent)
++    info = os.fstat(descriptor)
++    try:
++        require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
++                "direct-exec root ownership differs")
++        return descriptor
++    except BaseException:
++        os.close(descriptor)
++        raise
++
++
++def write_member(root, name, payload, mode):
++    runtime.safe_name(name)
++    parts = name.split("/")
++    parent = os.dup(root)
++    try:
++        for part in parts[:-1]:
++            try:
++                os.mkdir(part, 0o700, dir_fd=parent)
++            except FileExistsError:
++                pass
++            following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
++                                dir_fd=parent)
++            os.close(parent)
++            parent = following
++            info = os.fstat(parent)
++            require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
++                    "direct-exec installed directory differs")
++        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
++                     mode, dir_fd=parent)
++        try:
++            os.fchmod(fd, mode)
++            with os.fdopen(os.dup(fd), "wb") as stream:
++                stream.write(payload)
++                stream.flush()
++                os.fsync(stream.fileno())
++        finally:
++            os.close(fd)
++        os.fsync(parent)
++    finally:
++        os.close(parent)
++
++
++def launcher(prefix):
++    # Fixed absolute deployment root; moving this installation is a new transformation.
++    return ("#!/bin/sh\nset -eu\n"
++            "unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH LD_PROFILE LD_DEBUG LD_DEBUG_OUTPUT "
++            "LD_USE_LOAD_BIAS LD_ORIGIN_PATH GLIBC_TUNABLES\n"
++            "SSL_CERT_FILE=" + shlex.quote(str(prefix / runtime.CA)) + "\nexport SSL_CERT_FILE\n"
++            "exec " + shlex.quote(str(prefix / BACKEND)) + ' "$@"\n').encode()
++
++
++class Tool:
++    """Held declared executable. Expected digest must be independently selected."""
++    def __init__(self, path, expected_sha256):
++        selection._hash(expected_sha256)
++        self.fd = os.open(Path(path).resolve(strict=True),
++                          os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
++        try:
++            payload, self.info = read_fd(self.fd, MAX_TOOL_BYTES)
++            require(self.info.st_uid in (0, os.getuid())
++                    and not self.info.st_mode & 0o022 and self.info.st_mode & 0o111
++                    and digest(payload) == expected_sha256, "declared patchelf identity differs")
++            # Refuse script wrappers that could dispatch an unbound second executable.
++            runtime.portable.elf_metadata(payload, max_bytes=MAX_TOOL_BYTES)
++            self.sha256 = expected_sha256
++        except BaseException:
++            os.close(self.fd)
++            raise
++
++    def close(self):
++        os.close(self.fd)
++
++    def run(self, root, options, name):
++        require(file_state(self.info) == file_state(os.fstat(self.fd)), "declared patchelf changed")
++        try:
++            subprocess.run(["/proc/self/fd/" + str(self.fd), *options,
++                            "/proc/self/fd/" + str(root) + "/" + name],
++                           pass_fds=(self.fd, root), stdin=subprocess.DEVNULL,
++                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++                           timeout=60, check=True,
++                           env={"LC_ALL": "C", "PATH": "/nonexistent"})
++        except (OSError, subprocess.SubprocessError) as error:
++            raise ValueError("declared direct-exec relocation failed") from error
++        require(file_state(self.info) == file_state(os.fstat(self.fd)), "declared patchelf changed")
++
++
++class Installation:
++    """Retains installed root and exact bytes; conveys no actor or live-peer authority."""
++    def __init__(self, prefix, descriptor, record, encoded):
++        self.prefix, self.fd, self.record, self.encoded = prefix, descriptor, record, encoded
++        receipt_fd = open_member(descriptor, RECEIPT)
++        try:
++            self.receipt_state = file_state(os.fstat(receipt_fd))
++        finally:
++            os.close(receipt_fd)
++
++    def close(self):
++        os.close(self.fd)
++
++    def recheck(self):
++        expected = self.record["installation"]
++        require(root_identity(os.fstat(self.fd)) == (
++            expected["directory_device"], expected["directory_inode"],
++            expected["uid"], expected["gid"], expected["mode"]),
++            "direct-exec installation root changed")
++        current = walk_directory(self.prefix)
++        try:
++            require(root_identity(os.fstat(current)) == root_identity(os.fstat(self.fd)),
++                    "direct-exec installation root replaced")
++        finally:
++            os.close(current)
++        for name, record in self.record["files"].items():
++            fd = open_member(self.fd, name)
++            try:
++                payload, info = read_fd(fd, runtime.MAX_BACKEND_BYTES if name == BACKEND else runtime.portable._MAX_FILE)
++                require(file_state(info) == tuple(record["state"])
++                        and digest(payload) == record["sha256"] and len(payload) == record["bytes"],
++                        "direct-exec installed payload changed")
++                reopened = open_member(self.fd, name)
++                try:
++                    require(file_state(info) == file_state(os.fstat(reopened)),
++                            "direct-exec installed payload replaced")
++                finally:
++                    os.close(reopened)
++            finally:
++                os.close(fd)
++        fd = open_member(self.fd, RECEIPT)
++        try:
++            payload, info = read_fd(fd, runtime.MAX_METADATA_BYTES)
++            require(payload == self.encoded and info.st_uid == expected["uid"]
++                    and stat.S_IMODE(info.st_mode) == 0o600
++                    and file_state(info) == self.receipt_state, "direct-exec receipt changed")
++            published = open_member(self.fd, RECEIPT)
++            try:
++                require(file_state(os.fstat(published)) == self.receipt_state,
++                        "direct-exec receipt replaced")
++            finally:
++                os.close(published)
++        finally:
++            os.close(fd)
++
++
++def _relocate_verified(prefix, tool, manifest, files, input_runtime):
++    """Internal transformation, after immutable raw runtime verification."""
++    root = create_root(prefix)
++    try:
++        original = {name: payload for name, payload in files.items()
++                    if name not in (runtime.MANIFEST, LAUNCHER)}
++        require(set(original) == set(manifest["files"]) - {LAUNCHER},
++                "direct-exec input membership differs")
++        libraries = {Path(name).name: name for name in manifest["runtime"]["dependencies"]}
++        require(len(libraries) == len(manifest["runtime"]["dependencies"]),
++                "direct-exec library basenames are ambiguous")
++        for name, payload in original.items():
++            write_member(root, name, payload, manifest["files"][name]["mode"])
++        actions = {}
++        for name, payload in original.items():
++            if name == runtime.CA or name == LOADER:
++                continue
++            before = runtime.portable.elf_metadata(payload, max_bytes=runtime.MAX_BACKEND_BYTES)
++            require(all(needed in libraries for needed in before["needed"]),
++                    "direct-exec dependency is undeclared")
++            options = []
++            for needed in before["needed"]:
++                options.extend(["--replace-needed", needed, str(prefix / libraries[needed])])
++            if name == BACKEND:
++                options.extend(["--set-interpreter", str(prefix / LOADER),
++                                "--set-rpath", "$ORIGIN/../lib"])
++            tool.run(root, options, name)
++            fd = open_member(root, name)
++            try:
++                updated, _ = read_fd(fd, runtime.MAX_BACKEND_BYTES if name == BACKEND else runtime.portable._MAX_FILE)
++            finally:
++                os.close(fd)
++            after = runtime.portable.elf_metadata(updated, max_bytes=runtime.MAX_BACKEND_BYTES)
++            require(after["machine"] == before["machine"]
++                    and sorted(after["needed"]) == sorted(str(prefix / libraries[needed]) for needed in before["needed"])
++                    and after["rpath"] == (["$ORIGIN/../lib"] if name == BACKEND else before["rpath"])
++                    and after["interpreter"] == (str(prefix / LOADER) if name == BACKEND else before["interpreter"]),
++                    "direct-exec ELF transformation differs")
++            actions[name] = options
++        write_member(root, LAUNCHER, launcher(prefix), 0o755)
++        records = {}
++        for name in sorted(manifest["files"]):
++            fd = open_member(root, name)
++            try:
++                value, info = read_fd(fd, runtime.MAX_BACKEND_BYTES if name == BACKEND else runtime.portable._MAX_FILE)
++                require(info.st_uid == os.getuid() and info.st_gid == os.fstat(root).st_gid
++                        and stat.S_IMODE(info.st_mode) == manifest["files"][name]["mode"],
++                        "direct-exec installed file ownership differs")
++                records[name] = {"sha256": digest(value), "bytes": len(value),
++                                 "mode": stat.S_IMODE(info.st_mode), "device": device(info), "inode": info.st_ino,
++                                 "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns,
++                                 "state": list(file_state(info))}
++            finally:
++                os.close(fd)
++        info = os.fstat(root)
++        record = {"schema_version": 1, "kind": "omux-codex-installed-direct-exec",
++                  "launch_profile": PROFILE, "target": "x86_64-linux", "native_support": False,
++                  "input_runtime": input_runtime, "candidate": manifest["candidate"],
++                  "tool": {"sha256": tool.sha256, "actions": actions},
++                  "installation": {"directory_device": device(info), "directory_inode": info.st_ino,
++                                   "uid": info.st_uid, "gid": info.st_gid, "mode": 0o700},
++                  "files": records, "actor_selection": "uncommitted",
++                  "executable_attribution": "unproved"}
++        encoded = (json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
++        require(len(encoded) <= runtime.MAX_METADATA_BYTES, "direct-exec receipt exceeds bound")
++        write_member(root, RECEIPT, encoded, 0o600)
++        os.fsync(root)
++        installation = Installation(prefix, root, record, encoded)
++        installation.recheck()
++        return installation
++    except BaseException:
++        os.close(root)
++        # Failed exclusive roots are quarantined; never recursively delete a changed target.
++        raise
++
++
++def verify_selected_inputs(archive, manifest_bytes, receipt_bytes, expected_runtime_inputs):
++    """Expectation is from retained deployment authority, never incoming receipt fields."""
++    require(isinstance(expected_runtime_inputs, dict)
++            and set(expected_runtime_inputs) == {"archive", "manifest", "runtime_receipt"},
++            "independent direct-exec input selection is required")
++    for name, payload, maximum in (
++            ("archive", archive, runtime.MAX_ARCHIVE_BYTES),
++            ("manifest", manifest_bytes, runtime.MAX_METADATA_BYTES),
++            ("runtime_receipt", receipt_bytes, runtime.MAX_METADATA_BYTES)):
++        expected = expected_runtime_inputs[name]
++        require(isinstance(expected, dict) and set(expected) == {"sha256", "bytes"}
++                and type(expected["bytes"]) is int and 0 < expected["bytes"] <= maximum
++                and type(payload) is bytes and len(payload) == expected["bytes"]
++                and digest(payload) == selection._hash(expected["sha256"]),
++                "independently selected runtime input differs")
++
++
++def install_runtime(archive, manifest_bytes, receipt_bytes, *, prefix, patchelf,
++                    expected_runtime_inputs,
++                    expected_source_receipt_sha256, expected_producer_receipt_sha256,
++                    expected_patchelf_sha256):
++    verify_selected_inputs(archive, manifest_bytes, receipt_bytes, expected_runtime_inputs)
++    qualified = selection.qualify_runtime(archive, manifest_bytes, receipt_bytes,
++        expected_source_receipt_sha256=expected_source_receipt_sha256,
++        expected_producer_receipt_sha256=expected_producer_receipt_sha256)
++    receipt = json.loads(receipt_bytes, object_pairs_hook=runtime.unique_object)
++    manifest, files = runtime.verify_runtime_files(archive, receipt)
++    selected = qualified["selection"]
++    inputs = {"archive_sha256": selected["archive"]["sha256"],
++              "manifest_sha256": selected["manifest_sha256"],
++              "runtime_receipt_sha256": selected["runtime_receipt_sha256"],
++              "source_receipt_sha256": selected["source_receipt_sha256"],
++              "producer_receipt_sha256": selected["producer_receipt_sha256"],
++              "artifact_selection_sha256": qualified["selection_sha256"]}
++    tool = Tool(patchelf, expected_patchelf_sha256)
++    try:
++        return _relocate_verified(Path(prefix), tool, manifest, files, inputs)
++    finally:
++        tool.close()
++
++
++def filesystem_magic(fd):
++    # Exact Linux x86_64 libc ABI only. An oversized, aligned output buffer
++    # avoids defining or depending on the rest of struct statfs.
++    require(os.uname().sysname == "Linux" and os.uname().machine == "x86_64",
++            "unsupported kernel image observation ABI")
++    libc = ctypes.CDLL(None, use_errno=True)
++    call = libc.fstatfs
++    call.argtypes = (ctypes.c_int, ctypes.c_void_p)
++    call.restype = ctypes.c_int
++    result = (ctypes.c_long * 32)()
++    require(call(fd, ctypes.byref(result)) == 0, "kernel image filesystem unavailable")
++    return result[0]
++
++
++def namespace_identity(root, name):
++    fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=root)
++    try:
++        require(filesystem_magic(fd) == 0x6e736673, "native namespace filesystem differs")
++        info = os.fstat(fd)
++        require(info.st_ino != 0, "native namespace inode is absent")
++        return info.st_dev, info.st_ino
++    finally:
++        os.close(fd)
++
++
++def read_proc(root, name):
++    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
++    try:
++        require(filesystem_magic(fd) == 0x9fa0, "native metadata is not procfs")
++        value = os.read(fd, 4097)
++        require(len(value) <= 4096, "native process metadata exceeds bound")
++        return value.decode("ascii").splitlines()
++    finally:
++        os.close(fd)
++
++
++def observe_kernel_backend(installation, peer_pidfd):
++    """Point-in-time OS image identity only, never an exec-incarnation permit.
++
++    peer_pidfd must be held by the in-process socket authenticator (or an owned
++    test launcher). It is never accepted from RPC/receipt/numeric PID claims.
++    PIDFS may survive exec; callers must recheck at every relevant boundary.
++    """
++    installation.recheck()
++    require(filesystem_magic(peer_pidfd) == 0x50494446, "unsupported native PIDFS profile")
++    held = os.fstat(peer_pidfd)
++    require(held.st_ino != 0, "native PIDFS inode is absent")
++    poller = select.poll()
++    poller.register(peer_pidfd, select.POLLIN)
++    require(not poller.poll(0), "native peer departed")
++    proc = os.open("/proc", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
++    check = task = image = installed = -1
++    try:
++        require(filesystem_magic(proc) == 0x9fa0, "native process root is not procfs")
++        lines = read_proc(proc, "self/fdinfo/" + str(peer_pidfd))
++        pid_fields = [line.split(":", 1)[1].strip() for line in lines if line.startswith("Pid:")]
++        require(len(pid_fields) == 1 and pid_fields[0].isdigit() and int(pid_fields[0]) > 0,
++                "native peer PIDFD metadata differs")
++        pid = int(pid_fields[0])
++        check = os.pidfd_open(pid)
++        require(filesystem_magic(check) == 0x50494446
++                and (held.st_dev, held.st_ino) == (os.fstat(check).st_dev, os.fstat(check).st_ino)
++                and not poller.poll(0), "native peer incarnation changed")
++        task = os.open(str(pid), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
++                       dir_fd=proc)
++        require(filesystem_magic(task) == 0x9fa0, "native task directory is not procfs")
++        for name in ("user", "pid"):
++            require(namespace_identity(task, "ns/" + name) == namespace_identity(proc, "self/ns/" + name),
++                    "native peer namespace differs")
++        status = read_proc(task, "status")
++        for field, selected in (("Uid:", os.getuid()), ("Gid:", os.getgid())):
++            entries = [line.split(":", 1)[1].split() for line in status if line.startswith(field)]
++            require(len(entries) == 1 and len(entries[0]) == 4
++                    and all(value.isdigit() and int(value) == selected for value in entries[0]),
++                    "native peer credential differs")
++        image = os.open("exe", os.O_RDONLY | os.O_CLOEXEC, dir_fd=task)
++        installed = open_member(installation.fd, BACKEND)
++        record = installation.record["files"][BACKEND]
++        info = os.fstat(image)
++        require(file_state(info) == tuple(record["state"])
++                and file_state(info) == file_state(os.fstat(installed)),
++                "kernel executable is not installed backend")
++        value, observed = read_fd(image, runtime.MAX_BACKEND_BYTES)
++        require(file_state(observed) == file_state(info) and digest(value) == record["sha256"],
++                "kernel executable is not installed backend")
++        second = os.open("exe", os.O_RDONLY | os.O_CLOEXEC, dir_fd=task)
++        try:
++            require(file_state(os.fstat(second)) == file_state(info) and not poller.poll(0),
++                    "native peer executable changed")
++        finally:
++            os.close(second)
++        installation.recheck()
++        require(not poller.poll(0), "native peer departed")
++        return {"profile": "linux-kernel-backend-image-observation-v1",
++                "pidfs_device": held.st_dev, "pidfs_inode": held.st_ino,
++                "backend_device": device(info), "backend_inode": info.st_ino,
++                "backend_sha256": record["sha256"], "exec_incarnation": "unproved"}
++    finally:
++        for fd in (installed, image, task, check, proc):
++            if fd >= 0:
++                os.close(fd)
+diff --git a/delivery/test_codex_direct_exec.py b/delivery/test_codex_direct_exec.py
+new file mode 100644
+--- /dev/null
++++ b/delivery/test_codex_direct_exec.py
+@@ -0,0 +1,206 @@
++"""Declared real ELF relocation/OS-image predicates; no Codex or continuity proof."""
++import argparse
++import json
++import os
++from pathlib import Path
++import selectors
++import subprocess
++import tempfile
++import unittest
++
++import codex_direct_exec as direct
++
++OPTIONS = None
++
++
++class DirectExecTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        cls.tool_hash = direct.digest(OPTIONS.patchelf.resolve(strict=True).read_bytes())
++        files, runtime = direct.runtime.assemble_runtime(
++            OPTIONS.fixture, OPTIONS.runtime_file, OPTIONS.patchelf, OPTIONS.ca_bundle)
++        cls.files = files
++        cls.manifest = {"files": {name: {"mode": 0o644 if name == direct.runtime.CA else 0o755}
++                                  for name in files}, "runtime": runtime,
++                        "candidate": {"upstream_commit": "synthetic-ELF-fixture-only"}}
++        cls.inputs = {"qualification": "synthetic-transformation-test-only"}
++
++    def setUp(self):
++        self.temporary = tempfile.TemporaryDirectory(prefix="omux-direct-exec-")
++        self.prefix = Path(self.temporary.name) / "installed"
++        self.installation = None
++
++    def tearDown(self):
++        if self.installation is not None:
++            self.installation.close()
++        self.temporary.cleanup()
++
++    def install(self):
++        tool = direct.Tool(OPTIONS.patchelf, self.tool_hash)
++        try:
++            self.installation = direct._relocate_verified(
++                self.prefix, tool, self.manifest, self.files, self.inputs)
++        finally:
++            tool.close()
++        return self.installation
++
++    def held_child(self, installation):
++        child = subprocess.Popen([str(installation.prefix / direct.LAUNCHER)],
++                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                                 stderr=subprocess.DEVNULL, env={"PATH": "/nonexistent"})
++        selector = selectors.DefaultSelector()
++        try:
++            selector.register(child.stdout, selectors.EVENT_READ)
++            self.assertTrue(selector.select(10), "declared direct fixture did not start")
++            self.assertEqual(child.stdout.readline(), b"OMUX_DIRECT_EXEC_FIXTURE_READY\n")
++            return child
++        except BaseException:
++            child.kill()
++            child.wait(timeout=5)
++            raise
++        finally:
++            selector.close()
++
++    def finish_child(self, child):
++        try:
++            child.communicate(b"q", timeout=5)
++            self.assertEqual(child.returncode, 0)
++        finally:
++            if child.poll() is None:
++                child.kill()
++                child.wait(timeout=5)
++
++    def test_kernel_exe_is_exact_relocated_backend_and_original_bytes_remain(self):
++        before = dict(self.files)
++        installed = self.install()
++        child = self.held_child(installed)
++        pidfd = os.pidfd_open(child.pid)
++        try:
++            observation = direct.observe_kernel_backend(installed, pidfd)
++            self.assertEqual(observation["backend_inode"], installed.record["files"][direct.BACKEND]["inode"])
++            self.assertEqual(observation["backend_sha256"], installed.record["files"][direct.BACKEND]["sha256"])
++            self.assertEqual(observation["exec_incarnation"], "unproved")
++            self.assertFalse(installed.record["native_support"])
++            self.assertEqual(installed.record["actor_selection"], "uncommitted")
++            self.assertEqual(self.files, before)
++            backend = (installed.prefix / direct.BACKEND).read_bytes()
++            metadata = direct.runtime.portable.elf_metadata(backend)
++            self.assertEqual(metadata["interpreter"], str(installed.prefix / direct.LOADER))
++            self.assertTrue(all(name.startswith(str(installed.prefix) + "/") for name in metadata["needed"]))
++            self.assertNotEqual(backend, before[direct.BACKEND])
++        finally:
++            os.close(pidfd)
++            self.finish_child(child)
++
++    def test_another_kernel_executable_does_not_attest_backend(self):
++        installed = self.install()
++        pidfd = os.pidfd_open(os.getpid())
++        try:
++            with self.assertRaisesRegex(ValueError, "kernel executable"):
++                direct.observe_kernel_backend(installed, pidfd)
++        finally:
++            os.close(pidfd)
++
++    def test_exclusive_root_and_symlinked_ancestor_refused(self):
++        self.prefix.mkdir(mode=0o700)
++        with self.assertRaises(FileExistsError):
++            self.install()
++        self.prefix.rmdir()
++        alias = Path(self.temporary.name) / "alias"
++        alias.symlink_to(Path(self.temporary.name), target_is_directory=True)
++        self.prefix = alias / "installed"
++        with self.assertRaises(OSError):
++            self.install()
++
++    def test_root_replacement_refused(self):
++        installed = self.install()
++        displaced = self.prefix.with_name("displaced")
++        self.prefix.rename(displaced)
++        self.prefix.mkdir(mode=0o700)
++        with self.assertRaisesRegex(ValueError, "root replaced"):
++            installed.recheck()
++
++    def test_same_bytes_replaced_backend_inode_refused(self):
++        installed = self.install()
++        backend = self.prefix / direct.BACKEND
++        payload = backend.read_bytes()
++        backend.unlink()
++        backend.write_bytes(payload)
++        backend.chmod(0o755)
++        with self.assertRaisesRegex(ValueError, "payload changed"):
++            installed.recheck()
++
++    def test_payload_symlink_and_receipt_mutation_refused(self):
++        installed = self.install()
++        receipt = self.prefix / direct.RECEIPT
++        receipt.write_bytes(b"{}\n")
++        with self.assertRaisesRegex(ValueError, "receipt changed"):
++            installed.recheck()
++        receipt.write_bytes(installed.encoded)
++        # This changed inode metadata remains a rejection even with identical bytes.
++        with self.assertRaisesRegex(ValueError, "receipt changed"):
++            installed.recheck()
++
++    def test_installed_backend_symlink_refused(self):
++        installed = self.install()
++        backend = self.prefix / direct.BACKEND
++        target = backend.with_name("copied")
++        backend.rename(target)
++        backend.symlink_to(target)
++        with self.assertRaises(OSError):
++            installed.recheck()
++
++    def test_wrong_declared_tool_identity_refused_before_install(self):
++        with self.assertRaisesRegex(ValueError, "patchelf identity"):
++            direct.Tool(OPTIONS.patchelf, "1" * 64)
++        self.assertFalse(self.prefix.exists())
++
++    def test_unverified_runtime_refused_before_root_creation(self):
++        with self.assertRaises(ValueError):
++            direct.install_runtime(b"not-an-archive", b"{}", b"{}", prefix=self.prefix,
++                patchelf=OPTIONS.patchelf, expected_runtime_inputs={},
++                expected_source_receipt_sha256="1" * 64,
++                expected_producer_receipt_sha256="2" * 64, expected_patchelf_sha256=self.tool_hash)
++        self.assertFalse(self.prefix.exists())
++
++
++    def test_each_independent_runtime_digest_and_byte_count_is_required(self):
++        values = (b"synthetic-archive", b"synthetic-manifest", b"synthetic-receipt")
++        names = ("archive", "manifest", "runtime_receipt")
++        selected = {name: {"sha256": direct.digest(value), "bytes": len(value)}
++                    for name, value in zip(names, values)}
++        direct.verify_selected_inputs(*values, selected)
++        for index, name in enumerate(names):
++            with self.subTest(name=name):
++                changed = list(values)
++                changed[index] += b"forged"
++                with self.assertRaises(ValueError):
++                    direct.verify_selected_inputs(*changed, selected)
++                wrong = json.loads(json.dumps(selected))
++                wrong[name]["sha256"] = "1" * 64
++                with self.assertRaises(ValueError):
++                    direct.verify_selected_inputs(*values, wrong)
++                wrong = json.loads(json.dumps(selected))
++                wrong[name]["bytes"] = True
++                with self.assertRaises(ValueError):
++                    direct.verify_selected_inputs(*values, wrong)
++        with self.assertRaises(ValueError):
++            direct.verify_selected_inputs(*values, {})
++
++    def test_byte_identical_receipt_replacement_refused(self):
++        installed = self.install()
++        receipt = self.prefix / direct.RECEIPT
++        receipt.unlink()
++        receipt.write_bytes(installed.encoded)
++        receipt.chmod(0o600)
++        with self.assertRaisesRegex(ValueError, "receipt changed"):
++            installed.recheck()
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser()
++    parser.add_argument("fixture", type=Path)
++    parser.add_argument("patchelf", type=Path)
++    parser.add_argument("ca_bundle", type=Path)
++    parser.add_argument("--runtime-file", type=Path, action="append", required=True)
++    OPTIONS, rest = parser.parse_known_args()
++    unittest.main(argv=[__file__, *rest])
+diff --git a/delivery/codex_direct_exec_fixture.c b/delivery/codex_direct_exec_fixture.c
+new file mode 100644
+--- /dev/null
++++ b/delivery/codex_direct_exec_fixture.c
+@@ -0,0 +1,7 @@
++/* Declared ELF fixture: no network, accounts, native stores or tool execution. */
++#include <stdio.h>
++int main(void) {
++    if (puts("OMUX_DIRECT_EXEC_FIXTURE_READY") == EOF || fflush(stdout) != 0)
++        return 2;
++    return getchar() == 'q' ? 0 : 3;
++}
+diff --git a/delivery/BUILD.bazel b/delivery/BUILD.bazel
+--- a/delivery/BUILD.bazel
++++ b/delivery/BUILD.bazel
+@@ -1,4 +1,5 @@
+ load("//tools:rules.bzl", "python_binary", "python_test")
++load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+ load(":rules.bzl", "channel_archives", "native_resolution", "release_archive")
+ load(":metadata_rules.bzl", "extension_metadata")
+ load(":browser_proof_rules.bzl", "browser_runtime_authority")
+@@ -624,6 +625,36 @@
+ 
+ python_test(
+     name = "native_resumed_checkpoint_test",
+     main = "test_native_resumed_checkpoint.py",
+     srcs = ["native_resumed_checkpoint.py"],
+ )
++
++# New installed-image observations; retained runtime009 qualification is unchanged.
++cc_binary(
++    name = "codex_direct_exec_fixture",
++    srcs = ["codex_direct_exec_fixture.c"],
++    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
++)
++
++python_test(
++    name = "codex_direct_exec_test",
++    main = "test_codex_direct_exec.py",
++    srcs = [
++        "codex_direct_exec.py", "codex_runtime_selection.py", "portable.py",
++        "//integrations/codex-owner-runtime:runtime_package.py",
++        "//integrations/codex-upstream:patch_io.py",
++        "//integrations/codex-upstream:restore_source.py",
++    ],
++    data = [
++        ":codex_direct_exec_fixture", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle",
++    ],
++    args = [
++        "$(location :codex_direct_exec_fixture)",
++        "$(location @omux_nix//:patchelf)",
++        "$(location @omux_nix//:ca_bundle)",
++    ],
++    file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
++    tags = ["manual", "no-remote", "no-cache"],
++    timeout = "long",
++    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
++)

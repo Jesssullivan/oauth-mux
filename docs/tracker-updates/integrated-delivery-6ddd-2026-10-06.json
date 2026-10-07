@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "kind": "scoped_storage_validation_and_retained_native_preservation_failure",
+  "authority": "Explicit resumed implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "observed_at": "2026-10-06T18:09:58Z",
+  "epoch": "6dddd386-818b-47f0-93ee-3a729f618c74",
+  "receipt_sha256": "368121813fc16c08b8cbb056a9054792bbbc0e024c06e102bc4087fdd0eb650f",
+  "graph_sha256": "7898f49d454ff272b10e3a90aa433afc40da9b6fda311e80c788c5c81bccbc38",
+  "test_evidence_sha256": "d995f1051af4f0c0f20dd0ec25a4bd797d3554534c47eff09186c05ea091f4b8",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "state": "empty",
+    "ownership": "unproved",
+    "stop": "not-requested",
+    "readback_attempts": 0
+  },
+  "handle": 45190,
+  "handle_closed": true,
+  "passing_targets": [
+    "//:docs_check",
+    "//:native_owner_storage_test",
+    "//:reliability_commit_test",
+    "//:storage_test"
+  ],
+  "failed_target": {
+    "label": "//delivery:installed_legacy_native_tui_test",
+    "elapsed_seconds": 60.9,
+    "phase": "resumed-preservation",
+    "diagnostic": "unclassified",
+    "completed_scoped_edges": "First detach/status/replay and seed preservation/clean exit; cold resume into original thread with different process, owner and reference, authenticated process witness",
+    "not_proved": "Resumed native history/configuration preservation, subsequent detach/clean exit/durable inspection, complete native gate, robust repeated resume, accepted-history or live handoff"
+  },
+  "archive": {
+    "status": "experimental",
+    "version": "0.2.0-dev",
+    "target": "x86_64-linux",
+    "distribution": "portable-linux",
+    "sha256": "6fef4a4611ca622db75a37b1fb22df8538f792084d6fa3d8ef267375fd243383",
+    "bytes": 59438569,
+    "artifact_count": 138,
+    "manifest_provenance": {
+      "sourceDirty": true,
+      "sourceRevision": null
+    }
+  },
+  "caller_source_selection": {
+    "commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+    "dirty": true,
+    "scope": "Caller selection, not promoted into the archive's absent sourceRevision"
+  },
+  "prior_foundation": {
+    "epoch": "f10a6f07-14d1-4b7c-96d9-86f70df980a8",
+    "passing_targets": 13,
+    "docs_failed_missing_declared_JSON_input": true,
+    "docs_repair_verified_by_this_epoch": true,
+    "receipt_sha256": "6245cf3db665290b3e9f02195ab32e7dbf23c7e62529e5d6725491c8732b73e5",
+    "graph_sha256": "5dc9c86e707a29505a63071c53fe72184bb2e40da1383985952f9601dc2138e6",
+    "test_evidence_sha256": "86a43b651f6ac42bdf42cb22f30a40a4633392d246739319466ae2b485d3a965"
+  },
+  "new_acceptance_gate_closed": false,
+  "passed_gate_count": 5,
+  "open_gate_count": 6,
+  "linear_carriers": [
+    "TIN-2063",
+    "TIN-5338",
+    "TIN-5421",
+    "TIN-5442",
+    "TIN-2057"
+  ],
+  "provider_access": false,
+  "publication": false,
+  "darwin_support": false,
+  "native_support": false,
+  "live_continuity": false,
+  "next": [
+    "Finite resumed-preservation diagnostics without predicate/deadline/call changes",
+    "Same600/1200 HM acquisition event-wait measurement",
+    "Reviewed exact HOME30overlay acquisition and firstpinnedGit producer",
+    "Yoga destination declaration/registration/offline graph/Wayland human proof"
+  ],
+  "limits": "Unchanged4GiBRAM/swap0/Tasks512/CPU2/20min/privateNetwork; fresh uncached tests; owned clean cache partition only"
+}

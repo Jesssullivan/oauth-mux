@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "continued_installed_proof_checkpoint",
+  "authority": "User-resumed 15-hour implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-05T20:00:23Z",
+  "goal": ".goal/omux-integrated-delivery-2026-10-05.json",
+  "plan": "docs/plans/omux-integrated-delivery-sprint-2026-10-05.md",
+  "passing_gates": [
+    "ID-AUTHORITY",
+    "ID-CONTAINMENT",
+    "ID-CHANNEL",
+    "ID-SETUP",
+    "ID-DELIVERY"
+  ],
+  "full_goal": "incomplete_active_original_checkpoints_preserved",
+  "spa_tuple": "docs/tracker-updates/integrated-delivery-spa-2026-10-05.json",
+  "foundations_tuple": "docs/tracker-updates/integrated-delivery-foundations-2026-10-05.json",
+  "chromium": {
+    "epoch": "97e91470-e557-4385-9ec2-dd3a50270b9c",
+    "exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "graph_sha256": "e1a0c0ee02965569d5a697976e56ea44509d2cd301f75daba4da6438e70933b0",
+    "test_evidence_sha256": "2a66fe0a4e0a1d80f06be7551a2885d622084c1fca5a7c0cf5143430b8e09174",
+    "diagnostic": {
+      "phase": "actual-chromium",
+      "reason": "assertion_failed"
+    },
+    "claim": "failed; no browser lifecycle, consent, acquisition or continuity acceptance"
+  },
+  "following": {
+    "corrected_selector": "27 methods queued in d4fb100c-152c-41bd-9c55-52c41a958c14 with fresh runtime_source_receipt; unrun at checkpoint",
+    "development_generation_restart": "source-only new fixture in progress; no execution",
+    "native_dependency_producer": "first16 finite producer queued; no fresh candidate compilation",
+    "fleet": "modeled acquired-pair byte verifier passed; actual paired inputs/evaluation/activation absent"
+  },
+  "inspection_receipt": {
+    "actor": "root",
+    "target_ownership": "own read-only rg PID1767567, exact parent command inspected",
+    "reason": "unnecessary broad retained-cache file listing stopped; direct epoch paths used",
+    "ruling": "R-N11",
+    "prior_state": "running inspection only",
+    "result": "TERM sent; no payload or other session signalled"
+  },
+  "not_proved": [
+    "Actual browser consent/provider acquisition",
+    "Home Manager activation/update/removal",
+    "Complete development restart/reload loop",
+    "Fresh candidate compilation/native resume/live same-process handoff",
+    "Darwin",
+    "Public signing/distribution/deployment",
+    "Achieved lifecycle SLO or contractual SLA"
+  ]
+}

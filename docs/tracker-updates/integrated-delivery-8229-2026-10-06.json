@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "scoped_product_validation_with_failed_overall_batch",
+  "authority": "Explicit user continuation of integrated implementation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "observed_at": "2026-10-06T17:18:49Z",
+  "epoch": "8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9",
+  "root": "/home/jess/.local/state/omux-execution-20261005/8229cb7a-d9d1-4d53-b2e6-793cddfd7cb9",
+  "receipt_sha256": "0b4131e965a87405f810f187e0c9215c10a9e8ff6cd71e10f88dc3443a01bacc",
+  "graph_sha256": "7a313747047cf93dadf936da546e811833ee53157506ffb0e9c3519cba37bf05",
+  "test_evidence_sha256": "0d322256ba1e45c0ff14efb098af0340e8e74cc45fa2854b668bb948ed5bdb78",
+  "controller_exit": 1,
+  "workload_exit": 1,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "profile": "standard",
+  "source_commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+  "source_dirty": true,
+  "source_and_artifact_scope": "Caller-selected dirty source; exact action graph and per-target copied evidence retained. No shipped release or provider/native-live authority.",
+  "passing_targets": [
+    {"label": "//:mutation_authority_test", "scope": "Existing bounded mutation authority and replay predicates"},
+    {"label": "//:reliability_lifecycle_witness_test", "cases": 27, "authored_cases": 7, "scope": "Original disconnect witness, strict restoration, serialized capacity and imported ledger/admission predicates"},
+    {"label": "//:reliability_lifecycle_source_actor_test", "cases": 247, "authored_cases": 5, "scope": "Actual isolated actor/SQLite original commit, preparation refusal, real second-commit denial, full-envelope pressure, authenticated revision/startup refusal, replay/restart and imported predicates"},
+    {"label": "//tools:home_manager_acquisition_test", "methods": 88, "scope": "Modeled acquisition including exact completion-event wake/deadline/later-lease failure"},
+    {"label": "//delivery:yoga_wrapper_authority_test", "methods": 19, "scope": "Pure captured-byte wrapper/manifest/inventory validation, without filesystem custody or execution"},
+    {"label": "//:format_test", "scope": "Current Zig formatting"}
+  ],
+  "failed_targets": [
+    {"label": "//:storage_test", "outcome": "failed_to_build", "category": "undeclared_src_domain_zig_imported_by_reliability_commit"},
+    {"label": "//:docs_check", "outcome": "failed", "category": "new_session_note_not_classified_in_authority_index"},
+    {"label": "//delivery:installed_legacy_native_tui_test", "outcome": "failed", "phase": "cold-native-resume", "diagnostic": "unclassified", "scope": "Earlier first-detach/status/completion/replay/preservation/clean-exit predicates were reached and completed in this fixture; cold resume and the whole native gate failed"}
+  ],
+  "subsequent_source_repairs": [
+    "BUILD.bazel declares domain/native-owner/paths/peer/instance dependencies for storage, native-owner storage and reliability-commit targets",
+    "docs/authority.json explicitly classifies the current October 6 session note",
+    "Reviewed fixture-only finite cold-resume edge diagnostics; original calls, deadlines and predicates retained"
+  ],
+  "subsequent_repairs_verified": false,
+  "new_acceptance_gate_closed": false,
+  "passed_gate_count": 5,
+  "open_gate_count": 6,
+  "limits": "Unchanged 4 GiB RAM, no swap, 512 tasks, two CPUs, 20-minute aggregate, 10-second stop; private network, serialized root coordinator, no Bazel server/cache reuse",
+  "limits_of_evidence": [
+    "Source-disconnect interval only; no full demand/end-to-end/provenance/SLO baseline",
+    "Actual HM600 acquisition still failed; no source pair, genuine evaluation or activation",
+    "Yoga destination registration, offline graph, visible seat and human consent remain unrun",
+    "Retained Codex candidate only; fresh SDK compilation, ordinary cold resume, live handoff and unmodified application support remain unproved",
+    "No provider login/call, fleet activation, signing/publication or Darwin/PZM operation"
+  ],
+  "yoga_nar_proof_copy": {
+    "path": "docs/tracker-updates/yoga-controller-d631-raw-nar-proof-2026-10-06.json",
+    "sha256": "d549616d0669e01e1ae80de080a50ba0a6a95fbc2ffa4dfce23970b39fe9de4f",
+    "basis": "Faithful manual copy of the exact 12-field JSON stdout line observed in actual d631 test.log; no regenerated or inferred verifier outcome",
+    "original_epoch": "d6311994-5212-4034-ac93-49b06405db88",
+    "original_test_log_sha256": "45b3a1e05bef68ea293ab27c68d1ffd8470eea994f0c8a1aded89ea4da17cabd",
+    "original_guard_receipt_sha256": "f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a",
+    "execution_authority": false
+  },
+  "linear_carriers": ["TIN-2057", "TIN-2063", "TIN-5338", "TIN-5421", "TIN-5442"],
+  "tracker_write": false
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "kind": "closed_remote_os_bootstrap_step_diagnostics",
+  "authority": "Parent authorized provider-free source-only diagnosis; AGENTS.md/R-N13",
+  "actual_parent_report": {
+    "qualify_epoch_prefix": "2daac6b1",
+    "terminal_exit": 2,
+    "workload_exit": 2,
+    "owned_descendants": "empty",
+    "controller_failure": null,
+    "source_verified_after": true,
+    "operation_stage": "authenticated-os-qualification",
+    "ssh_status": 1,
+    "host_key_rejected": false,
+    "missing_tool_mentioned": true,
+    "other_closed_flags": false,
+    "qualification": null,
+    "receipt_sha256": "0e5c75a16c407f49c391ea2af465a9ba821f75fa7ade096181313d5cf1a9408e"
+  },
+  "observation_limit": "Existing broad missing_tool flag identifies neither interpreter absence nor any particular missing file. No inspect/verify followed.",
+  "proposal": "Exact existing remote OS code adds source-fixed step labels and a closed exception hook. It emits one finite marker without traceback, exception text, paths, environment, credentials or machine IDs. Controller accepts one complete marker from a fixed finite step/category table; duplicate/malformed/unknown markers confer no diagnostic observation.",
+  "unchanged": [
+    "SSH-authenticated OS trust boundary and exact /usr/bin/python3 -I -S",
+    "public host-pin source/hash/custody and strict options",
+    "No Nix before independent OS profile/generation/Nix-byte qualification",
+    "Original alarm/deadline reserve, caps, masks, exact472 controller inventory and d631 selection",
+    "Qualification/result success predicates and remote cleanup unknown",
+    "No copy, realization, fleet configuration, interpreter/path substitution or provider invocation"
+  ],
+  "interfaces": [
+    "tools/yoga_executable_qualification.py",
+    "tools/yoga_controller_delivery.py",
+    "tools/yoga_executable_qualification_test.py",
+    "tools/yoga_controller_delivery_test.py"
+  ],
+  "fixture_coverage": "Three new fixtures: six mocked OS missing-step cases execute exact remote code and fixed exception hook without remote actions; decoder rejects arbitrary/duplicate/noncanonical markers; SSH failure result retains only exact closed observation and redacts other stderr.",
+  "diagnostic_boundary": "If interpreter or code imports never start, no marker is emitted. Absence remains unresolved; this proposal does not substitute an interpreter, probe a path or weaken authentication.",
+  "next": "Parent reviews/applies after input freeze permits, runs contained regression gates, then may make one fresh root-owned qualify attempt. Actual current remote input absence remains unproved until a fixed marker is observed.",
+  "execution": "UNAPPLIED source amendment only. This author performed ordinary source reads and JavaScript text/diff generation; no project check/build/test, SSH, tracker/index mutation or applied-source change."
+}

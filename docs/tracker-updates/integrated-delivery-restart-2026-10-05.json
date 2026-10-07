@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "kind": "actual_selected_development_generation_restart_receipt",
+  "authority": "AGENTS.md; explicit user-resumed 15-hour implementation; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-05 20:48:14 UTC",
+  "epoch": "fb13c1ae-aa08-470c-a087-74f0a1b3caed",
+  "profile": "standard",
+  "targets": [
+    "//delivery:dev_generation_restart_test",
+    "//delivery:dev_generation_restart_retained"
+  ],
+  "graph_sha256": "2aeedb4adf30ae86d51c8118432f65722a763b3078bd022c1fd2a45fb9c93824",
+  "exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "test_evidence_sha256": "bc374f053786c0bddb9576a66e839ff5901c6cf2f67403fb3c7c95fc12f388a1",
+  "test_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 305,
+          "file": "aadd6ab18507527343be67d584546230181e97fd4458fa47dc1fcc767a37c9c8.evidence",
+          "sha256": "96ed8f37943142be2efbab1a055ca4c9c04a8022db2a19b4f224bac00b440aca",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 718,
+          "file": "cbd02f9093c5618182cf12a4a470104fd101f081782e6b7654f75da9b576bf03.evidence",
+          "sha256": "dd8f4864c816741317da3a226ecb4f5d509fbc244b5eb506d2aef9dacf95ed40",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:dev_generation_restart_test"
+    },
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 1065,
+          "file": "1fd026a15e1b5481c6303db43c145374c917e6279689e80672cd5ec217a44658.evidence",
+          "sha256": "3d010370b787a5d062a5e10f63440eb193baf4bf739f09e4d63b0c04f89641c8",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 1486,
+          "file": "e0b5d48261110802d1408b50bae519849224dec8918e7a63f954d5dfababe8c4.evidence",
+          "sha256": "834e7a9c261d5ba290c5877b3c46113189efac6017179e326e604bd73c70e7fd",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//delivery:dev_generation_restart_retained"
+    }
+  ],
+  "facts": {
+    "artifacts": {
+      "core": "2aa98ce48b237b776722d275bec361478d98d5188b3e770598208ac15f6d8232",
+      "daemon": "e7a874ad2a84cdb97440765b0f7c6edb5c332d5f47ab61ba167bc18583b3ee45",
+      "extension": "0ec74f20b4d9831e760e0e133e4082298413677a1fca7c0f21c95619685dac01"
+    },
+    "atomicExecutionWitness": false,
+    "browserReloaded": false,
+    "channel": "development",
+    "cleanShutdowns": 2,
+    "daemonRestarted": true,
+    "daemonStartedTwice": true,
+    "emptyAuthorityPreserved": true,
+    "generation": "0736ff39498d436bb914b1436052b803",
+    "instance": "dev",
+    "liveExecutableAttributed": false,
+    "nativeContinuityProved": false,
+    "providerAccess": false,
+    "receiptSha256": "37c8e707cb54fb2a9c2b21703f47256e3641b588082af61d541e4c39eb811dbc",
+    "schemaVersion": 1,
+    "scope": "development-selected-generation-private-daemon-restart",
+    "serviceActivated": false,
+    "startupRevisionDelta": 3,
+    "toolManifestSha256": "b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0"
+  },
+  "source_commit_declaration": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+  "source_dirty_declaration": "true",
+  "source_metadata_independently_verified": false,
+  "scope": [
+    "Exact retained development generation and immutable receipt/artifact hashes admitted",
+    "Actual qualified packaged daemon starts twice against the same private empty authority state",
+    "State revision advances; observed startup delta is diagnostic, not a required implementation value",
+    "Two clean daemon shutdowns and empty aggregate descendants",
+    "24 modeled restart custody/tool-wrapper/authority boundary methods passed"
+  ],
+  "full_development_loop_gate": "open; manual Chromium reload/reconnect joined to selected generation remains unproved",
+  "preserved_failed_epochs": [
+    "0cfa652b-1cf4-4f6b-a0dd-33a7fabe3f30",
+    "54669f72-482a-440c-b2ee-baf2278b50da"
+  ],
+  "not_proved": [
+    "Browser reload/reconnect",
+    "Fleet service activation/update/removal",
+    "Enrollment/grants/renewal",
+    "Native executable attribution, ordinary native launch/resume or seamless handoff",
+    "Provider access, Darwin, signing/publication or achieved lifecycle SLO"
+  ]
+}

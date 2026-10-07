@@ -1,0 +1,38 @@
+load("//tools:rules.bzl", "python_binary", "python_test")
+load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
+load(":runtime_inputs.bzl", "runtime_inputs_manifest")
+
+package(default_visibility = ["//visibility:public"])
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.bzl", "*.bazel"], allow_empty = True))
+exports_files(["README.md", "runtime_package.py", "runtime-receipt.json", "runtime-manifest.json"])
+alias(
+    name = "codex-owner-runtime.tar.gz",
+    actual = "@omux_codex_owner_runtime//:codex-owner-runtime.tar.gz",
+    tags = ["manual"],
+)
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.bzl", "*.bazel", "*.md", "*.json"], allow_empty = True))
+filegroup(name = "runtime_inputs", srcs = [":codex-owner-runtime.tar.gz", "runtime-receipt.json", "runtime-manifest.json"], tags = ["manual"])
+
+runtime_inputs_manifest(name = "runtime_files_manifest", srcs = "@omux_nix//:runtime_libraries")
+
+python_binary(
+    name = "runtime_package",
+    main = "runtime_package.py",
+    srcs = ["//delivery:portable.py", "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py"],
+    data = ["//integrations/codex-owner-candidate:public_sources", "//integrations/codex-owner-candidate:README.md", ":runtime_files_manifest", "@omux_nix//:ca_bundle", "@omux_nix//:tool_wrappers/strip", "@omux_nix//:patchelf", "@omux_nix//:all_tools"],
+    args = [
+        "--artifact-dir", "$(location //integrations/codex-owner-candidate:README.md)",
+        "--strip", "$(location @omux_nix//:tool_wrappers/strip)",
+        "--patchelf", "$(location @omux_nix//:patchelf)",
+        "--ca-bundle", "$(location @omux_nix//:ca_bundle)",
+        "--runtime-files-manifest", "$(location :runtime_files_manifest)",
+        "--tool-path", NIX_COREUTILS_BIN,
+    ],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "runtime_package_test",
+    main = "runtime_package_test.py",
+    srcs = ["runtime_package.py", "//delivery:portable.py", "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py", "//integrations/codex-upstream:refresh_artifact.py"],
+)

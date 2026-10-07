@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-native-discovery-resume-sprint-2026-10-04.md",
+  "start": "2026-10-04T20:06:11Z",
+  "due": "2026-10-05T06:06:11Z",
+  "duration_hours": 10,
+  "timezone": "America/New_York",
+  "clock_semantics": "Conditional ten-hour checkpoint from the same exact active root goal start; no independent goal or automatic dispatch",
+  "session_note": "docs/agent-notes/2026-10-04-sess-omux-native-discovery.md",
+  "status": "planned",
+  "execution_state": "held_after_sting_execution_incident",
+  "execution_hold_receipt": "docs/agent-notes/2026-10-04-sess-omux-execution-incident.md",
+  "status_semantics": "Conditional subordinate checkpoint from the same start; new work and passing evidence are not inferred from scheduling or predecessor receipts.",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "ruling_id": "R-N13",
+  "hook_authority": "R-HOOK-CONVERGENCE-20261004",
+  "user_authority": "October 4 authorized wide five-hour/ten-hour sprint; resources and provider access remain separately gated",
+  "depends_on": [".goal/omux-native-discovery-2026-10-04.json"],
+  "predecessor_checkpoint": ".goal/omux-native-discovery-2026-10-04.json",
+  "predecessor_outcome": "Partial five-hour checkpoint; all eight ND gates unpassed. Installed discovery timed out, SDK batch cancelled, fresh installed fixtures server-terminated. Execution held for incident containment and estate review; no blanket daemon restart or accepted-history promise",
+  "provider_evaluation_authorized": false,
+  "personal_vault_access_authorized": false,
+  "service_activation_authorized": false,
+  "publication_authorized": false,
+  "process_signals_authorized": false,
+  "native_support": false,
+  "live_continuity": "unavailable",
+  "pzm_gf_worker_state": "held; no host action or worker activation authorized",
+  "tracker_child": "TIN-5421 under TIN-5338 records the five-hour discovery dependency; no follow-on proof or provider permission follows",
+  "tracker_child_id": "c5945e4e-9247-4a36-bb1b-e0230dadb97c",
+  "tracker_planning_comment_id": "22fa3b62-74af-4419-8f4b-ad29a46e50a0",
+  "tracker_receipt": "docs/tracker-updates/native-discovery-sprint-2026-10-04.json",
+  "acceptance": [
+    {
+      "id": "NR-RECOVERY",
+      "status": "planned",
+      "issues": ["TIN-5338", "TIN-1798"],
+      "scope": "Bounded exact native reconciliation retaining sealed original witnesses, operations, outcome credits and accepted/uncertain request fences; unrestricted automatic daemon replacement excluded",
+      "evidence": []
+    },
+    {
+      "id": "NR-HISTORY",
+      "status": "blocked",
+      "issues": ["TIN-1798", "TIN-2057"],
+      "scope": "Genuine accepted nonempty native history and supported resume with tools/approval preservation; zero-turn metadata is insufficient",
+      "next_action": "Establish an explicitly authorized exact native/provider evaluation scope and history custody contract; otherwise retain unproved status and make no live calls",
+      "evidence": []
+    },
+    {
+      "id": "NR-PROVIDER",
+      "status": "blocked",
+      "issues": ["TIN-1798", "TIN-2057"],
+      "scope": "Exact authorized provider enrollment/accepted turn or pre-acceptance failure and alternate proof; no access inherited from sprint scheduling",
+      "next_action": "Wait for separately supplied credential/provider/resource/spending authorization; no live calls, personal vault reads or enrollment meanwhile",
+      "evidence": []
+    },
+    {
+      "id": "NR-GIT",
+      "status": "planned",
+      "issues": ["TIN-2057", "TIN-2050"],
+      "scope": "Plan existing non-LLM GitHTTPS/GitHub helper evaluation against exact Git/repository/scoped permissions; no invented support or live-provider claim",
+      "evidence": []
+    },
+    {
+      "id": "NR-RECONCILIATION",
+      "status": "planned",
+      "issues": ["TIN-2057", "TIN-2050"],
+      "scope": "Record achieved, blocked and unrun native/resource predicates with exact receipts, next actions and preserved historical claims",
+      "evidence": []
+    }
+  ],
+  "evidence": [],
+  "remaining": [
+    "Execution held after reported recursive Bash actions and cluster-wide resource impact; actual loop unresolved and full RCA may be unavailable",
+    "Enforceable aggregate memory/process/time limits and exact descendant cancellation are prerequisites for resumed workload",
+    "Follow-on depends on five-hour acceptance and independent resources",
+    "No live calls are authorized; accepted-history and provider gates are blocked",
+    "Daemon replacement and uncertain-effect recovery need specific reviewed protocols and exact proof",
+    "Stock Codex, Darwin and live continuity remain unavailable; PZM/GF remains held"
+  ]
+}

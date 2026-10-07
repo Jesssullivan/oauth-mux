@@ -1,749 +1,779 @@
+//! Resident per-user broker. Socket reads never hold the lifecycle writer lock.
+//! A fixed worker pool and bounded queue isolate slow/malformed local clients.
 const std = @import("std");
-const env = @import("env.zig");
-const health_mod = @import("health.zig");
-const paths = @import("paths.zig");
-const log = @import("log.zig");
-const repair_state = @import("repair_state.zig");
 const builtin = @import("builtin");
+const c = std.c;
+const paths = @import("paths.zig");
+const native_peer = @import("platform/peer.zig");
+const metadata = @import("platform/file_metadata.zig");
+const engine_module = @import("engine.zig");
+const Engine = engine_module.Engine;
+pub const Channel = engine_module.Channel;
 
-const Pid = if (builtin.os.tag == .windows) u32 else std.posix.pid_t;
-const stay_afloat_snapshot_stale_after_s: i64 = 300;
+pub const max_frame_bytes = 1024 * 1024;
+pub const worker_count = 16;
+pub const queue_capacity = 8;
+// Lower-priority UI/browser clients cannot occupy every native-adapter worker.
+const channel_workers = [_]usize{ 4, 4, 8 };
+const control_connection_capacity = queue_capacity + channel_workers[0];
+const control_slice_ms: i64 = 100;
+pub const request_timeout_ms: i64 = 15_000;
+pub const ConnectionError = error{ Timeout, PeerRejected, SocketFailed, FrameTooLarge, TrailingFrame, IncompleteFrame, EmptyFrame, ConnectionClosed };
 
-pub const DaemonError = error{
-    AlreadyRunning,
-    SocketError,
-    ForkFailed,
-    ConfigError,
-    OutOfMemory,
-};
+extern "c" fn socket(domain: c_int, kind: c_int, protocol: c_int) c.fd_t;
+extern "c" fn socketpair(domain: c_int, kind: c_int, protocol: c_int, pair: *[2]c.fd_t) c_int;
+extern "c" fn getpeereid(fd: c.fd_t, uid: *c.uid_t, gid: *c.gid_t) c_int;
+extern "c" fn signal(sig: c_int, handler: ?*const fn (c_int) callconv(.c) void) ?*const fn (c_int) callconv(.c) void;
 
-pub const RunGuard = struct {
-    allocator: std.mem.Allocator,
-    pid_path: []const u8,
-    metadata_path: []const u8,
-
-    pub fn release(self: *RunGuard) void {
-        std.fs.deleteFileAbsolute(self.pid_path) catch {};
-        std.fs.deleteFileAbsolute(self.metadata_path) catch {};
-        self.allocator.free(self.pid_path);
-        self.allocator.free(self.metadata_path);
-    }
-};
-
-pub const StayAfloatRunMetadata = struct {
-    profile: ?[]const u8 = null,
-    provider: ?[]const u8 = null,
-    account: ?[]const u8 = null,
-    capability: ?[]const u8 = null,
-    once: bool = true,
-    iterations: u32 = 1,
-    interval_ms: u64 = 60_000,
-    execute: bool = true,
-};
-
-const SnapshotFreshness = struct {
-    present: bool,
-    parseable: bool,
-    last_tick_at: ?i64 = null,
-    age_seconds: ?i64 = null,
-    loop_started_at: ?i64 = null,
-    current_loop_observed: ?bool = null,
-    stale_after_seconds: i64 = stay_afloat_snapshot_stale_after_s,
-    stale: bool = true,
-    reason: []const u8,
-};
-
-const StatusLoopInfo = struct {
-    started_at: ?i64 = null,
-};
-
-pub fn run(allocator: std.mem.Allocator) DaemonError!void {
-    if (comptime builtin.os.tag == .windows) {
-        log.err("daemon: foreground socket transport is not implemented on windows", .{});
-        return error.SocketError;
-    }
-
-    const sock_path = paths.socketPath(allocator) catch return error.OutOfMemory;
-    defer allocator.free(sock_path);
-
-    const pid_path = pidPath(allocator) catch return error.OutOfMemory;
-    defer allocator.free(pid_path);
-
-    if (isRunning(allocator)) {
-        log.err("daemon: already running", .{});
-        return error.AlreadyRunning;
-    }
-
-    ensureRuntimeDir(sock_path) catch return error.SocketError;
-
-    writePidFile(pid_path, currentPid()) catch return error.SocketError;
-    defer std.fs.deleteFileAbsolute(pid_path) catch {};
-
-    runLoop(allocator, sock_path) catch return error.SocketError;
+var stopping: std.atomic.Value(bool) = .init(false);
+fn stopSignal(_: c_int) callconv(.c) void {
+    stopping.store(true, .release);
 }
 
-pub fn acquireStayAfloatRunGuard(allocator: std.mem.Allocator, metadata: StayAfloatRunMetadata) DaemonError!RunGuard {
-    if (comptime builtin.os.tag == .windows) {
-        log.err("daemon: foreground stay-afloat loop is not implemented on windows", .{});
-        return error.SocketError;
+fn nonblocking(fd: c.fd_t) !void {
+    const flags = c.fcntl(fd, c.F.GETFL);
+    if (flags < 0 or c.fcntl(fd, c.F.SETFL, flags | @as(c_int, @bitCast(c.O{ .NONBLOCK = true }))) != 0) return error.SocketFailed;
+    if (c.fcntl(fd, c.F.SETFD, @as(c_int, c.FD_CLOEXEC)) != 0) return error.SocketFailed;
+    if (builtin.os.tag == .macos) {
+        const enabled: c_int = 1;
+        if (c.setsockopt(fd, c.SOL.SOCKET, c.SO.NOSIGPIPE, &enabled, @sizeOf(c_int)) != 0) return error.SocketFailed;
     }
+}
 
-    const pid_path = pidPath(allocator) catch return error.OutOfMemory;
-    errdefer allocator.free(pid_path);
+/// Threaded's accept implementation assumes blocking listeners. A readiness
+/// indication can race with peer closure, so handle EAGAIN at this boundary.
+fn acceptReady(io: std.Io, listener: c.fd_t) !?std.Io.net.Stream {
+    try io.checkCancel();
+    const fd = if (builtin.os.tag == .linux)
+        c.accept4(listener, null, null, c.SOCK.CLOEXEC | c.SOCK.NONBLOCK)
+    else
+        c.accept(listener, null, null);
+    if (fd < 0) return switch (std.posix.errno(fd)) {
+        .AGAIN, .INTR, .CONNABORTED => null,
+        else => error.SocketFailed,
+    };
+    errdefer _ = c.close(fd);
+    try nonblocking(fd);
+    return .{ .socket = .{ .handle = fd, .address = .{ .ip4 = .loopback(0) } } };
+}
 
-    const metadata_path = metadataPath(allocator) catch return error.OutOfMemory;
-    errdefer allocator.free(metadata_path);
-
-    if (isRunning(allocator)) {
-        log.err("daemon: already running", .{});
-        return error.AlreadyRunning;
+/// Configure writer evidence before bind/listen, so even a peer's first queued
+/// bytes carry ancillary authority. Unsupported platforms keep a private socket
+/// whose protected requests refuse at capture, leaving control/status usable.
+fn listenAdapter(io: std.Io, path: []const u8, custody: paths.Custody) !std.Io.net.Server {
+    try io.checkCancel();
+    if (path.len >= @as(c.sockaddr.un, undefined).path.len) return error.SocketPathTooLong;
+    const fd = socket(c.AF.UNIX, c.SOCK.STREAM, 0);
+    if (fd < 0) return error.SocketFailed;
+    errdefer _ = c.close(fd);
+    try nonblocking(fd);
+    native_peer.Context.enable(fd) catch |err| switch (err) {
+        error.UnsupportedPeerProfile => {},
+        else => return err,
+    };
+    var addr: c.sockaddr.un = .{ .path = @splat(0) };
+    @memcpy(addr.path[0..path.len], path);
+    addr.path[path.len] = 0;
+    const addr_len: c.socklen_t = @intCast(@offsetOf(c.sockaddr.un, "path") + path.len + 1);
+    if (builtin.os.tag == .macos) addr.len = @intCast(addr_len);
+    if (c.bind(fd, @ptrCast(&addr), addr_len) != 0) return error.SocketFailed;
+    if (c.fchmodat(custody.run_fd, "adapter.sock", 0o600, 0) != 0) return error.SocketPermissionFailed;
+    const bound = try metadata.statAt(custody.run_fd, "adapter.sock", c.AT.SYMLINK_NOFOLLOW);
+    errdefer {
+        const current = metadata.statAt(custody.run_fd, "adapter.sock", c.AT.SYMLINK_NOFOLLOW) catch null;
+        if (current) |present| {
+            if (present.dev == bound.dev and present.ino == bound.ino) custody.removeSocket("adapter.sock") catch |err| {
+                std.log.err("owned adapter socket cleanup failed: {s}", .{@errorName(err)});
+            };
+        }
     }
-
-    ensureParentDir(pid_path) catch return error.SocketError;
-    writePidFile(pid_path, currentPid()) catch return error.SocketError;
-    errdefer std.fs.deleteFileAbsolute(pid_path) catch {};
-
-    writeStayAfloatMetadata(metadata_path, metadata) catch return error.SocketError;
+    if (c.listen(fd, queue_capacity) != 0) return error.SocketFailed;
     return .{
-        .allocator = allocator,
-        .pid_path = pid_path,
-        .metadata_path = metadata_path,
+        .socket = .{ .handle = fd, .address = .{ .ip4 = .loopback(0) } },
+        .options = if (std.Io.net.Server.AcceptOptions != void) .{ .mode = .stream, .protocol = null },
     };
 }
 
-pub fn start(allocator: std.mem.Allocator) DaemonError!void {
-    if (comptime builtin.os.tag == .windows) {
-        log.err("daemon: unsupported on windows", .{});
-        return error.SocketError;
+/// Authenticate both directions. A socket pathname is not server identity.
+pub fn verifyPeer(fd: c.fd_t) !void {
+    const uid = c.getuid();
+    switch (builtin.os.tag) {
+        .linux => {
+            const Credentials = extern struct { pid: c.pid_t, uid: c.uid_t, gid: c.gid_t };
+            var peer: Credentials = undefined;
+            var len: c.socklen_t = @sizeOf(Credentials);
+            if (c.getsockopt(fd, c.SOL.SOCKET, c.SO.PEERCRED, &peer, &len) != 0 or len != @sizeOf(Credentials) or peer.uid != uid) return error.PeerRejected;
+        },
+        .macos => {
+            var peer_uid: c.uid_t = undefined;
+            var peer_gid: c.gid_t = undefined;
+            if (getpeereid(fd, &peer_uid, &peer_gid) != 0 or peer_uid != uid) return error.PeerRejected;
+        },
+        else => return error.PeerRejected,
     }
+}
 
-    const sock_path = paths.socketPath(allocator) catch return error.OutOfMemory;
-    defer allocator.free(sock_path);
+fn deadline(io: std.Io) std.Io.Clock.Timestamp {
+    return deadlineAfter(io, request_timeout_ms);
+}
 
-    const pid_path = pidPath(allocator) catch return error.OutOfMemory;
-    defer allocator.free(pid_path);
+fn channelDeadline(io: std.Io, channel: Channel) std.Io.Clock.Timestamp {
+    return deadlineAfter(io, if (channel == .browser) 8_000 else request_timeout_ms);
+}
 
-    // Check if already running
-    if (isRunning(allocator)) {
-        log.err("daemon: already running", .{});
-        return error.AlreadyRunning;
-    }
+fn deadlineAfter(io: std.Io, timeout_ms: i64) std.Io.Clock.Timestamp {
+    return .fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(timeout_ms) });
+}
 
-    ensureRuntimeDir(sock_path) catch return error.SocketError;
-
-    // Fork into background
-    if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) {
-        const pid = std.posix.fork() catch return error.ForkFailed;
-        if (pid != 0) {
-            // Parent: write PID file and exit
-            writePidFile(pid_path, pid) catch {};
-            log.info("daemon: started (pid {d})", .{pid});
-            return;
+fn waitReady(io: std.Io, fd: c.fd_t, events: i16, until: std.Io.Clock.Timestamp) !void {
+    var fds = [_]c.pollfd{.{ .fd = fd, .events = events, .revents = 0 }};
+    while (true) {
+        try io.checkCancel();
+        const remaining = until.durationFromNow(io).raw.toMilliseconds();
+        if (remaining <= 0) return error.Timeout;
+        const rc = c.poll(&fds, 1, @intCast(@min(remaining, 200)));
+        if (rc < 0) {
+            if (std.posix.errno(rc) == .INTR) continue;
+            return error.SocketFailed;
         }
-        // Child: continue to event loop
-    }
-
-    // Child continues after fork — parent already returned
-
-    // Run the daemon event loop
-    runLoop(allocator, sock_path) catch |e| {
-        log.err("daemon: loop error: {s}", .{@errorName(e)});
-    };
-
-    // Cleanup
-    std.fs.deleteFileAbsolute(sock_path) catch {};
-    std.fs.deleteFileAbsolute(pid_path) catch {};
-}
-
-fn ensureRuntimeDir(sock_path: []const u8) !void {
-    if (std.fs.path.dirname(sock_path)) |dir| {
-        // The macOS runtime dir lives under ~/Library/Application Support and
-        // is more than one level deep (TIN-2041); create the full path.
-        try std.fs.cwd().makePath(dir);
+        if (rc == 0) continue;
+        if (fds[0].revents & events != 0) return;
+        if (fds[0].revents & (c.POLL.ERR | c.POLL.HUP | c.POLL.NVAL) != 0) return error.ConnectionClosed;
     }
 }
 
-pub fn stop(allocator: std.mem.Allocator) !void {
-    if (comptime builtin.os.tag == .windows) {
-        log.err("daemon: unsupported on windows", .{});
-        return;
+pub const Frame = struct {
+    bytes: std.ArrayList(u8) = .empty,
+    complete: bool = false,
+
+    pub fn deinit(self: *Frame, allocator: std.mem.Allocator) void {
+        std.crypto.secureZero(u8, self.bytes.items);
+        self.bytes.deinit(allocator);
     }
 
-    const pid_path = try pidPath(allocator);
-    defer allocator.free(pid_path);
-
-    const pid = readPidFile(allocator, pid_path) catch {
-        log.err("daemon: not running (no pid file)", .{});
-        return;
-    };
-
-    // Send SIGTERM
-    std.posix.kill(pid, std.posix.SIG.TERM) catch {
-        log.err("daemon: failed to signal pid {d}", .{pid});
-        std.fs.deleteFileAbsolute(pid_path) catch {};
-        return;
-    };
-
-    const metadata_path = metadataPath(allocator) catch null;
-    defer if (metadata_path) |path| allocator.free(path);
-
-    log.info("daemon: stopped (pid {d})", .{pid});
-    std.fs.deleteFileAbsolute(pid_path) catch {};
-    if (metadata_path) |path| std.fs.deleteFileAbsolute(path) catch {};
-}
-
-pub fn status(allocator: std.mem.Allocator, writer: anytype, json: bool) !void {
-    const pid_path = try pidPath(allocator);
-    defer allocator.free(pid_path);
-
-    const running = isRunning(allocator);
-    const loop_hosted = if (running) hasStayAfloatMetadata(allocator) else false;
-
-    if (running) {
-        const pid = readPidFile(allocator, pid_path) catch 0;
-        const sock = try paths.socketPath(allocator);
-        defer allocator.free(sock);
-        if (json) {
-            try writer.writeAll("{\"status\":\"running\"");
-            try writeStatusContractJson(writer, loop_hosted);
-            const loop_info = try writeStatusLoopJson(allocator, writer, loop_hosted);
-            try writeStatusSnapshotJson(allocator, writer, loop_info.started_at);
-            try writer.print(",\"pid\":{d},\"transport\":", .{pid});
-            try std.json.stringify(if (loop_hosted) "foreground_tick_loop" else "unix_socket", .{}, writer);
-            try writer.writeAll(",\"socket\":");
-            if (loop_hosted) try writer.writeAll("null") else try std.json.stringify(sock, .{}, writer);
-            try writer.writeAll("}\n");
+    pub fn feed(self: *Frame, allocator: std.mem.Allocator, data: []const u8) !void {
+        if (self.complete) return error.TrailingFrame;
+        if (std.mem.indexOfScalar(u8, data, '\n')) |end| {
+            if (end + 1 != data.len) return error.TrailingFrame;
+            if (self.bytes.items.len + end > max_frame_bytes) return error.FrameTooLarge;
+            try self.bytes.appendSlice(allocator, data[0..end]);
+            if (self.bytes.items.len == 0) return error.EmptyFrame;
+            self.complete = true;
         } else {
-            if (loop_hosted) {
-                try writer.print("daemon: running foreground stay-afloat tick loop (pid {d})\n", .{pid});
-            } else {
-                try writer.print("daemon: running (pid {d}, socket {s})\n", .{ pid, sock });
-            }
-            try writer.writeAll("daemon: experimental; stay-afloat contract is the foreground tick engine\n");
-        }
-    } else {
-        if (json) {
-            try writer.writeAll("{\"status\":\"not_running\"");
-            try writeStatusContractJson(writer, false);
-            const loop_info = try writeStatusLoopJson(allocator, writer, false);
-            try writeStatusSnapshotJson(allocator, writer, loop_info.started_at);
-            try writer.writeAll("}\n");
-        } else {
-            try writer.writeAll("daemon: not running\n");
-            try writer.writeAll("daemon: experimental; stay-afloat contract is the foreground tick engine\n");
+            if (self.bytes.items.len + data.len > max_frame_bytes) return error.FrameTooLarge;
+            try self.bytes.appendSlice(allocator, data);
         }
     }
-}
+};
 
-fn writeStatusContractJson(writer: anytype, loop_hosted: bool) !void {
-    try writer.writeAll(",\"contract\":");
-    try std.json.stringify(if (loop_hosted) "experimental_foreground_tick_loop" else "experimental_socket_stub", .{}, writer);
-    try writer.writeAll(",\"production_supported\":false");
-    try writer.writeAll(",\"hosts_stay_afloat\":false");
-    try writer.writeAll(",\"wrapper_contract\":\"foreground_tick\"");
-    try writer.writeAll(",\"socket_transport_supported\":");
-    try writer.writeAll(if (builtin.os.tag == .windows) "false" else "true");
-}
-
-fn writeStatusLoopJson(allocator: std.mem.Allocator, writer: anytype, loop_hosted: bool) !StatusLoopInfo {
-    try writer.writeAll(",\"stay_afloat_loop\":");
-    if (loop_hosted) {
-        const metadata = try readMetadataAlloc(allocator);
-        if (metadata) |bytes| {
-            defer allocator.free(bytes);
-            const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-            if (trimmed.len != 0 and trimmed[0] == '{') {
-                try writer.writeAll(trimmed);
-                return .{ .started_at = jsonObjectI64(allocator, trimmed, "started_at") };
+pub fn readFrame(io: std.Io, allocator: std.mem.Allocator, fd: c.fd_t, until: std.Io.Clock.Timestamp) ![]u8 {
+    var frame: Frame = .{};
+    errdefer frame.deinit(allocator);
+    var buffer: [8192]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buffer);
+    while (!frame.complete) {
+        try waitReady(io, fd, c.POLL.IN, until);
+        const n = c.recv(fd, &buffer, buffer.len, 0);
+        if (n < 0) {
+            switch (std.posix.errno(n)) {
+                .INTR, .AGAIN => continue,
+                else => return error.SocketFailed,
             }
         }
+        if (n == 0) return error.IncompleteFrame;
+        try frame.feed(allocator, buffer[0..@intCast(n)]);
     }
-    try writer.writeAll("{\"hosted\":false,\"production_supported\":false}");
-    return .{};
+    return frame.bytes.toOwnedSlice(allocator);
 }
 
-fn writeStatusSnapshotJson(allocator: std.mem.Allocator, writer: anytype, loop_started_at: ?i64) !void {
-    try writer.writeAll(",\"stay_afloat\":");
-    const now = std.time.timestamp();
-    const snapshot = try repair_state.readDaemonSnapshotAlloc(allocator);
-    const freshness = if (snapshot) |bytes| blk: {
-        defer allocator.free(bytes);
-        const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-        const classified = snapshotFreshnessFromBytes(allocator, trimmed, now, loop_started_at);
-        if (trimmed.len != 0 and classified.parseable) {
-            try writer.writeAll(trimmed);
-        } else {
-            try writer.writeAll("null");
+/// Persistent control clients may send several complete NDJSON requests in
+/// one kernel read. Keep only one bounded frame plus a small read-ahead buffer.
+pub const ConnectionReader = struct {
+    buffer: [8192]u8 = undefined,
+    start: usize = 0,
+    end: usize = 0,
+
+    const Slice = union(enum) { pending, closed, frame: []u8 };
+
+    pub fn next(self: *ConnectionReader, io: std.Io, allocator: std.mem.Allocator, fd: c.fd_t, until: std.Io.Clock.Timestamp) !?[]u8 {
+        return self.nextWithPeer(io, allocator, fd, until, null);
+    }
+
+    /// Adapter framing returns bytes only after authenticating every received
+    /// segment. Authentication failure discards the entire partial frame.
+    pub fn nextWithPeer(self: *ConnectionReader, io: std.Io, allocator: std.mem.Allocator, fd: c.fd_t, until: std.Io.Clock.Timestamp, peer: ?*native_peer.Context) !?[]u8 {
+        var bytes: std.ArrayList(u8) = .empty;
+        defer {
+            std.crypto.secureZero(u8, bytes.items);
+            bytes.deinit(allocator);
         }
-        break :blk classified;
-    } else blk: {
-        try writer.writeAll("null");
-        break :blk missingSnapshotFreshness();
-    };
-
-    try writer.writeAll(",\"stay_afloat_snapshot\":");
-    try writeSnapshotFreshnessJson(writer, freshness);
-}
-
-fn snapshotFreshnessFromBytes(
-    allocator: std.mem.Allocator,
-    trimmed: []const u8,
-    now: i64,
-    loop_started_at: ?i64,
-) SnapshotFreshness {
-    if (trimmed.len == 0) return .{
-        .present = false,
-        .parseable = false,
-        .loop_started_at = loop_started_at,
-        .current_loop_observed = if (loop_started_at == null) null else false,
-        .reason = "empty",
-    };
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch {
-        return .{
-            .present = true,
-            .parseable = false,
-            .loop_started_at = loop_started_at,
-            .current_loop_observed = if (loop_started_at == null) null else false,
-            .reason = "malformed",
+        return switch (try self.nextSliceWithPeer(io, allocator, fd, &bytes, until, until, peer)) {
+            .frame => |frame| frame,
+            .closed => null,
+            .pending => error.Timeout,
         };
-    };
-    defer parsed.deinit();
-
-    const obj = switch (parsed.value) {
-        .object => |obj| obj,
-        else => return .{
-            .present = true,
-            .parseable = true,
-            .loop_started_at = loop_started_at,
-            .current_loop_observed = if (loop_started_at == null) null else false,
-            .reason = "missing_last_tick_at",
-        },
-    };
-
-    const last_tick_at = switch (obj.get("last_tick_at") orelse return .{
-        .present = true,
-        .parseable = true,
-        .loop_started_at = loop_started_at,
-        .current_loop_observed = if (loop_started_at == null) null else false,
-        .reason = "missing_last_tick_at",
-    }) {
-        .integer => |value| value,
-        else => return .{
-            .present = true,
-            .parseable = true,
-            .loop_started_at = loop_started_at,
-            .current_loop_observed = if (loop_started_at == null) null else false,
-            .reason = "invalid_last_tick_at",
-        },
-    };
-
-    const age = if (last_tick_at > now) 0 else now - last_tick_at;
-    const stale = age > stay_afloat_snapshot_stale_after_s;
-    const current_loop_observed = if (loop_started_at) |started_at| last_tick_at >= started_at else null;
-    return .{
-        .present = true,
-        .parseable = true,
-        .last_tick_at = last_tick_at,
-        .age_seconds = age,
-        .loop_started_at = loop_started_at,
-        .current_loop_observed = current_loop_observed,
-        .stale = stale,
-        .reason = if (stale) "stale" else if (current_loop_observed == false) "before_current_loop" else "fresh",
-    };
-}
-
-fn missingSnapshotFreshness() SnapshotFreshness {
-    return .{
-        .present = false,
-        .parseable = false,
-        .reason = "missing",
-    };
-}
-
-fn writeSnapshotFreshnessJson(writer: anytype, freshness: SnapshotFreshness) !void {
-    try writer.writeAll("{\"present\":");
-    try writer.writeAll(if (freshness.present) "true" else "false");
-    try writer.writeAll(",\"parseable\":");
-    try writer.writeAll(if (freshness.parseable) "true" else "false");
-    try writer.writeAll(",\"last_tick_at\":");
-    if (freshness.last_tick_at) |last_tick_at| try writer.print("{d}", .{last_tick_at}) else try writer.writeAll("null");
-    try writer.writeAll(",\"age_seconds\":");
-    if (freshness.age_seconds) |age_seconds| try writer.print("{d}", .{age_seconds}) else try writer.writeAll("null");
-    try writer.writeAll(",\"loop_started_at\":");
-    if (freshness.loop_started_at) |started_at| try writer.print("{d}", .{started_at}) else try writer.writeAll("null");
-    try writer.writeAll(",\"current_loop_observed\":");
-    if (freshness.current_loop_observed) |observed| try writer.writeAll(if (observed) "true" else "false") else try writer.writeAll("null");
-    try writer.writeAll(",\"stale_after_seconds\":");
-    try writer.print("{d}", .{freshness.stale_after_seconds});
-    try writer.writeAll(",\"stale\":");
-    try writer.writeAll(if (freshness.stale) "true" else "false");
-    try writer.writeAll(",\"reason\":");
-    try std.json.stringify(freshness.reason, .{}, writer);
-    try writer.writeAll("}");
-}
-
-fn jsonObjectI64(allocator: std.mem.Allocator, bytes: []const u8, field: []const u8) ?i64 {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
-    defer parsed.deinit();
-    const obj = switch (parsed.value) {
-        .object => |obj| obj,
-        else => return null,
-    };
-    return switch (obj.get(field) orelse return null) {
-        .integer => |value| value,
-        else => null,
-    };
-}
-
-fn isRunning(allocator: std.mem.Allocator) bool {
-    if (comptime builtin.os.tag == .windows) {
-        return false;
     }
 
-    const pid_path = pidPath(allocator) catch return false;
-    defer allocator.free(pid_path);
+    // A fairness slice may end with a partial frame. Its owner retains both
+    // accumulated bytes and read-ahead without extending the request deadline.
+    fn nextSlice(self: *ConnectionReader, io: std.Io, allocator: std.mem.Allocator, fd: c.fd_t, bytes: *std.ArrayList(u8), until: std.Io.Clock.Timestamp, slice_until: std.Io.Clock.Timestamp) !Slice {
+        return self.nextSliceWithPeer(io, allocator, fd, bytes, until, slice_until, null);
+    }
 
-    const pid = readPidFile(allocator, pid_path) catch return false;
+    fn nextSliceWithPeer(self: *ConnectionReader, io: std.Io, allocator: std.mem.Allocator, fd: c.fd_t, bytes: *std.ArrayList(u8), until: std.Io.Clock.Timestamp, slice_until: std.Io.Clock.Timestamp, peer: ?*native_peer.Context) !Slice {
+        while (true) {
+            try io.checkCancel();
+            if (until.durationFromNow(io).raw.toMilliseconds() <= 0) return error.Timeout;
+            if (self.start != self.end) {
+                const pending = self.buffer[self.start..self.end];
+                const newline = std.mem.indexOfScalar(u8, pending, '\n');
+                const n = newline orelse pending.len;
+                if (bytes.items.len + n > max_frame_bytes) return error.FrameTooLarge;
+                try bytes.appendSlice(allocator, pending[0..n]);
+                self.start += n;
+                if (newline != null) {
+                    self.start += 1;
+                    if (bytes.items.len == 0) return error.EmptyFrame;
+                    return .{ .frame = try bytes.toOwnedSlice(allocator) };
+                }
+            }
+            waitReady(io, fd, c.POLL.IN, slice_until) catch |err| {
+                if (err == error.Timeout and until.durationFromNow(io).raw.toMilliseconds() > 0) return .pending;
+                return err;
+            };
+            const n: isize = if (peer) |verified| @intCast(verified.receiveSegment(&self.buffer) catch |err| switch (err) {
+                error.WouldBlock, error.Interrupted => continue,
+                else => {
+                    std.crypto.secureZero(u8, &self.buffer);
+                    self.start = 0;
+                    self.end = 0;
+                    return err;
+                },
+            }) else c.recv(fd, &self.buffer, self.buffer.len, 0);
+            if (n < 0) {
+                switch (std.posix.errno(n)) {
+                    .INTR, .AGAIN => continue,
+                    else => return error.SocketFailed,
+                }
+            }
+            if (n == 0) {
+                if (bytes.items.len != 0) return error.IncompleteFrame;
+                return .closed;
+            }
+            self.start = 0;
+            self.end = @intCast(n);
+        }
+    }
+};
 
-    // Check if process is alive
-    std.posix.kill(pid, 0) catch return false;
+fn writeBytes(io: std.Io, fd: c.fd_t, bytes: []const u8, until: std.Io.Clock.Timestamp) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        try waitReady(io, fd, c.POLL.OUT, until);
+        const n = c.send(fd, bytes[offset..].ptr, bytes.len - offset, if (builtin.os.tag == .linux) c.MSG.NOSIGNAL else 0);
+        if (n < 0) {
+            switch (std.posix.errno(n)) {
+                .INTR, .AGAIN => continue,
+                else => return error.SocketFailed,
+            }
+        }
+        if (n == 0) return error.ConnectionClosed;
+        offset += @intCast(n);
+    }
+}
+
+pub fn writeFrame(io: std.Io, fd: c.fd_t, bytes: []const u8, until: std.Io.Clock.Timestamp) !void {
+    if (bytes.len > max_frame_bytes or std.mem.indexOfScalar(u8, bytes, '\n') != null) return error.FrameTooLarge;
+    try writeBytes(io, fd, bytes, until);
+    try writeBytes(io, fd, "\n", until);
+}
+
+fn connect(io: std.Io, path: []const u8, until: std.Io.Clock.Timestamp) !c.fd_t {
+    if (path.len >= @as(c.sockaddr.un, undefined).path.len) return error.SocketPathTooLong;
+    const fd = socket(c.AF.UNIX, c.SOCK.STREAM, 0);
+    if (fd < 0) return error.SocketFailed;
+    errdefer _ = c.close(fd);
+    try nonblocking(fd);
+    var addr: c.sockaddr.un = .{ .path = @splat(0) };
+    @memcpy(addr.path[0..path.len], path);
+    addr.path[path.len] = 0;
+    const addr_len: c.socklen_t = @intCast(@offsetOf(c.sockaddr.un, "path") + path.len + 1);
+    if (builtin.os.tag == .macos) addr.len = @intCast(addr_len);
+    if (c.connect(fd, @ptrCast(&addr), addr_len) != 0) {
+        switch (std.posix.errno(-1)) {
+            .INPROGRESS, .AGAIN => {},
+            .NOENT, .CONNREFUSED => return error.DaemonUnavailable,
+            else => return error.SocketFailed,
+        }
+        try waitReady(io, fd, c.POLL.OUT, until);
+        var connect_error: c_int = 0;
+        var len: c.socklen_t = @sizeOf(c_int);
+        if (c.getsockopt(fd, c.SOL.SOCKET, c.SO.ERROR, &connect_error, &len) != 0 or connect_error != 0) return error.DaemonUnavailable;
+    }
+    try verifyPeer(fd);
+    return fd;
+}
+
+pub fn exchange(io: std.Io, allocator: std.mem.Allocator, socket_path: []const u8, payload: []const u8) ![]u8 {
+    return exchangeWithTimeout(io, allocator, socket_path, payload, request_timeout_ms);
+}
+
+pub fn exchangeWithTimeout(io: std.Io, allocator: std.mem.Allocator, socket_path: []const u8, payload: []const u8, timeout_ms: i64) ![]u8 {
+    if (timeout_ms < 1 or timeout_ms > request_timeout_ms) return error.InvalidDeadline;
+    paths.verifySocketPath(allocator, socket_path) catch |err| switch (err) {
+        error.PathOpenFailed => return error.DaemonUnavailable,
+        else => return err,
+    };
+    const until = deadlineAfter(io, timeout_ms);
+    const fd = try connect(io, socket_path, until);
+    defer _ = c.close(fd);
+    try writeFrame(io, fd, payload, until);
+    return readFrame(io, allocator, fd, until);
+}
+
+const ControlConnection = struct {
+    reader: ConnectionReader = .{},
+    partial: std.ArrayList(u8) = .empty,
+    until: std.Io.Clock.Timestamp,
+};
+const Job = struct { stream: std.Io.net.Stream, channel: Channel, until: std.Io.Clock.Timestamp, control: ?*ControlConnection = null };
+const Pool = struct {
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    engine: *Engine,
+    queue: std.Io.Queue(Job),
+    failures: std.atomic.Value(u64) = .init(0),
+    control_connections: std.atomic.Value(usize) = .init(0),
+};
+
+fn closeJob(pool: *Pool, job: Job) void {
+    job.stream.close(pool.io);
+    if (job.control) |connection| {
+        std.crypto.secureZero(u8, connection.partial.items);
+        connection.partial.deinit(pool.allocator);
+        std.crypto.secureZero(u8, &connection.reader.buffer);
+        pool.allocator.destroy(connection);
+        _ = pool.control_connections.fetchSub(1, .monotonic);
+    }
+}
+
+/// Only control connections yield. Native/browser workers retain their existing
+/// channel budgets and behavior. Every admitted control connection has a queue
+/// slot even while active, so yielding cannot discard a request or block.
+fn handleControlSlice(pool: *Pool, job: Job) !bool {
+    const connection = job.control.?;
+    const fd = job.stream.socket.handle;
+    try verifyPeer(fd);
+    const remaining = connection.until.durationFromNow(pool.io).raw.toMilliseconds();
+    if (remaining <= 0) return error.Timeout;
+    const slice_until = deadlineAfter(pool.io, @min(remaining, control_slice_ms));
+    const payload = switch (try connection.reader.nextSlice(pool.io, pool.allocator, fd, &connection.partial, connection.until, slice_until)) {
+        .pending => return true,
+        .closed => return false,
+        .frame => |bytes| bytes,
+    };
+    defer {
+        std.crypto.secureZero(u8, payload);
+        pool.allocator.free(payload);
+    }
+    var arena: std.heap.ArenaAllocator = .init(pool.allocator);
+    defer arena.deinit();
+    const reply = try pool.engine.dispatchUntil(arena.allocator(), payload, .control, connection.until);
+    defer std.crypto.secureZero(u8, reply);
+    try writeFrame(pool.io, fd, reply, connection.until);
+    connection.until = channelDeadline(pool.io, .control);
     return true;
 }
 
-fn runLoop(allocator: std.mem.Allocator, sock_path: []const u8) !void {
-    if (comptime builtin.os.tag == .windows) {
-        return error.Unsupported;
-    }
-
-    // Remove stale socket
-    std.fs.deleteFileAbsolute(sock_path) catch {};
-
-    const addr = std.net.Address.initUnix(sock_path) catch return error.Unexpected;
-    var server = addr.listen(.{ .reuse_address = true }) catch return error.Unexpected;
-    defer server.deinit();
-
-    log.info("daemon: listening on {s}", .{sock_path});
-
-    // Main loop: accept connections and handle commands
+fn handle(pool: *Pool, job: Job) !void {
+    const fd = job.stream.socket.handle;
+    defer job.stream.close(pool.io);
+    try verifyPeer(fd);
+    try nonblocking(fd);
+    if (job.channel == .adapter) try native_peer.Context.enable(fd);
+    var peer: ?native_peer.Context = if (job.channel == .adapter)
+        try native_peer.Context.capture(fd, c.getuid())
+    else
+        null;
+    defer if (peer) |*verified| verified.deinit();
+    var reader: ConnectionReader = .{};
+    defer std.crypto.secureZero(u8, &reader.buffer);
+    var until = job.until;
     while (true) {
-        if (server.accept()) |conn| {
-            defer conn.stream.close();
-            handleConnection(allocator, conn.stream) catch |e| {
-                log.debug("daemon: connection error: {s}", .{@errorName(e)});
-            };
-        } else |_| {
-            break;
-        }
+        var arena: std.heap.ArenaAllocator = .init(pool.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const payload = (try reader.nextWithPeer(pool.io, allocator, fd, until, if (peer) |*verified| verified else null)) orelse return;
+        defer std.crypto.secureZero(u8, payload);
+        const reply = if (peer) |*verified|
+            try pool.engine.dispatchUntilWithPeer(allocator, payload, job.channel, until, verified)
+        else
+            try pool.engine.dispatchUntil(allocator, payload, job.channel, until);
+        defer std.crypto.secureZero(u8, reply);
+        try writeFrame(pool.io, fd, reply, until);
+        until = channelDeadline(pool.io, job.channel);
     }
 }
 
-fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream) !void {
-    var buf: [1024]u8 = undefined;
-    const n = stream.read(&buf) catch return;
-    if (n == 0) return;
-
-    const cmd = std.mem.trim(u8, buf[0..n], " \t\n\r");
-
-    if (std.mem.eql(u8, cmd, "status")) {
-        var store = health_mod.HealthStore.load(allocator, .{});
-        defer store.deinit();
-
-        var resp = std.ArrayList(u8).init(allocator);
-        defer resp.deinit();
-        const writer = resp.writer();
-
-        try writer.writeAll("{\"status\":\"running\",\"accounts\":{");
-        var first = true;
-        var it = store.accounts.iterator();
-        while (it.next()) |entry| {
-            if (!first) try writer.writeByte(',');
-            first = false;
-            try writer.print("\"{s}\":{{\"score\":{d},\"circuit\":\"{s}\"}}", .{
-                entry.key_ptr.*,
-                entry.value_ptr.score.score,
-                switch (entry.value_ptr.circuit) {
-                    .closed => "closed",
-                    .open => "open",
-                    .half_open => "half_open",
-                },
-            });
-        }
-        try writer.writeAll("}}\n");
-        _ = stream.write(resp.items) catch {};
-    } else if (std.mem.eql(u8, cmd, "stop")) {
-        _ = stream.write("stopping\n") catch {};
-        std.process.exit(0);
-    } else if (std.mem.startsWith(u8, cmd, "refresh ")) {
-        _ = stream.write("refresh unsupported; use oauth-mux repair-plan\n") catch {};
-    } else {
-        _ = stream.write("unknown command\n") catch {};
-    }
-}
-
-fn pidPath(allocator: std.mem.Allocator) ![]const u8 {
-    const dir = paths.runtimeDir(allocator) catch return error.OutOfMemory;
-    defer allocator.free(dir);
-    return std.fs.path.join(allocator, &.{ dir, "daemon.pid" });
-}
-
-fn currentPid() Pid {
-    return switch (builtin.os.tag) {
-        .linux => std.os.linux.getpid(),
-        .macos => std.c.getpid(),
-        else => 0,
-    };
-}
-
-fn writePidFile(path: []const u8, pid: Pid) !void {
-    try ensureParentDir(path);
-    const file = try std.fs.createFileAbsolute(path, .{ .mode = 0o600 });
-    defer file.close();
-    try file.writer().print("{d}", .{pid});
-}
-
-fn readPidFile(allocator: std.mem.Allocator, path: []const u8) !Pid {
-    const file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
-    var buf: [32]u8 = undefined;
-    const n = try file.readAll(&buf);
-    const pid_str = std.mem.trim(u8, buf[0..n], " \t\n\r");
-    _ = allocator;
-    return std.fmt.parseInt(Pid, pid_str, 10) catch return error.InvalidCharacter;
-}
-
-fn metadataPath(allocator: std.mem.Allocator) ![]const u8 {
-    const dir = paths.runtimeDir(allocator) catch return error.OutOfMemory;
-    defer allocator.free(dir);
-    return std.fs.path.join(allocator, &.{ dir, "daemon-metadata.json" });
-}
-
-fn writeStayAfloatMetadata(path: []const u8, metadata: StayAfloatRunMetadata) !void {
-    try ensureParentDir(path);
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true, .mode = 0o600 });
-    defer file.close();
-    try writeStayAfloatMetadataJson(file.writer(), metadata);
-}
-
-fn writeStayAfloatMetadataJson(writer: anytype, metadata: StayAfloatRunMetadata) !void {
-    try writer.writeAll("{\"hosted\":true");
-    try writer.writeAll(",\"mode\":\"stay_afloat_tick_loop\"");
-    try writer.writeAll(",\"contract\":\"beta_foreground_tick_host\"");
-    try writer.writeAll(",\"production_supported\":false");
-    try writer.writeAll(",\"selector\":{");
-    try writer.writeAll("\"profile\":");
-    if (metadata.profile) |profile| try std.json.stringify(profile, .{}, writer) else try writer.writeAll("null");
-    try writer.writeAll(",\"provider\":");
-    if (metadata.provider) |provider| try std.json.stringify(provider, .{}, writer) else try writer.writeAll("null");
-    try writer.writeAll(",\"account\":");
-    if (metadata.account) |account| try std.json.stringify(account, .{}, writer) else try writer.writeAll("null");
-    try writer.writeAll(",\"capability\":");
-    if (metadata.capability) |capability| try std.json.stringify(capability, .{}, writer) else try writer.writeAll("null");
-    try writer.writeByte('}');
-    try writer.writeAll(",\"once\":");
-    try writer.writeAll(if (metadata.once) "true" else "false");
-    try writer.writeAll(",\"iterations\":");
-    try writer.print("{d}", .{metadata.iterations});
-    try writer.writeAll(",\"interval_ms\":");
-    try writer.print("{d}", .{metadata.interval_ms});
-    try writer.writeAll(",\"execution_mode\":");
-    try std.json.stringify(if (metadata.execute) "execute" else "plan", .{}, writer);
-    try writer.writeAll(",\"started_at\":");
-    try writer.print("{d}", .{std.time.timestamp()});
-    try writer.writeAll("}\n");
-}
-
-fn readMetadataAlloc(allocator: std.mem.Allocator) !?[]const u8 {
-    const path = try metadataPath(allocator);
-    defer allocator.free(path);
-    const file = std.fs.openFileAbsolute(path, .{}) catch |e| switch (e) {
-        error.FileNotFound => return null,
-        else => return e,
-    };
-    defer file.close();
-    return try file.readToEndAlloc(allocator, 16 * 1024);
-}
-
-fn hasStayAfloatMetadata(allocator: std.mem.Allocator) bool {
-    const metadata = readMetadataAlloc(allocator) catch return false;
-    if (metadata) |bytes| {
-        defer allocator.free(bytes);
-        return std.mem.indexOf(u8, bytes, "\"hosted\":true") != null and
-            (std.mem.indexOf(u8, bytes, "\"mode\":\"stay_afloat_tick_loop\"") != null or
-                std.mem.indexOf(u8, bytes, "\"mode\":\"stay_afloat_supervisor\"") != null);
-    }
+fn handleNonControl(pool: *Pool, job: Job) !bool {
+    try handle(pool, job);
     return false;
 }
 
-fn ensureParentDir(path: []const u8) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        // The macOS runtime dir lives under ~/Library/Application Support and
-        // is more than one level deep (TIN-2041); create the full path.
-        try std.fs.cwd().makePath(dir);
+fn worker(pool: *Pool) std.Io.Cancelable!void {
+    while (true) {
+        const job = pool.queue.getOne(pool.io) catch |err| switch (err) {
+            error.Closed => return,
+            error.Canceled => return error.Canceled,
+        };
+        const yielded = if (job.control != null) handleControlSlice(pool, job) else handleNonControl(pool, job);
+        const keep = yielded catch |err| {
+            if (job.control != null) closeJob(pool, job);
+            if (err == error.Canceled) return error.Canceled;
+            if (err == error.ConnectionClosed) continue;
+            // Connection faults are accounted without recording request bytes.
+            _ = pool.failures.fetchAdd(1, .monotonic);
+            std.log.warn("local {s} request failed: {s}", .{ @tagName(job.channel), @errorName(err) });
+            continue;
+        };
+        if (job.control == null) continue;
+        if (!keep) {
+            closeJob(pool, job);
+            continue;
+        }
+        const queued = pool.queue.put(pool.io, &.{job}, 0) catch |err| {
+            closeJob(pool, job);
+            return switch (err) {
+                error.Closed => {},
+                error.Canceled => error.Canceled,
+            };
+        };
+        // Admission reserves a slot for this active connection. A full queue
+        // here violates that invariant; fail closed without executing it again.
+        if (queued == 0) {
+            closeJob(pool, job);
+            _ = pool.failures.fetchAdd(1, .monotonic);
+        }
     }
 }
 
-/// Test helper: point the runtime and state dirs at a per-test tmp dir via
-/// the OMUX_RUNTIME_DIR / OMUX_STATE_DIR seams so daemon tests assert a
-/// synthetic state instead of the developer's real machine state.
-const TestDaemonDirScope = struct {
-    tmp: std.testing.TmpDir,
-    root: []const u8,
-    overrides: std.process.EnvMap,
+pub fn run(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations) !void {
+    var custody = try paths.Custody.acquire(allocator, locations);
+    defer custody.deinit();
+    const engine = try Engine.openForInstance(io, allocator, locations.state, locations.instance);
+    defer engine.deinit();
+    try serve(io, allocator, locations, custody, engine);
+}
 
-    fn init(allocator: std.mem.Allocator) !TestDaemonDirScope {
-        var tmp = std.testing.tmpDir(.{});
-        errdefer tmp.cleanup();
-        const root = try tmp.dir.realpathAlloc(allocator, ".");
-        errdefer allocator.free(root);
-        var overrides = std.process.EnvMap.init(allocator);
-        errdefer overrides.deinit();
-        try overrides.put("OMUX_RUNTIME_DIR", root);
-        try overrides.put("OMUX_STATE_DIR", root);
-        return .{ .tmp = tmp, .root = root, .overrides = overrides };
+/// Exercise the production socket/worker path with an explicitly synthetic
+/// engine. This entry point never acquires a personal vault key.
+pub fn serveWithEngineForTest(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, engine: *Engine) !void {
+    if (!builtin.is_test) return error.TestOnly;
+    var custody = try paths.Custody.acquire(allocator, locations);
+    defer custody.deinit();
+    try serve(io, allocator, locations, custody, engine);
+}
+
+pub fn stopForTest() !void {
+    if (!builtin.is_test) return error.TestOnly;
+    stopping.store(true, .release);
+}
+
+fn serve(io: std.Io, allocator: std.mem.Allocator, locations: paths.Locations, custody: paths.Custody, engine: *Engine) !void {
+    const socket_names = [_][:0]const u8{ "control.sock", "browser.sock", "adapter.sock" };
+    const socket_paths = [_][]const u8{ locations.control, locations.browser, locations.adapter };
+    const channels = [_]Channel{ .control, .browser, .adapter };
+    var servers: [3]std.Io.net.Server = undefined;
+    var initialized: usize = 0;
+    defer for (0..initialized) |i| {
+        servers[i].deinit(io);
+        custody.removeSocket(socket_names[i]) catch |err| {
+            std.log.err("private socket cleanup failed: {s}", .{@errorName(err)});
+        };
+    };
+    for (socket_paths, 0..) |path, i| {
+        try custody.removeSocket(socket_names[i]);
+        const address = try std.Io.net.UnixAddress.init(path);
+        servers[i] = if (channels[i] == .adapter)
+            try listenAdapter(io, path, custody)
+        else
+            try address.listen(io, .{ .kernel_backlog = queue_capacity });
+        initialized += 1;
+        if (c.fchmodat(custody.run_fd, socket_names[i].ptr, 0o600, 0) != 0) return error.SocketPermissionFailed;
+        try nonblocking(servers[i].socket.handle);
     }
-
-    fn activate(self: *TestDaemonDirScope) void {
-        env.test_overrides = &self.overrides;
+    var jobs: [3][control_connection_capacity]Job = undefined;
+    var pools: [3]Pool = undefined;
+    for (&pools, 0..) |*pool, i| pool.* = .{ .io = io, .allocator = allocator, .engine = engine, .queue = .init(jobs[i][0..if (i == 0) control_connection_capacity else queue_capacity]) };
+    var workers: std.Io.Group = .init;
+    defer {
+        for (&pools) |*pool| pool.queue.close(io);
+        workers.cancel(io);
+        for (&pools) |*pool| {
+            var leftovers: [1]Job = undefined;
+            while (true) {
+                const n = pool.queue.getUncancelable(io, &leftovers, 0) catch break;
+                if (n == 0) break;
+                closeJob(pool, leftovers[0]);
+            }
+        }
     }
-
-    fn deinit(self: *TestDaemonDirScope, allocator: std.mem.Allocator) void {
-        env.test_overrides = null;
-        self.overrides.deinit();
-        allocator.free(self.root);
-        self.tmp.cleanup();
+    for (&pools, 0..) |*pool, i| for (0..channel_workers[i]) |_| try workers.concurrent(io, worker, .{pool});
+    stopping.store(false, .release);
+    const old_term = signal(@backingInt(c.SIG.TERM), stopSignal);
+    const old_int = signal(@backingInt(c.SIG.INT), stopSignal);
+    defer {
+        _ = signal(@backingInt(c.SIG.TERM), old_term);
+        _ = signal(@backingInt(c.SIG.INT), old_int);
     }
-};
-
-test "isRunning returns false when no daemon" {
-    var scope = try TestDaemonDirScope.init(std.testing.allocator);
-    defer scope.deinit(std.testing.allocator);
-    scope.activate();
-
-    try std.testing.expect(!isRunning(std.testing.allocator));
+    var pollfds: [3]c.pollfd = undefined;
+    while (!stopping.load(.acquire)) {
+        try io.checkCancel();
+        for (&pollfds, 0..) |*entry, i| entry.* = .{ .fd = servers[i].socket.handle, .events = c.POLL.IN, .revents = 0 };
+        const rc = c.poll(&pollfds, pollfds.len, 200);
+        if (rc < 0) {
+            if (std.posix.errno(rc) == .INTR) continue;
+            return error.SocketFailed;
+        }
+        for (pollfds, 0..) |entry, i| {
+            if (entry.revents & c.POLL.IN == 0) continue;
+            const stream = (try acceptReady(io, servers[i].socket.handle)) orelse continue;
+            var job: Job = .{ .stream = stream, .channel = channels[i], .until = channelDeadline(io, channels[i]) };
+            if (channels[i] == .control) {
+                if (pools[i].control_connections.fetchAdd(1, .monotonic) >= control_connection_capacity) {
+                    _ = pools[i].control_connections.fetchSub(1, .monotonic);
+                    stream.close(io);
+                    continue;
+                }
+                const connection = allocator.create(ControlConnection) catch |err| {
+                    _ = pools[i].control_connections.fetchSub(1, .monotonic);
+                    stream.close(io);
+                    return err;
+                };
+                connection.* = .{ .until = job.until };
+                job.control = connection;
+            }
+            const queued = pools[i].queue.put(io, &.{job}, 0) catch |err| {
+                closeJob(&pools[i], job);
+                return err;
+            };
+            if (queued == 0) closeJob(&pools[i], job);
+        }
+    }
 }
 
-test "isRunning returns true for a live pid in the runtime pid file" {
-    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
-    const a = std.testing.allocator;
-    var scope = try TestDaemonDirScope.init(a);
-    defer scope.deinit(a);
-    scope.activate();
-
-    // Synthetic pid file carrying this test process's own (live) pid.
-    const pid_path = try pidPath(a);
-    defer a.free(pid_path);
-    try writePidFile(pid_path, currentPid());
-
-    try std.testing.expect(isRunning(a));
+test "NDJSON framing rejects oversized and pipelined input" {
+    const allocator = std.testing.allocator;
+    var frame: Frame = .{};
+    defer frame.deinit(allocator);
+    try frame.feed(allocator, "{\"jsonrpc\":");
+    try frame.feed(allocator, "\"2.0\"}\n");
+    try std.testing.expect(frame.complete);
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\"}", frame.bytes.items);
+    try std.testing.expectError(error.TrailingFrame, frame.feed(allocator, "{}\n"));
+    var pipelined: Frame = .{};
+    defer pipelined.deinit(allocator);
+    try std.testing.expectError(error.TrailingFrame, pipelined.feed(allocator, "{}\n{}\n"));
+    var oversized: Frame = .{};
+    defer oversized.deinit(allocator);
+    const huge = try allocator.alloc(u8, max_frame_bytes + 1);
+    defer allocator.free(huge);
+    @memset(huge, 'x');
+    try std.testing.expectError(error.FrameTooLarge, oversized.feed(allocator, huge));
 }
 
-test "status json exposes socket daemon contract" {
-    var scope = try TestDaemonDirScope.init(std.testing.allocator);
-    defer scope.deinit(std.testing.allocator);
-    scope.activate();
-
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-
-    try status(std.testing.allocator, buf.writer(), true);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"status\":\"not_running\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"contract\":\"experimental_socket_stub\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"production_supported\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hosts_stay_afloat\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"wrapper_contract\":\"foreground_tick\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat_loop\":{\"hosted\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat\":") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stay_afloat_snapshot\":") != null);
+test "local socket framing verifies peer and bounds incomplete reads" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var pair: [2]c.fd_t = undefined;
+    if (socketpair(c.AF.UNIX, c.SOCK.STREAM, 0, &pair) != 0) return error.SocketFailed;
+    defer _ = c.close(pair[0]);
+    defer _ = c.close(pair[1]);
+    try nonblocking(pair[0]);
+    try nonblocking(pair[1]);
+    try verifyPeer(pair[0]);
+    try verifyPeer(pair[1]);
+    const io = std.testing.io;
+    try writeFrame(io, pair[0], "{\"jsonrpc\":\"2.0\"}", deadline(io));
+    const payload = try readFrame(io, std.testing.allocator, pair[1], deadline(io));
+    defer std.testing.allocator.free(payload);
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\"}", payload);
+    const expired = std.Io.Clock.Timestamp.now(io, .awake);
+    try std.testing.expectError(error.Timeout, readFrame(io, std.testing.allocator, pair[1], expired));
+    const partial_until = std.Io.Clock.Timestamp.fromNow(io, .{ .clock = .awake, .raw = .fromMilliseconds(5) });
+    try writeBytes(io, pair[0], "{", deadline(io));
+    try std.testing.expectError(error.Timeout, readFrame(io, std.testing.allocator, pair[1], partial_until));
 }
 
-test "stay-afloat snapshot freshness reports fresh and stale snapshots" {
-    const fresh = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1000}", 1100, null);
-    try std.testing.expect(fresh.present);
-    try std.testing.expect(fresh.parseable);
-    try std.testing.expectEqual(@as(?i64, 1000), fresh.last_tick_at);
-    try std.testing.expectEqual(@as(?i64, 100), fresh.age_seconds);
-    try std.testing.expect(!fresh.stale);
-    try std.testing.expectEqualStrings("fresh", fresh.reason);
-
-    const stale = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1000}", 1301, null);
-    try std.testing.expect(stale.present);
-    try std.testing.expect(stale.parseable);
-    try std.testing.expectEqual(@as(?i64, 301), stale.age_seconds);
-    try std.testing.expect(stale.stale);
-    try std.testing.expectEqualStrings("stale", stale.reason);
-
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-    try writeSnapshotFreshnessJson(buf.writer(), fresh);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"present\":true,\"parseable\":true,\"last_tick_at\":1000") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"age_seconds\":100") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"loop_started_at\":null") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"current_loop_observed\":null") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale_after_seconds\":300") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stale\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"reason\":\"fresh\"") != null);
+test "persistent connection reader preserves coalesced requests" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var pair: [2]c.fd_t = undefined;
+    if (socketpair(c.AF.UNIX, c.SOCK.STREAM, 0, &pair) != 0) return error.SocketFailed;
+    defer _ = c.close(pair[0]);
+    defer _ = c.close(pair[1]);
+    try nonblocking(pair[0]);
+    try nonblocking(pair[1]);
+    const io = std.testing.io;
+    try writeBytes(io, pair[0], "{\"id\":1}\n{\"id\":2}\n", deadline(io));
+    var reader: ConnectionReader = .{};
+    const first = (try reader.next(io, std.testing.allocator, pair[1], deadline(io))).?;
+    defer std.testing.allocator.free(first);
+    const second = (try reader.next(io, std.testing.allocator, pair[1], deadline(io))).?;
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings("{\"id\":1}", first);
+    try std.testing.expectEqualStrings("{\"id\":2}", second);
 }
 
-test "stay-afloat snapshot freshness reports missing and malformed snapshots" {
-    const missing = missingSnapshotFreshness();
-    try std.testing.expect(!missing.present);
-    try std.testing.expect(!missing.parseable);
-    try std.testing.expect(missing.stale);
-    try std.testing.expectEqualStrings("missing", missing.reason);
-
-    const empty = snapshotFreshnessFromBytes(std.testing.allocator, "", 1100, null);
-    try std.testing.expect(!empty.present);
-    try std.testing.expect(!empty.parseable);
-    try std.testing.expect(empty.stale);
-    try std.testing.expectEqualStrings("empty", empty.reason);
-
-    const malformed = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":", 1100, null);
-    try std.testing.expect(malformed.present);
-    try std.testing.expect(!malformed.parseable);
-    try std.testing.expect(malformed.stale);
-    try std.testing.expectEqualStrings("malformed", malformed.reason);
-
-    const missing_tick = snapshotFreshnessFromBytes(std.testing.allocator, "{\"version\":\"test\"}", 1100, null);
-    try std.testing.expect(missing_tick.present);
-    try std.testing.expect(missing_tick.parseable);
-    try std.testing.expect(missing_tick.stale);
-    try std.testing.expectEqualStrings("missing_last_tick_at", missing_tick.reason);
+test "control reader yields partial frames without renewing their absolute deadline" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    var pair: [2]c.fd_t = undefined;
+    if (socketpair(c.AF.UNIX, c.SOCK.STREAM, 0, &pair) != 0) return error.SocketFailed;
+    defer _ = c.close(pair[0]);
+    defer _ = c.close(pair[1]);
+    try nonblocking(pair[0]);
+    try nonblocking(pair[1]);
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var reader: ConnectionReader = .{};
+    var partial: std.ArrayList(u8) = .empty;
+    defer partial.deinit(allocator);
+    const until = deadline(io);
+    try writeBytes(io, pair[0], "{\"id\":", until);
+    const yielded = try reader.nextSlice(io, allocator, pair[1], &partial, until, deadlineAfter(io, 5));
+    try std.testing.expect(yielded == .pending);
+    try std.testing.expectEqualStrings("{\"id\":", partial.items);
+    // Expiry also applies to bytes already buffered at an earlier slice.
+    try std.testing.expectError(error.Timeout, reader.nextSlice(io, allocator, pair[1], &partial, .now(io, .awake), until));
+    try writeBytes(io, pair[0], "1}\n{\"id\":2}\n", until);
+    const first = (try reader.nextSlice(io, allocator, pair[1], &partial, until, until)).frame;
+    defer allocator.free(first);
+    const second = (try reader.nextSlice(io, allocator, pair[1], &partial, until, until)).frame;
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings("{\"id\":1}", first);
+    try std.testing.expectEqualStrings("{\"id\":2}", second);
 }
 
-test "stay-afloat snapshot freshness identifies snapshots before active loop" {
-    const before_loop = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1000}", 1100, 1050);
-    try std.testing.expect(before_loop.present);
-    try std.testing.expect(before_loop.parseable);
-    try std.testing.expectEqual(@as(?i64, 1050), before_loop.loop_started_at);
-    try std.testing.expectEqual(@as(?bool, false), before_loop.current_loop_observed);
-    try std.testing.expect(!before_loop.stale);
-    try std.testing.expectEqualStrings("before_current_loop", before_loop.reason);
-
-    const current_loop = snapshotFreshnessFromBytes(std.testing.allocator, "{\"last_tick_at\":1100}", 1100, 1050);
-    try std.testing.expectEqual(@as(?i64, 1050), current_loop.loop_started_at);
-    try std.testing.expectEqual(@as(?bool, true), current_loop.current_loop_observed);
-    try std.testing.expect(!current_loop.stale);
-    try std.testing.expectEqualStrings("fresh", current_loop.reason);
+test "fifth control client progresses while four persistent clients remain connected" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    const io = std.testing.io;
+    const allocator = std.heap.page_allocator;
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var nonce: [8]u8 = undefined;
+    try io.randomSecure(&nonce);
+    const root = try std.fmt.allocPrint(a, "{s}/omux-fair-{s}", .{ if (builtin.os.tag == .macos) "/private/tmp" else "/tmp", std.fmt.bytesToHex(nonce, .lower) });
+    const root_fd = try paths.openPrivateRoot(a, root, true);
+    _ = c.close(root_fd);
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch |err| std.log.err("fixture cleanup failed: {s}", .{@errorName(err)});
+    const locations = try paths.Locations.init(a, root);
+    const engine = try Engine.openWithKey(io, allocator, root, @splat(47));
+    defer engine.deinit();
+    const Server = struct {
+        locations: paths.Locations,
+        engine: *Engine,
+        failure: ?anyerror = null,
+        fn run(self: *@This()) void {
+            serveWithEngineForTest(std.testing.io, std.heap.page_allocator, self.locations, self.engine) catch |err| {
+                self.failure = err;
+            };
+        }
+    };
+    var server: Server = .{ .locations = locations, .engine = engine };
+    const thread = try std.Thread.spawn(.{}, Server.run, .{&server});
+    defer {
+        stopForTest() catch unreachable;
+        thread.join();
+        std.testing.expect(server.failure == null) catch @panic("fairness fixture daemon failed");
+    }
+    const health = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"system.health\"}";
+    var ready = false;
+    for (0..100) |_| {
+        const response = exchangeWithTimeout(io, a, locations.control, health, 100) catch {
+            try io.sleep(.fromMilliseconds(10), .awake);
+            continue;
+        };
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, response, .{});
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.object.contains("result"));
+        ready = true;
+        break;
+    }
+    try std.testing.expect(ready);
+    var clients: [4]c.fd_t = undefined;
+    var connected: usize = 0;
+    defer for (clients[0..connected]) |fd| {
+        _ = c.close(fd);
+    };
+    for (&clients) |*fd| {
+        fd.* = try connect(io, locations.control, deadline(io));
+        connected += 1;
+        try writeFrame(io, fd.*, health, deadline(io));
+        const reply = try readFrame(io, a, fd.*, deadlineAfter(io, 2_000));
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.object.contains("result"));
+    }
+    const fifth = try exchangeWithTimeout(io, a, locations.control, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"state.snapshot\"}", 2_000);
+    const parsed_fifth = try std.json.parseFromSlice(std.json.Value, a, fifth, .{});
+    defer parsed_fifth.deinit();
+    try std.testing.expectEqual(@as(i64, 5), parsed_fifth.value.object.get("id").?.integer);
+    try std.testing.expect(parsed_fifth.value.object.contains("result"));
+    // Existing controls retain their streams and partial/coalesced requests
+    // across yields; no reconnect or replay is required to complete them.
+    try writeBytes(io, clients[0], "{\"jsonrpc\":\"2.0\",\"id\":6,", deadline(io));
+    try io.sleep(.fromMilliseconds(250), .awake);
+    try writeBytes(io, clients[0], "\"method\":\"state.snapshot\"}\n{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"system.health\"}\n", deadline(io));
+    var reader: ConnectionReader = .{};
+    for ([_]i64{ 6, 7 }) |expected| {
+        const reply = (try reader.next(io, a, clients[0], deadlineAfter(io, 2_000))).?;
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(expected, parsed.value.object.get("id").?.integer);
+        try std.testing.expect(parsed.value.object.contains("result"));
+    }
+    for (clients[1..]) |fd| {
+        try writeFrame(io, fd, health, deadline(io));
+        const reply = try readFrame(io, a, fd, deadlineAfter(io, 2_000));
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, reply, .{});
+        defer parsed.deinit();
+        try std.testing.expect(parsed.value.object.contains("result"));
+    }
 }
 
-test "stay-afloat metadata json exposes selector and cadence" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-
-    try writeStayAfloatMetadataJson(buf.writer(), .{
-        .profile = "codex-max",
-        .capability = "codex-max",
-        .once = false,
-        .iterations = 200,
-        .interval_ms = 50,
-        .execute = true,
-    });
-
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"hosted\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"selector\":{\"profile\":\"codex-max\",\"provider\":null,\"account\":null,\"capability\":\"codex-max\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"once\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"iterations\":200") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"interval_ms\":50") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"execution_mode\":\"execute\"") != null);
+test "private Unix endpoint roundtrip rejects symlink socket aliases" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return error.SkipZigTest;
+    const io = std.testing.io;
+    const allocator = std.testing.allocator;
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var nonce: [8]u8 = undefined;
+    io.random(&nonce);
+    const root = try std.fmt.allocPrint(a, "{s}/omux-ipc-{s}", .{ if (builtin.os.tag == .macos) "/private/tmp" else "/tmp", std.fmt.bytesToHex(nonce, .lower) });
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch |err| std.log.err("test directory cleanup failed: {s}", .{@errorName(err)});
+    const locations = try paths.Locations.init(a, root);
+    var custody = try paths.Custody.acquire(a, locations);
+    defer custody.deinit();
+    const address = try std.Io.net.UnixAddress.init(locations.control);
+    var server = try address.listen(io, .{});
+    defer server.deinit(io);
+    try nonblocking(server.socket.handle);
+    if (c.fchmodat(custody.run_fd, "control.sock", 0o600, 0) != 0) return error.SocketPermissionFailed;
+    try std.testing.expect((try acceptReady(io, server.socket.handle)) == null);
+    const client = try connect(io, locations.control, deadline(io));
+    defer _ = c.close(client);
+    const accepted = (try acceptReady(io, server.socket.handle)) orelse return error.NoQueuedConnection;
+    defer accepted.close(io);
+    try nonblocking(accepted.socket.handle);
+    try verifyPeer(accepted.socket.handle);
+    try paths.verifySocketPath(a, locations.control);
+    try writeFrame(io, client, "{\"id\":1}", deadline(io));
+    const payload = try readFrame(io, a, accepted.socket.handle, deadline(io));
+    try std.testing.expectEqualStrings("{\"id\":1}", payload);
+    try writeFrame(io, accepted.socket.handle, "{\"id\":1,\"result\":{}}", deadline(io));
+    const reply = try readFrame(io, a, client, deadline(io));
+    try std.testing.expectEqualStrings("{\"id\":1,\"result\":{}}", reply);
+    if (c.symlinkat("control.sock", custody.run_fd, "alias.sock") != 0) return error.SymlinkFailed;
+    const alias = try std.fmt.allocPrint(a, "{s}/alias.sock", .{locations.run});
+    try std.testing.expectError(error.UnsafeSocketPath, paths.verifySocketPath(a, alias));
 }

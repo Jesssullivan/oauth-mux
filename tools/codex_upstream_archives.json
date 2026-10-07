@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "system": "x86_64-linux",
+  "scope": "Fetched tools for the audited upstream Codex Bazel graph; additional platforms and optional lint toolchains require their own audited archives.",
+  "graph": {
+    "rules_rs": "0.0.96",
+    "llvm": "0.8.11",
+    "rules_python": "1.7.0"
+  },
+  "archives": [
+    {
+      "name": "x86_64-linux-gnu.2.28.tar.zst",
+      "url": "https://github.com/cerisier/glibc-headers/releases/download/2.28-20250512/x86_64-linux-gnu.2.28.tar.zst",
+      "sha256": "8015f4a710987439dfdcde7539b62cc5db52d2cd9456af5e2e297494f13c56f3",
+      "kind": "compiler-headers"
+    },
+    {
+      "name": "6.17.13-x86.tar.zst",
+      "url": "https://github.com/cerisier/kernel-headers/releases/download/6.17.13-20260228/6.17.13-x86.tar.zst",
+      "sha256": "2bb80502d70cadabd1efa0e0cd7ff826873fd787ab593f6394d6ada57248780a",
+      "kind": "compiler-headers"
+    },
+    {
+      "name": "rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "url": "https://static.rust-lang.org/dist/rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "8426a3d170a5879f5682f5fbdd024a1779b3951e7baba685af2d6dc32a6dfc15",
+      "kind": "compiler"
+    },
+    {
+      "name": "rust-std-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "url": "https://static.rust-lang.org/dist/rust-std-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "047ea7098803d3500fa1072e9cee5392697e21525559e4458128a2bf874aa382",
+      "kind": "compiler-runtime"
+    },
+    {
+      "name": "cargo-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "url": "https://static.rust-lang.org/dist/cargo-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "e74edd2cf7d0f1f1383b4f00eb90c843750bc489e2ccf7214e6476678a907425",
+      "kind": "repository-tool"
+    },
+    {
+      "name": "clippy-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "url": "https://static.rust-lang.org/dist/clippy-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "ac779bc9839dd47180806b133e4e2563c4a34716284cd5b8fede8ef289f452ca",
+      "kind": "compiler-lint"
+    },
+    {
+      "name": "rustfmt-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "url": "https://static.rust-lang.org/dist/rustfmt-1.95.0-x86_64-unknown-linux-gnu.tar.xz",
+      "sha256": "f1b2a7301513ffdd95ebf22ebbdd932e4d17fc806f748d93924740d0297b1396",
+      "kind": "formatter"
+    },
+    {
+      "name": "llvm-toolchain-minimal-22.1.8-linux-amd64-musl.tar.zst",
+      "url": "https://github.com/hermeticbuild/hermetic-llvm/releases/download/llvm-22.1.8-1/llvm-toolchain-minimal-22.1.8-linux-amd64-musl.tar.zst",
+      "sha256": "89f29294a584267251edac00ab723a0a74514b8e1acb7f036840d13635c66bfa",
+      "kind": "compiler"
+    },
+    {
+      "name": "toolchain-extra-prebuilts-20260429-linux-amd64-musl.tar.zst",
+      "url": "https://github.com/hermeticbuild/hermetic-llvm/releases/download/prebuilts-extras-20260429/toolchain-extra-prebuilts-20260429-linux-amd64-musl.tar.zst",
+      "sha256": "418a27a0ab8ecf46e2e00bd4381efc0bcb54c28312261c4f36114842e5ecb20e",
+      "kind": "compiler-generators"
+    },
+    {
+      "name": "llvm-project-22.1.8.src.tar.zst",
+      "url": "https://github.com/hermeticbuild/llvm-redist/releases/download/llvmorg-22.1.8-r1/llvm-project-22.1.8.src.tar.zst",
+      "sha256": "0a120cd02aa4319887b938ed98f34907563e9b4bcdd4a2aed23a1a05dd5a8157",
+      "kind": "source"
+    },
+    {
+      "name": "toml2json_linux_amd64",
+      "url": "https://github.com/hermeticbuild/toml2json/releases/download/v0.0.26/toml2json_linux_amd64",
+      "sha256": "87921b36ceb343af152fc988be59eec49ac9865f2e499a48152bed03e66f8228",
+      "kind": "repository-tool"
+    },
+    {
+      "name": "bindgen_linux_amd64.tar.zst",
+      "url": "https://github.com/hermeticbuild/bindgen/releases/download/v0.0.2/bindgen_linux_amd64.tar.zst",
+      "sha256": "ec2b39a56443142a34dc76ec32a17cb099c6c09137c3fbac893310c623cb10ac",
+      "kind": "compiler-generator"
+    },
+    {
+      "name": "cpython-3.11.14+20251014-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20251014/cpython-3.11.14+20251014-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "d0623c777fb89b904b56cd5aba51af29cbb34b1f9d45f0672f90f6dce30fa93e",
+      "kind": "interpreter"
+    }
+  ]
+}

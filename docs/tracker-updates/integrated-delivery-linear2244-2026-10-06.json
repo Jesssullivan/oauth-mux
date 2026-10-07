@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "kind": "factual_tracker_reconciliation",
+  "authority": "Explicit user-authorized ongoing Linear reconciliation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-06T22:44:28Z",
+  "comments": [
+    {"issue": "TIN-5338", "comment_id": "7e6dd735-1711-4cd7-a35e-dd3abe501625", "exact_body_readback_verified": true, "facts": ["7156 installed refusal before resume", "5197 diagnostic17 model pass with overall docs failure", "platform17 installed payload dispatched"]},
+    {"issue": "TIN-2063", "comment_id": "27e93a2f-db5e-41d4-92c8-f42a85ff2e1e", "exact_body_readback_verified": true, "facts": ["350f Home Manager pack refusal", "observed physical/canonical mode mismatch", "canonical reconstruction under review with publication gap held", "Yoga diagnostic3 fixtures passed;374 actual transport refusal"]}
+  ],
+  "issue_scope_state_or_completion_changed": false,
+  "new_acceptance_gate_closed": false,
+  "current_checkpoint": ".goal/omux-native-browser-2026-10-06.json"
+}

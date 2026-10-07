@@ -1,0 +1,13 @@
+diff --git a/delivery/BUILD.bazel b/delivery/BUILD.bazel
+--- a/delivery/BUILD.bazel
++++ b/delivery/BUILD.bazel
+@@ -641,6 +641,9 @@ python_test(
+ cc_binary(
+     name = "codex_direct_exec_fixture",
+     srcs = ["codex_direct_exec_fixture.c"],
++    # The declared C++ link driver must not add its unused C++ runtime to this
++    # C-only fixture's portable dependency closure.
++    linkopts = ["-Wl,--as-needed"],
+     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+ )
+ 

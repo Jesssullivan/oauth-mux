@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "kind": "subordinate_milestone_ledger",
+  "umbrella": "Omux native reset ratification and weekend acceptance readiness",
+  "authority": "docs/plans/omux-ratification-weekend-push-2026-10-02.md",
+  "timezone": "America/New_York",
+  "start": "2026-10-03T03:41:49Z",
+  "status_semantics": "planned means an acceptance objective, not completed work or automatic dispatch; update only from observed deliverables and receipts",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "milestones": [
+    {
+      "id": "h3",
+      "due": "2026-10-03T06:41:49Z",
+      "status": "passed",
+      "gate": "Source contracts and authority/subtraction ratified against the active reset, with claim classes and open decisions explicit",
+      "evidence": [
+        {
+          "kind": "document",
+          "path": "docs/authority.json"
+        },
+        {
+          "kind": "document",
+          "path": "docs/product/charter.md"
+        },
+        {
+          "kind": "document",
+          "path": "docs/history/retired-design-inventory.md"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/ratification-push-evidence-2026-10-02.md",
+          "invocation_id": "70147176-f8df-436f-bad1-64915be1b34e",
+          "command": "nix develop --command bazelisk test //:docs_check --test_output=errors",
+          "result": "passed"
+        }
+      ],
+      "linear_milestone_id": "d6dac322-4760-4d6d-b1c9-576b10b1d470",
+      "local_date": "2026-10-03",
+      "completed_at": "2026-10-03T04:07:56Z"
+    },
+    {
+      "id": "h5",
+      "due": "2026-10-03T08:41:49Z",
+      "status": "passed",
+      "depends_on": [
+        "h3"
+      ],
+      "gate": "Existing Linear project/backlog uplift has referenced dispositions, dependencies and concrete acceptance criteria, or an explicit external-access blocker",
+      "evidence": [
+        {
+          "kind": "tracker_readback",
+          "path": "docs/tracker-updates/native-ratification-2026-10-02.json"
+        },
+        {
+          "kind": "document",
+          "path": "docs/tracker-updates/native-ratification-2026-10-02.md"
+        }
+      ],
+      "linear_milestone_id": "db099c53-b668-4a5b-b842-0b6dd12db417",
+      "local_date": "2026-10-03",
+      "completed_at": "2026-10-03T04:07:56Z"
+    },
+    {
+      "id": "h10",
+      "due": "2026-10-03T13:41:49Z",
+      "status": "passed",
+      "depends_on": [
+        "h3",
+        "h5"
+      ],
+      "gate": "Final source scope and necessary Nix/Bazel receipts reconcile; installed/vault/native blockers have resource prerequisites and next actions",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/ratification-push-evidence-2026-10-02.md",
+          "invocation_id": "2037eefc-b67f-4d3b-b44c-5d86d44cd707",
+          "command": "nix develop --command bazelisk test //... --keep_going --jobs=4",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/ratification-push-evidence-2026-10-02.md",
+          "invocation_id": "cb58e4c8-4bf8-4cb6-9862-cc8dfd4933d1",
+          "command": "nix develop --command bazelisk build //... --jobs=4",
+          "result": "passed"
+        },
+        {
+          "kind": "document",
+          "path": "docs/plans/omux-ratification-weekend-push-2026-10-02.md"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/ratification-push-evidence-2026-10-02.md",
+          "invocation_id": "db13fc19-33e7-4164-bc7b-4a8bef61f48e",
+          "command": "nix develop --command bazelisk test //:docs_check //:docs_guard_test --test_output=errors",
+          "result": "passed"
+        }
+      ],
+      "linear_milestone_id": "46e22745-4acb-4019-8765-81e0000b7f31",
+      "local_date": "2026-10-03",
+      "completed_at": "2026-10-03T04:18:23Z"
+    },
+    {
+      "id": "weekend",
+      "due": "2026-10-05T03:59:00Z",
+      "status": "unrun",
+      "depends_on": [
+        "h10"
+      ],
+      "gate": "Available authorized clean-machine/vault/native gates have exact receipts; unavailable gates remain explicitly blocked or unrun and claims stay scoped",
+      "evidence": [],
+      "linear_milestone_id": "3529dc24-4dfa-4830-be4c-84a29fd36201",
+      "local_date": "2026-10-04",
+      "next_action": "Evaluate authorized exact installed/native/provider scope with dedicated test resources; record each passing, failed, blocked or unrun tuple and retain experimental claims"
+    }
+  ],
+  "baseline_evidence": "docs/implementation/native-reset-evidence-2026-10-02.md",
+  "current_claim": "experimental_unshipped_live_continuity_unavailable",
+  "remaining_gates": [
+    {
+      "gate": "SC-01/02/08/09/10 complete Linux installed desktop/service/custody tuple",
+      "state": "unrun",
+      "prerequisites": "Dedicated Linux interactive desktop/service and remaining vault fault/upgrade test scope; no use of personal credentials",
+      "issue": "TIN-2830 / TIN-5340",
+      "component_evidence": {
+        "path": "docs/implementation/native-evening-evidence-2026-10-03.md",
+        "remote_proof_invocation_id": "c6f3600c-a728-490b-8219-ee4158f6f179",
+        "scope": "Sting installed portable daemon/CLI/offscreen Qt, genuine disposable Secret Service custody, restart/mutation replay/rollback/uninstall passed; current artifact bytes match independently",
+        "artifact_sha256": "aed5dce3535e10161594152f10c9e6be2d2a0a0ea71da060b4ed4002077ea3ee",
+        "cleanup": "removed",
+        "broader_gate_promoted": false
+      },
+      "next_action": "Retain passed exact-artifact installed predicates; exercise remaining interactive desktop, service, upgrade and vault lock/loss/recovery tuples with ephemeral test data"
+    },
+    {
+      "gate": "SC-04/05/06 Codex continuity",
+      "state": "blocked",
+      "prerequisites": "Accepted available exact native upstream hook; compatible independently authorized provider accounts and safe evaluation budget; inspectable portable native context",
+      "issue": "TIN-5338 / TIN-2057",
+      "next_action": "Obtain supported native hook and run exact-version ordinary-launch/resume/eligible attachment and pre-acceptance alternate admission proof"
+    },
+    {
+      "gate": "SC-01/02/08/11 macOS delivery",
+      "state": "unrun",
+      "prerequisites": "Concrete PZM REAPI operator binding and complete matching closure, authorized Apple SDK, real test Keychain and signing scope as applicable",
+      "issue": "TIN-2797 / TIN-2830 / TIN-5340",
+      "next_action": "Dispatch declared Mac graph through PZM REAPI with independent worker/input evidence, then test installed menu-bar/service/vault/restoration behavior"
+    },
+    {
+      "gate": "US-BROWSER-01 production browser import",
+      "state": "blocked",
+      "prerequisites": "Exact provider acquisition schema, independent identity and context-binding evidence; authorized browser test profiles",
+      "issue": "TIN-2720",
+      "next_action": "Prove one narrow provider reader before enabling an export; retain disabled production acquisition meanwhile"
+    },
+    {
+      "gate": "LC-07/12 production adoption/revoke",
+      "state": "blocked",
+      "prerequisites": "Implemented operation owners and provider-specific verified adoption/revoke protocol",
+      "issue": "TIN-3032 / TIN-5339",
+      "next_action": "Implement and prove exclusive renewal authority, ambiguous rotation quarantine and explicit upstream revoke outcome"
+    },
+    {
+      "gate": "REL-009/010 achieved reliability",
+      "state": "unrun",
+      "prerequisites": "Bounded privacy-safe instrumentation and installed/native workload baseline",
+      "issue": "TIN-5342 / TIN-2040",
+      "next_action": "Measure exact strata with real denominators before publishing achieved SLOs or offering a support SLA"
+    }
+  ],
+  "latest_implementation_checkpoint": {
+    "path": ".goal/omux-native-owner-2026-10-04.json",
+    "evidence": "docs/implementation/native-owner-evidence-2026-10-04.md",
+    "pause_handoff": "docs/implementation/native-safety-evening-handoff-2026-10-03.md",
+    "execution_state": "active",
+    "predecessor_checkpoint": ".goal/omux-native-admission-2026-10-04.json",
+    "scope": "Native owner custody and experimental Codex protocol; native protocol plus isolated installed Linux proof; prior admission passed at its own source epoch, original deadlines and broader weekend gates retain their scope",
+    "promotes_weekend": false
+  }
+}

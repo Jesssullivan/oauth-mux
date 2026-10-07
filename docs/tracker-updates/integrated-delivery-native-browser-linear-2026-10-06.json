@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "pre_action_factual_tracker_reconciliation",
+  "authority": "User-authorized Linear/sprint reconciliation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "plan": "docs/plans/omux-native-browser-continuation-2026-10-06.md",
+  "issues": [
+    {
+      "issue": "TIN-2057",
+      "body": "2026-10-06 provider-free native/browser checkpoint20:13:12UTC–2026-10-07 01:13:12UTC, user-ratified Codex resume and installed browser proof. Parent fifteen-hour objective stays active/incomplete; five historical scoped passes/six open. Latest actual3a3cfb5f ended controller/workload3/3, empty descendants, ReleaseSafe249/250 native actor cases in120.7s; mandatory successful-unmeasured registered removal pressure case failed. Format/source capture passed; docs classification failed. Source review disproved the proposed production starvation cause; only four-point fixture calibration/classification fixes applied, unrun. Native strict paginated-envelope/next-ordinal/LF fixture and Git absolute-deadline custody corrections also applied, unrun. Plan: docs/plans/omux-native-browser-continuation-2026-10-06.md; ledger: .goal/omux-native-browser-2026-10-06.json; raw/digest receipt: docs/tracker-updates/integrated-delivery-3a3c-2026-10-06.json. Next semantic gate then exact retained-candidate installed empty-history cold resume. No real authority, accepted-history/tool/approval proof, live same-process handoff, stock support, achieved SLO/SLA or Darwin inferred; no issue scope/state/owner/date change.",
+      "before_status": "In Progress"
+    },
+    {
+      "issue": "TIN-2063",
+      "body": "2026-10-06 factual installation/dependency continuation. Actual e3b9e0bc source acquisition finished finite producer work in617.128s, emitted pinned readonly pair receipt9e9c04f6, then Bazel TIMEOUT900 during ~95,000-node undeclared-output collection. Controller/workload3/3, empty descendants. Preserve failed wrapper; complete bytes may feed an independently declared compact pack/full content verification then genuine offline module evaluation. No acquisition target PASS/evaluation/activation claimed. Evidence: docs/tracker-updates/integrated-delivery-HM-e3b9-2026-10-06.json. Reviewed HM compact producer/consumer and Yoga executable qualification remain unapplied/unrun. User chose provider-free Codex resume + installed Yoga browser proof for20:13:12UTC–01:13:12UTC checkpoint; Home Manager is one bounded enabling attempt. Sole root executor/caps4GiB512tasks1200s unchanged; no provider access, PZM/GF activation or fleet mutation. Plan: docs/plans/omux-native-browser-continuation-2026-10-06.md. No acceptance closure or issue scope/state change.",
+      "before_status": "In Progress"
+    },
+    {
+      "issue": "TIN-5338",
+      "body": "2026-10-06 adapter/native continuation. Omux owns per-application authentication integration; no vendor-provided Codex/Omux hook prerequisite. Maintained application modification is an allowed delivery route, qualified per exact application/version. User chose provider-free ordinary Codex launch/resume plus installed browser proof for20:13:12UTC–01:13:12UTC. Retained candidate previously reached original cold-resumed thread in a new process but preservation acceptance failed. Applied reviewed fixture now checks genuine paginated rollout's exactfour-field envelope, actual final ordinal+1 and LF termination while retaining original row/inode/fullprefix/cwd/policy/plugins/owner-ref/second-detach assertions. Eleven helper methods unrun; next //delivery:native_resumed_checkpoint_test then //delivery:installed_legacy_native_tui_test with freshly built declared Omux archive. Sources: delivery/native_resumed_checkpoint.py, delivery/test_installed_native_tui.py; plan/ledger: docs/plans/omux-native-browser-continuation-2026-10-06.md, .goal/omux-native-browser-2026-10-06.json. Candidate remains experimental/native_support=false; channel selection, backend attribution, accepted-history/tools/approvals, fresh candidate schema/runtime and live handoff are separate open gates. Stock support and Darwin unproved. No provider call or scope/state change.",
+      "before_status": "In Progress"
+    }
+  ],
+  "writes_completed": true,
+  "new_acceptance_gate_closed": false,
+  "readbacks": [
+    {
+      "issue": "TIN-2057",
+      "comment_id": "472b54d0-ab5d-46c4-9763-c42c1b8b0afa",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-2063",
+      "comment_id": "b9675818-0a6e-4b71-aff5-e984b2bf634f",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    },
+    {
+      "issue": "TIN-5338",
+      "comment_id": "e2fbb5ed-1945-4998-9dd8-143752546d8a",
+      "body_exact": true,
+      "issue_metadata_unchanged": true,
+      "checked_metadata_fields": [
+        "title",
+        "description",
+        "status",
+        "assignee",
+        "dueDate",
+        "relations",
+        "project"
+      ]
+    }
+  ],
+  "readbacks_recorded_at": "2026-10-06T20:35:16Z"
+}

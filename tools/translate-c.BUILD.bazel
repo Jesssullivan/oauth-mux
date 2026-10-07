@@ -1,0 +1,8 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_library")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+package(default_visibility=["//visibility:public"])
+write_file(name="translate_options",out="translate_options.zig",content=["pub const debug_allocations = false;"])
+zig_library(name="build_options",main=":translate_options")
+zig_library(name="c_builtins", main="lib/c_builtins.zig")
+zig_library(name="helpers",main="lib/helpers.zig")
+zig_binary(name="translate-c",data=glob(["lib/**/*.zig"]),srcs=glob(["src/**/*.zig"]),main="src/main.zig",deps=[":c_builtins",":helpers",":build_options","@arocc//:aro"])

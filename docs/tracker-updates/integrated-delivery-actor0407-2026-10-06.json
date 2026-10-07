@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "surrounding_actor_regression_validation",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "040742f7-ee60-4e64-9cb9-007687241f5c",
+  "original_handle": 33760,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/040742f7-ee60-4e64-9cb9-007687241f5c/receipt.json",
+  "raw_receipt_sha256": "ed7a067ac17b2062a83211e6f18736b4933e1881b35bd336cc12ba72ad43b3b6",
+  "graph_sha256": "f878beb9cef23005bb8a0ce07980c6a3ee9d56dd512602939ef22009fbc61764",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "test_evidence": {
+    "bytes": 284806,
+    "files": 13,
+    "manifest": "test-evidence.json",
+    "sha256": "40f3755a75e187faaf557c6b4c34f95a795a3cbe8bb1f9fb81af4da837034a92",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//:engine_test",
+    "//:storage_test",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "new_parent_acceptance_gate_closed": false,
+  "scope": "Current engine worker publication/join and restart plus authenticated storage/revision/commit regressions. Documentation, format and source capture passed. No installed resume, browser consent, physical capacity margin or live provider/handoff inferred.",
+  "provider_calls": false
+}

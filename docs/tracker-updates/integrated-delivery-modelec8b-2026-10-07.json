@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "kind": "refined_observer_passes_yoga_fixture_refuses",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "ec8bf2d1-ce07-475a-ab9b-1bb7e518b078",
+  "original_handle": 8366,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/ec8bf2d1-ce07-475a-ab9b-1bb7e518b078/receipt.json",
+  "raw_receipt_sha256": "743521eb259df93cb37b84a97adedfb5489098f2c6f43b80717338596265fc3b",
+  "graph_sha256": "fa421c915fe74f59ddfc66f823c82508ee5acb4a1c1cacdb2659038d3e9a50b3",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 225082,
+    "files": 19,
+    "manifest": "test-evidence.json",
+    "sha256": "564fc042a6b7efc4f2423445a02ea8f67b8f2eacb0c183347af1a9dfbe7ea816",
+    "state": "preserved"
+  },
+  "targets_passed": 7,
+  "targets_total": 8,
+  "passed_targets": [
+    "//delivery:native_fd2_observer_test",
+    "//tools:yoga_controller_delivery_test",
+    "//tools:guard_yoga_delivery_profile_test",
+    "//tools:execution_guard_test",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_target": "//tools:yoga_executable_qualification_test",
+  "yoga_methods": 17,
+  "yoga_failed_methods": 3,
+  "observer_methods": 13,
+  "scope": "Observer's refined finite failures, declared Bash/loader topology, vfork and exit-group models passed. Yoga fixed-selector fixture failed its valid-chain/valid-tuple and missing-input methods; source review identifies mock root path joining as inconsistent with production. No actual fixed-selector qualification or installed outcome is promoted.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

@@ -1,0 +1,19 @@
+# UNAPPLIED: root applies only after the live 3a3 action has terminated.
+# Authority: parent-authorized native-removal reliability continuation;
+# R-HOOK-CONVERGENCE-20261004, R-N13; existing repo AGENTS.md.
+# Observed ReleaseSafe bracket: registered12500 SnapshotTooLarge/unregister0;
+# registered16000 and20000 removed/measured/unregister1. No intermediate
+# candidate was sampled. This patch refines calibration only, not runtime.
+# reserveOutcome/reserveWithCounts do not consult optional witness/shared
+# envelope bytes. checkNativeRemovalMeasurementCapacity already runs after
+# nested credit reservation and retries snapshotUsage without the witness.
+# Restored reserved=true is not proof that optional discard was bypassed.
+# All caps, deadlines, effects/replay/restart assertions and the requirement
+# for an actual successful unmeasured registered removal stay unchanged.
+# Thresholds below are unrun candidates, never claimed passing limits.
+diff --git a/src/reliability_lifecycle_native_removal_tests.zig b/src/reliability_lifecycle_native_removal_tests.zig
+--- a/src/reliability_lifecycle_native_removal_tests.zig
++++ b/src/reliability_lifecycle_native_removal_tests.zig
+@@ -310,1 +310,1 @@
+-    for ([_]usize{ 9500, 12500, 16000, 20000 }) |spare_bytes| {
++    for ([_]usize{ 12500, 13500, 14500, 15500 }) |spare_bytes| {

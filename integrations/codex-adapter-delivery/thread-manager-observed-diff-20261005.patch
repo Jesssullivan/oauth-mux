@@ -1,0 +1,88 @@
+--- pinned-thread_manager.rs
++++ current-thread_manager.rs
+@@ -421,10 +421,25 @@
+     ops_log: Option<SharedCapturedOps>,
+ }
+ 
++#[expect(
++    clippy::expect_used,
++    reason = "corrupt compiled catalog must never borrow native auth"
++)]
+ pub fn build_models_manager(
+     config: &Config,
+     auth_manager: Arc<AuthManager>,
+ ) -> SharedModelsManager {
++    if config.auth_broker_configured() {
++        // A bundled catalog describes models, not this account's entitlement. Request leases
++        // make entitlement decisions; model discovery never borrows canonical native auth.
++        return Arc::new(
++            codex_models_manager::manager::StaticModelsManager::for_broker_catalog(
++                // This is a committed compile-time catalog, independently covered by parser tests.
++                codex_models_manager::bundled_models_response()
++                    .expect("committed bundled model catalog is invalid"),
++            ),
++        );
++    }
+     let provider = create_model_provider(config.model_provider.clone(), Some(auth_manager));
+     let manager = provider.models_manager(
+         config.codex_home.to_path_buf(),
+@@ -541,6 +556,9 @@
+             Arc::clone(&auth_manager),
+             skills_service.clone(),
+         ));
++        if config.auth_broker_configured() {
++            plugins_manager.enter_broker_local_only();
++        }
+         let mcp_manager = Arc::new(McpManager::new_with_extensions(
+             Arc::clone(&plugins_manager),
+             Arc::clone(&extensions),
+@@ -746,6 +764,28 @@
+         self.state.auth_manager.clone()
+     }
+ 
++    /// Late account delegation disables the native-auth analytics queue across
++    /// every cloned consumer before the new request authority is acknowledged.
++    pub async fn disable_native_analytics_delivery(&self) {
++        if let Some(client) = &self.state.analytics_events_client {
++            client.disable_native_delivery().await;
++        }
++    }
++
++    pub fn enter_broker_descriptive_mode(&self) {
++        self.state.models_manager.enter_broker_descriptive_mode();
++    }
++
++    pub async fn enter_broker_local_only(&self) {
++        self.state.plugins_manager.await_broker_local_only().await;
++    }
++
++    pub async fn drain_broker_mcp_authority(&self, thread_id: ThreadId) -> CodexResult<()> {
++        let thread = self.get_thread(thread_id).await?;
++        thread.session.drain_broker_mcp_authority().await;
++        Ok(())
++    }
++
+     pub fn skills_service(&self) -> Arc<HostSkillsService> {
+         self.state.skills_service.clone()
+     }
+@@ -2270,6 +2310,12 @@
+         let new_thread = self
+             .finalize_thread_spawn(session, io, tracked_session_source)
+             .await?;
++        if crate::auth_broker::is_startup_registration(new_thread.thread_id) {
++            // The independent native owner endpoint can now inspect this real
++            // internally published thread. No map lock spans the handshake.
++            // Failure retains unresolved native/daemon custody, never exposure.
++            crate::auth_broker::finish_registration(new_thread.thread_id).await?;
++        }
+         new_thread.thread.emit_thread_ready_lifecycle().await;
+         if source_changed_during_startup.load(Ordering::Acquire) {
+             new_thread.thread.session.request_mcp_runtime_refresh();
+@@ -2581,3 +2627,7 @@
+ #[cfg(test)]
+ #[path = "thread_manager_tests.rs"]
+ mod tests;
++
++#[cfg(all(test, target_os = "linux"))]
++#[path = "native_owner_startup_tests.rs"]
++mod native_owner_startup_tests;

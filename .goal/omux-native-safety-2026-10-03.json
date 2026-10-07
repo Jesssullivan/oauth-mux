@@ -1,0 +1,665 @@
+{
+  "schema_version": 1,
+  "kind": "implementation_sprint_checkpoint",
+  "authority": "docs/plans/omux-native-safety-sprint-2026-10-03.md",
+  "start": "2026-10-03T10:07:56Z",
+  "due": "2026-10-03T15:07:56Z",
+  "duration_hours": 5,
+  "timezone": "America/New_York",
+  "status": "in_progress",
+  "automatic_dispatch": false,
+  "independent_active_goals": false,
+  "priority": "daemon_and_native_continuity_safety",
+  "checkpoint": "installed_platform_proof_where_available",
+  "hosts": {
+    "darwin": [
+      "neo",
+      "pzm"
+    ],
+    "linux": [
+      "sting",
+      "yoga"
+    ]
+  },
+  "provider_evaluation_authorized": false,
+  "execution_state": "paused_at_user_request",
+  "pause_recorded_at": "2026-10-03T20:00:00Z",
+  "pause_reason": "Lunch break with manual evening resumption; original checkpoint and unfinished acceptance retained",
+  "pause_handoff": "docs/implementation/native-safety-evening-handoff-2026-10-03.md",
+  "automatic_resume": false,
+  "current_bazel_version": "9.0.1",
+  "pause_docs_check": {
+    "invocation_id": "6788d3f5-72a4-4d73-84a4-938ed36f09bf",
+    "targets": 2,
+    "result": "passed",
+    "observed_at": "2026-10-03T20:01:10Z",
+    "scope": "handoff, authority classification, checkpoint ledgers and tracker receipts"
+  },
+  "latest_local_test": {
+    "invocation_id": "402bfcc8-0e1f-4725-9a08-806a69cc8f85",
+    "passed": 54,
+    "skipped": 0,
+    "failed": 0,
+    "fresh": 9,
+    "cached": 45,
+    "observed_at": "2026-10-03T19:49:51Z"
+  },
+  "latest_local_build": {
+    "invocation_id": "133a5eb0-8d62-4199-a81b-5896c03486e0",
+    "targets": 96,
+    "result": "passed",
+    "observed_at": "2026-10-03T19:51:17Z"
+  },
+  "current_linux_artifact": {
+    "invocation_id": "60d57b35-8c2c-4a4e-b791-88665e7875c9",
+    "sha256": "1c25304f169166ef04c71fc61c471b2c57d59f23a6bbad0b29b9c4976f46728d",
+    "bytes": 59741056,
+    "artifacts": 138,
+    "scope": "local installed and relocation proof; dedicated Sting receipt remains earlier 0be/a49 epoch"
+  },
+  "pzm_reapi_next": {
+    "status": "not_dispatched",
+    "darwin_closure": "9k958iwyvk7cn5f7axdfg8a0j1s0nsa1-omux-bazel-closure",
+    "resolve_invocation_id": "98d7e583-d2e9-414c-8f7b-4ab90c97ae39",
+    "neo_metadata_invocation_id": "07635590-fc14-4fda-871a-6fd54d0fb8b1",
+    "native_manifest_sha256": "fdfeb78902a8fb28d2e7cff6c4516558c9b0b5e9c4b154b2981a49e561b25087",
+    "sdk_version": "14.4",
+    "complete_closure_imported": false,
+    "binding_verified": false,
+    "current_local_wrapper_variables": "all_five_absent_in_observed_context_only",
+    "next_action": "Materialize the exact closure on the coordinator and PZM, resolve operator REAPI binding and routing, inspect Darwin action inputs, then execute remote-only archive proof"
+  },
+  "host_roles": {
+    "pzm": "Darwin compilation through established lab Bazel REAPI",
+    "neo": "teletype and authorized read-only Darwin consumer source inspection",
+    "correction_received": "2026-10-03T18:54:00Z",
+    "correction_time_precision": "approximate"
+  },
+  "linear_milestone_id": "0d38e3b1-26f2-484e-9867-718bbe6a11be",
+  "evidence": [
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "345cb6b9-f49b-4a7f-a572-82e4c67368d9",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors --invocation_id=345cb6b9-f49b-4a7f-a572-82e4c67368d9",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "616ad9c8-1a6b-4c7f-9b0c-4938fb9a874e",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4 --invocation_id=616ad9c8-1a6b-4c7f-9b0c-4938fb9a874e",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "0f3d6cb5-0d88-4f2c-86c4-60c17b1c9f48",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors --invocation_id=0f3d6cb5-0d88-4f2c-86c4-60c17b1c9f48",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "4dc406e2-e20f-429c-8dc4-901ebf67fb52",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4 --invocation_id=4dc406e2-e20f-429c-8dc4-901ebf67fb52",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "b58a58d8-5157-41ea-9ab1-1c66bad2d158",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "c2dbe0ba-35e7-4ca8-b71f-fe1301a311de",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "e74c4393-78bc-450e-ab10-0827d0ba0e4d",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "269155db-aa8f-4737-a7bb-829a97ce22f9",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "d0c02cc2-e4fe-4809-b2a7-22b3ab053d5c",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "bdea5b80-fd4e-49d4-8501-2877476dd3a7",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "f1c5527a-7710-4e25-911a-015eca20cdd8",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "c538f2c0-4ead-4ad7-a7e3-45f187ed0036",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "91d2f6d5-67d5-48de-ade4-57dc06a25e0f",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "67b99533-5ceb-4acb-bcc8-fe094f4e6660",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "5f78e793-af5b-4ef1-bce3-0f1bc9fb7b1a",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+      "result": "passed"
+    },
+    {
+      "kind": "local_check",
+      "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+      "invocation_id": "8cd3cb64-b9ec-4eb0-8cac-e4eaf04c3f18",
+      "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+      "result": "passed"
+    }
+  ],
+  "acceptance": [
+    {
+      "id": "request_and_mutation_authority",
+      "issues": [
+        "TIN-5337"
+      ],
+      "status": "passed",
+      "scope": "Durable request/mutation component plus same-installation Swift/Qt/CLI error reconciliation; actual Linux socket/CLI fixtures and local installed artifact passed; native/live promotion excluded",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "b58a58d8-5157-41ea-9ab1-1c66bad2d158",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "e74c4393-78bc-450e-ab10-0827d0ba0e4d",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        }
+      ],
+      "next_action": "Final dedicated-host artifact receipts remain separately tracked under platform proof"
+    },
+    {
+      "id": "independent_backup_fence",
+      "issues": [
+        "TIN-5336"
+      ],
+      "status": "passed",
+      "scope": "SQLite-only rollback while independent authority survives; full-user rollback/provider adoption excluded",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "e74c4393-78bc-450e-ab10-0827d0ba0e4d",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "id": "xdg_socket_and_singleton",
+      "issues": [
+        "TIN-5335"
+      ],
+      "status": "passed",
+      "scope": "Linux runtime selection, custody and daemon/Qt private socket; login-service and Darwin promotion excluded",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "e74c4393-78bc-450e-ab10-0827d0ba0e4d",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "id": "local_observation",
+      "issues": [
+        "TIN-5342"
+      ],
+      "status": "passed",
+      "scope": "bounded in-memory fixed typed observations only; scheduled coverage, durable metrics and achieved SLO excluded",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "e74c4393-78bc-450e-ab10-0827d0ba0e4d",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        }
+      ]
+    },
+    {
+      "id": "available_installed_platform_proof",
+      "issues": [
+        "TIN-5340",
+        "TIN-2723",
+        "TIN-2830"
+      ],
+      "status": "in_progress",
+      "scope": "Updated Linux installed runtime and exact artifact and private macOS vault IO passed; reviewed TreeArtifact packaging and original-deadline cleanup corrections passed 53 tests and 92 builds; exact Neo and fixed-receipt Sting recoveries precede final host proofs; all historical failed receipts retained",
+      "next_action": "After evening resumption, import matched 9k958 Darwin closure and verify PZM REAPI binding and actual action/artifact proof; local owned SSH scope is closed; interrupted Neo remote result and earlier unidentified Sting cleanup remain unknown; no Neo compilation or manual PZM SSH compiler",
+      "current_recovery_source_sha256": "0be0a6ba61854b608b26bdd3706d122eae0bf427528101d2dffb6ca13101f430",
+      "cleanup_entry_ceiling": 8000000,
+      "cleanup_depth_ceiling": 128,
+      "latest_scoped_recovery": {
+        "source_sha256": "0be0a6ba61854b608b26bdd3706d122eae0bf427528101d2dffb6ca13101f430",
+        "neo": {
+          "proof_id": "ce76120f-efee-4120-ae5b-cfd2fa54fb1b",
+          "invocation_id": "f84dd426-23e6-48e1-b2b4-32dc45b0c460",
+          "workspace": ".run-s9jRDq9y",
+          "remote_exit": 0,
+          "local_exit": 0,
+          "old_workspace_cleanup": "removed",
+          "fresh_staging_cleanup": "removed",
+          "directories": 35214,
+          "entries": 199746,
+          "repaired_directories": 0,
+          "summary_sha256": "58150bc9dee2f245d83d4a96d5df0399e56006536dfadcf946462c9730353ea8",
+          "bootstrap_at": "2026-10-03T18:23:57Z",
+          "repair_at": "2026-10-03T18:24:21Z"
+        },
+        "sting": {
+          "proof_id": "8f4f760e-214e-4160-a2cf-d9b3125c34a6",
+          "invocation_id": "22230804-301c-4c10-b92d-06c4655e754e",
+          "remote_exit": 3,
+          "local_exit": 2,
+          "predicate": "recovery-no-match",
+          "candidate_count": 2,
+          "match_count": 0,
+          "old_directory_mutations": 0,
+          "old_workspace_cleanup": "unidentified_unknown_disposition",
+          "fresh_staging_cleanup": "removed",
+          "failure_summary_sha256": "77d59b1df47cd5896455a8750c176ae1c038b8293ffc28f275ab6da6fb2208bc",
+          "bootstrap_at": "2026-10-03T18:23:58Z",
+          "reader_at": "2026-10-03T18:24:08Z",
+          "further_identity_extensions": false
+        }
+      },
+      "post_recovery_host_proof": {
+        "source_sha256": "0be0a6ba61854b608b26bdd3706d122eae0bf427528101d2dffb6ca13101f430",
+        "neo": {
+          "invocation_id": "f56bfe97-7da6-4a5e-804c-a8880220d451",
+          "proof_id": "2acf30f9-a1df-4a57-9231-ad2ee195299e",
+          "workspace": ".run-U1ZLg7kn",
+          "bootstrap_at": "2026-10-03T18:26:34Z",
+          "graph_at": "2026-10-03T18:26:56Z",
+          "status": "caller_interrupted_remote_unknown",
+          "caller_allowance_seconds": 3600,
+          "local_exit": 130,
+          "remote_exit": null,
+          "graph_exit": null,
+          "current_workspace_cleanup": "unknown",
+          "local_owned_ssh_cancellation": "completed_absent_no_signals",
+          "local_scope_invocation_id": "558961a5-b1d4-4a3d-b0bd-6f28c2ae2bfa",
+          "local_scope_observed_at": "2026-10-03T19:14:06Z",
+          "local_scope_match_count": 0,
+          "local_scope_scan_ceiling": 65536,
+          "remote_termination_inferred": false
+        },
+        "sting": {
+          "invocation_id": "d889391c-2091-4d76-9ef3-3c8c78f45178",
+          "proof_id": "fb703896-cde8-4cac-a3cb-20cfc5baa6dc",
+          "workspace": ".run-7Vx7V1E1",
+          "bootstrap_at": "2026-10-03T18:26:35Z",
+          "graph_at": "2026-10-03T18:26:41Z",
+          "status": "passed",
+          "caller_allowance_seconds": 1800,
+          "graph_exit": 0,
+          "remote_exit": 0,
+          "local_exit": 0,
+          "host_os": "Linux",
+          "host_arch": "x86_64",
+          "kernel": "6.12.0",
+          "artifact_sha256": "a49ad024d06d6864097007e4d1c7c0729e9415c830c2cc1427c92680d3e6aa5a",
+          "artifact_bytes": 59741174,
+          "log_sha256": "c1f73826db572b6eb65958f9428d1620fd0e50cede062859f209041ad777da9d",
+          "graph_completed_observed_at": "2026-10-03T18:32:19Z",
+          "observed_at": "2026-10-03T18:34:19Z",
+          "current_workspace_cleanup": "removed",
+          "cleanup_counts_summary": "uncollected",
+          "scope": "private installed daemon/CLI/offscreen Qt/genuine vault, restart, lost reply, SQLite-only rollback and ownership uninstall; no OS service, interactive UI, personal vault or live provider"
+        }
+      },
+      "neo_two_million_entry_repair_failure": {
+        "proof_id": "0ef52da7-9a63-4c82-aa6c-c194d22c7a99",
+        "invocation_id": "9e31140a-4859-4103-992f-87b6d714c56b",
+        "source_sha256": "6de25a74941cef63cd51ba28fed9ae812c7ccdfa45dc9f60eeb836627b43476e",
+        "workspace": ".run-s9jRDq9y",
+        "caller_allowance_seconds": 600,
+        "remote_exit": 3,
+        "local_exit": 2,
+        "predicate": "entry-bound",
+        "predicate_depth": 22,
+        "directories": 425237,
+        "entries": 2000001,
+        "repaired_directories": 0,
+        "failure_summary_sha256": "d73052e87c5dd3547599ad499881979b3992fb3dbece13e5bb205492bb562cf4",
+        "old_workspace_cleanup": "partial_not_removed",
+        "fresh_staging_cleanup": "removed",
+        "observed_at": "2026-10-03T18:08:11Z"
+      },
+      "sting_marker_log_recovery_failure": {
+        "proof_id": "3462b2a6-6e8d-41b2-a29d-eca0ee9ef5e8",
+        "invocation_id": "7f8cf3d0-b036-4749-935b-c4a6dff1f473",
+        "source_sha256": "6de25a74941cef63cd51ba28fed9ae812c7ccdfa45dc9f60eeb836627b43476e",
+        "remote_exit": 3,
+        "local_exit": 2,
+        "predicate": "authority",
+        "cause": "unique_candidate_not_admitted_missing_or_ambiguous_uncollected",
+        "mutation_counters": 0,
+        "failure_summary_sha256": "c2c1201b719d6433aedc5fed04ad9a9f0f18e724051156b08666c3fe77829373",
+        "fresh_staging_cleanup": "removed",
+        "old_workspace_mutation": "none",
+        "bootstrap_at": "2026-10-03T18:01:19Z",
+        "reader_at": "2026-10-03T18:01:25Z"
+      },
+      "enhanced_third_workspace_repair_pass": {
+        "proof_id": "1961c977-a130-475e-a4b8-6f7ec09ab09b",
+        "invocation_id": "8132583d-22c0-47c9-95bf-6e15636338f9",
+        "source_sha256": "2cecd60a850b8034ea078ff63652e1fe838b4d5433966447fdd9d784b0ff1a8d",
+        "workspace": ".run-tIFiJDX7",
+        "remote_exit": 0,
+        "local_exit": 0,
+        "repair_result": "removed",
+        "fresh_staging_cleanup": "removed",
+        "directories": 3407,
+        "entries": 35288,
+        "repaired_directories": 0,
+        "summary_sha256": "5a9eb6b33804f218c8c32398aa13108f9200018479db9fc324bd1478d9f60ee6",
+        "observed_at": "2026-10-03T17:24:08Z",
+        "historical_rejection_predicate": "uncollected"
+      },
+      "final_host_proof": {
+        "source_sha256": "2cecd60a850b8034ea078ff63652e1fe838b4d5433966447fdd9d784b0ff1a8d",
+        "neo": {
+          "proof_id": "22412e51-546a-4379-bef2-9b164c552e46",
+          "invocation_id": "d2135163-9838-490f-b12b-4d701b69b25a",
+          "status": "failed_packaging_and_cleanup_deadline",
+          "caller_allowance_seconds": 1800,
+          "graph_exit": 1,
+          "remote_exit": 1,
+          "local_exit": 2,
+          "artifact": "not_produced",
+          "log_sha256": "f94b1dd7a5fad77d0641e7f1a165f4f0bdfc030ef4f544d21c8833b22e732a67",
+          "failure": "Generated Omux.app TreeArtifact expanded instead of passing its directory pathname",
+          "observed_at": "2026-10-03T17:54:21Z",
+          "cleanup": "failed",
+          "cleanup_predicate": "deadline",
+          "cleanup_allowance_seconds": 20,
+          "directories": 31881,
+          "entries": 136442,
+          "repaired_directories": 3,
+          "failure_summary_sha256": "dbc00ed86da4f3c6bbd44345639b09b5e54acce8f0cf2a64d89ac452b476314c",
+          "workspace": ".run-s9jRDq9y"
+        },
+        "sting": {
+          "proof_id": "faf6e1f4-a9c9-4dad-9947-1b9424a6c844",
+          "invocation_id": "456e3af3-7a74-4b7e-a16f-8bbce102626e",
+          "status": "failed_cleanup_deadline",
+          "caller_allowance_seconds": 1800,
+          "graph_exit": 0,
+          "remote_exit": 1,
+          "local_exit": 2,
+          "runtime_predicates": "passed",
+          "artifact_sha256": "a49ad024d06d6864097007e4d1c7c0729e9415c830c2cc1427c92680d3e6aa5a",
+          "artifact_bytes": 59741174,
+          "log_sha256": "16a33002b13ba56e2f390ab0903c135294398973ba18fdc621243ec11323aff2",
+          "graph_completed_at": "2026-10-03T17:32:34Z",
+          "observed_at": "2026-10-03T17:33:37Z",
+          "cleanup": "failed",
+          "cleanup_predicate": "deadline",
+          "cleanup_allowance_seconds": 20,
+          "directories": 48985,
+          "entries": 326703,
+          "repaired_directories": 1,
+          "failure_summary_sha256": "10a71805272f8349bfe8701b22315cea62c1bd0b17544aff81111131732fb302",
+          "workspace": "uncollected"
+        }
+      },
+      "third_known_workspace_repair_failure": {
+        "proof_id": "47c21c45-0597-4be2-a7d9-187996f1994e",
+        "invocation_id": "57fe497a-470a-45ef-8ac3-365f9d690ed7",
+        "source_sha256": "6ccc7d26a03ef98379cf287cb66bd8951c23d9e26ee62f85f29a12c40b018824",
+        "workspace": ".run-tIFiJDX7",
+        "remote_exit": 3,
+        "local_exit": 2,
+        "repair_result": "failed",
+        "repair_error": "custody",
+        "old_cleanup": "partial_not_removed",
+        "fresh_staging_cleanup": "removed",
+        "observed_at": "2026-10-03T17:10:32Z",
+        "partial_counters": "uncollected",
+        "summary_sha256": "uncollected"
+      },
+      "observed_failure": {
+        "proof_id": "1a14710d-ccf2-4640-bf8c-91502c6a253c",
+        "invocation_id": "13703b7c-1749-43a5-a409-8d099aa6c87c",
+        "source_sha256": "d284c4601b62082cf12620564707bdf5357243c547d29dff5719242729f74039",
+        "graph_exit": 1,
+        "remote_exit": 1,
+        "cleanup": "removed",
+        "log_sha256": "8a4191a48344689994ed15a1aa04a70cb25d0f9fbb0f5fd7ee6076a5448ebb54",
+        "failure": "Bazel absolute C header include rejection; exact rejected headers uncollected"
+      },
+      "darwin_private_vault_pass": {
+        "proof_id": "2054eb40-8f4f-4009-b7ab-12a190a89e85",
+        "invocation_id": "b114fa76-4ba3-4f6f-b9ec-1a0750f826d4",
+        "source_sha256": "db31f7e514c86078689b957fff03cd0ce5a3ce0a1836f609412d7df18817307b",
+        "graph_exit": 0,
+        "remote_exit": 0,
+        "cleanup": "removed",
+        "log_sha256": "e46d72a7018ef4a8a04d2ac219459606e906580ca7dd0038290ec1a8d924f093",
+        "scope": "private Keychain driver IO; no default/personal vault or production daemon installation"
+      },
+      "darwin_bundle_failure": {
+        "proof_id": "14ccacec-4922-486d-a95f-4332d4f531bb",
+        "invocation_id": "61f9cfe2-5b61-484e-9b4d-7cae27ec5a0f",
+        "source_sha256": "db31f7e514c86078689b957fff03cd0ce5a3ce0a1836f609412d7df18817307b",
+        "graph_exit": 1,
+        "remote_exit": 1,
+        "cleanup": "failed",
+        "log_sha256": "c7471d9ee235ca7edf9f310c03186fd0ad7b37c49b5d1192949fc5df65bbfa9f",
+        "failure": "Zig cannot find Security/CoreFoundation frameworks; no search paths declared"
+      },
+      "known_workspace_repair": {
+        "proof_id": "c53b84fa-4b82-4690-841c-2570a7eac263",
+        "invocation_id": "1077f4b8-3298-4384-a1b2-97b2b9625464",
+        "source_sha256": "9876183412758f2e0546bdaf545f7d278b0181128e5f1313df9b80fb5ddc3292",
+        "workspace": ".run-nUi7wZna",
+        "remote_exit": 0,
+        "cleanup": "removed",
+        "fresh_staging_cleanup": "removed",
+        "directories": 13,
+        "entries": 126,
+        "owned_read_only_directories_repaired": 3,
+        "summary_sha256": "6539155bb8dc322ab3eed0dbc1a1c68b9d14385b75ee320886659fb46409ba0b"
+      },
+      "corrected_darwin_bundle": {
+        "proof_id": "3ddc3001-8494-4fb1-bfdb-4f3676d15684",
+        "invocation_id": "2b9df463-469b-4772-bbee-dc56821d5d81",
+        "source_sha256": "9876183412758f2e0546bdaf545f7d278b0181128e5f1313df9b80fb5ddc3292",
+        "target": "//clients/macos:archive",
+        "status": "failed",
+        "last_observed_phase": "action-execution",
+        "phase_observed_at": "2026-10-03T16:08:48Z",
+        "caller_allowance_seconds": 1800,
+        "graph_exit": 1,
+        "remote_exit": 1,
+        "local_exit": 2,
+        "cleanup": "failed",
+        "workspace": ".run-UVJycRK3",
+        "log_sha256": "c0caf942f58e6da6ab5fd9e4ae5fef63a63509e8fe109d02276eda03f98f57d0",
+        "failure": "Using LLD to link Mach-O files is unsupported; no artifact"
+      },
+      "second_known_workspace_repair": {
+        "proof_id": "2b7163e4-c36d-4235-b9c1-65ce07447b44",
+        "invocation_id": "bd1b3493-7247-4f95-b95d-22a841ae58e2",
+        "source_sha256": "699298768f2765607fd087c8836e1866f9233be9b438fdbf6b772073eb247914",
+        "workspace": ".run-UVJycRK3",
+        "remote_exit": 0,
+        "local_exit": 0,
+        "cleanup": "removed",
+        "fresh_staging_cleanup": "removed",
+        "directories": 13,
+        "entries": 126,
+        "owned_read_only_directories_repaired": 3,
+        "summary_sha256": "6539155bb8dc322ab3eed0dbc1a1c68b9d14385b75ee320886659fb46409ba0b"
+      },
+      "native_linker_darwin_bundle": {
+        "proof_id": "e5d3e5f5-7872-4249-926b-de7db20d9632",
+        "invocation_id": "8e2a8b6d-859c-49e5-a3c8-5616e3c76685",
+        "source_sha256": "699298768f2765607fd087c8836e1866f9233be9b438fdbf6b772073eb247914",
+        "target": "//clients/macos:archive",
+        "status": "failed",
+        "last_observed_phase": "declared-bazel-graph",
+        "phase_observed_at": "2026-10-03T16:29:21Z",
+        "caller_allowance_seconds": 1800,
+        "graph_exit": 1,
+        "remote_exit": 1,
+        "local_exit": 2,
+        "cleanup": "failed",
+        "workspace": ".run-tIFiJDX7",
+        "observed_at": "2026-10-03T16:36:29Z",
+        "log_sha256": "8537f74eaf4a9b6913a8721cdaf8dfa3d9d9c640213e19346729e53bb836a346",
+        "failure": "Unresolved dependency identities omitted by collector; normal cleanup category uncollected; no artifact"
+      }
+    },
+    {
+      "id": "graph_reference_and_tracker_reconciliation",
+      "issues": [
+        "TIN-2057"
+      ],
+      "status": "passed",
+      "scope": "53-test/92-build Linux graph, source-derived SPA facts and exact issue/NS5 readbacks; platform repair/artifact outcomes remain separate",
+      "evidence": [
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "e74c4393-78bc-450e-ab10-0827d0ba0e4d",
+          "result": "passed",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "269155db-aa8f-4737-a7bb-829a97ce22f9",
+          "result": "passed",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4"
+        },
+        {
+          "kind": "document",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "aec7cc1c-7efb-46cf-bd5d-657f6661534b",
+          "result": "passed",
+          "purpose": "reference_and_spa_receipt"
+        },
+        {
+          "kind": "tracker_readback",
+          "path": "docs/tracker-updates/native-safety-sprint-2026-10-03.json",
+          "field": "final_linux_host_epoch",
+          "result": "verified"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "d0c02cc2-e4fe-4809-b2a7-22b3ab053d5c",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "bdea5b80-fd4e-49d4-8501-2877476dd3a7",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "f1c5527a-7710-4e25-911a-015eca20cdd8",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "c538f2c0-4ead-4ad7-a7e3-45f187ed0036",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "91d2f6d5-67d5-48de-ade4-57dc06a25e0f",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "67b99533-5ceb-4acb-bcc8-fe094f4e6660",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "5f78e793-af5b-4ef1-bce3-0f1bc9fb7b1a",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 test //... --keep_going --jobs=4 --test_output=errors",
+          "result": "passed"
+        },
+        {
+          "kind": "local_check",
+          "path": "docs/implementation/native-safety-evidence-2026-10-03.md",
+          "invocation_id": "8cd3cb64-b9ec-4eb0-8cac-e4eaf04c3f18",
+          "command": "nix develop --ignore-environment --keep HOME --command bazelisk --nosystem_rc --nohome_rc --output_user_root=/srv/fast-local/jess/state/codex/omux-native-safety-proof-20261003 build //... --keep_going --jobs=4",
+          "result": "passed"
+        }
+      ]
+    }
+  ],
+  "claim": "experimental_unshipped_live_continuity_unavailable",
+  "checkpoint_result": "partial_darwin_implementation_failure",
+  "checkpoint_due": "2026-10-03T15:07:56Z",
+  "goal_continues_after_checkpoint": true,
+  "latest_public_source_sha256": "0be0a6ba61854b608b26bdd3706d122eae0bf427528101d2dffb6ca13101f430"
+}

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "append_existing_factual_checkpoint",
+  "authority": "Explicit user-authorized integrated implementation and Linear reconciliation; AGENTS.md; R-N13",
+  "recorded_at": "2026-10-05T17:27:00Z",
+  "base_receipt": "docs/tracker-updates/integrated-delivery-resume-2026-10-05.json",
+  "appendix": "\n\n---\n\n17:27 UTC RESUMED COMPILED/INSTALLED CHECKPOINT — active, incomplete. Earlier UNRUN/blocked notes retain their dated scope. Allocation is restored; the original 19:03:36 UTC checkpoint and 4 GiB/512-task/two-CPU/20-minute containment remain unchanged.\n\nEpoch 33452a55 (overall exit 3, empty descendants) passes 228 engine, 28 guard and 13 Linux transport predicates, setup UI, format and installed_core_browser_test. Two packaged core instances with genuine isolated Secret Service pass channel/state/socket separation, native-host framing, mismatch refusals without mutation and owned removal. This excludes browser registration/consent, full Qt packaging, OS-service activation and providers. Failed earlier epochs remain failed.\n\nEpoch 4cf338e5 (overall exit 3, empty descendants) passes all 16 CLI tests and current guard/site/dependency admission tests. Custody still fails its unselected artifact-readiness assertion; finite diagnostics identify readiness-artifact. An allowlisted reason diagnostic is prepared but unrun. No assertion relaxed or setup/restart gate promoted.\n\nEpoch f3c76f3f passes complete 50-path NAR coordinator qualification (receipt SHA 3e8184da017f41b90ddab42972111a930be4a4e53bbdff7df9de493386583a6b) and the offline SDK plan (279 objects; 1,436 missing; closure false; receipt SHA c6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b). Site epoch 359c16da exits 48 with empty descendants before tests: lock version 24 is incompatible with pinned Bazel 9.0.1. Exact contained mod deps regeneration is reviewed and guard-tested, preserving prior/final raw lock bytes and permitting only lock mutation. Actual migration and SPA delivery remain unrun.\n\nSeparate source-frozen, unrun exact-164/runtime009 TUI/cold-resume evaluation does not prove the newer recovery delta, backend attribution, accepted history or live handoff. Genuine paired Home Manager inputs/activation remain missing. Darwin/GF-owned PZM remain held. Native support and achieved SLO/SLA remain unproved. Only ID-AUTHORITY is a complete gate.\n\nPlan/evidence: docs/plans/omux-integrated-delivery-sprint-2026-10-05.md; docs/tracker-updates/integrated-delivery-resume-2026-10-05.json; .goal/omux-integrated-delivery-2026-10-05.json. No issue title, description, state, assignment, date or relationship change.",
+  "entries": [
+    {
+      "issueId": "TIN-2057",
+      "commentId": "9125cc71-40a6-499b-8f89-2de5cc1ef6f1",
+      "base_json_pointer": "/tracker_reconciliation/entries/0/args/body",
+      "base_exact_readback_verified": true,
+      "before_updatedAt": "2026-10-05T16:27:40.734Z",
+      "readback_pending": false,
+      "readback": {
+        "comment_equal": true,
+        "updatedAt": "2026-10-05T17:28:41.416Z",
+        "unchanged": {
+          "title": true,
+          "description": true,
+          "status": true,
+          "assignee": true,
+          "dueDate": true,
+          "relations": true
+        }
+      }
+    },
+    {
+      "issueId": "TIN-2063",
+      "commentId": "e6c9672c-52f5-41ad-a76e-9a7cd4915a95",
+      "base_json_pointer": "/tracker_reconciliation/entries/1/args/body",
+      "base_exact_readback_verified": true,
+      "before_updatedAt": "2026-10-05T16:27:41.233Z",
+      "readback_pending": false,
+      "readback": {
+        "comment_equal": true,
+        "updatedAt": "2026-10-05T17:28:41.969Z",
+        "unchanged": {
+          "title": true,
+          "description": true,
+          "status": true,
+          "assignee": true,
+          "dueDate": true,
+          "relations": true
+        }
+      }
+    }
+  ],
+  "pre_action_draft_appendix": "\n\n---\n\n17:27 UTC RESUMED COMPILED/INSTALLED CHECKPOINT — active, incomplete. Historical UNRUN/blocked notes above retain their dated scope. Allocation is restored; original15-hour due19:03:36UTC and unchanged4GiB/512task/2CPU/20minute/floor2GiB containment remain. No automatic retry or fleet/provider/publication dispatch.\n\nEpoch33452a55 (overall3/emptydescendants) now passes engine228, guard28, Linuxtransport13,setupUI,format and installed_core_browser_test. Two actual packaged core instances use isolated genuine Secret Service and pass channel/state/socket/native-host framing, mismatch/no-mutation and owned-removal predicates. Marker OMUX_INSTALLED_SYNTHETIC_BROWSER_TRANSPORT_OK. This excludes real browser registration/consent, full Qt package, OS-service activation and providers. Earlier failed engine/CLI epochs remain failed.\n\nEpoch4cf338e5 (overall3/emptydescendants) passes current CLI16 and guard/site/dependency admission tests; custody still fails its unselected artifact-readiness assertion. Finite subphase diagnostic identifies readiness-artifact; allowlisted reason-only diagnostic is prepared, not yet run. No custody assertion relaxed, terminal/restart proof or full setup gate promoted.\n\nEpochf3c76f3f passes both real50-path complete NAR coordinator qualification (receipt3e8184da017f41b90ddab42972111a930be4a4e53bbdff7df9de493386583a6b) and offline SDK dependency plan279objects (receiptc6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b;1436missing/closurefalse). Site359c16da exits48/empty before tests because MODULElock24 is incompatible with pinnedBazel9.0.1. Exact contained mod deps regeneration is source-reviewed and guard-tested; preserves raw before/final lock, permits only lock source mutation. Actual migration and SPA import/rendering remain unrun.\n\nSeparate exact164/runtime009 ordinary TUI/cold-resume fixture is source-frozen, unrun; it cannot prove newer recoverydelta, backend attribution, accepted history or livehandoff. Actual paired HM inputs/activation remain missing. Darwin/GF-ownedPZM held; native_support=false; no achievedSLO/SLA. Only ID-AUTHORITY fullgate passed. Source/plan/evidence: docs/plans/omux-integrated-delivery-sprint-2026-10-05.md; docs/tracker-updates/integrated-delivery-resume-2026-10-05.json; .goal/omux-integrated-delivery-2026-10-05.json. No issue title/body/state/assignment/date/dependency change.",
+  "draft_correction": "Spacing and wording corrected before external saves; facts unchanged; final exact appendix and readbacks recorded here."
+}

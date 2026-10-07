@@ -1,45 +1,32 @@
 ---
-name: Live handoff evidence
-about: Share redacted evidence for a quota/auth handoff or failed handoff
+name: Native continuity evidence
+about: Record exact-version ordinary-launch continuity proof or a failed gate
 title: "[evidence] "
 labels: evidence
 assignees: ""
 ---
 
-## Scenario
+## Exact support tuple and provenance
 
-- provider/harness:
-- route labels involved:
-- command used:
-- expected handoff:
-- observed result:
+Record OS/architecture, artifact digest/revision, application version/commit,
+native hook/protocol, provider/account type, credential operation, resource and
+scope. Link the declared Nix/Bazel action, UTC interval and redacted receipt.
+Distinguish candidate, fixture, local relocation, installed platform and live
+provider evidence. Historical proof cannot promote rewritten code.
 
-## Status summary
+## Observable gates
 
-Paste redacted status summary output:
+- Ordinary native launch and resume; no Omux wrapper or alternate session home.
+- Verified existing-process attachment, if separately claimed.
+- Real provider-originated failure before acceptance and compatible admission.
+- Unchanged application process and preserved native session/tools/approvals.
+- No routine prompt, accepted-stream replay or repeated tool execution.
+- Concurrent identity isolation and safe failure for account-bound native state.
 
-```bash
-oauth-mux codex status-latest --json
-```
+Record each gate as passed, failed, blocked or unrun with evidence. A fallback
+route result alone does not establish same-process continuity. Stock Codex support
+remains unavailable until native-hook and live acceptance gates pass.
 
-If using a saved artifact:
-
-```bash
-oauth-mux codex status-latest --status-file <redacted-status.ndjson> --json
-```
-
-## Claim boundary
-
-Check all that apply:
-
-- [ ] provider-originated quota event observed
-- [ ] auth failure observed
-- [ ] fallback route returned success
-- [ ] user-visible failure occurred
-- [ ] same-thread continuity is being claimed
-- [ ] unmanaged daemon hot-swap is being claimed
-
-## Privacy check
-
-Do not paste raw tokens, refresh tokens, account ids, emails, credential paths,
-session ids, prompt text, or assistant transcript content.
+Use docs/product/support-and-completeness.md and docs/spec/native-adapter-contract.md
+for acceptance IDs. Share no credentials, account identities, emails, prompts,
+provider bodies, transcript contents or PII captures.

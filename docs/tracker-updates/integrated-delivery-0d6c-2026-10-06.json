@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_retained_input_modeled_result",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "0d6c2610-2437-4d9c-a043-d1d2f49e43f4",
+  "original_handle": 13545,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/0d6c2610-2437-4d9c-a043-d1d2f49e43f4/receipt.json",
+  "raw_receipt_sha256": "8b4c5fc54c80324f61fe133535ba81875596075247e074a38488cad07b6ce7bd",
+  "graph_sha256": "7c584b7d03c250cf379da39d5ad267efc318933643f49b6b7e460adf66aa6eb9",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 213350,
+    "files": 15,
+    "manifest": "test-evidence.json",
+    "sha256": "8f172602e661ccc5df5120da4dd0af969e69b65696885e18ba59f69ffd22dd83",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//tools:guard_owner_runtime_input_test",
+    "//tools:execution_guard_test",
+    "//tools:codex_owner_runtime_input_test",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "named_new_guard_helper_cases": 18,
+  "new_controller_cases": 3,
+  "scope": "Modeled guard sealed/private mode pairs, physical custody, replacement/mode/hash/refusal/deadline and final readback cases pass. Actual declared external-input qualification and installed native proof remain unrun. No ambient selection is used by this default source/model graph.",
+  "new_parent_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false
+}

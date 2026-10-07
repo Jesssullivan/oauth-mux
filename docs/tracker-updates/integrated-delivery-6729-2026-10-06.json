@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_applied_foundation_semantic_result",
+  "authority": "User-ratified Oct6 native/browser continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "67297244-ea1b-47b6-9525-ee52b163fed4",
+  "original_handle": 54347,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/67297244-ea1b-47b6-9525-ee52b163fed4/receipt.json",
+  "raw_receipt_sha256": "c25b143ebaa05977207c1fe5d5173fbcd07112d8d4628ad3f6b7cc40ff81b86a",
+  "graph_sha256": "7f4572ffe3159691c4f095cc654a3a79e4da2614c95edfb7a723fcfce85ec37d",
+  "controller_exit": 1,
+  "workload_exit": 1,
+  "controller_failure": null,
+  "descendants_empty": true,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 239655,
+    "files": 33,
+    "manifest": "test-evidence.json",
+    "sha256": "6d397d435980471045023f04a658d5db3122709e7eed68da8bf701d9b2983d01",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//tools:execution_guard_test",
+    "//tools:guard_dependency_profile_test",
+    "//tools:yoga_delivery_settings_test",
+    "//tools:guard_yoga_delivery_profile_test",
+    "//tools:yoga_executable_qualification_test",
+    "//tools:yoga_controller_delivery_test",
+    "//tools:home_manager_bundle_test",
+    "//tools:home_manager_acquired_evaluation_test",
+    "//delivery:native_cli_stderr_test",
+    "//tools:system_mask_policy_test",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_to_build": [
+    "//:reliability_lifecycle_native_removal_test",
+    "//:runtime_selection_producer_test"
+  ],
+  "build_failure": "measured_runtime_selection.zig43 local witness shadows helper witness166; helper rename applied after terminal",
+  "failed_tests": [
+    {
+      "target": "//delivery:codex_direct_exec_test",
+      "ran": 0,
+      "error": "fixture assembly missing declared libstdc++.so.6"
+    },
+    {
+      "target": "//tools:home_manager_acquisition_test",
+      "ran": 88,
+      "errors": 1,
+      "error": "diagnostic production-count fixture acquired-ancestor-changed"
+    }
+  ],
+  "elapsed_seconds": 204.889,
+  "new_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false,
+  "limits": {
+    "CPUQuotaPerSecUSec": "2s",
+    "KillMode": "control-group",
+    "MemoryMax": "4294967296",
+    "MemorySwapMax": "0",
+    "OOMPolicy": "kill",
+    "RuntimeMaxUSec": "20min",
+    "SendSIGKILL": "yes",
+    "TasksMax": "512",
+    "TimeoutStopUSec": "10s"
+  },
+  "next": "Fresh corrected tests and measured actor coverage; exact installed native diagnostic and qualified Yoga read-only transport"
+}

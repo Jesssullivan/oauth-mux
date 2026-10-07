@@ -1,0 +1,31 @@
+load("//tools:rules.bzl", "host_python_binary", "python_test")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.bazel", "*.md", "*.json", "*.patch", "*.tar.gz"], allow_empty = True))
+filegroup(name = "artifact_files", srcs = glob(["*.json", "*.patch", "*.tar.gz"], allow_empty = True))
+exports_files(["README.md"])
+
+python_test(
+    name = "artifact_tooling_test",
+    main = "artifact_tooling_test.py",
+    srcs = ["artifact_test.py", "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py"],
+)
+
+# README supplies a stable runfile-directory anchor before artifacts are staged.
+# Missing candidate bytes fail at invocation, never hide behind the old artifact.
+python_test(
+    name = "artifact_test",
+    main = "artifact_test.py",
+    srcs = ["//integrations/codex-upstream:patch_io.py"],
+    data = ["README.md", ":artifact_files"],
+    args = ["--artifact-dir", "$(location README.md)"],
+)
+
+host_python_binary(
+    name = "restore_source",
+    main = "//integrations/codex-upstream:restore_source.py",
+    srcs = ["//integrations/codex-upstream:patch_io.py"],
+    data = ["README.md", ":artifact_files", "@omux_host//:git", "@omux_host//:ca-bundle.crt"],
+    args = ["--artifact-dir", "$(location README.md)", "--git", "$(location @omux_host//:git)", "--ca-file", "$(location @omux_host//:ca-bundle.crt)"],
+)

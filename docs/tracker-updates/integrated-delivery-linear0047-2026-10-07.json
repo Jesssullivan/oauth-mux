@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "kind": "factual_tracker_checkpoint_pre_action",
+  "authority": "User-authorized factual Linear reconciliation; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-07T00:47:01Z",
+  "issues": [
+    {
+      "issue": "TIN-5338",
+      "body": "Provider-free checkpoint 2026-10-07 00:47 UTC: ordinary installed retained009 target44d7 ran with explicit TOKIO_WORKER_THREADS=2 and failed at selected-detach / detach-rpc (controller/workload3/3, descendants empty, held input verified after cleanup). Docs/source passed. Native cold resume was not reached; this is no original-cause or improvement claim. Receipt: docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json.\n\nEarlier refined observer158b identified fork EAGAIN before launching the CLI; original CLI stderr/cause and resource cause remain unmeasured. Snapshot247/history4/restart and observer13 models passed in their exact historical scopes. Production adapter bytes, caps and all history/status assertions remain intact. Codex remains Omux-owned experimental integration; stock support, accepted-history and live handoff unproved. Next: independently reviewed bounded detach-RPC diagnosis and exact signed source delivery, with no provider calls or automatic retry. Parent remains5 historical scoped gates passed/6open; issue scope/state unchanged.",
+      "posted": false
+    },
+    {
+      "issue": "TIN-2063",
+      "body": "Provider-free checkpoint 2026-10-07 00:47 UTC: fixed Lab system Nix selection passed actual Yoga OS/executable qualificationd47f and read-only inspectionf0c7 (each0/0, descendants empty, unchanged source). Same qualified tuple/graph was reused for verifyc7f6, which refused destination-registration-content (2/2, empty, source-aftertrue). It identifies no individual missing path or size/hash/reference mismatch. Receipt: docs/tracker-updates/integrated-delivery-yoga-d47f-chain-2026-10-07.json.\n\nNo destination transfer, fleet activation, browser/wrapper/cold graph or human toolbar consent proved. Repaired selector fixture17 passed35d5. HM9337 still timed out124/124 without an admitted compact pair; genuine evaluation remains unrun and private sandbox filesystem residue retained despite empty processes. Next: bounded registry predicate diagnosis/destination authority and signed source delivery; Home Manager declarative ownership preserved. Parent5historical passes/6open; scope/state unchanged.",
+      "posted": false
+    },
+    {
+      "issue": "TIN-2057",
+      "body": "Provider-free continuation checkpoint 2026-10-07 00:47 UTC: parent fifteen-hour objective remains active/incomplete, five historical scoped gates passed and six open. Current ledger: .goal/omux-native-browser-2026-10-06.json; next review01:13:12UTC. Time never closes an acceptance gate.\n\nExact latest evidence: ordinary retained009/Tokio2 native44d7 refused detach RPC, cold resume unreached; observer158b fork EAGAIN precedes CLI launch, original/resource cause unmeasured. Yoga d47f/f0c7 qualification+inspection passed, c7f6 registry metadata refused; no transfer/browser/toolbar proof. HM9337 timed out with no admitted pair. Snapshot247, history4, restart, Yoga17 and observer13 models passed only their stated source/epoch predicates. Receipts under docs/tracker-updates/integrated-delivery-{native44d7,native158b,yoga-d47f-chain,model35d5}-2026-10-07.json.\n\nNext: reviewable signed exact-source delivery on main134e ancestry with finite serialized local gates, retaining failed evidence and unsupported stock/Darwin/live claims. All provider access and publication remain separate. No broad acceptance or issue state change.",
+      "posted": false
+    }
+  ],
+  "scope_or_status_changes": false,
+  "readback_pending": false,
+  "readbacks": [{"issue":"TIN-5338","id":"cf4fe85c-5647-4cc5-9e4e-ff3a81262ee0","body_exact":true,"scope_and_status_unchanged":true},{"issue":"TIN-2063","id":"89dff639-dd6c-4cdf-8e25-8e28d5b583df","body_exact":true,"scope_and_status_unchanged":true},{"issue":"TIN-2057","id":"ace23cba-f41b-402f-bafa-8d3d20a77b48","body_exact":true,"scope_and_status_unchanged":true}]
+}

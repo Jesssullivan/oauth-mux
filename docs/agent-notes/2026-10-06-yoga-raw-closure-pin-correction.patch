@@ -1,0 +1,56 @@
+diff --git a/tools/yoga_delivery_settings.py b/tools/yoga_delivery_settings.py
+--- a/tools/yoga_delivery_settings.py
++++ b/tools/yoga_delivery_settings.py
+@@ -13,7 +13,10 @@
+ UUID = re.compile('[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+ INVENTORY = '2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8'
+ SOURCE_RECEIPT = 'f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a'
+-NATIVE = 'b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0'
++# Raw registered closure bytes recorded in the exact d631 guard receipt.
++# The unchanged inventory separately records its canonical action manifest
++# as b24fb333... and the same registered object as this raw digest.
++NATIVE = '7f19ccff61a0d5981641a73ab65067eac6de77e13e146b4be06ac6b36652bd41'
+ TOOLS = {
+     # execution_guard.immutable resolves this generation's python3 -> python3.13.
+     # The store root/bootstrap manifest/inventory generation remain unchanged.
+diff --git a/tools/yoga_delivery_settings_test.py b/tools/yoga_delivery_settings_test.py
+--- a/tools/yoga_delivery_settings_test.py
++++ b/tools/yoga_delivery_settings_test.py
+@@ -54,6 +54,23 @@
+     def write(self,path,data):
+         path.write_bytes(data); path.chmod(0o600)
+ 
++    def test_raw_d631_closure_pin_is_distinct_from_canonical_inventory_manifest(self):
++        # Exact public d631 receipt and controller-evidence.json independently
++        # record this raw digest for 12way/native.json -> s3iz...-native.json.
++        raw = '7f19ccff61a0d5981641a73ab65067eac6de77e13e146b4be06ac6b36652bd41'
++        canonical_input = 'b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0'
++        settings.tools(dict(settings.TOOLS), raw, settings.executable.BOOTSTRAP_SHA)
++        for wrong in (canonical_input, '0' * 64):
++            with self.assertRaisesRegex(ValueError, 'unchanged-d631-controller-tools'):
++                settings.tools(dict(settings.TOOLS), wrong, settings.executable.BOOTSTRAP_SHA)
++        changed = dict(settings.TOOLS, closure='/nix/store/' + 'a' * 32 + '-omux-bazel-closure')
++        with self.assertRaisesRegex(ValueError, 'unchanged-d631-controller-tools'):
++            settings.tools(changed, raw, settings.executable.BOOTSTRAP_SHA)
++        receipt = self.receipt('a' * 64)
++        receipt['closure_manifest_sha256'] = canonical_input
++        with self.assertRaisesRegex(ValueError, 'successful-same-graph-qualify-guard-epoch'):
++            settings.prior_receipt(receipt, self.epoch, 'f' * 64, {'fixed': 'fixture'}, self.lock)
++
+     def test_finite_scope_refuses_authority_for_qualify_and_unrelated_routes(self):
+         settings.finite(['run','//tools:yoga_controller_qualify'],'system',None,[])
+         for args,manager,epoch,other in ((['run','//tools:yoga_controller_qualify'],'system',self.epoch,[]),
+diff --git a/docs/agent-notes/2026-10-06-yoga-readonly-dispatch-selection.json b/docs/agent-notes/2026-10-06-yoga-readonly-dispatch-selection.json
+--- a/docs/agent-notes/2026-10-06-yoga-readonly-dispatch-selection.json
++++ b/docs/agent-notes/2026-10-06-yoga-readonly-dispatch-selection.json
+@@ -80,7 +80,9 @@
+     "controller_nar_bytes": 2829689512,
+     "d631_receipt_path": "/home/jess/.local/state/omux-execution-20261005/d6311994-5212-4034-ac93-49b06405db88/receipt.json",
+     "d631_receipt_sha256": "f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a",
+-    "native_manifest_sha256": "b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0",
++    "raw_registered_native_manifest_sha256": "7f19ccff61a0d5981641a73ab65067eac6de77e13e146b4be06ac6b36652bd41",
++    "registered_native_manifest_object": "/nix/store/s3izwvjn0dx2jmdjriaynb77wn96q90x-native.json",
++    "canonical_inventory_native_manifest_sha256": "b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0",
+     "bootstrap_manifest_path": "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure/native.json",
+     "bootstrap_manifest_sha256": "c056b1b590c814bc662a7ef348ba4f5789e3534ed9ae8420fdc8614fefd9bc3a",
+     "ssh_path": "/nix/store/aq5s91svywqgs5l9zyhp1wcjqvnfa0ss-openssh-with-gssapi-10.2p1/bin/ssh"

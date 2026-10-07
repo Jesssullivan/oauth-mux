@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "kind": "fixed_system_nix_selector_fixture_pass",
+  "authority": "User-ratified provider-free October6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "35d5f445-57cd-4b2c-85be-3f03afe80c4f",
+  "original_handle": 87544,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/35d5f445-57cd-4b2c-85be-3f03afe80c4f/receipt.json",
+  "raw_receipt_sha256": "209c05f1235c2bb73adc6ce3e17030ff423e620d3d7beda6f01dd61d3151ee26",
+  "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "rejection": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 214097,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "70cbca7f4e4b0277f245d01228ec086a8a684c454c2679ddd2ffdb292b8a5ca4",
+    "state": "preserved"
+  },
+  "targets_passed": 3,
+  "targets_total": 3,
+  "passed_targets": [
+    "//tools:yoga_executable_qualification_test",
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "yoga_methods": 17,
+  "scope": "The four-line test-only canonical path-join correction passed all17 scenarios. Production ownership, descriptor/name/target/kernel-path/hash checks and refusal/cleanup predicates remain intact. Earlier ec8b whole-batch failure remains historical; this model pass alone does not qualify a remote executable, store or browser.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

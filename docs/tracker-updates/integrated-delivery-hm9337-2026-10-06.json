@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "actual_canonical_reconstruction_timeout",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "933755a5-ca8d-42ef-be71-b9e9fded5676",
+  "original_handle": 21319,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/933755a5-ca8d-42ef-be71-b9e9fded5676/receipt.json",
+  "raw_receipt_sha256": "ef5a3db2f1a10c66f0e545a4f7f790a1119c5e123d46977fc07ceb83ede3a00a",
+  "graph_sha256": "170d369b255af15ef6632af436ba418d36741a02af1007d5e96128ea2760e2f5",
+  "controller_exit": 124,
+  "workload_exit": 124,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "rejection": null,
+  "cleanup": {
+    "ownership": "refused",
+    "readback_attempts": 1,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 197,
+    "files": 1,
+    "manifest": "test-evidence.json",
+    "sha256": "7521e310083022e0ff8abe3c828950005ad225be9e4828dcf913c2be08f02244",
+    "state": "preserved"
+  },
+  "target": "//tools:home_manager_retained_reconstruction_producer",
+  "scope": "Bazel completed declaration of 71,223 targets and started the actual reconstruction action; outer aggregate deadline expired while action was running. No completed test XML or output manifest, successful producer receipt or independently admitted compact pair.",
+  "successful_compact_pair_admitted": false,
+  "genuine_evaluation_run": false,
+  "automatic_retry": false,
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

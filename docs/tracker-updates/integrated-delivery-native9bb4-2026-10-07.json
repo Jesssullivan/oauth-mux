@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "kind": "installed_native_observer_failed_before_cold_resume",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "9bb484f9-2925-4eae-b6a1-32294540558a",
+  "original_handle": 88848,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/9bb484f9-2925-4eae-b6a1-32294540558a/receipt.json",
+  "raw_receipt_sha256": "9ea59132c435fe48f3888e8acf9a1d384b06a1043dc78a85b55fb7cdd1b35dcb",
+  "graph_sha256": "7364a12afc36c4948bca49acdd311bdf4c58eba944038be6d2f8191264df50ab",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 214660,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "7e3206a3459f09f9f56a952486d6fae587a74235326d4abebd6d11b17e2cc737",
+    "state": "preserved"
+  },
+  "held_input_verified_after_cleanup": true,
+  "passed_targets": [
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_target": "//delivery:installed_legacy_native_fd2_diagnostic_test",
+  "failed_phase": "selected-detach",
+  "diagnostic": "detach-status-rpc/cli-process-failure/exit-positive-other/status-json-unrecognized/stderr-empty/completion-not-result",
+  "fd2_observation": "error/writer-none/image-none/sink-none/call-none/origin-none",
+  "scope": "Initial native history witness and metadata predicates passed in this attempt. The observer failed with a generic instrumentation error; wrapper failure cannot identify the original CLI exit, stderr writer or cause. Ordinary native acceptance remains unchanged. Cold resume was not reached.",
+  "cold_resume_reached": false,
+  "original_cli_cause_known": false,
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false,
+  "linear_carriers": [
+    "TIN-5338",
+    "TIN-5421",
+    "TIN-2057"
+  ]
+}

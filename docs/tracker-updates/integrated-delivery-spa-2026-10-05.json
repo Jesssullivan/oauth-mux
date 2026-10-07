@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "kind": "experimental_local_SPA_delivery_gate_tuple",
+  "authority": [
+    "User-authorized integrated implementation",
+    "AGENTS.md",
+    "R-HOOK-CONVERGENCE-20261004",
+    "R-N13"
+  ],
+  "plan": "docs/plans/omux-integrated-delivery-sprint-2026-10-05.md",
+  "scope": "ID-DELIVERY passed for exact local experimental development SPA archive; faithfully rendered caller-declared source provenance, capability and delivery limits",
+  "site_repository": "/srv/fast-local/jess/git/omux.xoxd.ai",
+  "site_branch": "feature/native-account-custody-reference",
+  "runtime_metadata_sha256": "21cc984d60f2b2787c8f68fcb5e43dfcb2de8b22a760ada8f6a08c9ad0864d9c",
+  "runtime_extension_zip_sha256": "0ec74f20b4d9831e760e0e133e4082298413677a1fca7c0f21c95619685dac01",
+  "metadata_provenance": {
+    "commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+    "dirty": true,
+    "authority": "caller-declared public metadata; not independent commit/artifact correspondence"
+  },
+  "import_before": null,
+  "import_after": {
+    "manifest": {
+      "artifact": {
+        "bytes": 54966,
+        "filename": "chromium_dev_package.zip",
+        "format": "zip",
+        "sha256": "0ec74f20b4d9831e760e0e133e4082298413677a1fca7c0f21c95619685dac01"
+      },
+      "capability_limits": {
+        "max_capsule_bytes": 131072,
+        "max_message_bytes": 262144,
+        "max_secret_bytes": 8192,
+        "native_continuity": "unproved",
+        "provider_acquisition": "experimental"
+      },
+      "channel": "development",
+      "extension": {
+        "browser": "chromium",
+        "id": "bggghdafplhajiailkafeihemlalagmm",
+        "version": "0.2.0"
+      },
+      "instance": "dev",
+      "native_host": "ai.xoxd.omux.dev",
+      "protocol_version": 1,
+      "schema_version": 1,
+      "signing": {
+        "status": "unsigned",
+        "store_publication": "unpublished"
+      },
+      "source": {
+        "commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+        "dirty": true
+      }
+    },
+    "manifest_sha256": "21cc984d60f2b2787c8f68fcb5e43dfcb2de8b22a760ada8f6a08c9ad0864d9c"
+  },
+  "coordinator_qualification_sha256": "3e8184da017f41b90ddab42972111a930be4a4e53bbdff7df9de493386583a6b",
+  "archive": {
+    "schema": "omux.site-archive-observation.v1",
+    "artifact": "site_archive.tar.gz",
+    "bytes": 1031926,
+    "sha256": "0e5bbe0af08e833e8b0ee32f64b2f734feea5f0f5f005c2fabaf315c3c070938",
+    "publicationPerformed": false,
+    "path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/cache-v2-31e8d1fe1761040c508ae9c0b4ca7176fe876174422079292fc970928c77b804/output-base/execroot/_main/bazel-out/k8-fastbuild/bin/site_archive.tar.gz",
+    "observation_source": "same held compressed bytes used by actual archive_check; raw digest produced within Bazel"
+  },
+  "final_controller_graph_sha256": "a4b7a4c2e6c53b4fa703b559b5561a58b54ab803b943e289ecc6b4d0119dbaf2",
+  "final_site_source_sha256": "8243a609492dad47eff7503057e0247a7f825c8dc684e50159ff687be11b9ca4",
+  "epochs": [
+    {
+      "id": "dd0f73f1-87e4-4d12-9c07-021b611f8a68",
+      "phase": "qualification",
+      "targets": [
+        "//tools:qualified_site_tools_test",
+        "//tools:nix_file_inventory_test",
+        "//:reference_check"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "69ff9ce1e8504744bab758dd4a56f27cb649a56f7f058bb32f38d55e9637be2b",
+      "source_before_sha256": "5fc265e446806ad2caf31355fb051ac5f3a9118ddc0b0b8dd9f444f709a96fa2",
+      "source_after_sha256": "5fc265e446806ad2caf31355fb051ac5f3a9118ddc0b0b8dd9f444f709a96fa2",
+      "source_verified_after_cleanup": true,
+      "source_changes": [],
+      "test_evidence": {
+        "bytes": 2899,
+        "files": 6,
+        "manifest": "test-evidence.json",
+        "sha256": "639a3f1336eb7118f675fd208f1d7da9a99aea36b13aefd7bfcbe6ecc315f7b4",
+        "state": "preserved"
+      }
+    },
+    {
+      "id": "23282ef1-9dae-434e-af52-cd609fc0325e",
+      "phase": "import",
+      "targets": [
+        "//:import_extension_delivery",
+        "--",
+        "--manifest",
+        "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/chromium_dev_metadata.json",
+        "--sha256",
+        "21cc984d60f2b2787c8f68fcb5e43dfcb2de8b22a760ada8f6a08c9ad0864d9c"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "69ff9ce1e8504744bab758dd4a56f27cb649a56f7f058bb32f38d55e9637be2b",
+      "source_before_sha256": "5fc265e446806ad2caf31355fb051ac5f3a9118ddc0b0b8dd9f444f709a96fa2",
+      "source_after_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_verified_after_cleanup": true,
+      "source_changes": [
+        "src/lib/content/extension-delivery.json"
+      ],
+      "test_evidence": {
+        "state": "not-applicable"
+      }
+    },
+    {
+      "id": "78ad8202-ff69-4e5f-be8a-cb938685d56a",
+      "phase": "checks",
+      "targets": [
+        "//:unit_tests",
+        "//:svelte_check",
+        "//:reference_check"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "69ff9ce1e8504744bab758dd4a56f27cb649a56f7f058bb32f38d55e9637be2b",
+      "source_before_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_after_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_verified_after_cleanup": true,
+      "source_changes": [],
+      "test_evidence": {
+        "bytes": 25826,
+        "files": 6,
+        "manifest": "test-evidence.json",
+        "sha256": "fc6f302b7d9d0a922b561281fb3759a4c609279442746fa0f7679c8aba99b519",
+        "state": "preserved"
+      }
+    },
+    {
+      "id": "1c6c2032-26f6-447d-b8cd-4da4dc7eba7a",
+      "phase": "build",
+      "targets": [
+        "//:build"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "69ff9ce1e8504744bab758dd4a56f27cb649a56f7f058bb32f38d55e9637be2b",
+      "source_before_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_after_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_verified_after_cleanup": true,
+      "source_changes": [],
+      "test_evidence": {
+        "state": "not-applicable"
+      }
+    },
+    {
+      "id": "587cec5c-0e3c-4785-ac27-4c56d1720bbb",
+      "phase": "archive",
+      "targets": [
+        "//:site_archive"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "69ff9ce1e8504744bab758dd4a56f27cb649a56f7f058bb32f38d55e9637be2b",
+      "source_before_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_after_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_verified_after_cleanup": true,
+      "source_changes": [],
+      "test_evidence": {
+        "state": "not-applicable"
+      }
+    },
+    {
+      "id": "cf79aa9b-75c8-4677-8911-f31be6167381",
+      "phase": "checks",
+      "targets": [
+        "//:archive_check"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "69ff9ce1e8504744bab758dd4a56f27cb649a56f7f058bb32f38d55e9637be2b",
+      "source_before_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_after_sha256": "da3a622a860c785bbc5a19433e0a085b161a7682b2f7c292e6faa3f545fc9694",
+      "source_verified_after_cleanup": true,
+      "source_changes": [],
+      "test_evidence": {
+        "bytes": 913,
+        "files": 2,
+        "manifest": "test-evidence.json",
+        "sha256": "e34e681fe5c4edab45644853e3182c627d908f657feebc63e8232f6e848652c9",
+        "state": "preserved"
+      }
+    },
+    {
+      "id": "b62de355-e8e5-4c26-a3f6-e4bb8e370f3b",
+      "phase": "checks",
+      "targets": [
+        "//:unit_tests",
+        "//:archive_check"
+      ],
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "graph_sha256": "a4b7a4c2e6c53b4fa703b559b5561a58b54ab803b943e289ecc6b4d0119dbaf2",
+      "source_before_sha256": "8243a609492dad47eff7503057e0247a7f825c8dc684e50159ff687be11b9ca4",
+      "source_after_sha256": "8243a609492dad47eff7503057e0247a7f825c8dc684e50159ff687be11b9ca4",
+      "source_verified_after_cleanup": true,
+      "source_changes": [],
+      "test_evidence": {
+        "bytes": 24659,
+        "files": 4,
+        "manifest": "test-evidence.json",
+        "sha256": "e6a20f1bcc19548174867de3d68e84481cb30a4ce84cdc02f1b224970c9976d3",
+        "state": "preserved"
+      }
+    }
+  ],
+  "final_target_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 11484,
+          "file": "cf64f7c050644acf63853747783257768fcd6e69313fc72f474508b1e48dad01.evidence",
+          "sha256": "2e05526d0810435b4220f48057b6d916e007bcdcb18962c510e8b8ce5d951cc8",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 11862,
+          "file": "871bb17b75718827bcd393933e824237111b0867987d1012335994cac36c468d.evidence",
+          "sha256": "1454ece63ed3ee746eb65e1786e8e29d8b6321e082388bc324b42772c551a29a",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//:unit_tests"
+    },
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 461,
+          "file": "e3852a9b3c83f0181e027a79991d489a766574628f7a1a5e17764b82b744181c.evidence",
+          "sha256": "3e907597c8363dbfbdc563e3a4242384ee6b056c7c168e888796ec5f65eb5e9c",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 852,
+          "file": "0c8961ed93240b1709809a2f33dc885beab936e758863dba5a6cdc1b1b91102a.evidence",
+          "sha256": "19ca1940b4ec4f38733124c99a05cbfbc0e3632fc4f6c0fddcccbf134c104188",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "missing"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//:archive_check"
+    }
+  ],
+  "not_proved": [
+    "Browser loading, consent and provider acquisition",
+    "Verified identities, usable grants and renewal",
+    "Ordinary native application launch/resume or same-process handoff",
+    "Home Manager activation/update/removal",
+    "Darwin",
+    "Public downloads, signing, store publication or website deployment",
+    "Achieved lifecycle reliability SLO or contractual SLA"
+  ],
+  "review": "Independent resume_gate_audit conditional closure accepted; final controller/workload0, empty scope, verified source preservation and named digest conditions satisfied"
+}

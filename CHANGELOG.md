@@ -6,14 +6,32 @@ claims stop at that evidence. The 61 PRs that sat unreleased between v0.1.13
 and v0.1.14 motivated this file; a cut is now owed whenever a flagship evidence
 dir lands.
 
-## Unreleased
+## Unreleased — native account-lifecycle reset (2026-10-02)
 
-Everything below is on `main` but uncut. The v0.2 broker work in this
-section is **future/experimental/unshipped** per the evaluation ladder's
-promotion rule (`docs/runbooks/omux-v0.2-evaluation-ladder-2026-07-14.md`
-§12): TIN-2057's golden scorecard is 0/11, no prerelease exists, and
-v0.1.15 remains the honest stable release. Nothing here changes shipped
-claims.
+Experimental replacement source; **no new stable release or live native handoff
+claim**. The active contract is
+`docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md`.
+
+- Replace managed-launch direction with a resident local daemon and reversible
+  native integrations for normally launched applications. Codex native grant/
+  attachment hooks require proof before support promotion; Claude/Git follow.
+- Separate identity, account, source, grant, resource, observation, binding and
+  lease state. Define verified discovery, detached-source retention, explicit
+  removal/tombstones, renewal ownership and generic scoped capacity.
+- Reset custody toward ciphertext SQLite grants and OS-vault wrapping keys;
+  browser acquisition uses scoped Chromium/Firefox native messaging.
+- Remove the legacy runtime, scripts, executable tests, Just/Zig-build release
+  authority and automated CI/GF proof dispatch. Preserve historical tags and
+  reviewed fixtures/evidence. Build/test authority is local Bazel with Nix inputs.
+- Update repository authority and public documentation. The rewritten runtime
+  does not inherit v0.1.15 evidence or predecessor v0.2 synthetic proof.
+
+### Historical unreleased work before the reset
+
+The entries below describe predecessor code at its original commits. That code
+has been removed from the successor build graph. Its v0.2 program was
+experimental/unshipped; v0.1.15 remains the latest historical stable release.
+These records preserve evidence boundaries, not current runtime behavior.
 
 ### Added — stable-lane surfaces (v0.1.16 material)
 

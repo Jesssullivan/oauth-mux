@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "kind": "factual_local_execution_checkpoint",
+  "authority": "Explicit user-resumed integrated implementation; AGENTS; R-HOOK-CONVERGENCE-20261004; R-N13",
+  "observed_at": "2026-10-06T16:27:22Z",
+  "epoch": "d6311994-5212-4034-ac93-49b06405db88",
+  "root": "/home/jess/.local/state/omux-execution-20261005/d6311994-5212-4034-ac93-49b06405db88",
+  "receipt_sha256": "f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a",
+  "graph_sha256": "2572c60dcfe92f1ffc5f53bbb5420c58f1a41b69e7568d9a130c055cf2df5ce6",
+  "test_evidence_sha256": "92c5264efaaa9d2a4f813198bf4e3c4b09a406144ab0b0f251b9985f4f0b28b1",
+  "source_commit": "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+  "source_dirty": true,
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "targets_passed": [
+    "//tools:execution_guard_test",
+    "//tools:guard_dependency_profile_test",
+    "//tools:yoga_controller_byte_verification",
+    "//:docs_check"
+  ],
+  "guard_test_methods": 50,
+  "dependency_profile_test_methods": 11,
+  "yoga_nar_content": {
+    "inventory_sha256": "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+    "descriptor_sha256": "164334ee60fffd597f1f1fbd67adc0761062e2fd2d85d332002020bacee6cf8b",
+    "verified_paths": 472,
+    "verified_regular_inputs": 61016,
+    "verified_nar_bytes": 2829689512,
+    "content_rehashed": true,
+    "execution_authority": false,
+    "flake_mapping_verified": false,
+    "realized": false,
+    "link_targets_followed": false
+  },
+  "limits": {
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu_equivalent": 2,
+    "overall_seconds": 1200,
+    "private_network": true
+  },
+  "linear_carriers": ["TIN-2063", "TIN-5442", "TIN-2057"],
+  "tracker_write": false,
+  "historical_scoped_gates_passed": 5,
+  "acceptance_gates_open": 6,
+  "new_acceptance_gate_closed": false,
+  "limits_of_proof": [
+    "HOME admission predicates passed; actual Home Manager source-pair acquisition and evaluation remain unrun",
+    "Controller bytes verified; Yoga destination registration, wrapper execution qualification, offline graph and human toolbar consent remain unproved",
+    "No application compilation or whole-current-runtime source correspondence established by this batch",
+    "No provider access, fleet activation, native continuity, achieved SLO, signing/publication or Darwin/PZM operation"
+  ]
+}

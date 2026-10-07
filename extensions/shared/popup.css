@@ -1,0 +1,19 @@
+:root { color-scheme: light dark; font: 14px system-ui, sans-serif; }
+body { margin: 0; min-width: 330px; max-width: 390px; }
+main { padding: 18px; }
+h1 { margin-top: 0; font-size: 18px; }
+h2 { font-size: 15px; margin-bottom: 10px; }
+p { line-height: 1.45; }
+label { display: block; margin-bottom: 6px; }
+select { width: 100%; padding: 7px; font: inherit; }
+section { margin: 16px 0; padding: 12px; border: 1px solid GrayText; border-radius: 6px; }
+dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+dt { color: GrayText; }
+dd { margin: 0; }
+.consent { display: flex; align-items: start; gap: 6px; line-height: 1.45; }
+.consent input { margin-top: 4px; flex-shrink: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+button { padding: 7px 9px; font: inherit; cursor: pointer; }
+button:disabled { cursor: default; opacity: .6; }
+.help, #availability { font-size: 12px; }
+#status { min-height: 3em; }

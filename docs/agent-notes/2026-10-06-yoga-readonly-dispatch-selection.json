@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "kind": "reviewed_yoga_readonly_dispatch_recipe",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "status": "Prepared by read-only source inspection; no execution, SSH, remote qualification or toolbar proof performed by this reviewer",
+  "cwd": "/srv/fast-local/jess/git/oauth-mux",
+  "common_guard_argv": [
+    "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/bin/python3",
+    "/srv/fast-local/jess/git/oauth-mux/tools/execution_guard.py",
+    "--manager",
+    "system",
+    "--become-file",
+    "/home/jess/.config/sops-nix/secrets/become/password",
+    "--python",
+    "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/bin/python3",
+    "--systemd-run",
+    "/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemd-run",
+    "--systemctl",
+    "/nix/store/9rpism89x6lyjcwzzkp6kana25rs03nn-systemd-260.1/bin/systemctl",
+    "--bazel",
+    "/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel",
+    "--closure",
+    "/nix/store/12waya019j1aiimr0j91lpdfk145xi9i-omux-bazel-closure",
+    "--bootstrap-closure",
+    "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+    "--zig-sdk",
+    "/nix/store/vv1k6176b445ln4dphbx1k29wagrin3z-zig-sdk-0.17.0",
+    "--java-home",
+    "/nix/store/siln89j8b6k5wdzw4asl69bma0k96nns-openjdk-headless-21.0.10+7",
+    "--source-commit",
+    "f5f83c1ad99c2920de6759791b327a99a02a2ec5",
+    "--source-dirty",
+    "true",
+    "--profile",
+    "yoga-controller-delivery",
+    "--state-dir",
+    "/home/jess/.local/state/omux-yoga-delivery-20261006",
+    "--coordination-dir",
+    "/home/jess/.local/state/omux-execution-20261005"
+  ],
+  "qualify_first_suffix": [
+    "--initialize-state-dir",
+    "--",
+    "run",
+    "//tools:yoga_controller_qualify"
+  ],
+  "qualify_existing_state_suffix": [
+    "--",
+    "run",
+    "//tools:yoga_controller_qualify"
+  ],
+  "inspect_suffix_template": [
+    "--yoga-delivery-epoch",
+    "<SUCCESSFUL_NEW_QUALIFY_GUARD_UUID>",
+    "--",
+    "run",
+    "//tools:yoga_controller_inspect"
+  ],
+  "verify_suffix_template": [
+    "--yoga-delivery-epoch",
+    "<SAME_SUCCESSFUL_NEW_QUALIFY_GUARD_UUID>",
+    "--",
+    "run",
+    "//tools:yoga_controller_verify"
+  ],
+  "substitution": "Use the new successful qualify receipt's UUID. Never substitute d631 or an inspect epoch. Concatenate argv arrays; no shell interpolation is required.",
+  "state_initialization": "Inspection found the exact delivery state root absent and coordinator present with mode0700. Reinspect before dispatch; --initialize-state-dir is exclusive creation and must be omitted once this root exists.",
+  "execution_order": [
+    "Root completes serial modeled/regression gates on frozen actual inputs.",
+    "Root qualifies over authenticated host alias yoga. This fixed target invokes only remote OS bootstrap Python and hashes immutable installed Nix before any Nix call.",
+    "Only actual workload0, empty owned descendants, source recheck and complete guard cleanup permit canonical qualification.json extraction into the new guard epoch.",
+    "Root inspects with that same successful qualify epoch, independently rechecking remote OS/profile/Nix tuple before isolated readonly nix store info.",
+    "Root verifies with the same successful qualify epoch, independently rechecking before readonly exact472 path registration and NAR rehash operations.",
+    "Any graph/tool/native/bootstrap/lock/profile-generation change refuses the old qualification. Resolve the cause and run a fresh qualify; do not replace authority hashes or bypass masks."
+  ],
+  "immutable_inputs": {
+    "controller_inventory_path": "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/8b6bd81f-786e-49c1-b8de-ac1103e986b1/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/yoga_controller_inventory_producer/test.outputs/yoga-controller-inputs/controller-inventory.json",
+    "controller_inventory_sha256": "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+    "controller_store_paths": 472,
+    "controller_nar_bytes": 2829689512,
+    "d631_receipt_path": "/home/jess/.local/state/omux-execution-20261005/d6311994-5212-4034-ac93-49b06405db88/receipt.json",
+    "d631_receipt_sha256": "f52825eb9235da1e5c23beb51536b390ef81b1dd2ba5c604f8a6ace40b11f50a",
+    "raw_registered_native_manifest_sha256": "7f19ccff61a0d5981641a73ab65067eac6de77e13e146b4be06ac6b36652bd41",
+    "registered_native_manifest_object": "/nix/store/s3izwvjn0dx2jmdjriaynb77wn96q90x-native.json",
+    "canonical_inventory_native_manifest_sha256": "b24fb333d7cd58e57790cf02c69cf9a0c1eba3afc7359ab18318973d8b77d2c0",
+    "bootstrap_manifest_path": "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure/native.json",
+    "bootstrap_manifest_sha256": "c056b1b590c814bc662a7ef348ba4f5789e3534ed9ae8420fdc8614fefd9bc3a",
+    "ssh_path": "/nix/store/aq5s91svywqgs5l9zyhp1wcjqvnfa0ss-openssh-with-gssapi-10.2p1/bin/ssh"
+  },
+  "new_qualification_custody": {
+    "receipt_path_template": "/home/jess/.local/state/omux-yoga-delivery-20261006/<SUCCESSFUL_NEW_QUALIFY_GUARD_UUID>/receipt.json",
+    "qualification_path_template": "/home/jess/.local/state/omux-yoga-delivery-20261006/<SUCCESSFUL_NEW_QUALIFY_GUARD_UUID>/qualification.json",
+    "expected_custody": "Guard-owned regular single-link0600 files within retained private0700 owned ancestor chain; same successful terminal receipt, graph, fixed tools, manifest hashes and actual held/named HOME lock witness",
+    "authority": "Guard selects and rechecks these paths from UUID; caller does not pass qualification path/hash/deadline or environment authority",
+    "source_graph": "tools/guard_cache.py graph_digest includes all tools Python and graph definitions; freeze that graph from qualify through inspect/verify"
+  },
+  "limits": {
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu_count": 2,
+    "original_overall_seconds": 1200,
+    "guard_cleanup_reserve_seconds": 15
+  },
+  "network": "Only exact delivery run labels allow local SSH network. Existing personal HOME/system masks and strict host authentication remain. No provider invocation or fleet/store/config mutation.",
+  "refusal_states": [
+    "Missing fixed d631 receipt, inventory, manifest or immutable tool closure",
+    "Missing or stale HOME execution lock custody, live prior owner or failed prior cleanup",
+    "Unrelated cache/site/recovery/SDK/Yoga-seat options, any run argument beyond one exact label, or caller-supplied delivery authority tuple",
+    "Qualify bootstrap lacks authenticated SSH, OS /usr/bin/python3, x86_64 Linux nonroot uid, matching HM profile/gcroot, schema2 immutable control marker or immutable installed Nix",
+    "Inspect/verify producer absent, malformed, unsuccessful, noncanonical, changed graph/lock/closed-file witness or changed remote machine/boot/uid/HM generation/source marker/Nix bytes",
+    "Destination daemon access/registration/NAR bytes/reference topology fail, deadline expires, local cleanup cannot prove empty",
+    "SSH transport depends on masked agent authority; do not loosen masks to make authentication pass"
+  ],
+  "read_only_proof_limits": {
+    "copy_performed": false,
+    "remote_owned_containment_verified": false,
+    "remote_cleanup": "unknown",
+    "disk_available_bytes": "inspect reports null; no capacity measurement authority",
+    "offline_graph_verified": false,
+    "wrapper_execution_authority": false,
+    "toolbar_consent_proved": false,
+    "destination_verification": "Only actual successful verify proves the exact selected472 paths already registered with matching NAR bytes. It does not transfer missing paths."
+  },
+  "toolbar_prerequisites": [
+    "Independently qualify/register Chromium+Node browser closure and exact private DBus/keyring wrapper source/ABI/runtime authority; controller-only472 path proof does not supply every browser runtime input.",
+    "If any destination path is absent, first prepare a separately authorized destination-owned aggregate/store transfer route. This readonly profile admits no copy, realization or remote cleanup claim.",
+    "Stage the exact development bundle/extension, observer and recorder inputs outside personal HOME under owned private physical /srv roots, with all11 source-selected digests and qualified runtime inventory.",
+    "Complete current source and browser/wrapper checks and an actual cold offline Yoga action graph under unchanged limits/masks.",
+    "Select actual local Yoga Wayland logind session, compositor socket/peer and operator terminal, and prove current UID/machine/boot/audit/login ingress. SSH PTY or declared WM configuration cannot replace a live local seat.",
+    "Prepare exact private /srv yoga-local-session-selection-v1 with fresh proofUUID and one absolute <=1200s deadline. Run //tools:yoga_session_qualification via the root-approved Bazel/local bootstrap lane at the actual local terminal; its private receipt is qualification only.",
+    "At that same terminal, invoke exact yoga-toolbar system profile with --yoga-qualification <PRIVATE_/srv_RECEIPT> --yoga-qualification-sha256 <PRODUCED_SHA> --yoga-deadline-monotonic-ns <SAME_NS> -- run //delivery:yoga_toolbar_consent_proof.",
+    "User opens the actual toolbar, checks consent, clicks Connect and chooses Deny, then repeats Approve in the fresh approval profile, then reopens after exact extension generation reload without another request. Submit only the guard's currentproof ordered console events after observing each case."
+  ],
+  "human_event_templates": [
+    {
+      "proofId": "<CURRENT_TOOLBAR_PROOF_UUID>",
+      "case": "denial",
+      "observed": "toolbar-checkbox-connect-prompt-denied"
+    },
+    {
+      "proofId": "<CURRENT_TOOLBAR_PROOF_UUID>",
+      "case": "approval",
+      "observed": "toolbar-checkbox-connect-prompt-approved"
+    },
+    {
+      "proofId": "<CURRENT_TOOLBAR_PROOF_UUID>",
+      "case": "reload",
+      "observed": "toolbar-reopened-without-request"
+    }
+  ],
+  "remaining_unobserved_facts": [
+    "Authenticated SSH transport with existing masked execution environment",
+    "Current Yoga HM generation/control marker and OS-qualified installed Nix path/hash",
+    "Current Yoga destination controller472 registration/NAR content",
+    "Qualified destination browser closure and wrapper ABI/source/runtime inputs",
+    "Owned destination transfer/aggregate route if closure is missing",
+    "Cold offline Yoga execution graph",
+    "Actual local Yoga Wayland seat, same-login operator terminal and live compositor authority",
+    "Actual observed Deny/Approve/reload browser permission protocol"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "closed_native_stderr_model_validation",
+  "authority": "User-ratified provider-free Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "9b932f64-81ed-468c-aed6-190c9e0e0fe3",
+  "original_handle": 65115,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/9b932f64-81ed-468c-aed6-190c9e0e0fe3/receipt.json",
+  "raw_receipt_sha256": "69a864b588fa5d1152e6f5b73e982df933c707265fc3665db0cfd238bc164a9e",
+  "graph_sha256": "9c6aae001338c65c90e49c38d6be87e2bdfc5a13f22c27b4e78ff7a0cfc1bfce",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "test_evidence": {"bytes": 210609, "files": 9, "manifest": "test-evidence.json", "sha256": "56dce5d673c42443a83cf8940716fa65511482950bee45e394aba3899b637203", "state": "preserved"},
+  "passed_targets": ["//delivery:native_cli_stderr_test", "//:docs_check", "//tools:runtime_source_receipt"],
+  "modeled_methods": 14,
+  "scope": "Fixed private diagnostic categories, bounded scoped log spelling, priority preservation and strict nonempty stderr refusal. Categories identify shapes, not causes. Prior f95 actual failure remains unresolved; native resume unproved.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

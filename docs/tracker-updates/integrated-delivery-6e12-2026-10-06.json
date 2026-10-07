@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "kind": "retained_input_declaration_failure",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "6e12d178-23f0-4e3e-8f64-602b330f70f5",
+  "original_handle": 8216,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/6e12d178-23f0-4e3e-8f64-602b330f70f5/receipt.json",
+  "raw_receipt_sha256": "ef83f1b10eb1298f06caeced66ea7b1d93aa8e86cef8132ee3d9a7ad72b5b700",
+  "graph_sha256": "7c584b7d03c250cf379da39d5ad267efc318933643f49b6b7e460adf66aa6eb9",
+  "controller_exit": 1,
+  "workload_exit": 1,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "test_evidence": {
+    "bytes": 209626,
+    "files": 7,
+    "manifest": "test-evidence.json",
+    "sha256": "73cd7269d94363d8faaa22f6634b57b3c247448c2c181577204671af39a37934",
+    "state": "preserved"
+  },
+  "guard_input_verified_after_cleanup": true,
+  "passed_targets": [
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "unrun_target": "//tools:codex_owner_runtime_input_qualification",
+  "failure": "Bazel9 Java Starlark rejects hexadecimal NUL string escape in selected repository rule before target analysis; target did not execute.",
+  "next": "Retain exact NUL rejection using JSON-decoded Unicode value, then fresh finite actual qualification; same dormant HM declaration syntax corrected before actual producer.",
+  "native_support": false,
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

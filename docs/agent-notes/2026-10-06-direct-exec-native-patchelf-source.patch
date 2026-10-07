@@ -1,0 +1,32 @@
+diff --git a/tools/nix_repository.bzl b/tools/nix_repository.bzl
+--- a/tools/nix_repository.bzl
++++ b/tools/nix_repository.bzl
+@@ -418,6 +418,10 @@ def _nix_repo_impl(ctx):
+         ctx.file("tool_wrappers/" + name, "#!{}\nset -eu\nexec {} \"$@\"\n".format(shell, _quote(executable)), executable = True)
+         tool_closure = ":" + name + "_tools" if name in interpreter_groups else ":all_tools"
+         build.append('omux_nix_tool(name = {}, script = {}, executable_path = {}, closure = {})'.format(repr(name), repr("tool_wrappers/" + name), repr(executable), repr(tool_closure)))
++        if name == "patchelf":
++            # The capability selector already requires this exact executable to
++            # be registered and inventoried. FD-bound callers need its raw ELF.
++            build.append('filegroup(name = "patchelf_native", srcs = {})'.format(repr(["closure/" + executable[len("/nix/store/"):]])))
+     if "bash" not in resolved_tools or "bash" not in interpreter_groups:
+         fail("minimal interpreted launchers require the declared Bash tool and closure")
+     build.append('omux_nix_tool(name = "interpreter_bash", script = "tool_wrappers/bash", executable_path = {}, closure = ":bash_tools")'.format(repr(resolved_tools["bash"])))
+diff --git a/delivery/BUILD.bazel b/delivery/BUILD.bazel
+--- a/delivery/BUILD.bazel
++++ b/delivery/BUILD.bazel
+@@ -657,11 +657,12 @@ python_test(
+         "//integrations/codex-upstream:restore_source.py",
+     ],
+     data = [
+-        ":codex_direct_exec_fixture", "@omux_nix//:patchelf", "@omux_nix//:ca_bundle",
++        ":codex_direct_exec_fixture", "@omux_nix//:patchelf_native",
++        "@omux_nix//:patchelf_tools", "@omux_nix//:ca_bundle",
+     ],
+     args = [
+         "$(location :codex_direct_exec_fixture)",
+-        "$(location @omux_nix//:patchelf)",
++        "$(location @omux_nix//:patchelf_native)",
+         "$(location @omux_nix//:ca_bundle)",
+     ],
+     file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},

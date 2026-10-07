@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "kind": "factual_tracker_reconciliation",
+  "authority": [
+    "AGENTS.md",
+    "docs/plans/omux-native-discovery-resume-sprint-2026-10-04.md",
+    "R-HOOK-CONVERGENCE-20261004",
+    "R-N13"
+  ],
+  "authorization": "User-requested Omux Linear reconciliation; factual results only, no acceptance or sequencing changes",
+  "prior_receipt_preserved": "docs/tracker-updates/native-discovery-sprint-2026-10-04.json",
+  "external_mutation_count": 2,
+  "mutations": [
+    {
+      "issue": "TIN-5421",
+      "comment_id": "5cab95f8-0cd1-4296-b57f-8796638eb3ec",
+      "created_at": "2026-10-05T02:52:26.236Z",
+      "body": "Discovery/resume checkpoint after the Sting execution incident: PARTIAL, not accepted.\n\nThe five-hour window ended at 2026-10-05 01:06:11 UTC with all eight ND acceptance gates unpassed. Invocation 923c6f5e-189c-479b-af3b-46823463bd07 passed inventory23, engine209, native-request217 and Qt transport predicates; adee3ea5-7b56-4d3c-a370-beb0273c50fc passed CLI9 but failed installed discovery before its query. These narrow passes do not close installed discovery, selection or resume.\n\nCorrected installed discovery invocation aee5c690-ed23-41eb-8344-3a5bc1fe65dc printed a fixture marker but ended Bazel TIMEOUT after 15,600.3s; it remains failed. SDK invocation 2b4f062d-b216-4d31-a8d6-0cda7b9524cd was cancelled with exit8. Installed fixtures 6d994597-f522-45cb-aa74-ff0ee1041875 ended exit37 / server terminated. No new runtime package/receipt exists. The older 4b0fcf36 configured provider-free interoperability PASS retains its original scope only.\n\nUser/operator evidence reports recursive Bash chains rooted in the Omux coordinator lane, over40GB memory use and cluster-wide SSH impact. The exact recursion mechanism is unresolved. Recorded root-owned SDK client/server processes were stopped after live ownership checks; that does not establish cluster recovery. Execution remains held pending verified aggregate resource containment. Source corrections to cleanup-marker placement, declared new schema inputs and genuine zero-turn TUI persistence remain unrun.\n\nCurrent working-tree carriers: docs/agent-notes/2026-10-04-sess-omux-execution-incident.md; .goal/omux-native-discovery-2026-10-04.json; docs/plans/omux-native-discovery-resume-sprint-2026-10-04.md. Authority: AGENTS.md/native reset; R-HOOK-CONVERGENCE-20261004, R-N11/R-N13.\n\nThe product bar remains ordinary launch/native resume, same-process compatible authorization handoff and preserved native history/tools/approvals without a wrapper or replay. native_support=false; stock Codex, live handoff, accepted-history and Darwin remain unproved. No issue completion, integration-order change, assignee/date change, service activation or provider access is implied."
+    },
+    {
+      "issue": "TIN-5338",
+      "comment_id": "6ceb5d5b-b151-4eb1-92af-907289cb6a12",
+      "created_at": "2026-10-05T02:53:07.040Z",
+      "body": "Status reconciliation for TIN-5421 is recorded in comment 5cab95f8-0cd1-4296-b57f-8796638eb3ec: all eight discovery/resume gates remain unpassed after the Sting execution incident. Unit/CLI/local protocol predicates retain their narrow passing scope; the installed discovery TIMEOUT, cancelled SDK build and server-terminated fixtures remain failed/incomplete. New status candidate/schema/runtime artifacts are not staged and ordinary TUI/native resume is not proved.\n\nUser-requested product review is now considering integration sequence, optional browser extension delivery and finite evaluation intake. Two Codex candidates are represented only by nonsecret aliases in the private planning workflow; exact profiles, compatible operations and limits remain pending. Codex-first remains ratified; OpenCode feasibility is a proposal, with no supported adapter or adoption claim. Browser acquisition cannot create a missing native TUI hook. No new provider calls, service activation, signing or publication occurred.\n\nCurrent evidence/hold carrier: docs/agent-notes/2026-10-04-sess-omux-execution-incident.md. Original source/artifact epochs and the full ordinary-launch/resume/same-process product acceptance remain intact. No state, assignment, date or dependency change is requested by this factual update."
+    }
+  ],
+  "readback_checks": [
+    {
+      "issue": "TIN-5421",
+      "fields_changed": [
+        "updatedAt"
+      ],
+      "expected_automatic_change_only": true,
+      "status_preserved": true,
+      "comment_id": "5cab95f8-0cd1-4296-b57f-8796638eb3ec",
+      "comment_body_matches": true,
+      "save_body_matches": true,
+      "original_planning_comment_present": null
+    },
+    {
+      "issue": "TIN-5338",
+      "fields_changed": [
+        "updatedAt"
+      ],
+      "expected_automatic_change_only": true,
+      "status_preserved": true,
+      "comment_id": "6ceb5d5b-b151-4eb1-92af-907289cb6a12",
+      "comment_body_matches": true,
+      "save_body_matches": true,
+      "original_planning_comment_present": true
+    }
+  ],
+  "execution": "No builds, tests, package generation, provider calls or service activation",
+  "outcome": "All eight ND gates remain unpassed; original scope and passing epochs preserved; execution held after Sting incident"
+}

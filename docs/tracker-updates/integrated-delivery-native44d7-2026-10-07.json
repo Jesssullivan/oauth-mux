@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "kind": "ordinary_native_explicit_async_worker_profile_refused",
+  "authority": "User-ratified provider-free October6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "44d7d2d3-0085-4377-838e-8b2ce9969e23",
+  "original_handle": 48335,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/44d7d2d3-0085-4377-838e-8b2ce9969e23/receipt.json",
+  "raw_receipt_sha256": "397cdb182d0b45c494038898ae0aaa9c1573f7506def62e228d7c67bf12e6c9c",
+  "graph_sha256": "44eb0165e1e35444cf68f542d2cb076489a589a0b0841e028e39be4f07879199",
+  "controller_exit": 3,
+  "workload_exit": 3,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "rejection": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 214161,
+    "files": 9,
+    "manifest": "test-evidence.json",
+    "sha256": "447842e4e344d7a48599fde00e3080d5b91c71526e1aa31a24b8973379036cdf",
+    "state": "preserved"
+  },
+  "held_owner_input_verified_after_cleanup": true,
+  "targets_passed": 2,
+  "targets_total": 3,
+  "passed_targets": [
+    "//:docs_check",
+    "//tools:runtime_source_receipt"
+  ],
+  "failed_target": "//delivery:installed_legacy_native_tui_test",
+  "retained_archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+  "environment": {
+    "TOKIO_WORKER_THREADS": "2"
+  },
+  "observed_phase": "selected-detach",
+  "observed_diagnostic": "detach-rpc",
+  "native_cold_resume_reached": false,
+  "scope": "Provider-free ordinary installed target under explicitly declared two-async-worker profile failed at the detach RPC. This is a different source/environment-qualified failure than the prior status/observer failures; no underlying cause or improvement is inferred. All original hard acceptance predicates and caps remained required.",
+  "new_parent_acceptance_gate_closed": false,
+  "provider_calls": false
+}

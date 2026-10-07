@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kind": "verified_partial_native_dependency_union",
+  "authority": "AGENTS.md; user-resumed integrated sprint; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-05 21:19:25 UTC",
+  "epoch": "aa8e5a39-1f58-4fd6-b872-b51431581adc",
+  "graph_sha256": "672f43507df84ab8914ac1d53d48594814b5b528103a21d31735f7419bec2045",
+  "batch_exit": 3,
+  "batch_workload_exit": 3,
+  "descendants_empty": true,
+  "target": "//tools:codex_dependency_union_producer",
+  "target_result": "passed; separate Home Manager unit target failed, whole batch remains failed",
+  "test_evidence_sha256": "e1c44200f34d84a95332fec8f06c8d91bbefc83c13ea24f3e366f3b501229fe6",
+  "test_evidence": [
+    {
+      "configuration": "k8-fastbuild",
+      "files": [
+        {
+          "bytes": 751,
+          "file": "77853c0f99419d880fc88995a5d1caee914a4907e864915b344ec1c38c1f2e72.evidence",
+          "sha256": "bdd5ac5adb84153f074fea3078549877a2dff541f3794700136ce06295ad3939",
+          "source": "test.log",
+          "state": "copied"
+        },
+        {
+          "bytes": 1168,
+          "file": "cf3acf346b2ce642dfeeb43b5f80d5d99a99f9b6f00a6393ce43dd7453845dd9.evidence",
+          "sha256": "fbb3169555394077a769e50ef3b8b2235d0e9b4262646dfa9b134b9e62fc69ce",
+          "source": "test.xml",
+          "state": "copied"
+        },
+        {
+          "bytes": 43189,
+          "file": "54c00634f55d9a010d644da81c8185e0be9a96ed9fb603fb19c2429491ab75eb.evidence",
+          "sha256": "ab9057c20e51e521f8381191c13eda5f5d1271357fe20d9621b52e30909a5e43",
+          "source": "test.outputs_manifest/MANIFEST",
+          "state": "copied"
+        },
+        {
+          "bytes": 0,
+          "source": "test.outputs_manifest/ANNOTATIONS",
+          "state": "missing"
+        }
+      ],
+      "state": "observed",
+      "target": "//tools:codex_dependency_union_producer"
+    }
+  ],
+  "receipt_sha256": "d7aa4cbf8ac002224ee9c2843f2773e598e77a39a8a6c201ec4992f2e75ccd7e",
+  "counts": {
+    "duplicate_objects": 3,
+    "input_objects": 308,
+    "missing_by_type": {
+      "bazel-module-archive": 18,
+      "bazel-module-overlay": 42,
+      "bazel-module-patches": 33,
+      "cargo-crate": 1297,
+      "generated-repository-download": 20
+    },
+    "missing_objects": 1410,
+    "unique_objects": 305,
+    "unresolved_by_type": {
+      "bazel-module-archive": 8,
+      "cargo-git": 16,
+      "dynamic-repository-closure": 1,
+      "rules-rs-git-snapshot": 17
+    },
+    "unresolved_rows": 42
+  },
+  "closure_proved": false,
+  "offline_analysis_proved": false,
+  "bundle_root": "/home/jess/.local/state/omux-execution-20261005/cache-v2-0263cddbc2fe72e072e344a70bf61fdc0e90702986c9738e791ef64375ac8aee/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_dependency_union_producer/test.outputs/codex-sdk-dependency-union",
+  "parents": {
+    "plan": "c6613a0e4d9b0c952a91a9bf03e2010ce02a680c45eec6c84a1df7030d31ce6b",
+    "first16": "c2bd6aa1a8e350c891e9a16f3c7006ccf1e6d22e4394f8885d7906020c291009",
+    "tools13": "1d3d34323a3e19fd7e640146bf0eba006881a9bdd2d376a0493153f4cd8d30a0"
+  },
+  "scope": "Independently verified explicit retained payloads merged into descriptor-anchored fresh CAS; overlap sources rehashed and missing/unresolved counts recomputed",
+  "canonical_id_metadata_exported": false,
+  "provider_access": false,
+  "native_support": false,
+  "ordinary_launch_resume_proved": false,
+  "live_continuity": false
+}

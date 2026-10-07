@@ -33,9 +33,8 @@ Thumbs.db
 *.swp
 *.swo
 
-# Bazel (future)
+# Bazel outputs (the module lock is committed build authority)
 bazel-*
-MODULE.bazel.lock
 
 # Distribution artifacts
 dist/build/

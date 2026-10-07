@@ -1,34 +1,32 @@
 ---
-name: Provider or adapter request
-about: Request support for another harness, provider, or auth shape
-title: "[provider] "
+name: Native adapter or account-source request
+about: Request a bounded application, provider or credential operation
+title: "[adapter] "
 labels: provider
 assignees: ""
 ---
 
-## Provider or harness
+## User outcome
 
-Name the provider/harness and the command or API users run today.
+Name the normal application command/version and the work that must continue.
+Describe source enrollment, ordinary launch/resume, attachment and the safe
+request boundary. State how native session/tools/approvals remain authoritative.
 
-## Account and auth shapes
+## Authorization and resource scope
 
-Use role labels, not identities:
+Specify verified account type, source kind, grant form, audience, purpose,
+scopes, expiry and renewal owner. Security keys, passwords and OTPs are
+acquisition factors; do not treat them as transferable OAuth credentials.
+Describe calls, bytes, uploads, duration, rates or provider-defined capacity,
+including shared buckets and observation freshness.
 
-- auth shape: OAuth / PAT / API key / device login / plan token / other
-- account shape: individual / team / enterprise / project / resource token
-- quota/rate/tier signal users see today:
+## Feasibility and proof
 
-## Desired proof
+Link official native hook/provider documentation and a concrete bounded proof
+plan. Browser acquisition is optional and requires a narrow declared schema and
+verified identity; browser automation and universal interception are outside the
+reset. A declaration/parser does not prove live continuity. Cross-host federation,
+Windows, Safari, arbitrary-provider support and speculative mid-stream recovery
+are deferred. See docs/README.md for acceptance and repository boundaries.
 
-What should oauth-mux prove first?
-
-- inventory only
-- auth-status/runtime doctor
-- request probe
-- managed harness launch
-- quota/rate/tier fallback
-
-## References
-
-Link official docs, public issues, or redacted examples. Do not paste secrets,
-raw emails, account ids, or private workspace URLs.
+Do not paste secrets, cookies, raw identities, emails or private workspace data.

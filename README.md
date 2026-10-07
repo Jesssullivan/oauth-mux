@@ -1,191 +1,124 @@
-# oauth-mux
+# Omux
 
-OAuth and account multiplexing for professional AI harnesses and autonomous agents.
+Omux is being rebuilt as a per-user account-continuity daemon for ordinary terminal
+applications. Authorize account sources once, then keep using normal commands.
+The goal is compatible account handoff without application restart, routine login
+prompts or changes to native session/history state.
 
-Developers and agents now work across personal, work, team, subscription, API-key,
-and service identities, but most CLIs expose one auth store, one active
-subscription, and one opaque 401/429 failure. `oauth-mux` puts a broker in front of
-that path so a harness session stays usable when auth, quota, tier, or local
-runtime state changes.
+**The replacement is experimental and unshipped.** Native Codex handoff needs a
+Omux-developed per-thread/request authorization adapter and live proof; an account store or broker
+route decision alone does not provide it. Claude and Git HTTPS/GitHub follow the
+Codex proof. No application is advertised as transparently supported before its
+native integration is verified.
 
-The product bar is narrow and hard:
+The latest historical stable release is **v0.1.15**. Its published artifacts and
+claims remain documented in [the changelog](CHANGELOG.md) and release tags. The
+source reset removes the former runtime and build/install paths; new code does
+not inherit old support claims. npm remains retired.
 
-> The user runs `oauth-mux <harness>` (e.g. `oauth-mux codex`). The harness behaves
-> like the real one. The active account exhausts quota. Another credited account is
-> substituted in place. The process is not restarted. The user is not prompted.
+## Architecture
 
-Restart, supervised relaunch, route warming, and `prepared_fallback` are diagnostic
-infrastructure — not product success.
+A resident Zig daemon owns account lifecycle, encrypted grants, readiness and
+routing. Omux develops the integration contract and authentication adapter for
+each adapted OAuth-based terminal application. Delivery may use a sufficient
+existing extension API, an upstream contribution or a maintained application
+modification; it is not contingent on a vendor supplying an Omux hook. Each
+adapter must establish safe application request boundaries with exact-version
+evidence. The current Codex candidate does not establish unmodified Codex support.
+Thin SwiftUI/macOS, Qt6/Linux and CLI clients inspect and control the daemon.
+Chromium/Firefox extensions provide scoped browser acquisition through native
+messaging; no browser automation is required by the architecture.
 
-## Current release
+Accounts, identities, sources, grants, resources, observations, application
+bindings and leases are separate. Quota is one possible resource: calls, bytes,
+uploads, duration and throughput use the same scoped observation model. Totals
+include only compatible units/windows and do not multiply shared quota buckets.
+Source disappearance detaches an account; explicit forget removes stored secrets
+and prevents automatic re-enrollment.
 
-`0.1.15` ("valet") is the current public release across the GitHub Release,
-curl installer, deb/rpm, and Homebrew lanes. It retains the consent-gated
-credential keepalive shipped in 0.1.14 and adds an honesty-first account advisor,
-live Claude quota-header schema evidence, entitlement/version diagnostics,
-opt-in transition alerts, and bounded lock-wait UX. Managed hot-swap and a Claude
-request proxy are not shipped. `CHANGELOG.md` lists every change and the committed
-evidence each claim is bound to. The npm lane is retired (registry frozen at
-`0.1.9`).
+SQLite holds metadata and encrypted grant payloads. The wrapping key belongs in
+macOS Keychain or Linux Secret Service. Native/browser imports do not automatically
+transfer refresh-token ownership. Browser-bound grants retain their browser
+requirements. General control clients receive metadata and opaque handles.
 
-Homebrew is binary-only: `brew install jesssullivan/omux/oauth-mux` installs
-`oauth-mux` and does not link a managed `codex` shim.
+See the [active architecture and acceptance contract](docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md)
+and [authority map](docs/authority-map.md) for current direction and historical
+spec classification.
 
-### What works today
+The [product charter](docs/product/charter.md),
+[user stories](docs/product/user-stories.md) and
+[support/completeness gates](docs/product/support-and-completeness.md) define
+what install, ordinary use and successful handoff must prove.
+[Recorded decisions](docs/decisions/README.md),
+[repository roles](docs/governance/repository-roles.md) and
+[reliability objectives](docs/reliability/service-objectives.md) make the design
+durable. Reliability numbers are measurement targets; no contractual SLA or
+staffed response promise applies to this experimental self-hosted software.
+Use the [docs index](docs/README.md) for lifecycle, security and repair contracts.
 
-- **Managed Codex** launch and resume (`oauth-mux codex`, `oauth-mux codex resume`)
-  with a native resume chooser against the account's route-local persistent home.
-  Management applies only when PATH resolves the oauth-mux shim; direct native
-  `codex` binaries and already-running native sessions are not protected.
-- **Route-local Codex session authority**: managed runs use the selected account
-  home as `CODEX_HOME` and keep muxed state out of canonical `~/.codex`. Config is
-  written fresh per launch and scrubbed on exit. Legacy canonical-bridge behavior is
-  explicit opt-in (`shared_canonical`).
-- **Credential keepalive** (`oauth-mux keepalive [--once]`) for opted-in accounts;
-  accounts sharing an OAuth identity are refused (refresh-token-family protection).
-  Service residency is operator-explicit (`just keepalive-service-install`; nothing
-  auto-enables). Committed evidence covers refused-safely ticks, 5-account
-  admission/stability, rotation-under-loop, and a live macOS launchd install with
-  kill/respawn recovery. The Linux systemd-user unit remains lint-level only.
-  Keepalive does not create capacity — quota windows reset on the provider's clock;
-  model/quota-class keepalive is not a shipped capability.
-- **Live Codex quota handoff** for `oauth-mux codex resume`; managed launch/resume
-  auto-revalidates expired Codex quota/rate windows before route election.
-  Interactive login stays user-mediated. Headline proof:
-  `docs/evidence/codex-engineered-quota-handoff-20260509/`.
-- **Redacted diagnostics**: JSON surfaces and opt-in trace JSONL for agents and
-  operators, no token bytes or raw account/session ids.
+Delivery proceeds through Chromium installation and daemon activation, browser
+connection, verified identity and usable authority, renewal, ordinary native
+launch/resume and same-process handoff. Native UI onboarding uses shared CLI
+setup operations. Home Manager owns fleet packages, service definitions and
+exact-extension-ID host registration; Omux owns live state and authorized
+enrollment and must guide declarative changes instead of overwriting managed
+files. Development has separate extension/host/service identities, sockets,
+database and vault custody, with an explicit serialized rebuild, manual browser
+reload and daemon restart. Updates are guided through the declarative lane;
+rollback must not restore spent credential generations or erase tombstones.
+Permanent key loss offers explicit fresh enrollment into separate custody while
+preserving the failed installation. These are acceptance requirements, not
+claims that the installed lifecycle has passed.
 
-### Still open
+## Develop and validate
 
-Request-boundary managed Claude continuity; Linux systemd-user service-residency
-proof; the 2×Claude + 2×Codex golden-metric soak; exact-model cross-account
-handoff; long-window soak and negative-permutation cassettes. Mid-stream replay
-and recovery are explicit non-goals.
-
-## v0.2 direction (future, unshipped)
-
-The active v0.2 program is a hard reset toward full broker ownership, starting
-with managed Claude traffic through a per-session authenticated loopback sidecar.
-`omux setup` is the guided enrollment, consent, service, and readiness front
-door; normal operation stays inside the native harness with a compact statusline,
-transition notifications, and a precise repair flow rather than a dashboard.
-It specifies exact-model routing, sticky least-loaded leases, and at most one
-alternate for explicit pre-body 401/403/429 responses; ambiguous failures and
-started responses are never replayed. The resident service remains a refresh,
-observation, alert, and snapshot plane - not the session proxy. See
-`docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` and
-`docs/authority-map.md`. v0.1.15 remains stable until signed prereleases pass the
-golden proof and three clean non-maintainer beta users, including one Linux user,
-complete the six-week beta gate.
-
-## Current v0.1.15 Lifecycle
-
-This diagram describes the shipped valet/fallback-materialization lifecycle, not
-the future v0.2 per-session request proxy.
-
-```mermaid
-flowchart LR
-    install["Install"] --> init["init"]
-    init --> enroll["Enroll accounts"]
-    enroll --> diagnose["Local diagnostics"]
-    diagnose --> route["Route selection"]
-    route --> launch["Managed harness launch"]
-    launch --> signal["Provider signal observed"]
-    signal --> decision["Broker decision"]
-    decision --> materialize["Fallback materialization"]
-    materialize --> status["Redacted status artifact"]
-    status --> repair["Repair / revalidate loop"]
-    repair --> diagnose
-```
-
-Route-state labels are stable public vocabulary: `available`, `quota_exhausted`,
-`rate_limited`, `tier_insufficient`, `auth_permanently_failed`,
-`credential_unavailable`, `revalidation_needed`, `not_afloat`. See
-`docs/lifecycle.md` for the full lifecycle, agent control-plane, and claim ladder.
-
-## Install
+All executable work uses Bazel/Bazelisk with tools from the locked Nix flake.
+Local sandboxed execution is the default; automated CI test/build/check lanes and
+legacy Just/Zig-build paths are removed.
 
 ```bash
-brew install jesssullivan/omux/oauth-mux     # binary-only; no managed codex shim
-nix build .#oauth-mux                         # or .#withCodexShim for the managed shim
+nix develop --command bazelisk build //...
+nix develop --command bazelisk test //...
+nix develop --command bazelisk test //:docs_check
 ```
 
-Home Manager: import `inputs.oauth-mux.homeManagerModules.default` (installs
-`oauth-mux` only; set `programs.oauth-mux.codexShim.enable = true` for the shim). See
-`docs/home-manager.md`.
+The toolchain targets Zig **0.17.0**, verified in the
+[official release index](https://ziglang.org/download/index.json). Bazel declares compiler, library, test,
+generator and packaging actions. Future RBE/REAPI uses the same action graph with
+operator-supplied execution configuration.
 
-Unreleased source dogfood:
+A passing synthetic suite proves its local predicates. Live continuity requires
+exact application-version and commit evidence of native launch/resume, attachment,
+quota handoff, unchanged process/session authority and no routine prompt.
 
-```bash
-just install-local-dogfood
-oauth-mux version --json     # active path, SHA-256, and build_id under runtime_identity
-```
+## Documentation and distribution
 
-`version --json` gives machine-readable proof of the exact binary that will run, and
-`oauth-mux codex preflight --json` reports PATH candidates and managed-vs-native
-Codex resolution. Provenance rules, PATH-shadow handling, the macOS
-in-place-overwrite hazard, and the shim contract live in
-`docs/release-install-lanes.md`.
+[omux.xoxd.ai](https://omux.xoxd.ai) is the separate project SPA for downloads and
+documentation. The development SPA imports API method summaries, CLI, lifecycle,
+capability and release facts by digest from the versioned bundle generated by
+`//:reference`; curated lifecycle explanations remain prose.
+[Reset](docs/implementation/native-reset-evidence-2026-10-02.md),
+[saved evening](docs/implementation/native-evening-evidence-2026-10-03.md) and
+[current admission evidence](docs/implementation/native-admission-evidence-2026-10-04.md)
+record their local runtime, native-hook, delivery and SPA gates. Platform execution
+and live continuity require their own evidence before this experimental checkout
+becomes an installable release.
 
-## Usage
+The exact pinned owner candidate also passed a [provider-free installed
+app-server checkpoint](docs/implementation/native-interop-evidence-2026-10-04.md)
+on Sting: genuine native registration and acknowledged zero-acquire removal
+preserved its process, thread/session, initialized zero-turn history and native
+configuration. Stock Codex support, CLI/TUI resume and live account handoff
+remain unproved.
 
-First run:
+The [weekend push](docs/plans/omux-ratification-weekend-push-2026-10-02.md) and
+[.goal ledger](.goal/omux-weekend-2026-10-02.json) record three-, five-, ten-hour
+and Sunday acceptance checkpoints. They track actual receipts and blockers;
+they do not schedule automatic execution or promote support at a deadline.
 
-```bash
-oauth-mux init --codex-max
-oauth-mux doctor
-oauth-mux route explain --profile codex-max --capability codex-max
-oauth-mux codex resume
-```
-
-`oauth-mux codex` reads `defaults.profile`/`defaults.capability` and falls back to
-the `codex-max` profile, so explicit flags are needed only for diagnostics or
-scripted proof. If a route needs upstream auth, run the labeled handoff from
-`route explain` (e.g. `oauth-mux codex login-device max-3`).
-
-Agent-safe inspection (no provider spend):
-
-```bash
-oauth-mux doctor runtime --profile codex-max --capability codex-max --json
-oauth-mux accounts list --provider codex --json
-oauth-mux route explain --profile codex-max --capability codex-max --json
-oauth-mux repair-plan --profile codex-max --capability codex-max --json
-oauth-mux codex preflight --profile codex-max --capability codex-max --json
-```
-
-When shell, install, auth, and route-health state disagree, enable the redacted
-trace sink (`OMUX_TRACE=1 OMUX_TRACE_FILE=…`; schema in `docs/tracing.md`). In the
-current release, only managed Codex launch/resume and admitted stay-afloat execution
-may spend provider calls — to revalidate expired Codex quota/rate windows before
-route election. Inspection commands never spend.
-
-## UX / DX / AX contract
-
-- **UX** — the managed harness feels native; no hidden daemon dependency on the
-  Codex path; handoffs are labeled and user-mediated when upstream login is needed.
-- **AX** — JSON surfaces are redacted and account-label based; agents choose a next
-  action without token files or raw stores; provider-spend behavior is
-  policy-labeled and separated from diagnostic inspection; output includes exact
-  next-action commands.
-- **DX** — `just build | test | check | e2e` run on the remote proof runner
-  (explicit `just remote-*` aliases exist). Local `*-local` recipes are debugging
-  tools only, never the proof path. Run `just release-proof <version> [ref]` before
-  any registry mutation.
-
-## Proof
-
-Claims stay tied to evidence:
-
-- `CHANGELOG.md` — per-release changes and the evidence each claim is bound to.
-- `docs/spec/broker-mcp-contract-2026-05-03.md` — the product anchor;
-  `docs/spec/codex-adapter-contract-2026-05-03.md` — the Codex adapter contract.
-- `docs/lifecycle.md` — lifecycle, managed Codex flow, agent control plane, claim levels.
-- `docs/qa-handoff-matrix.md` — route states, handoff patterns, current Codex truth.
-- `docs/release-install-lanes.md` — public package lanes vs local dogfood provenance.
-- `docs/plans/oauth-mux-v0.2-full-broker-foss-program-2026-07-11.md` — current
-  six-week product and delivery program.
-- `docs/authority-map.md` — current decision, implementation, proof, and
-  release authority boundaries.
-- `docs/tracing.md` — opt-in trace schema and redaction rules.
-- `docs/evidence/` — committed proof runs (Codex quota handoff; keepalive tick, soak, rotation).
+The subsequent [native safety sprint](docs/plans/omux-native-safety-sprint-2026-10-03.md)
+tracks durable request/mutation authority, backup rollback refusal, XDG socket
+custody, local observations and available platform proof. Its
+[receipt](docs/implementation/native-safety-evidence-2026-10-03.md) and
+[five-hour checkpoint](.goal/omux-native-safety-2026-10-03.json) distinguish
+current implementation from installed and live acceptance.

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "factual_tracker_reconciliation",
+  "authority": "Explicit user-resumed integrated implementation and Linear reconciliation; R-N13",
+  "pre_action_at": "2026-10-06 16:32:44 UTC",
+  "bodies": {
+    "TIN-2063": "2026-10-06 resumed implementation checkpoint; R-HOOK-CONVERGENCE-20261004 / R-N13.\n\nFresh HOME epoch d6311994-5212-4034-ac93-49b06405db88 ended controller/workload 0/0 with empty descendants. All four declared targets passed, including 50 execution-guard methods, 11 dependency-profile methods and docs. The reviewed exception admits exactly the sole Home Manager acquisition target in its fixed HOME allocation with the existing exclusive coordination lock; resource, custody and no-reuse boundaries remain unchanged. Actual HM acquisition is now in flight as c762e01e-71be-4d70-9e22-8c8c92e9878d; publication and genuine evaluation are not established.\n\nFive historical scoped gates pass; six remain open. Exact graph/receipt/evidence: docs/tracker-updates/integrated-delivery-d631-2026-10-06.json. Current workstream note: docs/agent-notes/2026-10-06-sess-omux-home-yoga-native.md. Original goal preserved; next continuation review 21:05:51 UTC. No fleet activation, provider access or Darwin operation.",
+    "TIN-5442": "2026-10-06 resumed browser checkpoint; R-HOOK-CONVERGENCE-20261004 / R-N13.\n\nActual //tools:yoga_controller_byte_verification passed in epoch d6311994 with controller/workload 0/0 and empty descendants: 472 paths, 61,016 regular inputs and 2,829,689,512 NAR bytes rehashed. Inventory SHA256 2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8. Execution authority, flake mapping and realization remain false. This closes the content-check step, not the installed-browser acceptance gate.\n\nRemaining work: exact wrapper qualification, Yoga destination registration, cold offline graph, isolated local Wayland console, human permission denial/approval and exact-generation reload/reconnect. Operator participation is confirmed once setup is ready. All eleven selected payload hashes must remain bound; wrapper substitution is not acceptable. Evidence: docs/tracker-updates/integrated-delivery-d631-2026-10-06.json; source declaration tools/BUILD.bazel and MODULE.bazel. No provider login/access, signing or publication."
+  },
+  "scope": "Two factual comments only; preserve issue descriptions, titles, states, assignees, due dates, relations and projects",
+  "execution_evidence": "docs/tracker-updates/integrated-delivery-d631-2026-10-06.json",
+  "readback": [
+    {
+      "issue": "TIN-2063",
+      "comment_id": "1d33fe2b-61e8-4fb0-812d-ce1252929a85",
+      "exact_body": true,
+      "unchanged": {
+        "title": true,
+        "description": true,
+        "status": true,
+        "assignee": true,
+        "dueDate": true,
+        "relations": true,
+        "project": true
+      }
+    },
+    {
+      "issue": "TIN-5442",
+      "comment_id": "d33e6e28-4139-486e-a565-ff1ae83a638c",
+      "exact_body": true,
+      "unchanged": {
+        "title": true,
+        "description": true,
+        "status": true,
+        "assignee": true,
+        "dueDate": true,
+        "relations": true,
+        "project": true
+      }
+    }
+  ],
+  "readback_at": "2026-10-06 16:33:23 UTC"
+}

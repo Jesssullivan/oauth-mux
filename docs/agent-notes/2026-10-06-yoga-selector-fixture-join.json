@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "kind": "test_only_fixed_selector_fixture_path_join_correction",
+  "authority": "Parent authorized read-only ec8b failure diagnosis and UNAPPLIED test-only amendment; user provider-free continuation; AGENTS.md/R-N13",
+  "failure_evidence": "/home/jess/.local/state/omux-execution-20261005/ec8bf2d1-ce07-475a-ab9b-1bb7e518b078/test-evidence/3834d160840cc9ba11a7005f6a26c94a84fe428b26a4e8dcb67755ad3b5cb1ee.evidence",
+  "parent_report": "ec8bf2d1-ce07-475a-ab9b-1bb7e518b078 terminal3/3, empty descendants; seven targets pass, Yoga qualification17 methods fail3.",
+  "observed_failures": [
+    "valid hardlinked selector chain refused instead of reaching mocked exec",
+    "valid exact-tuple selector refused instead of reaching mocked exec",
+    "missing-input fixture returned PredicateRefused instead of FileNotFoundError"
+  ],
+  "source_diagnosis": "All three mock descriptor-relative operations concatenate retained root \"/\" with \"/\" and first component, producing \"//nix\". Precisely two leading slashes survive posixpath.normpath, so canonical fixture symlink/file keys and missing-step injection are missed. This source mechanism explains valid route refusal. Current production full-selector stat explicitly passes follow_symlinks=True; the mock already maps that call, so defaultFalse alone does not explain these three failures.",
+  "primary_source": "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12/lib/python3.13/posixpath.py:72–92,159–161,357–369",
+  "proposed_change": "Four test-only lines: descriptor-relative opened/named/readlink use os.path.join(parent,path), matching fixed production joining and avoiding artificial double-root; named defaults follow_symlinks=True like os.stat.",
+  "preserved": "Production is unchanged. Explicit follow_symlinks=False named custody calls, full-selector-mismatch case, all symlink/ancestor/leaf/byte/ownership/cycle/parent-traversal refusals, all-release and primary cleanup assertions, OS/HOME/marker predicates and existing alarm remain.",
+  "validation": "Existing 17-method target must be rerun by root through contained Bazel. Positive exact-tuple/hardlink methods and six-stage missing-input method validate the corrected model. No pass is inferred here.",
+  "execution": "Source/log/library reads and unapplied patch generation only. No project executable/check/build/test, SSH, tracker/index mutation or actual source edit."
+}

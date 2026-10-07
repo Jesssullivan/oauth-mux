@@ -1,0 +1,8 @@
+{
+  "current_epoch": "from_guard",
+  "epochs": [
+    {"uuid":"05d7c7e7-29c7-4c24-8099-eb56ac766025","receipt_sha256":"db4a833f509b9e7ae8990a46439e8857a951c7f536990f7975cba49789e6079d"},
+    {"uuid":"80a8c353-0939-4158-9f73-8a8e926d08c9","receipt_sha256":"63c6639628e34e8f5240e0960f2aaebc3c12f2f81504bab89def0bbfe5e258b7"},
+    {"uuid":"bdbddca6-d527-419e-abdf-4ceef8db710a","receipt_sha256":"126be7b2838de6964a78ae8bdc2b6bcbc40957cd4633588fa39b570133d2f900"}
+  ]
+}

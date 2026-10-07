@@ -1,13 +1,140 @@
-"""
-oauth-mux Bazel module.
-
-This graph is intentionally tiny: TIN-2105 uses it only to prove a bounded
-Zig build/test REAPI target class. The existing Just/Nix remote lanes remain
-the repository's validation authority until a forced GloriousFlywheel proof
-artifact promotes the target class.
-"""
+"""Omux successor: local Bazel execution is the build authority."""
 
 module(
-    name = "oauth_mux",
-    version = "0.1.13",
+    name = "omux",
+    version = "0.2.0-dev",
 )
+
+bazel_dep(name = "rules_zig", version = "0.0.0")
+
+archive_override(
+    module_name = "rules_zig",
+    urls = ["https://github.com/hermeticbuild/rules_zig/archive/c81e777fe398186c9f0251ba1332a1d56f30d094.tar.gz"],
+    integrity = "sha256-/KZl4kMeAt4rDHrrIfn1ZqODP5aH8x4P6YbEhrrMlkc=",
+    strip_prefix = "rules_zig-c81e777fe398186c9f0251ba1332a1d56f30d094",
+    patches = ["//tools:rules_zig_017.patch"],
+    patch_strip = 1,
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.18")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
+
+zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+zig.index(file = "//tools:zig-index.json")
+zig.toolchain(
+    zig_version = "0.17.0",
+    default = True,
+)
+
+use_repo(
+    zig,
+    "zig_toolchains",
+    "zig_0.17.0_x86_64-linux",
+    "zig_0.17.0_aarch64-linux",
+    "zig_0.17.0_aarch64-macos",
+    "zig_0.17.0_x86_64-macos",
+)
+
+register_toolchains(
+    "//tools:linux_x86_64_target",
+    "//tools:linux_aarch64_target",
+    "@rules_zig//zig/target:all",
+    "@zig_toolchains//:all",
+)
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "arocc",
+    build_file = "//tools:arocc.BUILD.bazel",
+    sha256 = "42f5ac4d1fb7c55ad4073dc462b02d485ace4da6d7fc29b35acfa99e28f2cb7d",
+    strip_prefix = "arocc",
+    url = "https://codeberg.org/ziglang/arocc/archive/d0c8c4d9c55daa7ef6e40cf0f630a5b5e900989b.tar.gz",
+)
+
+http_archive(
+    name = "translate-c",
+    build_file = "//tools:translate-c.BUILD.bazel",
+    sha256 = "465ec33805d3b964abe5fc58a0cb0da2da5bbeefe881ea155940df542ae38c39",
+    strip_prefix = "translate-c",
+    url = "https://codeberg.org/ziglang/translate-c/archive/0da7a16c3235b935b82421646076e0657cda21f6.tar.gz",
+)
+
+register_toolchains("//tools:translate_c_toolchain")
+
+native_repository = use_repo_rule("//tools:nix_repository.bzl", "omux_nix_repository")
+native_repository(name = "omux_nix")
+
+host_repository = use_repo_rule("//tools:host_tools_repository.bzl", "omux_host_tools_repository")
+host_repository(name = "omux_host")
+host_repository(
+    name = "omux_eval_host",
+    requested_tools = ["python", "bash", "nix"],
+    require_ca = False,
+)
+
+# The operator selects one already cached source root through --repo_env.
+# Its bytes are verified against flake.lock inside the declared evaluation test.
+evaluation_source = use_repo_rule("//tools:nix_evaluation_source.bzl", "nix_evaluation_source")
+evaluation_source(name = "omux_eval_source")
+
+site_inputs = use_repo_rule("//tools:site_inputs_repository.bzl", "site_inputs_repository")
+site_inputs(name = "omux_site_inputs")
+
+# Read-only Lab paired-source metadata. Cached source/NAR and actual Home
+# Manager evaluation remain separately qualified manual operator gates.
+home_manager_inputs = use_repo_rule("//tools:home_manager_inputs_repository.bzl", "home_manager_inputs_repository")
+home_manager_inputs(name = "omux_lab_home_manager_inputs")
+
+evaluation_source(
+    name = "omux_site_eval_source",
+    source_env = "OMUX_SITE_NIXPKGS_EVALUATION_SOURCE",
+    lock = "@omux_site_inputs//:flake.lock",
+)
+
+# Candidate cached inputs are declared without executing them. Separate manual
+# actions must verify NAR bytes and their mapping to the locked site selection.
+cached_site = use_repo_rule("//tools:cached_site_repository.bzl", "cached_site_repository")
+cached_site(name = "omux_cached_site")
+
+cached_nar = use_repo_rule("//tools:cached_nar_repository.bzl", "cached_nar_repository")
+cached_nar(name = "omux_cached_nars")
+
+# Independently frozen public bytes: no acquisition/artifact producer edge.
+retained_hm = use_repo_rule("//tools:home_manager_retained_repository.bzl", "home_manager_retained_repository")
+retained_hm(name = "omux_retained_hm")
+# Separate selected compact output; no dependency on the bundle producer.
+hm_bundle = use_repo_rule("//tools:home_manager_bundle_repository.bzl", "home_manager_bundle_repository")
+hm_bundle(name = "omux_hm_bundle")
+
+# Independently selected controller/vault-backend registry export. This
+# repository supplies inert byte-proof inputs, never execution authority.
+cached_nar(
+    name = "omux_yoga_controller_nars",
+    inventory_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/8b6bd81f-786e-49c1-b8de-ac1103e986b1/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/yoga_controller_inventory_producer/test.outputs/yoga-controller-inputs/controller-inventory.json",
+    inventory_sha256 = "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
+    bootstrap_closure = "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
+)
+
+yoga_delivery_inputs = use_repo_rule("//tools:yoga_delivery_inputs.bzl", "yoga_delivery_inputs")
+yoga_delivery_inputs(name = "omux_yoga_delivery_inputs")
+
+# Retained proof bytes are explicit offline operator inputs, outside Git.
+retained_runtime = use_repo_rule("//tools:codex_owner_runtime_repository.bzl", "codex_owner_runtime_repository")
+retained_runtime(name = "omux_codex_owner_runtime")
+
+codex_cached_inputs = use_repo_rule("//tools:codex_cached_inputs.bzl", "codex_cached_inputs")
+codex_cached_inputs(name = "omux_codex_pack_inputs")
+
+codex_recovery_inputs = use_repo_rule("//tools:codex_recovery_inputs.bzl", "codex_recovery_inputs")
+codex_recovery_inputs(name = "omux_codex_recovery_inputs")
+
+codex_source_artifacts = use_repo_rule("//tools:codex_source_artifacts.bzl", "codex_source_artifacts_repository")
+codex_source_artifacts(name = "omux_codex_source_artifacts")
+
+register_toolchains("@omux_nix//:toolchain")
+
+apple_repository = use_repo_rule("//tools:apple_repository.bzl", "omux_apple_repository")
+apple_repository(name = "omux_apple")

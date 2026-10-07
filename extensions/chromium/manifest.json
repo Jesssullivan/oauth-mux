@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Omux browser sources",
+  "version": "0.2.0",
+  "description": "Connect explicitly authorized browser account sources to the local Omux daemon.",
+  "minimum_chrome_version": "121",
+  "permissions": ["nativeMessaging", "storage", "activeTab"],
+  "optional_permissions": ["cookies"],
+  "optional_host_permissions": ["https://chatgpt.com/*", "https://claude.ai/*", "https://github.com/*"],
+  "background": { "service_worker": "shared/background.mjs", "type": "module" },
+  "action": { "default_title": "Omux browser sources", "default_popup": "shared/popup.html" },
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'" }
+}

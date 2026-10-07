@@ -1,0 +1,13 @@
+[Unit]
+Description=Omux per-user account lifecycle daemon (experimental)
+
+[Service]
+Type=simple
+ExecStart=@EXEC@
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

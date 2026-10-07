@@ -1,0 +1,995 @@
+"""Pure fake-controller predicates; run only through the declared Bazel target.
+
+Live acceptance still requires bounded declared stress actions: exceed 512 tasks,
+4 GiB memory, 8 MiB output, runtime deadline and cancellation, then read back
+empty descendants. These tests do not perform those workloads or call systemd.
+"""
+import tempfile
+import stat
+import hashlib
+import json
+import os
+import subprocess
+import time
+from types import SimpleNamespace
+from unittest.mock import patch, Mock
+from pathlib import Path
+import unittest
+from execution_guard import (PROPERTIES, SANDBOX, DELEGATION_ENV, CGROUP,
+                             blocked_paths, bazel_command, properties, verify)
+from execution_guard import validate_become_metadata, system_identity, selected_site_source, selected_site_inventory
+from execution_guard import await_startup
+
+
+class FakeService:
+    def __init__(self, root):
+        self.root = root
+        self.actual = {**PROPERTIES, **SANDBOX,
+                       'InaccessiblePaths': ' '.join(blocked_paths()),
+                       'UnsetEnvironment': ' '.join(DELEGATION_ENV)}
+        for name, value in CGROUP.items():
+            (root / name).write_text(value)
+        (root / 'cpu.max').write_text('200000 100000')
+
+    def admit(self):
+        verify(self.actual, self.root)
+
+
+class FakeClock:
+    def __init__(self, value=0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+class GuardTest(unittest.TestCase):
+    def test_yoga_delivery_command_binds_original_deadline_and_clears_prior_authority(self):
+        from execution_guard import yoga_delivery_command
+        args = ['run','//tools:yoga_controller_qualify']
+        with patch('time.monotonic_ns',return_value=100*10**9):
+            command,values = yoga_delivery_command('/nix/store/fixed-bazel',Path('/owned/epoch'),args,1200*10**9)
+        self.assertEqual(command[-1],args[-1]); self.assertEqual(command.count('run'),1)
+        self.assertIn('--run_env=OMUX_YOGA_DELIVERY_DEADLINE_NS='+str(1200*10**9),command)
+        self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256=',command)
+        self.assertIn('--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION=',command)
+        for flag in ('--batch','--nosystem_rc','--nohome_rc','--noworkspace_rc','--jobs=2',
+                     '--remote_executor=','--remote_cache=','--disk_cache=','--lockfile_mode=error'):
+            self.assertIn(flag,command)
+        prior = {'path':'/home/jess/.local/state/omux-yoga-delivery-20261006/prior/qualification.json','sha256':'a'*64}
+        with patch('time.monotonic_ns',return_value=100*10**9):
+            command,_ = yoga_delivery_command('/nix/store/fixed-bazel',Path('/owned/epoch'),
+                ['run','//tools:yoga_controller_verify'],1200*10**9,prior)
+        self.assertIn('--repo_env=OMUX_YOGA_DELIVERY_QUALIFICATION='+prior['path'],command)
+        self.assertIn('--run_env=OMUX_YOGA_DELIVERY_AUTHORITY_SHA256='+prior['sha256'],command)
+        self.assertEqual(blocked_paths('yoga-controller-delivery'),blocked_paths('standard'))
+        # General run and unrelated dependency producers remain refused.
+        for arguments in (['run','//tools:yoga_controller_qualify'],['run','//...']):
+            with self.assertRaises(ValueError): bazel_command('/nix/store/fixed-bazel',Path('/owned/epoch'),arguments)
+
+    def test_delivery_scope_rejects_unrelated_inputs_before_tool_reads(self):
+        import execution_guard as guard
+        common = ['--profile','yoga-controller-delivery','--manager','system',
+            '--state-dir','/home/jess/.local/state/omux-yoga-delivery-20261006',
+            '--coordination-dir','/home/jess/.local/state/omux-execution-20261005']
+        with patch.object(guard,'immutable') as tools:
+            for addition in (['--reuse-owned-cache'],['--yoga-delivery-epoch','12345678-1234-4123-8123-123456789012'],
+                             ['--repository-cache','/unrelated']):
+                with self.assertRaises(ValueError): guard.main(common+addition+['--','run','//tools:yoga_controller_qualify'])
+            tools.assert_not_called()
+        with patch.object(guard,'immutable') as tools:
+            with self.assertRaises(ValueError): guard.main(['--yoga-delivery-epoch','12345678-1234-4123-8123-123456789012',
+                '--','test','//:docs_check'])
+            tools.assert_not_called()
+    def test_home_manager_home_prepare_preserves_custody_sampling_and_fixed_coordination(self):
+        import execution_guard as guard
+        from guard_dependency_profile import HOME_MANAGER_STATE, HOME_MANAGER_FETCH_LABEL, COORDINATION_DIRECTORY
+        calls = []
+        with patch.object(guard, 'private', side_effect=lambda path, **options: calls.append(('private', path))), \
+                patch.object(guard, 'initialize_state', side_effect=lambda path, validator: calls.append(('initialize', path))), \
+                patch.object(guard, 'check_free_space', side_effect=lambda path: calls.append(('space', path))):
+            selected = guard.prepare_state(HOME_MANAGER_STATE, 'dependency-prefetch', COORDINATION_DIRECTORY,
+                True, arguments=['test', HOME_MANAGER_FETCH_LABEL])
+        self.assertEqual(selected, COORDINATION_DIRECTORY)
+        self.assertEqual(calls, [('private', COORDINATION_DIRECTORY), ('initialize', HOME_MANAGER_STATE),
+                                 ('private', HOME_MANAGER_STATE), ('space', HOME_MANAGER_STATE)])
+        self.assertEqual(guard.DIAGNOSTIC_STAGE, 'state-free-space')
+
+    def test_home_manager_home_prepare_refuses_other_scope_before_state_mutation(self):
+        import execution_guard as guard
+        from guard_dependency_profile import HOME_MANAGER_STATE, HOME_MANAGER_FETCH_LABEL, COORDINATION_DIRECTORY, FETCH_LABEL
+        with patch.object(guard, 'private') as private, patch.object(guard, 'initialize_state') as initialize, \
+                patch.object(guard, 'check_free_space') as space:
+            for profile, arguments in (('dependency-prefetch', None), ('dependency-prefetch', ['test', FETCH_LABEL]),
+                                       ('standard', ['test', HOME_MANAGER_FETCH_LABEL])):
+                with self.subTest(profile=profile, arguments=arguments), self.assertRaises(ValueError):
+                    guard.prepare_state(HOME_MANAGER_STATE, profile, COORDINATION_DIRECTORY,
+                                        True, arguments=arguments)
+            private.assert_not_called()
+            initialize.assert_not_called()
+            space.assert_not_called()
+
+    def test_home_manager_home_network_producer_still_refuses_cache_reuse_before_tool_reads(self):
+        from execution_guard import main
+        from guard_dependency_profile import HOME_MANAGER_STATE, HOME_MANAGER_FETCH_LABEL, COORDINATION_DIRECTORY
+        with patch('execution_guard.immutable') as tools:
+            with self.assertRaises(ValueError):
+                main(['--profile', 'dependency-prefetch', '--state-dir', str(HOME_MANAGER_STATE),
+                      '--coordination-dir', str(COORDINATION_DIRECTORY), '--reuse-owned-cache',
+                      '--', 'test', HOME_MANAGER_FETCH_LABEL])
+            tools.assert_not_called()
+
+    def test_yoga_production_preallocation_publication_and_command_join(self):
+        import guard_yoga_profile as yoga
+        from execution_guard import yoga_command
+        from yoga_operator_launch import command_digest
+        deadline = time.monotonic_ns() + 1100 * 10**9
+        proof_id = '12345678-1234-4123-8123-123456789012'
+        root = Path('/srv/yoga-source')
+        run = Path('/srv/yoga-state') / proof_id
+        tools = {name: '/nix/store/' + 'a' * 32 + '-controller/' + name for name in yoga.TOOLS}
+        tools['bootstrap_closure'] = '/nix/store/' + 'a' * 32 + '-bootstrap'
+        snapshot = {'device': 4, 'inode': 5, 'uid': 1000, 'mode': 0o700, 'pid': 200, 'start_ticks': 50}
+        receipt = {'schemaVersion': 1, 'scope': 'yoga-local-guard-qualification-v1', 'hostAlias': 'yoga',
+            'proofId': proof_id, 'deadlineMonotonicNs': deadline,
+            'host': {'machineIdSha256': 'a' * 64, 'bootIdSha256': 'b' * 64, 'uid': 1000},
+            'seat': {'sessionId': '3', 'seatId': 'seat0', 'uid': 1000}, 'operatorTerminal': '/dev/pts/4',
+            'sourceRoot': str(root), 'sourceGraphSha256': 'c' * 64,
+            'sourceFilesSha256': {name: 'd' * 64 for name in yoga.SOURCE_FILES},
+            'sourceSocket': '/run/user/1000/wayland-0', 'compositorSnapshot': snapshot,
+            'inputPaths': {name: '/srv/yoga-inputs/' + name for name in yoga.coordinator.INPUTS},
+            'inputSha256': {name: 'e' * 64 for name in yoga.coordinator.INPUTS}, 'controllerTools': tools,
+            'controllerInventory': {'path': '/srv/yoga-inputs/controller-inventory', 'sha256': 'f' * 64},
+            'controllerNarProof': {'path': '/srv/yoga-inputs/controller-nar', 'sha256': 'f' * 64}}
+        receipt['vaultWrapperAuthority'] = {
+            'companion': {'path': '/srv/yoga-inputs/companion', 'sha256': '1' * 64},
+            'nativeManifest': {'path': '/srv/yoga-inputs/native.json', 'sha256': '2' * 64},
+            'registeredNativeManifest': {'path': '/nix/store/' + 'b' * 32 + '-native.json', 'sha256': '3' * 64},
+            **{name: receipt[name] for name in ('controllerTools', 'controllerInventory', 'controllerNarProof')}}
+        witness = {'source': receipt['sourceSocket'], 'destination': str(run / 'wayland.sock'),
+                   'proof_root': str(run), 'uid': 1000, 'deadline_ns': deadline, 'snapshot': snapshot}
+        content = b'{"public":"qualified-inventory-fixture"}'
+        inventory = {'bytes': content, 'sha256': hashlib.sha256(content).hexdigest()}
+        with patch.object(yoga, 'file_bytes', return_value=json.dumps(receipt).encode()), \
+                patch.object(yoga, 'local_identity'), \
+                patch.object(yoga, 'runtime_qualification', return_value=(receipt['inputSha256'], inventory)) as qualify, \
+                patch.object(yoga, 'require_unit_absent'), \
+                patch.object(yoga.display, 'capture_pinned', return_value=(witness, Mock())), \
+                patch.object(Path, 'resolve', return_value=root):
+            admission = yoga.preallocate('/srv/yoga-inputs/selection.json', 'f' * 64, deadline,
+                manager='system', arguments=['run', yoga.LABEL], state_root='/srv/yoga-state', source_root=root,
+                home=Path('/home/user'), tools=tools, graph_sha256='c' * 64, uid=1000, operator_descriptor=0)
+            qualify.assert_called_once_with(receipt, deadline, retain_inventory=True)
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            with patch.object(yoga.inputs, 'open_parent', side_effect=lambda *args: os.open(fixture, os.O_RDONLY | os.O_DIRECTORY)), \
+                    patch.object(yoga, 'file_bytes', side_effect=lambda *args, **options: (fixture / 'browser-inventory.json').read_bytes()):
+                yoga.publish_repository_inventory(admission, run)
+                command = yoga_command(tools['bazel'], run, ['run', yoga.LABEL], admission, manager='system')
+                self.assertEqual(command[-1], yoga.LABEL)
+                self.assertEqual(command.count('run'), 1)
+                self.assertNotIn('--', command)
+                self.assertIn('--output_base=' + str(run / 'output-base'), command)
+                self.assertIn('--symlink_prefix=' + str(run / 'bazel-'), command)
+                for flag in ('--batch', '--nosystem_rc', '--nohome_rc', '--noworkspace_rc', '--jobs=2',
+                             '--spawn_strategy=sandboxed', '--remote_executor=', '--remote_cache=', '--disk_cache=',
+                             '--sandbox_default_allow_network=false', '--lockfile_mode=error'):
+                    self.assertIn(flag, command)
+                for key, value in yoga.repository_bindings(admission, run).items():
+                    self.assertIn('--repo_env=' + key + '=' + value, command)
+                self.assertEqual(len(command_digest(command)), 64)
+                with self.assertRaises(ValueError):
+                    yoga_command('/nix/store/foreign/bazel', run, ['run', yoga.LABEL], admission, manager='system')
+                (fixture / 'browser-inventory.json').write_bytes(b'changed')
+                with self.assertRaises(ValueError):
+                    yoga_command(tools['bazel'], run, ['run', yoga.LABEL], admission, manager='system')
+
+    def test_yoga_route_keeps_generic_runs_and_extra_arguments_refused(self):
+        import guard_yoga_profile as yoga
+        from execution_guard import yoga_command
+        for arguments in (['run', yoga.LABEL], ['run', yoga.LABEL, '--', '--inside'], ['run', '//:other']):
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/srv/owned/run'), arguments)
+        for arguments, manager in ((['run', yoga.LABEL], 'user'), (['run', '//:other'], 'system'),
+                                   (['run', yoga.LABEL, '--', '--inside'], 'system'),
+                                   (['build', yoga.LABEL], 'system')):
+            with patch.object(yoga, 'repository_bindings') as bindings:
+                with self.assertRaises(ValueError):
+                    yoga_command('/store/bazel', Path('/srv/owned/run'), arguments, {}, manager=manager)
+                bindings.assert_not_called()
+
+    def test_yoga_caller_site_and_cache_flags_still_refuse_before_tool_reads(self):
+        import guard_yoga_profile as yoga
+        from execution_guard import main
+        baseline = ['--profile', 'yoga-toolbar', '--manager', 'system',
+                    '--state-dir', '/srv/yoga-state', '--yoga-qualification', '/srv/yoga-inputs/selection.json',
+                    '--yoga-qualification-sha256', 'a' * 64, '--yoga-deadline-monotonic-ns',
+                    str(time.monotonic_ns() + 1100 * 10**9)]
+        for options in (['--site-inventory', '/srv/foreign-inventory'], ['--site-inventory-sha256', 'b' * 64],
+                        ['--repository-cache', '/srv/foreign-cache'], ['--reuse-owned-cache'],
+                        ['--nixpkgs-source', '/nix/store/foreign-source']):
+            with patch('execution_guard.immutable') as tools:
+                with self.assertRaises(ValueError):
+                    main(baseline + options + ['--', 'run', yoga.LABEL])
+                tools.assert_not_called()
+
+    def test_controller_failures_use_only_finite_categories(self):
+        from execution_guard import controller_diagnostic, controller_run
+        diagnostics = []
+        error = subprocess.TimeoutExpired(['sensitive-argv'], 15,
+                                          output=b'sensitive-output', stderr=b'sensitive-error')
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            controller_run(['sensitive-argv'], operation='unit-readback', phase='monitor',
+                diagnose=diagnostics.append, invoke=Mock(side_effect=error))
+        self.assertIs(raised.exception, error)
+        self.assertEqual(diagnostics, [{'operation': 'unit-readback', 'phase': 'monitor',
+                                       'exception': 'TimeoutExpired', 'timeout_seconds': 15}])
+        self.assertNotIn('sensitive', str(diagnostics))
+        self.assertEqual(controller_diagnostic(error, 'sensitive', 'sensitive', float('inf')),
+            {'operation': 'unknown', 'phase': 'unknown', 'exception': 'TimeoutExpired',
+             'timeout_seconds': None})
+        diagnostics.clear()
+        with self.assertRaises(subprocess.CalledProcessError):
+            controller_run(['sensitive'], operation='unit-stop', phase='cleanup',
+                diagnose=diagnostics.append,
+                invoke=Mock(return_value=SimpleNamespace(returncode=1, stdout=b'sensitive', stderr=b'sensitive')))
+        self.assertEqual(diagnostics[0]['exception'], 'CalledProcessError')
+        self.assertNotIn('sensitive', str(diagnostics))
+
+    def test_controller_deadline_refuses_spawn_and_caps_remaining_time(self):
+        from execution_guard import controller_run
+        invoke = Mock(return_value=SimpleNamespace(returncode=0, stdout=b'Id=owned\n'))
+        diagnostics = []
+        self.assertEqual(controller_run(['fixed'], operation='unit-readback', phase='cleanup',
+            diagnose=diagnostics.append, timeout=2, deadline=15, clock=lambda: 14.75,
+            invoke=invoke), 'Id=owned\n')
+        self.assertEqual(invoke.call_args.kwargs['timeout'], 0.25)
+        invoke.reset_mock()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            controller_run(['fixed'], operation='unit-stop', phase='cleanup',
+                diagnose=diagnostics.append, deadline=15, clock=lambda: 15, invoke=invoke)
+        invoke.assert_not_called()
+        self.assertEqual(diagnostics[-1]['timeout_seconds'], 0)
+
+    def test_monitor_timeout_stays_failed_when_owned_cleanup_is_empty(self):
+        from execution_guard import monitor_workload, cleanup_owned, controller_run
+        diagnostics = []
+        result = 125
+        def read():
+            return controller_run(['fixed'], operation='unit-readback', phase='monitor',
+                diagnose=diagnostics.append, invoke=Mock(side_effect=subprocess.TimeoutExpired('fixed', 15)))
+        with self.assertRaises(subprocess.TimeoutExpired):
+            result = monitor_workload(read, 20, lambda: None, clock=lambda: 0)
+        cleanup = cleanup_owned(deadline=15, readback=Mock(), authorize=Mock(), stop=Mock(),
+                                observe=lambda: 'empty', clock=lambda: 0)
+        self.assertEqual(cleanup['state'], 'empty')
+        self.assertEqual(result, 125)
+        self.assertEqual(diagnostics[0]['phase'], 'monitor')
+
+    def test_cleanup_retry_stop_and_observation_share_original_deadline(self):
+        from execution_guard import cleanup_owned
+        clock = FakeClock()
+        events = []
+        state = ['populated']
+        def read(timeout, deadline):
+            events.append(('read', timeout, deadline))
+            if len(events) == 1:
+                clock.advance(timeout)
+                raise subprocess.TimeoutExpired('fixed', timeout)
+            return {'Id': 'owned'}
+        def stop(timeout, deadline):
+            events.append(('stop', timeout, deadline))
+            clock.advance(10)
+            state[0] = 'empty'
+        authority = Mock()
+        summary = cleanup_owned(deadline=15, readback=read, authorize=authority, stop=stop,
+            observe=lambda: state[0], clock=clock, pause=clock.advance)
+        self.assertEqual(summary['state'], 'empty')
+        self.assertEqual(summary['readback_attempts'], 2)
+        self.assertEqual(summary['stop'], 'succeeded')
+        authority.assert_called_once_with({'Id': 'owned'})
+        self.assertEqual([row[2] for row in events], [15, 15, 15])
+        self.assertEqual([row[1] for row in events[:2]], [2, 2])
+        self.assertLessEqual(events[-1][1], 15 - 2.1)
+        self.assertLess(clock(), 15)
+
+    def test_cleanup_query_timeout_budget_expires_without_stop(self):
+        from execution_guard import cleanup_owned
+        clock = FakeClock()
+        budgets = []
+        def read(timeout, deadline):
+            self.assertEqual(deadline, 15)
+            budgets.append(timeout)
+            clock.advance(timeout)
+            raise subprocess.TimeoutExpired('fixed', timeout)
+        stop = Mock()
+        summary = cleanup_owned(deadline=15, readback=read, authorize=Mock(), stop=stop,
+            observe=lambda: 'populated', clock=clock, pause=clock.advance)
+        self.assertEqual(summary['state'], 'deadline-exhausted')
+        self.assertLessEqual(len(budgets), 8)
+        self.assertTrue(all(0 < budget <= 2 for budget in budgets))
+        self.assertAlmostEqual(clock(), 15)
+        stop.assert_not_called()
+
+    def test_cleanup_expired_before_or_during_ownership_never_stops(self):
+        from execution_guard import cleanup_owned
+        clock = FakeClock(15)
+        read, stop, observe = Mock(), Mock(), Mock()
+        summary = cleanup_owned(deadline=15, readback=read, authorize=Mock(), stop=stop,
+                                observe=observe, clock=clock, pause=clock.advance)
+        self.assertEqual(summary['state'], 'deadline-exhausted')
+        read.assert_not_called()
+        observe.assert_not_called()
+        stop.assert_not_called()
+        clock = FakeClock()
+        summary = cleanup_owned(deadline=15, readback=lambda budget, end: {},
+            authorize=lambda actual: clock.advance(15), stop=stop, observe=lambda: 'populated',
+            clock=clock, pause=clock.advance)
+        self.assertEqual(summary['state'], 'deadline-exhausted')
+        stop.assert_not_called()
+
+    def test_cleanup_observation_after_deadline_cannot_prove_empty(self):
+        from execution_guard import cleanup_owned
+        clock = FakeClock()
+        read, stop = Mock(), Mock()
+        def observe():
+            clock.advance(15)
+            return 'empty'
+        summary = cleanup_owned(deadline=15, readback=read, authorize=Mock(), stop=stop,
+                                observe=observe, clock=clock, pause=clock.advance)
+        self.assertEqual(summary['state'], 'deadline-exhausted')
+        read.assert_not_called()
+        stop.assert_not_called()
+
+    def test_cleanup_uncertain_stop_requires_original_empty_observation(self):
+        from execution_guard import cleanup_owned
+        for emptied in (False, True):
+            clock = FakeClock()
+            state = ['populated']
+            def stop(budget, deadline):
+                clock.advance(10)
+                state[0] = 'empty' if emptied else 'populated'
+                raise subprocess.TimeoutExpired('fixed', 10)
+            summary = cleanup_owned(deadline=15, readback=lambda budget, end: {}, authorize=Mock(),
+                stop=stop, observe=lambda: state[0], clock=clock, pause=clock.advance)
+            self.assertEqual(summary['state'], 'empty' if emptied else 'deadline-exhausted')
+            self.assertEqual(summary['stop'], 'unresolved')
+            self.assertLessEqual(clock(), 15)
+
+    def test_cleanup_changed_or_unproved_original_never_stops(self):
+        from execution_guard import cleanup_owned
+        for initial in ('changed', 'unproved'):
+            read, stop = Mock(), Mock()
+            summary = cleanup_owned(deadline=15, readback=read, authorize=Mock(), stop=stop,
+                                    observe=lambda: initial, clock=lambda: 0)
+            self.assertEqual(summary['state'], 'original-' + initial)
+            read.assert_not_called()
+            stop.assert_not_called()
+        states = iter(('populated', 'changed'))
+        stop = Mock()
+        summary = cleanup_owned(deadline=15, readback=lambda budget, end: {}, authorize=Mock(),
+                                stop=stop, observe=lambda: next(states), clock=lambda: 0)
+        self.assertEqual(summary['state'], 'original-changed')
+        stop.assert_not_called()
+
+    def test_cleanup_refuses_foreign_epoch_group_and_process(self):
+        from execution_guard import cleanup_owned, authorize_cleanup
+        run = Path('/owned/run')
+        unit = 'omux-execution-owned.service'
+        cgroup = Path('/sys/fs/cgroup/system.slice') / unit
+        actual = {'Id': unit, 'User': '1000', 'Group': '1000',
+                  'Environment': 'OMUX_EXECUTION_GUARD=/owned/run',
+                  'ExecStart': '{ path=/store/python ; argv[]=/store/python /controller --worker /owned/run -- fixed ; }',
+                  'ControlGroup': '/system.slice/' + unit, 'MainPID': '123'}
+        with patch('execution_guard.os.getuid', return_value=1000), patch('execution_guard.os.getgid', return_value=1000):
+            authorize = lambda row: authorize_cleanup(row, unit=unit, manager='system', run=run,
+                python='/store/python', worker='/controller', cgroup=cgroup, original_pid=123,
+                original_ticks='456', pid_ticks=lambda pid: '456')
+            authorize(actual)
+            for changed in ({'Id': 'foreign'}, {'User': '0'}, {'Group': '0'},
+                            {'Environment': 'OMUX_EXECUTION_GUARD=/foreign'}, {'ExecStart': 'foreign'},
+                            {'ControlGroup': '/foreign/' + unit}, {'MainPID': '124'}):
+                clock, stop = FakeClock(), Mock()
+                summary = cleanup_owned(deadline=15, readback=lambda budget, end: {**actual, **changed},
+                    authorize=authorize, stop=stop, observe=lambda: 'populated', clock=clock, pause=clock.advance)
+                self.assertEqual(summary['ownership'], 'refused')
+                self.assertEqual(summary['state'], 'deadline-exhausted')
+                stop.assert_not_called()
+            with self.assertRaises(ValueError):
+                authorize_cleanup(actual, unit=unit, manager='system', run=run, python='/store/python',
+                    worker='/controller', cgroup=cgroup, original_pid=123, original_ticks='456',
+                    pid_ticks=lambda pid: 'new-process')
+
+    def test_partial_dispatch_capture_requires_second_fresh_ownership_read(self):
+        from execution_guard import cleanup_owned, capture_cleanup_pin, authorize_cleanup
+        clock = FakeClock()
+        pin = [None]
+        state = ['populated']
+        rows = []
+        unit = 'omux-execution-owned.service'
+        run = Path('/owned/run')
+        name = '/system.slice/' + unit
+        facts = {'Id': unit, 'User': '1000', 'Group': '1000',
+                 'Environment': 'OMUX_EXECUTION_GUARD=/owned/run',
+                 'ExecStart': '{ path=/store/python ; argv[]=/store/python /controller --worker /owned/run -- fixed ; }',
+                 'ControlGroup': name, 'MainPID': '123'}
+        selected = dict(unit=unit, manager='system', run=run, python='/store/python', worker='/controller')
+        original = SimpleNamespace(path=Path('/sys/fs/cgroup') / name.lstrip('/'),
+                                   observe=lambda: state[0], close=Mock())
+        def read(budget, deadline):
+            rows.append(dict(facts))
+            return rows[-1]
+        def authorize(row):
+            if pin[0] is None:
+                pin[0], pid, ticks = capture_cleanup_pin(row, **selected)
+                self.assertEqual((pid, ticks), (123, '456'))
+                return False
+            self.assertEqual(len(rows), 2)
+            authorize_cleanup(row, **selected, cgroup=pin[0].path,
+                              original_pid=123, original_ticks='456', pid_ticks=lambda pid: '456')
+        def stop(budget, deadline):
+            self.assertEqual(len(rows), 2)
+            state[0] = 'empty'
+        with patch('execution_guard.os.getuid', return_value=1000), patch('execution_guard.os.getgid', return_value=1000), \
+                patch('execution_guard.process_start_ticks', return_value='456'), \
+                patch('execution_guard.Path.read_text', return_value='0::' + name + '\n'), \
+                patch('execution_guard.CgroupPin', return_value=original) as capture:
+            summary = cleanup_owned(deadline=15, readback=read, authorize=authorize, stop=stop,
+                observe=lambda: pin[0].observe() if pin[0] else 'uncaptured', clock=clock, pause=clock.advance)
+            capture.assert_called_once_with(original.path)
+        self.assertEqual(summary['state'], 'empty')
+        self.assertEqual(summary['readback_attempts'], 2)
+        self.assertEqual(summary['ownership'], 'verified')
+
+    def test_partial_dispatch_refuses_foreign_marker_and_kernel_group(self):
+        from execution_guard import capture_cleanup_pin
+        unit = 'omux-execution-owned.service'
+        name = '/system.slice/' + unit
+        actual = {'Id': unit, 'User': '1000', 'Group': '1000', 'MainPID': '123',
+                  'Environment': 'OMUX_EXECUTION_GUARD=/owned/run', 'ControlGroup': name,
+                  'ExecStart': '{ path=/store/python ; argv[]=/store/python /controller --worker /owned/run -- fixed ; }'}
+        selected = dict(unit=unit, manager='system', run=Path('/owned/run'), python='/store/python', worker='/controller')
+        with patch('execution_guard.os.getuid', return_value=1000), patch('execution_guard.os.getgid', return_value=1000), \
+                patch('execution_guard.process_start_ticks', return_value='456'), \
+                patch('execution_guard.Path.read_text', return_value='0::/foreign\n'), \
+                patch('execution_guard.CgroupPin') as capture:
+            for changed in ({'Environment': 'OMUX_EXECUTION_GUARD=/foreign'}, {}, {'MainPID': '0'}):
+                with self.assertRaises(ValueError):
+                    capture_cleanup_pin({**actual, **changed}, **selected)
+            capture.assert_not_called()
+
+    def test_pinned_original_group_refuses_empty_replacement_and_unwinds(self):
+        from execution_guard import CgroupPin
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / 'original'
+            original.mkdir()
+            (original / 'cgroup.events').write_text('populated 1\nfrozen 0\n')
+            pin = CgroupPin(original)
+            try:
+                self.assertEqual(pin.observe(), 'populated')
+                original.rename(Path(directory) / 'retained')
+                original.mkdir()
+                (original / 'cgroup.events').write_text('populated 0\n')
+                self.assertEqual(pin.observe(), 'changed')
+            finally:
+                pin.close()
+                pin.close()
+        with patch('execution_guard.os.open', return_value=42), patch('execution_guard.os.fstat', side_effect=OSError('fixed')):
+            with patch('execution_guard.os.close') as close:
+                with self.assertRaises(OSError):
+                    CgroupPin(Path('/fixed'))
+                close.assert_called_once_with(42)
+
+    def test_pre_epoch_state_custody_and_free_space_stages_are_distinct(self):
+        import execution_guard as guard
+        with patch('execution_guard.validate_coordination', return_value=Path('/owned/state')):
+            with patch('execution_guard.private', side_effect=ValueError('sensitive')), patch('execution_guard.check_free_space') as free:
+                with self.assertRaises(ValueError) as error:
+                    guard.prepare_state(Path('/owned/state'), 'standard', None)
+                self.assertEqual(guard.rejection_diagnostic(error.exception, guard.DIAGNOSTIC_STAGE),
+                    'execution containment rejected; stage=state-custody; exception=ValueError')
+                free.assert_not_called()
+            with patch('execution_guard.private'), patch('execution_guard.check_free_space', side_effect=ValueError('sensitive')):
+                with self.assertRaises(ValueError) as error:
+                    guard.prepare_state(Path('/owned/state'), 'standard', None)
+                self.assertEqual(guard.rejection_diagnostic(error.exception, guard.DIAGNOSTIC_STAGE),
+                    'execution containment rejected; stage=state-free-space; exception=ValueError')
+
+    def test_standard_formatter_requires_exact_finite_source_selection(self):
+        base = ['run', '//:format', '--', 'src/main.zig', 'src/setup_collector.zig', 'src/setup_collector_tests.zig']
+        for args in (base, base + ['src/engine.zig'], ['run', '//:format', '--', 'src']):
+            selected = bazel_command('/store/bazel', Path('/owned/run'), args)
+            self.assertEqual(selected[-len(args[1:]):], args[1:])
+            self.assertIn('--sandbox_default_allow_network=false', selected)
+        rejected = (['run', '//:format'], ['run', '//:format', '--'],
+                    base + ['src/main.zig'], base + ['src/arbitrary.zig'],
+                    base + ['src/engine.zig', 'src/engine.zig'], base + ['src/engine.zig', 'src/arbitrary.zig'],
+                    base + ['src/../private.zig'], base + ['--check'], base + ['src/setup_verification/control.zig'],
+                    ['run', '//:format', '--', 'tools'], ['run', '//:format', '--', '.'],
+                    ['run', '//:format', '--', 'src/../tools'], ['run', '//:format', '--', '/absolute/src'],
+                    ['run', '//:format', '--', 'src', '--check'], ['run', '//:format', '--', 'src', 'src'],
+                    ['run', '//:arbitrary'] + base[2:])
+        for args in rejected:
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/owned/run'), args)
+        for profile in ('installed-browser', 'dependency-prefetch', 'codex-sdk', 'site'):
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/owned/run'), base, profile=profile)
+
+    def test_site_requires_both_effective_masks_for_each_manager(self):
+        from system_mask_policy import setting
+        with tempfile.TemporaryDirectory() as temporary:
+            service = FakeService(Path(temporary))
+            for manager in ('user', 'system'):
+                service.actual['InaccessiblePaths'] = ' '.join(blocked_paths())
+                if manager == 'system':
+                    service.actual['TemporaryFileSystem'] = setting(profile='site')
+                with self.assertRaises(ValueError):
+                    verify(service.actual, service.root, manager=manager, profile='site')
+                service.actual['InaccessiblePaths'] = ' '.join(blocked_paths('site'))
+                verify(service.actual, service.root, manager=manager, profile='site')
+            self.assertEqual(service.actual['PrivateNetwork'], 'yes')
+
+    def test_site_admission_rejects_generic_execution_before_tool_reads(self):
+        from execution_guard import main
+        baseline = ['--profile', 'site', '--site-phase', 'checks',
+                    '--site-source', '/srv/fast-local/jess/git/omux.xoxd.ai',
+                    '--site-inventory', '/owned/inventory.json', '--site-inventory-sha256', 'a' * 64,
+                    '--site-qualification', '/owned/qualification.json', '--site-qualification-sha256', 'b' * 64]
+        for arguments in (['test', '//...'], ['run', '//:dev'], ['test', '//:unit_tests', '--jobs=9'],
+                          ['test', '//:unit_tests', '//:unit_tests']):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(baseline + ['--'] + arguments)
+                reader.assert_not_called()
+        with patch('execution_guard.immutable') as reader:
+            with self.assertRaises(ValueError):
+                main(baseline + ['--zig-sdk', '/nix/store/runtime-zig', '--', 'test', '//:unit_tests'])
+            reader.assert_not_called()
+        with self.assertRaises(ValueError):
+            main(['--profile', 'standard', '--site-phase', 'checks', '--', 'test', '//:unit_tests'])
+
+    def test_site_lock_network_exception_requires_exact_phase_and_command(self):
+        from execution_guard import main
+        from guard_site_profile import phase_isolation
+        selected = ['mod', 'deps', '--lockfile_mode=update']
+        with tempfile.TemporaryDirectory() as directory:
+            service = FakeService(Path(directory))
+            service.actual['InaccessiblePaths'] = ' '.join(blocked_paths('site'))
+            isolation = {**SANDBOX, **phase_isolation('lock', selected)}
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, profile='site', isolation=isolation)
+            service.actual['PrivateNetwork'] = 'no'
+            verify(service.actual, service.root, profile='site', isolation=isolation)
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, profile='site')
+        baseline = ['--profile', 'site', '--site-phase', 'lock', '--site-source', '/site',
+                    '--site-inventory', '/owned/inventory.json', '--site-inventory-sha256', 'a' * 64,
+                    '--site-qualification', '/owned/report.json', '--site-qualification-sha256', 'b' * 64]
+        for args in (['mod', 'deps'], selected + ['--registry=unselected'], ['mod', 'tidy', '--lockfile_mode=update'],
+                     ['test', '//:unit_tests'], ['build', '//:build']):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(baseline + ['--'] + args)
+                reader.assert_not_called()
+        for option in ('--zig-sdk', '--sdk-source-root', '--codex-recovery-source', '--nixpkgs-source'):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(baseline + [option, '/unrelated/input', '--'] + selected)
+                reader.assert_not_called()
+
+    def test_site_fetch_rejects_general_network_execution_before_tool_reads(self):
+        from execution_guard import main
+        from guard_site_profile import phase_isolation
+        selected = ['fetch', '//:unit_tests']
+        self.assertEqual(phase_isolation('fetch', selected), {'PrivateNetwork': 'no'})
+        with tempfile.TemporaryDirectory() as directory:
+            service = FakeService(Path(directory))
+            service.actual['InaccessiblePaths'] = ' '.join(blocked_paths('site'))
+            isolation = {**SANDBOX, **phase_isolation('fetch', selected)}
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, profile='site', isolation=isolation)
+            service.actual['PrivateNetwork'] = 'no'
+            verify(service.actual, service.root, profile='site', isolation=isolation)
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, profile='site')
+        baseline = ['--profile', 'site', '--site-phase', 'fetch', '--site-source', '/site',
+                    '--site-inventory', '/owned/inventory.json', '--site-inventory-sha256', 'a' * 64,
+                    '--site-qualification', '/owned/report.json', '--site-qualification-sha256', 'b' * 64]
+        for args in (['fetch'], ['fetch', '//...'], ['fetch', '//:unit_tests', '//:dev'],
+                     selected + ['--build'], selected + ['--lockfile_mode=update'],
+                     selected + ['//:unit_tests'], ['build', '//:build'], ['run', '//:preview']):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(baseline + ['--'] + args)
+                reader.assert_not_called()
+        for option in ('--zig-sdk', '--sdk-source-root', '--codex-recovery-source', '--nixpkgs-source'):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(baseline + [option, '/unrelated/input', '--'] + selected)
+                reader.assert_not_called()
+
+    def test_site_import_arguments_must_match_admitted_selection(self):
+        from execution_guard import main
+        selected = ['--profile', 'site', '--site-phase', 'import', '--site-source', '/site',
+                    '--site-inventory', '/owned/inventory.json', '--site-inventory-sha256', 'a' * 64,
+                    '--site-qualification', '/owned/report.json', '--site-qualification-sha256', 'b' * 64,
+                    '--site-delivery-manifest', '/owned/manifest.json', '--site-delivery-manifest-sha256', 'c' * 64]
+        for args in (['run', '//:preview'],
+                     ['run', '//:import_extension_delivery', '--', '--manifest', '/other/manifest.json', '--sha256', 'c' * 64],
+                     ['run', '//:import_extension_delivery', '--', '--manifest', '/owned/manifest.json', '--sha256', 'd' * 64]):
+            with patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(selected + ['--'] + args)
+                reader.assert_not_called()
+
+    def test_site_receipt_selector_refuses_unowned_and_arbitrary_outputs(self):
+        from execution_guard import selected_site_receipt
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / ('cache-v2-' + 'a' * 64) / 'output-base/execroot/_main/bazel-out/k8-fastbuild/bin/delivery/chromium_dev_metadata.json'
+            selected.parent.mkdir(parents=True)
+            selected.write_text('{}')
+            digest = hashlib.sha256(b'{}').hexdigest()
+            with patch('execution_guard.private'), patch('guard_site_profile.bounded_file') as reader:
+                self.assertEqual(selected_site_receipt(selected, digest, root, root, 'manifest'), selected)
+                reader.assert_called_once_with(selected, digest, 16384)
+                for path in (root / 'manifest.json', selected.parent / 'arbitrary.json',
+                             Path('/unselected') / selected.relative_to(root)):
+                    with self.assertRaises(ValueError):
+                        selected_site_receipt(path, digest, root, root, 'manifest')
+
+    def test_sdk_cache_provenance_binds_inputs_but_not_selected_lane(self):
+        from execution_guard import sdk_cache_provenance
+        from guard_cache import stable_fingerprint
+        plan = {'environment': {'PATH': '/nix/store/bash/bin:/nix/store/git/bin', 'STABLE_GIT_COMMIT': 'a' * 40},
+                'physical_mode_policy': 'bazel-retained-export-all-regular-and-directories-0555-v1',
+                'git_mode_authority': 'sha256-bound-source-receipt-Git-modes'}
+        lanes = {'core': ('//sdk:core', 'fixed'), 'protocol': ('//sdk:protocol', None)}
+        profile = sdk_cache_provenance(plan, '/fast/source', 'a' * 64, '/home/settings', 'b' * 64, 'c' * 64, lanes, {})
+        tools = {'bazel': '/nix/store/fixture/bin/bazel'}
+        key = lambda value: stable_fingerprint(Path.cwd(), tools, 1000, 1000, 'user', {'sdk': value})
+        self.assertEqual(key(profile), key(dict(profile)))
+        for field in ('source_receipt_sha256', 'settings_receipt_sha256', 'bundle_receipt_sha256'):
+            changed = {**profile, field: 'd' * 64}
+            self.assertNotEqual(key(profile), key(changed))
+        for field, value in (('PATH', '/nix/store/other/bin'), ('STABLE_GIT_COMMIT', 'b' * 40)):
+            changed = {**profile, 'environment': {**profile['environment'], field: value}}
+            self.assertNotEqual(key(profile), key(changed))
+        self.assertNotIn('lane', profile)
+        self.assertEqual(profile['physical_mode_policy'], plan['physical_mode_policy'])
+        self.assertEqual(profile['git_mode_authority'], plan['git_mode_authority'])
+        for field in ('physical_mode_policy', 'git_mode_authority'):
+            incomplete = dict(plan)
+            del incomplete[field]
+            with self.assertRaises(ValueError):
+                sdk_cache_provenance(incomplete, '/fast/source', 'a' * 64, '/home/settings', 'b' * 64,
+                                     'c' * 64, lanes, {})
+
+    def test_sdk_output_base_and_resource_flags_are_owned(self):
+        from execution_guard import sdk_owned_command
+        plan = {'argv': ('/store/bazel', '--batch', '--ignore_all_rc_files',
+                         '--output_base=/producer/fallback', 'test', '//sdk:fixed')}
+        run = Path('/private/uuid')
+        command = sdk_owned_command(plan, run, Path('/private/cache/output-base'))
+        self.assertIn('--output_base=/private/cache/output-base', command)
+        self.assertNotIn('--output_base=/producer/fallback', command)
+        self.assertIn('--host_jvm_args=-Xmx768m', command)
+        self.assertIn('--symlink_prefix=/private/uuid/bazel-', command)
+        self.assertIn('--nocache_test_results', command)
+        self.assertFalse(any('rules_zig' in value for value in command))
+        with self.assertRaises(ValueError):
+            sdk_owned_command({'argv': plan['argv'] + ('--output_base=/other',)}, run)
+
+    def test_predispatch_diagnostic_contains_only_static_stage_and_category(self):
+        from execution_guard import rejection_diagnostic
+        class ArbitrarySecretNamedError(ValueError):
+            pass
+        message = rejection_diagnostic(ArbitrarySecretNamedError('sensitive payload /private/path'), 'tool/closure')
+        self.assertEqual(message, 'execution containment rejected; stage=tool/closure; exception=ValueError')
+        self.assertEqual(rejection_diagnostic(OSError('sensitive'), 'arbitrary-sensitive-stage'),
+                         'execution containment rejected; stage=unknown; exception=OSError')
+        self.assertNotIn('sensitive', message)
+
+    def test_sampled_free_floor_refuses_low_available_blocks(self):
+        from execution_guard import check_free_space, FREE_FLOOR
+        with patch('execution_guard.os.statvfs', return_value=SimpleNamespace(f_bavail=FREE_FLOOR, f_frsize=1)):
+            self.assertEqual(check_free_space(Path('/private/state')), FREE_FLOOR)
+        with patch('execution_guard.os.statvfs', return_value=SimpleNamespace(f_bavail=FREE_FLOOR - 1, f_frsize=1)):
+            with self.assertRaises(ValueError):
+                check_free_space(Path('/private/state'))
+
+    def test_recovery_repository_input_is_fixed_and_standard_only(self):
+        from guard_dependency_profile import RECOVERY_DIRECTORY, recovery_source
+        validator = Mock()
+        self.assertEqual(recovery_source(RECOVERY_DIRECTORY, validator), RECOVERY_DIRECTORY)
+        validator.assert_called_once_with(RECOVERY_DIRECTORY, owner_only=False)
+        command = bazel_command('/store/bazel', Path('/private/run'), ['test', '//:producer'],
+                                codex_recovery_source=RECOVERY_DIRECTORY)
+        self.assertIn('--repo_env=OMUX_CODEX_RECOVERY_SOURCE=' + str(RECOVERY_DIRECTORY), command)
+        for source, profile in ((Path('/private/arbitrary'), 'standard'),
+                                (RECOVERY_DIRECTORY, 'installed-browser'),
+                                (RECOVERY_DIRECTORY, 'dependency-prefetch')):
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/private/run'), ['test', '//:producer'],
+                              codex_recovery_source=source, profile=profile)
+
+    def test_browser_marker_requires_exact_masked_profile(self):
+        arguments = ['test', '//delivery:installed_chromium_test']
+        flag = '--test_env=OMUX_BROWSER_HOST_CONFIGURATION=host-configurations-unavailable'
+        self.assertIn(flag, bazel_command('/store/bazel', Path('/private/run'), arguments,
+                                         profile='installed-browser'))
+        self.assertNotIn(flag, bazel_command('/store/bazel', Path('/private/run'), arguments))
+        self.assertNotIn(flag, bazel_command('/store/bazel', Path('/private/run'),
+                                            ['test', '//tools:fetch_codex_archives_bundle'],
+                                            profile='dependency-prefetch'))
+        with self.assertRaises(ValueError):
+            bazel_command('/store/bazel', Path('/private/run'), ['test', '//:other'],
+                          profile='installed-browser')
+
+    def test_installed_browser_requires_effective_bluetooth_mask(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            service = FakeService(Path(temporary))
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, profile='installed-browser')
+            service.actual['InaccessiblePaths'] += ' /etc/bluetooth'
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, profile='installed-browser')
+            service.actual['InaccessiblePaths'] += ' /etc/environment'
+            verify(service.actual, service.root, profile='installed-browser')
+        self.assertNotIn('/etc/bluetooth', blocked_paths())
+        self.assertNotIn('/etc/environment', blocked_paths())
+        with self.assertRaises(ValueError):
+            blocked_paths('arbitrary')
+
+    def test_system_browser_requires_regular_file_environment_mask(self):
+        from system_mask_policy import setting
+        with tempfile.TemporaryDirectory() as temporary:
+            service = FakeService(Path(temporary))
+            service.actual['TemporaryFileSystem'] = setting(profile='installed-browser')
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, manager='system', profile='installed-browser')
+            service.actual['InaccessiblePaths'] += ' -/etc/environment'
+            verify(service.actual, service.root, manager='system', profile='installed-browser')
+
+    def test_only_exact_output_probe_lifts_bazel_display_limit(self):
+        flag = '--experimental_ui_max_stdouterr_bytes=10485760'
+        command = lambda args: bazel_command('/store/bazel', Path('/private/run'), args)
+        self.assertIn(flag, command(['test', '//tools:execution_probe_output']))
+        for arguments in (['build', '//tools:execution_probe_output'],
+                          ['test', '//tools:execution_probe_output', '//:other'],
+                          ['test', '//tools:all'], ['test', '//...']):
+            self.assertNotIn(flag, command(arguments))
+
+    def test_no_block_startup_waits_for_queued_inactive_job(self):
+        states = iter([{'ActiveState': state} for state in ('inactive', 'activating', 'active')])
+        actual, history = await_startup(lambda: next(states), clock=lambda: 0,
+                                        pause=lambda seconds: None)
+        self.assertEqual(actual['ActiveState'], 'active')
+        self.assertEqual([row['ActiveState'] for row in history], ['inactive', 'activating', 'active'])
+
+    def test_startup_failure_and_deadline_are_finite(self):
+        actual, history = await_startup(lambda: {'ActiveState': 'failed'}, clock=lambda: 0,
+                                        pause=lambda seconds: self.fail('failed service must not wait'))
+        self.assertEqual(actual['ActiveState'], 'failed')
+        self.assertEqual(len(history), 1)
+        ticks = iter((0, 0, 10))
+        actual, history = await_startup(lambda: {'ActiveState': 'inactive'},
+                                        clock=lambda: next(ticks), pause=lambda seconds: None)
+        self.assertEqual(actual['ActiveState'], 'inactive')
+        self.assertEqual(len(history), 2)
+
+    def test_dependency_network_override_is_verified_not_assumed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            service = FakeService(Path(temporary))
+            isolation = {**SANDBOX, 'PrivateNetwork': 'no'}
+            with self.assertRaises(ValueError):
+                verify(service.actual, service.root, isolation=isolation)
+            service.actual['PrivateNetwork'] = 'no'
+            verify(service.actual, service.root, isolation=isolation)
+            with self.assertRaises(ValueError):
+                service.admit()
+
+    def test_pack_input_is_a_fixed_repository_environment_value(self):
+        selected = Path('/public/fixed-pack')
+        command = bazel_command('/store/bazel', Path('/private/run'), ['test', '//:fixture'],
+                                codex_pack_directory=selected)
+        self.assertIn('--repo_env=OMUX_CODEX_PACK_DIRECTORY=' + str(selected), command)
+        self.assertIn('--batch', command)
+        self.assertIn('--nocache_test_results', command)
+
+    def test_site_nixpkgs_input_is_immutable_and_explicitly_scoped(self):
+        selected = Path('/nix/store/fixture-site-nixpkgs-source')
+        with patch('execution_guard.store_directory', return_value=selected) as validator:
+            command = bazel_command('/store/bazel', Path('/private/run'), ['build', '//:site'],
+                                    site_source=Path('/public/omux.xoxd.ai'), site_nixpkgs_source=selected)
+            validator.assert_called_once_with(selected)
+            self.assertIn('--repo_env=OMUX_SITE_NIXPKGS_EVALUATION_SOURCE=' + str(selected), command)
+        with self.assertRaises(ValueError):
+            bazel_command('/store/bazel', Path('/private/run'), ['build', '//:site'], site_nixpkgs_source=selected)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/private/run'), ['build', '//:site'],
+                              site_source=Path('/public/omux.xoxd.ai'), site_nixpkgs_source=Path(directory))
+
+    def test_exact_owned_cached_site_inventory_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            inventory = state / ('cache-' + 'a' * 64) / 'output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/cached_site_inventory_probe/test.outputs/inventory.json'
+            inventory.parent.mkdir(parents=True)
+            content = b'{"public":true}'
+            inventory.write_bytes(content)
+            digest = hashlib.sha256(content).hexdigest()
+            with patch('execution_guard.private'):
+                self.assertEqual(selected_site_inventory(inventory, digest, state), inventory)
+                fast = Path('/srv/fast-local/jess/state/codex/fixture-fast-state')
+                with patch('guard_dependency_profile.COORDINATION_DIRECTORY', state):
+                    self.assertEqual(selected_site_inventory(inventory, digest, fast, state), inventory)
+                    with self.assertRaises(ValueError):
+                        selected_site_inventory(inventory, digest, fast, state / 'arbitrary')
+                    with self.assertRaises(ValueError):
+                        selected_site_inventory(state / 'private.json', digest, fast, state)
+                with self.assertRaises(ValueError):
+                    selected_site_inventory(inventory, digest, fast)
+                with self.assertRaises(ValueError):
+                    selected_site_inventory(inventory, 'b' * 64, state)
+                with self.assertRaises(ValueError):
+                    selected_site_inventory(state / 'private.json', digest, state)
+                inventory.unlink()
+                inventory.symlink_to(state / 'private.json')
+                with self.assertRaises(OSError):
+                    selected_site_inventory(inventory, digest, state)
+            command = bazel_command('/store/bazel', state / 'run', ['build', '//:site'],
+                                    site_inventory=inventory, site_inventory_sha256=digest)
+            self.assertIn('--repo_env=OMUX_SITE_INVENTORY_SHA256=' + digest, command)
+
+    def test_site_selection_only_reads_exact_public_sibling_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / 'oauth-mux'
+            repository.mkdir()
+            site = root / 'omux.xoxd.ai'
+            site.mkdir()
+            (site / 'tools').mkdir()
+            for relative in ('flake.nix', 'flake.lock', 'tools/offline-site-roots.json', 'tools/tool-selection.nix'):
+                (site / relative).write_text('public fixture')
+                (site / relative).chmod(0o644)
+            selected, digests = selected_site_source(site, repository)
+            self.assertEqual(selected, site)
+            self.assertEqual(set(digests), {'flake.nix', 'flake.lock', 'tools/offline-site-roots.json', 'tools/tool-selection.nix'})
+            command = bazel_command('/store/bazel', root / 'run', ['test', '//:site_check'], site_source=selected)
+            self.assertIn('--repo_env=OMUX_SITE_SOURCE=' + str(site), command)
+            with self.assertRaises(ValueError):
+                selected_site_source(repository, repository)
+            (site / 'flake.lock').chmod(0o600)
+            with self.assertRaises(ValueError):
+                selected_site_source(site, repository)
+            (site / 'flake.lock').unlink()
+            (site / 'flake.lock').symlink_to(site / 'flake.nix')
+            with self.assertRaises(OSError):
+                selected_site_source(site, repository)
+
+    def test_become_descriptor_predicates_without_payload(self):
+        valid = dict(st_mode=stat.S_IFREG | 0o400, st_uid=1000, st_nlink=1, st_size=32)
+        validate_become_metadata(SimpleNamespace(**valid), 1000)
+        for replacement in ({'st_mode': stat.S_IFREG | 0o644}, {'st_uid': 0},
+                            {'st_nlink': 2}, {'st_size': 0}, {'st_size': 4097},
+                            {'st_mode': stat.S_IFLNK | 0o600}):
+            with self.assertRaises(ValueError):
+                validate_become_metadata(SimpleNamespace(**{**valid, **replacement}), 1000)
+
+    def test_system_identity_requires_host_root_mapping_and_no_capabilities(self):
+        actual = {'User': '1000', 'Group': '1000', 'PrivateUsers': 'no',
+                  'CapabilityBoundingSet': '', 'AmbientCapabilities': '', 'StandardInput': 'null'}
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            worker = proc / '123'
+            worker.mkdir()
+            status = 'Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nCapEff:\t0000\nCapPrm:\t0000\nCapAmb:\t0000\n'
+            (worker / 'status').write_text(status)
+            for name in ('uid_map', 'gid_map'):
+                (worker / name).write_text('0 0 4294967295\n')
+            with patch('execution_guard.os.getuid', return_value=1000), patch('execution_guard.os.getgid', return_value=1000):
+                system_identity(actual, 123, proc)
+                (worker / 'uid_map').write_text('1000 1000 1\n')
+                with self.assertRaises(ValueError):
+                    system_identity(actual, 123, proc)
+                (worker / 'uid_map').write_text('0 0 4294967295\n')
+                (worker / 'status').write_text(status.replace('CapEff:\t0000', 'CapEff:\t0001'))
+                with self.assertRaises(ValueError):
+                    system_identity(actual, 123, proc)
+                (worker / 'status').write_text(status)
+                for key in actual:
+                    with self.assertRaises(ValueError):
+                        system_identity({**actual, key: 'unexpected'}, 123, proc)
+
+    def test_all_effective_limits_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = FakeService(Path(directory))
+            service.admit()
+            for key in (*PROPERTIES, *SANDBOX, 'InaccessiblePaths', 'UnsetEnvironment'):
+                old = service.actual.pop(key)
+                with self.assertRaises(ValueError):
+                    service.admit()
+                service.actual[key] = old
+
+    def test_kernel_limits_must_agree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = FakeService(Path(directory))
+            for key in CGROUP:
+                (service.root / key).write_text('max')
+                with self.assertRaises(ValueError):
+                    service.admit()
+                (service.root / key).write_text(CGROUP[key])
+            (service.root / 'cpu.max').write_text('max 100000')
+            with self.assertRaises(ValueError):
+                service.admit()
+            (service.root / 'cpu.max').write_text('300000 100000')
+            with self.assertRaises(ValueError):
+                service.admit()
+
+    def test_batch_and_owned_output_base(self):
+        command = bazel_command('/nix/store/example/bin/bazel', Path('/private/uuid'), ['test', '//:docs_check'])
+        self.assertEqual(command[1], '--batch')
+        self.assertIn('--output_base=/private/uuid/output-base', command)
+        self.assertIn('--noworkspace_rc', command)
+        self.assertIn('--remote_executor=', command)
+        self.assertIn('--host_jvm_args=-Xmx1536m', command[:command.index('test')])
+        self.assertIn('--host_jvm_args=-XX:ActiveProcessorCount=2', command[:command.index('test')])
+        for args in ([], ['--batch', 'test'], ['test', '--output_base=/shared'],
+                     ['test', '--config=remote'], ['run', '//:delegate']):
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/private/uuid'), args)
+
+    def test_fake_show_response(self):
+        self.assertEqual(properties('MemoryMax=4294967296\nignored\nKillMode=control-group\n'),
+                         {'MemoryMax': '4294967296', 'KillMode': 'control-group'})
+
+    def test_provenance_is_a_narrow_explicit_pair(self):
+        command = bazel_command('/store/bazel', Path('/private/uuid'), ['build', '//extensions:chromium_dev_package'],
+                                source_commit='a' * 40, source_dirty='true')
+        self.assertIn('--define=OMUX_SOURCE_COMMIT=' + 'a' * 40, command)
+        self.assertIn('--define=OMUX_SOURCE_DIRTY=true', command)
+        for commit, dirty in ((None, 'true'), ('a' * 40, None), ('a' * 39, 'false'),
+                              ('a' * 40 + ' --config=remote', 'false'), ('a' * 40, '--remote_executor=x')):
+            with self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/private/uuid'), ['build', '//:omux'],
+                              source_commit=commit, source_dirty=dirty)
+
+
+class RetainedRuntimeCommandTests(unittest.TestCase):
+    def test_unselected_command_clears_ambient_repository_selector(self):
+        import guard_owner_runtime_input as retained
+        with patch.dict(os.environ, {retained.VARIABLE: "/ambient/untrusted"}):
+            command = bazel_command("/store/bazel", Path("/owned/epoch"), ["test", "//:docs_check"])
+        self.assertIn("--repo_env=" + retained.VARIABLE + "=", command)
+        self.assertNotIn("--repo_env=" + retained.VARIABLE + "=/ambient/untrusted", command)
+
+    def test_only_fixed_offline_labels_forward_explicit_selection(self):
+        import guard_owner_runtime_input as retained
+        root = Path("/owned") / "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad"
+        command = bazel_command("/store/bazel", Path("/owned/epoch"),
+            ["test", "//tools:codex_owner_runtime_input_qualification"],
+            codex_owner_runtime_directory=root)
+        self.assertIn("--repo_env=" + retained.VARIABLE + "=" + str(root), command)
+        self.assertIn("--sandbox_default_allow_network=false", command)
+        for args, profile, other in (
+                (["test", "//..."], "standard", {}),
+                (["test", "//delivery:installed_native_interop_test"], "dependency-prefetch", {}),
+                (["test", "//delivery:installed_native_interop_test"], "standard", {"site_source": Path("/site")})):
+            with self.assertRaises(ValueError):
+                bazel_command("/store/bazel", Path("/owned/epoch"), args,
+                    profile=profile, codex_owner_runtime_directory=root, **other)
+
+    def test_dynamic_standard_runtime_limit_cannot_exceed_original_budget(self):
+        import yoga_delivery_settings as delivery
+        self.assertEqual(delivery.effective_runtime("19min", 1150), 1140 * 1000000)
+        with self.assertRaises(ValueError):
+            delivery.effective_runtime("20min", 1150)
+
+
+if __name__ == '__main__':
+    unittest.main()

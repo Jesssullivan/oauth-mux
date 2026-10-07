@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_optional_allocation_and_retained_input_result",
+  "authority": "User-ratified Oct6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "epoch": "be7993cf-ae9c-4b06-bf85-6479ce283453",
+  "original_handle": 32845,
+  "handle_terminal": true,
+  "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/be7993cf-ae9c-4b06-bf85-6479ce283453/receipt.json",
+  "raw_receipt_sha256": "fa1cd9eee1ed3eed51ab1cc15d81403e9ac91477d3c98b443b25531bc8eff4e7",
+  "graph_sha256": "a24e41960884f6d02fd05593aa25c0504922b211c6046d4cb1104c461d021c98",
+  "controller_exit": 0,
+  "workload_exit": 0,
+  "descendants_empty": true,
+  "controller_failure": null,
+  "cleanup": {
+    "ownership": "unproved",
+    "readback_attempts": 0,
+    "state": "empty",
+    "stop": "not-requested"
+  },
+  "test_evidence": {
+    "bytes": 265716,
+    "files": 16,
+    "manifest": "test-evidence.json",
+    "sha256": "cb7bf59940e017e2a894e29077ff3dd935c6346f55a4bcf351d796f8e37ce79b",
+    "state": "preserved"
+  },
+  "passed_targets": [
+    "//:reliability_lifecycle_native_removal_test",
+    "//tools:codex_owner_runtime_input_test",
+    "//tools:codex_owner_runtime_input_copy",
+    "//:docs_check",
+    "//:format_test",
+    "//tools:runtime_source_receipt"
+  ],
+  "named_predicates": {
+    "native_removal": 250,
+    "copy_helper": 10
+  },
+  "elapsed_seconds": 546.945,
+  "retained_input": {
+    "directory": "/home/jess/.local/state/omux-execution-20261005/be7993cf-ae9c-4b06-bf85-6479ce283453/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/codex_owner_runtime_input_copy/test.outputs/0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+    "archive_sha256": "0094334d7fd27b81f613ebe734305412bd13f95f1f3396ba2f0396168e5223ad",
+    "archive_bytes": 119923125,
+    "custody_receipt_sha256": "ac659d1fa11c5866b3c8d7b6c2effca94332b4cd69669a42306e8015b664e626",
+    "independently_hashed_original_and_copy": true,
+    "original_preserved": true,
+    "post_bazel_mode_octal": "0555",
+    "post_bazel_single_link_regular_archive": true,
+    "physical_protected_ancestors": true,
+    "scope": "Copy action records pre-seal0700directory/0400file; Bazel seals outputs0555 afterward. Fresh guarded admission must derive post-seal custody; no old-mode witness reuse."
+  },
+  "scope": "250 removal cases including genuine optional post-commit OOM and separate zero-owner pressure pass. Registered physical capacity remains unproved; previous failed sweep retained. Copy bytes are proof inputs only, not runtime installation/source lineage/native support.",
+  "new_parent_acceptance_gate_closed": false,
+  "native_support": false,
+  "provider_calls": false
+}

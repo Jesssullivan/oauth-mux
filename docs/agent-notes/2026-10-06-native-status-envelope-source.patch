@@ -1,0 +1,18 @@
+diff --git a/delivery/test_installed_legacy_native_tui.py b/delivery/test_installed_legacy_native_tui.py
+--- a/delivery/test_installed_legacy_native_tui.py
++++ b/delivery/test_installed_legacy_native_tui.py
+@@ -350,9 +350,11 @@ def status_cli(command, environment, params, *, expected_completion):
+         if process.returncode != 0 or diagnostics:
+             classify_status_process(process.returncode, output, diagnostics, params, expected_completion)
+         require(process.returncode == 0 and not diagnostics, "installed CLI predicate failed")
+-        value = json.loads(output)
+-        require(isinstance(value, dict) and "error" not in value
+-                and isinstance(value.get("result"), dict), "installed CLI response rejected")
++        value = json.loads(output, object_pairs_hook=tui.strict_object)
++        require(isinstance(value, dict) and set(value) == {"jsonrpc", "id", "result"}
++                and value["jsonrpc"] == "2.0" and type(value["id"]) is int
++                and value["id"] == 1 and isinstance(value["result"], dict),
++                "installed CLI response rejected")
+         return value["result"]
+     finally:
+         support.stop(process)
