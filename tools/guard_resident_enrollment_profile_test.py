@@ -152,6 +152,64 @@ class ResidentModels(unittest.TestCase):
         self.assertIn("--run_env="+resident.VARIABLE+"="+resident.DESTINATION+"/input.json",command)
         self.assertNotIn("/private/input.json",str(command))
 
+
+    def test_resident_repository_inputs_accept_only_exact_complete_public_pair(self):
+        self.assertEqual(resident.repository_inputs(None,None),[])
+        expected = [str(resident.REPOSITORY_CACHE)+":"+str(resident.REPOSITORY_CACHE)]
+        self.assertEqual(resident.repository_inputs(resident.REPOSITORY_CACHE,resident.NIXPKGS_SOURCE),expected)
+        for cache,source in ((resident.REPOSITORY_CACHE,None),(None,resident.NIXPKGS_SOURCE),
+                (Path("/foreign/cache"),resident.NIXPKGS_SOURCE),
+                (resident.REPOSITORY_CACHE,Path("/nix/store/"+"a"*32+"-source")),
+                (str(resident.REPOSITORY_CACHE),resident.NIXPKGS_SOURCE)):
+            with self.subTest(cache=cache,source=source),self.assertRaises(ValueError):
+                resident.repository_inputs(cache,source)
+
+    def test_resident_commands_use_exact_repository_inputs_with_fresh_output_and_offline_limits(self):
+        import guard_resident_vault_profile as vault
+        admission = SimpleNamespace(manifest="/private/input.json",environment=lambda:{resident.DEADLINE_VARIABLE:"123"})
+        for label in (resident.LABEL,vault.LABEL,vault.UNLOCK_LABEL):
+            command = resident_enrollment_command("/store/bazel",Path("/private/run"),["run",label],admission,
+                repository_cache=resident.REPOSITORY_CACHE,nixpkgs_source=resident.NIXPKGS_SOURCE)
+            for flag in ("--repository_cache="+str(resident.REPOSITORY_CACHE),
+                    "--repo_env=OMUX_NIXPKGS_EVALUATION_SOURCE="+str(resident.NIXPKGS_SOURCE),
+                    "--repository_disable_download","--output_base=/private/run/output-base",
+                    "--jobs=2","--host_jvm_args=-Xmx1536m","--host_jvm_args=-XX:ActiveProcessorCount=2",
+                    "--remote_executor=","--remote_cache=","--disk_cache=","--lockfile_mode=error",
+                    "--sandbox_default_allow_network=false","--spawn_strategy=linux-sandbox"):
+                with self.subTest(label=label,flag=flag):
+                    self.assertIn(flag,command)
+                    self.assertEqual(command.count(flag),1)
+            self.assertEqual(command[-1],label)
+            self.assertNotIn("cache-v2-",str(command))
+        with self.assertRaises(ValueError):
+            resident_enrollment_command("/store/bazel",Path("/private/run"),["run","//:other"],admission,
+                repository_cache=resident.REPOSITORY_CACHE,nixpkgs_source=resident.NIXPKGS_SOURCE)
+
+    def test_repository_directory_bind_is_readonly_exact_recursive_for_both_resident_admissions(self):
+        import guard_resident_vault_profile as vault
+        for admission_class in (resident.Admission,vault.Admission):
+            admission = admission_class.__new__(admission_class)
+            admission.root = Path("/private/input")
+            admission.sources = {}
+            admission.selected = manifest()
+            admission.product_directories = []
+            admission.offline_repository_bindings = resident.repository_inputs(resident.REPOSITORY_CACHE,resident.NIXPKGS_SOURCE)
+            run = Path("/private/run")
+            actual = {"BindReadOnlyPaths":systemctl_bind_readback(admission.bindings()),
+                "BindPaths":str(run)+":"+str(run)+":rbind"}
+            admission.verify_bindings(actual,run)
+            cache = str(resident.REPOSITORY_CACHE)+":"+str(resident.REPOSITORY_CACHE)
+            self.assertIn(cache+":rbind",actual["BindReadOnlyPaths"].split())
+            for changed in (cache,cache+":norbind","/foreign:/foreign:rbind"):
+                bad = {**actual,"BindReadOnlyPaths":actual["BindReadOnlyPaths"].replace(cache+":rbind",changed)}
+                with self.subTest(admission_class=admission_class,changed=changed),self.assertRaises(ValueError):
+                    admission.verify_bindings(bad,run)
+            for role in ("BindReadOnlyPaths","BindPaths"):
+                bad = dict(actual)
+                bad[role] += " "+cache+":rbind"
+                with self.subTest(admission_class=admission_class,role=role),self.assertRaises(ValueError):
+                    admission.verify_bindings(bad,run)
+
     def test_service_probe_accepts_existing_owned_metadata_and_refuses_foreign_owner(self):
         env = {"DBUS_SESSION_BUS_ADDRESS":"unix:path="+resident.DESTINATION+"/bus"}
         value = {"schema_version":1,"broker":{"pid":2,"uid":os.getuid()},

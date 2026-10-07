@@ -215,7 +215,7 @@ class Admission:
             "workload_memory":PROOF_MEMORY,"workload_tasks":PROOF_TASKS,
             "workload_cpu_percent":PROOF_CPU_PERCENT,"resident_reservation_qualified":False}
     def bindings(self):
-        return [str(self.root)+":"+DESTINATION]+[str(source)+":"+DESTINATION+"/"+target.name+":norbind"
+        return list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[str(source)+":"+DESTINATION+"/"+target.name+":norbind"
             for target,source in self.sources.items()]
     def writable_binding(self):
         return ""

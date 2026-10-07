@@ -1049,14 +1049,19 @@ def login_writable_binding(admission, run, profile):
         pieces.append(str(run)+':'+str(run))
     return ' '.join(piece for piece in pieces if piece)
 
-def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
+def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None,repository_cache=None,nixpkgs_source=None):
+    import guard_resident_enrollment_profile as repository
+    repository.repository_inputs(repository_cache,nixpkgs_source)
     if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
         import guard_resident_vault_profile as resident
     else:
         import guard_resident_enrollment_profile as resident
     resident.finite(arguments,'system',admission.manifest,False)
-    command = bazel_command(bazel,run,['build',arguments[1]],source_commit=source_commit,source_dirty=source_dirty)
+    command = bazel_command(bazel,run,['build',arguments[1]],source_commit=source_commit,source_dirty=source_dirty,
+        repository_cache=repository_cache,nixpkgs_source=nixpkgs_source)
     command[command.index('build')] = 'run'
+    if repository_cache is not None:
+        command.insert(command.index('run')+1,'--repository_disable_download')
     command[command.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
     command[-1:-1] = ['--run_env='+key+'='+value for key,value in admission.environment().items()]
     if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
@@ -1384,8 +1389,10 @@ def _main(argv, admission_resources):
             if args.resident_vault_manifest is not None:
                 raise ValueError('vault-input-exclusive-to-vault-label')
             resident_manifest = args.resident_enrollment_manifest
+        import guard_resident_enrollment_profile as resident_repositories
+        resident_repositories.repository_inputs(args.repository_cache,args.nixpkgs_source)
         login.finite(arguments,args.manager,resident_manifest,args.reuse_owned_cache,
-            (args.repository_cache,args.nixpkgs_source,args.site_source,args.codex_owner_runtime_directory,
+            (args.site_source,args.codex_owner_runtime_directory,
              args.codex_live_manifest,args.codex_login_manifest,args.native_login_directory,
              args.ui_prepare_manifest,args.ui_prepare_output,args.codex_pack_directory,args.codex_recovery_source,
              args.site_inventory,args.site_inventory_sha256,args.site_nixpkgs_source,args.site_phase,
@@ -1574,6 +1581,7 @@ def _main(argv, admission_resources):
         else:
             login_input = login.Admission(resident_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns)
         admission_resources.callback(login_input.close)
+        login_input.offline_repository_bindings = resident_repositories.repository_inputs(args.repository_cache,args.nixpkgs_source)
         login_input.service_observation(control,starting=True)
     fresh_metadata = selected_fresh_inputs(args.profile, arguments, args.codex_pristine_directory,
                                            args.codex_recovery_delta_directory, private)
@@ -1656,8 +1664,10 @@ def _main(argv, admission_resources):
                 delivery_prior, source_commit=args.source_commit, source_dirty=args.source_dirty)
             environment.update(delivery_envelope)
         elif login_input is not None:
+            repository_options = ({'repository_cache':args.repository_cache,'nixpkgs_source':args.nixpkgs_source}
+                if args.profile == 'resident-enrollment' else {})
             command = (resident_enrollment_command if args.profile == 'resident-enrollment' else native_login_ui_command if args.profile == 'native-login-ui' else codex_login_command)(bazel, run, arguments, login_input,
-                source_commit=args.source_commit, source_dirty=args.source_dirty)
+                source_commit=args.source_commit, source_dirty=args.source_dirty, **repository_options)
         elif yoga:
             yoga.publish_repository_inventory(yoga_admission, run)
             command = yoga_command(bazel, run, arguments, yoga_admission, manager=args.manager,

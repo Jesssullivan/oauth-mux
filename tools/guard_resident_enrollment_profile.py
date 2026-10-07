@@ -33,6 +33,19 @@ def finite(arguments,manager,manifest,reuse,unrelated=()):
         and not reuse and not any(unrelated))
     return {"PrivateNetwork":"yes","ProtectSystem":"strict","PrivateTmp":"yes"}
 
+# Public dependency inputs already used by the standard offline build lane.
+REPOSITORY_CACHE = Path("/srv/fast-local/jess/state/codex/omux-bazel9-owner-coordinator-20261004/cache/repos/v1")
+NIXPKGS_SOURCE = Path("/nix/store/75bkaivfbwq3x8cs7155hag7hs1chjcx-source")
+
+def repository_inputs(repository_cache,nixpkgs_source):
+    # A repository cache contains hash-addressed BCR metadata as well as archives.
+    # This does not select/reuse any output-base or authorize downloads.
+    if repository_cache is None and nixpkgs_source is None:
+        return []
+    require(isinstance(repository_cache,Path) and isinstance(nixpkgs_source,Path)
+        and repository_cache == REPOSITORY_CACHE and nixpkgs_source == NIXPKGS_SOURCE)
+    return [str(REPOSITORY_CACHE)+":"+str(REPOSITORY_CACHE)]
+
 def canonical(value):
     require(type(value) is str and value.startswith("/") and len(value) <= 4096
         and not any(c.isspace() or c in ":\\\0" for c in value)
@@ -547,7 +560,7 @@ class Admission:
         return facts
 
     def bindings(self):
-        return [str(self.root)+":"+DESTINATION]+[
+        return list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
             str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))+":norbind"
             for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())] + (
             [self.selected["runtime_state"]+":"+self.selected["runtime_state"]]+[
