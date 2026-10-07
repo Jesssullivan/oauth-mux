@@ -63,6 +63,11 @@ def selected_profile(profile, arguments, site_inputs=False, pack_input=False, re
         if site_inputs or pack_input or recovery_input or not any(arguments == [v[0], *v[1]] for v in MODES.values()):
             raise ValueError('native profile permits only finite selected mode')
         return {'PrivateNetwork': 'yes'}
+    if profile == 'codex-login':
+        from guard_codex_login_profile import selected
+        if site_inputs or pack_input or recovery_input:
+            raise ValueError('codex-login-unrelated-inputs')
+        return selected(arguments)
     if profile == 'codex-live':
         from guard_codex_live_profile import selected
         if site_inputs or pack_input or recovery_input:
@@ -131,7 +136,7 @@ def validate_coordination(profile, selected, state_root, *, arguments=None):
         if (not str(state_root).startswith('/srv/') or
                 selected is not None and Path(selected) != state_root):
             raise ValueError('Yoga requires one explicit local /srv state and coordination root')
-    if profile in ('standard', 'installed-browser', 'codex-live') and selected is not None and Path(selected) != state_root:
+    if profile in ('standard', 'installed-browser', 'codex-live', 'codex-login') and selected is not None and Path(selected) != state_root:
         if (Path(selected) != COORDINATION_DIRECTORY or
                 not str(state_root).startswith('/srv/fast-local/jess/state/')):
             raise ValueError('alternate standard coordination requires fixed home lock and fast state')

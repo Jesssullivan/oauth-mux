@@ -125,6 +125,10 @@ yoga_delivery_inputs(name = "omux_yoga_delivery_inputs")
 retained_runtime = use_repo_rule("//tools:codex_owner_runtime_repository.bzl", "codex_owner_runtime_repository")
 retained_runtime(name = "omux_codex_owner_runtime")
 
+# Opt-in native OAuth action only; preserves retained runtime009 declaration.
+native_enrollment_inputs = use_repo_rule("//tools:native_enrollment_repository.bzl", "native_enrollment_repository")
+native_enrollment_inputs(name = "omux_native_enrollment")
+
 codex_cached_inputs = use_repo_rule("//tools:codex_cached_inputs.bzl", "codex_cached_inputs")
 codex_cached_inputs(name = "omux_codex_pack_inputs")
 
