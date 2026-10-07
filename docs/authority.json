@@ -2,6 +2,7 @@
   "schema_version": 1,
   "architecture": "docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md",
   "current": [
+    "docs/agent-notes/2026-10-07-native-staged-compilation.md",
     "docs/agent-notes/2026-10-07-native-core-compiler-policy.md",
     "AGENTS.md",
     "README.md",

@@ -79,6 +79,9 @@ QUALIFICATION_GATES = {
 PRODUCTION = ('//codex-rs/core:core', '//codex-rs/app-server:app-server', '//codex-rs/config:config', '//codex-rs/app-server-protocol:app-server-protocol', '//codex-rs/tui:tui', '//codex-rs/cli:codex', '//codex-rs/config-schema:codex-write-config-schema', '//bazel/schema:public-schema-bundle')
 CLI = '//codex-rs/cli:codex'
 COMBINED_MODE = 'qualification-cli'
+PRODUCTION_LIBRARIES_MODE = 'staged-libraries'
+PRODUCTION_LIBRARIES = ('//codex-rs/config:config', '//codex-rs/login:login',
+    '//codex-rs/app-server-protocol:app-server-protocol')
 CLI_CONTEXT_FIELDS = frozenset(('invocation_id', 'output_base',
     'source_receipt_sha256', 'export_receipt_sha256', 'source_inventory_sha256',
     'export_inventory_sha256', 'candidate_cache_key', 'candidate_provenance_sha256',
@@ -86,6 +89,7 @@ CLI_CONTEXT_FIELDS = frozenset(('invocation_id', 'output_base',
     'source_and_export_verified_after_cleanup'))
 MAX_CLI_BYTES = 1024 * 1024 * 1024
 MODES = {
+    PRODUCTION_LIBRARIES_MODE: ('build', PRODUCTION_LIBRARIES, None),
     COMBINED_MODE: ('test', (CORE, CONFIG, LOGIN, CLI), None),
     'qualification': ('test', (CORE, CONFIG, LOGIN), None),
     'analysis': ('build', PRODUCTION, None), 'production8': ('build', PRODUCTION, None),
@@ -157,7 +161,43 @@ def copy_source(root, receipt, run):
     os.chmod(run / 'native-input', 0o555)
     return run / 'native-input/source'
 
+def production_libraries_admission(args, candidate):
+    """A new fixed build mode needs the actual separately qualified IO owner."""
+    require(getattr(args, 'profile', None) == 'codex-native'
+        and getattr(args, 'manager', None) == 'system'
+        and type(getattr(args, 'native_stage', None)) is int
+        and args.native_stage == 1
+        and getattr(args, 'native_staged_compilation', None)
+            == STATE / 'native-staged-compilation.json'
+        and str(args.native_staged_compilation)
+            == str(STATE / 'native-staged-compilation.json')
+        and isinstance(getattr(args, 'native_staged_compilation_sha256', None), str)
+        and re.fullmatch(r'[0-9a-f]{64}', args.native_staged_compilation_sha256)
+        and getattr(args, 'native_owned_candidate_cache', False) is False
+        and getattr(args, 'reuse_owned_cache', False) is False
+        and all(getattr(args, name, None) is None for name in (
+            'native_cache_attempt', 'native_cache_transition',
+            'native_cache_transition_sha256', 'native_cache_phase2',
+            'native_cache_phase2_sha256', 'native_fresh_completion',
+            'native_fresh_completion_sha256', 'native_global_attempt')),
+        'fixed libraries require exclusive successor stage1 selection')
+    # Legacy owners and caller-shaped readiness markers cannot reach/import
+    # the new owner. No fallback when that separately applied module is absent.
+    require(candidate is not None
+        and type(candidate).__module__ == 'codex_native_staged_compilation',
+        'fixed libraries require qualified successor Admission')
+    try:
+        from codex_native_staged_compilation import Admission
+    except ImportError:
+        raise ValueError('qualified successor Admission is unavailable') from None
+    require(type(candidate) is Admission
+        and candidate.authorize_native_mode(args) is True,
+        'fixed libraries require actual successor mode authorization')
+
+
 def command(args, run, locked_path, bash, candidate=None):
+    if args.native_mode == PRODUCTION_LIBRARIES_MODE:
+        production_libraries_admission(args, candidate)
     source_io.DEADLINE = args.native_deadline
     receipt, exported = verify_inputs(args)
     # validate_export has already qualified every explicitly selected public
@@ -228,6 +268,16 @@ def completion_deadline(args, original_entry_ns, candidate=None):
     require((path is None) == (pin is None), 'native phase2 complete selector required')
     seconds = getattr(args, 'native_aggregate_seconds', 1200)
     require(type(seconds) is int, 'native aggregate seconds must be exact integer')
+    staged_values = (getattr(args, 'native_staged_compilation', None),
+        getattr(args, 'native_staged_compilation_sha256', None),
+        getattr(args, 'native_stage', None))
+    if any(value is not None for value in staged_values):
+        import codex_native_staged_compilation as staged
+        require(staged.selected(args) and seconds == 3600
+            and candidate is not None
+            and getattr(candidate, 'staged_verified_before_launch', None) is True,
+            'staged native deadline requires independently verified admission')
+        return (original_entry_ns + seconds * 10**9) / 10**9
     fresh_path = getattr(args, 'native_fresh_completion', None)
     fresh_pin = getattr(args, 'native_fresh_completion_sha256', None)
     require((fresh_path is None) == (fresh_pin is None), 'fresh completion exact selector pair required')
