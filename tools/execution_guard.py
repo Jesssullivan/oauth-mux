@@ -540,7 +540,12 @@ def rejection_diagnostic(error, stage):
                 'ValueError' if isinstance(error, ValueError) else
                 'OSError' if isinstance(error, OSError) else
                 'SubprocessError' if isinstance(error, subprocess.SubprocessError) else 'Exception')
-    return 'execution containment rejected; stage=' + selected + '; exception=' + category
+    result = 'execution containment rejected; stage=' + selected + '; exception=' + category
+    import guard_resident_enrollment_profile as resident
+    diagnostic = resident.diagnostic_projection(error)
+    if diagnostic is not None:
+        result += '; resident_phase=' + diagnostic['phase'] + '; resident_errno=' + diagnostic['errno']
+    return result
 
 
 def sdk_owned_command(plan, run, output_base=None):

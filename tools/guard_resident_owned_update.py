@@ -158,20 +158,26 @@ def original_process_exited(identity):
 
 class OwnedFirstStart:
     """Qualified first start with only the existing zero-byte lock; no DB recovery."""
+    @resident.diagnostic_method
     def __init__(self,selected,home,deadline):
+        self.diagnostic_phase = "owned-first-start"
         self.selected,self.deadline = selected,deadline
         self.files,self.unit,self.directory,self.lock = [],None,None,None
         try:
             self.selection = start_pins(selected["start"],home)
             q = self.selection["qualification"]
+            self.diagnostic_phase = "qualification-open"
             qualification = PublicFile(q["path"],deadline,8*1024*1024)
             self.files.append(qualification)
+            self.diagnostic_phase = "qualification-validate"
             resident.require(len(qualification.raw) == q["bytes"] and hashlib.sha256(qualification.raw).hexdigest() == q["sha256"])
             receipt = json.loads(qualification.raw,object_pairs_hook=resident.unique)
             output = qualification_output(receipt,q)
             resident.require(Path(self.selection["archive_path"]) == output/ARCHIVE_RELATIVE)
+            self.diagnostic_phase = "archive-open"
             self.archive = PublicFile(self.selection["archive_path"],deadline,pack.MAX_BYTES)
             self.files.append(self.archive)
+            self.diagnostic_phase = "archive-validate"
             resident.require(len(self.archive.raw) == self.selection["archive_bytes"]
                 and hashlib.sha256(self.archive.raw).hexdigest() == self.selection["archive_sha256"])
             files,_ = pack.archive_contents(self.archive.raw)
@@ -182,7 +188,9 @@ class OwnedFirstStart:
             plan = install.installation_plan(manifest,files,Path(selected["prefix"]),Path(selected["records"]),
                 Path(selected["service_path"]),"linux",daemon_state_dir=Path(selected["runtime_state"]))
             expected = {str(path):{"sha256":hashlib.sha256(raw).hexdigest(),"mode":mode} for path,raw,mode in plan}
+            self.diagnostic_phase = "installed-unit-open"
             self.unit = resident.OwnedUnitCustody(selected)
+            self.diagnostic_phase = "installed-inventory"
             record = json.loads(self.unit.files[0][4],object_pairs_hook=resident.unique)
             resident.require(record["product"] == manifest["product"] and record["artifact"] == {
                 "channel":manifest["channel"],"target":manifest["target"],"distribution":manifest["distribution"],
@@ -191,15 +199,19 @@ class OwnedFirstStart:
                 and len(record["files"]) == len(expected)
                 and {row["path"]:{"sha256":row["sha256"],"mode":row["mode"]} for row in record["files"]} == expected)
             for row in record["files"]:
+                self.diagnostic_phase = "installed-payload-open"
                 public = PublicFile(row["path"],deadline,128*1024*1024,owned=True)
                 self.files.append(public)
                 resident.require(stat.S_IMODE(os.fstat(public.fd).st_mode) == row["mode"]
                     and hashlib.sha256(public.raw).hexdigest() == row["sha256"])
             unit = Path(selected["service_path"])
+            self.diagnostic_phase = "installed-alias"
             self.unit.verify_fragment(unit.parents[4]/".config/systemd/user"/unit.name)
             self.state = Path(selected["runtime_state"])
+            self.diagnostic_phase = "retained-state-open"
             self.directory = resident.open_directory(self.state,private=True)
             self.root_identity = resident.stable(os.fstat(self.directory))
+            self.diagnostic_phase = "retained-lock"
             self.lock = os.open("daemon.lock",os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.directory)
             info = os.fstat(self.lock)
             resident.require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
@@ -209,14 +221,20 @@ class OwnedFirstStart:
         except BaseException:
             self.close()
             raise
+    @resident.diagnostic_method
     def pristine(self):
         self.recheck()
+        self.diagnostic_phase = "retained-pristine"
         resident.require(os.listdir(self.directory) == ["daemon.lock"])
+    @resident.diagnostic_method
     def recheck(self):
+        self.diagnostic_phase = "installed-unit-recheck"
         tick(self.deadline)
         self.unit.recheck()
         for public in self.files:
+            self.diagnostic_phase = "installed-file-recheck"
             public.recheck()
+        self.diagnostic_phase = "retained-state-recheck"
         resident.require(resident.stable(os.fstat(self.directory)) == self.root_identity
             == resident.stable(self.state.stat(follow_symlinks=False))
             and resident.file_identity(os.fstat(self.lock)) == self.lock_identity
