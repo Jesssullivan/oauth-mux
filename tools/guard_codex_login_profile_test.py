@@ -154,7 +154,7 @@ class LoginProfileTests(unittest.TestCase):
         actual["BindReadOnlyPaths"] += " " + actual["BindReadOnlyPaths"].split()[0]
         with self.assertRaises(ValueError):
             admission.verify_bindings(actual)
-        actual["BindReadOnlyPaths"] = " ".join(admission.bindings())
+        actual["BindReadOnlyPaths"] = systemctl_bind_readback(admission.bindings())
         actual["BindPaths"] = "/private/native:/private/native:rbind"
         with self.assertRaises(ValueError):
             admission.verify_bindings(actual)

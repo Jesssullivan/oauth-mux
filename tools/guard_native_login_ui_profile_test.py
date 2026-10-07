@@ -70,7 +70,7 @@ class PrepareModels(unittest.TestCase):
             "BindPaths":systemctl_bind_readback([admitted.writable_binding()])}
         admitted.verify_bindings(actual)
         admitted.verify_bindings({**actual,"BindReadOnlyPaths":" ".join(reversed(actual["BindReadOnlyPaths"].split()))})
-        for key,value in (("BindPaths",""),("BindPaths",actual["BindPaths"]+" /private/extra:/extra"),
+        for key,value in (("BindPaths",""),("BindPaths",actual["BindPaths"]+" /private/extra:/extra:rbind"),
                 ("BindReadOnlyPaths",actual["BindReadOnlyPaths"]+":rw"),
                 ("BindReadOnlyPaths",actual["BindReadOnlyPaths"]+" "+actual["BindReadOnlyPaths"])):
             with self.subTest(key=key,value=value),self.assertRaises(ValueError):
