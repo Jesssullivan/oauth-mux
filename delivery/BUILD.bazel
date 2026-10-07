@@ -1181,3 +1181,22 @@ python_test(
     srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
         "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
 )
+# Existing software selection comes from the exact private archive/BUILD join.
+# This carrier declares no runtime/UI/default archive producer dependency.
+python_binary(
+    name = "resident_codex_existing_enrollment",
+    main = "resident_existing_enrollment.py",
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    data = ["@omux_nix//:systemctl",":resident_session_services"],
+    args = ["$(location @omux_nix//:systemctl)","$(location :resident_session_services)"],
+    tags = ["manual","no-remote","no-cache","requires-network"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "resident_existing_enrollment_contract_test",
+    main = "test_resident_existing_enrollment.py",
+    srcs = ["resident_existing_enrollment.py","resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py","resident_owned_start.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
+    target_compatible_with = ["@platforms//os:linux","@platforms//cpu:x86_64"],
+)

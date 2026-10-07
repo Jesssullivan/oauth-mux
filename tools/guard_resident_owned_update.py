@@ -338,6 +338,64 @@ class PublicFile:
                 os.close(value)
                 setattr(self,name,None)
 
+class QualifiedExistingEnrollment:
+    """Public archive/installed-software authority; never open private custody."""
+    def __init__(self,selected,home,deadline):
+        self.deadline = deadline
+        self.files,self.unit = [],None
+        try:
+            self.selection = start_pins(selected["existing_archive"],home)
+            q = self.selection["qualification"]
+            qualification = PublicFile(q["path"],deadline,8*1024*1024)
+            self.files.append(qualification)
+            resident.require(len(qualification.raw) == q["bytes"]
+                and hashlib.sha256(qualification.raw).hexdigest() == q["sha256"])
+            receipt = json.loads(qualification.raw,object_pairs_hook=resident.unique)
+            output = qualification_output(receipt,q)
+            resident.require(Path(self.selection["archive_path"]) == output/ARCHIVE_RELATIVE)
+            archive = PublicFile(self.selection["archive_path"],deadline,pack.MAX_BYTES)
+            self.files.append(archive)
+            resident.require(len(archive.raw) == self.selection["archive_bytes"]
+                and hashlib.sha256(archive.raw).hexdigest() == self.selection["archive_sha256"])
+            files,_ = pack.archive_contents(archive.raw)
+            resident.require(hashlib.sha256(files["release-manifest.json"]).hexdigest() == self.selection["manifest_sha256"])
+            manifest = json.loads(files["release-manifest.json"],object_pairs_hook=resident.unique)
+            resident.require(manifest["channel"] == "release" and manifest["distribution"] == "portable-linux"
+                and manifest["target"] == "x86_64-linux" and manifest["provenance"] == {"sourceRevision":None,"sourceDirty":True})
+            plan = install.installation_plan(manifest,files,Path(selected["prefix"]),Path(selected["records"]),
+                Path(selected["service_path"]),"linux",daemon_state_dir=Path(selected["runtime_state"]))
+            expected = {str(path):{"sha256":hashlib.sha256(raw).hexdigest(),"mode":mode} for path,raw,mode in plan}
+            self.unit = resident.OwnedUnitCustody(selected)
+            record = json.loads(self.unit.files[0][4],object_pairs_hook=resident.unique)
+            resident.require(record["product"] == manifest["product"] and record["artifact"] == {
+                "channel":manifest["channel"],"target":manifest["target"],"distribution":manifest["distribution"],
+                "provenance":manifest["provenance"],"archiveSha256":self.selection["archive_sha256"],
+                "manifestSha256":self.selection["manifest_sha256"]}
+                and len(record["files"]) == len(expected)
+                and {row["path"]:{"sha256":row["sha256"],"mode":row["mode"]} for row in record["files"]} == expected)
+            for row in record["files"]:
+                public = PublicFile(row["path"],deadline,128*1024*1024,owned=True)
+                self.files.append(public)
+                resident.require(stat.S_IMODE(os.fstat(public.fd).st_mode) == row["mode"]
+                    and hashlib.sha256(public.raw).hexdigest() == row["sha256"])
+            self.unit.verify_fragment(Path(home)/".config/systemd/user"/Path(selected["service_path"]).name)
+            self.recheck()
+        except BaseException:
+            self.close()
+            raise
+    def recheck(self):
+        tick(self.deadline)
+        self.unit.recheck()
+        for public in self.files:
+            public.recheck()
+    def close(self):
+        if self.unit is not None:
+            self.unit.close()
+            self.unit = None
+        for public in reversed(self.files):
+            public.close()
+        self.files = []
+
 class RuntimeFence:
     """Hold existing singleton lock and exact named/held metadata; read no private bytes."""
     def __init__(self,state,deadline,*,acquire_lock=True):

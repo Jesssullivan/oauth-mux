@@ -14,6 +14,7 @@ import time
 
 LABEL = "//delivery:resident_codex_enrollment"
 LIFECYCLE_LABEL = "//delivery:resident_owned_lifecycle"
+EXISTING_ENROLLMENT_LABEL = "//delivery:resident_codex_existing_enrollment"
 PROFILE = "resident-enrollment"
 DESTINATION = "/omux-resident-inputs"
 VARIABLE = "OMUX_RESIDENT_ENROLLMENT_MANIFEST"
@@ -30,7 +31,7 @@ def require(value):
         raise ValueError("resident-enrollment-admission-refused")
 
 def finite(arguments,manager,manifest,reuse,unrelated=()):
-    require(arguments in (["run",LABEL],["run",LIFECYCLE_LABEL]) and manager == "system" and manifest is not None
+    require(arguments in (["run",LABEL],["run",LIFECYCLE_LABEL],["run",EXISTING_ENROLLMENT_LABEL]) and manager == "system" and manifest is not None
         and not reuse and not any(unrelated))
     return {"PrivateNetwork":"yes","ProtectSystem":"strict","PrivateTmp":"yes"}
 
@@ -47,10 +48,11 @@ def repository_inputs(repository_cache,nixpkgs_source):
         and repository_cache == REPOSITORY_CACHE and nixpkgs_source == NIXPKGS_SOURCE)
     return [str(REPOSITORY_CACHE)+":"+str(REPOSITORY_CACHE)]
 
-def carrier_purpose(label,action):
-    require(label in (LABEL,LIFECYCLE_LABEL)
-        and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","stop-idle-owned"))
-            or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))
+def carrier_purpose(label,action,selected_archive=False):
+    require(type(selected_archive) is bool and label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL)
+        and ((label == EXISTING_ENROLLMENT_LABEL and action == "enroll-existing" and selected_archive)
+            or (not selected_archive and ((label == LIFECYCLE_LABEL and action in ("start-existing","observe-existing","stop-idle-owned"))
+            or (label == LABEL and action in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing"))))))
 
 def canonical(value):
     require(type(value) is str and value.startswith("/") and len(value) <= 4096
@@ -84,11 +86,12 @@ def fixed_paths(home,instance="default"):
         "service_path":prefix/"units/ai.xoxd.omux.service"}
 
 def manifest_schema(value,home):
+    existing_enrollment = type(value) is dict and "existing_archive" in value
     updating = type(value) is dict and value.get("action") == "update-existing"
     starting = type(value) is dict and value.get("action") in ("start-existing","observe-existing","stop-idle-owned")
     stopping = type(value) is dict and value.get("action") == "stop-idle-owned"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
-        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set())
+        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else {"start"} if starting else set()) | ({"existing_archive"} if existing_enrollment else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
         and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing","start-existing","observe-existing","stop-idle-owned")
@@ -129,6 +132,11 @@ def manifest_schema(value,home):
         require(permissions["connect_source"]
             and (value["action"] not in ("install-and-enroll","activate-existing-and-enroll") or permissions["activate_service"])
             and (value["ownership"] != "home-manager" or not permissions["activate_service"]))
+    if existing_enrollment:
+        require(value["action"] == "enroll-existing" and value["ownership"] == "omux-installation"
+            and permissions["connect_source"] is True and permissions["activate_service"] is False)
+        import guard_resident_owned_update as update
+        update.start_pins(value["existing_archive"],home)
     return value
 
 def quota_us(value):
@@ -451,7 +459,7 @@ def recovery_loaded_properties(values):
 class Admission:
     def __init__(self,manifest,home,deadline_ns,*,label=LABEL):
         self.deadline_ns = deadline_ns
-        require(label in (LABEL,LIFECYCLE_LABEL))
+        require(label in (LABEL,LIFECYCLE_LABEL,EXISTING_ENROLLMENT_LABEL))
         self.label=label
         self.lifecycle_identity=None
         self.lifecycle_peer=None
@@ -466,6 +474,7 @@ class Admission:
         self.recovery_empty = []
         self.installation_update = None
         self.owned_start = None
+        self.existing_enrollment = None
         try:
             self.directory = open_directory(self.root,private=True)
             self.held.append(self.directory)
@@ -508,7 +517,7 @@ class Admission:
             self.raw = os.pread(self.file,65537,0)
             require(len(self.raw) == info.st_size)
             self.selected = manifest_schema(json.loads(self.raw,object_pairs_hook=unique),home)
-            carrier_purpose(label,self.selected["action"])
+            carrier_purpose(label,self.selected["action"],"existing_archive" in self.selected)
             self.control_child = runtime_child(self.selected["runtime_state"])
             self.control_source = runtime/self.control_child
             control_source_fd = open_directory(self.control_source,private=True)
@@ -545,6 +554,9 @@ class Admission:
             if self.selected["action"] in ("start-existing","observe-existing","stop-idle-owned"):
                 import guard_resident_owned_update as update
                 self.owned_start = update.OwnedFirstStart(self.selected,home,deadline_ns)
+            if "existing_archive" in self.selected:
+                import guard_resident_owned_update as update
+                self.existing_enrollment = update.QualifiedExistingEnrollment(self.selected,home,deadline_ns)
             self.facts = self.recheck()
         except BaseException:
             self.close()
@@ -573,6 +585,8 @@ class Admission:
             self.installation_update.recheck()
         if getattr(self,"owned_start",None) is not None:
             self.owned_start.recheck()
+        if getattr(self,"existing_enrollment",None) is not None:
+            self.existing_enrollment.recheck()
         if self.owned_unit is not None:
             self.owned_unit.recheck()
         facts = {"scope":"resident-enrollment","source_contents_read":False,
@@ -587,7 +601,7 @@ class Admission:
         return facts
 
     def bindings(self):
-        starting = getattr(self,"owned_start",None)
+        starting = getattr(self,"owned_start",None) or getattr(self,"existing_enrollment",None)
         extra = ([str(path)+":"+str(path) for path,_,_ in self.product_directories]+[
             str(public.path)+":"+str(public.path)+":norbind" for public in starting.files[:2]]) if starting is not None else []
         return extra+list(getattr(self,"offline_repository_bindings",()))+[str(self.root)+":"+DESTINATION]+[
@@ -599,7 +613,7 @@ class Admission:
             if getattr(self,"installation_update",None) is not None else [])
 
     def writable_binding(self):
-        if getattr(self,"owned_start",None) is not None:
+        if getattr(self,"owned_start",None) is not None or getattr(self,"existing_enrollment",None) is not None:
             return ""
         return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories
             if getattr(self,"installation_update",None) is None or str(path) != self.selected["runtime_state"])
@@ -612,6 +626,8 @@ class Admission:
             for target,source in self.sources.items()]
         if getattr(self,"owned_start",None) is not None:
             leaves += [str(public.path)+":"+str(public.path) for public in self.owned_start.files[:2]]
+        if getattr(self,"existing_enrollment",None) is not None:
+            leaves += [str(public.path)+":"+str(public.path) for public in self.existing_enrollment.files[:2]]
         if getattr(self,"installation_update",None) is not None:
             leaves += [str(file.path)+":"+str(file.path) for file in
                 (self.installation_update.archive,self.installation_update.previous_archive,self.installation_update.qualification)]
@@ -763,6 +779,9 @@ class Admission:
         return int(remaining)
 
     def close(self):
+        if getattr(self,"existing_enrollment",None) is not None:
+            self.existing_enrollment.close()
+            self.existing_enrollment = None
         if getattr(self,"owned_start",None) is not None:
             self.owned_start.close()
             self.owned_start = None

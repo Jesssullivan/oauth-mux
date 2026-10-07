@@ -174,7 +174,7 @@ def identity(info):
             info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def private_manifest():
+def private_manifest(*, validator=validate_manifest):
     require(os.environ.get("OMUX_RESIDENT_ENROLLMENT_MANIFEST") == MANIFEST)
     root = parent = fd = None
     try:
@@ -201,7 +201,7 @@ def private_manifest():
         require(identity(before_parent) == identity(os.fstat(parent))
                 == identity(os.stat("omux-resident-inputs", dir_fd=root, follow_symlinks=False))
                 and identity(root_before) == identity(os.fstat(root)))
-        return validate_manifest(json.loads(raw, object_pairs_hook=strict_object))
+        return validator(json.loads(raw, object_pairs_hook=strict_object))
     finally:
         for descriptor in (fd, parent, root):
             if descriptor is not None:
