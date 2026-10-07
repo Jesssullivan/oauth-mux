@@ -367,7 +367,7 @@ def relocate_links(repositories, nix_inventory, budget):
                 suffix = '/'.join(parts[count:])
                 resolve(destination+('/'+suffix if suffix else ''),visited|{key})
                 return
-        need(key in objects,'dangling repository link')
+        need(key in objects,'dangling public repository link: '+repr(key))
     for key in links:
         resolve(key,set())
 

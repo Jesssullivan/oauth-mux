@@ -112,7 +112,8 @@
     "docs/agent-notes/2026-10-05-inert-nar-byteproof.md",
     "docs/agent-notes/2026-10-05-sting-omux-storage-handoff.md",
     "docs/tracker-updates/live-account-proof-2026-10-07.json",
-    "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md"
+    "docs/agent-notes/2026-10-07-sess-omux-live-account-proof.md",
+    "docs/agent-notes/2026-10-07-sdk-alias-and-controller-import.md"
   ],
   "historical_inventory": "docs/history/retired-design-inventory.md",
   "historical_extra": [
