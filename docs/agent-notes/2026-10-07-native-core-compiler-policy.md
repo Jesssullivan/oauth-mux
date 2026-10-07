@@ -89,3 +89,21 @@ literal pinned inputs or the existing environment route exclusively; the actual
 repository instance is not declared until a successful package supplies real
 pins. Contract and Starlark selector tests are queued; installed proof remains
 unrun. No accepted-history or handoff capability follows from this fixture.
+
+## First actual source suite
+
+The ten-target suite on signed `d30d5832e5ea48102c39e87e62f59ac76fb097c4`
+completed in `67838656-2861-47ee-80ba-a589a9673fb2`, exits3/3, empty descendants,
+preserved evidence and no controller failure. Receipt SHA256
+`aee9303a08e175a7e0f6316e6031c0ebc8115cac4a7ca2053efeaa1d7c6cceac`;
+evidence SHA256 `7a483a17b9a91126784ee34f628449040b97f5e83392d76a9b4352d1e3d083cf`.
+Nine targets passed, including native profile, old cache, consumer, SDK,
+execution guard, fresh TUI contract/selector, docs and source receipt.
+The fresh admission models alone failed: their temporary copied-source fixture
+used0444, while the actual sealed producer/verifier requires0555 for regular
+files and retains original Git modes separately in the pinned inventory.
+
+Root corrects only the model's seal and adds a refusal case for0444, preserving
+the actual production verifier. The changed model and docs/source checks are
+queued; no native action, declaration, admission or artifact follows from the
+partial suite. All eight failed native dispatches remain consumed and unchanged.

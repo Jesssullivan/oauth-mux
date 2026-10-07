@@ -141,7 +141,9 @@ class FreshAdmissionModels(unittest.TestCase):
         source.mkdir(mode=0o700,parents=True)
         item = source/'fixture.rs'
         item.write_bytes(b'qualified fixture source\n')
-        item.chmod(0o444)
+        # The actual sealed producer gives every regular file mode0555;
+        # original Git modes remain separately pinned in the inventory.
+        item.chmod(0o555)
         source.chmod(0o555)
         return source
 
@@ -165,6 +167,23 @@ class FreshAdmissionModels(unittest.TestCase):
     def cleanup_fixture(self, state):
         for root, _, _ in os.walk(state):
             Path(root).chmod(0o700)
+
+    def test_copied_source_refuses_unsealed_regular_mode(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(native,'STATE',Path(temp)), \
+                patch.object(fresh,'SELECTOR',Path(temp)/'native-fresh-completion.json'):
+            state = Path(temp)
+            admission = self.admitted(state)
+            try:
+                (admission.source/'fixture.rs').chmod(0o444)
+                inventory = {'fixture.rs':{'mode':'100644',
+                    'sha256':hashlib.sha256(b'qualified fixture source\n').hexdigest()}}
+                with patch.object(native,'validate_source',return_value={'source_inventory':inventory}), \
+                        patch.object(fresh,'trusted_parent',side_effect=lambda path:os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)):
+                    with self.assertRaises(ValueError):
+                        admission.verify_source_copy()
+            finally:
+                admission.close()
+                self.cleanup_fixture(state)
 
     def test_fresh_root_creation_is_empty_and_preexisting_root_is_never_adopted(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(native,'STATE',Path(temp)), \
