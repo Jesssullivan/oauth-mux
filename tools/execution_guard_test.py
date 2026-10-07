@@ -47,6 +47,37 @@ class FakeClock:
 
 
 class GuardTest(unittest.TestCase):
+    def test_staged_native_inputs_refuse_before_operator_tool_reads(self):
+        from execution_guard import main
+        import codex_native_profile as native
+        baseline = ['--profile', 'codex-native', '--manager', 'system',
+            '--state-dir', str(native.STATE), '--source-commit', '1' * 40,
+            '--source-dirty', 'false', '--native-mode', 'staged-libraries',
+            '--native-source-root', '/public/source', '--native-source-sha256', 'a' * 64,
+            '--native-export-root', '/public/export', '--native-export-sha256', 'b' * 64,
+            '--native-patch-sha256', 'c' * 64, '--native-patch-sha256', 'd' * 64,
+            '--native-patch-sha256', 'e' * 64]
+        selector = ['--native-staged-compilation',
+            str(native.STATE / 'native-staged-compilation.json'),
+            '--native-staged-compilation-sha256', 'f' * 64, '--native-stage', '1']
+        cases = [
+            baseline,
+            baseline + selector[:2],
+            baseline + selector + ['--native-global-attempt', '9'],
+            baseline + selector + ['--native-owned-candidate-cache', '--native-cache-attempt', '1'],
+            baseline + selector + ['--native-fresh-completion', str(native.STATE / 'native-fresh-completion.json'),
+                '--native-fresh-completion-sha256', 'a' * 64, '--native-global-attempt', '9'],
+            baseline + selector + ['--native-stage', '2'],
+            baseline + selector + ['--native-stage', '5'],
+            baseline + selector + ['--', 'build', '//codex-rs/cli:codex'],
+            ['--profile', 'standard'] + selector + ['--', 'test', '//:unit_tests'],
+        ]
+        for request in cases:
+            with self.subTest(request=request), patch('execution_guard.immutable') as reader:
+                with self.assertRaises(ValueError):
+                    main(request)
+                reader.assert_not_called()
+
     def test_sdk_export_run_is_one_exact_guarded_writer(self):
         run = Path('/private/12345678-1234-1234-1234-123456789abc')
         args = ['run','//tools:codex_retained_sdk_export_run']

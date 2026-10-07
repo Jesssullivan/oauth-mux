@@ -378,6 +378,355 @@ class RegistryMetadataAdmissionTests(unittest.TestCase):
                 Path(folder).chmod(0o755)
 
 
+class FixedCoreCodegenModels(unittest.TestCase):
+    SETTING = '@rules_rust//rust/settings:experimental_per_crate_rustc_flag'
+    OPTIONS = ('-Copt-level=0', '-Clto=off', '-Ccodegen-units=16',
+        '-Cdebug-assertions=off', '-Coverflow-checks=off')
+
+    def command(self, root, mode=native.COMBINED_MODE):
+        run = root / ('run-' + mode)
+        run.mkdir(mode=0o700)
+        source = root / 'sealed-source'
+        source.mkdir(mode=0o700, exist_ok=True)
+        selected = {'MODULE.bazel': b'locked-module-bytes\n',
+            'MODULE.bazel.lock': b'locked-extension-bytes\n',
+            'codex-rs/core/src/lib.rs': b'qualified-maintained-source\n'}
+        for name, raw in selected.items():
+            path = source / name
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_bytes(raw)
+                path.chmod(0o444)
+        args = SimpleNamespace(native_source_root=root/'input',
+            native_export_root=root/'export', native_deadline=None,
+            native_mode=mode)
+        exported = {'registry_cache':str(args.native_export_root/'registry-cache'),
+            'inventory_sha256':'2'*64, 'mapping_sha256':'3'*64,
+            'repositories':{}, 'module_overrides':{}}
+        candidate = SimpleNamespace(source=source, root=root/'candidate',
+            lease=SimpleNamespace(output_base=root/'output-base'))
+        with patch.object(native, 'verify_inputs',
+                return_value=({'inventory_sha256':'1'*64}, exported)):
+            result = native.command(args, run, '/nix/store/locked-tool/bin',
+                '/nix/store/i27rhb3nr65rkrwz36bchkwmav6ggsmn-bash-5.3p9/bin/bash',
+                candidate)
+        for name, raw in selected.items():
+            self.assertEqual((source/name).read_bytes(), raw)
+            self.assertEqual((source/name).stat().st_mode & 0o777, 0o444)
+        return result
+
+    def test_actual_plan_emits_only_exact_core_tuple_and_keeps14_targets_controls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            plan = self.command(Path(temp))
+        expected = ['--'+self.SETTING+'=codex-rs/core/src/lib.rs@'+flag
+            for flag in self.OPTIONS]
+        actual = [arg for arg in plan['argv'] if arg.startswith('--'+self.SETTING+'=')]
+        self.assertEqual(actual, expected)
+        self.assertEqual(plan['argv'][-4:], list(native.MODES[native.COMBINED_MODE][1]))
+        for name in (name for names in native.QUALIFICATION_GATES.values() for name in names):
+            self.assertEqual(plan['argv'].count('--test_arg='+name), 1)
+        self.assertEqual(sum(map(len, native.QUALIFICATION_GATES.values())), 14)
+        for flag in ('--compilation_mode=opt', '--lockfile_mode=error',
+                '--repository_disable_download', '--sandbox_default_allow_network=false',
+                '--jobs=1', '--host_jvm_args=-Xmx768m',
+                '--repo_contents_cache=', '--disk_cache=', '--remote_executor=',
+                '--remote_cache=', '--local_test_jobs=1'):
+            self.assertIn(flag, plan['argv'])
+        self.assertEqual(plan['candidate_output_base'], str(Path(temp)/'output-base'))
+        self.assertEqual(plan['environment']['USE_BAZEL_VERSION'], '9.0.1')
+
+    def test_recorded_tuple_digest_is_derived_and_returned_mutations_cannot_change_next_plan(self):
+        expected = {'kind':'omux-native-fixed-core-codegen-v1',
+            'configuration':'opt', 'setting':self.SETTING,
+            'crate_root_prefix':'codex-rs/core/src/lib.rs', 'options':list(self.OPTIONS),
+            'applies_to':'target-configuration-only', 'rust_version':'1.95.0',
+            'rules_rust_repository':'rules_rs++rules_rust+rules_rust'}
+        pin = hashlib.sha256(json.dumps(expected,
+            sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        selected = native.core_codegen_policy()
+        self.assertEqual(selected, {'policy':expected, 'sha256':pin})
+        selected['policy']['options'].append('-Copt-level=3')
+        selected['policy']['crate_root_prefix'] = ''
+        with tempfile.TemporaryDirectory() as temp:
+            plan = self.command(Path(temp))
+        self.assertEqual(plan['core_codegen'], {'policy':expected, 'sha256':pin})
+        self.assertNotIn('--'+self.SETTING+'=@-Copt-level=3', plan['argv'])
+
+    def test_ambient_compiler_flags_cannot_select_options_and_schema_keeps_same_policy(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
+                'RUSTFLAGS':'-Copt-level=3 -Clto=fat',
+                'CARGO_ENCODED_RUSTFLAGS':'-Cdebug-assertions=on',
+                'OMUX_NATIVE_CORE_CODEGEN':'foreign'}):
+            plan = self.command(Path(temp), 'schema')
+        self.assertEqual(plan['argv'][-2:], list(native.MODES['schema'][1]))
+        self.assertEqual(plan['core_codegen'], native.core_codegen_policy())
+        self.assertFalse(any(name in plan['environment'] for name in
+            ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'OMUX_NATIVE_CORE_CODEGEN')))
+        self.assertFalse(any('fat' in value for value in plan['argv']))
+        self.assertEqual([value for value in plan['argv']
+            if value.startswith('--'+self.SETTING+'=')], native.core_codegen_arguments())
+
+
+class ProductionLibrariesAdmissionModels(unittest.TestCase):
+    """Synthetic admission boundary; actual command/files remain exercised."""
+    BASH = '/nix/store/i27rhb3nr65rkrwz36bchkwmav6ggsmn-bash-5.3p9/bin/bash'
+    PATH = '/nix/store/locked-tool/bin'
+
+    def request(self, root):
+        return SimpleNamespace(profile='codex-native', manager='system',
+            native_mode=native.PRODUCTION_LIBRARIES_MODE,
+            native_stage=1,
+            native_staged_compilation=native.STATE/'native-staged-compilation.json',
+            native_staged_compilation_sha256='a'*64,
+            native_owned_candidate_cache=False, reuse_owned_cache=False,
+            native_source_root=root/'input', native_export_root=root/'export',
+            native_deadline=None)
+
+    def test_bare_old_owner_and_readiness_markers_refuse_before_inputs_or_writes(self):
+        candidates = (None, SimpleNamespace(fresh_verified_before_launch=True),
+            SimpleNamespace(phase2_verified_before_launch=True),
+            SimpleNamespace(staged_verified_before_launch=True, staged_phase='A',
+                staged_contract_kind='omux-native-staged-compilation-v1',
+                staged_provenance_sha256='a'*64,
+                authorize_native_mode=lambda args:True))
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for index,candidate in enumerate(candidates):
+                run=root/('run-'+str(index)); run.mkdir(mode=0o700)
+                args=self.request(root)
+                # Caller/env-shaped readiness is deliberately not authority.
+                args.staged_verified_before_launch=True
+                with patch.object(native,'verify_inputs') as verify, \
+                        patch.dict(os.environ,{'OMUX_NATIVE_STAGE_READY':'true'}):
+                    with self.assertRaises(ValueError):
+                        native.command(args,run,self.PATH,self.BASH,candidate)
+                verify.assert_not_called()
+                self.assertEqual(list(run.iterdir()),[])
+
+    def test_exact_concrete_owner_authorizes_before_full_verifier_and_fixed_build(self):
+        events=[]
+        class Admission:
+            def authorize_native_mode(self,args):
+                events.append('authorize')
+                return self.ready
+        Admission.__module__='codex_native_staged_compilation'
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); run=root/'run'; run.mkdir(mode=0o700)
+            source=root/'source'; source.mkdir(mode=0o700)
+            selected=source/'MODULE.bazel'; selected.write_bytes(b'locked source\n')
+            selected.chmod(0o555)
+            args=self.request(root)
+            owner=Admission(); owner.ready=True; owner.source=source
+            owner.root=root/'candidate'
+            owner.lease=SimpleNamespace(output_base=root/'output-base')
+            exported={'registry_cache':str(args.native_export_root/'registry-cache'),
+                'inventory_sha256':'2'*64,'mapping_sha256':'3'*64,
+                'repositories':{},'module_overrides':{}}
+            def verify(args):
+                events.append('verify')
+                return {'inventory_sha256':'1'*64},exported
+            with patch.dict('sys.modules',
+                    {'codex_native_staged_compilation':SimpleNamespace(Admission=Admission)}), \
+                    patch.object(native,'verify_inputs',side_effect=verify):
+                plan=native.command(args,run,self.PATH,self.BASH,owner)
+            self.assertEqual(events,['authorize','verify'])
+            argv=plan['argv']; verb=argv.index('build')
+            self.assertEqual(argv[-3:],['//codex-rs/config:config',
+                '//codex-rs/login:login',
+                '//codex-rs/app-server-protocol:app-server-protocol'])
+            self.assertFalse(any(value.startswith('--test_') for value in argv))
+            self.assertNotIn('--nobuild',argv)
+            self.assertFalse(any(value.startswith('//') for value in argv[verb+1:-3]))
+            for flag in ('--batch','--jobs=1','--host_jvm_args=-Xmx768m',
+                    '--host_jvm_args=-XX:ActiveProcessorCount=1',
+                    '--repository_disable_download','--lockfile_mode=error',
+                    '--sandbox_default_allow_network=false','--remote_executor=',
+                    '--remote_cache=','--disk_cache=','--repo_contents_cache='):
+                self.assertIn(flag,argv)
+            self.assertEqual([value for value in argv
+                if value.startswith('--'+native.CORE_CODEGEN_SETTING+'=')],
+                native.core_codegen_arguments())
+            self.assertEqual(plan['core_codegen'],native.core_codegen_policy())
+            self.assertEqual(selected.read_bytes(),b'locked source\n')
+            self.assertEqual(selected.stat().st_mode&0o777,0o555)
+            self.assertEqual(native.MODES[native.COMBINED_MODE],
+                ('test',(native.CORE,native.CONFIG,native.LOGIN,native.CLI),None))
+            self.assertEqual(native.MODES['schema'],('build',
+                ('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'),None))
+            self.assertEqual(sum(map(len,native.QUALIFICATION_GATES.values())),14)
+
+    def test_wrong_stage_selector_old_lane_or_denied_concrete_owner_stops_before_io(self):
+        class Admission:
+            def authorize_native_mode(self,args):
+                self.calls+=1
+                return self.ready
+        Admission.__module__='codex_native_staged_compilation'
+        class Subclass(Admission):
+            pass
+        Subclass.__module__='codex_native_staged_compilation'
+        changes=(('native_stage',True),('native_stage',2),('profile','standard'),
+            ('manager','user'),('native_staged_compilation',Path('/wrong/selector.json')),
+            ('native_staged_compilation_sha256',None),
+            ('native_staged_compilation_sha256','G'*64),
+            ('native_owned_candidate_cache',True),('reuse_owned_cache',True),
+            ('native_cache_attempt',1),('native_cache_transition',Path('/old/transition')),
+            ('native_cache_phase2',Path('/old/phase2')),
+            ('native_fresh_completion',native.STATE/'native-fresh-completion.json'),
+            ('native_fresh_completion_sha256','b'*64),('native_global_attempt',9),
+            ('native_global_attempt',10))
+        with tempfile.TemporaryDirectory() as temp, patch.dict('sys.modules',
+                {'codex_native_staged_compilation':SimpleNamespace(Admission=Admission)}):
+            root=Path(temp)
+            for index,(field,value) in enumerate(changes):
+                args=self.request(root); setattr(args,field,value)
+                owner=Admission(); owner.calls=0; owner.ready=True
+                run=root/('run-'+str(index)); run.mkdir(mode=0o700)
+                with self.subTest(field=field,value=value), \
+                        patch.object(native,'verify_inputs') as verify:
+                    with self.assertRaises(ValueError):
+                        native.command(args,run,self.PATH,self.BASH,owner)
+                    verify.assert_not_called()
+                    self.assertEqual(owner.calls,0)
+                    self.assertEqual(list(run.iterdir()),[])
+            for index,owner in enumerate((Admission(),Subclass())):
+                owner.calls=0; owner.ready=False
+                run=root/('denied-'+str(index)); run.mkdir(mode=0o700)
+                with patch.object(native,'verify_inputs') as verify:
+                    with self.assertRaises(ValueError):
+                        native.command(self.request(root),run,self.PATH,self.BASH,owner)
+                    verify.assert_not_called()
+                    self.assertEqual(owner.calls,1 if type(owner) is Admission else 0)
+                    self.assertEqual(list(run.iterdir()),[])
+
+
+class StagedCompletionDeadlineModels(unittest.TestCase):
+    """Pure selection/clock models; markers here grant no command authority."""
+    MODES = (native.PRODUCTION_LIBRARIES_MODE,'cli-opt',native.COMBINED_MODE,'schema')
+
+    def request(self,stage=1):
+        from codex_native_fresh_completion import INPUTS
+        return SimpleNamespace(profile='codex-native',manager='system',
+            state_dir=native.STATE,source_dirty='false',source_commit='c'*40,
+            native_mode=self.MODES[stage-1],native_stage=stage,
+            native_staged_compilation=native.STATE/'native-staged-compilation.json',
+            native_staged_compilation_sha256='a'*64,native_aggregate_seconds=3600,
+            native_source_root=Path(INPUTS['source_root']),
+            native_source_sha256=INPUTS['source_receipt_sha256'],
+            native_export_root=Path(INPUTS['export_root']),
+            native_export_sha256=INPUTS['export_receipt_sha256'],
+            native_patch_sha256=list(INPUTS['patch_sha256']),
+            native_owned_candidate_cache=False,native_cache_attempt=None,
+            native_cache_transition=None,native_cache_transition_sha256=None,
+            native_cache_phase2=None,native_cache_phase2_sha256=None,
+            native_fresh_completion=None,native_fresh_completion_sha256=None,
+            native_global_attempt=None,reuse_owned_cache=False)
+
+    def test_each_closed_stage_consumes_setup_inside_original_clock_and_reserve(self):
+        for stage in range(1,5):
+            args=self.request(stage)
+            args.native_deadline=native.completion_deadline(args,100*10**9,
+                SimpleNamespace(staged_verified_before_launch=True))
+            self.assertEqual(args.native_deadline,3700)
+            with patch.object(native.time,'monotonic',return_value=1000):
+                self.assertEqual(native.runtime(args),2580)
+            with patch.object(native.time,'monotonic',return_value=3581):
+                with self.assertRaises(ValueError):
+                    native.runtime(args)
+
+    def test_wrong_selector_role_old_flags_or_larger_budget_cannot_extend(self):
+        changes=(('profile','standard'),('manager','user'),
+            ('state_dir',Path('/wrong/state')),('source_dirty',False),
+            ('native_stage',True),('native_stage',0),('native_stage',5),
+            ('native_mode','analysis'),('native_mode','cli-opt'),
+            ('native_staged_compilation',Path('/wrong/native-staged-compilation.json')),
+            ('native_staged_compilation_sha256',None),
+            ('native_staged_compilation_sha256','G'*64),
+            ('native_aggregate_seconds',7200),('native_aggregate_seconds',3600.0),
+            ('native_owned_candidate_cache',True),('native_cache_attempt',1),
+            ('native_cache_transition',Path('/old/transition.json')),
+            ('native_cache_transition_sha256','b'*64),
+            ('native_cache_phase2',Path('/old/phase2.json')),
+            ('native_cache_phase2_sha256','b'*64),
+            ('native_fresh_completion',native.STATE/'native-fresh-completion.json'),
+            ('native_fresh_completion_sha256','b'*64),
+            ('native_global_attempt',9),('native_global_attempt',10),
+            ('reuse_owned_cache',True))
+        for field,value in changes:
+            args=self.request(); setattr(args,field,value)
+            with self.subTest(field=field,value=value),self.assertRaises(ValueError):
+                native.completion_deadline(args,100*10**9,
+                    SimpleNamespace(staged_verified_before_launch=True))
+
+    def test_partial_selector_and_missing_or_unverified_owner_fail_closed(self):
+        for field in ('native_stage','native_staged_compilation',
+                'native_staged_compilation_sha256'):
+            for remove in (False,True):
+                args=self.request()
+                if remove:
+                    delattr(args,field)
+                else:
+                    setattr(args,field,None)
+                with self.subTest(field=field,remove=remove),self.assertRaises(ValueError):
+                    native.completion_deadline(args,100*10**9,
+                        SimpleNamespace(staged_verified_before_launch=True))
+        for candidate in (None,SimpleNamespace(),
+                SimpleNamespace(staged_verified_before_launch=False),
+                SimpleNamespace(staged_verified_before_launch=1),
+                SimpleNamespace(fresh_verified_before_launch=True),
+                SimpleNamespace(phase2_verified_before_launch=True)):
+            with self.subTest(candidate=candidate),self.assertRaises(ValueError):
+                native.completion_deadline(self.request(),100*10**9,candidate)
+
+    def test_stage_mode_pair_cannot_reuse_another_successors_phase(self):
+        for stage in range(1,5):
+            for mode in self.MODES:
+                if mode == self.MODES[stage-1]:
+                    continue
+                args=self.request(stage); args.native_mode=mode
+                with self.subTest(stage=stage,mode=mode),self.assertRaises(ValueError):
+                    native.completion_deadline(args,100*10**9,
+                        SimpleNamespace(staged_verified_before_launch=True))
+
+
+class FreshCompletionDeadlineModels(unittest.TestCase):
+    def request(self, mode=native.COMBINED_MODE, attempt=9):
+        return SimpleNamespace(profile='codex-native', manager='system',
+            native_owned_candidate_cache=False, native_mode=mode,
+            native_global_attempt=attempt, native_cache_attempt=None,
+            native_fresh_completion=native.STATE/'native-fresh-completion.json',
+            native_fresh_completion_sha256='a'*64,
+            native_cache_phase2=None, native_cache_phase2_sha256=None,
+            native_cache_transition=None, native_cache_transition_sha256=None,
+            native_aggregate_seconds=3600)
+
+    def test_verified_fresh_roles_keep_consumed_setup_inside_original3600_and_reserve(self):
+        for mode, attempt in ((native.COMBINED_MODE,9),('schema',10)):
+            args=self.request(mode,attempt)
+            args.native_deadline=native.completion_deadline(args,100*10**9,
+                SimpleNamespace(fresh_verified_before_launch=True))
+            with patch.object(native.time,'monotonic',return_value=1000):
+                self.assertEqual(native.runtime(args),2580)
+            with patch.object(native.time,'monotonic',return_value=3581):
+                with self.assertRaises(ValueError):native.runtime(args)
+
+    def test_fresh_budget_refuses_unverified_selector_oldcache_and_extra_role(self):
+        for field,value in (('native_global_attempt',1),('native_global_attempt',11),
+                ('native_mode','cli-opt'),('native_owned_candidate_cache',True),
+                ('native_cache_attempt',1),('native_aggregate_seconds',7200),
+                ('native_fresh_completion_sha256',None),
+                ('native_fresh_completion',Path('/private/native-fresh-completion.json')),
+                ('native_cache_phase2',Path('/public/phase2.json')),
+                ('native_cache_phase2_sha256','b'*64)):
+            args=self.request(); setattr(args,field,value)
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                native.completion_deadline(args,100*10**9,
+                    SimpleNamespace(fresh_verified_before_launch=True))
+        for ready in (None,False):
+            with self.assertRaises(ValueError):
+                native.completion_deadline(self.request(),100*10**9,
+                    SimpleNamespace(fresh_verified_before_launch=ready))
+
+
 class NativeCompletionBudgetModels(unittest.TestCase):
     def request(self, phase2=True):
         return SimpleNamespace(profile='codex-native', manager='system',

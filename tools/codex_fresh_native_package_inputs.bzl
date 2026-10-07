@@ -1,5 +1,6 @@
 """Finite independently pinned fresh-native package inputs; no tool execution."""
 _ROLES = ["source","export","compile","qualification_run","qualification","qualification_xml","schema_run","config_schema","codex"]
+_STAGED_ROLES = _ROLES + ["library_run","library_artifacts","compile_artifacts","qualification_artifacts","schema_artifacts"]
 _HOME = "/home/jess/.local/state/omux-execution-20261005/"
 _NATIVE = "/srv/fast-local/jess/state/codex/omux-native-candidate-20261007/"
 
@@ -55,7 +56,9 @@ def _selected_impl(ctx):
     if len(raw) > 16 * 1024 * 1024:
         fail("fresh package selection exceeds finite metadata bound")
     value = json.decode(raw)
-    if value.get("kind") != "omux-fresh-native-package-selection-v1" or sorted(value.get("files", {}).keys()) != sorted(_ROLES):
+    staged = value.get("kind") == "omux-staged-native-package-selection-v1"
+    roles = _STAGED_ROLES if staged else _ROLES
+    if (not staged and value.get("kind") != "omux-fresh-native-package-selection-v1") or sorted(value.get("files", {}).keys()) != sorted(roles):
         fail("fresh package exact input role schema differs")
     if sorted(value.get("protocol_schema_roots", {}).keys()) != ["experimental","stable"]:
         fail("fresh package requires both generated JSON schema roots")
@@ -63,6 +66,14 @@ def _selected_impl(ctx):
     if not pins or len(pins) > 4096:
         fail("fresh package protocol JSON inventory bound")
     entries = dict(value["files"])
+    if staged:
+        extra = value.get("staged_artifact_files", {})
+        if type(extra) != "dict" or len(extra) != 7:
+            fail("staged package requires exact three libraries and four actual C evidence files")
+        for path,pin in extra.items():
+            if path != pin.get("path"):
+                fail("staged package explicit output map key differs")
+            entries["staged/"+path] = pin
     for name,pin in pins.items():
         if not (name.startswith("stable/json/") or name.startswith("experimental/json/")) or not name.endswith(".json") or ".." in name.split("/"):
             fail("fresh package protocol JSON member name differs")
@@ -71,14 +82,39 @@ def _selected_impl(ctx):
     for index,role in enumerate(sorted(entries)):
         pin = entries[role]
         source = pin.get("path","")
-        if sorted(pin.keys()) != ["bytes","path","sha256"] or not _path(source) or not _hash(pin["sha256"]) or type(pin["bytes"]) != "int" or pin["bytes"] < 0 or pin["bytes"] > 1073741824:
+        expected_keys = ["bytes","mode","path","sha256"] if role.startswith("staged/") else ["bytes","path","sha256"]
+        if sorted(pin.keys()) != expected_keys or not _path(source) or not _hash(pin["sha256"]) or type(pin["bytes"]) != "int" or pin["bytes"] < 0 or pin["bytes"] > 1073741824:
             fail("fresh package selected file pin differs")
+        if role.startswith("staged/"):
+            if type(pin["mode"]) != "int" or pin["mode"] not in [256, 288, 292, 384, 416, 420] or pin["bytes"] <= 0:
+                fail("staged file mode/custody/positive size differs")
+            if not source.startswith(_NATIVE):
+                fail("staged extra output leaves exact public native state")
+            parts = source[len(_NATIVE):].split("/")
+            library = False
+            if len(parts) == 10 and parts[0].startswith("cache-v2-") and _hash(parts[0][len("cache-v2-"):]) and parts[1:5] == ["output-base","execroot","_main","bazel-out"] and parts[5].endswith("-opt") and parts[6:8] == ["bin","codex-rs"]:
+                crates = {"config":"codex_config", "login":"codex_login", "app-server-protocol":"codex_app_server_protocol"}
+                if parts[8] in crates:
+                    prefix = "lib"+crates[parts[8]]+"-"
+                    leaf = parts[9]
+                    decimal = leaf[len(prefix):-len(".rlib")] if leaf.startswith(prefix) and leaf.endswith(".rlib") else ""
+                    library = 0 < len(decimal) and len(decimal) <= 20 and all([c in "0123456789" for c in decimal.elems()])
+            qualified = value["files"]["qualification_run"]["path"]
+            root = qualified[:-len("receipt.json")] if qualified.endswith("/receipt.json") else ""
+            evidence = (source == root+"test-evidence.json") or (source.startswith(root+"test-evidence/") and len(parts) == 3 and all([c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-" for c in parts[2].elems()]))
+            if not (library or evidence) or pin["bytes"] > (268435456 if library else 8388608):
+                fail("staged extra output leaves recorded library or actual copied qualification scope")
         if role in ["source","export"]:
             if receipt_producer(role, source) == None:
                 fail("fresh package source/export leaves exact declared producer outputs")
-        elif role in ["compile","qualification_run","schema_run"]:
+        elif role in ["compile","qualification_run","schema_run","library_run"]:
             if not source.startswith(_NATIVE) or not source.endswith("/receipt.json") or len(source[len(_NATIVE):].split("/")) != 2:
                 fail("fresh package guard receipt leaves exact owned native invocation")
+        elif role in ["library_artifacts","compile_artifacts","qualification_artifacts","schema_artifacts"]:
+            if not source.startswith(_NATIVE) or not source.endswith("/native-staged-artifacts.json") or len(source[len(_NATIVE):].split("/")) != 2:
+                fail("staged artifact envelope leaves exact actual native invocation")
+        elif role.startswith("staged/"):
+            pass  # Exact finite public library/evidence scopes checked above.
         elif role in ["qualification","qualification_xml"]:
             suffix = "/native-qualification.json" if role=="qualification" else "/native-qualification.xml"
             if not source.startswith(_NATIVE) or not source.endswith(suffix) or len(source[len(_NATIVE):].split("/")) != 2:
@@ -132,7 +168,7 @@ def _selected_impl(ctx):
     ctx.file("package-selection.sha256",ctx.attr.sha256+"\n",executable=False)
     ctx.file("input-aliases.json",json.encode(aliases)+"\n",executable=False)
     names += ["package-selection.json","package-selection.sha256","input-aliases.json"]
-    ctx.file("BUILD.bazel","exports_files("+repr(names)+")\nfilegroup(name='inputs',srcs="+repr(names)+")\n")
+    ctx.file("BUILD.bazel","exports_files("+repr(names)+")\nfilegroup(name='inputs',srcs="+repr(names)+",visibility=['//visibility:public'])\n")
     
 codex_fresh_native_package_inputs = repository_rule(
     implementation=_selected_impl,

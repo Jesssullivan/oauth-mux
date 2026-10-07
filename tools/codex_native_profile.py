@@ -17,6 +17,41 @@ from codex_live_source import BASE_RECEIPT_SHA, BASE_INVENTORY, COMMIT, GRAPH, w
 BAZEL = '/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel'
 BAZEL_VERSION = '9.0.1'
 MODULE_RESOLUTION_POLICY = 'locked-registry-module-identities-with-sealed-repository-overrides-v1'
+CORE_CODEGEN_SETTING = '@rules_rust//rust/settings:experimental_per_crate_rustc_flag'
+CORE_CODEGEN_ROOT = 'codex-rs/core/src/lib.rs'
+CORE_CODEGEN_OPTIONS = (
+    '-Copt-level=0',
+    '-Clto=off',
+    '-Ccodegen-units=16',
+    '-Cdebug-assertions=off',
+    '-Coverflow-checks=off',
+)
+
+
+def core_codegen_policy():
+    """Fixed target-only tuple; no caller/env-selected compiler options."""
+    policy = {
+        'kind': 'omux-native-fixed-core-codegen-v1',
+        'configuration': 'opt',
+        'setting': CORE_CODEGEN_SETTING,
+        'crate_root_prefix': CORE_CODEGEN_ROOT,
+        'options': list(CORE_CODEGEN_OPTIONS),
+        'applies_to': 'target-configuration-only',
+        'rust_version': '1.95.0',
+        'rules_rust_repository': 'rules_rs++rules_rust+rules_rust',
+    }
+    raw = json.dumps(policy, sort_keys=True, separators=(',', ':')).encode()
+    return {'policy': policy, 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def core_codegen_arguments():
+    # Pinned rules_rust applies this literal crate-root prefix only in target
+    # configuration and appends the options after mode/LTO/codegen defaults.
+    # The same root compiles both codex-core and its actual unit-test binary.
+    return ['--' + CORE_CODEGEN_SETTING + '=' + CORE_CODEGEN_ROOT + '@' + flag
+        for flag in CORE_CODEGEN_OPTIONS]
+
+
 STATE = Path('/srv/fast-local/jess/state/codex/omux-native-candidate-20261007')
 CORE = '//codex-rs/core:core-unit-tests'
 CONFIG = '//codex-rs/config:config-unit-tests'
@@ -44,6 +79,9 @@ QUALIFICATION_GATES = {
 PRODUCTION = ('//codex-rs/core:core', '//codex-rs/app-server:app-server', '//codex-rs/config:config', '//codex-rs/app-server-protocol:app-server-protocol', '//codex-rs/tui:tui', '//codex-rs/cli:codex', '//codex-rs/config-schema:codex-write-config-schema', '//bazel/schema:public-schema-bundle')
 CLI = '//codex-rs/cli:codex'
 COMBINED_MODE = 'qualification-cli'
+PRODUCTION_LIBRARIES_MODE = 'staged-libraries'
+PRODUCTION_LIBRARIES = ('//codex-rs/config:config', '//codex-rs/login:login',
+    '//codex-rs/app-server-protocol:app-server-protocol')
 CLI_CONTEXT_FIELDS = frozenset(('invocation_id', 'output_base',
     'source_receipt_sha256', 'export_receipt_sha256', 'source_inventory_sha256',
     'export_inventory_sha256', 'candidate_cache_key', 'candidate_provenance_sha256',
@@ -51,6 +89,7 @@ CLI_CONTEXT_FIELDS = frozenset(('invocation_id', 'output_base',
     'source_and_export_verified_after_cleanup'))
 MAX_CLI_BYTES = 1024 * 1024 * 1024
 MODES = {
+    PRODUCTION_LIBRARIES_MODE: ('build', PRODUCTION_LIBRARIES, None),
     COMBINED_MODE: ('test', (CORE, CONFIG, LOGIN, CLI), None),
     'qualification': ('test', (CORE, CONFIG, LOGIN), None),
     'analysis': ('build', PRODUCTION, None), 'production8': ('build', PRODUCTION, None),
@@ -122,7 +161,43 @@ def copy_source(root, receipt, run):
     os.chmod(run / 'native-input', 0o555)
     return run / 'native-input/source'
 
+def production_libraries_admission(args, candidate):
+    """A new fixed build mode needs the actual separately qualified IO owner."""
+    require(getattr(args, 'profile', None) == 'codex-native'
+        and getattr(args, 'manager', None) == 'system'
+        and type(getattr(args, 'native_stage', None)) is int
+        and args.native_stage == 1
+        and getattr(args, 'native_staged_compilation', None)
+            == STATE / 'native-staged-compilation.json'
+        and str(args.native_staged_compilation)
+            == str(STATE / 'native-staged-compilation.json')
+        and isinstance(getattr(args, 'native_staged_compilation_sha256', None), str)
+        and re.fullmatch(r'[0-9a-f]{64}', args.native_staged_compilation_sha256)
+        and getattr(args, 'native_owned_candidate_cache', False) is False
+        and getattr(args, 'reuse_owned_cache', False) is False
+        and all(getattr(args, name, None) is None for name in (
+            'native_cache_attempt', 'native_cache_transition',
+            'native_cache_transition_sha256', 'native_cache_phase2',
+            'native_cache_phase2_sha256', 'native_fresh_completion',
+            'native_fresh_completion_sha256', 'native_global_attempt')),
+        'fixed libraries require exclusive successor stage1 selection')
+    # Legacy owners and caller-shaped readiness markers cannot reach/import
+    # the new owner. No fallback when that separately applied module is absent.
+    require(candidate is not None
+        and type(candidate).__module__ == 'codex_native_staged_compilation',
+        'fixed libraries require qualified successor Admission')
+    try:
+        from codex_native_staged_compilation import Admission
+    except ImportError:
+        raise ValueError('qualified successor Admission is unavailable') from None
+    require(type(candidate) is Admission
+        and candidate.authorize_native_mode(args) is True,
+        'fixed libraries require actual successor mode authorization')
+
+
 def command(args, run, locked_path, bash, candidate=None):
+    if args.native_mode == PRODUCTION_LIBRARIES_MODE:
+        production_libraries_admission(args, candidate)
     source_io.DEADLINE = args.native_deadline
     receipt, exported = verify_inputs(args)
     # validate_export has already qualified every explicitly selected public
@@ -154,6 +229,7 @@ def command(args, run, locked_path, bash, candidate=None):
         '--platforms=//codex-rs/core:owner-linux', '--extra_toolchains=//codex-rs/core:owner-local-test-toolchain',
         '--workspace_status_command=' + str(status), '--symlink_prefix=' + str(run / 'bazel-'),
         '--noenable_runfiles', '--nobuild_runfile_links']
+    argv += core_codegen_arguments()
     for name, directory in sorted(exported['repositories'].items()):
         require(re.fullmatch(r'[A-Za-z0-9._+~-]{1,256}', name) and Path(directory) == args.native_export_root / 'repositories' / name, 'repository mapping refused')
         argv.append('--override_repository=' + name + '=' + str(directory))
@@ -177,6 +253,7 @@ def command(args, run, locked_path, bash, candidate=None):
         'candidate_cache_root': str(candidate.root) if candidate is not None else None,
         'candidate_output_base': str(candidate.lease.output_base) if candidate is not None else None,
         'export_inventory_sha256': exported['inventory_sha256'], 'mapping_sha256': exported['mapping_sha256'],
+        'core_codegen': core_codegen_policy(),
         'environment': {'PATH': locked_path, 'USE_BAZEL_VERSION': BAZEL_VERSION,
             'HOME': str(run / 'home'), 'XDG_CACHE_HOME': str(run / 'home/cache'),
             'XDG_CONFIG_HOME': str(run / 'home/config'), 'XDG_STATE_HOME': str(run / 'home/state')}}
@@ -191,7 +268,35 @@ def completion_deadline(args, original_entry_ns, candidate=None):
     require((path is None) == (pin is None), 'native phase2 complete selector required')
     seconds = getattr(args, 'native_aggregate_seconds', 1200)
     require(type(seconds) is int, 'native aggregate seconds must be exact integer')
-    if path is None:
+    staged_values = (getattr(args, 'native_staged_compilation', None),
+        getattr(args, 'native_staged_compilation_sha256', None),
+        getattr(args, 'native_stage', None))
+    if any(value is not None for value in staged_values):
+        import codex_native_staged_compilation as staged
+        require(staged.selected(args) and seconds == 3600
+            and candidate is not None
+            and getattr(candidate, 'staged_verified_before_launch', None) is True,
+            'staged native deadline requires independently verified admission')
+        return (original_entry_ns + seconds * 10**9) / 10**9
+    fresh_path = getattr(args, 'native_fresh_completion', None)
+    fresh_pin = getattr(args, 'native_fresh_completion_sha256', None)
+    require((fresh_path is None) == (fresh_pin is None), 'fresh completion exact selector pair required')
+    if fresh_path is not None:
+        require(args.profile == 'codex-native' and args.manager == 'system'
+            and args.native_owned_candidate_cache is False
+            and Path(fresh_path) == STATE / 'native-fresh-completion.json'
+            and str(fresh_path) == str(STATE / 'native-fresh-completion.json')
+            and (args.native_mode, getattr(args, 'native_global_attempt', None))
+                in ((COMBINED_MODE, 9), ('schema', 10))
+            and path is None and pin is None
+            and getattr(args, 'native_cache_transition', None) is None
+            and getattr(args, 'native_cache_transition_sha256', None) is None
+            and getattr(args, 'native_cache_attempt', None) is None
+            and seconds == 3600 and isinstance(fresh_pin, str)
+            and re.fullmatch(r'[0-9a-f]{64}', fresh_pin)
+            and candidate is not None and candidate.fresh_verified_before_launch is True,
+            'fresh completion deadline requires independently verified new admission')
+    elif path is None:
         require(seconds == 1200, 'ordinary native budget must remain unchanged')
     else:
         require(args.profile == 'codex-native' and args.manager == 'system'

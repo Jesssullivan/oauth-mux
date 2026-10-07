@@ -199,6 +199,9 @@ def validate_export_producer(selection, exported):
 
 def validate_selection_paths(selection):
     """Refuse reads outside the exact public producer/guard output namespaces."""
+    if selection.get('kind') == 'omux-staged-native-package-selection-v1':
+        from codex_staged_native_package_consumer import validate_paths
+        return validate_paths(selection)
     home = '/home/jess/.local/state/omux-execution-20261005/'
     require(selection['kind'] == SELECTION_KIND and set(selection['files']) == ROLES,
         'fresh runtime exact operator selection roles')
@@ -275,11 +278,100 @@ def validate_protocol_inventory(selection):
         'fresh protocol JSON subtree complete membership differs')
 
 
+def validate_fresh_completion_receipts(selection, values, source, exported):
+    from codex_native_fresh_completion import consumed_dispatches
+    from codex_native_profile import core_codegen_policy
+    import codex_native_profile as native
+    require(selection['files']['compile'] == selection['files']['qualification_run']
+        and values['compile'] == values['qualification_run'], 'fresh completion actual combined receipt required')
+    history = consumed_dispatches()
+    require(len(history) == 8, 'fresh completion exact eight consumed dispatches')
+    receipts, key = {}, None
+    policy = core_codegen_policy()
+    for role, attempt, mode, targets in (
+            ('qualification_run',9,COMBINED_MODE,(*tuple(QUALIFICATION_GATES),CLI)),
+            ('schema_run',10,'schema',('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'))):
+        value = parse(values[role])
+        require(value['profile'] == 'codex-native' and type(value['exit']) is int and value['exit'] == 0
+            and type(value['workload_exit']) is int and value['workload_exit'] == 0
+            and value['descendants_empty'] is True and value['controller_failure'] is None
+            and value['test_evidence']['state'] == ('preserved' if attempt == 9 else 'not-applicable')
+            and value['native_candidate_cache'] is None
+            and value['native_sdk']['mode'] == mode and value['targets'] == list(targets)
+            and value['native_sdk']['source_and_export_verified_after_cleanup'] is True
+            and value['native_sdk']['source_receipt_sha256'] == selection['files']['source']['sha256']
+            and value['native_sdk']['export_receipt_sha256'] == selection['files']['export']['sha256'],
+            'fresh completion successful guarded action required')
+        candidate = value['native_fresh_completion']
+        require(candidate['kind'] == 'omux-native-fresh-core-completion-v1'
+            and type(candidate['global_attempt']) is int and candidate['global_attempt'] == attempt
+            and type(candidate['max_global_attempts']) is int and candidate['max_global_attempts'] == 10
+            and candidate['verified_before_launch'] is True and candidate['verified_after_cleanup'] is True
+            and HASH.fullmatch(candidate['key']) and HASH.fullmatch(candidate['provenance_sha256'])
+            and candidate['key'] == candidate['provenance_sha256'] and candidate['core_codegen'] == policy,
+            'fresh completion dedicated provenance required')
+        require(value['manager'] == 'system' and value['source_dirty'] == 'false'
+            and re.fullmatch(r'[0-9a-f]{40}',value['source_commit'])
+            and candidate['source_commit'] == value['source_commit']
+            and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',value['id'])
+            and value['unit'] == 'omux-execution-'+value['id']+'.service'
+            and value['output_base'] == candidate['output_base']
+            and HASH.fullmatch(candidate['selector_sha256']), 'fresh completion owned clean controller binding')
+        observed = (candidate['key'],candidate['provenance_sha256'],candidate['workspace'],candidate['output_base'])
+        require(key is None or key == observed, 'fresh completion same new output namespace required')
+        key = observed
+        root = STATE/('cache-v2-'+key[0])
+        sdk = value['native_sdk']
+        require(canonical_path(key[2]) == root/'native-input/source'
+            and canonical_path(key[3]) == root/'output-base'
+            and sdk['plan']['candidate_output_base'] == key[3]
+            and sdk['plan']['source_inventory_sha256'] == source['inventory_sha256']
+            and sdk['plan']['export_inventory_sha256'] == exported['inventory_sha256']
+            and sdk['plan']['core_codegen'] == policy
+            and sdk['aggregate_seconds'] == 3600
+            and type(sdk['original_entry_monotonic_ns']) is int
+            and type(sdk['original_deadline_monotonic_ns']) is int
+            and sdk['original_deadline_monotonic_ns']-sdk['original_entry_monotonic_ns'] == 3600*10**9
+            and sdk['plan']['argv'][0] == BAZEL
+            and canonical_path(selection['files'][role]['path']) == STATE/value['id']/'receipt.json',
+            'fresh completion exact policy source output and original deadline required')
+        argv = sdk['plan']['argv']
+        require(sdk['plan']['cwd'] == key[2]
+            and sdk['plan']['mapping_sha256'] == exported['mapping_sha256']
+            and sdk['plan']['environment']['USE_BAZEL_VERSION'] == native.BAZEL_VERSION
+            and [flag for flag in argv if flag.startswith('--'+native.CORE_CODEGEN_SETTING+'=')]
+                == native.core_codegen_arguments()
+            and all(flag in argv for flag in ('--lockfile_mode=error','--repository_disable_download',
+                '--sandbox_default_allow_network=false','--jobs=1','--host_jvm_args=-Xmx768m',
+                '--repo_contents_cache=','--disk_cache=','--remote_executor=','--remote_cache='))
+            and (attempt != 9 or '--local_test_jobs=1' in argv), 'fresh completion fixed emitted plan required')
+        expected = list(history)
+        if attempt == 10:
+            prior = receipts['qualification_run']
+            expected.append({'id':prior['id'],'sha256':selection['files']['qualification_run']['sha256'],
+                'cache_key':key[0],'attempt':9})
+        require(candidate['previous_dispatches'] == expected, 'fresh completion all consumed dispatches retained')
+        receipts[role] = value
+    qualification, schema = receipts['qualification_run'], receipts['schema_run']
+    require(qualification['id'] != schema['id'] and HASH.fullmatch(qualification['graph_sha256'])
+        and qualification['graph_sha256'] == schema['graph_sha256'], 'fresh completion same frozen graph required')
+    require(qualification['source_commit'] == schema['source_commit']
+        and qualification['native_fresh_completion']['selector_sha256'] ==
+            schema['native_fresh_completion']['selector_sha256'], 'fresh completion same source selector required')
+    receipts['compile'] = qualification
+    return receipts,key,True
+
+
 def validate_action_receipts(selection, values, source, exported):
     """Join real successful action receipts; retain the historical three-role chain."""
+    if selection.get('kind') == 'omux-staged-native-package-selection-v1':
+        from codex_staged_native_package_consumer import validate_receipts
+        return validate_receipts(selection,values,source,exported)
     receipts = {}
     cache = None
     combined = selection['files']['compile'] == selection['files']['qualification_run']
+    if parse(values['qualification_run']).get('native_fresh_completion') is not None:
+        return validate_fresh_completion_receipts(selection, values, source, exported)
     history = parse(values['qualification_run'])['native_candidate_cache'].get('transition_history') if combined else None
     phase2 = combined and isinstance(history, list) and len(history) == 2
     maximum = 7 if phase2 else 6
@@ -397,15 +489,18 @@ def validate_action_receipts(selection, values, source, exported):
 
 
 def validate_combined_cli(group, selection, values, receipt, source, exported):
+    fresh_candidate = receipt.get('native_fresh_completion')
+    candidate = receipt['native_staged_compilation'] if selection.get('kind') == 'omux-staged-native-package-selection-v1' else (
+        fresh_candidate if fresh_candidate is not None else receipt['native_candidate_cache'])
     context = {
         'invocation_id': receipt['id'],
-        'output_base': receipt['native_candidate_cache']['output_base'],
+        'output_base': candidate['output_base'],
         'source_receipt_sha256': selection['files']['source']['sha256'],
         'export_receipt_sha256': selection['files']['export']['sha256'],
         'source_inventory_sha256': source['inventory_sha256'],
         'export_inventory_sha256': exported['inventory_sha256'],
-        'candidate_cache_key': receipt['native_candidate_cache']['key'],
-        'candidate_provenance_sha256': receipt['native_candidate_cache']['provenance_sha256'],
+        'candidate_cache_key': candidate['key'],
+        'candidate_provenance_sha256': candidate['provenance_sha256'],
         'controller_graph_sha256': receipt['graph_sha256'],
         'bazel': BAZEL, 'workload_exit': 0, 'descendants_empty': True,
         'source_and_export_verified_after_cleanup': True,
@@ -425,11 +520,20 @@ def validate_combined_cli(group, selection, values, receipt, source, exported):
         and len(values['codex']) == pin['bytes'] and digest(values['codex']) == pin['sha256'],
         'combined actual CLI bytes differ from post-cleanup artifact evidence')
 
-def validate_chain(selection, values, protocol_values):
+def package_roles(selection):
+    if selection.get('kind') == 'omux-staged-native-package-selection-v1':
+        from codex_staged_native_package_consumer import ROLES as staged_roles
+        return staged_roles
+    require(selection.get('kind') == SELECTION_KIND, 'fresh exact selection kind required')
+    return ROLES
+
+
+def validate_chain(selection, values, protocol_values, staged_values=None):
     """Consume independently selected source/build/test/schema evidence bytes."""
     validate_selection_paths(selection)
-    require(selection['kind'] == SELECTION_KIND and set(selection['files']) == ROLES
-        and set(values) == ROLES, 'fresh runtime exact input roles')
+    roles = package_roles(selection)
+    require(set(selection['files']) == roles and set(values) == roles,
+        'fresh runtime exact input roles')
     for role, value in values.items():
         pin = selection['files'][role]
         require(digest(value) == pin['sha256'] and len(value) == pin['bytes'],
@@ -470,6 +574,11 @@ def validate_chain(selection, values, protocol_values):
         and inventory[declaration['path']]['sha256'] == declaration['after_sha256'],
         'fresh runtime generated schema source declaration differs')
     receipts, cache, combined = validate_action_receipts(selection, values, source, exported)
+    staged_chain = None
+    if selection['kind'] == 'omux-staged-native-package-selection-v1':
+        from codex_staged_native_package_consumer import validate_artifacts
+        require(isinstance(staged_values,dict), 'staged actual qualification logs required')
+        staged_chain = validate_artifacts(selection,values,protocol_values,staged_values,receipts)
     group = parse(values['qualification'])
     require(group['schema'] == 'omux-native-grouped-qualification-v1'
         and group['passed'] == 14 and group['failed'] == group['ignored'] == 0
@@ -545,11 +654,19 @@ def validate_chain(selection, values, protocol_values):
         'schema_invocation_id':receipts['schema_run']['id'],
         'input_files': selection['files'], 'protocol_schema_files':schema_files,
         'protocol_schema_roots':selection['protocol_schema_roots'],
-        'qualified_tests':group['targets']}
+        'qualified_tests':group['targets'],
+        **({'fresh_completion': {'kind':'omux-native-fresh-core-completion-v1',
+            'qualification':receipts['qualification_run']['native_fresh_completion'],
+            'schema':receipts['schema_run']['native_fresh_completion']}}
+            if receipts['qualification_run'].get('native_fresh_completion') is not None else {})}
     if combined:
         chain.update(compile_evidence_kind='successful-explicit-cli-target-in-qualification',
-            cli_artifact=group['cli_artifact'], cli_context=group['cli_context'],
-            candidate_cache_transition=receipts['qualification_run']['native_candidate_cache']['transition_history'])
+            cli_artifact=group['cli_artifact'], cli_context=group['cli_context'])
+        if staged_chain is not None:
+            chain['compile_evidence_kind'] = 'staged-explicit-cli-build-rehashed-in-qualification'
+            chain['native_staged_compilation'] = staged_chain
+        elif receipts['qualification_run'].get('native_fresh_completion') is None:
+            chain['candidate_cache_transition'] = receipts['qualification_run']['native_candidate_cache']['transition_history']
     return chain
 
 
@@ -628,9 +745,9 @@ def verify_runtime_files(payload, receipt):
     return manifest, {n:v for n,v in files.items() if n != runtime.MANIFEST}
 
 
-def package(selection, values, protocol_values, runtime_files, args, output):
+def package(selection, values, protocol_values, runtime_files, args, output, staged_values=None):
     validate_protocol_inventory(selection)
-    chain = validate_chain(selection, values, protocol_values)
+    chain = validate_chain(selection, values, protocol_values,staged_values)
     original = values['codex']
     require(0 < len(original) <= runtime.MAX_ORIGINAL_BYTES,
         'fresh runtime original backend bound')
@@ -706,6 +823,12 @@ def package(selection, values, protocol_values, runtime_files, args, output):
             runtime.MAX_ORIGINAL_BYTES if role=='codex' else MAX_METADATA)
     for pin in selection['protocol_schema_files'].values():
         read_selected(canonical_path(pin['path']),pin,MAX_METADATA)
+    if selection.get('kind') == 'omux-staged-native-package-selection-v1':
+        from codex_staged_native_package_consumer import validate_receipts,envelopes,read_extra
+        receipts,_,_ = validate_receipts(selection,values,parse(values['source']),parse(values['export']))
+        after = read_extra(selection,envelopes(selection,values,receipts),receipts)
+        require(validate_chain(selection,values,protocol_values,after) == chain,
+            'staged complete chain/output rehash changed after packaging cleanup')
     validate_protocol_inventory(selection)
     output_file(output, 'fresh-native-runtime.tar.gz', payload, 0o444)
     output_file(output, 'runtime-manifest.json', encoded(manifest), 0o444)
@@ -739,14 +862,24 @@ def main():
     aliases = parse(args.input_aliases.read_bytes())
     entries = {**selection['files'],
         **{'protocol/'+n:p for n,p in selection['protocol_schema_files'].items()}}
+    staged_values = None
+    if selection.get('kind') == 'omux-staged-native-package-selection-v1':
+        entries.update({'staged/'+name:pin for name,pin in selection['staged_artifact_files'].items()})
     require(set(aliases) == set(entries), 'fresh runtime declared input aliases differ')
     values, protocol_values, protocol_bytes = {}, {}, 0
     args.selected_sha256 = sha
     runfiles = _ROOT.parent
-    for role, pin in entries.items():
+    def selected_alias(role,pin):
         alias = runfiles/aliases[role]
         path = alias.resolve(strict=True)
         require(str(path) == pin['path'], 'fresh runtime declared alias resolution differs')
+        return path
+    if selection.get('kind') == 'omux-staged-native-package-selection-v1':
+        from codex_staged_native_package_consumer import load_inputs
+        values,protocol_values,staged_values = load_inputs(selection,
+            lambda role,pin,maximum:read_selected(selected_alias(role,pin),pin,maximum),selected_alias)
+    for role, pin in (() if staged_values is not None else entries.items()):
+        path = selected_alias(role,pin)
         maximum = runtime.MAX_ORIGINAL_BYTES if role=='codex' else MAX_METADATA
         value = read_selected(path,pin,maximum)
         if role.startswith('protocol/'):
@@ -759,9 +892,11 @@ def main():
     runtime_files = runtime.read_runtime_inputs(args.runtime_files_manifest, runfiles)
     require(sum(p.stat().st_size for p in runtime_files) <= runtime.MAX_DECLARED_RUNTIME_BYTES,
         'fresh declared runtime library bound')
-    receipt = package(selection,values,protocol_values,runtime_files,args,output)
+    receipt = package(selection,values,protocol_values,runtime_files,args,output,staged_values)
     # Prove all selected original inputs remain byte-identical after packaging.
     for role,pin in entries.items():
+        if role.startswith('staged/'):
+            continue  # read_extra streamed and rehashed each declared library/log after cleanup.
         read_selected(canonical_path(pin['path']),pin,
             runtime.MAX_ORIGINAL_BYTES if role=='codex' else MAX_METADATA)
     print('fresh experimental native runtime package completed; provider proof unrun')
