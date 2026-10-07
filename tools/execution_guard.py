@@ -36,7 +36,9 @@ CGROUP = {'memory.max': '4294967296', 'memory.swap.max': '0',
 LIMIT = 8 * 1024 * 1024
 FREE_FLOOR = 2 * 1024 * 1024 * 1024
 DIAGNOSTIC_STAGES = ('arguments/profile', 'privilege-metadata', 'tool/closure',
-                     'state-custody', 'state-free-space', 'operatorinputs', 'lock', 'private-epoch')
+                     'state-custody', 'state-free-space', 'operatorinputs', 'lock', 'private-epoch',
+                     'effective-properties', 'resident-bindings', 'resident-custody',
+                     'tool-environment', 'worker-identity', 'workload-admission')
 DIAGNOSTIC_STAGE = 'arguments/profile'
 CONTROLLER_TIMEOUT = 15
 CLEANUP_SECONDS = 15
@@ -1891,27 +1893,33 @@ def _main(argv, admission_resources):
             resources.callback(cgroup_pin.close)
             original_pid = int(actual.get('MainPID', '0'))
             original_ticks = process_start_ticks(original_pid)
+            DIAGNOSTIC_STAGE = 'effective-properties'
             verify(actual, cgroup, args.manager, isolation, args.profile,
                    runtime_seconds=delivery_runtime_seconds)
             if native_sdk:
                 native_sdk.verify_readonly(actual, args, native_plan)
             if login_input is not None:
                 if args.profile == 'resident-enrollment':
+                    DIAGNOSTIC_STAGE = 'resident-bindings'
                     login_input.verify_bindings(actual,run)
                 else:
                     login_input.verify_bindings(actual)
                 observed_properties = login.projection(observed_properties, verified=True)
+                if args.profile == 'resident-enrollment':
+                    DIAGNOSTIC_STAGE = 'resident-custody'
                 login_input.recheck()
             if live_input is not None:
                 live.verify_binding(actual, live_input.binding())
                 observed_properties = live.receipt_properties(observed_properties, verified=True)
                 live_input.recheck()
+            DIAGNOSTIC_STAGE = 'tool-environment'
             exported = set(actual.get('Environment', '').split())
             if not {key + '=' + value for key, value in environment.items()}.issubset(exported):
                 raise ValueError('effective pinned tool environment rejected')
             if actual.get('ActiveState') != 'active':
                 raise ValueError('service is not active before admission')
             if args.manager == 'system':
+                DIAGNOSTIC_STAGE = 'worker-identity'
                 identity_maps = system_identity(actual, int(actual.get('MainPID', '0')))
             check_free_space(args.state_dir)
             if site:
@@ -1951,6 +1959,7 @@ def _main(argv, admission_resources):
                     effective_writable_binds=actual.get('BindPaths', '').split())
             epoch_start_ns = time.time_ns()
             if not yoga:
+                DIAGNOSTIC_STAGE = 'workload-admission'
                 pids_observation.sample(cgroup_pin, 'baseline')
                 (run / 'go').touch(mode=0o600, exist_ok=False)
             deadline = ((args.yoga_deadline_monotonic_ns - yoga.CLEANUP_RESERVE_NS) / 10**9

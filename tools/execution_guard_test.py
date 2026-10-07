@@ -976,6 +976,15 @@ class GuardTest(unittest.TestCase):
                          'execution containment rejected; stage=unknown; exception=OSError')
         self.assertNotIn('sensitive', message)
 
+    def test_admission_diagnostic_stages_never_render_payload_or_private_values(self):
+        from execution_guard import rejection_diagnostic
+        for stage in ('effective-properties', 'resident-bindings', 'resident-custody',
+                      'tool-environment', 'worker-identity', 'workload-admission'):
+            message = rejection_diagnostic(ValueError('sensitive /private/payload'), stage)
+            self.assertEqual(message, 'execution containment rejected; stage=' + stage + '; exception=ValueError')
+            self.assertNotIn('sensitive', message)
+            self.assertNotIn('/private/', message)
+
     def test_sampled_free_floor_refuses_low_available_blocks(self):
         from execution_guard import check_free_space, FREE_FLOOR
         with patch('execution_guard.os.statvfs', return_value=SimpleNamespace(f_bavail=FREE_FLOOR, f_frsize=1)):
