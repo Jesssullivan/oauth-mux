@@ -19,6 +19,10 @@ upstream contributions or maintained application modifications are delivery
 choices to prove per application and version. Missing implemented capability
 remains a gate; waiting for a vendor to supply an Omux integration is not the plan.
 
+The [portable Linux exec continuation](agent-notes/2026-10-07-sess-omux-portable-exec.md)
+records the launcher change and its qualified verification, without closing
+installed continuity gates.
+
 The [October 7 source-delivery checkpoint](agent-notes/2026-10-07-sess-omux-source-delivery.md)
 records the exact signed source tree delivered in PR #527 and the separate local
 source/model/retained-input/archive gates. Its post-head receipt records verified

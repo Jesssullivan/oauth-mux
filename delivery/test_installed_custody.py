@@ -619,8 +619,11 @@ def main() -> int:
                                  '<allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/>' +
                                  '</policy></busconfig>')
         bootstrap = "import os,runpy,sys;p=sys.argv.pop(1);sys.path.insert(0,os.path.dirname(p));sys.argv[0]=p;runpy.run_path(p,run_name='__main__')"
+        # Keep declared sibling Python inputs, including the generated trusted
+        # launcher template, in the child's isolated import path. Resolving this
+        # runfiles alias would instead select the physical source checkout.
         process = subprocess.Popen([str(session), "--dbus-daemon=" + str(bus), "--config-file=" + str(configuration),
-                                    "--", sys.executable, "-I", "-B", "-c", bootstrap, str(Path(__file__).resolve()),
+                                    "--", sys.executable, "-I", "-B", "-c", bootstrap, str(Path(__file__).absolute()),
                                     "--inside", str(bundle), str(keyring), str(root)] + (["--core-only"] if core_only else []),
                                    env=environment, start_new_session=True, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE)

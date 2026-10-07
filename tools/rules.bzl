@@ -7,6 +7,10 @@ use its declared Bash to locate runfiles, then exec the declared interpreter.
 load("@omux_nix//:tool_paths.bzl", "NIX_BASH")
 load(":native_tool_info.bzl", "OmuxNixToolInfo")
 
+# Used only with an exact declared generated-file argv. Load it before the main
+# script, without an import search or a source-tree fallback.
+PORTABLE_PYTHON_BOOTSTRAP = "import importlib.util, os, runpy, sys; template = sys.argv.pop(1); script = sys.argv.pop(1); spec = importlib.util.spec_from_file_location('portable_launcher_template', template); module = importlib.util.module_from_spec(spec); sys.modules['portable_launcher_template'] = module; spec.loader.exec_module(module); sys.path.insert(0, os.path.dirname(script)); sys.argv[0] = script; runpy.run_path(script, run_name='__main__')"
+
 def _runfile_key(ctx, file):
     if file.short_path.startswith("../"):
         return file.short_path[3:]
@@ -65,7 +69,14 @@ def _interpreted_impl(ctx):
         # source tree. Run it with only its declared runfiles directory on the
         # import path, plus the pinned interpreter's standard library.
         bootstrap = "import os, runpy, sys; script = sys.argv.pop(1); sys.path.insert(0, os.path.dirname(script)); sys.argv[0] = script; runpy.run_path(script, run_name='__main__')"
-        options = "-I -B -c " + _quote(bootstrap) + " "
+        templates = [file for file in files if file.basename == "portable_launcher_template.py"]
+        if templates:
+            if len(templates) != 1:
+                fail("portable consumers require one declared native template module")
+            bootstrap = PORTABLE_PYTHON_BOOTSTRAP
+            options = "-I -B -c " + _quote(bootstrap) + ' "$RUNFILES_ROOT/%s" ' % _runfile_key(ctx, templates[0])
+        else:
+            options = "-I -B -c " + _quote(bootstrap) + " "
     else:
         options = "--preserve-symlinks --preserve-symlinks-main "
     ctx.actions.write(
@@ -139,24 +150,43 @@ node_test = rule(
     test = True,
 )
 
-python_test = rule(
+_python_test = rule(
     implementation = _interpreted_impl,
     attrs = _interpreter_attrs("@omux_nix//:python", "python"),
     test = True,
 )
 
-python_binary = rule(
+_python_binary = rule(
     implementation = _interpreted_impl,
     attrs = _interpreter_attrs("@omux_nix//:python", "python"),
     executable = True,
 )
 
 # Manual coordinator tools stay executable before selecting a Darwin closure.
-host_python_binary = rule(
+_host_python_binary = rule(
     implementation = _interpreted_impl,
     attrs = _interpreter_attrs("@omux_host//:python", "python", "@omux_host//:all_tools", "@omux_host//:bash"),
     executable = True,
 )
+
+def _portable_python_sources(kwargs):
+    """Route the generated module only to consumers declaring portable.py."""
+    sources = kwargs.get("srcs", [])
+    portable_labels = ["//delivery:portable.py", "@//delivery:portable.py", "@@//delivery:portable.py"]
+    if native.package_name() == "delivery":
+        portable_labels += ["portable.py", ":portable.py"]
+    if any([str(source) in portable_labels for source in sources + [kwargs.get("main", "")]]):
+        kwargs["srcs"] = sources + ["//delivery:portable_launcher_template"]
+    return kwargs
+
+def python_test(**kwargs):
+    _python_test(**_portable_python_sources(kwargs))
+
+def python_binary(**kwargs):
+    _python_binary(**_portable_python_sources(kwargs))
+
+def host_python_binary(**kwargs):
+    _host_python_binary(**_portable_python_sources(kwargs))
 
 def _stdout_capture_impl(ctx):
     targets = {str(target.label): target for target in [ctx.attr.executable] + ctx.attr.data}.values()

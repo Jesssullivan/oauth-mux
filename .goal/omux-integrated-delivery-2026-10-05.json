@@ -16,9 +16,9 @@
   "previous_paused_at": "2026-10-06T00:03:44Z",
   "paused_at": "2026-10-06T03:55:23Z",
   "paused_by": "User explicitly set tool goal paused; subsequent check-in requests status only",
-  "execution_state": "root_sole_executor;exact_signed_source_H_f878ea_PR527_merged_S_a4bf48_tree_verified;isolated17_actor3_retained7_and_source_archivePASS;native44d7_detach_failed_before_resume;YogaQUAL_INSPECTpass_VERIFYmetadatarefused;HM9337_timeout_no_pair;five_historical_scoped_parent_passes_six_open",
+  "execution_state": "none_all_new_owned_gate_aggregates_terminal_empty;source_implementation_continues",
   "current_status_checkin": {
-    "observed_at": "2026-10-07T01:18:04Z",
+    "observed_at": "2026-10-07T01:46:42Z",
     "acceptance_gates_passed": 5,
     "acceptance_gates_open": 6,
     "new_gate_closed": false,
@@ -31,10 +31,12 @@
     "yoga_receipt": "docs/tracker-updates/integrated-delivery-yoga-d47f-chain-2026-10-07.json",
     "yoga": "QUAL/INSPECT pass; destination registry metadata refusal; no copy/toolbar",
     "home_manager": "9337 timeout no admitted pair; private filesystem residue retained",
-    "new_payload_running": false,
+    "new_payload_running": true,
     "continuation_checkpoint": ".goal/omux-native-browser-2026-10-06.json",
     "continuation_due": "2026-10-07T01:13:12Z",
-    "next": "Reviewed optional one-call detach diagnostics and independently scoped held-cgroup metadata; Yoga exact metadata predicate then bounded compact HM source"
+    "next": "Terminal exact single-call installed diagnostic receipt; preserve private raw and separately scope workload counters and failure-stage witness",
+    "source_followon_pr": 528,
+    "source_followon_head": "04120ea64f8d160fff561fec22b86e8f1df75b92"
   },
   "historical_status_checkin_2135": {
     "observed_at": "2026-10-06T21:35:22Z",
@@ -158,35 +160,14 @@
   "superseded_pr_closure_receipt_key": "superseded_pr_closures_1404",
   "automatic_dispatch": false,
   "independent_active_goals": false,
-  "latest_execution_epoch": "cc24e63a-0445-4b26-bc0a-469cdf316e7f",
-  "latest_execution_result": "controller0_workload0_descendants_empty;declared_source_archive_buildPASS;no_installed_or_parent_gate_promotion",
-  "latest_execution_receipt": "docs/tracker-updates/integrated-delivery-source-2026-10-07.json",
-  "latest_checkin": {
-    "observed_at": "2026-10-07T01:18:04Z",
-    "handle": 41581,
-    "handle_terminal": true,
-    "controller_exit": 0,
-    "workload_exit": 0,
-    "descendants_empty": true,
-    "new_payload_running": false,
-    "new_parent_acceptance_gate_closed": false
-  },
+  "latest_execution_epoch": "72e04337-7c64-44c3-87ac-c6bb26bb69b4",
+  "latest_execution_result": "controller3_workload3_empty_null_failure_rejection;exact_status_completion_exit0_nonempty_stderr_refused;no_automatic_retry",
+  "latest_execution_receipt": "/home/jess/.local/state/omux-execution-20261005/72e04337-7c64-44c3-87ac-c6bb26bb69b4/receipt.json",
+  "latest_checkin": "2026-10-07T01:52:58Z_native_diagnostic_failed_at_status_query_after_detach_ack;fresh_readonly_Yoga_qualify_started;5_passed_6_open",
   "current_owned_execution": {
-    "epoch": "cc24e63a-0445-4b26-bc0a-469cdf316e7f",
-    "handle": 41581,
-    "profile": "standard",
-    "state_root": "/home/jess/.local/state/omux-execution-20261005",
-    "targets": [
-      "//:public_source_archive"
-    ],
-    "verb": "build",
-    "handle_terminal": true,
-    "handle_confirmed_live": false,
-    "new_payload_running": false,
-    "controller_exit": 0,
-    "workload_exit": 0,
-    "descendants_empty": true,
-    "scope": "Source archive build for exact signedH; no product release or installed continuity"
+    "state": "none",
+    "last_epoch": "bb7c913f-bb2c-4070-8375-6d9145c24639",
+    "descendants_empty": true
   },
   "claim": "experimental_unshipped_live_continuity_unavailable",
   "hook_authority": "R-HOOK-CONVERGENCE-20261004",
@@ -729,5 +710,24 @@
       "Closed Yoga first-failed registration metadata predicate before any copy",
       "Qualified bounded compact HM producer; genuine offline evaluation"
     ]
-  }
+  },
+  "latest_native_diagnostic_checkpoint": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
+  "latest_diagnostic_source_delivery": {
+    "pr": 528,
+    "merged": true,
+    "commit": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json"
+  },
+  "next_source_implementation": {
+    "lead": "Fork-free portable launcher",
+    "reason": "One source-demonstrated shell child per invocation; preserves native process/cwd/argv, removes avoidable fork demand; no RCA claim",
+    "reviews": [
+      "/root/portable_exec_design",
+      "/root/native_registry_authority"
+    ],
+    "execution": "held_until_reviewed_source_and_declared_tests",
+    "provider_free": true
+  },
+  "latest_portable_exec_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
+  "new_source_pending_verification": "portable_static14/generator5/archive49/guard68PASS77e9; actualOmuxQtTLS_relocation_stagingPASS9b69; fixture3plusdocs/source5of5PASSbb7c; source_signing_pending; native/Yoga_unproved"
 }

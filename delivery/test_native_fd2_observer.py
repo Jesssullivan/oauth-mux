@@ -16,7 +16,6 @@ import portable
 OBSERVER = Path(sys.argv.pop(1)).resolve(strict=True)
 FIXTURE = Path(sys.argv.pop(1)).resolve(strict=True)
 LOADER = Path(sys.argv.pop(1)).resolve(strict=True)
-BASH = Path(sys.argv.pop(1)).resolve(strict=True)
 RUNTIME_FILES = []
 while "--runtime-file" in sys.argv:
     index = sys.argv.index("--runtime-file")
@@ -170,11 +169,11 @@ class ChildTests(unittest.TestCase):
         code, output, diagnostics, record = self.invoke("thread-exit-group")
         self.assertEqual((code, output, diagnostics, record[0]), (0, b"", b"", "no-write"))
 
-    def test_portable_script_command_substitution_and_explicit_loader_writer(self):
-        # Execute unchanged real launcher bytes via declared Bash in POSIX mode.
-        # This covers script/command-substitution/explicit-loader topology; it
-        # does not cover the product's kernel /bin/sh shebang binding. Every ELF
-        # comes from declared data; no host selection or PATH discovery.
+    def test_portable_static_launcher_and_explicit_loader_writer(self):
+        # Execute the actual static launcher directly, then observe the declared
+        # packaged loader/backend fixture. The separate synthetic fork/vfork
+        # tests retain their own topology scope. Every ELF comes from declared
+        # data; no host selection or PATH discovery.
         selected = sorted({path for path in RUNTIME_FILES
                            if path == (LOADER.parent / "libc.so.6").resolve(strict=True)})
         self.assertEqual(len(selected), 1, "declared loader libc fixture is absent or ambiguous")
@@ -194,7 +193,7 @@ class ChildTests(unittest.TestCase):
             launcher.write_bytes(portable.linux_launcher(LOADER.name, "omux.bin", "release"))
             launcher.chmod(0o755)
             code, output, diagnostics, record = self.invoke(
-                "write", budget=6, launch_command=[str(BASH), "--noprofile", "--norc", "--posix", str(launcher), "write"],
+                "write", budget=6, launch_command=[str(launcher), "write"],
                 role_paths=(binary, loader, libc),
                 environment={"PATH": "/nonexistent", "OMUX_INSTANCE": "default"})
             self.assertTrue(code == 0 and output == b"" and diagnostics == b"ignored payload\n",

@@ -17,22 +17,22 @@
   "latest_hm_model_receipt": "docs/tracker-updates/integrated-delivery-hma8ab-2026-10-06.json",
   "latest_surrounding_regression_receipt": "docs/tracker-updates/integrated-delivery-actor0407-2026-10-06.json",
   "latest_restart_regression_receipt": "docs/tracker-updates/integrated-delivery-restartdc4f-2026-10-07.json",
-  "new_source_pending_verification": "Signed sourceH f878ea delivered as exact-tree server squash a4bf48; all four delivery gates passed; subsequent post-head checkpoint metadata and diagnostic proposals separately unverified",
+  "new_source_pending_verification": "portable_static14/generator5/archive49/guard68PASS77e9; actualOmuxQtTLS_relocation_stagingPASS9b69; fixture3plusdocs/source5of5PASSbb7c; source_signing_pending; native/Yoga_unproved",
   "latest_yoga_fixture_receipt": "docs/tracker-updates/integrated-delivery-model35d5-2026-10-07.json",
   "native_test_profile": "Retained009 bootstrap_and_cold_resume_TOKIO_WORKER_THREADS2;async_workers_only;total_threads_and_prior_EAGAIN_cause_unmeasured",
   "latest_refined_observer_model_receipt": "docs/tracker-updates/integrated-delivery-modelec8b-2026-10-07.json",
   "latest_diagnostic_model_receipt": "docs/tracker-updates/integrated-delivery-stderr5197-2026-10-06.json",
   "latest_semantic_receipt": "docs/tracker-updates/integrated-delivery-be799-2026-10-06.json",
-  "latest_installed_native_receipt": "docs/tracker-updates/integrated-delivery-native44d7-2026-10-07.json",
-  "latest_installed_native_result": "44d7_terminal3_3_empty_held009_aftertrue_docs_sourcePASS;explicit_Tokio_async_workers2_profile_fails_selected_detach_RPC;status_and_cold_resume_unreached;no_cause_or_improvement_claim",
+  "latest_installed_native_receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
+  "latest_installed_native_result": "72e0_controller3_workload3_empty_retained_aftertrue_docs_source_passed;ordinary_no_observer_exact_status_completed_exit0_nonempty_ASCII_stderr_refused;sampled_pids512_exposed_max_event_increase_unattributed;completion_acceptance_preservation_cold_resume_unproved",
   "latest_retained_input_qualification": "docs/tracker-updates/integrated-delivery-47d9-2026-10-06.json",
   "latest_semantic_result": "be799_terminal0_0_empty;6of6_targetsPASS;removal250_including_real_optional_OOMPASS;retained_copy119923125_exact009_and_helper10PASS;actual_B_admission47d9PASS;installed_native_unproved",
-  "latest_yoga_receipt": "docs/tracker-updates/integrated-delivery-yoga-d47f-chain-2026-10-07.json",
-  "latest_yoga_result": "d47fQUAL0_0_empty_f0c7INSPECT0_0_empty_c7f6VERIFY2_2_empty_all_source_aftertrue;fixed_system_Nix5287200B_qualified;destination_registration_content_predicate_refused_no_missing_vs_mismatch_inference;no_copy_wrapper_browser_toolbar",
+  "latest_yoga_receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
+  "latest_yoga_result": "clean_C_a77dQUAL0_0_empty_d1deINSPECT0_0_empty_70e0VERIFY2_2_empty_all_source_aftertrue;fixed_predicate_row_object;metadata_equality_NAR_rehash_unproved_no_missing_vs_corruption_inference;no_copy_wrapper_browser_toolbar",
   "latest_hm_receipt": "docs/tracker-updates/integrated-delivery-hm9337-2026-10-06.json",
   "latest_hm_result": "9337_terminal124_124_empty;declaration_complete_actual_reconstruction_deadline_expired;no_compact_pair_admitted;genuine_evaluation_unrun;no_automatic_retry",
-  "latest_installed_native_diagnostic_receipt": "docs/tracker-updates/integrated-delivery-native158b-2026-10-07.json",
-  "latest_installed_native_diagnostic_result": "158b_terminal3_3_empty_held009_aftertrue_docs_sourcePASS;selected_detach_observer_launch_fork_EAGAIN_before_CLIexec;resource_and_original_CLI_causes_unknown_cold_resume_unreached",
+  "latest_installed_native_diagnostic_receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
+  "latest_installed_native_diagnostic_result": "6616_controller3_workload3_empty_controller_failure_null_rejection_null_retained_aftertrue;docs_source2of3passed;selected_detach_status_rpc_process_failure;FD2_observer_launch_fork_busy;whole_workload_max_event_increase_observed_peak456_no_sample512;no_rootcause_or_cold_resume",
   "scope": "Provider-free partial candidate resume and installed Chromium consent; parent objective/eleven gates preserved",
   "executor": "root",
   "latest_factual_linear_receipt": "docs/tracker-updates/integrated-delivery-source-2026-10-07.json",
@@ -159,5 +159,19 @@
       "Closed Yoga first-failed registration metadata predicate before any copy",
       "Qualified bounded compact HM producer; genuine offline evaluation"
     ]
+  },
+  "latest_native_diagnostic_checkpoint": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
+  "latest_diagnostic_source_delivery": {
+    "pr": 528,
+    "merged": true,
+    "commit": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json"
+  },
+  "next_implementation": "Fork-free portable launcher preserving cwd/argv/FDs/loader/channel; independently qualify destination-owned Yoga delivery",
+  "latest_portable_exec_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
+  "current_owned_execution": {
+    "state": "none",
+    "last_epoch": "bb7c913f-bb2c-4070-8375-6d9145c24639",
+    "descendants_empty": true
   }
 }

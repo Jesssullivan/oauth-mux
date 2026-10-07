@@ -1,8 +1,51 @@
 """Archive actions with declared binaries, channel and pinned interpreter."""
 
+load("//tools:rules.bzl", "PORTABLE_PYTHON_BOOTSTRAP")
+
+def _portable_launcher_template(ctx):
+    output = ctx.actions.declare_file("portable_launcher_template.py")
+    if not ctx.attr.target:
+        if ctx.file.launcher:
+            fail("an unavailable native target cannot provide a launcher")
+        ctx.actions.write(output, "ABI = 1\nTARGET = None\nTEMPLATE = None\nSHA256 = None\n")
+    else:
+        if not ctx.file.launcher:
+            fail("a native Linux target requires its declared launcher")
+        args = ctx.actions.args()
+        args.add_all(["-I", "-B"])
+        args.add(ctx.file._generator)
+        args.add("--launcher", ctx.file.launcher)
+        args.add("--target", ctx.attr.target)
+        args.add("--output", output)
+        ctx.actions.run(
+            executable = ctx.executable._python,
+            arguments = [args],
+            inputs = depset([ctx.file._generator, ctx.file.launcher]),
+            tools = [ctx.attr._python[DefaultInfo].files_to_run] + ctx.attr._all_tools[DefaultInfo].files.to_list(),
+            outputs = [output],
+            mnemonic = "OmuxPortableLauncherTemplate",
+            progress_message = "Binding the declared native static launcher template",
+            use_default_shell_env = False,
+            env = {"PATH": "", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    return [DefaultInfo(files = depset([output]))]
+
+portable_launcher_template = rule(
+    implementation = _portable_launcher_template,
+    attrs = {
+        "launcher": attr.label(allow_single_file = True),
+        "target": attr.string(values = ["", "x86_64-linux", "aarch64-linux"]),
+        "_generator": attr.label(default = "//delivery:generate_portable_launcher_template.py", allow_single_file = True),
+        "_python": attr.label(default = "@omux_nix//:python", executable = True, cfg = "exec"),
+        "_all_tools": attr.label(default = "@omux_nix//:python_tools", cfg = "exec"),
+    },
+)
+
 def _native_resolution(ctx):
     output = ctx.actions.declare_file(ctx.label.name + ".json")
     args = ctx.actions.args()
+    args.add_all(["-I", "-B", "-c", PORTABLE_PYTHON_BOOTSTRAP])
+    args.add(ctx.file._launcher_template)
     args.add(ctx.file._audit)
     args.add(ctx.file.control)
     args.add(ctx.file.plugin)
@@ -13,7 +56,7 @@ def _native_resolution(ctx):
     ctx.actions.run(
         executable = ctx.executable._python,
         arguments = [args],
-        inputs = depset([ctx.file._audit, ctx.file._portable, ctx.file.control, ctx.file.plugin] +
+        inputs = depset([ctx.file._audit, ctx.file._portable, ctx.file._launcher_template, ctx.file.control, ctx.file.plugin] +
                         ctx.files.runtime_files + ctx.files.plugin_files),
         tools = [ctx.attr._python[DefaultInfo].files_to_run, ctx.attr.control[DefaultInfo].files_to_run] +
                 ctx.attr._all_tools[DefaultInfo].files.to_list(),
@@ -34,6 +77,7 @@ native_resolution = rule(
         "plugin_files": attr.label(default = "@omux_nix//:qt_platform_plugins"),
         "_audit": attr.label(default = "//delivery:runtime_audit.py", allow_single_file = True),
         "_portable": attr.label(default = "//delivery:portable.py", allow_single_file = True),
+        "_launcher_template": attr.label(default = "//delivery:portable_launcher_template", allow_single_file = True),
         "_python": attr.label(default = "@omux_nix//:python", executable = True, cfg = "exec"),
         "_all_tools": attr.label(default = "@omux_nix//:all_tools", cfg = "exec"),
     },
@@ -48,6 +92,8 @@ def _release_archive(ctx):
             fail("development_source_revision must be a full lowercase commit digest")
     output = ctx.actions.declare_file(ctx.label.name + ".tar.gz")
     args = ctx.actions.args()
+    args.add_all(["-I", "-B", "-c", PORTABLE_PYTHON_BOOTSTRAP])
+    args.add(ctx.file._launcher_template)
     args.add(ctx.file._pack)
     for name in ["binary", "daemon", "reference", "systemd_template", "launchd_template"]:
         args.add("--" + name.replace("_", "-"))
@@ -79,7 +125,7 @@ def _release_archive(ctx):
     ctx.actions.run(
         executable = ctx.executable._python,
         arguments = [args],
-        inputs = depset([ctx.file._pack, ctx.file._portable, ctx.file.binary, ctx.file.daemon, ctx.file.reference,
+        inputs = depset([ctx.file._pack, ctx.file._portable, ctx.file._launcher_template, ctx.file.binary, ctx.file.daemon, ctx.file.reference,
                          ctx.file.systemd_template, ctx.file.launchd_template, ctx.file._ca_bundle] + ctx.files.runtime_files +
                         ctx.files.qt_runtime_files + ctx.files.qt_plugin_files + ([ctx.file.control] if ctx.file.control else []) +
                         ([ctx.file.resolution_witness] if ctx.file.resolution_witness else [])),
@@ -110,6 +156,7 @@ release_archive = rule(
         "resolution_witness": attr.label(allow_single_file = True),
         "_pack": attr.label(default = "//delivery:pack.py", allow_single_file = True),
         "_portable": attr.label(default = "//delivery:portable.py", allow_single_file = True),
+        "_launcher_template": attr.label(default = "//delivery:portable_launcher_template", allow_single_file = True),
         "_ca_bundle": attr.label(default = "@omux_nix//:ca_bundle", allow_single_file = True),
         "_patchelf": attr.label(default = "@omux_nix//:patchelf", executable = True, cfg = "exec"),
         "_python": attr.label(default = "@omux_nix//:python", executable = True, cfg = "exec"),

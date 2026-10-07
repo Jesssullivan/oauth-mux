@@ -2,8 +2,8 @@
 
 No host loader, library discovery command, or host search path participates in
 selection.  The copied binaries and dependency closure are patched before they
-enter the archive.  Only the small shell launchers belong in the user's bin
-directory; shared libraries live below the private Omux installation subtree.
+enter the archive. Static ELF launchers belong in the user's bin directory;
+shared libraries live below the private Omux installation subtree.
 """
 from __future__ import annotations
 
@@ -16,6 +16,10 @@ import struct
 import subprocess
 import tempfile
 from pathlib import Path
+
+# Bazel provides this generated module from the declared static launcher ELF.
+# Missing modules fail the import: no source, shell or host-target fallback.
+import portable_launcher_template as _launcher_template
 
 _MAX_FILE = 128 * 1024 * 1024
 _MAX_BACKEND_FILE = 512 * 1024 * 1024
@@ -178,36 +182,49 @@ def channel_instance(channel: str | None) -> str | None:
     return "dev" if channel == "development" else "default"
 
 
-def linux_launcher(loader: str, backend: str, channel: str | None = None) -> bytes:
-    """A PATH-independent POSIX launcher preserving application aliases."""
-    loader = _basename(loader)
-    if backend not in {"omux.bin", "omuxd.bin", "omux-control.bin"}:
-        raise ValueError("unsupported backend executable")
-    qt = ("QT_PLUGIN_PATH=\"$runtime/plugins\"\n"
-          "QT_QPA_PLATFORM_PLUGIN_PATH=\"$runtime/plugins/platforms\"\n"
-          "export QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH\n") if backend == "omux-control.bin" else ""
-    namespace = _QT_RUNTIME if backend == "omux-control.bin" else _RUNTIME
-    instance = channel_instance(channel)
-    binding = (f'if [ "${{OMUX_INSTANCE+x}}" = x ] && [ "$OMUX_INSTANCE" != "{instance}" ]; then\n'
-               '  printf "%s\\n" "Omux artifact instance mismatch" >&2\n'
-               '  exit 64\nfi\n'
-               f'OMUX_INSTANCE={instance}\nexport OMUX_INSTANCE\n') if instance is not None else ""
-    return ("#!/bin/sh\n"
-            "set -eu\n"
-            "unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH\n"
-            "launch_dir=${0%/*}\n"
-            "if [ \"$launch_dir\" = \"$0\" ]; then launch_dir=.; fi\n"
-            "pkg_root=$(CDPATH= cd -P \"$launch_dir/..\" && pwd -P) || exit 1\n"
-            'OMUX_INSTALL_PREFIX="$pkg_root"\n'
-            'export OMUX_INSTALL_PREFIX\n'
-            + binding +
-            f"runtime=$pkg_root/{namespace}\n"
-            f'OMUX_CA_BUNDLE="$pkg_root/{_CA_BUNDLE}"\n'
-            "export OMUX_CA_BUNDLE\n"
-            + qt +
-            f'exec "$runtime/lib/{loader}" --inhibit-cache --library-path "$runtime/lib" '
-            f'--argv0 "$0" "$runtime/libexec/{backend}" "$@"\n').encode("ascii")
+def _trusted_launcher(target: str | None) -> tuple[str, bytes, str]:
+    """Select only the generated native target, never archive-owned code."""
+    native_target = _launcher_template.TARGET
+    selected = native_target if target is None else target
+    if (type(_launcher_template.ABI) is not int or _launcher_template.ABI != 1
+            or not isinstance(native_target, str) or native_target not in _MACHINES
+            or not isinstance(selected, str) or selected != native_target):
+        raise ValueError("declared static launcher is unavailable for the requested target")
+    template, digest = _launcher_template.TEMPLATE, _launcher_template.SHA256
+    if (not isinstance(template, bytes) or not 0 < len(template) <= _MAX_FILE
+            or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or hashlib.sha256(template).hexdigest() != digest):
+        raise ValueError("declared static launcher template is invalid")
+    metadata = elf_metadata(template)
+    if (metadata["machine"] != _MACHINES[selected] or metadata["interpreter"] is not None
+            or metadata["needed"] or metadata["rpath"]):
+        raise ValueError("declared launcher does not have its native static ELF boundary")
+    return selected, template, digest
 
+
+def _launcher_metadata(target: str) -> dict:
+    selected, _, digest = _trusted_launcher(target)
+    return {"abi": 1, "target": selected, "templateSha256": digest}
+
+
+def linux_launcher(loader: str, backend: str, channel: str | None = None, *,
+                   target: str | None = None) -> bytes:
+    """Trusted static ELF plus its canonical ABI1 loader/role/channel record."""
+    loader = _basename(loader)
+    roles = {"omux.bin": 1, "omuxd.bin": 2, "omux-control.bin": 3}
+    if backend not in roles:
+        raise ValueError("unsupported backend executable")
+    channel_instance(channel)
+    selected, template, _ = _trusted_launcher(target)
+    record = bytearray(256)
+    record[:16] = b"OMUXLNXLAUNCHv1\0"
+    record[16] = 1
+    record[17] = roles[backend]
+    record[18] = {None: 0, "development": 1, "release": 2}[channel]
+    struct.pack_into("<H", record, 20, _MACHINES[selected])
+    loader_bytes = loader.encode("ascii")
+    record[32:32 + len(loader_bytes)] = loader_bytes
+    return template + bytes(record)
 
 def _patch(path: Path, metadata: dict, patchelf: Path, backend: bool,
            rpath: str = "$ORIGIN") -> None:
@@ -295,6 +312,7 @@ def _assemble_namespace(binary: Path, daemon: Path, runtime_files: list[Path], p
     backend_max_bytes = _file_limit(backend_max_bytes)
     if target not in _MACHINES:
         raise ValueError("portable Linux assembly requires a supported Linux target")
+    _trusted_launcher(target)
     if not runtime_files or len(runtime_files) > _MAX_HEADERS:
         raise ValueError("runtime dependency inputs must be nonempty and bounded")
     plugins = qt_plugins or []
@@ -483,14 +501,15 @@ def _assemble_namespace(binary: Path, daemon: Path, runtime_files: list[Path], p
     runtime = {"loader": namespace + "/lib/" + loader_name,
                "dependencies": [namespace + "/lib/" + name for name in sorted(selected)],
                "backendInterpreter": _BACKEND_INTERPRETER,
-               "caBundle": _CA_BUNDLE}
+               "caBundle": _CA_BUNDLE,
+               "launcher": _launcher_metadata(target)}
     if namespace == _RUNTIME:
-        launcher = linux_launcher(loader_name, "omux.bin", channel)
+        launcher = linux_launcher(loader_name, "omux.bin", channel, target=target)
         for alias in _ALIASES:
             files["bin/" + alias] = launcher
-        files["bin/omuxd"] = linux_launcher(loader_name, "omuxd.bin", channel)
+        files["bin/omuxd"] = linux_launcher(loader_name, "omuxd.bin", channel, target=target)
     else:
-        files["bin/omux-control"] = linux_launcher(loader_name, "omux-control.bin", channel)
+        files["bin/omux-control"] = linux_launcher(loader_name, "omux-control.bin", channel, target=target)
         files[_QT_CONFIG] = _QT_CONFIG_BYTES
         runtime = {"loader": runtime["loader"], "dependencies": runtime["dependencies"],
                    "control": _QT_CONTROL, "config": _QT_CONFIG,
@@ -544,6 +563,13 @@ def verify_linux_runtime(files: dict[str, bytes], manifest: dict) -> None:
     channel_instance(channel)
     if target not in _MACHINES or not isinstance(runtime, dict):
         raise ValueError("portable runtime requires a Linux target and runtime metadata")
+    launcher = runtime.get("launcher")
+    if (not isinstance(launcher, dict) or set(launcher) != {"abi", "target", "templateSha256"}
+            or type(launcher.get("abi")) is not int
+            or not isinstance(launcher.get("target"), str)
+            or not isinstance(launcher.get("templateSha256"), str)
+            or launcher != _launcher_metadata(target)):
+        raise ValueError("portable runtime launcher ABI disagrees with the declared native template")
     dependencies = runtime.get("dependencies")
     loader = runtime.get("loader")
     if (not isinstance(dependencies, list) or not dependencies or len(dependencies) > _MAX_HEADERS
@@ -587,7 +613,7 @@ def verify_linux_runtime(files: dict[str, bytes], manifest: dict) -> None:
         raise ValueError("archive has missing or undeclared portable runtime files")
     if qt is not None:
         if files[_QT_CONFIG] != _QT_CONFIG_BYTES or files["bin/omux-control"] != linux_launcher(
-                _basename(qt["loader"]), "omux-control.bin", channel):
+                _basename(qt["loader"]), "omux-control.bin", channel, target=target):
             raise ValueError("Qt control has an external plugin or configuration lookup")
         if "resolutionWitness" in qt:
             archived = qt["resolutionWitness"]
@@ -632,10 +658,10 @@ def verify_linux_runtime(files: dict[str, bytes], manifest: dict) -> None:
             elif metadata["interpreter"] not in {None, _BACKEND_INTERPRETER} or any(
                     path != (_QT_PLUGIN_RPATH if name in graph_plugins else "$ORIGIN") for path in metadata["rpath"]):
                 raise ValueError("portable library has an external runtime lookup")
-    cli = linux_launcher(_basename(loader), "omux.bin", channel)
+    cli = linux_launcher(_basename(loader), "omux.bin", channel, target=target)
     if any(files["bin/" + name] != cli for name in _ALIASES):
         raise ValueError("portable CLI aliases do not match the confined launcher")
-    if files["bin/omuxd"] != linux_launcher(_basename(loader), "omuxd.bin", channel):
+    if files["bin/omuxd"] != linux_launcher(_basename(loader), "omuxd.bin", channel, target=target):
         raise ValueError("portable daemon does not match the confined launcher")
 
 

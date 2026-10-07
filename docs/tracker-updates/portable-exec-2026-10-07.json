@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "kind": "portable_linux_launcher_implementation",
+  "authority": "User-authorized provider-free October6 continuation; AGENTS.md; R-HOOK-CONVERGENCE-20261004/R-N13",
+  "recorded_at": "2026-10-07T02:33:30Z",
+  "goal": ".goal/omux-integrated-delivery-2026-10-05.json",
+  "continuation": ".goal/omux-native-browser-2026-10-06.json",
+  "plan": "docs/plans/omux-native-browser-continuation-2026-10-06.md",
+  "note": "docs/agent-notes/2026-10-07-sess-omux-portable-exec.md",
+  "issues": [
+    "TIN-5338",
+    "TIN-2063",
+    "TIN-2057"
+  ],
+  "source": {
+    "branch": "codex/omux-portable-exec-20261007",
+    "base": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "base_tree": "bfd67a0dba57a2d03bd3985a994b323ebc0c7b04",
+    "dirty": true,
+    "commit_assertion": "caller-declared base; uncommitted adopted implementation",
+    "original_mixed_checkout_preserved": true,
+    "freeze": "all adopted implementation/fixture changes have stated passing scoped checks; unsigned source delivery preparation"
+  },
+  "proposals": {
+    "core": {
+      "sha256": "5c1af9069f29df2e8eb326750b9229db3fe10621b7df0ac14846a929e6619b0c",
+      "status": "adopted_root_sequentially_source_cleared_unexecuted"
+    },
+    "plumbing": {
+      "sha256": "995d21ce6fe9787e06e1f83dc8bc98b069f1c3778c8b9dc68ff295e40f346135",
+      "status": "adopted_root_sequentially_source_cleared_unexecuted"
+    },
+    "execution_tests": {
+      "sha256": "b965f53ed048b3160a30d566b99458092e846d2959d88a4d3d83d0869e1f7776",
+      "status": "adopted_root_sequentially_source_cleared_unexecuted"
+    },
+    "portable_tests": {
+      "sha256": "aa3afa49dfcfe309abc8c9ff24b184c9838c10b14ad68c8c98b1b3e4d5a47e12",
+      "status": "adopted_root_sequentially_source_cleared_unexecuted"
+    },
+    "generator_tests": {
+      "sha256": "6cd98719212b921103efdf4ab86aefcf57d84630491ca377089e55090c989238",
+      "status": "adopted_root_sequentially_source_cleared_unexecuted"
+    },
+    "child_routing": {
+      "sha256": "4c1be3aba1ec564b82b6c9efced9a6d48314acc9ea918ba715dd75fc4aad1daa",
+      "status": "adopted_root_sequentially_source_cleared_unexecuted"
+    }
+  },
+  "independent_reviews": {
+    "registry": "four concrete blockers closed source-only",
+    "selection": "core/wiring/models/actualfixture/childrouting source-cleared nativeLinuxx86",
+    "root_formatter": "one exact standard command; nearby tuples still refused; source-clear"
+  },
+  "preexecution_refusal": {
+    "epoch": "10cfd892-2886-460c-86c7-7626015573c7",
+    "controller_exit": 1,
+    "stage": "private-epoch",
+    "exception": "ValueError",
+    "unit_started": false,
+    "reason": "new formatter tuple absent in existing finite guard",
+    "correction": "one exact standard formatter command with negative tuple/profile models",
+    "resource_caps_unchanged": true
+  },
+  "current_execution": {
+    "state": "none",
+    "last_epoch": "bb7c913f-bb2c-4070-8375-6d9145c24639",
+    "descendants_empty": true
+  },
+  "resource_limits": {
+    "memory_bytes": 4294967296,
+    "swap_bytes": 0,
+    "tasks": 512,
+    "cpu": 2,
+    "aggregate_seconds": 1200
+  },
+  "prior_receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json",
+  "product_gates": {
+    "parent_scoped_passes": 5,
+    "parent_open": 6,
+    "native_resume": "unproved",
+    "yoga_toolbar": "unproved",
+    "home_manager_offline_evaluation": "unproved",
+    "stock_codex": "unproved",
+    "live_handoff": "unproved",
+    "darwin": "held_unproved"
+  },
+  "scope_limits": [
+    "Provider-free",
+    "No provider/account access",
+    "No source-only continuity claim",
+    "Native x86 Linux only; no foreign-template fallback",
+    "Recorder substitutes loader; sentinel backend is not native proof",
+    "Development stage upstream shell argv0 semantics unchanged",
+    "Same-user loader/backend path race remains qualified",
+    "FIFO replacement race unproved",
+    "No cap increase or assertion relaxation"
+  ],
+  "next": [
+    "Formatter then targeted Bazel execution models",
+    "Declared real-package/staging regression gates",
+    "One justified fresh native attempt only after static launcher proof"
+  ],
+  "publication": false,
+  "format_result": {
+    "epoch": "4e2ab760-1280-4677-b6da-f382b3eef8c2",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "e1871d4e732ae083bad8d38961b11f572fd359a6631a5dd739c9e4f16c7c3d8f",
+    "raw_receipt_sha256": "b39b314c651e3148c10e67aa3b3d880cdd2c058d86670638aa16dd2d5a8eb17b",
+    "scope": "format_only"
+  },
+  "model_result": {
+    "epoch": "77e9da46-31db-4030-b018-63c66e6a427f",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "e1871d4e732ae083bad8d38961b11f572fd359a6631a5dd739c9e4f16c7c3d8f",
+    "raw_receipt_sha256": "50214f5341c139fa0bd3de9ec17df720d4b72bd205c3c797f589cbbc29579ca8",
+    "test_evidence": {
+      "bytes": 220558,
+      "files": 17,
+      "manifest": "test-evidence.json",
+      "sha256": "f537f6e95c30356c73297b467472917c7c262549fcaf10a9b196298596552890",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:generate_portable_launcher_template_test",
+      "//delivery:linux_launcher_test",
+      "//delivery:portable_test",
+      "//delivery:linux_launcher_format_test",
+      "//tools:execution_guard_test",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_target": "//:docs_check",
+    "failure": "new note missing authority classification; corrected",
+    "scope": "6of7targets; actual recorder-boundary and archive/generator/guard models passed, no native proof",
+    "whole_workload_process_observation": {
+      "attribution": "none",
+      "baseline": {
+        "current": 1,
+        "custody": "same",
+        "limit": 512,
+        "max_event_delta": 0,
+        "max_events": 0,
+        "pids_limit": "verified512",
+        "pids_max_event_delta": "unchanged",
+        "pids_sample": "below",
+        "sample_timing": "baseline"
+      },
+      "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+      "last_monitor": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "monitor"
+      },
+      "monitor_samples": 433,
+      "observed_at_or_over_verified_limit": false,
+      "observed_max_event_decrease": false,
+      "observed_max_event_increase": false,
+      "observed_unknown": true,
+      "pre_cleanup": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "pre-cleanup"
+      },
+      "pre_cleanup_control_flow_deferred": false,
+      "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+      "sample_count_saturated": false,
+      "sampled_peak_current": 345,
+      "schema_version": 1,
+      "scope": "whole-owned-workload-cgroup",
+      "window": "admitted-before-go-through-pre-cleanup"
+    },
+    "internal_cases": {
+      "compiled_launcher": 14,
+      "generator_models": 5,
+      "portable_archive_models": 49,
+      "guard_models": 68
+    },
+    "documentation_correction": "source-cleared missing classification entry added; full docs rerun pending9b69"
+  },
+  "regression_result": {
+    "epoch": "9b69bca2-e259-4cff-b408-adda3b9ced9d",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "e1871d4e732ae083bad8d38961b11f572fd359a6631a5dd739c9e4f16c7c3d8f",
+    "raw_receipt_sha256": "fca353da722ac1b31ae8819404e76d420b41b03da99acc99af07377ccddade2f",
+    "test_evidence": {
+      "bytes": 297738,
+      "files": 25,
+      "manifest": "test-evidence.json",
+      "sha256": "a310a2c0003d895d342bf240b59d0a7088b7c8f839c3d4e5295596f85f26427b",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:delivery_test",
+      "//delivery:dev_stage_test",
+      "//delivery:dev_stage_runtime_test",
+      "//delivery:installed_custody_process_test",
+      "//delivery:codex_direct_exec_test",
+      "//delivery:relocation_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_targets": [
+      "//delivery:dev_generation_restart_test",
+      "//delivery:dev_generation_test",
+      "//delivery:native_fd2_observer_test"
+    ],
+    "scope": "8of11; real portable Omux/Qt/TLS relocation and development staging passed; no native resume",
+    "whole_workload_process_observation": {
+      "attribution": "none",
+      "baseline": {
+        "current": 1,
+        "custody": "same",
+        "limit": 512,
+        "max_event_delta": 0,
+        "max_events": 0,
+        "pids_limit": "verified512",
+        "pids_max_event_delta": "unchanged",
+        "pids_sample": "below",
+        "sample_timing": "baseline"
+      },
+      "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+      "last_monitor": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "monitor"
+      },
+      "monitor_samples": 1262,
+      "observed_at_or_over_verified_limit": false,
+      "observed_max_event_decrease": false,
+      "observed_max_event_increase": false,
+      "observed_unknown": true,
+      "pre_cleanup": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "pre-cleanup"
+      },
+      "pre_cleanup_control_flow_deferred": false,
+      "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+      "sample_count_saturated": false,
+      "sampled_peak_current": 345,
+      "schema_version": 1,
+      "scope": "whole-owned-workload-cgroup",
+      "window": "admitted-before-go-through-pre-cleanup"
+    }
+  },
+  "regression_correction": {
+    "proposal_sha256": "856d02881f5326b9f00cce34f306dd6a0e5cdf61860b2944d8fb7a1000386ba0",
+    "source_cleared_by": "native_selection_review",
+    "adopted_after_empty": true,
+    "files": [
+      "delivery/test_dev_generation.py",
+      "delivery/test_native_fd2_observer.py",
+      "delivery/BUILD.bazel"
+    ],
+    "reason": "valid fixture gains required launcher metadata; actual static ELF directly invoked; unused Bash input removed",
+    "assertions_and_caps_unchanged": true
+  },
+  "correction_result": {
+    "epoch": "bb7c913f-bb2c-4070-8375-6d9145c24639",
+    "controller_exit": 0,
+    "workload_exit": 0,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "134494b7d93bc63a904cf835877b7a8bf13a29cdc02334f6bdb7a27ebbbbf9bb",
+    "raw_receipt_sha256": "9695d3fe10e32dfbe574dea5f8b9d2222b6b453d287d35079af2a0f472eb1d03",
+    "test_evidence": {
+      "bytes": 218750,
+      "files": 13,
+      "manifest": "test-evidence.json",
+      "sha256": "3762f072f3a7e854eb25255624b4d0cde3baf4840e82f5617f12fed6de4b9979",
+      "state": "preserved"
+    },
+    "passed_targets": [
+      "//delivery:dev_generation_restart_test",
+      "//delivery:dev_generation_test",
+      "//delivery:native_fd2_observer_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "scope": "5of5 correction targets; failed77e9/9b69 remain historical failed batches",
+    "whole_workload_process_observation": {
+      "attribution": "none",
+      "baseline": {
+        "current": 1,
+        "custody": "same",
+        "limit": 512,
+        "max_event_delta": 0,
+        "max_events": 0,
+        "pids_limit": "verified512",
+        "pids_max_event_delta": "unchanged",
+        "pids_sample": "below",
+        "sample_timing": "baseline"
+      },
+      "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+      "last_monitor": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "monitor"
+      },
+      "monitor_samples": 337,
+      "observed_at_or_over_verified_limit": false,
+      "observed_max_event_decrease": false,
+      "observed_max_event_increase": false,
+      "observed_unknown": true,
+      "pre_cleanup": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "pre-cleanup"
+      },
+      "pre_cleanup_control_flow_deferred": false,
+      "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+      "sample_count_saturated": false,
+      "sampled_peak_current": 341,
+      "schema_version": 1,
+      "scope": "whole-owned-workload-cgroup",
+      "window": "admitted-before-go-through-pre-cleanup"
+    }
+  },
+  "hook_alternative": {
+    "actor": "root",
+    "target": "own codex/omux-portable-exec-20261007 commit and normal branch push",
+    "reason": "all project checks run through reviewed Nix/Bazel aggregate; avoid unqualified duplicate project/credential hooks",
+    "ruling": "R-N12 R-HOOK-CONVERGENCE-20261004",
+    "prior_state": "inspected Home Manager advisory hook wrappers",
+    "result": "per-invocation core.hooksPath=/dev/null only; global config unchanged; signed commit and independent Git validation required"
+  }
+}
