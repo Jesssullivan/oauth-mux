@@ -87,6 +87,14 @@ def refusal_record(error):
         "phase":ACTIVE_PHASE if ACTIVE_PHASE in LOCAL_PHASES else "entry","category":category}
     if isinstance(error,RemoteRefusal):
         result.update(error.record)
+    if isinstance(error,delivery.GateError) and type(error.hints) is dict:
+        observed = error.hints.get("osBootstrapFailure")
+        if type(observed) is dict and set(observed) == {"step","category"} \
+                and type(observed["step"]) is str and type(observed["category"]) is str \
+                and observed["step"] in delivery.qualification.REMOTE_FAILURE_STEPS \
+                and observed["category"] in delivery.qualification.REMOTE_FAILURE_CATEGORIES:
+            result["os_bootstrap_phase"] = observed["step"]
+            result["os_bootstrap_category"] = observed["category"]
     return result
 
 

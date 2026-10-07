@@ -54,6 +54,15 @@ class Preparation(unittest.TestCase):
             'stderrFlags':{'ssh_auth_rejected':True,'private':'PRIVATE_MODEL_CANARY'}})
         self.assertEqual(local.refusal_record(failure)['category'],'ssh_authentication')
         self.assertNotIn('PRIVATE_MODEL_CANARY',json.dumps(local.refusal_record(failure)))
+        failure = local.delivery.GateError('PRIVATE_MODEL_CANARY',hints={
+            'osBootstrapFailure':{'step':'nix-custody','category':'missing-input'}})
+        record = local.refusal_record(failure)
+        self.assertEqual(record['os_bootstrap_phase'],'nix-custody')
+        self.assertEqual(record['os_bootstrap_category'],'missing-input')
+        failure.hints['osBootstrapFailure']['step'] = 'PRIVATE_MODEL_CANARY'
+        record = local.refusal_record(failure)
+        self.assertNotIn('os_bootstrap_phase',record)
+        self.assertNotIn('PRIVATE_MODEL_CANARY',json.dumps(record))
 
     def test_actual_main_marks_control_input_refusal_before_any_ssh_boundary(self):
         raw = b'{}'
