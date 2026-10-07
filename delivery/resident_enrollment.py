@@ -135,6 +135,8 @@ def absolute(value):
 
 
 def validate_manifest(value):
+    if isinstance(value,dict) and value.get("action") == "update-existing":
+        return resident_guard.manifest_schema(value,Path(os.environ["HOME"]))
     require(isinstance(value, dict) and set(value) == {"schema_version", "ownership", "action", "instance",
             "prefix", "records", "runtime_state", "service_path", "native_context", "permissions"}
             and type(value["schema_version"]) is int and value["schema_version"] == 1
@@ -443,6 +445,10 @@ def execute(bundle, systemctl, session_probe, manifest):
     prefix, records, state, service_path = (absolute(manifest[key]) for key in
                                           ("prefix", "records", "runtime_state", "service_path"))
     unit = service_path.name
+    if manifest["action"] == "update-existing":
+        PHASE = "installation"
+        import resident_owned_update
+        return resident_owned_update.execute_update(bundle,systemctl,manifest,environment,bounded,remaining,DEADLINE_NS)
     PHASE = "source-metadata"
     directory, source, information, source_path = hold_source_metadata(manifest["native_context"])
     try:

@@ -30,6 +30,50 @@ class ModelSelector:
 
 
 class ResidentContract(unittest.TestCase):
+    def test_update_dispatch_never_reads_native_source_or_observes_vault(self):
+        value = self.manifest()
+        value.update(action="update-existing",native_context=None,update={})
+        value["permissions"] = {"connect_source":False,"activate_service":False,"restart_daemon":False}
+        with mock.patch.object(resident,"original_deadline",return_value=resident.time.monotonic_ns()+120*10**9), \
+                mock.patch.object(resident,"validate_manifest",return_value=value), \
+                mock.patch.object(resident,"hold_source_metadata",side_effect=AssertionError("no source metadata")), \
+                mock.patch.object(resident.resident_guard,"observe_existing_session_services",side_effect=AssertionError("no vault")):
+            import resident_owned_update
+            with mock.patch.object(resident_owned_update,"execute_update",return_value={"installation_updated":True}) as update:
+                self.assertEqual(resident.execute(resident.Path("/declared/archive"),resident.Path("/declared/systemctl"),
+                    resident.Path("/declared/probe"),value),{"installation_updated":True})
+                update.assert_called_once()
+
+    def test_update_constructor_failure_closes_runtime_metadata_fence(self):
+        import resident_owned_update as update
+        new,old = b"new public archive",b"old public archive"
+        public_manifest = b"public release manifest"
+        sha = lambda raw: resident.hashlib.sha256(raw).hexdigest()
+        value = self.manifest()
+        selection = {"archive_bytes":len(new),"archive_sha256":sha(new),"manifest_sha256":sha(public_manifest),
+            "previous_archive_bytes":len(old),"previous_archive_sha256":sha(old),"previous_manifest_sha256":sha(public_manifest),
+            "previous_archive_path":"/public/old.tar.gz","qualification":{"source_commit":"a"*40}}
+        value.update(action="update-existing",native_context=None,update=selection)
+        artifact = {"channel":"release","distribution":"portable-linux","target":"x86_64-linux",
+            "provenance":{"sourceRevision":None,"sourceDirty":True}}
+        files = {"release-manifest.json":public_manifest}
+        fence = mock.Mock()
+        bounded = mock.Mock(side_effect=AssertionError("no command before constructor custody"))
+        with mock.patch.object(update.update,"pins",return_value=selection), \
+                mock.patch.object(update.pack,"read_bundle",side_effect=[new,old]), \
+                mock.patch.object(update.pack,"verify_bundle",return_value=(artifact,files)), \
+                mock.patch.object(update.pack,"archive_contents",return_value=(files,{})), \
+                mock.patch.object(update.json,"loads",return_value=artifact), \
+                mock.patch.object(update.install,"installation_plan",return_value=[]), \
+                mock.patch.object(update.update,"RuntimeFence",return_value=fence), \
+                mock.patch.object(update.resident,"OwnedUnitCustody",side_effect=ValueError("ownership refused")):
+            with self.assertRaises(ValueError):
+                update.execute_update(resident.Path("/declared/archive"),resident.Path("/declared/systemctl"),
+                    value,{"HOME":"/home/jess"},bounded,mock.Mock(return_value=20),
+                    resident.time.monotonic_ns()+120*10**9)
+        fence.close.assert_called_once_with()
+        bounded.assert_not_called()
+
     def record_fixture(self):
         prefix = resident.Path("/private/package")
         unit = prefix / "units/ai.xoxd.omux.service"

@@ -2196,6 +2196,8 @@ def _main(argv, admission_resources):
                     fresh_input_verified_after = False
             if login_input is not None:
                 try:
+                    if args.profile == 'resident-enrollment' and getattr(login_input,'installation_update',None) is not None:
+                        login_input.complete_owned_update(result,cleanup is True and cleanup_summary.get('state') == 'empty')
                     login_input.recheck()
                     if args.profile == 'native-login-ui':
                         ui_prepare_output = login_input.completed()

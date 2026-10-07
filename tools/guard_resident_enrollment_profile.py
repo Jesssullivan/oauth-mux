@@ -65,11 +65,12 @@ def fixed_paths(home,instance="default"):
         "service_path":prefix/"units/ai.xoxd.omux.service"}
 
 def manifest_schema(value,home):
+    updating = type(value) is dict and value.get("action") == "update-existing"
     require(type(value) is dict and set(value) == {"schema_version","ownership","action","instance",
-        "prefix","records","runtime_state","service_path","native_context","permissions"}
+        "prefix","records","runtime_state","service_path","native_context","permissions"} | ({"update"} if updating else set())
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing","update-existing")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -81,17 +82,24 @@ def manifest_schema(value,home):
         require(value["action"] == "enroll-existing" and prefix.parts[:3] == ("/","nix","store")
             and len(prefix.parts) == 4 and re.fullmatch(r"[a-z0-9]{32}[-][A-Za-z0-9+._-]+",prefix.name)
             and unit == canonical(str(home/".config/systemd/user/ai.xoxd.omux.service")))
-    context = value["native_context"]
-    require(type(context) is dict and set(context) == {"application","provenance","codex_home"}
-        and context["application"] == "codex" and context["provenance"] == "authorized-working-native-context")
-    source_home = canonical(context["codex_home"])
-    for path in (prefix,expected["records"],expected["runtime_state"]):
-        require(path != source_home and path not in source_home.parents and source_home not in path.parents)
     permissions = value["permissions"]
     require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"}
-        and all(type(v) is bool for v in permissions.values()) and permissions["connect_source"]
-        and (value["action"] not in ("install-and-enroll","activate-existing-and-enroll") or permissions["activate_service"])
-        and (value["ownership"] != "home-manager" or not permissions["activate_service"]))
+        and all(type(v) is bool for v in permissions.values()))
+    if updating:
+        require(value["ownership"] == "omux-installation" and value["native_context"] is None
+            and not any(permissions.values()))
+        import guard_resident_owned_update as update
+        update.pins(value["update"],home)
+    else:
+        context = value["native_context"]
+        require(type(context) is dict and set(context) == {"application","provenance","codex_home"}
+            and context["application"] == "codex" and context["provenance"] == "authorized-working-native-context")
+        source_home = canonical(context["codex_home"])
+        for path in (prefix,expected["records"],expected["runtime_state"]):
+            require(path != source_home and path not in source_home.parents and source_home not in path.parents)
+        require(permissions["connect_source"]
+            and (value["action"] not in ("install-and-enroll","activate-existing-and-enroll") or permissions["activate_service"])
+            and (value["ownership"] != "home-manager" or not permissions["activate_service"]))
     return value
 
 def quota_us(value):
@@ -423,6 +431,7 @@ class Admission:
         self.created_control = None
         self.owned_unit = None
         self.recovery_empty = []
+        self.installation_update = None
         try:
             self.directory = open_directory(self.root,private=True)
             self.held.append(self.directory)
@@ -495,6 +504,9 @@ class Admission:
                 self.owned_unit = OwnedUnitCustody(self.selected)
                 selected_unit = canonical(self.selected["service_path"])
                 self.owned_unit.verify_fragment(selected_unit.parents[4]/".config/systemd/user"/selected_unit.name)
+            if self.selected["action"] == "update-existing":
+                import guard_resident_owned_update as update
+                self.installation_update = update.InstallationUpdate(self.selected,home,deadline_ns)
             self.facts = self.recheck()
         except BaseException:
             self.close()
@@ -519,19 +531,33 @@ class Admission:
             require(socket_witness(path) == witness)
         for path,fd,witness in self.source_parents+self.product_directories:
             require(stable(os.fstat(fd)) == witness == stable(path.stat(follow_symlinks=False)))
+        if getattr(self,"installation_update",None) is not None:
+            self.installation_update.recheck()
         if self.owned_unit is not None:
             self.owned_unit.recheck()
-        return {"scope":"resident-enrollment","source_contents_read":False,
+        facts = {"scope":"resident-enrollment","source_contents_read":False,
             "resident_memory":RESIDENT_MEMORY,"resident_tasks":RESIDENT_TASKS,"resident_cpu_percent":RESIDENT_CPU_PERCENT,
             "proof_memory":PROOF_MEMORY,"proof_tasks":PROOF_TASKS,"proof_cpu_percent":PROOF_CPU_PERCENT}
+        if getattr(self,"installation_update",None) is not None:
+            facts.update(action="update-existing",installation_witness_transition_completed=self.installation_update.finished,
+                archive_sha256=self.selected["update"]["archive_sha256"],
+                previous_archive_sha256=self.selected["update"]["previous_archive_sha256"],
+                qualification_guard_sha256=self.selected["update"]["qualification"]["sha256"],
+                runtime_metadata_preserved=True,service_started=False,source_connected=False)
+        return facts
 
     def bindings(self):
         return [str(self.root)+":"+DESTINATION]+[
             str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))+":norbind"
-            for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())]
+            for target,source in self.sources.items()] + [runtime_binding(self.selected["runtime_state"],os.getuid())] + (
+            [self.selected["runtime_state"]+":"+self.selected["runtime_state"]]+[
+                str(file.path)+":"+str(file.path)+":norbind" for file in
+                (self.installation_update.archive,self.installation_update.previous_archive,self.installation_update.qualification)]
+            if getattr(self,"installation_update",None) is not None else [])
 
     def writable_binding(self):
-        return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories)
+        return " ".join(str(path)+":"+str(path) for path,_,_ in self.product_directories
+            if getattr(self,"installation_update",None) is None or str(path) != self.selected["runtime_state"])
 
     def verify_bindings(self,actual,run=None):
         expected_rw = normalize_binds(self.writable_binding())
@@ -539,6 +565,9 @@ class Admission:
             expected_rw.append(str(run)+":"+str(run))
         leaves = [str(source)+":"+DESTINATION+"/"+str(target.relative_to(self.root))
             for target,source in self.sources.items()]
+        if getattr(self,"installation_update",None) is not None:
+            leaves += [str(file.path)+":"+str(file.path) for file in
+                (self.installation_update.archive,self.installation_update.previous_archive,self.installation_update.qualification)]
         expected_ro = normalize_binds(" ".join(self.bindings()),leaves)
         ro,rw = normalize_binds(actual.get("BindReadOnlyPaths",""),leaves,readback=True),normalize_binds(actual.get("BindPaths",""),readback=True)
         require(len(ro) == len(expected_ro) and set(ro) == set(expected_ro)
@@ -550,10 +579,13 @@ class Admission:
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        recovering_action = self.selected["action"] == "activate-existing-and-enroll"
+        recovering_action = self.selected["action"] in ("activate-existing-and-enroll","update-existing")
         properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
         if recovering_action:
             properties += ",UnitFileState"
+        if self.selected["action"] == "update-existing":
+            import guard_resident_owned_update as update
+            properties = ",".join(sorted(update.IDLE_PROPERTIES))
         result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
             "ai.xoxd.omux.service"],env=env,stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=remaining,check=False)
@@ -564,12 +596,20 @@ class Admission:
             and not result.stderr and len(result.stdout) <= 16384)
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
-            "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set()))
+            "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set())
+            | ({"Slice","ExecStart","DropInPaths","NeedDaemonReload"} if self.selected["action"] == "update-existing" else set()))
         if starting_new:
             require(values["LoadState"] == "not-found" and values["ActiveState"] == "inactive"
                 and values["SubState"] == "dead" and values["MainPID"] == "0"
                 and values["FragmentPath"] == "" and values["ControlGroup"] == "")
             return {"active":False,"new_owned_service_admitted":True}
+        if self.selected["action"] == "update-existing":
+            update.inactive_installation(values,self.selected)
+            update.inactive_cgroup(self.deadline_ns)
+            require(self.installation_update is not None)
+            self.installation_update.verify_fragment(values["FragmentPath"])
+            return {"active":False,"owned_update_inactive_verified":True,"bounded":True,
+                "installation_update_completed":self.installation_update.finished}
         recovering = starting and self.selected["action"] == "activate-existing-and-enroll"
         if recovering:
             recovery_loaded_properties(values)
@@ -615,6 +655,13 @@ class Admission:
             "resident_memory":RESIDENT_MEMORY,"resident_tasks":RESIDENT_TASKS,"resident_cpu_percent":RESIDENT_CPU_PERCENT,
             "ownership":self.selected["ownership"],"custody_claim_requires_controller_success":True}
 
+    def complete_owned_update(self,workload_status,cleaned):
+        require(self.installation_update is not None and type(workload_status) is int
+            and workload_status == 0 and cleaned is True)
+        result = self.installation_update.completed()
+        self.facts = self.recheck()
+        return result
+
     def environment(self):
         info = os.fstat(self.directory)
         return {VARIABLE:DESTINATION+"/input.json",DEADLINE_VARIABLE:str(self.deadline_ns),
@@ -627,6 +674,9 @@ class Admission:
         return int(remaining)
 
     def close(self):
+        if getattr(self,"installation_update",None) is not None:
+            self.installation_update.close()
+            self.installation_update = None
         if getattr(self,"owned_unit",None) is not None:
             self.owned_unit.close()
             self.owned_unit = None

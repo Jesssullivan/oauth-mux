@@ -36,7 +36,7 @@ python_test(
 )
 filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
 filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
-exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
+exports_files(["README.md", "install.py", "resident_owned_update.py", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
 exports_files(["yoga_wrapper_authority.py", "yoga_wrapper_custody.py", "generate_portable_launcher_template.py"])
 
 # One guard-bound native OAuth RUN; UI descriptors are created after Bazel launch.
@@ -343,7 +343,8 @@ python_binary(name = "runtime_audit", main = "runtime_audit.py", srcs = ["portab
               target_compatible_with = ["@platforms//os:linux"])
 native_resolution(name = "native_runtime_resolution", control = "//clients/linux:control",
                   target_compatible_with = ["@platforms//os:linux"])
-python_test(name = "delivery_test", main = "test_delivery.py", srcs = ["pack.py", "install.py", "portable.py", "test_portable.py"],
+python_test(name = "delivery_test", main = "test_delivery.py", srcs = ["pack.py", "install.py", "portable.py", "test_portable.py",
+            "//tools:guard_resident_enrollment_profile.py", "//tools:guard_resident_owned_update.py"],
             data = ["services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
 python_test(name = "update_plan_test", main = "test_update_plan.py", srcs = ["update_plan.py"])
 python_test(
@@ -1067,7 +1068,8 @@ cc_binary(
 python_binary(
     name = "resident_codex_enrollment",
     main = "resident_enrollment.py",
-    srcs = ["install.py","pack.py","portable.py","//tools:guard_resident_enrollment_profile.py"],
+    srcs = ["install.py","pack.py","portable.py","resident_owned_update.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
     data = [":default_instance_archive","@omux_nix//:systemctl",":resident_session_services"],
     args = ["$(location :default_instance_archive)","$(location @omux_nix//:systemctl)",
         "$(location :resident_session_services)"],
@@ -1077,6 +1079,6 @@ python_binary(
 python_test(
     name = "resident_enrollment_contract_test",
     main = "test_resident_enrollment.py",
-    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py",
-        "//tools:guard_resident_enrollment_profile.py"],
+    srcs = ["resident_enrollment.py","install.py","pack.py","portable.py","resident_owned_update.py",
+        "//tools:guard_resident_enrollment_profile.py","//tools:guard_resident_owned_update.py"],
 )
