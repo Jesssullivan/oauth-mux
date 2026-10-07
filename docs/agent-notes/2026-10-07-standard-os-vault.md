@@ -242,3 +242,35 @@ Five meaningful new contract methods cover closed role/permission/qualification 
 Root applied independently reviewed controller-onlye3914a73ea01ae94bffdec4e2b6d9c2430974cc3bab2146a2f7dc31311bfc5ce. Acceptance now rejoins the exact selected seven-field public Source and checks its Codex/native_store lineage, connected-or-detached status, signed-i64 authorization times and exclusive expiry against the same captured now. Missing/duplicate/extra source shape, bool/float/overflow times, future authorization, disconnection and expiry-at-now refuse before successful enrollment output. A different connected source cannot authorize this grant. Valid detached non-browser authority remains eligible, matching domain routing; grant generation and all strict identity/external ready access/expiry/account/source joins remain intact. Three meaningful methods extend the existing enrollment contract.
 
 This changes only the controller and can use the unchanged qualified I8 software after model proof. Separately reviewed runtime projection proposal935a3c55ba04ca54e4ffa561233bbb00d18dcee039c592b906047b4cb86144f5 remains unapplied: setup's Usable authority phase can omit source-expiry status even though routing correctly refuses and complete readiness staysfalse. That runtime correction requires its own source/test/artifact/install qualification and inherits no I8 proof. Neither new controller methods nor runtime delta have execution evidence yet.
+
+## Enrollment checks and readiness-source correction — 21:38 UTC
+
+All eight changed enrollment/lifecycle/controller/docs/source tests passed on
+signed e4d8bb636364afdda14b77fb84a8e265df2c93ea in epoch
+87e4be20-dff3-49ba-91bb-dc9e09faf160. Exits0/0, descendants empty,
+controller failure null, evidence preserved. Receipt SHA256
+6f840f53a37e8e9d2bbbfbf55b48714ff149eaeadde9fc187f43db4332ef0340;
+evidence SHA256 bb9d245bacb79aa3654ea111cd1f94919fd13a915e4e9a674c6e746ba679a110.
+These replace the earlier queued status for the three controller deltas.
+
+The first lightweight restoration was refused before an epoch, workload or
+service launch: stage=operatorinputs, exception=OSError. No root cause is
+established. Qualified public software/receipt/archive and private input paths
+exist, the exact 32hex control directory is empty, and app.slice exists with
+the owned unit cgroup absent. A narrowly redacted diagnostic is being reviewed.
+The daemon has not been restored. OS unlock binding remains with the Neo operator.
+
+Root now applied independently reviewed runtime projection proposal SHA256
+935a3c55ba04ca54e4ffa561233bbb00d18dcee039c592b906047b4cb86144f5.
+Setup captures one clock and requires the grant's exact source lineage to have
+current authorization before displaying usable authority. Valid detached
+non-browser grants remain eligible. The regression compares the displayed
+phase with actual routing for current, detached, expired, future and disconnected
+source authority, including an unrelated connected source and unchanged generation.
+This supersedes the previous unapplied status. Runtime/source checks are queued;
+installed I8 software is unchanged and inherits no successor behavior or proof.
+
+Git receipt: root | own standard fork, exact engine/note paths | preserve actual
+source correction and evidence | R-N12/R-N13 | Original index untouched |
+invocation-local hooksPath=/dev/null, signed commit; declared Bazel checks remain
+required. No credentials, factor, native auth/history or provider operation.
