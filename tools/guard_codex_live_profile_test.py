@@ -100,6 +100,23 @@ class LiveAdmissionTests(unittest.TestCase):
         self.assertEqual(live.rejection_category(ValueError("private-provider-content")),
                          "codex-live-admission-refused")
 
+    def test_exact_directory_binding_accepts_systemd_recursive_normalization(self):
+        expected='/private/input-directory:/omux-live-inputs'
+        for entry in (expected, expected+':rbind'):
+            actual={'BindReadOnlyPaths':entry,'BindPaths':''}
+            live.verify_binding(actual,expected)
+            facts=live.binding_facts(actual,expected)
+            self.assertTrue(facts['source_matches'] and facts['destination_matches'])
+            self.assertNotIn('/private',repr(facts))
+        for entry, writable in ((expected+':other',''), (expected+':rbind extra',''),
+                                 ('/private/other:/omux-live-inputs:rbind',''),
+                                 ('/private/input-directory:/other:rbind',''),
+                                 (expected,'/private/input-directory:/unexpected')):
+            actual={'BindReadOnlyPaths':entry,'BindPaths':writable}
+            with self.assertRaises(ValueError):
+                live.verify_binding(actual,expected)
+            self.assertNotIn('/private',repr(live.binding_facts(actual,expected)))
+
     def test_private_manifest_rejects_duplicate_fields(self):
         with self.assertRaises(ValueError):
             live.unique_object([("model", "first"), ("model", "second")])

@@ -1109,6 +1109,7 @@ def _main(argv, admission_resources):
     owner_input_after = None
     live_input = None
     live_input_verified_after = None
+    live_binding_readback = None
     if args.profile == 'codex-live':
         import guard_codex_live_profile as live
         live.finite(arguments, args.manager, args.codex_live_manifest,
@@ -1611,6 +1612,7 @@ def _main(argv, admission_resources):
                                     'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths')}
             if live_input is not None:
                 observed_properties = live.receipt_properties(observed_properties)
+                live_binding_readback = live.binding_facts(actual, live_input.binding())
             name = actual.get('ControlGroup', '')
             if (not name.startswith('/') or '..' in Path(name).parts
                     or Path(name).name != unit or actual.get('Id') != unit):
@@ -1627,9 +1629,7 @@ def _main(argv, admission_resources):
             verify(actual, cgroup, args.manager, isolation, args.profile,
                    runtime_seconds=delivery_runtime_seconds)
             if live_input is not None:
-                if (actual.get('BindReadOnlyPaths', '').split() != [live_input.binding()]
-                        or actual.get('BindPaths', '').strip()):
-                    raise ValueError('codex-live-private-bind-rejected')
+                live.verify_binding(actual, live_input.binding())
                 observed_properties = live.receipt_properties(observed_properties, verified=True)
                 live_input.recheck()
             exported = set(actual.get('Environment', '').split())
@@ -1855,6 +1855,7 @@ def _main(argv, admission_resources):
                        'profile': args.profile, 'coordination_directory': str(coordination),
                        'codex_live_input': {'verified_after_cleanup': live_input_verified_after,
                            'selected_sources': live_input.count, 'source_content_read_by_guard': False} if live_input else None,
+                       'codex_live_binding_readback': live_binding_readback,
                        'yoga_delivery': dict(delivery_summary, prior_qualification=delivery_prior,
                            original_deadline_monotonic_ns=delivery_entry_deadline_ns,
                            runtime_seconds=delivery_runtime_seconds) if delivery_settings else None,

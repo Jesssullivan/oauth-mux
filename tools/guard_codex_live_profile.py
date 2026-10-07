@@ -115,6 +115,27 @@ def rejection_category(error):
     """Do not stringify OSError or native/provider exception content."""
     return "codex-live-admission-refused"
 
+def verify_binding(observed, expected):
+    entries = observed.get('BindReadOnlyPaths', '').split()
+    if len(entries) != 1 or observed.get('BindPaths', '').strip():
+        raise ValueError('codex-live-private-bind-rejected')
+    parts = entries[0].split(':')
+    required = expected.split(':')
+    if (len(parts) not in (2, 3) or parts[:2] != required
+            or len(parts) == 3 and parts[2] != 'rbind'):
+        raise ValueError('codex-live-private-bind-rejected')
+
+def binding_facts(observed, expected):
+    # Explicit shape predicates only; never retain mount source selectors.
+    entries = observed.get('BindReadOnlyPaths', '').split()
+    parts = entries[0].split(':') if len(entries) == 1 else []
+    required = expected.split(':')
+    return {'entry_count': min(len(entries), 2), 'part_count': min(len(parts), 4),
+            'source_matches': bool(parts) and parts[0] == required[0],
+            'destination_matches': len(parts)>1 and parts[1] == required[1],
+            'option': 'absent' if len(parts)==2 else 'rbind' if len(parts)==3 and parts[2]=='rbind' else 'unrecognized',
+            'writable_bind_present': bool(observed.get('BindPaths','').strip())}
+
 def schema(raw, label=LABEL):
     if label not in LABELS:
         raise ValueError("codex-live-exact-target")
