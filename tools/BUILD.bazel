@@ -1405,7 +1405,7 @@ python_test(
     main = "codex_live_source.py",
     data = ["@omux_codex_live_source_inputs//:inputs"],
     args = [
-        "--patch-sha256", "2d819f44ce06d6bb948ba99d72279267e8fc242c57d4bf746d3b95b907414cb7",
+        "--patch-sha256", "5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6",
         "--patch-sha256", "3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53",
         "--patch-sha256", "84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5",
     ],

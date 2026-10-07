@@ -489,6 +489,16 @@ def main():
     args = parser.parse_args()
     budget = Budget(args.deadline_unix if args.deadline_unix is not None else time.time()+900)
     parent = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR'])
+    public_parent = open_dir(parent)
+    try:
+        need(os.fstat(public_parent).st_uid==os.getuid(),'Bazel output parent ownership')
+        # Bazel owns output-parent permissions; use only a fresh private child.
+        # mkdir is exclusive: never chmod or reuse an existing output directory.
+        os.mkdir('sdk-private',0o700,dir_fd=public_parent)
+        os.fsync(public_parent)
+    finally:
+        os.close(public_parent)
+    parent = parent/'sdk-private'
     fd = open_dir(parent,private=True)
     try:
         if args.phase == 'qualify':

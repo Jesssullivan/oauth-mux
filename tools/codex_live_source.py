@@ -43,6 +43,10 @@ MAX_METADATA = 8 * 1024 * 1024
 MAX_PATCH = 4 * 1024 * 1024
 HASH = re.compile(r'[0-9a-f]{64}')
 DEADLINE = None
+# Only fixed public categories may enter diagnostics. Never format exceptions,
+# source, paths, patch contents, or native values into the refusal message.
+PHASE = 'baseline'
+PHASES = frozenset(('baseline', 'patch/1', 'patch/2', 'patch/3', 'dependency', 'output'))
 
 
 def require(value):
@@ -347,7 +351,8 @@ def write_source(root, files):
 
 
 def produce(output, patch_pins, seconds):
-    global DEADLINE
+    global DEADLINE, PHASE
+    PHASE = 'baseline'
     DEADLINE = time.monotonic() + seconds
     require(1 <= seconds <= 1100 and len(patch_pins) == len(PATCHES)
             and all(HASH.fullmatch(value) for value in patch_pins))
@@ -356,13 +361,15 @@ def produce(output, patch_pins, seconds):
     patch_fd = directory(PATCH_DIRECTORY)
     changes = []
     try:
-        for name, pin in zip(PATCHES, patch_pins):
+        for index, (name, pin) in enumerate(zip(PATCHES, patch_pins), 1):
+            PHASE = ('patch/1', 'patch/2', 'patch/3')[index - 1]
             raw, _ = read(patch_fd, name, MAX_PATCH)
             require(sha(raw) == pin)
             files, changed = apply_native_patch(files, raw)
             changes.append({'patch_sha256': pin, 'paths': sorted(changed)})
     finally:
         os.close(patch_fd)
+    PHASE = 'dependency'
     files, native_declaration = declare_pinned_sha2(files)
     require(all({'sha256': sha(files[name][1])} == baseline_graph[name]
                 for name in GRAPH if name != 'codex-rs/core/BUILD.bazel'))
@@ -379,6 +386,7 @@ def produce(output, patch_pins, seconds):
         'physical_mode_policy': 'bazel-retained-export-all-regular-and-directories-0555-v1',
         'graph_resolution': 'retained-crate-hub-with-explicit-pinned-native-sha2-dependency; offline-analysis-unrun',
         'native_support': False, 'native_compile_passed': False, 'provider_evaluation': False}
+    PHASE = 'output'
     fd = write_source(output, files)
     try:
         tick()
@@ -414,5 +422,6 @@ if __name__ == '__main__':
     try:
         main()
     except (ValueError, OSError, KeyError, TypeError, UnicodeError, json.JSONDecodeError):
-        print('native source producer refused', file=sys.stderr)
+        stage = PHASE if PHASE in PHASES else 'baseline'
+        print('native source producer refused at ' + stage, file=sys.stderr)
         raise SystemExit(1) from None

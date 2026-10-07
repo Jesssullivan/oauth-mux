@@ -55,3 +55,27 @@ Signed C4 source was pushed and independently read back. The available GitHub PR
 C5 targeted models passed6/8 in `ce68dbc9-edf6-4102-a11b-44722100a1e2`; source-parser fixture names were accidentally rebased by root, and candidate-cache fixtures encountered shared temporary ancestors. Those fixtures are corrected without changing production restrictions. Applied the runtime0600 SQLite fix with existing-file and POSIX-lock preservation, detailed sealed predicates, bounded native request audit, and real text handoff fixture with explicit configured text mode/minimum supported effort/no reasoning summaries. Accepted-history cold resume and post-history detach/restoration remain independently unproved. `//:format` on `src` passed via the guarded Bazel formatter with empty descendants.
 
 Fresh native SDK export now selects only actual baseline-lock BCR metadata digests into a new sealed cache. This addresses missing transitive registry metadata while retaining network denial and readonly original caches; qualification remains unrun. Static reviews found no concrete blockers in these revisions. The next action is exact targeted models, then fresh source/SDK production. No passing model or source definition closes real-account custody, native resume or handoff acceptance.
+
+## C8 actual enrollment and native preparation corrections
+
+Authority: explicit user-authorized live implementation/proof, AGENTS.md and
+R-N13. C8 `d0932e7a36a3f798c645e4afd472ebd8f7fe9ae9` passed storage,
+engine, format, docs and source in `361369b1-9f9b-4693-b005-a1eb0d93949a`;
+the two actual source/SDK preparation targets failed, with empty descendants.
+
+Its actual installed first-account live retry
+`3990dd83-a8ff-4734-96cf-d356effb07d9` passed (exit0, empty descendants,
+no controller failure). The preserved proof SHA256
+`1229eb3023027218a1f10dc22f0c6076d7182bcdac62877d9209369a9c62c34f`
+reports one provider-verified identity, encrypted SQLite access-grant custody,
+sealed snapshot, daemon restart and unchanged ciphertext/grant generation.
+External renewal stays external. No sign-in/native auth write occurred, and the
+fixture removes isolated custody; resident deployment, two accounts, ordinary
+native resume and handoff remain open. Original durable receipt carries details.
+
+Native preparation corrections preserve strict unique-context patching and all
+limits: the final text patch context is strengthened with SHA256
+`5b9eb9d8ffc19ac6e53429186b3dc3e51ab05ab9bbb30564c3b621d7d5383ef6`;
+source refusal diagnostics use fixed phase categories; SDK output uses a new
+private child rather than changing Bazel-owned directory permissions. These
+corrections require actual producer qualification; no native build is inferred.
