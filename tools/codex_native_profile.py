@@ -181,6 +181,44 @@ def command(args, run, locked_path, bash, candidate=None):
             'HOME': str(run / 'home'), 'XDG_CACHE_HOME': str(run / 'home/cache'),
             'XDG_CONFIG_HOME': str(run / 'home/config'), 'XDG_STATE_HOME': str(run / 'home/state')}}
 
+
+def completion_deadline(args, original_entry_ns, candidate=None):
+    """Select a closed native budget from the original invocation entry clock."""
+    require(type(original_entry_ns) is int and original_entry_ns >= 0,
+        'native original entry clock required')
+    path = getattr(args, 'native_cache_phase2', None)
+    pin = getattr(args, 'native_cache_phase2_sha256', None)
+    require((path is None) == (pin is None), 'native phase2 complete selector required')
+    seconds = getattr(args, 'native_aggregate_seconds', 1200)
+    require(type(seconds) is int, 'native aggregate seconds must be exact integer')
+    if path is None:
+        require(seconds == 1200, 'ordinary native budget must remain unchanged')
+    else:
+        require(args.profile == 'codex-native' and args.manager == 'system'
+            and args.native_owned_candidate_cache is True
+            and (args.native_mode, args.native_cache_attempt) in ((COMBINED_MODE, 6), ('schema', 7))
+            and getattr(args, 'native_cache_transition', None) is None
+            and getattr(args, 'native_cache_transition_sha256', None) is None
+            and seconds == 3600 and isinstance(pin, str) and re.fullmatch(r'[0-9a-f]{64}', pin)
+            and candidate is not None and candidate.phase2_verified_before_launch is True,
+            'native phase2 deadline requires fully verified closed candidate')
+    return (original_entry_ns + seconds * 10**9) / 10**9
+
+
+def phase2_effective_runtime(value, maximum):
+    """Read back only the native retry's finite remaining workload duration."""
+    require(type(value) is str and len(value) <= 64
+        and type(maximum) is int and 0 < maximum <= 3480,
+        'native phase2 effective runtime invalid')
+    matches = list(re.finditer(r'([0-9]+(?:\.[0-9]{1,6})?)(us|ms|s|min|h)', value))
+    require(matches and ''.join(match.group(0) for match in matches) == value.replace(' ', ''),
+        'native phase2 effective runtime invalid')
+    scales = {'us':1, 'ms':1000, 's':1000000, 'min':60000000, 'h':3600000000}
+    total = sum(int(float(match.group(1)) * scales[match.group(2)]) for match in matches)
+    require(0 < total <= maximum * 1000000,
+        'native phase2 effective runtime exceeds original remaining budget')
+    return total
+
 def runtime(args):
     tick(args.native_deadline)
     # Reserve 120 seconds inside the same aggregate budget for verified cleanup

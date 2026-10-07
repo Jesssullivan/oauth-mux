@@ -842,12 +842,16 @@ def selected_site_receipt(path, expected_sha256, state_root, coordination_root, 
     return path
 
 
-def verify(actual, cgroup, manager='user', isolation=None, profile='standard', runtime_seconds=None):
+def verify(actual, cgroup, manager='user', isolation=None, profile='standard', runtime_seconds=None, native_phase2=False):
     for key, value in {**PROPERTIES, **(isolation or SANDBOX)}.items():
         if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'codex-native') or
                 profile in ('standard', 'codex-live') and runtime_seconds is not None):
             import yoga_delivery_settings as delivery_settings
-            delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
+            if profile == 'codex-native' and native_phase2 is True:
+                from codex_native_profile import phase2_effective_runtime
+                phase2_effective_runtime(actual.get(key), runtime_seconds)
+            else:
+                delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
             continue
         if actual.get(key) != value:
             raise ValueError('effective service property rejected: ' + key)
@@ -1037,7 +1041,8 @@ def main(argv=None):
 def _main(argv, admission_resources):
     # Delivery's one deadline begins before parsing/tool validation/bootstrap.
     # Other profiles keep their existing deadlines and execution behavior.
-    delivery_entry_deadline_ns = time.monotonic_ns() + 1200 * 10**9
+    delivery_entry_monotonic_ns = time.monotonic_ns()
+    delivery_entry_deadline_ns = delivery_entry_monotonic_ns + 1200 * 10**9
     global DIAGNOSTIC_STAGE
     DIAGNOSTIC_STAGE = 'arguments/profile'
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1077,6 +1082,8 @@ def _main(argv, admission_resources):
     parser.add_argument('--native-cache-attempt', type=int)
     parser.add_argument('--native-cache-transition', type=Path)
     parser.add_argument('--native-cache-transition-sha256')
+    parser.add_argument('--native-cache-phase2', type=Path)
+    parser.add_argument('--native-cache-phase2-sha256')
     parser.add_argument('--yoga-delivery-epoch')
     parser.add_argument('--yoga-qualification', type=Path)
     parser.add_argument('--yoga-qualification-sha256')
@@ -1124,8 +1131,17 @@ def _main(argv, admission_resources):
             or args.manager != 'system' or args.native_cache_attempt not in (5, 6)
             or args.native_mode not in ('qualification-cli', 'schema')):
             raise ValueError('native transition restricted to final C26 combined and schema invocations')
-        if args.native_cache_attempt is not None and not 1 <= args.native_cache_attempt <= 6:
-            raise ValueError('native continuation is limited to six attempts')
+        if (args.native_cache_phase2 is None) != (args.native_cache_phase2_sha256 is None):
+            raise ValueError('native phase2 requires one exact reviewed amendment pin')
+        phase2_selected = args.native_cache_phase2 is not None
+        if phase2_selected and (args.native_cache_transition is not None
+            or args.native_cache_transition_sha256 is not None
+            or not args.native_owned_candidate_cache or args.manager != 'system'
+            or (args.native_mode, args.native_cache_attempt) not in (('qualification-cli', 6), ('schema', 7))):
+            raise ValueError('native phase2 restricted to exact completion retry and independent schema')
+        if args.native_cache_attempt is not None and not 1 <= args.native_cache_attempt <= (7 if phase2_selected else 6):
+            raise ValueError('native continuation exceeds explicitly selected finite phase')
+        args.native_aggregate_seconds = 3600 if phase2_selected else 1200
         import codex_native_profile as native_sdk
         args.native_deadline = delivery_entry_deadline_ns / 10**9
         if arguments or args.native_mode not in native_sdk.MODES or any(v is None for v in native_inputs):
@@ -1145,7 +1161,7 @@ def _main(argv, admission_resources):
         if args.state_dir != native_sdk.STATE:
             raise ValueError('native profile requires fixed fresh fast state')
         arguments = [native_sdk.MODES[args.native_mode][0], *native_sdk.MODES[args.native_mode][1]]
-    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None or args.native_cache_transition is not None or args.native_cache_transition_sha256 is not None:
+    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None or args.native_cache_transition is not None or args.native_cache_transition_sha256 is not None or args.native_cache_phase2 is not None or args.native_cache_phase2_sha256 is not None:
         raise ValueError('native inputs are exclusive to native profile')
     site = None
     site_qualification = None
@@ -1501,6 +1517,9 @@ def _main(argv, admission_resources):
                 native_cache = Candidate(args, run, tools, native_controller_graph, locked_path,
                     args.manager, previous_empty)
                 resources.callback(native_cache.close)
+            args.native_deadline = native_sdk.completion_deadline(args,
+                delivery_entry_monotonic_ns, native_cache)
+            args.native_original_deadline_ns = delivery_entry_monotonic_ns + args.native_aggregate_seconds * 10**9
             native_plan = native_sdk.command(args, run, locked_path, bash, native_cache)
             command = native_plan['argv']
             workload_cwd = Path(native_plan['cwd'])
@@ -1773,7 +1792,8 @@ def _main(argv, admission_resources):
             original_pid = int(actual.get('MainPID', '0'))
             original_ticks = process_start_ticks(original_pid)
             verify(actual, cgroup, args.manager, isolation, args.profile,
-                   runtime_seconds=delivery_runtime_seconds)
+                   runtime_seconds=delivery_runtime_seconds,
+                   native_phase2=native_cache is not None and native_cache.phase2_verified_before_launch is True)
             if native_sdk:
                 native_sdk.verify_readonly(actual, args, native_plan)
             if live_input is not None:
@@ -2052,6 +2072,9 @@ def _main(argv, admission_resources):
                        'manager': args.manager, 'host_identity_maps': identity_maps,
                        'profile': args.profile, 'coordination_directory': str(coordination),
                        'native_sdk': {'mode': args.native_mode, 'plan': native_plan,
+                           'aggregate_seconds': args.native_aggregate_seconds,
+                           'original_entry_monotonic_ns': delivery_entry_monotonic_ns,
+                           'original_deadline_monotonic_ns': args.native_original_deadline_ns,
                            'source_receipt_sha256': args.native_source_sha256,
                            'export_receipt_sha256': args.native_export_sha256,
                            'source_and_export_verified_after_cleanup': native_verified_after} if native_sdk else None,

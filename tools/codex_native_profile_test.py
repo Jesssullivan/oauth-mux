@@ -377,5 +377,48 @@ class RegistryMetadataAdmissionTests(unittest.TestCase):
             for folder, _, _ in os.walk(cache):
                 Path(folder).chmod(0o755)
 
+
+class NativeCompletionBudgetModels(unittest.TestCase):
+    def request(self, phase2=True):
+        return SimpleNamespace(profile='codex-native', manager='system',
+            native_owned_candidate_cache=True, native_mode=native.COMBINED_MODE,
+            native_cache_attempt=6, native_cache_phase2=Path('/public/phase2.json') if phase2 else None,
+            native_cache_phase2_sha256='a'*64 if phase2 else None,
+            native_cache_transition=None, native_cache_transition_sha256=None,
+            native_aggregate_seconds=3600 if phase2 else 1200)
+
+    def test_verified_retry_keeps_setup_time_and_cleanup_inside_original_budget(self):
+        entry=100 * 10**9
+        for phase2, expected in ((False, 180), (True, 2580)):
+            args=self.request(phase2)
+            candidate=SimpleNamespace(phase2_verified_before_launch=True)
+            args.native_deadline=native.completion_deadline(args,entry,candidate)
+            # Nine hundred seconds of admission is already consumed.
+            with patch.object(native.time,'monotonic',return_value=1000):
+                self.assertEqual(native.runtime(args),expected)
+        with patch.object(native.time,'monotonic',return_value=3581):
+            with self.assertRaises(ValueError):
+                native.runtime(args)
+
+    def test_unverified_foreign_or_unselected_request_cannot_extend_deadline(self):
+        mutations=(('profile','standard'),('manager','user'),
+            ('native_owned_candidate_cache',False),('native_mode','qualification'),
+            ('native_cache_attempt',5),('native_cache_phase2_sha256',None),
+            ('native_cache_transition',Path('/public/phase1.json')),
+            ('native_aggregate_seconds',7200))
+        for field,value in mutations:
+            args=self.request(); setattr(args,field,value)
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                native.completion_deadline(args,100 * 10**9,
+                    SimpleNamespace(phase2_verified_before_launch=True))
+        for verified in (None,False):
+            with self.assertRaises(ValueError):
+                native.completion_deadline(self.request(),100 * 10**9,
+                    SimpleNamespace(phase2_verified_before_launch=verified))
+        args=self.request(False); args.native_aggregate_seconds=3600
+        with self.assertRaises(ValueError):
+            native.completion_deadline(args,100 * 10**9,
+                SimpleNamespace(phase2_verified_before_launch=True))
+
 if __name__ == '__main__':
     unittest.main()
