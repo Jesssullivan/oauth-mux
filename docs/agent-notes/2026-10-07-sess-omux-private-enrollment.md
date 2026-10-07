@@ -29,6 +29,19 @@ enrollment, TIN-2063 installation. Tracker facts remain in the Original
 `docs/tracker-updates/live-account-proof-2026-10-07.json` until this source is
 qualified and reconciled. Completion never follows merely from a schema.
 
+The phase-aware retained qualification on source 9dc1ca3 failed in
+40a41b71-b015-4705-8164-921b9172e580 at NATIVEVERSION, before schema
+generation and any provider access. Four companion targets passed; controller
+cleanup found no descendants. The schema-annotation correction therefore does
+not explain this actual refusal. The next correction reports only fixed launch
+categories, exit status and bounded output counts/digests, and matches the
+portable loader's inhibit-cache flag. No raw native output is exposed.
+
+UI admission now derives the exact 181 closure rows from the separately pinned
+retained inventory and checks their canonical digest. Same-count and same-size
+row substitutions must refuse. This source has not yet run its new models or
+actual desktop qualification; neither readiness nor consent is established.
+
 R-N12 per-command hook alternative: advisory hooks are bypassed only for this
 owned signed commit; no global hooks or remotes are changed. Source and commit
 readbacks and actual declared checks supply the traceable alternative.

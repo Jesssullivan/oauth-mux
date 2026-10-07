@@ -28,6 +28,31 @@ UI_ROOTS = frozenset((
     "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0",
     "/nix/store/l1nqjg1yx6q6vx6zwsnd3ky0s7a0kfk8-qtwayland-6.11.0"))
 INVENTORY_SHA = "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8"
+INVENTORY_PATH = Path("/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/8b6bd81f-786e-49c1-b8de-ac1103e986b1/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/yoga_controller_inventory_producer/test.outputs/yoga-controller-inputs/controller-inventory.json")
+
+def canonical_rows(rows):
+    return json.dumps(rows,sort_keys=True,separators=(",",":"),allow_nan=False).encode("ascii")
+
+def selected_inventory_rows(raw,expected_sha256=INVENTORY_SHA):
+    from verify_cached_nars import parse_inventory
+    rows = parse_inventory(raw,expected_sha256)
+    if len(rows) != 472:
+        raise ValueError("native-ui-source-inventory")
+    by_path = {row["path"]:row for row in rows}
+    selected,pending = set(),list(UI_ROOTS)
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        if name not in by_path:
+            raise ValueError("native-ui-source-inventory")
+        selected.add(name)
+        pending.extend(by_path[name]["references"])
+    result = [by_path[name] for name in sorted(selected)]
+    if len(result) != 181 or sum(row["narSize"] for row in result) != 869166464:
+        raise ValueError("native-ui-source-inventory")
+    return result
+
 CLOSURE_FIELDS = frozenset(("schema_version","scope","rows","verified_paths","verified_nar_bytes",
     "destination_registration_verified","destination_content_rehashed","store_import_performed",
     "dialog_sha256","source_inventory_sha256","os_qualification_sha256"))
@@ -35,7 +60,7 @@ SEAT_EXTRA = frozenset(("schema_version","scope","wayland_peer_pid","wayland_pee
     "wayland_peer_start_ticks","portal_owner_pid","portal_owner_start_ticks",
     "actual_dialog_ready","actual_dialog_eof_clean_exit","provider_request_performed","portal_openuri_performed"))
 
-def measured_receipts(closure,seat,remote,os_pin,control_pin):
+def measured_receipts(closure,seat,remote,os_pin,control_pin,rows_sha256):
     if (type(closure) is not dict or set(closure) != CLOSURE_FIELDS
             or type(closure["schema_version"]) is not int or closure["schema_version"] != 1
             or closure["scope"] != "omux-native-login-ui-closure-v1"
@@ -46,7 +71,8 @@ def measured_receipts(closure,seat,remote,os_pin,control_pin):
             or closure["store_import_performed"] is not False
             or closure["dialog_sha256"] != control_pin or closure["source_inventory_sha256"] != INVENTORY_SHA
             or closure["os_qualification_sha256"] != os_pin
-            or type(closure["rows"]) is not list or len(closure["rows"]) != 181):
+            or type(closure["rows"]) is not list or len(closure["rows"]) != 181
+            or hashlib.sha256(canonical_rows(closure["rows"])).hexdigest() != rows_sha256):
         raise ValueError("native-ui-measured-closure")
     from verify_cached_nars import expected_hash
     rows,names,total = closure["rows"],set(),0
@@ -147,6 +173,21 @@ class Admission:
                     or self.output.is_relative_to(self.source) or self.output == self.namespace
                     or self.output.is_relative_to(self.namespace) or self.namespace.is_relative_to(self.output)):
                 raise ValueError("native-ui-private-scope")
+            parent = retained.directory(INVENTORY_PATH.parent)
+            try:
+                self.inventory_fd = os.open(INVENTORY_PATH.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,dir_fd=parent)
+                self.fds.append(self.inventory_fd)
+            finally:
+                os.close(parent)
+            info = os.fstat(self.inventory_fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0,os.getuid()) or info.st_mode & 0o022
+                    or info.st_nlink != 1 or not 0 < info.st_size <= 8*1024*1024):
+                raise ValueError("native-ui-source-inventory-custody")
+            self.inventory_identity = inputs.identity(info)
+            raw = os.pread(self.inventory_fd,8*1024*1024+1,0)
+            if len(raw) != info.st_size or inputs.identity(os.fstat(self.inventory_fd)) != self.inventory_identity:
+                raise ValueError("native-ui-source-inventory-changed")
+            self.rows_sha256 = hashlib.sha256(canonical_rows(selected_inventory_rows(raw))).hexdigest()
             self.namespace_fd = retained.directory(self.namespace)
             self.fds.append(self.namespace_fd)
             login.namespace_custody(os.fstat(self.namespace_fd))
@@ -214,6 +255,18 @@ class Admission:
 
     def recheck(self):
         self.budget()
+        parent = retained.directory(INVENTORY_PATH.parent)
+        try:
+            named = os.open(INVENTORY_PATH.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,dir_fd=parent)
+            try:
+                if (inputs.identity(os.fstat(named)) != self.inventory_identity
+                        or inputs.identity(os.fstat(self.inventory_fd)) != self.inventory_identity
+                        or hashlib.sha256(os.pread(self.inventory_fd,8*1024*1024+1,0)).hexdigest() != INVENTORY_SHA):
+                    raise ValueError("native-ui-source-inventory-changed")
+            finally:
+                os.close(named)
+        finally:
+            os.close(parent)
         for path,held,expected,directory in (
                 (self.namespace,self.namespace_fd,self.namespace_identity,True),
                 (self.manifest,self.manifest_fd,self.manifest_identity,False),
@@ -293,7 +346,7 @@ class Admission:
                 or any(type(remote[name]) is not int or remote[name] <= 0 for name in ("wayland_device","wayland_inode"))):
             raise ValueError("native-ui-output-runtime-seat")
         inputs.binding_selector(remote["dialog_path"])
-        measured_receipts(rows["closure.json"][1],rows["seat.json"][1],remote,self.pins[1],self.pins[2])
+        measured_receipts(rows["closure.json"][1],rows["seat.json"][1],remote,self.pins[1],self.pins[2],self.rows_sha256)
         return {name:pin for name,(pin,_) in rows.items()}
 
     def bindings(self):

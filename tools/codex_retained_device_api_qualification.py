@@ -1,5 +1,6 @@
 """Retained009 provider-free device schema qualification; declared Bazel only."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -134,11 +135,18 @@ def seal(root):
 
 def native(loader_fd, backend_fd, library_path, arguments, environment, directory):
     tick()
-    command = ["/proc/self/fd/" + str(loader_fd), "--library-path", str(library_path),
+    command = ["/proc/self/fd/" + str(loader_fd), "--inhibit-cache", "--library-path", str(library_path),
         "--argv0", "codex", "/proc/self/fd/" + str(backend_fd), *arguments]
-    process = subprocess.Popen(command, pass_fds=(loader_fd, backend_fd), cwd=directory,
-        env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, umask=0o077)
+    try:
+        process = subprocess.Popen(command, pass_fds=(loader_fd, backend_fd), cwd=directory,
+            env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, umask=0o077)
+    except OSError as error:
+        category = {errno.ENOENT: "not-found", errno.EACCES: "permission", errno.ENOEXEC: "format",
+            errno.EMFILE: "descriptor-limit", errno.ENFILE: "descriptor-limit",
+            errno.ENOMEM: "memory", errno.EAGAIN: "process-limit"}.get(error.errno, "other")
+        print("OMUX_RETAINED_NATIVE_LAUNCH_" + category.upper(), file=sys.stderr, flush=True)
+        raise
     pidfd = None
     try:
         pidfd = os.pidfd_open(process.pid)
@@ -158,8 +166,18 @@ def native(loader_fd, backend_fd, library_path, arguments, environment, director
                     else:
                         captured[key.fd].extend(block)
                         require(sum(map(len, captured.values())) <= 65536)
-        require(process.wait(timeout=max(0.1, min(5, until-time.monotonic()))) == 0)
-        return bytes(captured[process.stdout.fileno()]), bytes(captured[process.stderr.fileno()])
+        result = process.wait(timeout=max(0.1, min(5, until-time.monotonic())))
+        stdout = bytes(captured[process.stdout.fileno()])
+        stderr = bytes(captured[process.stderr.fileno()])
+        category = "none"
+        if b": error while loading shared libraries:" in stderr and b": cannot open shared object file:" in stderr:
+            category = "loader-missing-library"
+        print("OMUX_RETAINED_NATIVE_RESULT " + json.dumps({"exit": result,
+            "stdout_bytes":len(stdout), "stdout_sha256":sha(stdout),
+            "stderr_bytes":len(stderr), "stderr_sha256":sha(stderr),
+            "category":category}, sort_keys=True), file=sys.stderr, flush=True)
+        require(result == 0)
+        return stdout, stderr
     finally:
         if process.poll() is None:
             if pidfd is not None:
@@ -274,7 +292,10 @@ def main():
                 phase("nativeversion")
                 version, diagnostics = native(loader, backend, runtime/"lib/codex/lib", ["--version"],
                     environment, scratch)
-                require(re.fullmatch(rb"codex-cli [0-9][0-9A-Za-z.+_-]{0,127}\n", version))
+                version_matches = re.fullmatch(rb"codex-cli [0-9][0-9A-Za-z.+_-]{0,127}\n", version) is not None
+                print("OMUX_RETAINED_NATIVE_VERSION_" + ("MATCH" if version_matches else "FORMAT-REFUSED"),
+                    file=sys.stderr, flush=True)
+                require(version_matches)
                 phase("schemageneration")
                 _, schema_diagnostics = native(loader, backend, runtime/"lib/codex/lib",
                     ["app-server", "generate-json-schema", "--out", str(scratch/"schemas")], environment, scratch)

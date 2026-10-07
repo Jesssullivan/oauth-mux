@@ -140,11 +140,14 @@ class PrepareModels(unittest.TestCase):
             "wayland_peer_pid":2001,"wayland_peer_uid":1000,"wayland_peer_start_ticks":5,
             "portal_owner_pid":2002,"portal_owner_start_ticks":6,"actual_dialog_ready":True,
             "actual_dialog_eof_clean_exit":True,"provider_request_performed":False,"portal_openuri_performed":False}
-        ui.measured_receipts(closure,seat,remote,"a"*64,"b"*64)
+        rows_sha256 = hashlib.sha256(ui.canonical_rows(rows)).hexdigest()
+        ui.measured_receipts(closure,seat,remote,"a"*64,"b"*64,rows_sha256)
         for change in ("empty_closure","empty_seat","missing_path","rehashed_false","import","source_pin","code",
-                "missing_eof","peer_uid","remote_mismatch","portal_open"):
+                "missing_eof","peer_uid","remote_mismatch","portal_open","changed_row_same_count_and_total"):
             c,s = copy.deepcopy(closure),copy.deepcopy(seat)
-            if change == "empty_closure":
+            if change == "changed_row_same_count_and_total":
+                c["rows"][0]["narHash"] = "sha256:"+"c"*64
+            elif change == "empty_closure":
                 c = {}
             elif change == "empty_seat":
                 s = {}
@@ -167,7 +170,25 @@ class PrepareModels(unittest.TestCase):
             else:
                 s["portal_openuri_performed"] = True
             with self.subTest(change=change),self.assertRaises(ValueError):
-                ui.measured_receipts(c,s,remote,"a"*64,"b"*64)
+                ui.measured_receipts(c,s,remote,"a"*64,"b"*64,rows_sha256)
+
+
+    def test_authoritative_inventory_projection_is_derived_from_independently_pinned_bytes(self):
+        selected = sorted(ui.UI_ROOTS)+["/nix/store/"+("0"*29)+str(index).zfill(3)+"-selected-model" for index in range(177)]
+        unused = ["/nix/store/"+("1"*29)+str(index).zfill(3)+"-unused-model" for index in range(291)]
+        rows = [{"path":name,"narHash":"sha256:"+"a"*64,"narSize":1,"references":[]} for name in selected+unused]
+        rows[0]["narSize"] = 869166464-180
+        rows[0]["references"] = selected[4:]
+        raw = json.dumps({"schemaVersion":1,"roots":sorted(ui.UI_ROOTS),"paths":rows}).encode()
+        pin = hashlib.sha256(raw).hexdigest()
+        projected = ui.selected_inventory_rows(raw,pin)
+        self.assertEqual([row["path"] for row in projected],sorted(selected))
+        self.assertEqual(sum(row["narSize"] for row in projected),869166464)
+        changed = raw.replace(("sha256:"+"a"*64).encode(),("sha256:"+"b"*64).encode(),1)
+        with self.assertRaises(ValueError):
+            ui.selected_inventory_rows(changed,pin)
+        with self.assertRaises(ValueError):
+            ui.selected_inventory_rows(raw)
 
 if __name__ == "__main__":
     unittest.main()
