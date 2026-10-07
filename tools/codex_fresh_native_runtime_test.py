@@ -163,8 +163,10 @@ class FreshRuntimeModels(unittest.TestCase):
 
 
 class CombinedActionChainModels(unittest.TestCase):
-    def fixture(self, combined=True):
-        origin='a'*64; provenance='b'*64 if combined else origin; graph='c'*64
+    def fixture(self, combined=True, phase2=False):
+        origin=fresh.PHASE2_PRIOR_TRANSITION['from_provenance_sha256'] if phase2 else 'a'*64
+        provenance='b'*64 if combined else origin; graph='c'*64
+        first_attempt=6 if phase2 else 5
         base=fresh.STATE/('cache-v2-'+origin)/'output-base'
         source={'inventory_sha256':'1'*64}; exported={'inventory_sha256':'2'*64}
         files={'source':{'sha256':'3'*64},'export':{'sha256':'4'*64}}
@@ -173,28 +175,40 @@ class CombinedActionChainModels(unittest.TestCase):
             'from_controller_graph_sha256':'f'*64,'to_controller_graph_sha256':graph,
             'from_provenance_sha256':origin,'to_provenance_sha256':provenance,
             'from_attempt':4,'first_attempt':5,'aggregate_before':6,'aggregate_max':8}
-        specs=(('qualification_run',fresh.COMBINED_MODE,(*tuple(fresh.QUALIFICATION_GATES),fresh.CLI),5),
-            ('schema_run','schema',('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'),6)) if combined else (
+        if phase2:
+            transition.update(schema_version=2,prior_epoch=fresh.PHASE2_FAILED_EPOCH,
+                prior_cleanup_receipt_sha256=fresh.PHASE2_FAILED_RECEIPT,
+                from_controller_graph_sha256=fresh.PHASE2_PRIOR_TRANSITION['to_controller_graph_sha256'],
+                from_provenance_sha256=fresh.PHASE2_PRIOR_TRANSITION['to_provenance_sha256'],
+                from_attempt=5,first_attempt=6,aggregate_before=7,aggregate_max=9)
+        specs=(('qualification_run',fresh.COMBINED_MODE,(*tuple(fresh.QUALIFICATION_GATES),fresh.CLI),first_attempt),
+            ('schema_run','schema',('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'),first_attempt+1)) if combined else (
             ('compile','cli-opt',(fresh.CLI,),1),
             ('qualification_run','qualification',tuple(fresh.QUALIFICATION_GATES),2),
             ('schema_run','schema',('//bazel/schema:native-config-schema','//bazel/schema:public-schema-bundle'),3))
         previous=[{'id':'87654321-1234-4234-8234-%012d'%n,
             'sha256':hashlib.sha256(('prior%d'%n).encode()).hexdigest(),
             'cache_key':origin,'attempt':min(n,4)} for n in range(1,7)]
+        if phase2:
+            previous.append({'id':fresh.PHASE2_FAILED_EPOCH,'sha256':fresh.PHASE2_FAILED_RECEIPT,
+                'cache_key':origin,'attempt':5})
         values={}
         for role,mode,targets,attempt in specs:
             epoch='12345678-1234-4234-8234-%012d'%attempt
             candidate={'key':origin,'provenance_sha256':provenance,'workspace':str(base.parent/'native-input/source'),
-                'output_base':str(base),'max_attempts':6,'attempt':attempt}
+                'output_base':str(base),'max_attempts':7 if phase2 else 6,'attempt':attempt}
             if combined:
                 history=list(previous)
                 if role=='schema_run':
                     prior=fresh.parse(values['qualification_run'])
                     history.append({'id':prior['id'],'sha256':files['qualification_run']['sha256'],
-                        'cache_key':origin,'attempt':5})
-                candidate.update(origin_provenance_sha256=origin,transition_history=[transition],
-                    aggregate_attempt=attempt+2,aggregate_max_attempts=8,
+                        'cache_key':origin,'attempt':first_attempt})
+                candidate.update(origin_provenance_sha256=origin,
+                    transition_history=([copy.deepcopy(fresh.PHASE2_PRIOR_TRANSITION)] if phase2 else [])+[transition],
+                    aggregate_attempt=attempt+2,aggregate_max_attempts=9 if phase2 else 8,
                     transition_verified_after_cleanup=True,aggregate_previous_dispatches=history)
+            if phase2:
+                candidate['phase2_verified_before_launch']=True
             receipt={'id':epoch,'profile':'codex-native','exit':0,'workload_exit':0,
                 'descendants_empty':True,'controller_failure':None,'graph_sha256':graph,
                 'targets':list(targets),'native_candidate_cache':candidate,
@@ -202,6 +216,10 @@ class CombinedActionChainModels(unittest.TestCase):
                     'source_receipt_sha256':files['source']['sha256'],'export_receipt_sha256':files['export']['sha256'],
                     'plan':{'candidate_output_base':str(base),'source_inventory_sha256':source['inventory_sha256'],
                         'export_inventory_sha256':exported['inventory_sha256'],'argv':[fresh.BAZEL]}}}
+            if phase2:
+                receipt['native_sdk'].update(aggregate_seconds=3600,
+                    original_entry_monotonic_ns=100*10**9,
+                    original_deadline_monotonic_ns=3700*10**9)
             raw=fresh.encoded(receipt); values[role]=raw
             files[role]={'path':str(fresh.STATE/epoch/'receipt.json'),'sha256':fresh.digest(raw),'bytes':len(raw)}
         if combined:
@@ -240,6 +258,42 @@ class CombinedActionChainModels(unittest.TestCase):
             ('schema_run',lambda r:r['native_sdk'].update(source_and_export_verified_after_cleanup=False)))
         for role,mutate in mutations:
             selection,values,source,exported=self.fixture()
+            self.change(selection,values,role,mutate)
+            with self.subTest(role=role,mutate=mutate),self.assertRaises(ValueError):
+                fresh.validate_action_receipts(selection,values,source,exported)
+
+
+    def test_phase2_retry_and_independent_schema_preserve_actual_failed_fifth_dispatch(self):
+        selection,values,source,exported=self.fixture(phase2=True)
+        receipts,cache,combined=fresh.validate_action_receipts(selection,values,source,exported)
+        self.assertTrue(combined)
+        qualification=receipts['qualification_run']['native_candidate_cache']
+        schema=receipts['schema_run']['native_candidate_cache']
+        self.assertEqual((qualification['attempt'],schema['attempt']),(6,7))
+        self.assertEqual((qualification['aggregate_attempt'],schema['aggregate_attempt']),(8,9))
+        self.assertEqual(qualification['transition_history'][0],fresh.PHASE2_PRIOR_TRANSITION)
+        self.assertEqual(qualification['aggregate_previous_dispatches'][-1]['sha256'],fresh.PHASE2_FAILED_RECEIPT)
+
+    def test_phase2_cannot_relabel_timeout_skip_history_reset_budget_or_broaden_limits(self):
+        mutations=(
+            ('qualification_run',lambda r:r.update(exit=125,workload_exit=124)),
+            ('qualification_run',lambda r:r['native_candidate_cache'].update(attempt=5)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(attempt=6)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(max_attempts=8)),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(aggregate_max_attempts=10)),
+            ('qualification_run',lambda r:r['native_candidate_cache']['transition_history'][0].update(amendment_sha256='9'*64)),
+            ('qualification_run',lambda r:r['native_candidate_cache']['transition_history'][0].update(schema_version=True)),
+            ('qualification_run',lambda r:r['native_candidate_cache']['transition_history'][1].update(prior_cleanup_receipt_sha256='9'*64)),
+            ('qualification_run',lambda r:r['native_candidate_cache']['aggregate_previous_dispatches'].pop()),
+            ('qualification_run',lambda r:r['native_candidate_cache']['aggregate_previous_dispatches'][-1].update(sha256='9'*64)),
+            ('schema_run',lambda r:r['native_sdk'].update(aggregate_seconds=1200)),
+            ('schema_run',lambda r:r['native_sdk'].update(original_deadline_monotonic_ns=3701*10**9)),
+            ('schema_run',lambda r:r['native_sdk'].pop('original_entry_monotonic_ns')),
+            ('schema_run',lambda r:r['native_candidate_cache'].update(transition_verified_after_cleanup=False)),
+            ('qualification_run',lambda r:r['native_candidate_cache'].update(phase2_verified_before_launch=False)),
+            ('schema_run',lambda r:r['native_candidate_cache'].pop('phase2_verified_before_launch')))
+        for role,mutate in mutations:
+            selection,values,source,exported=self.fixture(phase2=True)
             self.change(selection,values,role,mutate)
             with self.subTest(role=role,mutate=mutate),self.assertRaises(ValueError):
                 fresh.validate_action_receipts(selection,values,source,exported)

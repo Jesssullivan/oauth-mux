@@ -12,6 +12,12 @@
 #define LOGIN "/org/freedesktop/secrets/collection/login"
 #define GNOME_EXE "/nix/store/x1199bxd4ia75dd1nmh0xnnpfzxz1785-gnome-keyring-48.0/bin/.gnome-keyring-daemon-wrapped"
 static gint64 until;
+static const char *predicate="observer-arguments";
+static int refused(void) {
+    /* Only source-literal predicate names; no errors, paths or owner data. */
+    printf("{\"schema\":\"omux-vault-observer-refusal-v1\",\"predicate\":\"%s\"}\n",predicate);
+    return 125;
+}
 typedef struct { guint32 uid, pid; unsigned long long start; char exe[4096]; } Identity;
 static int remaining(void) {
     gint64 left = until - g_get_monotonic_time();
@@ -117,17 +123,20 @@ int main(int argc,char **argv) {
     (void)argv;
     const char *address=getenv("DBUS_SESSION_BUS_ADDRESS");
     const char *deadline=getenv("OMUX_RESIDENT_ORIGINAL_DEADLINE_NS");
-    if (argc!=1 || !address || strcmp(address,ADDRESS) || !deadline || !*deadline || strlen(deadline)>20) return 125;
-    for (const char *p=deadline;*p;p++) if (!g_ascii_isdigit(*p)) return 125;
+    if (argc!=1 || !address || strcmp(address,ADDRESS) || !deadline || !*deadline || strlen(deadline)>20) return refused();
+    predicate="observer-deadline";
+    for (const char *p=deadline;*p;p++) if (!g_ascii_isdigit(*p)) return refused();
     char *end=NULL; unsigned long long ns=strtoull(deadline,&end,10);
-    if (!end || *end || ns>INT64_MAX || ns/1000>(unsigned long long)g_get_monotonic_time()+1200000000ULL) return 125;
-    until=(gint64)(ns/1000); if (!remaining()) return 125;
+    if (!end || *end || ns>INT64_MAX || ns/1000>(unsigned long long)g_get_monotonic_time()+1200000000ULL) return refused();
+    until=(gint64)(ns/1000); if (!remaining()) return refused();
+    predicate="observer-bus-connect";
     GError *error=NULL;
     GDBusConnection *bus=g_dbus_connection_new_for_address_sync(address,
         G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT|G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION,
         NULL,NULL,&error);
     if (error) g_error_free(error);
-    if (!bus) return 125;
+    if (!bus) return refused();
+    predicate="observer-broker-identity";
     GIOStream *stream=g_dbus_connection_get_stream(bus); struct ucred peer;
     socklen_t size=sizeof(peer); Identity broker={0},manager={0},secret={0};
     int ok=G_IS_SOCKET_CONNECTION(stream);
@@ -136,23 +145,35 @@ int main(int argc,char **argv) {
         ok=!getsockopt(fd,SOL_SOCKET,SO_PEERCRED,&peer,&size) && size==sizeof(peer)
             && peer.uid==getuid() && identity(peer.pid,&broker);
     }
+    if (ok) predicate="observer-manager-owner";
     char *manager_name=ok ? owner(bus,"org.freedesktop.systemd1") : NULL;
+    if (manager_name) predicate="observer-manager-identity";
     ok=manager_name && owned(bus,manager_name,&manager);
+    if (ok) predicate="observer-secret-owner";
     char *secret_name=ok ? owner(bus,"org.freedesktop.secrets") : NULL;
     int present=secret_name!=NULL, exists=0, login=0, state=-1, gnome=0;
     char *path=NULL;
     if (present) {
+        predicate="observer-secret-identity";
         ok=owned(bus,secret_name,&secret);
         gnome=ok && !strcmp(secret.exe,GNOME_EXE);
         /* Identity/provider witness precedes any collection operation. */
         if (gnome) {
+            predicate="observer-default-alias";
             path=alias(bus,secret_name); ok=path!=NULL;
             if (ok) {
                 exists=strcmp(path,"/")!=0; login=!strcmp(path,LOGIN);
-                if (exists) ok=locked(bus,secret_name,path,&state);
+                if (exists) {
+                    predicate="observer-collection-locked";
+                    ok=locked(bus,secret_name,path,&state);
+                }
             }
         }
-    } else ok=ok && absent(bus,"org.freedesktop.secrets");
+    } else {
+        if (ok) predicate="observer-secret-absence";
+        ok=ok && absent(bus,"org.freedesktop.secrets");
+    }
+    if (ok) predicate="observer-owner-stability";
     Identity broker_after={0},manager_after={0},secret_after={0};
     char *manager_again=ok ? owner(bus,"org.freedesktop.systemd1") : NULL;
     char *secret_again=ok && present ? owner(bus,"org.freedesktop.secrets") : NULL;
@@ -163,10 +184,12 @@ int main(int argc,char **argv) {
         && owned(bus,secret_again,&secret_after) && !memcmp(&secret,&secret_after,sizeof(secret));
     else ok=ok && absent(bus,"org.freedesktop.secrets");
     if (ok && gnome) {
+        predicate="observer-alias-stability";
         char *again=alias(bus,secret_name); int after=-1;
         ok=again && !strcmp(path,again) && (!exists || (locked(bus,secret_name,again,&after) && after==state));
         g_free(again);
     }
+    if (ok) predicate="observer-deadline";
     if (ok && remaining()) {
         printf("{\"schema\":\"omux-existing-vault-metadata-v1\",\"broker\":"); print_identity(&broker,NULL);
         printf(",\"manager\":"); print_identity(&manager,manager_name);
@@ -178,5 +201,5 @@ int main(int argc,char **argv) {
         printf(",\"items_read\":false,\"secrets_read\":false,\"provider_invocation\":false}\n");
     } else ok=0;
     g_free(path);g_free(manager_name);g_free(secret_name);g_free(manager_again);g_free(secret_again);g_object_unref(bus);
-    return ok?0:125;
+    return ok?0:refused();
 }

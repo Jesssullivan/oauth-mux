@@ -12,6 +12,36 @@ import time
 sys.path.insert(0,str(Path(__file__).parent.parent/"tools"))
 import guard_resident_vault_profile as vault
 import guard_resident_enrollment_profile as resident
+OBSERVER_PREDICATES = frozenset((
+    "observer-arguments","observer-deadline","observer-bus-connect","observer-broker-identity",
+    "observer-manager-owner","observer-manager-identity","observer-secret-owner","observer-secret-identity",
+    "observer-secret-absence","observer-default-alias","observer-collection-locked",
+    "observer-owner-stability","observer-alias-stability"))
+PHASES = frozenset(("arguments","deadline","private-input","before-observation","unlock",
+    "after-observation","observation-stability","metadata-output"))
+PHASE = "arguments"
+class ClosedRefusal(ValueError):
+    def __init__(self,predicate):
+        self.predicate = predicate if predicate in OBSERVER_PREDICATES | {"observer-exit"} else "carrier-gate"
+        super().__init__("resident-vault-action-refused")
+def refusal_projection(error):
+    # Never stringify an exception or reflect observer output/paths into logs.
+    return {"status":"resident-vault-action-refused","secret_output":False,"provider_invocation":False,
+        "phase":PHASE if PHASE in PHASES else "arguments",
+        "predicate":error.predicate if isinstance(error,ClosedRefusal)
+            and error.predicate in OBSERVER_PREDICATES | {"observer-exit"} else "carrier-gate"}
+def observer_refusal(answer):
+    predicate = "observer-exit"
+    if answer.returncode == 125 and 0 < len(answer.stdout) <= 16384:
+        try:
+            value=json.loads(answer.stdout,object_pairs_hook=resident.unique)
+            if (type(value) is dict and set(value)=={"schema","predicate"}
+                    and value["schema"]=="omux-vault-observer-refusal-v1"
+                    and type(value["predicate"]) is str and value["predicate"] in OBSERVER_PREDICATES):
+                predicate=value["predicate"]
+        except (ValueError,KeyError,TypeError):
+            pass
+    raise ClosedRefusal(predicate)
 def require(value):
     if not value:raise ValueError("resident-vault-action-refused")
 def deadline(environment):
@@ -46,7 +76,9 @@ def observe(observer,until):
         vault.DEADLINE_VARIABLE:str(until),"LC_ALL":"C"}
     answer=subprocess.run([observer],env=environment,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,timeout=budget(until),check=False)
-    require(answer.returncode==0 and 0<len(answer.stdout)<=16384)
+    if answer.returncode!=0:
+        observer_refusal(answer)
+    require(0<len(answer.stdout)<=16384)
     value=vault.validate_observation(json.loads(answer.stdout,object_pairs_hook=resident.unique))
     for name in ("broker","manager","secret_service"):
         row=value[name]
@@ -94,17 +126,30 @@ def unlock(before,selected,client,until):
                 and resident.stable(initial)==resident.stable(control.stat(follow_symlinks=False)))
         finally:os.close(factor)
 def main(argv=None):
+    global PHASE
+    PHASE="arguments"
     arguments=sys.argv[1:] if argv is None else argv
     require(len(arguments)==3 and arguments[0] in ("observe","unlock"))
     action,observer,client=arguments
-    until=deadline(os.environ);selected=private_manifest()
+    PHASE="deadline"
+    until=deadline(os.environ)
+    PHASE="private-input"
+    selected=private_manifest()
     require(selected["purpose"]=={"observe":"observe-default-vault","unlock":"unlock-existing-login-vault"}[action])
+    PHASE="before-observation"
     before=observe(observer,until)
     if action=="unlock":
+        PHASE="unlock"
         unlock(before,selected,client,until)
-        after=observe(observer,until);vault.compare_after(before,after)
+        PHASE="after-observation"
+        after=observe(observer,until)
+        PHASE="observation-stability"
+        vault.compare_after(before,after)
     else:
-        after=observe(observer,until);require(before==after)
+        PHASE="after-observation"
+        after=observe(observer,until)
+        PHASE="observation-stability"
+        require(before==after)
     output={"schema":"omux-resident-vault-action-v1","purpose":selected["purpose"],"observation":after,
         "unlock_dispatched":action=="unlock","unchanged_service_owner":True,
         "factor_contents_read_by_controller":False,"provider_invocation":False,
@@ -112,6 +157,7 @@ def main(argv=None):
         "atomic_existing_collection_only":False,
         "gnome_server_unlock_may_initialize_token_pins":action=="unlock",
         "normal_os_unlock_passed":action=="unlock","native_support":False}
+    PHASE="metadata-output"
     retain(output)
     print(json.dumps({"status":"metadata-observed" if action=="observe" else "normal-os-unlock-observed",
         "provider":after["provider"],"default_exists":after["default_exists"],
@@ -120,6 +166,6 @@ def main(argv=None):
     return 0
 if __name__=="__main__":
     try:sys.exit(main())
-    except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired):
-        print('{"status":"resident-vault-action-refused","secret_output":false,"provider_invocation":false}')
+    except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
+        print(json.dumps(refusal_projection(error),sort_keys=True))
         sys.exit(125)

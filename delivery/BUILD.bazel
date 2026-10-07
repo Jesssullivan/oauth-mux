@@ -44,8 +44,8 @@ python_test(
     name = "resident_vault_models",
     main = "test_resident_vault.py",
     srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
-    data = [":resident_vault_control_client"],
-    args = ["$(location :resident_vault_control_client)"],
+    data = [":resident_vault_control_client", ":resident_vault_metadata_observer"],
+    args = ["$(location :resident_vault_control_client)", "$(location :resident_vault_metadata_observer)"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
 )
 python_binary(

@@ -3,14 +3,17 @@ import copy
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).parent.parent/"tools"))
 import guard_resident_vault_profile as vault
+import guard_resident_enrollment_profile as resident
 import resident_vault as action
 CLIENT=None
+OBSERVER=None
 def observed():
     common={"uid":os.getuid(),"pid":101,"start_ticks":7,"exe":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bus/bin/dbus-broker"}
     return {"schema":"omux-existing-vault-metadata-v1","broker":dict(common),
@@ -24,6 +27,58 @@ def selected():
         "mapping":{"role":"become/password","purpose":"gnome-login-keyring-unlock","encoding":"exact-bytes","user_confirmed":True},
         "expected":observed()}
 class VaultModels(unittest.TestCase):
+
+    def test_failed_observer_exposes_only_a_declared_closed_predicate(self):
+        body=json.dumps({"schema":"omux-vault-observer-refusal-v1","predicate":"observer-manager-identity"}).encode()
+        with patch.object(action,"budget",return_value=1), \
+                patch.object(action.subprocess,"run",return_value=SimpleNamespace(returncode=125,stdout=body)):
+            with self.assertRaises(action.ClosedRefusal) as failure:
+                action.observe("/declared/observer",10**18)
+        with patch.object(action,"PHASE","before-observation"):
+            self.assertEqual(action.refusal_projection(failure.exception),
+                {"status":"resident-vault-action-refused","phase":"before-observation",
+                    "predicate":"observer-manager-identity","secret_output":False,"provider_invocation":False})
+        for body in (b"private-value",b'{"schema":"omux-vault-observer-refusal-v1","predicate":"private-selector"}',
+                b'{"schema":"omux-vault-observer-refusal-v1","predicate":"observer-manager-identity","token":"private-value"}',
+                b'{"schema":"omux-vault-observer-refusal-v1","predicate":"observer-manager-identity","predicate":"observer-bus-connect"}'):
+            with self.subTest(body=body),self.assertRaises(action.ClosedRefusal) as failure:
+                action.observer_refusal(SimpleNamespace(returncode=125,stdout=body))
+            self.assertEqual(failure.exception.predicate,"observer-exit")
+
+    def test_refusal_does_not_stringify_errors_or_emit_private_paths(self):
+        class Sensitive(OSError):
+            def __str__(self):
+                raise AssertionError("private exception text must remain unobserved")
+        for phase in action.PHASES:
+            with patch.object(action,"PHASE",phase):
+                projection=action.refusal_projection(Sensitive())
+            self.assertEqual(projection["predicate"],"carrier-gate")
+            self.assertEqual(projection["phase"],phase)
+            self.assertEqual(set(projection),{"status","phase","predicate","secret_output","provider_invocation"})
+
+    def test_carrier_records_failed_phase_without_running_later_operations(self):
+        value={"schema_version":1,"purpose":"observe-default-vault","permissions":{"metadata":True,"unlock":False},
+            "mapping":None,"expected":None}
+        with patch.object(action,"deadline",return_value=10**18), \
+                patch.object(action,"private_manifest",return_value=value), \
+                patch.object(action,"observe",side_effect=action.ClosedRefusal("observer-broker-identity")), \
+                patch.object(action,"retain") as retain,patch.object(action,"unlock") as unlock:
+            with self.assertRaises(action.ClosedRefusal):
+                action.main(["observe","/declared/observer","/declared/client"])
+            self.assertEqual(action.PHASE,"before-observation")
+            retain.assert_not_called();unlock.assert_not_called()
+
+    def test_compiled_observer_refuses_missing_selector_or_deadline_without_contacting_bus(self):
+        self.assertIsNotNone(OBSERVER)
+        for environment,predicate in (({},"observer-arguments"),
+                ({"DBUS_SESSION_BUS_ADDRESS":"unix:path="+resident.DESTINATION+"/bus",
+                    vault.DEADLINE_VARIABLE:"0"},"observer-deadline")):
+            answer=subprocess.run([OBSERVER],env=environment,stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5,check=False)
+            self.assertEqual((answer.returncode,answer.stderr),(125,b""))
+            self.assertEqual(json.loads(answer.stdout),
+                {"schema":"omux-vault-observer-refusal-v1","predicate":predicate})
+
     def test_original_deadline_keeps_cleanup_reserve(self):
         now=10**12
         with patch.object(action.time,"monotonic_ns",return_value=now):
@@ -112,4 +167,6 @@ class VaultModels(unittest.TestCase):
 if __name__=="__main__":
     if len(sys.argv)>1:
         CLIENT=sys.argv.pop(1)
+    if len(sys.argv)>1:
+        OBSERVER=sys.argv.pop(1)
     unittest.main()
