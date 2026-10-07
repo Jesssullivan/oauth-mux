@@ -1,14 +1,65 @@
 load("//tools:rules.bzl", "python_binary", "python_test")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
-load(":rules.bzl", "channel_archives", "native_resolution", "release_archive")
+load(":rules.bzl", "channel_archives", "native_resolution", "portable_launcher_template", "release_archive")
+load("//tools:runtime_zig.bzl", "static_linux_launcher_binary")
+load("//tools:zig_tools.bzl", "zig_format", "zig_format_test")
 load(":metadata_rules.bzl", "extension_metadata")
 load(":browser_proof_rules.bzl", "browser_runtime_authority")
 
 package(default_visibility = ["//visibility:public"])
-filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
-filegroup(name = "public_sources", srcs = glob(["*.py", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
+filegroup(name = "source_receipt_inputs", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "services/*.in"], allow_empty = True))
+filegroup(name = "public_sources", srcs = glob(["*.py", "*.zig", "*.c", "*.h", "*.bzl", "*.bazel", "*.md", "services/*.in", "proofs/*.md", "proofs/*.log"], allow_empty = True))
 exports_files(["README.md", "pack.py", "portable.py", "runtime_audit.py", "services/omux.service.in", "services/dev.xoxd.omux.plist.in"])
-exports_files(["yoga_wrapper_authority.py", "yoga_wrapper_custody.py"])
+exports_files(["yoga_wrapper_authority.py", "yoga_wrapper_custody.py", "generate_portable_launcher_template.py"])
+
+# Initial support is the declared native Linux target only. Other targets get
+# an explicit unavailable module; there is no host-template fallback.
+zig_format(
+    name = "linux_launcher_format",
+    srcs = ["linux_launcher.zig"],
+)
+zig_format_test(
+    name = "linux_launcher_format_test",
+    srcs = ["linux_launcher.zig"],
+)
+static_linux_launcher_binary(
+    name = "linux_launcher",
+    main = "linux_launcher.zig",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+portable_launcher_template(
+    name = "portable_launcher_template",
+    launcher = select({
+        ":x86_64_linux": ":linux_launcher",
+        ":aarch64_linux": ":linux_launcher",
+        "//conditions:default": None,
+    }),
+    target = select({
+        ":x86_64_linux": "x86_64-linux",
+        ":aarch64_linux": "aarch64-linux",
+        "//conditions:default": "",
+    }),
+)
+cc_binary(
+    name = "linux_launcher_recorder_fixture",
+    srcs = ["linux_launcher_recorder.c"],
+    linkopts = ["-Wl,--as-needed"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+python_test(
+    name = "generate_portable_launcher_template_test",
+    main = "test_generate_portable_launcher_template.py",
+    srcs = ["generate_portable_launcher_template.py"],
+)
+python_test(
+    name = "linux_launcher_test",
+    main = "test_linux_launcher.py",
+    srcs = ["portable.py"],
+    data = [":linux_launcher", ":linux_launcher_recorder_fixture"],
+    args = ["--launcher", "$(location :linux_launcher)",
+            "--recorder", "$(location :linux_launcher_recorder_fixture)"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 
 python_binary(name = "bundle", main = "pack.py", srcs = ["portable.py"])
 python_binary(name = "verify", main = "pack.py", srcs = ["portable.py"])
@@ -585,10 +636,9 @@ python_test(
     main = "test_native_fd2_observer.py",
     srcs = ["native_fd2_observer.py", "portable.py"],
     data = [":native_fd2_observer", ":native_fd2_observer_fixture",
-            "@omux_nix//:dynamic_linker", "@omux_nix//:runtime_libraries",
-            "@omux_nix//:interpreter_bash"],
+            "@omux_nix//:dynamic_linker", "@omux_nix//:runtime_libraries"],
     args = ["$(location :native_fd2_observer)", "$(location :native_fd2_observer_fixture)",
-            "$(location @omux_nix//:dynamic_linker)", "$(location @omux_nix//:interpreter_bash)"],
+            "$(location @omux_nix//:dynamic_linker)"],
     file_args = {"@omux_nix//:runtime_libraries": "--runtime-file"},
     tags = ["no-remote"],
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],

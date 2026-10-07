@@ -9,6 +9,19 @@ from pathlib import Path
 from unittest import mock
 
 import portable
+import portable_launcher_template as trusted
+
+
+def canonical_launcher(loader: str, backend: str, channel: str | None = None) -> bytes:
+    """Independent expected record, bound to the declared compiled template."""
+    record = bytearray(256)
+    record[:16] = b"OMUXLNXLAUNCHv1\0"
+    record[16:19] = bytes((1, {"omux.bin": 1, "omuxd.bin": 2, "omux-control.bin": 3}[backend],
+                           {None: 0, "development": 1, "release": 2}[channel]))
+    struct.pack_into("<H", record, 20, {"x86_64-linux": 62, "aarch64-linux": 183}[trusted.TARGET])
+    encoded = loader.encode("ascii")
+    record[32:32 + len(encoded)] = encoded
+    return trusted.TEMPLATE + bytes(record)
 
 
 def elf(needed: tuple[str, ...] = (), rpath: tuple[str, ...] = (), interpreter: str | None = None,
@@ -115,6 +128,29 @@ class MetadataTest(unittest.TestCase):
         struct.pack_into("<Q", oversized_strings, 64 + 112 + 32 + 8, portable._MAX_FILE + 1)
         with self.assertRaisesRegex(ValueError, "unique bounded table"):
             portable.elf_metadata(oversized_strings, max_bytes=512 * 1024 * 1024)
+
+
+class LauncherTemplateTest(unittest.TestCase):
+    def test_native_constructor_requires_canonical_inputs_and_independent_digest(self) -> None:
+        for backend in ("omux.bin", "omuxd.bin", "omux-control.bin"):
+            for channel in (None, "development", "release"):
+                self.assertEqual(portable.linux_launcher("loader", backend, channel),
+                                 canonical_launcher("loader", backend, channel))
+        for loader in ("", ".", "..", "-loader", "bad\n", "x" * 129, "\u00c5"):
+            with self.subTest(loader=loader), self.assertRaises(ValueError):
+                portable.linux_launcher(loader, "omux.bin")
+        self.assertEqual(portable.linux_launcher("x" * 128, "omux.bin"),
+                         canonical_launcher("x" * 128, "omux.bin"))
+        for kwargs in ({"backend": "unrecognized"}, {"backend": "omux.bin", "channel": "unsupported"},
+                       {"backend": "omux.bin", "target": "aarch64-macos"},
+                       {"backend": "omux.bin", "target": "aarch64-linux" if trusted.TARGET == "x86_64-linux" else "x86_64-linux"}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                portable.linux_launcher("loader", **kwargs)
+        for attribute, value in (("ABI", 2), ("TARGET", None), ("TEMPLATE", None),
+                                 ("SHA256", "0" * 64), ("ABI", True)):
+            with mock.patch.object(trusted, attribute, value):
+                with self.subTest(attribute=attribute), self.assertRaises(ValueError):
+                    portable.linux_launcher("loader", "omux.bin")
 
 
 class AssemblyTest(unittest.TestCase):
@@ -290,11 +326,14 @@ class AssemblyTest(unittest.TestCase):
         self.assertNotIn("lib/omux/lib/unused.so", files)
         for alias in ("oauth-mux", "omux-native-host", "git-credential-omux"):
             self.assertEqual(files["bin/omux"], files["bin/" + alias])
-        self.assertIn(b'--argv0 "$0"', files["bin/omux"])
-        self.assertIn(b"unset LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH", files["bin/omux"])
-        self.assertIn(b"export OMUX_CA_BUNDLE", files["bin/omux"])
+        self.assertEqual(files["bin/omux"], canonical_launcher(self.loader.name, "omux.bin"))
+        self.assertEqual(files["bin/omuxd"], canonical_launcher(self.loader.name, "omuxd.bin"))
+        self.assertEqual(manifest["runtime"]["launcher"], {
+            "abi": 1, "target": trusted.TARGET, "templateSha256": trusted.SHA256})
         self.assertEqual(files[manifest["runtime"]["caBundle"]], self.ca_bundle.read_bytes())
-        self.assertNotIn(b"/nix/store", files["bin/omux"])
+        self.assertEqual(portable.elf_metadata(files["bin/omux"])["interpreter"], None)
+        self.assertEqual(portable.elf_metadata(files["bin/omux"])["needed"], [])
+        self.assertEqual(portable.elf_metadata(files["bin/omux"])["rpath"], [])
         portable.verify_linux(files, manifest)
 
     def test_missing_transitive_dependency_and_conflicting_duplicate_are_rejected(self) -> None:
@@ -374,13 +413,20 @@ class AssemblyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "machine"):
             self.assemble()
 
-    def test_aarch64_closure_has_aarch64_loader_and_machine(self) -> None:
+    def test_aarch64_closure_requires_its_own_declared_template(self) -> None:
         loader = self.write("ld-linux-aarch64.so.1", elf(machine=183))
         self.libc.write_bytes(elf(interpreter=str(loader), machine=183))
         self.sqlite.write_bytes(elf(("libc.so.6",), machine=183))
         self.cli.write_bytes(elf(("libsqlite3.so.0",), interpreter=str(loader), machine=183))
         self.daemon.write_bytes(elf(("libc.so.6",), interpreter=str(loader), machine=183))
         with mock.patch.object(portable, "_patch", side_effect=self.patch_fixture):
+            if trusted.TARGET != "aarch64-linux":
+                # Correct foreign runtime ELF is insufficient authority to reuse
+                # the host's compiled launcher. Both-machine parser tests remain.
+                with self.assertRaisesRegex(ValueError, "unavailable.*target"):
+                    portable.assemble_linux(self.cli, self.daemon, [loader, self.libc, self.sqlite],
+                                            self.patchelf, "aarch64-linux", self.ca_bundle)
+                return
             files, runtime = portable.assemble_linux(self.cli, self.daemon, [loader, self.libc, self.sqlite],
                                                       self.patchelf, "aarch64-linux", self.ca_bundle)
         self.assertEqual(runtime["loader"], "lib/omux/lib/ld-linux-aarch64.so.1")
@@ -463,8 +509,7 @@ class AssemblyTest(unittest.TestCase):
         })
         self.assertIn("lib/omux/qt/lib/libxcb.so.1", qt["dependencies"])
         self.assertNotIn("lib/omux/lib/libxcb.so.1", manifest["runtime"]["dependencies"])
-        self.assertIn(b'QT_PLUGIN_PATH="$runtime/plugins"', files["bin/omux-control"])
-        self.assertIn(b'QT_QPA_PLATFORM_PLUGIN_PATH="$runtime/plugins/platforms"', files["bin/omux-control"])
+        self.assertEqual(files["bin/omux-control"], canonical_launcher(self.loader.name, "omux-control.bin"))
         self.assertEqual(files[qt["config"]], portable._QT_CONFIG_BYTES)
         for name in qt["plugins"]:
             self.assertEqual(portable.elf_metadata(files[name])["rpath"], ["$ORIGIN/../../lib"])
@@ -606,7 +651,7 @@ class AssemblyTest(unittest.TestCase):
                          ["libc.so.6", "libsqlite3.so.0"])
         self.assertEqual(portable.elf_metadata(files["lib/omux/qt/lib/libcurl.so.4"])["needed"],
                          ["libc.so.6", "libQt6Core.so.6"])
-        self.assertIn(b"runtime=$pkg_root/lib/omux/qt\n", files["bin/omux-control"])
+        self.assertEqual(files["bin/omux-control"], canonical_launcher(self.loader.name, "omux-control.bin"))
         portable.verify_linux(files, manifest)
 
     def test_qt_edges_cannot_resolve_through_the_cli_dependency_namespace(self) -> None:
@@ -650,6 +695,66 @@ class AssemblyTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ambiguous declared runtime dependency libsqlite3") as rejected:
                 self.assemble(control, plugins, qt_runtime=qt_runtime)
             self.assertNotIn(str(self.root), str(rejected.exception))
+
+    def test_whole_trusted_template_tampering_is_rejected_after_content_rehash(self) -> None:
+        # Template and trailer are independently trusted, even if an archive's
+        # ordinary content digests are recomputed after changing code bytes.
+        control, plugins = self.configure_qt()
+        for role in ("cli", "daemon", "qt"):
+            files, manifest = self.all_files(control, plugins, channel="development")
+            paths = (["bin/" + name for name in portable._ALIASES] if role == "cli"
+                     else ["bin/omuxd" if role == "daemon" else "bin/omux-control"])
+            for path in paths:
+                payload = bytearray(files[path])
+                payload[len(trusted.TEMPLATE) // 2] ^= 1
+                files[path] = bytes(payload)
+            # These are modeled content digests, not launcher trust authority.
+            files["SHA256SUMS"] = "".join(hashlib.sha256(data).hexdigest() + "  " + name + "\n"
+                                           for name, data in sorted(files.items()) if name != "SHA256SUMS").encode()
+            with self.subTest(role=role), self.assertRaises(ValueError):
+                portable.verify_linux(files, manifest)
+
+    def test_canonical_footer_mutations_and_cross_role_substitution_are_rejected(self) -> None:
+        loader = self.loader.name
+        valid = canonical_launcher(loader, "omux.bin", "development")
+        prefix, footer = valid[:-256], valid[-256:]
+        cases = []
+        for offset, value in ((0, 0xFF), (16, 2), (17, 0), (18, 255), (19, 1), (20, 0),
+                              (22, 1), (32, ord('/')), (32 + len(loader) + 1, 1), (161, 1), (255, 1)):
+            malformed = bytearray(footer)
+            malformed[offset] = value
+            cases.append(prefix + malformed)
+        cases.extend((valid[:-1], valid + b"tail", valid + footer,
+                      prefix + footer[:32] + b"x" * 129 + footer[161:],
+                      canonical_launcher(loader, "omuxd.bin", "development"),
+                      canonical_launcher(loader, "omux.bin", "release")))
+        for payload in cases:
+            files, manifest = self.all_files(channel="development")
+            for alias in portable._ALIASES:
+                files["bin/" + alias] = payload
+            with self.subTest(size=len(payload)), self.assertRaisesRegex(ValueError, "confined launcher"):
+                portable.verify_linux(files, manifest)
+
+    def test_archive_launcher_metadata_cannot_replace_independent_template_authority(self) -> None:
+        foreign = "aarch64-linux" if trusted.TARGET == "x86_64-linux" else "x86_64-linux"
+        for field, value in (("abi", 2), ("abi", True), ("abi", 1.0), ("target", foreign),
+                             ("templateSha256", "0" * 64), ("extra", "unexpected")):
+            files, manifest = self.all_files()
+            manifest["runtime"]["launcher"][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "launcher ABI"):
+                portable.verify_linux(files, manifest)
+        files, manifest = self.all_files()
+        del manifest["runtime"]["launcher"]["abi"]
+        with self.assertRaisesRegex(ValueError, "launcher ABI"):
+            portable.verify_linux(files, manifest)
+        files, manifest = self.all_files()
+        changed = bytearray(files["bin/omux"])
+        changed[len(trusted.TEMPLATE) // 2] ^= 1
+        for alias in portable._ALIASES:
+            files["bin/" + alias] = bytes(changed)
+        manifest["runtime"]["launcher"]["templateSha256"] = hashlib.sha256(changed[:-256]).hexdigest()
+        with self.assertRaisesRegex(ValueError, "launcher ABI"):
+            portable.verify_linux(files, manifest)
 
     def test_qt_runtime_candidates_must_be_declared_explicitly(self) -> None:
         control, plugins = self.configure_qt()

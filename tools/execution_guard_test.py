@@ -784,6 +784,22 @@ class GuardTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bazel_command('/store/bazel', Path('/owned/run'), base, profile=profile)
 
+    def test_portable_launcher_formatter_is_one_exact_standard_selection(self):
+        arguments = ['run', '//delivery:linux_launcher_format', '--', 'delivery/linux_launcher.zig']
+        selected = bazel_command('/store/bazel', Path('/owned/run'), arguments)
+        self.assertEqual(selected[-len(arguments[1:]):], arguments[1:])
+        self.assertIn('--sandbox_default_allow_network=false', selected)
+        for changed in (arguments[:-1], arguments + ['--check'],
+                        arguments[:-1] + ['delivery'],
+                        arguments[:-1] + ['/absolute/linux_launcher.zig'],
+                        arguments[:-1] + ['delivery/../tools/execution_guard.py'],
+                        ['run', '//:format', '--', 'delivery/linux_launcher.zig']):
+            with self.subTest(arguments=changed), self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/owned/run'), changed)
+        for profile in ('installed-browser', 'dependency-prefetch', 'codex-sdk', 'site'):
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                bazel_command('/store/bazel', Path('/owned/run'), arguments, profile=profile)
+
     def test_site_requires_both_effective_masks_for_each_manager(self):
         from system_mask_policy import setting
         with tempfile.TemporaryDirectory() as temporary:

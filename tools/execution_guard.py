@@ -873,7 +873,9 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
     format_base = ['run', '//:format', '--', 'src/main.zig', 'src/setup_collector.zig', 'src/setup_collector_tests.zig']
     formatter = profile == 'standard' and (arguments == format_base or
                                            arguments == format_base + ['src/engine.zig'] or
-                                           arguments == ['run', '//:format', '--', 'src'])
+                                           arguments == ['run', '//:format', '--', 'src'] or
+                                           arguments == ['run', '//delivery:linux_launcher_format', '--',
+                                                         'delivery/linux_launcher.zig'])
     if not arguments or (arguments[0] not in ('build', 'test') and not formatter):
         raise ValueError('explicit Bazel verb required')
     # Do not accept startup flags/output-base overrides before the verb.

@@ -22,3 +22,14 @@ def zig_test(**kwargs):
     kwargs["zigopts"] = kwargs.get("zigopts", []) + NIX_ZIG_ROOTOPTS
     kwargs["extra_srcs"] = kwargs.get("extra_srcs", []) + NIX_ZIG_SDK_INPUTS
     _zig_test(**kwargs)
+
+def static_linux_launcher_binary(**kwargs):
+    """Pinned no-libc executable lane, isolated from native runtime root options."""
+    for attribute in ["deps", "csrcs", "copts", "zigopts", "linkopts", "extra_srcs", "linker_script"]:
+        if kwargs.get(attribute):
+            fail("static launcher forbids caller-supplied " + attribute)
+    kwargs["zigopts"] = ["-OReleaseSafe", "-fsingle-threaded", "-fno-error-tracing"]
+    kwargs["linkopts"] = ["-static", "-fno-PIE", "--stack", "0"]
+    # Deliberately call the pinned rule directly: no dynamic-linker, SDK inputs,
+    # libc dependency or native runtime link options enter this module.
+    _zig_binary(**kwargs)

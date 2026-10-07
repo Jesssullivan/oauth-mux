@@ -11,6 +11,7 @@ import zipfile
 
 import dev_generation
 import portable
+import portable_launcher_template as trusted
 import dev_stage_selected
 from dev_generation import GenerationError, select_generation
 from dev_stage import HOST, StagedGeneration, digest, inventory, stage, stage_generation
@@ -61,7 +62,9 @@ class GenerationTest(unittest.TestCase):
         source = elf(interpreter="/declared/synthetic-loader")
         runtime = {"loader": loader, "dependencies": [loader],
                    "backendInterpreter": "/omux/launch-via-bin-wrapper",
-                   "caBundle": "lib/omux/share/ca-bundle.crt"}
+                   "caBundle": "lib/omux/share/ca-bundle.crt",
+                   "launcher": {"abi": 1, "target": trusted.TARGET,
+                                "templateSha256": trusted.SHA256}}
         payload = {loader: elf(), "lib/omux/libexec/omux.bin": backend,
                    "lib/omux/libexec/omuxd.bin": backend,
                    "lib/omux/share/ca-bundle.crt": b"-----BEGIN CERTIFICATE-----\ncHVibGlj\n-----END CERTIFICATE-----\n"}

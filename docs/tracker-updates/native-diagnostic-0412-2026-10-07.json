@@ -1,0 +1,468 @@
+{
+  "schema_version": 1,
+  "kind": "provider_free_native_diagnostic_execution_checkpoint",
+  "authority": "User-authorized provider-free native/browser continuation; AGENTS.md/R-HOOK-CONVERGENCE-20261004/R-N13",
+  "observed_at": "2026-10-07T01:55:28Z",
+  "executor": "root",
+  "source": {
+    "branch": "codex/omux-detach-observation-20261007",
+    "worktree": "/srv/fast-local/jess/git/oauth-mux-detach-20261007",
+    "head": "04120ea64f8d160fff561fec22b86e8f1df75b92",
+    "parent": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+    "tree": "bfd67a0dba57a2d03bd3985a994b323ebc0c7b04",
+    "signature": "verify-commit0/G",
+    "clean_before_installed": true,
+    "clean_readback_during_build": true,
+    "pr": 528,
+    "url": "https://github.com/Jesssullivan/oauth-mux/pull/528",
+    "draft": false,
+    "head_base_body_readback_verified": true,
+    "source_parent_delivery_receipt": "docs/tracker-updates/integrated-delivery-source-2026-10-07.json",
+    "clean_after_installed": true,
+    "independent_final_review": {
+      "agent": "/root/review_prs_oct6",
+      "state": "source_clear",
+      "scope": "17-file source, frozen tree and chronological evidence; installed/product predicates unchanged"
+    },
+    "terminal_pr_body_readback_verified": true,
+    "merge_pre_action": {
+      "authority": "User-authorized signed source PR/admin delivery; source-only diagnostic change with all product limits preserved",
+      "expected_head": "04120ea64f8d160fff561fec22b86e8f1df75b92",
+      "expected_base": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+      "expected_tree": "bfd67a0dba57a2d03bd3985a994b323ebc0c7b04",
+      "method": "squash",
+      "main_unchanged": true,
+      "ready": true,
+      "review_threads": 0,
+      "reviews": 0,
+      "mergeable_state": "clean",
+      "protection_readback": "enforce_admins/linear_history/conversation_resolution retained; no required_status_checks; force pushes/deletions false",
+      "action_performed": true
+    },
+    "merge_result": {
+      "merged": true,
+      "merged_at": "2026-10-07T01:55:13Z",
+      "commit": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+      "sole_parent": "a4bf48e9ba8a55732e4b14d41f636d5acf8d928c",
+      "tree": "bfd67a0dba57a2d03bd3985a994b323ebc0c7b04",
+      "server_signature_verified": true,
+      "signature_reason": "valid",
+      "head_branch_retained": true,
+      "main_ref_verified": true,
+      "body_readback_verified": true,
+      "protection_unchanged": true,
+      "scope": "Experimental source diagnostics only; native gate failed; no product acceptance or release promotion"
+    }
+  },
+  "models": {
+    "native_and_yoga": {
+      "epoch": "0322d305-7145-4c0a-9096-c8dc8b930da0",
+      "targets_passed": 6,
+      "targets_total": 7,
+      "whole_batch": "failed_new_note_unclassified",
+      "native_helper_models": 12,
+      "correction": "Exact authority entry added"
+    },
+    "guard_and_correction": {
+      "epoch": "a634ab32-47f9-4a14-826b-bf82947ef37d",
+      "controller_exit": 0,
+      "workload_exit": 0,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "targets_passed": 3,
+      "targets_total": 3,
+      "guard_added_models": 12,
+      "documentation_passed": true,
+      "graph_sha256": "9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4",
+      "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/a634ab32-47f9-4a14-826b-bf82947ef37d/receipt.json",
+      "receipt_sha256": "05915fd5cee0227f1bcf1bfaf7fa7e388d91aecf7c8c7fda3a91eab07e11a838",
+      "test_evidence_sha256": "59af731b4e6d1e95f5094083a9bd34beca452da20d7cd0534d29b63bf895762e",
+      "scope": "New guard models/actual bounded guard admission and sampled resource record/docs/source only; no old native resource-cause or installed claim"
+    },
+    "cgroup_proposal_sha256": "d77600fa654190c4147bd24f4ca4e3a9dea8bf6ed628ac386f905e0d55bc6cb5",
+    "scope": "Version-bound source/model/admission predicates only; no installed result inherited"
+  },
+  "current_execution": {
+    "epoch": "66162c74-9ab0-4dea-9f45-7e031d1eb8b0",
+    "handle": 92271,
+    "state": "failed_terminal",
+    "targets": [
+      "//delivery:installed_legacy_native_fd2_diagnostic_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "docs_source_companions": "passed_from_workload_log",
+    "terminal_receipt_pending": false,
+    "limits": {
+      "memory_bytes": 4294967296,
+      "swap_bytes": 0,
+      "tasks": 512,
+      "cpu": 2,
+      "aggregate_seconds": 1200
+    },
+    "fixture": "Exact sealed retained009, fresh package, shared bootstrap/cold TOKIO_WORKER_THREADS2; single original detach in fresh isolated home; no mutation retry",
+    "native_result": "failed_selected_detach_status_observer_before_cli_exec",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "cleanup": {
+      "ownership": "unproved",
+      "readback_attempts": 0,
+      "state": "empty",
+      "stop": "not-requested"
+    },
+    "held_input_verified_after_cleanup": true,
+    "graph_sha256": "9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4",
+    "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/66162c74-9ab0-4dea-9f45-7e031d1eb8b0/receipt.json",
+    "receipt_sha256": "c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869",
+    "test_evidence": {
+      "bytes": 214910,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "66c015398b44308432972cca2b421f1f643f92acc9b2eed2cd28240e7e932b84",
+      "state": "preserved"
+    },
+    "closed_test_log": [
+      "OMUX_FD2_OBSERVER_V1/error-launch-fork-busy/writer-none/image-none/sink-none/call-none/origin-none",
+      "selected-detach",
+      "detach-status-rpc/cli-process-failure/exit-positive-other/status-json-unrecognized/stderr-empty/completion-not-result"
+    ],
+    "new_run_cli_failure_record_present": false,
+    "scope": "Diagnostic profile reached status observer wrapper after exact original detach result and acknowledgement predicates; observer fork-busy happened before any actual status CLI exec. Immutable status/completion, replay, retirement, post-detach native preservation and cold-resume predicates remain unproved.",
+    "mutation_retry": false
+  },
+  "product": {
+    "experimental": true,
+    "unshipped": true,
+    "parent_gates_passed": 5,
+    "parent_gates_open": 6,
+    "new_parent_gate_closed": false,
+    "native_resume": false,
+    "human_browser_consent": false,
+    "live_handoff": false,
+    "unmodified_codex_support": false,
+    "provider_calls": false,
+    "fleet_activation": false,
+    "release_publication": false,
+    "darwin": "PZM GF held"
+  },
+  "chronology": "This is later evidence stored only in the original workspace; no claim it is inside frozen clean commit04120ea. That commit retains the earlier pre-signing source snapshots.",
+  "previous_execution_checkpoint": {
+    "epoch": "66162c74-9ab0-4dea-9f45-7e031d1eb8b0",
+    "handle": 92271,
+    "state": "running",
+    "targets": [
+      "//delivery:installed_legacy_native_fd2_diagnostic_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "docs_source_companions": "passed_from_workload_log",
+    "terminal_receipt_pending": true,
+    "limits": {
+      "memory_bytes": 4294967296,
+      "swap_bytes": 0,
+      "tasks": 512,
+      "cpu": 2,
+      "aggregate_seconds": 1200
+    },
+    "fixture": "Exact sealed retained009, fresh package, shared bootstrap/cold TOKIO_WORKER_THREADS2; single original detach in fresh isolated home; no mutation retry",
+    "native_result": "pending"
+  },
+  "workload_process_observation": {
+    "attribution": "none",
+    "baseline": {
+      "current": 1,
+      "custody": "same",
+      "limit": 512,
+      "max_event_delta": 0,
+      "max_events": 0,
+      "pids_limit": "verified512",
+      "pids_max_event_delta": "unchanged",
+      "pids_sample": "below",
+      "sample_timing": "baseline"
+    },
+    "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+    "last_monitor": {
+      "current": null,
+      "custody": "absent",
+      "limit": null,
+      "max_event_delta": null,
+      "max_events": null,
+      "pids_limit": "unavailable",
+      "pids_max_event_delta": "unavailable",
+      "pids_sample": "unavailable",
+      "sample_timing": "monitor"
+    },
+    "monitor_samples": 1338,
+    "observed_at_or_over_verified_limit": false,
+    "observed_max_event_decrease": false,
+    "observed_max_event_increase": true,
+    "observed_unknown": true,
+    "pre_cleanup": {
+      "current": null,
+      "custody": "absent",
+      "limit": null,
+      "max_event_delta": null,
+      "max_events": null,
+      "pids_limit": "unavailable",
+      "pids_max_event_delta": "unavailable",
+      "pids_sample": "unavailable",
+      "sample_timing": "pre-cleanup"
+    },
+    "pre_cleanup_control_flow_deferred": false,
+    "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+    "sample_count_saturated": false,
+    "sampled_peak_current": 456,
+    "schema_version": 1,
+    "scope": "whole-owned-workload-cgroup",
+    "window": "admitted-before-go-through-pre-cleanup",
+    "interpretation": "Whole owned workload only; event increase observed under as-exposed mount semantics. Sampled peak456 is not a continuous maximum; no sampled count reached512. Sequential samples, absent terminal cgroup and no child attribution do not identify a detach/status cause or explain earlier failures."
+  },
+  "next": [
+    "Fix a source-demonstrated resource-demand edge without increasing caps or relaxing stderr/preservation assertions; no automatic native retry",
+    "Implement destination-owned Yoga controller delivery separately from read-only qualification and shared-daemon import authority",
+    "Qualify separate browser/Node/wrapper/offline inputs and local Wayland/operator channel before human consent"
+  ],
+  "yoga_follow_on": {
+    "state": "failed_terminal_row_object",
+    "epoch": "70e0e8d2-b5a0-4450-a9f9-122d3f204acc",
+    "handle": 9439,
+    "target": "//tools:yoga_controller_verify",
+    "source_commit": "04120ea64f8d160fff561fec22b86e8f1df75b92",
+    "source_dirty": false,
+    "read_only": true,
+    "copy": false,
+    "activation": false,
+    "human_consent_proved": false,
+    "qualification_epoch": "a77d36b1-2a02-4a73-a7e9-f19fa20116a4",
+    "qualification_sha256": "5fe1f6d8262681232148d2b472d652dc6eac2b6b7895d6e9fe19a0ad6b755b4c",
+    "qualification_result": "controller0_workload0_empty_source_aftertrue_null_failure_rejection",
+    "descendants_empty": true
+  },
+  "linear_pre_action": {
+    "authority": "Explicit user-authorized factual Linear reconciliation; R-HOOK-CONVERGENCE/R-N13",
+    "observed_at": "2026-10-07T01:56:22Z",
+    "states_readback": "TIN-5338/TIN-2063/TIN-2057 In Progress",
+    "issue_scope_or_state_change": false,
+    "posted": false,
+    "bodies": {
+      "TIN-5338": "Provider-free checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged the independently reviewed diagnostic source. Signed head `04120ea64f8d160fff561fec22b86e8f1df75b92` became server-verified squash `e4e644cd97343d53d3dc08664f5c0914ab173b99`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`, exact tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`. Head retained; protection unchanged. Source/model delivery, not a release or completion.\n\nClean-head installed diagnostic `66162c74-9ab0-4dea-9f45-7e031d1eb8b0` FAILED: controller/workload3, empty descendants, no controller failure/rejection, retained009 reverified after cleanup. Docs/source passed (2/3). The original detach CLI passed exit0/empty-stderr/JSON-result and exact original ACK. The subsequent status observer wrapper failed its fork with EAGAIN before any status CLI exec. No failure-only detach record was expected from a successful call.\n\nWhole-workload PID observations: baseline1/limit512, sampled peak456, exposed max-event increase, absent terminal cgroup/unknown samples. No process attribution or root cause; sampled peak is not continuous maximum. Completion readback, replay, retirement, post-detach preservation and cold resume remain unproved. No mutation retry or cap change.\n\nLater evidence is preserved separately from frozen C at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`; raw receipt SHA256 `c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869`. Parent remains five scoped passes/six open. No provider calls, stock-support claim, live handoff or Darwin proof.",
+      "TIN-2063": "Provider-free setup checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged reviewed fixed-predicate Yoga registry diagnostics and bounded native/workload observations. Exact signed-head/tree and server merge readbacks are preserved at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json` (later evidence outside frozen source).\n\nFresh clean-C Yoga QUAL `a77d36b1-2a02-4a73-a7e9-f19fa20116a4` passed controller/workload0, empty descendants, null controller failure/rejection, source recheck true; canonical qualification SHA256 `5fe1f6d8262681232148d2b472d652dc6eac2b6b7895d6e9fe19a0ad6b755b4c`, graph `9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4`. Read-only INSPECT has started under that fresh qualification. Prior d47f/f0c7/c7f6 remain historical: prior VERIFY refused registry metadata before independent content rehash.\n\nNo copy, store realization, wrapper activation, cold graph or human toolbar consent is proved. Yoga local Wayland/operator consent is still the intended installed checkpoint after controller/browser/session inputs qualify. Native6616 failed after original detach ACK at diagnostic observer fork before status CLI exec; no cold resume. All work remains provider-free, serial and bounded (4GiB/swap0/Tasks512/CPU2/1200s). Parent remains five passed/six open; no issue scope/state change.",
+      "TIN-2057": "Continuity checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\nReviewed experimental source [PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) is merged as server-verified `e4e644cd97343d53d3dc08664f5c0914ab173b99`, exact signed-source tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`. No acceptance gate closes from source delivery.\n\nNative diagnostic6616 ended controller/workload3 with empty descendants, null controller failure/rejection and retained input reverified. Docs/source passed; original detach CLI and exact ACK passed. The added status observer failed its fork before operation.status CLI execution. Completion/replay/retirement/post-detach state and ordinary cold resume remain unproved. Workload-wide sampled PID/event observations do not establish a native root cause; no mutation retry/cap increase.\n\nFresh Yoga QUAL a77d passed against clean signed C; inspect is running. Destination content, local browser consent and activation remain unproved. Later durable evidence: `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`, outside frozen C.\n\nThe 15-hour objective remains active and incomplete: five historical scoped passes/six open. Unmodified Codex support, accepted-history/tool preservation, same-process live handoff and Darwin remain unproved. No provider access, fleet/release/store/site publication or SLA/SLO achievement is claimed."
+    }
+  },
+  "linear_results": {
+    "posted": true,
+    "readback_verified": true,
+    "scope_state_unchanged": true,
+    "issues": [
+      {
+        "issue": "TIN-5338",
+        "id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+        "bodyExact": true
+      },
+      {
+        "issue": "TIN-2063",
+        "id": "dc527d8e-9385-4f91-836a-c9b7338d9159",
+        "bodyExact": true
+      },
+      {
+        "issue": "TIN-2057",
+        "id": "5c8c4427-1440-4c07-9dc1-b37ac5a98d92",
+        "bodyExact": true
+      }
+    ]
+  },
+  "yoga_chain": {
+    "source": "04120ea64f8d160fff561fec22b86e8f1df75b92",
+    "graph_sha256": "9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4",
+    "qualification_epoch": "a77d36b1-2a02-4a73-a7e9-f19fa20116a4",
+    "qualification_sha256": "5fe1f6d8262681232148d2b472d652dc6eac2b6b7895d6e9fe19a0ad6b755b4c",
+    "terminal": [
+      {
+        "mode": "qualify",
+        "epoch": "a77d36b1-2a02-4a73-a7e9-f19fa20116a4",
+        "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/a77d36b1-2a02-4a73-a7e9-f19fa20116a4/receipt.json",
+        "receipt_sha256": "e986ddf15c6a26f978c7e3d86e8e36b62d06515d4d20727ff052643d48b43fdd",
+        "controller_exit": 0,
+        "workload_exit": 0,
+        "descendants_empty": true,
+        "controller_failure": null,
+        "rejection": null,
+        "source_verified_after_cleanup": true
+      },
+      {
+        "mode": "inspect",
+        "epoch": "d1de64a5-1dfc-4333-aa30-aefb480d7556",
+        "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/d1de64a5-1dfc-4333-aa30-aefb480d7556/receipt.json",
+        "receipt_sha256": "2c70032dc9d317acfca38ad64b042daf2d75f23804717c26e08d0e5f58c4cdb5",
+        "controller_exit": 0,
+        "workload_exit": 0,
+        "descendants_empty": true,
+        "controller_failure": null,
+        "rejection": null,
+        "source_verified_after_cleanup": true
+      }
+    ],
+    "verify": {
+      "state": "failed_terminal",
+      "epoch": "70e0e8d2-b5a0-4450-a9f9-122d3f204acc",
+      "controller_exit": 2,
+      "workload_exit": 2,
+      "descendants_empty": true,
+      "controller_failure": null,
+      "rejection": null,
+      "source_verified_after_cleanup": true,
+      "gate": "destination-registration-content",
+      "operation_failure": {
+        "schemaVersion": 1,
+        "stage": "destination-registry",
+        "predicate": "row-object"
+      },
+      "raw_receipt": "/home/jess/.local/state/omux-yoga-delivery-20261006/70e0e8d2-b5a0-4450-a9f9-122d3f204acc/receipt.json",
+      "receipt_sha256": "aee7b8a4f083e6ce1fa8853228415f23935e5957755c24972c8662f2d09fc6ae",
+      "scope": "At least one requested registry value is not an object. This does not independently establish missing paths or corruption; equality and NAR rehash not reached."
+    },
+    "copy_performed": false,
+    "wrapper_authority": false,
+    "toolbar_consent_proved": false
+  },
+  "next_ordinary_native_preparation": {
+    "reviewer": "/root/native_selection_review",
+    "state": "failed_terminal",
+    "source": "04120ea64f8d160fff561fec22b86e8f1df75b92",
+    "target": "//delivery:installed_legacy_native_tui_test",
+    "rationale": "Fresh private state/vault/HOME/operation IDs; ordinary target omits the diagnostic observer fork that refused before status CLI execution in6616. No claim of a native fix or explanation of prior44d7.",
+    "predicates": "Original completed-status/exact replay/discovery retirement/native preservation/cold PTY resume/distinct reference/history bytes/SQL/inode/settings ordinal/second detach/sealed ledger remain unchanged",
+    "limits_unchanged": true,
+    "no_prior_mutation_retry": true,
+    "no_provider_calls": true,
+    "execution_prerequisite": "Current Yoga verify terminal/empty and guard admission passed",
+    "source_resource_review": "No justified Zig eager-thread fix: Threaded work is lazy; fixed daemon concurrent16 fits24; CLI status dispatch has no async/concurrent work; Tokio2 does not bound blocking threads",
+    "epoch": "72e04337-7c64-44c3-87ac-c6bb26bb69b4",
+    "handle": 52361,
+    "start": "2026-10-07T02:01:47Z",
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "held_input_verified_after_cleanup": true,
+    "graph_sha256": "9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4",
+    "raw_receipt": "/home/jess/.local/state/omux-execution-20261005/72e04337-7c64-44c3-87ac-c6bb26bb69b4/receipt.json",
+    "receipt_sha256": "47753f7d857d5e5926ad4af478e199cc14feea4674beca9a5c61cc2ac96253d3",
+    "test_evidence": {
+      "bytes": 214590,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "9cce3b15dba0d7b8187dd405d23e945840eda3de63c6062b0abb5397903d51e8",
+      "state": "preserved"
+    },
+    "result": "selected-detach/status-cli exact completed result with exit0 but nonempty ASCII-leading stderr rejected",
+    "closed_diagnostic": "detach-status-rpc/cli-process-failure/exit-zero-stderr/status-result/stderr-unrecognized-ascii-leading/completion-exact",
+    "workload_pids": {
+      "attribution": "none",
+      "baseline": {
+        "current": 1,
+        "custody": "same",
+        "limit": 512,
+        "max_event_delta": 0,
+        "max_events": 0,
+        "pids_limit": "verified512",
+        "pids_max_event_delta": "unchanged",
+        "pids_sample": "below",
+        "sample_timing": "baseline"
+      },
+      "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+      "last_monitor": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "monitor"
+      },
+      "monitor_samples": 408,
+      "observed_at_or_over_verified_limit": true,
+      "observed_max_event_decrease": false,
+      "observed_max_event_increase": true,
+      "observed_unknown": true,
+      "pre_cleanup": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "pre-cleanup"
+      },
+      "pre_cleanup_control_flow_deferred": false,
+      "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+      "sample_count_saturated": false,
+      "sampled_peak_current": 512,
+      "schema_version": 1,
+      "scope": "whole-owned-workload-cgroup",
+      "window": "admitted-before-go-through-pre-cleanup"
+    },
+    "scope": "Ordinary profile invoked actual status CLI without observer and received exact completed-status JSON. Empty-stderr gate failed; completion acceptance/replay/retirement/post-detach preservation/cold resume remain unproved. Whole-workload sampled512 and exposed max-event increase are not child attribution.",
+    "automatic_retry": false
+  },
+  "latest_execution_state": "none_all_four_new_gate_aggregates_terminal_empty",
+  "linear_followon_results": {
+    "native": {
+      "scope": "Later same-comment body update after72e0 terminal, preserving earlier preaction and readback snapshots",
+      "entries": [
+        {
+          "issue": "TIN-5338",
+          "id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+          "body": "Provider-free checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged the independently reviewed diagnostic source. Signed head `04120ea64f8d160fff561fec22b86e8f1df75b92` became server-verified squash `e4e644cd97343d53d3dc08664f5c0914ab173b99`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`, exact tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`. Head retained; protection unchanged. Source/model delivery, not a release or completion.\n\nClean-head installed diagnostic `66162c74-9ab0-4dea-9f45-7e031d1eb8b0` FAILED: controller/workload3, empty descendants, no controller failure/rejection, retained009 reverified after cleanup. Docs/source passed (2/3). The original detach CLI passed exit0/empty-stderr/JSON-result and exact original ACK. The subsequent status observer wrapper failed its fork with EAGAIN before any status CLI exec. No failure-only detach record was expected from a successful call.\n\nWhole-workload PID observations: baseline1/limit512, sampled peak456, exposed max-event increase, absent terminal cgroup/unknown samples. No process attribution or root cause; sampled peak is not continuous maximum. Completion readback, replay, retirement, post-detach preservation and cold resume remain unproved. No mutation retry or cap change.\n\nLater evidence is preserved separately from frozen C at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`; raw receipt SHA256 `c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869`. Parent remains five scoped passes/six open. No provider calls, stock-support claim, live handoff or Darwin proof.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.",
+          "body_exact": true
+        },
+        {
+          "issue": "TIN-2057",
+          "id": "5c8c4427-1440-4c07-9dc1-b37ac5a98d92",
+          "body": "Continuity checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\nReviewed experimental source [PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) is merged as server-verified `e4e644cd97343d53d3dc08664f5c0914ab173b99`, exact signed-source tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`. No acceptance gate closes from source delivery.\n\nNative diagnostic6616 ended controller/workload3 with empty descendants, null controller failure/rejection and retained input reverified. Docs/source passed; original detach CLI and exact ACK passed. The added status observer failed its fork before operation.status CLI execution. Completion/replay/retirement/post-detach state and ordinary cold resume remain unproved. Workload-wide sampled PID/event observations do not establish a native root cause; no mutation retry/cap increase.\n\nFresh Yoga QUAL a77d passed against clean signed C; inspect is running. Destination content, local browser consent and activation remain unproved. Later durable evidence: `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`, outside frozen C.\n\nThe 15-hour objective remains active and incomplete: five historical scoped passes/six open. Unmodified Codex support, accepted-history/tool preservation, same-process live handoff and Darwin remain unproved. No provider access, fleet/release/store/site publication or SLA/SLO achievement is claimed.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.",
+          "body_exact": true
+        }
+      ]
+    },
+    "setup": {
+      "id": "dc527d8e-9385-4f91-836a-c9b7338d9159",
+      "body": "Provider-free setup checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged reviewed fixed-predicate Yoga registry diagnostics and bounded native/workload observations. Exact signed-head/tree and server merge readbacks are preserved at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json` (later evidence outside frozen source).\n\nFresh clean-C Yoga QUAL `a77d36b1-2a02-4a73-a7e9-f19fa20116a4` passed controller/workload0, empty descendants, null controller failure/rejection, source recheck true; canonical qualification SHA256 `5fe1f6d8262681232148d2b472d652dc6eac2b6b7895d6e9fe19a0ad6b755b4c`, graph `9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4`. Read-only INSPECT has started under that fresh qualification. Prior d47f/f0c7/c7f6 remain historical: prior VERIFY refused registry metadata before independent content rehash.\n\nNo copy, store realization, wrapper activation, cold graph or human toolbar consent is proved. Yoga local Wayland/operator consent is still the intended installed checkpoint after controller/browser/session inputs qualify. Native6616 failed after original detach ACK at diagnostic observer fork before status CLI exec; no cold resume. All work remains provider-free, serial and bounded (4GiB/swap0/Tasks512/CPU2/1200s). Parent remains five passed/six open; no issue scope/state change.\n\n02:01 UTC follow-on: fresh INSPECT `d1de64a5-1dfc-4333-aa30-aefb480d7556` passed. The one fresh VERIFY `70e0e8d2-b5a0-4450-a9f9-122d3f204acc` failed controller/workload2 with empty descendants and source recheck true. Its closed predicate is `destination-registration-content/row-object`: at least one requested registry value is not an object. No missing-path/corruption inference, metadata equality or content rehash. No copy/activation/toolbar proof followed.",
+      "readback_verified": true
+    }
+  },
+  "source_follow_on": {
+    "lead": "Fork-free static portable launcher",
+    "state": "source_design_in_progress_no_checks",
+    "owners": [
+      "/root/portable_exec_design",
+      "/root/native_registry_authority"
+    ],
+    "source_demonstrated_issue": "Each current shell launcher uses one command-substitution child solely to resolve package root.",
+    "hypothesis_limit": "Actual72e0 stderr text and cause are not known; no RCA claim.",
+    "constraints": [
+      "Keep cwd unchanged even renamed/deleted",
+      "Preserve argv0/arguments/streams/inherited descriptor custody",
+      "No new child/thread/delegation",
+      "Preserve environment scrubbing, CA/Qt and channel binding",
+      "Exact trusted-template + canonical binding verification; no template authority from untrusted archive",
+      "All codegen/build/test via lockedNix/Bazel; no cap or assertion relaxation"
+    ],
+    "branch": "codex/omux-portable-exec-20261007",
+    "worktree": "/srv/fast-local/jess/git/oauth-mux-detach-20261007",
+    "base": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "base_tree": "bfd67a0dba57a2d03bd3985a994b323ebc0c7b04",
+    "original_signed_C_branch_retained": true,
+    "original_mixed_workspace_and_index_untouched_by_followon": true,
+    "reuse": "Own clean completed C worktree reused on a new branch from verified server squash with identical tree; no extra worktree and no old commit rewritten."
+  }
+}
