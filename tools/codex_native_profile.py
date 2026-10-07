@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import time
 import math
+import xml.etree.ElementTree as ET
 import codex_live_source as source_io
 from codex_sdk_profile import metadata, require, verify_inventory, EXPORT_MODE_POLICY, hash_regular
 from codex_fresh_source import trusted_parent
@@ -15,8 +16,31 @@ from codex_live_source import BASE_RECEIPT_SHA, BASE_INVENTORY, COMMIT, GRAPH, w
 BAZEL = '/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel'
 STATE = Path('/srv/fast-local/jess/state/codex/omux-native-candidate-20261007')
 CORE = '//codex-rs/core:core-unit-tests'
+CONFIG = '//codex-rs/config:config-unit-tests'
+LOGIN = '//codex-rs/login:login-unit-tests'
+QUALIFICATION_GATES = {
+    CORE: (
+        'auth_broker::tests::unix_transport::native_completed_waits_for_committed_terminal_report',
+        'auth_broker::tests::unix_transport::uncommitted_terminal_report_never_exposes_native_completed',
+        'broker_text_context::tests::real_history_projection_preserves_native_records_and_exact_text',
+        'broker_text_context::tests::typed_guard_rejects_plaintext_that_native_serde_suppresses',
+        'broker_text_context::tests::typed_guard_rejects_visible_reasoning_summary',
+        'broker_text_context::tests::raw_guard_precedes_real_modality_stripping',
+        'broker_text_context::tests::opaque_compaction_tools_agent_messages_and_unknown_records_are_refused',
+        'broker_text_context::tests::text_shaped_tool_metadata_cannot_be_dropped_by_request_preparation',
+        'broker_text_context::tests::a_prompt_change_after_raw_snapshot_is_refused',
+        'broker_text_context::tests::fingerprints_are_canonical_and_context_reports_never_expose_native_payloads',
+        'client::tests::native_text_policy_builds_actual_wire_input_and_freezes_the_complete_request',
+    ),
+    CONFIG: ('config_toml::tests::omux_text_context_mode_is_explicit_and_unknown_modes_fail',),
+    LOGIN: (
+        'server::server_bind_tests::occupied_callback_port_never_contacts_its_owner',
+        'server::server_bind_tests::available_callback_port_binds_only_loopback',
+    ),
+}
 PRODUCTION = ('//codex-rs/core:core', '//codex-rs/app-server:app-server', '//codex-rs/config:config', '//codex-rs/app-server-protocol:app-server-protocol', '//codex-rs/tui:tui', '//codex-rs/cli:codex', '//codex-rs/config-schema:codex-write-config-schema', '//bazel/schema:public-schema-bundle')
 MODES = {
+    'qualification': ('test', (CORE, CONFIG, LOGIN), None),
     'analysis': ('build', PRODUCTION, None), 'production8': ('build', PRODUCTION, None),
     'cli-opt': ('build', ('//codex-rs/cli:codex',), None),
     'core-completion-committed': ('test', (CORE,), 'native_completed_waits_for_committed_terminal_report'),
@@ -24,7 +48,7 @@ MODES = {
     'core-text': ('test', (CORE,), 'broker_text_context::tests'),
     'client-text': ('test', (CORE,), 'client::tests::native_text_policy_builds_actual_wire_input_and_freezes_the_complete_request'),
     'config-text': ('test', ('//codex-rs/config:config-unit-tests',), 'config_toml::tests::omux_text_context_mode_is_explicit_and_unknown_modes_fail'),
-    'schema': ('build', PRODUCTION[-2:], None),
+    'schema': ('build', ('//bazel/schema:native-config-schema', '//bazel/schema:public-schema-bundle'), None),
     'login-bind': ('test', ('//codex-rs/login:login-unit-tests',), 'server::server_bind_tests'),
 }
 
@@ -130,7 +154,12 @@ def command(args, run, locked_path, bash, candidate=None):
     if verb == 'test':
         argv += ['--local_test_jobs=1', '--test_sharding_strategy=disabled', '--test_timeout=1200', '--test_env=RUST_TEST_THREADS=1',
             '--test_env=RUST_MIN_STACK=8388608', '--test_env=PATH=' + locked_path, '--nocache_test_results',
-            '--nozip_undeclared_test_outputs', '--test_output=errors', '--test_filter=' + test_filter]
+            '--nozip_undeclared_test_outputs', '--test_output=errors']
+        if args.native_mode == 'qualification':
+            argv += ['--test_arg=--exact', '--test_arg=--format=pretty', '--test_arg=--color=never']
+            argv += ['--test_arg=' + name for names in QUALIFICATION_GATES.values() for name in names]
+        else:
+            argv.append('--test_filter=' + test_filter)
     return {'argv': argv + list(targets), 'cwd': str(source), 'source_inventory_sha256': receipt['inventory_sha256'],
         'candidate_cache_root': str(candidate.root) if candidate is not None else None,
         'candidate_output_base': str(candidate.lease.output_base) if candidate is not None else None,
@@ -146,7 +175,68 @@ def runtime(args):
     require(remaining > 0, 'native runtime budget exhausted')
     return remaining
 
+def qualification_log(value, target):
+    """Validate actual stable libtest output, not the umbrella Bazel XML count."""
+    expected = set(QUALIFICATION_GATES[target])
+    matches = re.findall(rb'^test ([A-Za-z0-9_:]+) \.\.\. (ok|FAILED|ignored)\r?$', value, re.MULTILINE)
+    require(len(matches) == len(expected), 'qualification named gate count differs')
+    require(all(status == b'ok' for _, status in matches), 'qualification gate failed or ignored')
+    observed = [name.decode('ascii') for name, _ in matches]
+    require(len(set(observed)) == len(observed) and set(observed) == expected,
+            'qualification exact named gates differ')
+    summaries = re.findall(rb'test result: ok\. ([0-9]+) passed; ([0-9]+) failed; ([0-9]+) ignored;', value)
+    require(summaries == [(str(len(expected)).encode(), b'0', b'0')],
+            'qualification actual libtest counts differ')
+    return sorted(observed)
+
+def qualification_evidence(run, manifest):
+    require({row['target'] for row in manifest['results']} == set(QUALIFICATION_GATES)
+        and len(manifest['results']) == len(QUALIFICATION_GATES),
+        'qualification exact target set differs')
+    fd = trusted_parent(run / 'test-evidence')
+    rows = {}
+    try:
+        for row in manifest['results']:
+            entries = [e for e in row['files'] if e['source'] == 'test.log' and e['state'] == 'copied']
+            require(len(entries) == 1, 'qualification requires one copied log per target')
+            entry = entries[0]
+            digest, _, value = hash_regular(fd, entry['file'], 64 * 1024 * 1024, True)
+            require(digest == entry['sha256'], 'qualification log changed')
+            rows[row['target']] = {'log_sha256': digest,
+                'tests': qualification_log(value, row['target'])}
+    finally:
+        os.close(fd)
+    count = sum(len(row['tests']) for row in rows.values())
+    xml = ET.Element('testsuites', tests=str(count), failures='0', errors='0', skipped='0')
+    for target, row in sorted(rows.items()):
+        suite = ET.SubElement(xml, 'testsuite', name=target, tests=str(len(row['tests'])),
+            failures='0', errors='0', skipped='0')
+        props = ET.SubElement(suite, 'properties')
+        ET.SubElement(props, 'property', name='actual_test_log_sha256', value=row['log_sha256'])
+        for name in row['tests']:
+            ET.SubElement(suite, 'testcase', classname=target, name=name)
+    raw = ET.tostring(xml, encoding='utf-8', xml_declaration=True) + b'\n'
+    receipt = {'schema': 'omux-native-grouped-qualification-v1',
+        'evidence': 'exact stable libtest names and counts from SHA256-verified actual logs',
+        'targets': rows, 'passed': count, 'failed': 0, 'ignored': 0,
+        'xml_sha256': hashlib.sha256(raw).hexdigest(),
+        'native_support': False, 'provider_evaluation': False}
+    parent = trusted_parent(run)
+    try:
+        for name, value in (('native-qualification.xml', raw),
+                ('native-qualification.json', (json.dumps(receipt, sort_keys=True) + '\n').encode())):
+            child = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            with os.fdopen(child, 'wb') as stream:
+                stream.write(value)
+                stream.flush()
+                os.fsync(stream.fileno())
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+    return receipt
 def meaningful_tests(run, manifest, mode):
+    if mode == 'qualification':
+        return qualification_evidence(run, manifest)
     minimum = {'core-text': 8, 'login-bind': 2}.get(mode, 1)
     fd = trusted_parent(run / 'test-evidence')
     try:

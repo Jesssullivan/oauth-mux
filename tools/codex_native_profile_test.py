@@ -11,6 +11,19 @@ import codex_retained_sdk_export as sdk_export
 from codex_retained_sdk_export import SCHEMA, canonical, digest, inventory, Budget, validate_export
 
 class SourceMutationTests(unittest.TestCase):
+    def test_grouped_exact_gates_reject_equal_count_substitution_and_zero(self):
+        for target, names in native.QUALIFICATION_GATES.items():
+            def log(selected):
+                return ('\n'.join('test ' + name + ' ... ok' for name in selected)
+                    + '\ntest result: ok. %d passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n'
+                    % len(selected)).encode()
+            self.assertEqual(native.qualification_log(log(names), target), sorted(names))
+            for bad in ((), names[:-1], (*names[:-1], 'unrelated::test'),
+                        (*names, names[0])):
+                with self.assertRaises(ValueError):
+                    native.qualification_log(log(bad), target)
+            with self.assertRaises(ValueError):
+                native.qualification_log(log(names).replace(b' ... ok', b' ... ignored', 1), target)
     def test_zero_matching_tests_never_passes_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             run = Path(temp)

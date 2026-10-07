@@ -256,6 +256,28 @@ def declare_pinned_sha2(files):
                     'origin': 'reviewed-text-patch-no-producer-graph-rewrite'}
 
 
+def declare_config_schema(files):
+    """Append one fixed declared generator action to an exact baseline BUILD."""
+    name = 'bazel/schema/BUILD.bazel'
+    mode, before = files[name]
+    require(mode == '100644' and sha(before) ==
+        '9e047e20da76b99608595a8abfb23b5e8633c5ba454f2de548b8e70744c72df6')
+    addition = b'''
+# Maintained candidate: generate changed config schema as a declared action.
+genrule(
+    name = "native-config-schema",
+    tools = ["//codex-rs/config-schema:codex-write-config-schema"],
+    outs = ["native-config.schema.json"],
+    cmd = "$(location //codex-rs/config-schema:codex-write-config-schema) --out \\"$@\\"",
+    tags = ["manual"],
+)
+'''
+    result = dict(files)
+    result[name] = (mode, before + addition)
+    return result, {'path': name,
+        'target': '//bazel/schema:native-config-schema',
+        'before_sha256': sha(before), 'after_sha256': sha(before + addition),
+        'origin': 'fixed-reviewed-maintained-source-generator-overlay'}
 def verify_written(source, files):
     """Read every materialized byte through nofollow directory descriptors."""
     fd = directory(source)
@@ -371,6 +393,7 @@ def produce(output, patch_pins, seconds):
         os.close(patch_fd)
     PHASE = 'dependency'
     files, native_declaration = declare_pinned_sha2(files)
+    files, schema_declaration = declare_config_schema(files)
     require(all({'sha256': sha(files[name][1])} == baseline_graph[name]
                 for name in GRAPH if name != 'codex-rs/core/BUILD.bazel'))
     require(set(NEW) <= set(files) and sum(len(value) for _, value in files.values()) <= MAX_SOURCE)
@@ -380,6 +403,7 @@ def produce(output, patch_pins, seconds):
         'baseline_inventory_sha256': BASE_INVENTORY, 'patch_sha256': list(patch_pins),
         'patches': changes, 'source_inventory': inventory, 'inventory_sha256': sha(canonical(inventory)),
         'native_build_declaration': native_declaration,
+        'native_schema_declaration': schema_declaration,
         'graph_files': {name: {'sha256': sha(files[name][1])} for name in GRAPH},
         'baseline_graph_files': baseline_graph,
         'tracked_files': len(files), 'source_bytes': sum(len(value) for _, value in files.values()),

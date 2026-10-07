@@ -79,3 +79,19 @@ limits: the final text patch context is strengthened with SHA256
 source refusal diagnostics use fixed phase categories; SDK output uses a new
 private child rather than changing Bazel-owned directory permissions. These
 corrections require actual producer qualification; no native build is inferred.
+
+## Fresh native source qualified; bounded tests and real schema action
+
+C9 source producer passed against the full actual pinned source and all three
+patches in e620088f-71af-4bd7-b909-bfa19c614a10 (191.1 seconds).
+Five of six targets passed; SDK public cache entry custody refused. The
+retained cache is not modified and native compile/support remain unproved.
+
+Added a fixed grouped qualification mode for fourteen exact core/config/login
+tests. Pinned stable Rust supports multiple positional exact filters; actual
+named successful test rows and counts are verified from hashed logs before
+derived XML is emitted. Existing six-attempt cache limit and aggregate caps
+remain unchanged. Added a fixed source overlay declaring actual config-schema
+generation; building only the generator binary cannot prove generated output.
+Both changes require models, full source regeneration and native execution.
+Root remains the sole executor; Original receipts preserve prior scopes.
