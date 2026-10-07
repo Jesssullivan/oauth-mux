@@ -78,3 +78,14 @@ declaration, admission, artifact or live proof. New admission, deadline and
 consumer models and existing regressions remain queued. The running owned
 resident reserves256MiB/32tasks/ten-percent CPU, so a full native four-GiB action
 cannot run until its separate owned idle disposition is verified.
+
+The ordinary native TUI fixture now has a separate fresh-runtime entrypoint,
+from reviewed proposal SHA256
+`b5fd0c32680b82a4da33abb9dda90728673b02040a284155bb8ae5dc30a55ca8`.
+It invokes the same export/rename, native store identity and cold-resume checks
+with independently qualified fresh package inputs. It constructs no live
+scenario and submits no provider turn. The repository selector admits either
+literal pinned inputs or the existing environment route exclusively; the actual
+repository instance is not declared until a successful package supplies real
+pins. Contract and Starlark selector tests are queued; installed proof remains
+unrun. No accepted-history or handoff capability follows from this fixture.

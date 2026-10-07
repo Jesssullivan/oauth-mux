@@ -925,6 +925,47 @@ config_setting(
     name = "codex_live_fresh_runtime",
     define_values = {"omux_codex_live_runtime": "fresh"},
 )
+# The root independently declares omux_codex_ordinary_fresh_runtime only after
+# successful native CLI/schema qualification and fresh runtime packaging.
+# This ordinary route needs no account manifest and submits no provider turn.
+_FRESH_ORDINARY_TUI_SOURCES = [
+    "test_installed_native_tui.py", "test_installed_codex_live_continuity.py",
+    "test_installed_native_interop.py", "test_installed_custody.py",
+    "native_resumed_checkpoint.py", "pack.py", "install.py", "portable.py",
+    "//integrations/codex-owner-runtime:runtime_package.py",
+    "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py",
+] + ["//tools:codex_fresh_live_support"]
+python_test(
+    name = "installed_fresh_native_tui_test",
+    main = "test_installed_fresh_native_tui.py",
+    srcs = _FRESH_ORDINARY_TUI_SOURCES,
+    data = [
+        ":default_instance_archive",
+        "@omux_codex_ordinary_fresh_runtime//:runtime.tar.gz",
+        "@omux_codex_ordinary_fresh_runtime//:runtime-manifest.json",
+        "@omux_codex_ordinary_fresh_runtime//:runtime-receipt.json",
+        "@omux_codex_ordinary_fresh_runtime//:input-pin.json",
+        "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon", "@omux_nix//:gnome_keyring_daemon",
+    ],
+    args = [
+        "--runtime-kind=fresh", "--runtime-pin=$(location @omux_codex_ordinary_fresh_runtime//:input-pin.json)",
+        "$(location :default_instance_archive)",
+        "$(location @omux_codex_ordinary_fresh_runtime//:runtime.tar.gz)",
+        "$(location @omux_codex_ordinary_fresh_runtime//:runtime-receipt.json)",
+        "$(location @omux_nix//:dbus_run_session)", "$(location @omux_nix//:dbus_daemon)",
+        "$(location @omux_nix//:gnome_keyring_daemon)",
+    ],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "fresh_native_tui_contract_test",
+    main = "test_fresh_native_tui_contract.py",
+    srcs = ["test_installed_fresh_native_tui.py"] + _FRESH_ORDINARY_TUI_SOURCES,
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
 # Opt-in real provider work; execution guard admits this exact target only.
 python_test(
     name = "installed_codex_live_continuity_test",

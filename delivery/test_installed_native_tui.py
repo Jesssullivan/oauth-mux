@@ -387,12 +387,14 @@ def inspect_durable(state, observations, operations, endpoints, witnesses, threa
                 "sealed original native process attribution changed")
 
 
-def inside(bundle, candidate, receipt, keyring, root, *, live=None):
+def inside(bundle, candidate, receipt, keyring, root, *, live=None, runtime_reader=None):
     global PHASE
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
     PHASE = "runtime-verification"
-    reader = getattr(live, "read_runtime_bundle", None) if live is not None else None
+    require(runtime_reader is None or (live is None and callable(runtime_reader)),
+            "ordinary runtime reader conflicts with live fixture")
+    reader = runtime_reader or (getattr(live, "read_runtime_bundle", None) if live is not None else None)
     candidate_manifest, files = (reader or support.runtime_package.read_runtime_bundle)(candidate, receipt)
     candidate_prefix = root / "candidate"
     candidate_prefix.mkdir(mode=0o700)
@@ -612,7 +614,7 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None):
         require(not failed, "owned private terminal process cleanup failed")
 
 
-def main():
+def main(*, runtime_reader=None, entrypoint=None, entrypoint_args=()):
     if len(sys.argv) >= 5 and sys.argv[1] == "--pty-exec":
         binary, cwd = (Path(value).resolve(strict=True) for value in sys.argv[2:4])
         # The PTY needs a separate controlling-terminal session. Bind its
@@ -647,7 +649,7 @@ def main():
         command.extend(["--no-alt-screen", "--strict-config"])
         os.execve(str(binary), command, os.environ)
     if len(sys.argv) == 7 and sys.argv[1] == "--inside":
-        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]))
+        inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]), runtime_reader=runtime_reader)
         return 0
     require(len(sys.argv) == 7, "declared Omux/native archives, receipt and vault tools required")
     bundle, candidate, receipt, session, bus, keyring = (Path(value).resolve(strict=True) for value in sys.argv[1:])
@@ -668,7 +670,8 @@ def main():
         bootstrap = ("import os,runpy,sys;p=sys.argv.pop(1);sys.path.insert(0,os.path.dirname(p));"
                      "sys.argv[0]=p;runpy.run_path(p,run_name='__main__')")
         process = subprocess.Popen([str(session), "--dbus-daemon=" + str(bus), "--config-file=" + str(configuration),
-                                    "--", sys.executable, "-I", "-B", "-c", bootstrap, str(Path(__file__).absolute()),
+                                    "--", sys.executable, "-I", "-B", "-c", bootstrap,
+                                    str(Path(entrypoint or __file__).absolute()), *entrypoint_args,
                                     "--inside", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
                                    env=environment, start_new_session=True, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, umask=0o077)

@@ -8,6 +8,7 @@ load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
 load("//integrations/codex-owner-runtime:runtime_inputs.bzl", "runtime_inputs_manifest")
 load("@omux_nix//:tool_paths.bzl", "NIX_COREUTILS_BIN")
 load(":codex_fresh_native_receipt_scope_test.bzl", "codex_fresh_native_receipt_scope_test")
+load(":codex_fresh_runtime_repository_selector_test.bzl", "codex_fresh_runtime_repository_selector_test")
 
 _CODEX_SDK_SOURCES = [
     "codex_native_candidate_cache.py",
@@ -1519,6 +1520,7 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 exports_files(["codex_live_fresh_runtime_repository.bzl","codex_live_fresh_runtime_repository_input.py"])
+codex_fresh_runtime_repository_selector_test(name = "codex_fresh_runtime_repository_selector_test")
 python_test(
     name = "guard_fresh_native_runtime_input_test",
     main = "guard_fresh_native_runtime_input_test.py",

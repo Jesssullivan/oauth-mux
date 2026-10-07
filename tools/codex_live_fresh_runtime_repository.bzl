@@ -1,10 +1,26 @@
 """Only independently admitted public fresh-runtime pins become inert aliases."""
 VARIABLE = "OMUX_CODEX_FRESH_RUNTIME_SELECTION"
 
+def runtime_selection(selection, sha256, bytes, environment):
+    """Actual repository selector, independent of filesystem materialization."""
+    literal = [selection, sha256, bytes]
+    if any(literal):
+        if not all(literal) or any(environment) or bytes < 1 or bytes > 16 * 1024 * 1024:
+            return None
+        path, sha, size = selection, sha256, str(bytes)
+    else:
+        path, sha, size = environment
+    if not path or len(sha) != 64 or any([c not in "0123456789abcdef" for c in sha.elems()]) or not size or any([c not in "0123456789" for c in size.elems()]):
+        return None
+    return [path, sha, size]
+
 def _implementation(ctx):
-    path = ctx.os.environ.get(VARIABLE,"")
-    sha = ctx.os.environ.get(VARIABLE+"_SHA256","")
-    size = ctx.os.environ.get(VARIABLE+"_BYTES","")
+    selected = runtime_selection(ctx.attr.selection, ctx.attr.sha256, ctx.attr.bytes,
+        [ctx.os.environ.get(VARIABLE,""), ctx.os.environ.get(VARIABLE+"_SHA256",""),
+         ctx.os.environ.get(VARIABLE+"_BYTES","")])
+    if selected == None:
+        fail("complete exclusive fresh-runtime input selection required")
+    path, sha, size = selected
     if not path or len(sha) != 64 or any([c not in "0123456789abcdef" for c in sha.elems()]) or not size or any([c not in "0123456789" for c in size.elems()]):
         fail("complete independent fresh-runtime input selection required")
     bootstrap = ctx.os.environ.get("OMUX_BAZEL_BOOTSTRAP_CLOSURE","")
@@ -39,7 +55,8 @@ def _implementation(ctx):
 
 codex_live_fresh_runtime_repository = repository_rule(
     implementation=_implementation,
-    attrs={"generator":attr.label(default=Label("//tools:codex_live_fresh_runtime_repository_input.py"),allow_single_file=True)},
+    attrs={"generator":attr.label(default=Label("//tools:codex_live_fresh_runtime_repository_input.py"),allow_single_file=True),
+           "selection":attr.string(default=""), "sha256":attr.string(default=""), "bytes":attr.int(default=0)},
     environ=[VARIABLE,VARIABLE+"_SHA256",VARIABLE+"_BYTES","OMUX_BAZEL_BOOTSTRAP_CLOSURE"],
     local=True,
 )
