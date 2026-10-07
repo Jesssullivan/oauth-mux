@@ -858,7 +858,13 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
             continue
         if key == 'CPUQuotaPerSecUSec' and profile == 'resident-enrollment':
-            if actual.get(key) not in ('1.900s','1.9s','1900ms'):
+            from decimal import Decimal
+            quota_value = actual.get(key)
+            matched = (re.fullmatch(r'([0-9]{1,7}(?:\.[0-9]{1,6})?)(us|ms|s)', quota_value)
+                       if type(quota_value) is str else None)
+            quota_us = (Decimal(matched.group(1)) * {'us': 1, 'ms': 1000, 's': 1000000}[matched.group(2)]
+                        if matched else None)
+            if quota_us != Decimal(1900000):
                 raise ValueError('effective complementary CPU reservation rejected')
             continue
         if actual.get(key) != value:
