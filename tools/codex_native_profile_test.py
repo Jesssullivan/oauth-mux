@@ -259,7 +259,7 @@ class CombinedQualificationTests(unittest.TestCase):
 
     def cli(self, context, configuration='k8-opt'):
         path=Path(context['output_base'])/'execroot/_main/bazel-out'/configuration/'bin/codex-rs/cli/codex'
-        path.parent.mkdir(parents=True,mode=0o700)
+        path.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
         path.write_bytes(b'\x7fELFmodel-actual-file'); path.chmod(0o500)
         return path
 
