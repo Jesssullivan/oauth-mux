@@ -63,7 +63,7 @@ class Contract(unittest.TestCase):
 
     def test_device_prompt_refuses_browser_uri_control_code_and_wrong_kind(self):
         started = {"type": "chatgptDeviceCode", "loginId": "synthetic-login", "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "MODEL-NOT-A-SECRET"}
-        for field, value in (("type", "chatgpt"), ("verificationUrl", "https://auth.openai.com/oauth/authorize"), ("userCode", "bad\\ncode"), ("userCode", "x" * 129)):
+        for field, value in (("type", "chatgpt"), ("verificationUrl", "https://auth.openai.com/oauth/authorize"), ("userCode", "bad\ncode"), ("userCode", "x" * 129)):
             with self.assertRaises(action.Refusal):
                 action.device_prompt({**started, field: value})
 

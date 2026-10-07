@@ -32,3 +32,16 @@ qualified and reconciled. Completion never follows merely from a schema.
 R-N12 per-command hook alternative: advisory hooks are bypassed only for this
 owned signed commit; no global hooks or remotes are changed. Source and commit
 readbacks and actual declared checks supply the traceable alternative.
+
+Initial source `14bf849234a9d00fc4e962ac2c9afc47898feac6` ran thirteen
+declared targets in `5b07a804-8fda-4a6b-8b11-98c0c86946db`, with nine
+passing and four failing; exit3, descendants empty and no controller failure.
+The guard, existing live/retained/dependency/SSH contracts, wrapper and actual
+offscreen Qt display/EOF/cancellation passed. Refused targets were document
+classification and three fixture defects: an escaped literal instead of a
+control newline, BytesIO lacking the modeled descriptor, and cleanup expecting
+termination despite modeled graceful exit. Corrections retain production
+predicates; cleanup now genuinely models timeout followed by owned termination.
+The document is classified in authority.json. Yoga uses its recorded remote
+account rather than assuming that the local username matches. These corrections
+are unverified until their next declared invocation completes.

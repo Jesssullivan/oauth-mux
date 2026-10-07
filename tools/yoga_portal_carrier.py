@@ -119,7 +119,7 @@ def ssh_arguments(ui, options, known_hosts_options, remote_command):
         "-oClearAllForwardings=yes", "-oForwardAgent=no",
         "-oForwardX11=no", "-oPermitLocalCommand=no", "-oRemoteCommand=none",
         "-oProxyCommand=none", "-oProxyJump=none", "-oHostName=100.104.152.110",
-        "-l", pwd.getpwuid(os.getuid()).pw_name,
+        "-l", "jsullivan2",
         "yoga", remote_command]
 
 

@@ -56,7 +56,9 @@ class Models(unittest.TestCase):
 
     def test_dialog_held_executable_and_public_flag_only_no_payload(self):
         process = Mock(pid=4321,returncode=0)
-        process.stdin,process.stdout = io.BytesIO(),io.BytesIO()
+        process.stdin = io.BytesIO()
+        process.stdout = Mock(wraps=io.BytesIO())
+        process.stdout.fileno.return_value = 42
         selected = {"uid":1000,"wayland_socket":"/run/user/1000/wayland-0",
             "qt_platform_plugin":"/declared/plugins/platforms/libqwayland-egl.so"}
         with patch.object(worker.subprocess,"Popen",return_value=process) as launch,\

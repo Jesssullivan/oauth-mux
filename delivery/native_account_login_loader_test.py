@@ -13,7 +13,7 @@ class LoaderContract(unittest.TestCase):
         process.stdin = io.BytesIO()
         process.stdout = io.BytesIO()
         process.poll.return_value = None
-        process.wait.return_value = 0
+        process.wait.side_effect = [action.subprocess.TimeoutExpired("owned-model", 5), 0]
         loader = mock.Mock(st_mode=stat.S_IFREG|0o555,st_uid=os.getuid(),st_nlink=1)
         environment = {"HOME":"/private/owned-profile","PATH":"/nonexistent"}
         with mock.patch.object(action.subprocess,"Popen",return_value=process) as launched, \
