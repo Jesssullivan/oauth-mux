@@ -402,8 +402,11 @@ def inside(bundle, candidate, receipt, keyring, root):
     codex_home.mkdir(mode=0o700)
     require(len(os.fsencode(codex_home)) <= 68, "native home exceeds bounded endpoint layout")
     config = codex_home / "config.toml"
+    # Skip the candidate's one-time screen-reader bookkeeping before capture.
+    # Cold resume still requires exact retained config and capability bytes.
     config.write_text('cli_auth_credentials_store = "file"\nsandbox_mode = "read-only"\napproval_policy = "never"\n'
                       'check_for_update_on_startup = false\n'
+                      '[tui]\nscreen_reader_detection_done = true\n'
                       '[otel]\nexporter = "none"\ntrace_exporter = "none"\nmetrics_exporter = "none"\nlog_user_prompt = false\n'
                       '[cloud.skills]\nenabled = false\n'
                       '[analytics]\nenabled = false\n[features]\nplugins = false\nrecommended_plugins = false\n'

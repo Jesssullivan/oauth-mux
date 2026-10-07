@@ -63,8 +63,11 @@
     "resource_caps_unchanged": true
   },
   "current_execution": {
-    "state": "none",
-    "last_epoch": "bb7c913f-bb2c-4070-8375-6d9145c24639",
+    "state": "terminal",
+    "epoch": "9f286027-f277-4f91-9097-468574b76d4a",
+    "kind": "fresh_provider_free_installed_native_clean_signed_source",
+    "controller_exit": 3,
+    "workload_exit": 3,
     "descendants_empty": true
   },
   "resource_limits": {
@@ -97,11 +100,15 @@
     "No cap increase or assertion relaxation"
   ],
   "next": [
-    "Formatter then targeted Bazel execution models",
-    "Declared real-package/staging regression gates",
-    "One justified fresh native attempt only after static launcher proof"
+    "Review exact candidate-native configuration write semantics against retained configuration predicate before another native invocation",
+    "Complete source-only PR529 delivery with failed native outcome disclosed",
+    "Continue qualified Yoga closure delivery before installed toolbar consent"
   ],
-  "publication": false,
+  "publication": {
+    "source_pr_pushed": true,
+    "product_release": false,
+    "store_or_spa": false
+  },
   "format_result": {
     "epoch": "4e2ab760-1280-4677-b6da-f382b3eef8c2",
     "controller_exit": 0,
@@ -372,5 +379,197 @@
     "ruling": "R-N12 R-HOOK-CONVERGENCE-20261004",
     "prior_state": "inspected Home Manager advisory hook wrappers",
     "result": "per-invocation core.hooksPath=/dev/null only; global config unchanged; signed commit and independent Git validation required"
+  },
+  "latest_observed_at": "2026-10-07T03:10:04Z",
+  "source_delivery": {
+    "pr": 529,
+    "url": "https://github.com/Jesssullivan/oauth-mux/pull/529",
+    "draft": false,
+    "normal_push": true,
+    "signed_source": {
+      "head": "f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c",
+      "tree": "21b45255f28bc1d4933242cd6bd602670166c021",
+      "parent": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+      "sig": "G"
+    },
+    "signature_verify_exit": 0,
+    "clean_before_native": true,
+    "source_claims": "independent signed/clean Git truth; historical dirty-source test receipts retain their original scope",
+    "native_proof": "terminal_failed_retained_config_predicate",
+    "independent_final_review": "source_only_clear_no_blocker; exact24files/head/parent/tree/cleanoriginalindex/trustedtemplate/platformlimits/noacceptancepromotion",
+    "merged": true,
+    "merge_commit": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+    "merge_parent": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "merge_tree": "21b45255f28bc1d4933242cd6bd602670166c021",
+    "merge_verified": true,
+    "main_exact_readback": true,
+    "source_branch_retained": true,
+    "protection_unchanged": true,
+    "scope": "Reviewed source-only packaging/model delivery; failed native9f286 result disclosed; no gate closes"
+  },
+  "native_result": {
+    "epoch": "9f286027-f277-4f91-9097-468574b76d4a",
+    "source_commit": "f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c",
+    "source_dirty": false,
+    "controller_exit": 3,
+    "workload_exit": 3,
+    "descendants_empty": true,
+    "controller_failure": null,
+    "rejection": null,
+    "graph_sha256": "134494b7d93bc63a904cf835877b7a8bf13a29cdc02334f6bdb7a27ebbbbf9bb",
+    "raw_receipt_sha256": "312d8be5ca74700db7913b5f4a4c86725aec064207c45d58b2c5463cdd98b24b",
+    "test_evidence": {
+      "bytes": 216946,
+      "files": 9,
+      "manifest": "test-evidence.json",
+      "sha256": "fa0b81c0807d33b44141cb2c3ea1d4b9067a936957d551e483e993c86a986550",
+      "state": "preserved"
+    },
+    "retained_input_verified_after_cleanup": true,
+    "passed_targets": [
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "failed_target": "//delivery:installed_legacy_native_tui_test",
+    "failure": {
+      "phase": "resumed-preservation",
+      "diagnostic": "resume-retained-config-predicate",
+      "predicate": "resume-retained-config-changed"
+    },
+    "scope": "Failed overall native gate; run reached cold resume and accepted the strict native checkpoint before exact retained configuration/capability comparison refused. No completed resumed detach/durable inspection, accepted-history or live proof.",
+    "whole_workload_process_observation": {
+      "attribution": "none",
+      "baseline": {
+        "current": 1,
+        "custody": "same",
+        "limit": 512,
+        "max_event_delta": 0,
+        "max_events": 0,
+        "pids_limit": "verified512",
+        "pids_max_event_delta": "unchanged",
+        "pids_sample": "below",
+        "sample_timing": "baseline"
+      },
+      "counter_semantics": "pids.events:max-as-exposed; mount-semantics-unqualified",
+      "last_monitor": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "monitor"
+      },
+      "monitor_samples": 469,
+      "observed_at_or_over_verified_limit": true,
+      "observed_max_event_decrease": false,
+      "observed_max_event_increase": true,
+      "observed_unknown": true,
+      "pre_cleanup": {
+        "current": null,
+        "custody": "absent",
+        "limit": null,
+        "max_event_delta": null,
+        "max_events": null,
+        "pids_limit": "unavailable",
+        "pids_max_event_delta": "unavailable",
+        "pids_sample": "unavailable",
+        "sample_timing": "pre-cleanup"
+      },
+      "pre_cleanup_control_flow_deferred": false,
+      "read_semantics": "bounded-sequential-fields; sampled-not-continuous",
+      "sample_count_saturated": false,
+      "sampled_peak_current": 512,
+      "schema_version": 1,
+      "scope": "whole-owned-workload-cgroup",
+      "window": "admitted-before-go-through-pre-cleanup"
+    }
+  },
+  "premerge_readback": {
+    "recorded_at": "2026-10-07T03:07:24Z",
+    "pr": 529,
+    "head": "f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c",
+    "base": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "draft": false,
+    "mergeable_state": "clean",
+    "reviews": [],
+    "review_threads": [],
+    "body_equal": true,
+    "worktree_clean": true,
+    "git_verify_commit_exit": 0,
+    "required_status_checks": null,
+    "other_protection_preserved": true,
+    "independent_review": "/root/review_prs_oct6 source-only clear",
+    "scope": "Source-only merge; native9f286 remains failed",
+    "time_semantics": "Recorded after authenticated merge readbacks; describes immediately preceding merge checks"
+  },
+  "linear_reconciliation": {
+    "recorded_at": "2026-10-07T03:07:24Z",
+    "state": "written_verified_exact_readbacks",
+    "updates": [
+      {
+        "issue": "TIN-5338",
+        "id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+        "before_body": "Provider-free checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged the independently reviewed diagnostic source. Signed head `04120ea64f8d160fff561fec22b86e8f1df75b92` became server-verified squash `e4e644cd97343d53d3dc08664f5c0914ab173b99`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`, exact tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`. Head retained; protection unchanged. Source/model delivery, not a release or completion.\n\nClean-head installed diagnostic `66162c74-9ab0-4dea-9f45-7e031d1eb8b0` FAILED: controller/workload3, empty descendants, no controller failure/rejection, retained009 reverified after cleanup. Docs/source passed (2/3). The original detach CLI passed exit0/empty-stderr/JSON-result and exact original ACK. The subsequent status observer wrapper failed its fork with EAGAIN before any status CLI exec. No failure-only detach record was expected from a successful call.\n\nWhole-workload PID observations: baseline1/limit512, sampled peak456, exposed max-event increase, absent terminal cgroup/unknown samples. No process attribution or root cause; sampled peak is not continuous maximum. Completion readback, replay, retirement, post-detach preservation and cold resume remain unproved. No mutation retry or cap change.\n\nLater evidence is preserved separately from frozen C at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`; raw receipt SHA256 `c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869`. Parent remains five scoped passes/six open. No provider calls, stock-support claim, live handoff or Darwin proof.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.",
+        "body": "Provider-free checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged the independently reviewed diagnostic source. Signed head `04120ea64f8d160fff561fec22b86e8f1df75b92` became server-verified squash `e4e644cd97343d53d3dc08664f5c0914ab173b99`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`, exact tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`. Head retained; protection unchanged. Source/model delivery, not a release or completion.\n\nClean-head installed diagnostic `66162c74-9ab0-4dea-9f45-7e031d1eb8b0` FAILED: controller/workload3, empty descendants, no controller failure/rejection, retained009 reverified after cleanup. Docs/source passed (2/3). The original detach CLI passed exit0/empty-stderr/JSON-result and exact original ACK. The subsequent status observer wrapper failed its fork with EAGAIN before any status CLI exec. No failure-only detach record was expected from a successful call.\n\nWhole-workload PID observations: baseline1/limit512, sampled peak456, exposed max-event increase, absent terminal cgroup/unknown samples. No process attribution or root cause; sampled peak is not continuous maximum. Completion readback, replay, retirement, post-detach preservation and cold resume remain unproved. No mutation retry or cap change.\n\nLater evidence is preserved separately from frozen C at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`; raw receipt SHA256 `c70c7b7aaa47af586fc13345fc2d405c3e10659d800043d73a23d0be80efc869`. Parent remains five scoped passes/six open. No provider calls, stock-support claim, live handoff or Darwin proof.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.\n\n2026-10-07T03:07:24Z provider-free follow-on (R-HOOK-CONVERGENCE-20261004/R-N13).\n\n[PR #529](https://github.com/Jesssullivan/oauth-mux/pull/529) merged as server-verified `e49acf2e0521dbd739f57d35d4a64ea6e403d4c7`: parent E4, exact signed C2 `f3684f1` tree `21b45255f28bc1d4933242cd6bd602670166c021`, source branch retained and protection unchanged. Scoped launcher/package checks passed; failed77e9 (6/7) and9b69 (8/11) retain their scopes, correctedbb7c passed5/5. This is source delivery, not release or acceptance.\n\nFresh clean-C2 native `9f286027-f277-4f91-9097-468574b76d4a` FAILED3/3, empty descendants, retained009 reverified. Docs/source passed. Native reached original detach/state preservation, clean exit, fresh-process resume and the strict settings checkpoint; exact retained config/capability comparison refused at `resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed`. Resumed detach/durable inspection were not reached; whole native gate remains open. Aggregate sampled512/exposed max-event increase has no cause attribution. Limits and predicates unchanged.\n\nNext: qualify exact candidate-native configuration-write behavior before any fresh invocation. No private data read, fixture relaxation or sealed runtime mutation.\n\nDurable current receipt: `docs/tracker-updates/portable-exec-2026-10-07.json`; [reviewed source note](https://github.com/Jesssullivan/oauth-mux/blob/f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c/docs/agent-notes/2026-10-07-sess-omux-portable-exec.md). Provider-free; stock Codex, live handoff, accepted-history, Darwin and achieved SLA/SLO remain unproved. Issue scope/state unchanged."
+      },
+      {
+        "issue": "TIN-2063",
+        "id": "dc527d8e-9385-4f91-836a-c9b7338d9159",
+        "before_body": "Provider-free setup checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged reviewed fixed-predicate Yoga registry diagnostics and bounded native/workload observations. Exact signed-head/tree and server merge readbacks are preserved at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json` (later evidence outside frozen source).\n\nFresh clean-C Yoga QUAL `a77d36b1-2a02-4a73-a7e9-f19fa20116a4` passed controller/workload0, empty descendants, null controller failure/rejection, source recheck true; canonical qualification SHA256 `5fe1f6d8262681232148d2b472d652dc6eac2b6b7895d6e9fe19a0ad6b755b4c`, graph `9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4`. Read-only INSPECT has started under that fresh qualification. Prior d47f/f0c7/c7f6 remain historical: prior VERIFY refused registry metadata before independent content rehash.\n\nNo copy, store realization, wrapper activation, cold graph or human toolbar consent is proved. Yoga local Wayland/operator consent is still the intended installed checkpoint after controller/browser/session inputs qualify. Native6616 failed after original detach ACK at diagnostic observer fork before status CLI exec; no cold resume. All work remains provider-free, serial and bounded (4GiB/swap0/Tasks512/CPU2/1200s). Parent remains five passed/six open; no issue scope/state change.\n\n02:01 UTC follow-on: fresh INSPECT `d1de64a5-1dfc-4333-aa30-aefb480d7556` passed. The one fresh VERIFY `70e0e8d2-b5a0-4450-a9f9-122d3f204acc` failed controller/workload2 with empty descendants and source recheck true. Its closed predicate is `destination-registration-content/row-object`: at least one requested registry value is not an object. No missing-path/corruption inference, metadata equality or content rehash. No copy/activation/toolbar proof followed.",
+        "body": "Provider-free setup checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\n[PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) merged reviewed fixed-predicate Yoga registry diagnostics and bounded native/workload observations. Exact signed-head/tree and server merge readbacks are preserved at `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json` (later evidence outside frozen source).\n\nFresh clean-C Yoga QUAL `a77d36b1-2a02-4a73-a7e9-f19fa20116a4` passed controller/workload0, empty descendants, null controller failure/rejection, source recheck true; canonical qualification SHA256 `5fe1f6d8262681232148d2b472d652dc6eac2b6b7895d6e9fe19a0ad6b755b4c`, graph `9d331f77c8e827fb36ae5571a0f831f79b6a5758a3d082da09a59036f19070a4`. Read-only INSPECT has started under that fresh qualification. Prior d47f/f0c7/c7f6 remain historical: prior VERIFY refused registry metadata before independent content rehash.\n\nNo copy, store realization, wrapper activation, cold graph or human toolbar consent is proved. Yoga local Wayland/operator consent is still the intended installed checkpoint after controller/browser/session inputs qualify. Native6616 failed after original detach ACK at diagnostic observer fork before status CLI exec; no cold resume. All work remains provider-free, serial and bounded (4GiB/swap0/Tasks512/CPU2/1200s). Parent remains five passed/six open; no issue scope/state change.\n\n02:01 UTC follow-on: fresh INSPECT `d1de64a5-1dfc-4333-aa30-aefb480d7556` passed. The one fresh VERIFY `70e0e8d2-b5a0-4450-a9f9-122d3f204acc` failed controller/workload2 with empty descendants and source recheck true. Its closed predicate is `destination-registration-content/row-object`: at least one requested registry value is not an object. No missing-path/corruption inference, metadata equality or content rehash. No copy/activation/toolbar proof followed.\n\n2026-10-07T03:07:24Z provider-free follow-on (R-HOOK-CONVERGENCE-20261004/R-N13).\n\n[PR #529](https://github.com/Jesssullivan/oauth-mux/pull/529) merged as server-verified `e49acf2e0521dbd739f57d35d4a64ea6e403d4c7`: parent E4, exact signed C2 `f3684f1` tree `21b45255f28bc1d4933242cd6bd602670166c021`, source branch retained and protection unchanged. Scoped launcher/package checks passed; failed77e9 (6/7) and9b69 (8/11) retain their scopes, correctedbb7c passed5/5. This is source delivery, not release or acceptance.\n\nFresh clean-C2 native `9f286027-f277-4f91-9097-468574b76d4a` FAILED3/3, empty descendants, retained009 reverified. Docs/source passed. Native reached original detach/state preservation, clean exit, fresh-process resume and the strict settings checkpoint; exact retained config/capability comparison refused at `resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed`. Resumed detach/durable inspection were not reached; whole native gate remains open. Aggregate sampled512/exposed max-event increase has no cause attribution. Limits and predicates unchanged.\n\nYoga70e0 still refuses destination registry row-object; no content rehash/copy/activation/human toolbar proof. Home Manager offline evaluation remains unproved.\n\nDurable current receipt: `docs/tracker-updates/portable-exec-2026-10-07.json`; [reviewed source note](https://github.com/Jesssullivan/oauth-mux/blob/f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c/docs/agent-notes/2026-10-07-sess-omux-portable-exec.md). Provider-free; stock Codex, live handoff, accepted-history, Darwin and achieved SLA/SLO remain unproved. Issue scope/state unchanged."
+      },
+      {
+        "issue": "TIN-2057",
+        "id": "5c8c4427-1440-4c07-9dc1-b37ac5a98d92",
+        "before_body": "Continuity checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\nReviewed experimental source [PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) is merged as server-verified `e4e644cd97343d53d3dc08664f5c0914ab173b99`, exact signed-source tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`. No acceptance gate closes from source delivery.\n\nNative diagnostic6616 ended controller/workload3 with empty descendants, null controller failure/rejection and retained input reverified. Docs/source passed; original detach CLI and exact ACK passed. The added status observer failed its fork before operation.status CLI execution. Completion/replay/retirement/post-detach state and ordinary cold resume remain unproved. Workload-wide sampled PID/event observations do not establish a native root cause; no mutation retry/cap increase.\n\nFresh Yoga QUAL a77d passed against clean signed C; inspect is running. Destination content, local browser consent and activation remain unproved. Later durable evidence: `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`, outside frozen C.\n\nThe 15-hour objective remains active and incomplete: five historical scoped passes/six open. Unmodified Codex support, accepted-history/tool preservation, same-process live handoff and Darwin remain unproved. No provider access, fleet/release/store/site publication or SLA/SLO achievement is claimed.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.",
+        "body": "Continuity checkpoint, 2026-10-07 01:56 UTC (R-HOOK-CONVERGENCE-20261004/R-N13; user-authorized factual reconciliation).\n\nReviewed experimental source [PR #528](https://github.com/Jesssullivan/oauth-mux/pull/528) is merged as server-verified `e4e644cd97343d53d3dc08664f5c0914ab173b99`, exact signed-source tree `bfd67a0dba57a2d03bd3985a994b323ebc0c7b04`, sole parent `a4bf48e9ba8a55732e4b14d41f636d5acf8d928c`. No acceptance gate closes from source delivery.\n\nNative diagnostic6616 ended controller/workload3 with empty descendants, null controller failure/rejection and retained input reverified. Docs/source passed; original detach CLI and exact ACK passed. The added status observer failed its fork before operation.status CLI execution. Completion/replay/retirement/post-detach state and ordinary cold resume remain unproved. Workload-wide sampled PID/event observations do not establish a native root cause; no mutation retry/cap increase.\n\nFresh Yoga QUAL a77d passed against clean signed C; inspect is running. Destination content, local browser consent and activation remain unproved. Later durable evidence: `docs/tracker-updates/native-diagnostic-0412-2026-10-07.json`, outside frozen C.\n\nThe 15-hour objective remains active and incomplete: five historical scoped passes/six open. Unmodified Codex support, accepted-history/tool preservation, same-process live handoff and Darwin remain unproved. No provider access, fleet/release/store/site publication or SLA/SLO achievement is claimed.\n\n02:06 UTC ordinary-profile follow-on: new isolated `72e04337-7c64-44c3-87ac-c6bb26bb69b4` (no FD2 observer) failed controller/workload3 with empty descendants, null controller failure/rejection and retained009 reverified. Docs/source passed. It reached actual operation.status CLI exit0 and exact completed-result JSON, but nonempty unrecognized ASCII-leading stderr violated the unchanged gate. Whole-workload sampled count reached512 with an exposed max-event increase; still no child/stderr-cause attribution. Replay, retirement, post-detach preservation and ordinary cold resume remain unproved. No retry, cap increase or stderr suppression. Source review found one avoidable portable-launcher command-substitution child; a fork-free launcher design is being prepared as a source improvement, not claimed RCA.\n\n2026-10-07T03:07:24Z provider-free follow-on (R-HOOK-CONVERGENCE-20261004/R-N13).\n\n[PR #529](https://github.com/Jesssullivan/oauth-mux/pull/529) merged as server-verified `e49acf2e0521dbd739f57d35d4a64ea6e403d4c7`: parent E4, exact signed C2 `f3684f1` tree `21b45255f28bc1d4933242cd6bd602670166c021`, source branch retained and protection unchanged. Scoped launcher/package checks passed; failed77e9 (6/7) and9b69 (8/11) retain their scopes, correctedbb7c passed5/5. This is source delivery, not release or acceptance.\n\nFresh clean-C2 native `9f286027-f277-4f91-9097-468574b76d4a` FAILED3/3, empty descendants, retained009 reverified. Docs/source passed. Native reached original detach/state preservation, clean exit, fresh-process resume and the strict settings checkpoint; exact retained config/capability comparison refused at `resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed`. Resumed detach/durable inspection were not reached; whole native gate remains open. Aggregate sampled512/exposed max-event increase has no cause attribution. Limits and predicates unchanged.\n\nParent remains active/incomplete: five scoped historical passes/six open. Earlier native failures remain historical; no acceptance promotion.\n\nDurable current receipt: `docs/tracker-updates/portable-exec-2026-10-07.json`; [reviewed source note](https://github.com/Jesssullivan/oauth-mux/blob/f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c/docs/agent-notes/2026-10-07-sess-omux-portable-exec.md). Provider-free; stock Codex, live handoff, accepted-history, Darwin and achieved SLA/SLO remain unproved. Issue scope/state unchanged."
+      }
+    ],
+    "readbacks": [
+      {
+        "issue": "TIN-5338",
+        "id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+        "body_equal": true,
+        "prior_body_preserved": true
+      },
+      {
+        "issue": "TIN-2063",
+        "id": "dc527d8e-9385-4f91-836a-c9b7338d9159",
+        "body_equal": true,
+        "prior_body_preserved": true
+      },
+      {
+        "issue": "TIN-2057",
+        "id": "5c8c4427-1440-4c07-9dc1-b37ac5a98d92",
+        "body_equal": true,
+        "prior_body_preserved": true
+      }
+    ]
+  },
+  "native_fixture_follow_on": {
+    "recorded_at": "2026-10-07T03:10:04Z",
+    "status": "applied_source_cleared_unexecuted",
+    "branch": "codex/omux-native-startup-fixture-20261007",
+    "base": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+    "proposal_sha256": "b41bacb17a0823ddf5992394658882d4a7e876149c32a1f192701f8b515ee820",
+    "change": "Initial isolated [tui] screen_reader_detection_done=true in legacy and ordinary fixtures before installation/baseline; two explanatory comments each",
+    "invariant": "All exact config/capability/history/identity/checkpoint/detach/noacceptedwork/status assertions and runtime009 remain unchanged",
+    "qualified_source": {
+      "upstream_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+      "patch_sha256": "2e5542c5f6a44e3a8dd38b4a4093d1735ff19771721b05fc51f55b475b1a8d46",
+      "inventory_sha256": "3400115fae8ef204f2ce085880b40887bcb14e2080236ba87a34be9b14fe7d3b",
+      "screen_reader_sha256": "4bdfe71be44424b5578d6603faad231ddc5b204ced4852284d26118f79dac459",
+      "startup_orchestration_sha256": "1cef2260614c45550332a53c2fee5f69544841196da74d973335088027802b1b",
+      "prepared_receipt_sha256": "23aaebd33bb3d9fea5a6eeae3051d9d38f49d0107648829f0c5018fcfb051b2e"
+    },
+    "independent_reviews": [
+      "/root/review_native_patch_oct6 exact lineage/source semantics",
+      "/root/portable_exec_tests independent exact-source/unchanged-predicates clearance"
+    ],
+    "scope": "One-time TUI bookkeeping fixture correction, not actual mismatch RCA or resumePASS; other config/capability changes still possible",
+    "next": "Signed independently verified clean source, then one contained fresh provider-free legacy native operation; no cap changes"
   }
 }

@@ -166,7 +166,7 @@
   "latest_checkin": "2026-10-07T01:52:58Z_native_diagnostic_failed_at_status_query_after_detach_ack;fresh_readonly_Yoga_qualify_started;5_passed_6_open",
   "current_owned_execution": {
     "state": "none",
-    "last_epoch": "bb7c913f-bb2c-4070-8375-6d9145c24639",
+    "last_epoch": "9f286027-f277-4f91-9097-468574b76d4a",
     "descendants_empty": true
   },
   "claim": "experimental_unshipped_live_continuity_unavailable",
@@ -718,16 +718,35 @@
     "commit": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
     "receipt": "docs/tracker-updates/native-diagnostic-0412-2026-10-07.json"
   },
-  "next_source_implementation": {
-    "lead": "Fork-free portable launcher",
-    "reason": "One source-demonstrated shell child per invocation; preserves native process/cwd/argv, removes avoidable fork demand; no RCA claim",
-    "reviews": [
-      "/root/portable_exec_design",
-      "/root/native_registry_authority"
-    ],
-    "execution": "held_until_reviewed_source_and_declared_tests",
-    "provider_free": true
-  },
+  "next_source_implementation": "Fresh bounded native checkpoint on signedclean startup-marker fixture; all preservation predicates unchanged",
   "latest_portable_exec_receipt": "docs/tracker-updates/portable-exec-2026-10-07.json",
-  "new_source_pending_verification": "portable_static14/generator5/archive49/guard68PASS77e9; actualOmuxQtTLS_relocation_stagingPASS9b69; fixture3plusdocs/source5of5PASSbb7c; source_signing_pending; native/Yoga_unproved"
+  "new_source_pending_verification": "Native initial TUI startup marker applied and source-cleared; execution unrun",
+  "latest_portable_exec_source_delivery": {
+    "pr": 529,
+    "url": "https://github.com/Jesssullivan/oauth-mux/pull/529",
+    "draft": false,
+    "normal_push": true,
+    "signed_source": {
+      "head": "f3684f1ae6e572bd40686dfd4cd4c8e23e494a3c",
+      "tree": "21b45255f28bc1d4933242cd6bd602670166c021",
+      "parent": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+      "sig": "G"
+    },
+    "signature_verify_exit": 0,
+    "clean_before_native": true,
+    "source_claims": "independent signed/clean Git truth; historical dirty-source test receipts retain their original scope",
+    "native_proof": "terminal_failed_retained_config_predicate",
+    "independent_final_review": "source_only_clear_no_blocker; exact24files/head/parent/tree/cleanoriginalindex/trustedtemplate/platformlimits/noacceptancepromotion",
+    "merged": true,
+    "merge_commit": "e49acf2e0521dbd739f57d35d4a64ea6e403d4c7",
+    "merge_parent": "e4e644cd97343d53d3dc08664f5c0914ab173b99",
+    "merge_tree": "21b45255f28bc1d4933242cd6bd602670166c021",
+    "merge_verified": true,
+    "main_exact_readback": true,
+    "source_branch_retained": true,
+    "protection_unchanged": true,
+    "scope": "Reviewed source-only packaging/model delivery; failed native9f286 result disclosed; no gate closes"
+  },
+  "latest_installed_native_receipt": "/home/jess/.local/state/omux-execution-20261005/9f286027-f277-4f91-9097-468574b76d4a/receipt.json",
+  "latest_installed_native_result": "FAILED: resumed-preservation/resume-retained-config-predicate/resume-retained-config-changed; strict checkpoint passed, overall native gate open"
 }
