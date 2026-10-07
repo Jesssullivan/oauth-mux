@@ -113,6 +113,12 @@ hm_bundle(name = "omux_hm_bundle")
 # repository supplies inert byte-proof inputs, never execution authority.
 cached_nar(
     name = "omux_yoga_controller_nars",
+    ui_roots = [
+        "/nix/store/0r6k8xa2kgqyp3r4v2w7yrb80ma2iawm-python3-3.13.12",
+        "/nix/store/zcmsivndca5wmam9nwnbjrm0zkgykwfz-glib-2.86.3",
+        "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0",
+        "/nix/store/l1nqjg1yx6q6vx6zwsnd3ky0s7a0kfk8-qtwayland-6.11.0",
+    ],
     inventory_path = "/srv/fast-local/jess/state/codex/omux-integrated-execution-20261005/8b6bd81f-786e-49c1-b8de-ac1103e986b1/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/yoga_controller_inventory_producer/test.outputs/yoga-controller-inputs/controller-inventory.json",
     inventory_sha256 = "2be4ecfe05837c67a7267aa216dbae683f2d44d07e96198d3475f3fbd124c7f8",
     bootstrap_closure = "/nix/store/j5dnm7vp4w41x7rjia61c1hd6s7yszvd-omux-bazel-bootstrap-closure",
@@ -124,6 +130,10 @@ yoga_delivery_inputs(name = "omux_yoga_delivery_inputs")
 # Retained proof bytes are explicit offline operator inputs, outside Git.
 retained_runtime = use_repo_rule("//tools:codex_owner_runtime_repository.bzl", "codex_owner_runtime_repository")
 retained_runtime(name = "omux_codex_owner_runtime")
+
+# Opt-in native OAuth action only; preserves retained runtime009 declaration.
+native_enrollment_inputs = use_repo_rule("//tools:native_enrollment_repository.bzl", "native_enrollment_repository")
+native_enrollment_inputs(name = "omux_native_enrollment")
 
 codex_cached_inputs = use_repo_rule("//tools:codex_cached_inputs.bzl", "codex_cached_inputs")
 codex_cached_inputs(name = "omux_codex_pack_inputs")

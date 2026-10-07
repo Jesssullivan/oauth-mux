@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -78,14 +79,14 @@ def _write(path: Path, data: bytes, mode: int) -> None:
 
 
 @contextmanager
-def _directory_lock(directory: Path, name: str, private: bool):
+def _directory_lock(directory: Path, name: str, private: bool, *, nonblocking=False):
     _safe_directory(directory, create=True, private=private)
     descriptor = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
             raise ValueError("unsafe installation lock")
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
         yield
     finally:
         os.close(descriptor)
@@ -139,15 +140,21 @@ def _matches(path: Path, entry: dict) -> bool:
         return False
 
 
-def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
-                   user_service: Path | None = None, platform: str = "linux") -> dict:
-    manifest, files = verify_bundle(payload)
+def installation_plan(manifest, files, prefix, state_dir, user_service=None, platform="linux",
+                      *, daemon_state_dir=None):
+    """Render exact public placement; callers must independently verify archive bytes."""
     _absolute(prefix)
     _absolute(state_dir)
     if platform not in {"linux", "macos"} or not manifest["target"].endswith("-" + platform):
         raise ValueError("bundle and service platform differ")
     if user_service is not None:
         _absolute(user_service)
+    if daemon_state_dir is not None:
+        _absolute(daemon_state_dir)
+        if user_service is None or platform != "linux":
+            raise ValueError("explicit daemon state requires a Linux owned service")
+        if any(char in str(daemon_state_dir) for char in "\n\r\x00"):
+            raise ValueError("unsafe daemon state path")
     channel = manifest.get("channel")
     instance = {"development": "dev", "release": "default"}.get(channel)
     if user_service is not None and platform == "linux" and instance is not None:
@@ -169,13 +176,23 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
             # systemd expands percent specifiers even inside quoted values.
             escaped = executable.replace("%", "%%").replace("$", "$$").replace("\\", "\\\\").replace('"', '\\"')
             replacement = '"' + escaped + '"'
+            if daemon_state_dir is not None:
+                state_argument = str(daemon_state_dir).replace("%", "%%").replace("$", "$$").replace("\\", "\\\\").replace('"', '\\"')
+                replacement += ' --state-dir "' + state_argument + '"'
             template = files["share/omux/services/omux.service.in"].decode()
             bindings = {"OMUX_INSTALL_PREFIX": str(prefix),
                         "OMUX_INSTALL_RECORD": str(state_dir / RECORD),
                         "OMUX_INSTALL_SERVICE_PATH": str(user_service)}
+            if daemon_state_dir is not None:
+                runtime = "/run/user/" + str(os.getuid())
+                bindings.update(DBUS_SESSION_BUS_ADDRESS="unix:path=" + runtime + "/bus",
+                                XDG_RUNTIME_DIR=runtime)
             if instance is not None:
                 bindings["OMUX_INSTANCE"] = instance
             template += "\n[Service]\n"
+            if daemon_state_dir is not None:
+                # Finite resident reservation, independent of proof lifetime.
+                template += "MemoryMax=268435456\nMemorySwapMax=0\nTasksMax=32\nCPUQuota=10%\n"
             for key, value in bindings.items():
                 if any(char in value for char in "\n\r\x00"):
                     raise ValueError("unsafe installation binding")
@@ -186,6 +203,15 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
             replacement = escape(executable)
             template = files["share/omux/services/dev.xoxd.omux.plist.in"].decode()
         destinations.append((user_service, template.replace("@EXEC@", replacement).encode(), 0o600))
+    return destinations
+
+
+def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
+                   user_service: Path | None = None, platform: str = "linux",
+                   *, daemon_state_dir: Path | None = None, _owned_update=None) -> dict:
+    manifest, files = verify_bundle(payload)
+    destinations = installation_plan(manifest, files, prefix, state_dir, user_service, platform,
+                                    daemon_state_dir=daemon_state_dir)
     # Validate the complete file layout before creating either custody lock.
     # A service cannot replace a payload, ownership record or active lock, nor
     # can a requested file occupy a directory required by another such file.
@@ -195,10 +221,19 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         for other in planned[index + 1:] + controls:
             if path == other or path in other.parents or other in path.parents:
                 raise ValueError("installation file paths collide")
-    with _lock(state_dir), _prefix_lock(prefix):
+    with _directory_lock(state_dir, "install.lock", private=True, nonblocking=_owned_update is not None), \
+            _directory_lock(prefix, ".omux-install.lock", private=False, nonblocking=_owned_update is not None):
         previous = _record(prefix, state_dir)
         if previous and previous["userService"] != (str(user_service) if user_service else None):
             raise ValueError("remove the owned installation before changing service placement")
+        if _owned_update is not None:
+            expected_archive, before_replace, after_replace, deadline_ns = _owned_update
+            if previous is None or previous["artifact"]["archiveSha256"] != expected_archive:
+                raise ValueError("owned update previous archive differs")
+            if not all(_matches(Path(entry["path"]), entry) for entry in previous["files"]):
+                raise ValueError("owned update previous payload differs")
+            before_replace()
+        previous_record = _read_regular(state_dir / RECORD) if previous is not None else None
         owned = {item["path"]: item for item in previous["files"]} if previous else {}
         # Preflight all targets before writing any executable or service file.
         for path, _, _ in destinations:
@@ -232,12 +267,20 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
         }
         try:
             for path, data, mode in destinations:
+                if _owned_update is not None and time.monotonic_ns() >= deadline_ns:
+                    raise ValueError("owned update deadline expired")
                 _write(path, data, mode)
                 written.append(path)
             for path in obsolete:
+                if _owned_update is not None and time.monotonic_ns() >= deadline_ns:
+                    raise ValueError("owned update deadline expired")
                 path.unlink()
                 removed.append(path)
+            if _owned_update is not None and time.monotonic_ns() >= deadline_ns:
+                raise ValueError("owned update deadline expired")
             _write(state_dir / RECORD, json_bytes(result), 0o600)
+            if _owned_update is not None:
+                after_replace(result)
         except Exception:
             for path in removed:
                 data, mode = originals[str(path)]
@@ -248,8 +291,23 @@ def install_bundle(payload: bytes, prefix: Path, state_dir: Path,
                     _write(path, data, mode)
                 else:
                     path.unlink()
+            if previous_record is not None:
+                _write(state_dir / RECORD, previous_record, 0o600)
+            elif (state_dir / RECORD).exists():
+                (state_dir / RECORD).unlink()
             raise
         return result
+
+
+def update_bundle(payload, prefix, records, service, runtime_state, previous_archive_sha256,
+                  before_replace, after_replace, *, deadline_ns):
+    """One owned inactive replacement; no service activation or runtime writes."""
+    if type(deadline_ns) is not int or not time.monotonic_ns() < deadline_ns <= time.monotonic_ns()+1200*10**9:
+        raise ValueError("owned update original deadline invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", previous_archive_sha256):
+        raise ValueError("owned update archive pin invalid")
+    return install_bundle(payload, prefix, records, service, "linux", daemon_state_dir=runtime_state,
+        _owned_update=(previous_archive_sha256, before_replace, after_replace, deadline_ns))
 
 
 def uninstall(prefix: Path, state_dir: Path) -> dict:
@@ -286,12 +344,14 @@ def main() -> None:
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--user-service", type=Path)
+    parser.add_argument("--daemon-state-dir", type=Path)
     parser.add_argument("--platform", choices=["linux", "macos"], default="linux")
     args = parser.parse_args()
     if args.operation == "install":
         if args.bundle is None:
             parser.error("install requires --bundle")
-        result = install_bundle(read_bundle(args.bundle), args.prefix, args.state_dir, args.user_service, args.platform)
+        result = install_bundle(read_bundle(args.bundle), args.prefix, args.state_dir, args.user_service, args.platform,
+                                daemon_state_dir=args.daemon_state_dir)
     else:
         result = uninstall(args.prefix, args.state_dir)
     print(json.dumps(result, sort_keys=True))

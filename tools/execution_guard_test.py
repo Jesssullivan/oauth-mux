@@ -47,6 +47,58 @@ class FakeClock:
 
 
 class GuardTest(unittest.TestCase):
+    def test_controller_launch_stderr_has_closed_categories_and_no_private_values(self):
+        from execution_guard import controller_run
+        cases = (
+            (b'sudo: 1 incorrect password attempt\n', 'sudo-credential'),
+            (b'Sorry, user private-user is not allowed to execute private-command as root on private-host.\n', 'sudo-authorization'),
+            (b'Failed to parse MemoryMax= value private-value: Invalid argument\n', 'client-parser'),
+            (b'Unknown assignment: private-key=private-value\n', 'client-parser'),
+            (b'Failed to start transient service unit: Source path  is not absolute.\n', 'manager-property'),
+            (b'Failed to start transient service unit: Access denied\n', 'permission'),
+            (b'Failed to connect to system scope bus via local transport: Permission denied\n', 'permission'),
+            (b'Failed to connect to system scope bus via local transport: Connection refused\n', 'transport'),
+            (b'private-secret-value\n', 'unknown'),
+            (b'Unknown assignment: private\nsudo: 1 incorrect password attempt\n', 'unknown'),
+            (b'Unknown assignment: private\x00value', 'unknown'),
+            (b'x' * 16385, 'unknown'),
+        )
+        for stderr, category in cases:
+            rows = []
+            with self.subTest(category=category), self.assertRaises(subprocess.CalledProcessError) as raised:
+                controller_run(['private-argv'], operation='launch', phase='launch', diagnose=rows.append,
+                    invoke=Mock(return_value=SimpleNamespace(returncode=1, stdout=b'private-output', stderr=stderr)))
+            self.assertEqual(rows[0]['stderr_category'], category)
+            self.assertEqual(rows[0]['exit_code'], 1)
+            self.assertNotIn('private', str(rows))
+            self.assertIsNone(raised.exception.stderr)
+            self.assertIsNone(raised.exception.output)
+
+    def test_controller_stderr_is_not_classified_outside_launch(self):
+        from execution_guard import controller_run, controller_diagnostic
+        rows = []
+        with self.assertRaises(subprocess.CalledProcessError):
+            controller_run(['fixed'], operation='unit-readback', phase='monitor', diagnose=rows.append,
+                invoke=Mock(return_value=SimpleNamespace(returncode=3, stdout=b'', stderr=b'sudo: 1 incorrect password attempt')))
+        self.assertEqual((rows[0]['stderr_category'], rows[0]['exit_code']), ('unknown', 3))
+        error = subprocess.CalledProcessError(1000, ['private'])
+        error.controller_stderr_category = 'private-value'
+        row = controller_diagnostic(error, 'launch', 'launch', 15)
+        self.assertIsNone(row['exit_code'])
+        self.assertEqual(row['stderr_category'], 'unknown')
+
+    def test_login_writable_bindings_have_no_empty_mount_component(self):
+        from execution_guard import login_writable_binding
+        run = Path('/owned/epoch')
+        vault = SimpleNamespace(writable_binding=Mock(return_value=''))
+        self.assertEqual(login_writable_binding(vault, run, 'resident-enrollment'),
+                         '/owned/epoch:/owned/epoch')
+        enrollment = SimpleNamespace(writable_binding=Mock(return_value='/product:/product /state:/state'))
+        self.assertEqual(login_writable_binding(enrollment, run, 'resident-enrollment'),
+                         '/product:/product /state:/state /owned/epoch:/owned/epoch')
+        ui = SimpleNamespace(writable_binding=Mock(return_value='/ui:/ui'))
+        self.assertEqual(login_writable_binding(ui, run, 'native-login-ui'), '/ui:/ui')
+
     def test_sdk_export_run_is_one_exact_guarded_writer(self):
         run = Path('/private/12345678-1234-1234-1234-123456789abc')
         args = ['run','//tools:codex_retained_sdk_export_run']
@@ -989,6 +1041,15 @@ class GuardTest(unittest.TestCase):
                          'execution containment rejected; stage=unknown; exception=OSError')
         self.assertNotIn('sensitive', message)
 
+    def test_admission_diagnostic_stages_never_render_payload_or_private_values(self):
+        from execution_guard import rejection_diagnostic
+        for stage in ('effective-properties', 'resident-bindings', 'resident-custody',
+                      'tool-environment', 'worker-identity', 'workload-admission'):
+            message = rejection_diagnostic(ValueError('sensitive /private/payload'), stage)
+            self.assertEqual(message, 'execution containment rejected; stage=' + stage + '; exception=ValueError')
+            self.assertNotIn('sensitive', message)
+            self.assertNotIn('/private/', message)
+
     def test_sampled_free_floor_refuses_low_available_blocks(self):
         from execution_guard import check_free_space, FREE_FLOOR
         with patch('execution_guard.os.statvfs', return_value=SimpleNamespace(f_bavail=FREE_FLOOR, f_frsize=1)):
@@ -1350,6 +1411,90 @@ class RetainedRuntimeCommandTests(unittest.TestCase):
         self.assertEqual(delivery.effective_runtime("19min", 1150), 1140 * 1000000)
         with self.assertRaises(ValueError):
             delivery.effective_runtime("20min", 1150)
+
+
+class ResidentEffectiveVerificationModels(unittest.TestCase):
+    isolation = {**SANDBOX, "ProtectSystem":"strict", "PrivateTmp":"yes"}
+
+    def resident_service(self,root,quota="1.900000s"):
+        from system_mask_policy import setting
+        service = FakeService(root)
+        service.actual.update(MemoryMax="4026531840",TasksMax="480",CPUQuotaPerSecUSec=quota,
+            RuntimeMaxUSec="19min 30s",ProtectSystem="strict",PrivateTmp="yes",
+            TemporaryFileSystem=setting(profile="standard"),
+            UnsetEnvironment=" ".join(key for key in DELEGATION_ENV if key != "DBUS_SESSION_BUS_ADDRESS"))
+        (root/"memory.max").write_text("4026531840")
+        (root/"pids.max").write_text("480")
+        (root/"cpu.max").write_text("190000 100000")
+        return service
+
+    def admit_resident(self,service):
+        verify(service.actual,service.root,manager="system",isolation=self.isolation,
+            profile="resident-enrollment",runtime_seconds=1170)
+
+    def test_resident_full_readback_accepts_exact_equivalent_cpu_duration_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for quota in ("1.900000s","1.900s","1.9s","1900ms","1900000us"):
+                with self.subTest(quota=quota):
+                    service = self.resident_service(Path(directory),quota)
+                    self.admit_resident(service)
+                    self.assertEqual(service.actual["MemoryMax"],"4026531840")
+                    self.assertEqual((service.root/"pids.max").read_text(),"480")
+
+    def test_resident_full_readback_refuses_nonexact_nonfinite_malformed_cpu_properties(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for quota in ("1.900001s","1.899999s","2s","1s","1900001us","1899999us",
+                    "NaNs","Infinitys","infinity","max","-1.9s","+1.9s","1.9e0s","1900000",
+                    "1.900000s extra"," 1.900000s","1.900000s ","9"*1000+"s",None,True,1900000):
+                with self.subTest(quota=quota):
+                    service = self.resident_service(Path(directory),quota)
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+
+    def test_resident_full_readback_refuses_kernel_memory_tasks_swap_and_cpu_drift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for key,value in (("memory.max","4026531841"),("memory.max","4026531839"),
+                    ("pids.max","481"),("pids.max","479"),("memory.swap.max","1"),
+                    ("memory.oom.group","0"),("cpu.max","190001 100000"),
+                    ("cpu.max","200000 100000"),("cpu.max","max 100000"),("cpu.max","0 100000")):
+                with self.subTest(key=key,value=value):
+                    service = self.resident_service(Path(directory))
+                    (service.root/key).write_text(value)
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+
+    def test_resident_normalized_cpu_does_not_bypass_other_properties_or_masks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for key,value in (("MemoryMax","4294967296"),("TasksMax","512"),("MemorySwapMax","1"),
+                    ("PrivateNetwork","no"),("ProtectSystem","no"),("PrivateTmp","no"),
+                    ("NoNewPrivileges","no"),("TemporaryFileSystem",""),
+                    ("UnsetEnvironment",""),("RuntimeMaxUSec","20min")):
+                with self.subTest(key=key,value=value):
+                    service = self.resident_service(Path(directory))
+                    service.actual[key] = value
+                    with self.assertRaises(ValueError):
+                        self.admit_resident(service)
+            service = self.resident_service(Path(directory))
+            (service.root/"memory.oom.group").unlink()
+            with self.assertRaises(FileNotFoundError):
+                self.admit_resident(service)
+
+    def test_standard_and_native_existing_two_second_policy_remains_exact(self):
+        self.assertEqual(PROPERTIES["CPUQuotaPerSecUSec"],"2s")
+        self.assertEqual(PROPERTIES["MemoryMax"],"4294967296")
+        self.assertEqual(PROPERTIES["TasksMax"],"512")
+        with tempfile.TemporaryDirectory() as directory:
+            for profile in ("standard","codex-native"):
+                service = FakeService(Path(directory))
+                kwargs = {"profile":profile}
+                if profile == "codex-native":
+                    kwargs["runtime_seconds"] = 1200
+                verify(service.actual,service.root,**kwargs)
+                for quota in ("1.900000s","1900ms","1900000us","1s","2.000000s","2000ms","2.000001s"):
+                    with self.subTest(profile=profile,quota=quota):
+                        changed = {**service.actual,"CPUQuotaPerSecUSec":quota}
+                        with self.assertRaises(ValueError):
+                            verify(changed,service.root,**kwargs)
 
 
 if __name__ == '__main__':

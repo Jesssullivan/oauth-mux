@@ -41,6 +41,13 @@ QUALIFICATION_GATES = {
     ),
 }
 PRODUCTION = ('//codex-rs/core:core', '//codex-rs/app-server:app-server', '//codex-rs/config:config', '//codex-rs/app-server-protocol:app-server-protocol', '//codex-rs/tui:tui', '//codex-rs/cli:codex', '//codex-rs/config-schema:codex-write-config-schema', '//bazel/schema:public-schema-bundle')
+CLI = '//codex-rs/cli:codex'
+COMBINED_MODE = 'qualification-cli'
+CLI_CONTEXT_FIELDS = frozenset(('invocation_id', 'output_base',
+    'source_receipt_sha256', 'export_receipt_sha256', 'source_inventory_sha256',
+    'export_inventory_sha256', 'candidate_cache_key', 'candidate_provenance_sha256',
+    'controller_graph_sha256', 'bazel', 'workload_exit', 'descendants_empty',
+    'source_and_export_verified_after_cleanup'))
 MODES = {
     'qualification': ('test', (CORE, CONFIG, LOGIN), None),
     'analysis': ('build', PRODUCTION, None), 'production8': ('build', PRODUCTION, None),

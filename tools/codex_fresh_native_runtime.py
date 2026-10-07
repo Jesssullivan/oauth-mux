@@ -24,7 +24,7 @@ sys.path.insert(0, str(_ROOT / 'integrations/codex-owner-runtime'))
 import portable
 import runtime_package as runtime
 from codex_live_source import BASE_RECEIPT_SHA, BASE_INVENTORY, COMMIT
-from codex_native_profile import QUALIFICATION_GATES, STATE, PRODUCTION
+from codex_native_profile import QUALIFICATION_GATES, STATE, PRODUCTION, COMBINED_MODE, CLI, BAZEL, CLI_CONTEXT_FIELDS
 from codex_retained_sdk_export import SCHEMA as EXPORT_SCHEMA
 
 KIND = 'omux-fresh-native-runtime-v1'
@@ -38,6 +38,22 @@ MAX_PROTOCOL = 128 * 1024 * 1024
 MAX_RUNTIME_FILES = 64
 HASH = re.compile(r'[0-9a-f]{64}')
 DEADLINE = None
+PHASE2_PRIOR_TRANSITION = {
+    'schema_version': 1,
+    'amendment_sha256': 'dcc9aa881b415d041e582e0271efc6e0fca7dff2d35918de5e65848c5b9ce6f5',
+    'prior_epoch': '34f674c0-9705-4135-b07d-7375fad6aa48',
+    'prior_cleanup_receipt_sha256': '589b8f7c13e7c0d46393b40fb4fd377a4788ad4a5777721a99ee6c41cc514e9c',
+    'from_controller_graph_sha256': '3fd85968c22ea532a2612a680c8ec8d1bfbe7e750f17e10805e2945a98468159',
+    'to_controller_graph_sha256': '76dd5eda91e2ead7a131cb27d88c6cca6fecb48a2013a8ffb4e56adcf1a4d603',
+    'from_provenance_sha256': '70d7fad0f82f7883e38ddfec2d343845f036dea4a6171ee213637e0b37669595',
+    'to_provenance_sha256': 'fe79bd14702570ea829266247e858a8449ef5030f166f969675746f5f5adffb7',
+    'from_attempt': 4,
+    'first_attempt': 5,
+    'aggregate_before': 6,
+    'aggregate_max': 8,
+}
+PHASE2_FAILED_EPOCH = '275e4094-af7e-4c26-a390-bf8aa960310e'
+PHASE2_FAILED_RECEIPT = '960f154b3ddcc7b05c9ea11b054dc6ddc329782eb9f14d50301e966dfa97b260'
 
 
 def require(ok, message='fresh runtime contract refused'):
@@ -259,6 +275,156 @@ def validate_protocol_inventory(selection):
         'fresh protocol JSON subtree complete membership differs')
 
 
+def validate_action_receipts(selection, values, source, exported):
+    """Join real successful action receipts; retain the historical three-role chain."""
+    receipts = {}
+    cache = None
+    combined = selection['files']['compile'] == selection['files']['qualification_run']
+    history = parse(values['qualification_run'])['native_candidate_cache'].get('transition_history') if combined else None
+    phase2 = combined and isinstance(history, list) and len(history) == 2
+    maximum = 7 if phase2 else 6
+    first_attempt = 6 if phase2 else 5
+    aggregate_before = 7 if phase2 else 6
+    aggregate_max = 9 if phase2 else 8
+    if combined:
+        require(values['compile'] == values['qualification_run'],
+            'combined compile and qualification must select the same actual receipt bytes')
+    roles = (('qualification_run', COMBINED_MODE, (*tuple(QUALIFICATION_GATES), CLI)),
+            ('schema_run', 'schema', ('//bazel/schema:native-config-schema', '//bazel/schema:public-schema-bundle'))) if combined else (
+            ('compile', 'cli-opt', (CLI,)),
+            ('qualification_run', 'qualification', tuple(QUALIFICATION_GATES)),
+            ('schema_run', 'schema', ('//bazel/schema:native-config-schema', '//bazel/schema:public-schema-bundle')))
+    for role, mode, targets in roles:
+        value = parse(values[role])
+        require(value['profile'] == 'codex-native' and value['exit'] == value['workload_exit'] == 0
+            and value['descendants_empty'] is True and value['controller_failure'] is None
+            and value['native_sdk']['mode'] == mode
+            and value['native_sdk']['source_and_export_verified_after_cleanup'] is True
+            and value['native_sdk']['source_receipt_sha256'] == selection['files']['source']['sha256']
+            and value['native_sdk']['export_receipt_sha256'] == selection['files']['export']['sha256']
+            and set(value['targets']) == set(targets) and len(value['targets']) == len(targets),
+            'fresh runtime successful guarded action join differs')
+        candidate = value['native_candidate_cache']
+        require(candidate is not None and candidate['max_attempts'] == maximum
+            and type(candidate['attempt']) is int and 1 <= candidate['attempt'] <= maximum
+            and HASH.fullmatch(candidate['key']) and HASH.fullmatch(candidate['provenance_sha256']),
+            'fresh runtime owned candidate provenance missing')
+        key = (candidate['key'], candidate['provenance_sha256'], candidate['workspace'], candidate['output_base'])
+        require(cache is None or cache == key, 'fresh runtime different candidate action chains')
+        cache = key
+        require(canonical_path(candidate['output_base']) == STATE/('cache-v2-'+candidate['key'])/'output-base'
+            and value['native_sdk']['plan']['candidate_output_base'] == candidate['output_base']
+            and value['native_sdk']['plan']['source_inventory_sha256'] == source['inventory_sha256']
+            and value['native_sdk']['plan']['export_inventory_sha256'] == exported['inventory_sha256'],
+            'fresh runtime actual output base/source/export join differs')
+        receipt_path = canonical_path(selection['files'][role]['path'])
+        require(receipt_path == STATE/value['id']/'receipt.json',
+            'fresh runtime guarded action receipt path differs')
+        receipts[role] = value
+    require(len({r['native_candidate_cache']['attempt'] for r in receipts.values()}) == (2 if combined else 3)
+        and len({r['id'] for r in receipts.values()}) == (2 if combined else 3),
+        'fresh runtime distinct selected guarded actions required')
+    if combined:
+        qualification, schema = receipts['qualification_run'], receipts['schema_run']
+        require(qualification['graph_sha256'] == schema['graph_sha256']
+            and qualification['native_candidate_cache']['attempt'] == first_attempt
+            and schema['native_candidate_cache']['attempt'] == first_attempt + 1,
+            'combined actual graph and final two attempts required')
+        history = qualification['native_candidate_cache'].get('transition_history')
+        require(isinstance(history, list) and len(history) == (2 if phase2 else 1)
+            and history == schema['native_candidate_cache'].get('transition_history'),
+            'combined explicit identical cache transition required')
+        transition = history[-1]
+        required = {'schema_version', 'amendment_sha256', 'prior_epoch',
+            'prior_cleanup_receipt_sha256', 'from_controller_graph_sha256',
+            'to_controller_graph_sha256', 'from_provenance_sha256', 'to_provenance_sha256',
+            'from_attempt', 'first_attempt', 'aggregate_before', 'aggregate_max'}
+        require(set(transition) == required and transition['schema_version'] == (2 if phase2 else 1)
+            and transition['from_attempt'] == first_attempt - 1 and transition['first_attempt'] == first_attempt
+            and transition['aggregate_before'] == aggregate_before and transition['aggregate_max'] == aggregate_max
+            and transition['from_provenance_sha256'] == (PHASE2_PRIOR_TRANSITION['to_provenance_sha256'] if phase2 else cache[0])
+            and transition['to_provenance_sha256'] == cache[1]
+            and transition['to_controller_graph_sha256'] == qualification['graph_sha256']
+            and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+                transition['prior_epoch'])
+            and all(isinstance(transition[k], str) and HASH.fullmatch(transition[k])
+                for k in required if k.endswith('_sha256')),
+            'combined closed cache transition provenance differs')
+        if phase2:
+            require(encoded(history[0]) == encoded(PHASE2_PRIOR_TRANSITION)
+                and cache[0] == PHASE2_PRIOR_TRANSITION['from_provenance_sha256']
+                and transition['from_controller_graph_sha256'] == PHASE2_PRIOR_TRANSITION['to_controller_graph_sha256']
+                and transition['prior_epoch'] == PHASE2_FAILED_EPOCH
+                and transition['prior_cleanup_receipt_sha256'] == PHASE2_FAILED_RECEIPT,
+                'phase2 must preserve exact phase1 amendment and actual failed fifth attempt')
+        for receipt in receipts.values():
+            candidate = receipt['native_candidate_cache']
+            if phase2:
+                budget = receipt['native_sdk']
+                require(candidate.get('phase2_verified_before_launch') is True
+                    and type(budget.get('aggregate_seconds')) is int and budget['aggregate_seconds'] == 3600
+                    and type(budget.get('original_entry_monotonic_ns')) is int
+                    and budget['original_entry_monotonic_ns'] >= 0
+                    and type(budget.get('original_deadline_monotonic_ns')) is int
+                    and budget['original_deadline_monotonic_ns'] == budget['original_entry_monotonic_ns'] + 3600 * 10**9,
+                    'phase2 actual receipt must retain original-entry native deadline')
+            require(candidate.get('origin_provenance_sha256') == cache[0]
+                and candidate.get('aggregate_attempt') == candidate['attempt'] + 2
+                and candidate.get('aggregate_max_attempts') == aggregate_max
+                and candidate.get('transition_verified_after_cleanup') is True,
+                'combined counters/origin and final transition readback required')
+        previous = qualification['native_candidate_cache'].get('aggregate_previous_dispatches')
+        after = schema['native_candidate_cache'].get('aggregate_previous_dispatches')
+        require(isinstance(previous, list) and len(previous) == aggregate_before
+            and isinstance(after, list) and len(after) == aggregate_before + 1 and after[:aggregate_before] == previous
+            and after[aggregate_before] == {'id':qualification['id'],
+                'sha256':selection['files']['qualification_run']['sha256'],
+                'cache_key':cache[0], 'attempt':first_attempt},
+            'combined global predecessor history must preserve all consumed dispatches')
+        require(len({row['id'] for row in previous}) == aggregate_before,
+            'combined global predecessor invocations must be distinct')
+        if phase2:
+            require(previous[-1] == {'id':PHASE2_FAILED_EPOCH, 'sha256':PHASE2_FAILED_RECEIPT,
+                'cache_key':cache[0], 'attempt':5}, 'phase2 cannot drop or rewrite failed fifth dispatch')
+        for row in previous:
+            require(set(row) == {'id','sha256','cache_key','attempt'}
+                and re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',row['id'])
+                and HASH.fullmatch(row['sha256']) and HASH.fullmatch(row['cache_key'])
+                and type(row['attempt']) is int and 1 <= row['attempt'] <= maximum,
+                'combined exact historical dispatch evidence required')
+        receipts['compile'] = qualification
+    return receipts, cache, combined
+
+
+def validate_combined_cli(group, selection, values, receipt, source, exported):
+    context = {
+        'invocation_id': receipt['id'],
+        'output_base': receipt['native_candidate_cache']['output_base'],
+        'source_receipt_sha256': selection['files']['source']['sha256'],
+        'export_receipt_sha256': selection['files']['export']['sha256'],
+        'source_inventory_sha256': source['inventory_sha256'],
+        'export_inventory_sha256': exported['inventory_sha256'],
+        'candidate_cache_key': receipt['native_candidate_cache']['key'],
+        'candidate_provenance_sha256': receipt['native_candidate_cache']['provenance_sha256'],
+        'controller_graph_sha256': receipt['graph_sha256'],
+        'bazel': BAZEL, 'workload_exit': 0, 'descendants_empty': True,
+        'source_and_export_verified_after_cleanup': True,
+    }
+    require(set(context) == CLI_CONTEXT_FIELDS and group.get('cli_context') == context
+        and receipt['native_sdk']['plan']['argv'][0] == BAZEL,
+        'combined actual CLI context must join the real successful guarded action')
+    pin = selection['files']['codex']
+    relative = canonical_path(pin['path']).relative_to(
+        canonical_path(context['output_base'])/'execroot/_main/bazel-out')
+    require(len(relative.parts) == 5 and relative.parts[1:] == ('bin','codex-rs','cli','codex')
+        and re.fullmatch(r'[A-Za-z0-9_.-]+-opt', relative.parts[0]),
+        'combined actual CLI exact explicit label output required')
+    expected = {'kind': 'actual-explicit-cli-target-v1', 'target': CLI,
+        'configuration': relative.parts[0], **pin}
+    require(group.get('cli_artifact') == expected and values['codex'].startswith(b'\x7fELF')
+        and len(values['codex']) == pin['bytes'] and digest(values['codex']) == pin['sha256'],
+        'combined actual CLI bytes differ from post-cleanup artifact evidence')
+
 def validate_chain(selection, values, protocol_values):
     """Consume independently selected source/build/test/schema evidence bytes."""
     validate_selection_paths(selection)
@@ -303,40 +469,7 @@ def validate_chain(selection, values, protocol_values):
         and declaration['before_sha256'] == '9e047e20da76b99608595a8abfb23b5e8633c5ba454f2de548b8e70744c72df6'
         and inventory[declaration['path']]['sha256'] == declaration['after_sha256'],
         'fresh runtime generated schema source declaration differs')
-    receipts = {}
-    cache = None
-    for role, mode, targets in (
-            ('compile', 'cli-opt', ('//codex-rs/cli:codex',)),
-            ('qualification_run', 'qualification', tuple(QUALIFICATION_GATES)),
-            ('schema_run', 'schema', ('//bazel/schema:native-config-schema', '//bazel/schema:public-schema-bundle'))):
-        value = parse(values[role])
-        require(value['profile'] == 'codex-native' and value['exit'] == value['workload_exit'] == 0
-            and value['descendants_empty'] is True and value['controller_failure'] is None
-            and value['native_sdk']['mode'] == mode
-            and value['native_sdk']['source_and_export_verified_after_cleanup'] is True
-            and value['native_sdk']['source_receipt_sha256'] == selection['files']['source']['sha256']
-            and value['native_sdk']['export_receipt_sha256'] == selection['files']['export']['sha256']
-            and set(value['targets']) == set(targets) and len(value['targets']) == len(targets),
-            'fresh runtime successful guarded action join differs')
-        candidate = value['native_candidate_cache']
-        require(candidate is not None and candidate['max_attempts'] == 6
-            and type(candidate['attempt']) is int and 1 <= candidate['attempt'] <= 6
-            and HASH.fullmatch(candidate['key']) and HASH.fullmatch(candidate['provenance_sha256']),
-            'fresh runtime owned candidate provenance missing')
-        key = (candidate['key'], candidate['provenance_sha256'], candidate['workspace'], candidate['output_base'])
-        require(cache is None or cache == key, 'fresh runtime different candidate action chains')
-        cache = key
-        require(canonical_path(candidate['output_base']) == STATE/('cache-v2-'+candidate['key'])/'output-base'
-            and value['native_sdk']['plan']['candidate_output_base'] == candidate['output_base']
-            and value['native_sdk']['plan']['source_inventory_sha256'] == source['inventory_sha256']
-            and value['native_sdk']['plan']['export_inventory_sha256'] == exported['inventory_sha256'],
-            'fresh runtime actual output base/source/export join differs')
-        receipt_path = canonical_path(selection['files'][role]['path'])
-        require(receipt_path == STATE/value['id']/'receipt.json',
-            'fresh runtime guarded action receipt path differs')
-        receipts[role] = value
-    require(len({r['native_candidate_cache']['attempt'] for r in receipts.values()}) == 3,
-        'fresh runtime distinct selected guarded actions required')
+    receipts, cache, combined = validate_action_receipts(selection, values, source, exported)
     group = parse(values['qualification'])
     require(group['schema'] == 'omux-native-grouped-qualification-v1'
         and group['passed'] == 14 and group['failed'] == group['ignored'] == 0
@@ -344,6 +477,8 @@ def validate_chain(selection, values, protocol_values):
         and group['xml_sha256'] == digest(values['qualification_xml'])
         and set(group['targets']) == set(QUALIFICATION_GATES),
         'fresh runtime grouped14 qualification differs')
+    if combined:
+        validate_combined_cli(group, selection, values, receipts['qualification_run'], source, exported)
     qualified_root = STATE/receipts['qualification_run']['id']
     require(selection['files']['qualification']['path'] == str(qualified_root/'native-qualification.json')
         and selection['files']['qualification_xml']['path'] == str(qualified_root/'native-qualification.xml'),
@@ -400,7 +535,7 @@ def validate_chain(selection, values, protocol_values):
     require(set(selection['protocol_schema_roots']) == {'stable','experimental'} and all(
         selection['protocol_schema_roots'][mode] == str(output_base/'execroot/_main/bazel-out'/config/'bin/bazel/schema'/('public-schema-bundle.'+mode)/'json')
         for mode in ('stable','experimental')), 'fresh runtime protocol JSON root join differs')
-    return {'upstream_commit': COMMIT, 'patch_sha256': pins,
+    chain = {'upstream_commit': COMMIT, 'patch_sha256': pins,
         'source_inventory_sha256':source['inventory_sha256'],
         'export_inventory_sha256':exported['inventory_sha256'],
         'candidate_cache_key':cache[0], 'candidate_provenance_sha256':cache[1],
@@ -411,6 +546,11 @@ def validate_chain(selection, values, protocol_values):
         'input_files': selection['files'], 'protocol_schema_files':schema_files,
         'protocol_schema_roots':selection['protocol_schema_roots'],
         'qualified_tests':group['targets']}
+    if combined:
+        chain.update(compile_evidence_kind='successful-explicit-cli-target-in-qualification',
+            cli_artifact=group['cli_artifact'], cli_context=group['cli_context'],
+            candidate_cache_transition=receipts['qualification_run']['native_candidate_cache']['transition_history'])
+    return chain
 
 
 def verify_runtime_files(payload, receipt):

@@ -19,6 +19,7 @@ CONSUMERS = frozenset((
     "//delivery:installed_legacy_native_tui_test",
     "//tools:codex_owner_runtime_input_copy",
     "//tools:codex_owner_runtime_input_qualification",
+    "//tools:codex_retained_device_api_qualification",
 ))
 COMPANIONS = frozenset((
     "//tools:codex_owner_runtime_input_test",

@@ -37,6 +37,166 @@ class DeliveryFixture(unittest.TestCase):
         self.systemd = self.write("omux.service.in", b"[Service]\nExecStart=@EXEC@\n")
         self.launchd = self.write("dev.xoxd.omux.plist.in", b"<plist><string>@EXEC@</string></plist>\n")
 
+    def test_actual_owned_installation_transition_and_forged_new_witness_refusal(self):
+        import sys
+        sys.path.insert(0,str(Path(__file__).parent.parent/"tools"))
+        import guard_resident_owned_update as update
+        import stat
+        def fixture_directory(path,private=False):
+            """Test-only nofollow walk; exempt only actual root-owned sticky /tmp."""
+            path = update.resident.canonical(str(path))
+            descriptor = os.open("/",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            current = Path("/")
+            try:
+                for part in path.parts[1:]:
+                    child = os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=descriptor)
+                    os.close(descriptor)
+                    descriptor = child
+                    current /= part
+                    info = os.fstat(descriptor)
+                    sticky_tmp = current == Path("/tmp") and info.st_uid == 0 and info.st_mode&stat.S_ISVTX
+                    update.resident.require(info.st_uid in (0,os.getuid()) and (not info.st_mode&0o022 or sticky_tmp))
+                if private:
+                    info = os.fstat(descriptor)
+                    update.resident.require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700)
+                return descriptor
+            except BaseException:
+                os.close(descriptor)
+                raise
+
+
+        with mock.patch.object(update.resident,"open_directory",side_effect=fixture_directory):
+            old = self.portable_bundle("release")
+            reference = json.loads(self.reference.read_bytes())
+            reference["product"]["version"] = "0.2.0-dev.next"
+            self.reference.write_bytes(pack.json_bytes(reference))
+            new = self.portable_bundle("release")
+            old_manifest,old_files = pack.verify_bundle(old)
+            new_manifest,new_files = pack.verify_bundle(new)
+            self.assertNotEqual(pack.digest(old),pack.digest(new))
+            for failure in (None,"inventory","unit","alias"):
+                with self.subTest(failure=failure):
+                    home = self.root/("case-"+str(failure))
+                    prefix,records,state = home/".local/share/omux",home/".local/state/omux-install",home/".local/state/omux"
+                    state.mkdir(mode=0o700,parents=True)
+                    (state/"daemon.lock").write_bytes(b"")
+                    (state/"daemon.lock").chmod(0o600)
+                    (state/"metadata.sqlite").write_bytes(b"synthetic retained ciphertext")
+                    (state/"metadata.sqlite").chmod(0o600)
+                    unit = prefix/"units/ai.xoxd.omux.service"
+                    install.install_bundle(old,prefix,records,unit,"linux",daemon_state_dir=state)
+                    alias = home/".config/systemd/user"/unit.name
+                    alias.parent.mkdir(mode=0o700,parents=True)
+                    alias.symlink_to(unit)
+                    qpath = home/"qualification.json"
+                    qvalue = {"id":home.name,"artifact_epoch":home.name,"profile":"standard","verb":"build","targets":["//delivery:default_instance_archive"],
+                        "exit":0,"workload_exit":0,"descendants_empty":True,"cleanup":{"state":"empty"},
+                        "controller_failure":None,"source_dirty":"false","source_commit":"a"*40,"graph_sha256":"b"*64,
+                        "cache_reuse_requested":False,"cache_policy":None,"cache_key":None,
+                        "output_base":str(qpath.parent/"output-base")}
+                    qraw = pack.json_bytes(qvalue)
+                    qpath.write_bytes(qraw)
+                    old_path = home/"old.tar.gz"
+                    new_path = home/"output-base"/update.ARCHIVE_RELATIVE
+                    new_path.parent.mkdir(mode=0o700,parents=True)
+                    old_path.write_bytes(old)
+                    new_path.write_bytes(new)
+                    selected = {"ownership":"omux-installation","prefix":str(prefix),"records":str(records),
+                        "runtime_state":str(state),"service_path":str(unit)}
+                    selected["update"] = {"previous_archive_path":str(old_path),"previous_archive_sha256":pack.digest(old),
+                        "previous_archive_bytes":len(old),"previous_manifest_sha256":pack.digest(old_files["release-manifest.json"]),
+                        "archive_path":str(new_path),"archive_sha256":pack.digest(new),"archive_bytes":len(new),
+                        "manifest_sha256":pack.digest(new_files["release-manifest.json"]),
+                        "qualification":{"path":str(qpath),"sha256":pack.digest(qraw),"bytes":len(qraw),
+                            "source_commit":"a"*40,"graph_sha256":"b"*64}}
+                    # Only external selected-file namespace/source qualification is synthetic.
+                    # Public archives, installer transaction, file fences and old->new record/unit/payload are real.
+                    with mock.patch.object(update,"pins",return_value=selected["update"]):
+                        witness = update.InstallationUpdate(selected,home,install.time.monotonic_ns()+60*10**9)
+                    try:
+                        witness.verify_fragment(str(alias))
+                        install.update_bundle(new,prefix,records,unit,state,pack.digest(old),witness.recheck,
+                            lambda result: None,deadline_ns=install.time.monotonic_ns()+30*10**9)
+                        if failure == "inventory":
+                            record = install._record(prefix,records)
+                            record["files"].pop(0)
+                            install._write(records/"install.json",pack.json_bytes(record),0o600)
+                        elif failure == "unit":
+                            install._write(unit,unit.read_bytes()+b"# changed unit\n",0o600)
+                        elif failure == "alias":
+                            alias.unlink()
+                            alias.symlink_to(unit)
+                        if failure is None:
+                            result = witness.completed()
+                            self.assertTrue(result["installation_updated"])
+                            self.assertFalse(result["service_active"])
+                            witness.recheck()
+                            self.assertEqual(install._record(prefix,records)["artifact"]["archiveSha256"],pack.digest(new))
+                        else:
+                            with self.assertRaises(ValueError):
+                                witness.completed()
+                        self.assertEqual((state/"metadata.sqlite").read_bytes(),b"synthetic retained ciphertext")
+                        self.assertEqual((state/"daemon.lock").read_bytes(),b"")
+                    finally:
+                        witness.close()
+
+    def test_owned_update_postcheck_rolls_back_every_payload_and_previous_record(self):
+        old = self.portable_bundle("release",source_revision="a"*40,source_dirty=False)
+        new = self.portable_bundle("release",source_revision="b"*40,source_dirty=False)
+        prefix,records,state = self.root/"prefix",self.root/"records",self.root/"retained-state"
+        state.mkdir(mode=0o700)
+        (state/"daemon.lock").write_bytes(b"")
+        (state/"daemon.lock").chmod(0o600)
+        unit = prefix/"units/ai.xoxd.omux.service"
+        previous = install.install_bundle(old,prefix,records,unit,"linux",daemon_state_dir=state)
+        raw_record = (records/"install.json").read_bytes()
+        files = {row["path"]:(Path(row["path"]).read_bytes(),Path(row["path"]).stat().st_mode&0o777)
+                 for row in previous["files"]}
+        before = mock.Mock()
+        after = mock.Mock(side_effect=ValueError("postwrite refusal"))
+        with self.assertRaises(ValueError):
+            install.update_bundle(new,prefix,records,unit,state,pack.digest(old),before,after,
+                deadline_ns=install.time.monotonic_ns()+30*10**9)
+        before.assert_called_once_with()
+        after.assert_called_once()
+        self.assertEqual((records/"install.json").read_bytes(),raw_record)
+        self.assertTrue(all((Path(path).read_bytes(),Path(path).stat().st_mode&0o777) == value
+                            for path,value in files.items()))
+        self.assertEqual((state/"daemon.lock").read_bytes(),b"")
+
+    def test_owned_update_refuses_modified_old_payload_before_first_write(self):
+        old = self.portable_bundle("release",source_revision="a"*40,source_dirty=False)
+        new = self.portable_bundle("release",source_revision="b"*40,source_dirty=False)
+        prefix,records,state = self.root/"prefix",self.root/"records",self.root/"state"
+        state.mkdir(mode=0o700)
+        unit = prefix/"units/ai.xoxd.omux.service"
+        install.install_bundle(old,prefix,records,unit,"linux",daemon_state_dir=state)
+        target = prefix/"bin/omuxd"
+        target.write_bytes(b"modified owned payload")
+        with mock.patch.object(install,"_write",side_effect=AssertionError("no mutation before custody")):
+            with self.assertRaises(ValueError):
+                install.update_bundle(new,prefix,records,unit,state,pack.digest(old),mock.Mock(),mock.Mock(),
+                    deadline_ns=install.time.monotonic_ns()+30*10**9)
+        self.assertEqual(target.read_bytes(),b"modified owned payload")
+
+    def test_owned_update_installer_lock_contention_is_nonblocking_and_no_write(self):
+        import fcntl
+        old = self.portable_bundle("release",source_revision="a"*40,source_dirty=False)
+        new = self.portable_bundle("release",source_revision="b"*40,source_dirty=False)
+        prefix,records,state = self.root/"prefix",self.root/"records",self.root/"state"
+        state.mkdir(mode=0o700)
+        unit = prefix/"units/ai.xoxd.omux.service"
+        install.install_bundle(old,prefix,records,unit,"linux",daemon_state_dir=state)
+        descriptor = os.open(records/"install.lock",os.O_RDWR|os.O_NOFOLLOW)
+        try:
+            fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with mock.patch.object(install,"_write",side_effect=AssertionError("no writes on contention")):
+                with self.assertRaises(BlockingIOError):
+                    install.update_bundle(new,prefix,records,unit,state,pack.digest(old),mock.Mock(),mock.Mock(),
+                        deadline_ns=install.time.monotonic_ns()+30*10**9)
+        finally:
+            os.close(descriptor)
+
     def write(self, name: str, data: bytes) -> Path:
         path = self.inputs / name
         path.write_bytes(data)
@@ -245,6 +405,29 @@ class BundleTest(DeliveryFixture):
 
 
 class InstallationTest(DeliveryFixture):
+    def test_owned_linux_service_binds_persistent_daemon_state_without_activation(self) -> None:
+        service = self.service.with_name("ai.xoxd.omux.dev.service")
+        persistent = self.root / 'runtime state with % and $ and "quotes"'
+        receipt = install.install_bundle(self.portable_bundle("development"), self.prefix, self.state,
+                                         service, daemon_state_dir=persistent)
+        self.assertFalse(receipt["serviceActivated"])
+        self.assertIn('--state-dir "' + str(persistent).replace("%", "%%").replace("$", "$$").replace('"', '\\"') + '"',
+                      service.read_text())
+        self.assertFalse(persistent.exists())
+        for bound in ("MemoryMax=268435456\n", "MemorySwapMax=0\n", "TasksMax=32\n", "CPUQuota=10%\n"):
+            self.assertIn(bound, service.read_text())
+        runtime = "/run/user/" + str(os.getuid())
+        self.assertIn('Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=' + runtime + '/bus"\n', service.read_text())
+        self.assertIn('Environment="XDG_RUNTIME_DIR=' + runtime + '"\n', service.read_text())
+        self.assertEqual(next(entry for entry in receipt["files"] if entry["path"] == str(service))["mode"], 0o600)
+
+    def test_daemon_state_binding_requires_an_owned_linux_service(self) -> None:
+        persistent = self.root / "runtime-state"
+        with self.assertRaisesRegex(ValueError, "requires a Linux owned service"):
+            install.install_bundle(self.portable_bundle("development"), self.prefix, self.state,
+                                   daemon_state_dir=persistent)
+        self.assertFalse(self.prefix.exists())
+
     def test_receipt_binds_archive_provenance_without_claiming_activation(self) -> None:
         payload = self.portable_bundle("development", source_revision="a" * 40, source_dirty=False)
         manifest, files = pack.verify_bundle(payload)

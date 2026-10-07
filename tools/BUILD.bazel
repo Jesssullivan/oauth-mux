@@ -1022,7 +1022,8 @@ python_binary(
     name = "execution_guard",
     main = "execution_guard.py",
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
+            "guard_resident_vault_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
     visibility = ["//visibility:public"],
@@ -1032,7 +1033,8 @@ python_test(
     name = "execution_guard_test",
     main = "execution_guard_test.py",
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
+            "guard_resident_vault_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
 )
@@ -1040,7 +1042,7 @@ python_test(
 python_test(
     name = "guard_dependency_profile_test",
     main = "guard_dependency_profile_test.py",
-    srcs = ["guard_dependency_profile.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
+    srcs = ["guard_dependency_profile.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
 )
 python_test(
     name = "yoga_delivery_settings_test",
@@ -1305,6 +1307,12 @@ filegroup(
 )
 
 exports_files([
+    "native_login_ui_qualification.py", "native_login_ui_prepare_remote.py",
+    "native_login_ui_qualification_test.py",
+    "yoga_delivery_settings.py", "guard_yoga_delivery_profile.py",
+    "yoga_portal_carrier.py", "yoga_portal_worker.py",
+    "yoga_controller_delivery.py", "yoga_executable_qualification.py",
+    "ssh_policy.py", "host_closure_transfer.py",
     "home_manager_retained_repository.bzl", "home_manager_bundle_repository.bzl",
     "codex_owner_runtime_repository.bzl",
     "nar_descriptor.py",
@@ -1343,6 +1351,20 @@ exports_files([
     "vault_proof_runner.py",
     "host-proof-custody.md",
 ])
+
+filegroup(
+    name = "yoga_portal_carrier_sources",
+    srcs = ["yoga_portal_carrier.py", "yoga_portal_worker.py", "yoga_controller_delivery.py",
+            "yoga_executable_qualification.py", "ssh_policy.py", "host_closure_transfer.py", "verify_cached_nars.py"],
+    visibility = ["//visibility:public"],
+)
+
+python_test(
+    name = "yoga_portal_carrier_test",
+    main = "yoga_portal_carrier_test.py",
+    srcs = [":yoga_portal_carrier_sources"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
 
 translate_c_toolchain(
     name = "translate_c_impl",
@@ -1398,8 +1420,20 @@ toolchain(
 python_test(
     name = "guard_codex_live_profile_test",
     main = "guard_codex_live_profile_test.py",
-    srcs = ["guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_dependency_profile.py",
+    srcs = ["guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources", "guard_dependency_profile.py",
             "guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
+)
+
+# Exact native OAuth action admission; all models are offline and opt-in run separate.
+exports_files(["guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", "guard_resident_owned_update.py", "guard_codex_live_profile.py",
+               "guard_owner_runtime_input.py", "codex_owner_runtime_input.py"])
+python_test(
+    name = "guard_codex_login_profile_test",
+    main = "guard_codex_login_profile_test.py",
+    srcs = ["guard_codex_fresh_live_profile.py", "execution_guard.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources", "guard_codex_live_profile.py",
+            "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_dependency_profile.py",
+            "guard_cache.py", "guard_test_evidence.py", "system_mask_policy.py"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
 
 # Root first copies the exact reviewed UNAPPLIED.source.py bytes to the main
@@ -1523,4 +1557,54 @@ python_test(
     srcs = ["guard_codex_fresh_live_profile.py","guard_codex_live_profile.py","codex_live_fresh_runtime_repository_input.py",
         "execution_guard.py","guard_cache.py","guard_test_evidence.py","guard_dependency_profile.py","system_mask_policy.py",
         "guard_owner_runtime_input.py","codex_owner_runtime_input.py"],
+)
+
+python_test(
+    name = "codex_retained_device_api_qualification",
+    main = "codex_retained_device_api_qualification.py",
+    srcs = ["codex_owner_runtime_input.py", "guard_owner_runtime_input.py",
+        "//delivery:codex_runtime_selection.py", "//delivery:portable.py",
+        "//integrations/codex-owner-runtime:runtime_package.py",
+        "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py"],
+    data = ["//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+        "//integrations/codex-owner-runtime:runtime-manifest.json",
+        "//integrations/codex-owner-runtime:runtime-receipt.json"],
+    args = ["--archive", "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+        "--manifest", "$(location //integrations/codex-owner-runtime:runtime-manifest.json)",
+        "--receipt", "$(location //integrations/codex-owner-runtime:runtime-receipt.json)"],
+    env_inherit = ["OMUX_EXECUTION_GUARD"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "guard_native_login_ui_profile_test",
+    main = "guard_native_login_ui_profile_test.py",
+    srcs = ["guard_codex_fresh_live_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources","guard_codex_login_profile.py","guard_codex_live_profile.py",
+        "guard_owner_runtime_input.py","codex_owner_runtime_input.py","execution_guard.py","guard_dependency_profile.py",
+        "guard_cache.py","guard_test_evidence.py","system_mask_policy.py","verify_cached_nars.py"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+exports_files(["guard_resident_enrollment_profile.py"])
+exports_files(["guard_resident_vault_profile.py"])
+python_test(
+    name = "guard_resident_enrollment_profile_test",
+    main = "guard_resident_enrollment_profile_test.py",
+    srcs = ["guard_codex_fresh_live_profile.py", "guard_resident_enrollment_profile.py", "guard_resident_vault_profile.py", ":resident_owned_update_sources","execution_guard.py",
+        "guard_cache.py","guard_test_evidence.py","system_mask_policy.py","guard_dependency_profile.py",
+        "guard_owner_runtime_input.py","codex_owner_runtime_input.py",
+        "guard_codex_live_profile.py","guard_codex_login_profile.py","guard_native_login_ui_profile.py"],
+)
+
+filegroup(
+    name = "resident_owned_update_sources",
+    srcs = ["guard_resident_owned_update.py", "//delivery:install.py", "//delivery:pack.py"],
+)
+python_test(
+    name = "guard_resident_owned_update_test",
+    main = "guard_resident_owned_update_test.py",
+    srcs = [":resident_owned_update_sources", "guard_resident_enrollment_profile.py"],
+    target_compatible_with = ["@platforms//os:linux"],
 )
