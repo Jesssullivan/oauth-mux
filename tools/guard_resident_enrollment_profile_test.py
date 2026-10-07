@@ -409,5 +409,168 @@ class PlatformActivationModels(unittest.TestCase):
                     resident.observe_existing_session_services(env,10000000001,"probe",allow_missing_secret_service=True)
 
 
+
+class OwnedRecoveryModels(unittest.TestCase):
+    def prepare(self,home):
+        selected = manifest()
+        selected.update(action="activate-existing-and-enroll",
+            **{key:str(value) for key,value in resident.fixed_paths(home).items()})
+        selected["native_context"]["codex_home"] = str(home/".codex")
+        unit = Path(selected["service_path"])
+        records = Path(selected["records"])
+        unit.parent.mkdir(parents=True,mode=0o700)
+        records.mkdir(parents=True,mode=0o700)
+        raw = b"[Service]\nExecStart=/public/declared/omuxd\nMemoryMax=268435456\n"
+        unit.write_bytes(raw)
+        unit.chmod(0o600)
+        record = {"schemaVersion":1,"prefix":selected["prefix"],"product":"omux",
+            "userService":str(unit),"serviceActivated":False,"artifact":{"archiveSha256":"a"*64},
+            "files":[{"path":str(unit),"mode":0o600,"sha256":hashlib.sha256(raw).hexdigest()}]}
+        record_path = records/"install.json"
+        record_path.write_text(json.dumps(record))
+        record_path.chmod(0o600)
+        alias = home/".config/systemd/user"/unit.name
+        alias.parent.mkdir(parents=True,mode=0o700)
+        alias.symlink_to(unit)
+        state = Path(selected["runtime_state"])
+        state.mkdir(mode=0o700)
+        control = home/"control-placeholder"
+        control.mkdir(mode=0o700)
+        return selected,unit,alias,record_path,state,control
+
+    def test_closed_recovery_action_permissions_and_home_manager_refusal(self):
+        value = manifest()
+        value["action"] = "activate-existing-and-enroll"
+        resident.manifest_schema(value,HOME)
+        value["permissions"]["activate_service"] = False
+        with self.assertRaises(ValueError):
+            resident.manifest_schema(value,HOME)
+        value["permissions"]["activate_service"] = True
+        value.update(ownership="home-manager",prefix="/nix/store/"+"a"*32+"-omux",
+            service_path=str(HOME/".config/systemd/user/ai.xoxd.omux.service"))
+        with self.assertRaises(ValueError):
+            resident.manifest_schema(value,HOME)
+
+    def test_exact_owned_alias_and_recorded_unit_digest_are_held(self):
+        with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+            selected,unit,alias,record_path,_,_ = self.prepare(Path(temporary))
+            custody = resident.OwnedUnitCustody(selected)
+            try:
+                self.assertEqual(custody.verify_fragment(unit),unit)
+                self.assertEqual(custody.verify_fragment(alias),unit)
+                custody.recheck()
+                unit.write_bytes(b"modified owned unit")
+                with self.assertRaises(ValueError):
+                    custody.recheck()
+            finally:
+                custody.close()
+
+    def test_alias_foreign_relative_hardlink_and_changed_parent_are_refused(self):
+        for change in ("foreign","relative","regular","hardlink","parent"):
+            with self.subTest(change=change),tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+                selected,unit,alias,_,_,_ = self.prepare(Path(temporary))
+                if change == "parent":
+                    alias.parent.chmod(0o777)
+                else:
+                    alias.unlink()
+                    if change == "foreign":
+                        alias.symlink_to(unit.parent/"foreign.service")
+                    elif change == "relative":
+                        alias.symlink_to(os.path.relpath(unit,alias.parent))
+                    elif change == "regular":
+                        alias.write_text("foreign unit")
+                    else:
+                        os.link(unit,alias)
+                with self.assertRaises(ValueError):
+                    resident.resolve_owned_unit_fragment(alias,unit)
+
+    def test_record_digest_symlink_replacement_and_unmanaged_rows_refused(self):
+        for change in ("digest","record-symlink","record-replace","unit-hardlink","extra-native-path","alias-replace"):
+            with self.subTest(change=change),tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+                selected,unit,alias,record_path,_,_ = self.prepare(Path(temporary))
+                if change in ("digest","extra-native-path"):
+                    record = json.loads(record_path.read_text())
+                    if change == "digest":
+                        record["files"][0]["sha256"] = "b"*64
+                    else:
+                        record["files"].append({"path":str(Path(temporary)/".codex/auth.json"),
+                            "mode":0o600,"sha256":"c"*64})
+                    record_path.write_text(json.dumps(record))
+                    with self.assertRaises(ValueError):
+                        resident.OwnedUnitCustody(selected)
+                elif change == "record-symlink":
+                    original = record_path.with_name("original.json")
+                    record_path.rename(original)
+                    record_path.symlink_to(original)
+                    with self.assertRaises((ValueError,OSError)):
+                        resident.OwnedUnitCustody(selected)
+                elif change == "unit-hardlink":
+                    os.link(unit,unit.with_name("second-unit"))
+                    with self.assertRaises(ValueError):
+                        resident.OwnedUnitCustody(selected)
+                elif change == "alias-replace":
+                    custody = resident.OwnedUnitCustody(selected)
+                    try:
+                        custody.verify_fragment(alias)
+                        alias.rename(alias.with_name("old-alias"))
+                        alias.symlink_to(unit)
+                        with self.assertRaises(ValueError):
+                            custody.recheck()
+                    finally:
+                        custody.close()
+                else:
+                    custody = resident.OwnedUnitCustody(selected)
+                    try:
+                        record_path.rename(record_path.with_name("old-record"))
+                        record_path.write_bytes(b"{}")
+                        record_path.chmod(0o600)
+                        with self.assertRaises(ValueError):
+                            custody.recheck()
+                    finally:
+                        custody.close()
+
+    def test_starting_recovery_qualifies_actual_loaded_inactive_metadata_and_empty_state(self):
+        with tempfile.TemporaryDirectory(dir=Path.home()) as temporary:
+            selected,unit,alias,_,state,control = self.prepare(Path(temporary))
+            admission = resident.Admission.__new__(resident.Admission)
+            admission.selected = selected
+            admission.deadline_ns = 30000000001
+            admission.owned_unit = resident.OwnedUnitCustody(selected)
+            admission.recovery_empty = [resident.open_directory(state,True),resident.open_directory(control,True)]
+            values = {"LoadState":"loaded","ActiveState":"inactive","SubState":"dead","MainPID":"0",
+                "FragmentPath":str(alias),"ControlGroup":"","MemoryMax":"268435456",
+                "MemorySwapMax":"0","TasksMax":"32","CPUQuotaPerSecUSec":"100ms","UnitFileState":"enabled"}
+            def result(properties,code=0):
+                return SimpleNamespace(returncode=code,stderr=b"",
+                    stdout="".join(k+"="+v+"\n" for k,v in properties.items()).encode("ascii"))
+            try:
+                with patch.object(resident.time,"monotonic_ns",return_value=1), \
+                        patch.object(resident.subprocess,"run",return_value=result(values)):
+                    self.assertEqual(admission.service_observation("/declared/systemctl",starting=True),
+                        {"active":False,"owned_partial_install_admitted":True,"bounded":True})
+                for key,value in (("LoadState","not-found"),("ActiveState","active"),("SubState","running"),
+                        ("MainPID","2"),("MainPID","00"),("ControlGroup","/foreign"),("UnitFileState","disabled"),("UnitFileState","static"),
+                        ("MemoryMax","268435457"),("MemoryMax","268435455"),("MemorySwapMax","1"),
+                        ("TasksMax","33"),("CPUQuotaPerSecUSec","101ms"),("FragmentPath",str(unit.parent/"foreign.service"))):
+                    changed = dict(values)
+                    changed[key] = value
+                    with self.subTest(key=key),patch.object(resident.time,"monotonic_ns",return_value=1), \
+                            patch.object(resident.subprocess,"run",return_value=result(changed)):
+                        with self.assertRaises(ValueError):
+                            admission.service_observation("/declared/systemctl",starting=True)
+                with patch.object(resident.time,"monotonic_ns",return_value=1), \
+                        patch.object(resident.subprocess,"run",return_value=result(values,4)):
+                    with self.assertRaises(ValueError):
+                        admission.service_observation("/declared/systemctl",starting=True)
+                (state/"state.db").write_bytes(b"existing encrypted database metadata")
+                with patch.object(resident.time,"monotonic_ns",return_value=1), \
+                        patch.object(resident.subprocess,"run",return_value=result(values)):
+                    with self.assertRaises(ValueError):
+                        admission.service_observation("/declared/systemctl",starting=True)
+            finally:
+                for descriptor in admission.recovery_empty:
+                    os.close(descriptor)
+                admission.owned_unit.close()
+
 if __name__ == "__main__":
     unittest.main()

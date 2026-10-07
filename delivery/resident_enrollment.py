@@ -139,9 +139,10 @@ def validate_manifest(value):
             "prefix", "records", "runtime_state", "service_path", "native_context", "permissions"}
             and type(value["schema_version"]) is int and value["schema_version"] == 1
             and value["ownership"] in ("omux-installation", "home-manager")
-            and value["action"] in ("install-and-enroll", "enroll-existing")
+            and value["action"] in ("install-and-enroll", "enroll-existing", "activate-existing-and-enroll")
             and value["instance"] in ("default", "dev"))
-    require(value["action"] != "install-and-enroll" or value["ownership"] == "omux-installation")
+    require(value["action"] not in ("install-and-enroll", "activate-existing-and-enroll")
+            or value["ownership"] == "omux-installation")
     paths = {key: absolute(value[key]) for key in ("prefix", "records", "runtime_state", "service_path")}
     require(len(set(paths.values())) == 4)
     expected_name = "ai.xoxd.omux" + (".dev" if value["instance"] == "dev" else "") + ".service"
@@ -160,7 +161,8 @@ def validate_manifest(value):
     permissions = value["permissions"]
     require(isinstance(permissions, dict) and set(permissions) == {"connect_source", "activate_service", "restart_daemon"}
             and all(type(item) is bool for item in permissions.values()) and permissions["connect_source"]
-            and (value["action"] != "install-and-enroll" or permissions["activate_service"]))
+            and (value["action"] not in ("install-and-enroll", "activate-existing-and-enroll")
+                 or permissions["activate_service"]))
     require(value["ownership"] != "home-manager" or not permissions["activate_service"])
     return value
 
@@ -282,6 +284,40 @@ def session_transition(pinned, observed, *, freeze_secret_service):
         require(observed["secret_service"] is not None)
         return observed
     return pinned
+
+
+def owned_record_inventory(record, artifact, archive_files, bundle_sha256, prefix, service_path):
+    """Require exact declared payload inventory before executing installed code."""
+    require(isinstance(record, dict) and record["userService"] == str(service_path)
+            and record["artifact"]["archiveSha256"] == bundle_sha256)
+    modes = {item["path"]: int(item["mode"], 8) for item in artifact["artifacts"]}
+    expected = {str(prefix / name): {"sha256": hashlib.sha256(content).hexdigest(), "mode": modes[name]}
+                for name, content in archive_files.items()
+                if name.startswith("lib/omux/") or name.startswith("bin/")
+                and name[4:] in (*pack.BINARIES, "omux-control")}
+    entries = record["files"]
+    actual = {entry["path"]: entry for entry in entries}
+    require(len(actual) == len(entries) and set(actual) == set(expected) | {str(service_path)})
+    for path, fields in expected.items():
+        require(actual[path]["sha256"] == fields["sha256"] and actual[path]["mode"] == fields["mode"])
+    unit = actual[str(service_path)]
+    require(unit["mode"] == 0o600 and isinstance(unit["sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", unit["sha256"]))
+    return entries
+
+
+def activation_readback(values, service_path, *, recovering=False):
+    require(type(recovering) is bool)
+    expected = {"MemoryMax", "MemorySwapMax", "TasksMax", "CPUQuotaPerSecUSec", "FragmentPath", "UnitFileState"}
+    if recovering:
+        expected |= {"ActiveState", "SubState", "MainPID", "ControlGroup"}
+        require(values["ActiveState"] == "inactive" and values["SubState"] == "dead"
+                and values["MainPID"] == "0" and values["ControlGroup"] == "")
+    require(set(values) == expected
+            and values["MemoryMax"] == "268435456" and values["MemorySwapMax"] == "0"
+            and values["TasksMax"] == "32" and resident_guard.quota_us(values["CPUQuotaPerSecUSec"]) == 100000
+            and values["UnitFileState"] == "enabled")
+    return resident_guard.resolve_owned_unit_fragment(absolute(values["FragmentPath"]), service_path)
 
 
 def bounded(command, environment, data=None, timeout=20, allowed_returncodes=(0,)):
@@ -411,7 +447,7 @@ def execute(bundle, systemctl, session_probe, manifest):
     directory, source, information, source_path = hold_source_metadata(manifest["native_context"])
     try:
         PHASE = "session-ownership"
-        allow_initial_missing_vault = manifest["action"] == "install-and-enroll"
+        allow_initial_missing_vault = manifest["action"] in ("install-and-enroll", "activate-existing-and-enroll")
         if allow_initial_missing_vault:
             require(empty_first_install_state(state))
         session_owners = resident_guard.observe_existing_session_services(
@@ -448,9 +484,8 @@ def execute(bundle, systemctl, session_probe, manifest):
             require(prefix.is_dir())
             if manifest["ownership"] == "omux-installation":
                 record = install._record(prefix, records)
-                require(record is not None and record["userService"] == str(service_path)
-                        and record["artifact"]["archiveSha256"] == hashlib.sha256(payload).hexdigest()
-                        and all(install._matches(Path(entry["path"]), entry) for entry in record["files"]))
+                entries = owned_record_inventory(record, artifact, archive_files, hashlib.sha256(payload).hexdigest(), prefix, service_path)
+                require(all(install._matches(Path(entry["path"]), entry) for entry in entries))
             else:
                 # Exact immutable HM artifact selection; collector independently
                 # verifies its full witness, payload and active responder.
@@ -476,9 +511,11 @@ def execute(bundle, systemctl, session_probe, manifest):
             value = dict(line.split("=", 1) for line in output.decode("utf-8").splitlines())
             pid, group = validate_service_properties(value, unit, os.getuid(), os.getgid())
             fragment = absolute(value["FragmentPath"])
-            require(fragment == service_path or manifest["ownership"] == "home-manager"
-                    and fragment.resolve(strict=True) == service_path.resolve(strict=True))
-            actual_fragment = fragment.resolve(strict=True) if manifest["ownership"] == "home-manager" else fragment
+            if manifest["ownership"] == "home-manager":
+                require(fragment == service_path or fragment.resolve(strict=True) == service_path.resolve(strict=True))
+                actual_fragment = fragment.resolve(strict=True)
+            else:
+                actual_fragment = resident_guard.resolve_owned_unit_fragment(fragment, service_path)
             fd = os.open(actual_fragment, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 info = os.fstat(fd)
@@ -540,15 +577,19 @@ def execute(bundle, systemctl, session_probe, manifest):
             PHASE = "activation"
             # Manager owns only this unit's link; inspect effective limits before
             # any daemon process can escape the resident reservation.
-            require_session_owners()
-            bounded([str(systemctl), "--user", "--quiet", "enable", str(service_path)], environment)
-            # Reload is intentionally a separate bounded command without unit.
-            require_session_owners()
-            bounded([str(systemctl), "--user", "--quiet", "daemon-reload"], environment)
-            loaded = manager("show", "--property=MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec,FragmentPath")
+            if manifest["action"] != "activate-existing-and-enroll":
+                require_session_owners()
+                bounded([str(systemctl), "--user", "--quiet", "enable", str(service_path)], environment)
+                # Reload is intentionally a separate bounded command without unit.
+                require_session_owners()
+                bounded([str(systemctl), "--user", "--quiet", "daemon-reload"], environment)
+            recovering = manifest["action"] == "activate-existing-and-enroll"
+            fields = "MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec,FragmentPath,UnitFileState"
+            if recovering:
+                fields += ",ActiveState,SubState,MainPID,ControlGroup"
+            loaded = manager("show", "--property=" + fields)
             limits = dict(line.split("=", 1) for line in loaded.decode("ascii").splitlines())
-            require(limits == {"MemoryMax": "268435456", "MemorySwapMax": "0", "TasksMax": "32",
-                               "CPUQuotaPerSecUSec": "100ms", "FragmentPath": str(service_path)})
+            require(activation_readback(limits, service_path, recovering=recovering) == service_path)
             if allow_initial_missing_vault:
                 require(empty_first_install_state(state))
             manager("start")

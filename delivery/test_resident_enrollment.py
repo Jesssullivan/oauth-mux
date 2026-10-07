@@ -30,6 +30,97 @@ class ModelSelector:
 
 
 class ResidentContract(unittest.TestCase):
+    def record_fixture(self):
+        prefix = resident.Path("/private/package")
+        unit = prefix / "units/ai.xoxd.omux.service"
+        files = {"bin/" + name: ("declared-" + name).encode() for name in resident.pack.BINARIES}
+        files["lib/omux/libexec/omuxd.bin"] = b"declared-image"
+        artifact = {"channel": "release", "distribution": "portable-linux",
+                    "artifacts": [{"path": name, "mode": "0755"} for name in files]}
+        entries = [{"path": str(prefix / name), "sha256": resident.hashlib.sha256(content).hexdigest(), "mode": 0o755}
+                   for name, content in files.items()]
+        entries.append({"path": str(unit), "sha256": "a" * 64, "mode": 0o600})
+        record = {"userService": str(unit), "artifact": {"archiveSha256": "b" * 64}, "files": entries}
+        return prefix, unit, artifact, files, record
+
+    def test_recovery_requires_exact_declared_payload_and_owned_unit_inventory(self):
+        prefix, unit, artifact, files, record = self.record_fixture()
+        self.assertEqual(resident.owned_record_inventory(record, artifact, files, "b" * 64, prefix, unit), record["files"])
+        cases = []
+        incomplete = copy.deepcopy(record)
+        incomplete["files"].pop(0)
+        cases.append(incomplete)
+        wrong_member = copy.deepcopy(record)
+        wrong_member["files"][0]["sha256"] = "c" * 64
+        cases.append(wrong_member)
+        wrong_archive = copy.deepcopy(record)
+        wrong_archive["artifact"]["archiveSha256"] = "c" * 64
+        cases.append(wrong_archive)
+        wrong_unit = copy.deepcopy(record)
+        wrong_unit["userService"] = "/another/unit.service"
+        cases.append(wrong_unit)
+        wrong_mode = copy.deepcopy(record)
+        wrong_mode["files"][-1]["mode"] = 0o644
+        cases.append(wrong_mode)
+        duplicated = copy.deepcopy(record)
+        duplicated["files"].append(copy.deepcopy(duplicated["files"][0]))
+        cases.append(duplicated)
+        for changed in cases:
+            with self.subTest(record=changed), self.assertRaises(ValueError):
+                resident.owned_record_inventory(changed, artifact, files, "b" * 64, prefix, unit)
+
+    def test_recovery_is_explicit_owned_activation_and_never_reinstalls_bad_files(self):
+        value = self.manifest()
+        value["action"] = "activate-existing-and-enroll"
+        self.assertEqual(resident.validate_manifest(value), value)
+        for ownership, activate in (("home-manager", True), ("omux-installation", False)):
+            changed = copy.deepcopy(value)
+            changed["ownership"] = ownership
+            changed["permissions"]["activate_service"] = activate
+            with self.subTest(ownership=ownership), self.assertRaises(ValueError):
+                resident.validate_manifest(changed)
+        prefix, unit, artifact, files, record = self.record_fixture()
+        record["artifact"]["archiveSha256"] = resident.hashlib.sha256(b"archive").hexdigest()
+        value.update(prefix=str(prefix), service_path=str(unit))
+        with mock.patch.object(resident, "original_deadline", return_value=resident.time.monotonic_ns() + 120 * 10**9), \
+                mock.patch.object(resident, "hold_source_metadata", return_value=(21, 22, None, resident.Path("/native/auth.json"))), \
+                mock.patch.object(resident, "empty_first_install_state", return_value=True), \
+                mock.patch.object(resident.resident_guard, "observe_existing_session_services", return_value={"broker": {}, "manager": {}, "secret_service": None}), \
+                mock.patch.object(resident.pack, "read_bundle", return_value=b"archive"), \
+                mock.patch.object(resident.pack, "verify_bundle", return_value=(artifact, files)), \
+                mock.patch.object(resident.Path, "is_dir", return_value=True), \
+                mock.patch.object(resident.install, "_record", return_value=record), \
+                mock.patch.object(resident.install, "_matches", return_value=False), \
+                mock.patch.object(resident.install, "install_bundle") as install, \
+                mock.patch.object(resident, "bounded") as execute, mock.patch.object(resident.os, "close"):
+            with self.assertRaises(ValueError):
+                resident.execute(resident.Path("/declared/archive"), resident.Path("/declared/systemctl"), resident.Path("/declared/probe"), value)
+        install.assert_not_called()
+        execute.assert_not_called()
+
+    def test_effective_activation_readback_requires_enabled_unit_and_qualified_alias(self):
+        unit = resident.Path("/private/package/units/ai.xoxd.omux.service")
+        values = {"MemoryMax": "268435456", "MemorySwapMax": "0", "TasksMax": "32",
+                  "CPUQuotaPerSecUSec": "100ms", "FragmentPath": "/owned/config/systemd/user/ai.xoxd.omux.service",
+                  "UnitFileState": "enabled"}
+        with mock.patch.object(resident.resident_guard, "resolve_owned_unit_fragment", return_value=unit, create=True) as resolve:
+            self.assertEqual(resident.activation_readback(values, unit), unit)
+            resolve.assert_called_once_with(resident.Path(values["FragmentPath"]), unit)
+        for field, changed in (("UnitFileState", "disabled"), ("MemoryMax", "268435457"),
+                               ("MemorySwapMax", "1"), ("TasksMax", "33"), ("CPUQuotaPerSecUSec", "101ms")):
+            bad = dict(values)
+            bad[field] = changed
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                resident.activation_readback(bad, unit)
+        idle = {**values, "ActiveState": "inactive", "SubState": "dead", "MainPID": "0", "ControlGroup": ""}
+        with mock.patch.object(resident.resident_guard, "resolve_owned_unit_fragment", return_value=unit, create=True):
+            self.assertEqual(resident.activation_readback(idle, unit, recovering=True), unit)
+        for field, changed in (("ActiveState", "active"), ("SubState", "running"), ("MainPID", "42"), ("ControlGroup", "/active")):
+            bad = dict(idle)
+            bad[field] = changed
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                resident.activation_readback(bad, unit, recovering=True)
+
     def test_fresh_state_requires_absence_or_owned_empty_private_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = resident.Path(temporary)

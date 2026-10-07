@@ -69,7 +69,7 @@ def manifest_schema(value,home):
         "prefix","records","runtime_state","service_path","native_context","permissions"}
         and type(value["schema_version"]) is int and value["schema_version"] == 1
         and value["ownership"] in ("omux-installation","home-manager")
-        and value["action"] in ("install-and-enroll","enroll-existing")
+        and value["action"] in ("install-and-enroll","activate-existing-and-enroll","enroll-existing")
         and value["instance"] == "default")
     expected = fixed_paths(home)
     for key in ("records","runtime_state"):
@@ -90,7 +90,7 @@ def manifest_schema(value,home):
     permissions = value["permissions"]
     require(type(permissions) is dict and set(permissions) == {"connect_source","activate_service","restart_daemon"}
         and all(type(v) is bool for v in permissions.values()) and permissions["connect_source"]
-        and (value["action"] != "install-and-enroll" or permissions["activate_service"])
+        and (value["action"] not in ("install-and-enroll","activate-existing-and-enroll") or permissions["activate_service"])
         and (value["ownership"] != "home-manager" or not permissions["activate_service"]))
     return value
 
@@ -263,6 +263,154 @@ def normalize_binds(value,leaf_bindings=(),*,readback=False):
         result.append(binding)
     return result
 
+def file_identity(info):
+    return tuple(getattr(info,name) for name in ("st_dev","st_ino","st_mode","st_uid","st_gid",
+        "st_nlink","st_size","st_mtime_ns","st_ctime_ns"))
+
+def resolve_owned_unit_fragment(fragment,selected_service):
+    selected = canonical(str(selected_service))
+    require(selected.name == "ai.xoxd.omux.service" and len(selected.parents) >= 5
+        and selected == fixed_paths(selected.parents[4])["service_path"])
+    fragment = canonical(str(fragment))
+    alias = selected.parents[4]/".config/systemd/user"/selected.name
+    require(fragment in (selected,alias))
+    parent = open_directory(fragment.parent)
+    physical_parent = None
+    descriptor = None
+    try:
+        physical_parent = open_directory(selected.parent)
+        require(os.fstat(parent).st_uid == os.getuid()
+            and os.fstat(physical_parent).st_uid == os.getuid())
+        before = os.stat(fragment.name,dir_fd=parent,follow_symlinks=False)
+        if fragment == alias:
+            require(stat.S_ISLNK(before.st_mode) and before.st_uid == os.getuid()
+                and before.st_nlink == 1 and os.readlink(fragment.name,dir_fd=parent) == str(selected))
+        descriptor = os.open(selected.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,
+            dir_fd=physical_parent)
+        info = os.fstat(descriptor)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
+            and 0 < info.st_size <= 65536
+            and file_identity(info) == file_identity(os.stat(selected.name,
+                dir_fd=physical_parent,follow_symlinks=False))
+            and file_identity(before) == file_identity(os.stat(fragment.name,dir_fd=parent,follow_symlinks=False)))
+        if fragment == alias:
+            require(os.readlink(fragment.name,dir_fd=parent) == str(selected))
+        return selected
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if physical_parent is not None:
+            os.close(physical_parent)
+        os.close(parent)
+
+class OwnedUnitCustody:
+    """Hold only public installer metadata and the recorded unit, never native auth."""
+    def __init__(self,selected):
+        self.selected = selected
+        self.held = []
+        self.files = []
+        self.alias = None
+        try:
+            prefix,records,unit = (canonical(selected[name]) for name in ("prefix","records","service_path"))
+            require(selected["ownership"] == "omux-installation")
+            for path,limit in ((records/"install.json",131072),(unit,65536)):
+                parent = open_directory(path.parent)
+                self.held.append(parent)
+                require(os.fstat(parent).st_uid == os.getuid())
+                descriptor = os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
+                self.held.append(descriptor)
+                info = os.fstat(descriptor)
+                require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
+                    and 0 < info.st_size <= limit)
+                raw = os.pread(descriptor,limit+1,0)
+                require(len(raw) == info.st_size)
+                self.files.append((path,parent,descriptor,file_identity(info),raw,stable(os.fstat(parent))))
+            record = json.loads(self.files[0][4],object_pairs_hook=unique)
+            require(type(record) is dict and set(record) == {"schemaVersion","prefix","product","userService",
+                "serviceActivated","artifact","files"} and type(record["schemaVersion"]) is int
+                and record["schemaVersion"] == 1 and record["prefix"] == str(prefix)
+                and record["userService"] == str(unit) and type(record["serviceActivated"]) is bool
+                and type(record["artifact"]) is dict
+                and type(record["artifact"].get("archiveSha256")) is str
+                and re.fullmatch(r"[0-9a-f]{64}",record["artifact"]["archiveSha256"]))
+            rows = record["files"]
+            require(type(rows) is list and 0 < len(rows) <= 256)
+            seen = set()
+            unit_row = None
+            for row in rows:
+                require(type(row) is dict and set(row) == {"path","sha256","mode"}
+                    and type(row["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}",row["sha256"])
+                    and type(row["mode"]) is int and row["mode"] in (0o600,0o644,0o755))
+                path = canonical(row["path"])
+                require(path not in seen)
+                seen.add(path)
+                relative = str(path.relative_to(prefix)) if prefix in path.parents else ""
+                require(path == unit or relative in ("bin/omux","bin/omuxd","bin/oauth-mux",
+                    "bin/omux-native-host","bin/git-credential-omux","bin/omux-control")
+                    or re.fullmatch(r"lib/omux/(?:lib/[A-Za-z0-9_.+-]+|libexec/omuxd?\.bin|share/ca-bundle\.crt|qt/lib/[A-Za-z0-9_.+-]+|qt/libexec/(?:omux-control\.bin|qt\.conf)|qt/plugins/platforms/[A-Za-z0-9_.+-]+\.so)",relative))
+                if path == unit:
+                    unit_row = row
+            require(unit_row is not None and unit_row["mode"] == 0o600
+                and hashlib.sha256(self.files[1][4]).hexdigest() == unit_row["sha256"])
+            self.recheck()
+        except BaseException:
+            self.close()
+            raise
+
+    def verify_fragment(self,fragment):
+        selected = resolve_owned_unit_fragment(fragment,self.selected["service_path"])
+        fragment = canonical(str(fragment))
+        if fragment != selected:
+            parent = open_directory(fragment.parent)
+            try:
+                witness = file_identity(os.stat(fragment.name,dir_fd=parent,follow_symlinks=False))
+                if self.alias is None:
+                    self.held.append(parent)
+                    self.alias = (fragment,parent,witness,stable(os.fstat(parent)))
+                    parent = None
+                else:
+                    require(fragment == self.alias[0] and witness == self.alias[2])
+            finally:
+                if parent is not None:
+                    os.close(parent)
+        self.recheck()
+        return selected
+
+    def recheck(self):
+        for path,parent,descriptor,witness,raw,parent_witness in self.files:
+            current_parent = open_directory(path.parent)
+            try:
+                require(stable(os.fstat(parent)) == parent_witness == stable(os.fstat(current_parent)))
+            finally:
+                os.close(current_parent)
+            require(file_identity(os.fstat(descriptor)) == witness
+                == file_identity(os.stat(path.name,dir_fd=parent,follow_symlinks=False))
+                and os.pread(descriptor,len(raw)+1,0) == raw)
+        if self.alias is not None:
+            path,parent,witness,parent_witness = self.alias
+            current_parent = open_directory(path.parent)
+            try:
+                require(stable(os.fstat(parent)) == parent_witness == stable(os.fstat(current_parent)))
+            finally:
+                os.close(current_parent)
+            require(file_identity(os.stat(path.name,dir_fd=parent,follow_symlinks=False)) == witness
+                and os.readlink(path.name,dir_fd=parent) == self.selected["service_path"])
+            resolve_owned_unit_fragment(path,self.selected["service_path"])
+
+    def close(self):
+        for descriptor in reversed(self.held):
+            os.close(descriptor)
+        self.held = []
+
+def recovery_loaded_properties(values):
+    require(values["LoadState"] == "loaded" and values["ActiveState"] == "inactive"
+        and values["SubState"] == "dead" and values["MainPID"] == "0" and values["ControlGroup"] == "")
+    require(values["UnitFileState"] == "enabled")
+    require(values["MemoryMax"] == str(RESIDENT_MEMORY) and values["MemorySwapMax"] == "0"
+        and values["TasksMax"] == str(RESIDENT_TASKS) and quota_us(values["CPUQuotaPerSecUSec"]) == 100000)
+
 class Admission:
     def __init__(self,manifest,home,deadline_ns):
         self.deadline_ns = deadline_ns
@@ -273,6 +421,8 @@ class Admission:
         self.created_sockets = []
         self.created_manager = False
         self.created_control = None
+        self.owned_unit = None
+        self.recovery_empty = []
         try:
             self.directory = open_directory(self.root,private=True)
             self.held.append(self.directory)
@@ -320,8 +470,10 @@ class Admission:
             control_source_fd = open_directory(self.control_source,private=True)
             self.held.append(control_source_fd)
             self.source_parents.append((self.control_source,control_source_fd,stable(os.fstat(control_source_fd))))
-            if self.selected["action"] == "install-and-enroll":
+            if self.selected["action"] in ("install-and-enroll","activate-existing-and-enroll"):
                 require(not os.listdir(control_source_fd))
+            if self.selected["action"] == "activate-existing-and-enroll":
+                self.recovery_empty.append(control_source_fd)
             os.mkdir(self.control_child,0o700,dir_fd=self.directory)
             control_placeholder = self.root/self.control_child
             self.created_control = (control_placeholder,stable(control_placeholder.stat(follow_symlinks=False)))
@@ -336,6 +488,13 @@ class Admission:
                 self.product_directories.append((path,fd,stable(os.fstat(fd))))
                 if self.selected["action"] == "install-and-enroll":
                     require(not os.listdir(fd))
+                elif self.selected["action"] == "activate-existing-and-enroll" and name == "runtime_state":
+                    require(not os.listdir(fd))
+                    self.recovery_empty.append(fd)
+            if self.selected["action"] == "activate-existing-and-enroll":
+                self.owned_unit = OwnedUnitCustody(self.selected)
+                selected_unit = canonical(self.selected["service_path"])
+                self.owned_unit.verify_fragment(selected_unit.parents[4]/".config/systemd/user"/selected_unit.name)
             self.facts = self.recheck()
         except BaseException:
             self.close()
@@ -360,6 +519,8 @@ class Admission:
             require(socket_witness(path) == witness)
         for path,fd,witness in self.source_parents+self.product_directories:
             require(stable(os.fstat(fd)) == witness == stable(path.stat(follow_symlinks=False)))
+        if self.owned_unit is not None:
+            self.owned_unit.recheck()
         return {"scope":"resident-enrollment","source_contents_read":False,
             "resident_memory":RESIDENT_MEMORY,"resident_tasks":RESIDENT_TASKS,"resident_cpu_percent":RESIDENT_CPU_PERCENT,
             "proof_memory":PROOF_MEMORY,"proof_tasks":PROOF_TASKS,"proof_cpu_percent":PROOF_CPU_PERCENT}
@@ -389,7 +550,11 @@ class Admission:
             "DBUS_SESSION_BUS_ADDRESS":"unix:path=/run/user/"+str(os.getuid())+"/bus"}
         remaining = min(15,(self.deadline_ns-time.monotonic_ns())/10**9)
         require(remaining > 0)
-        result = subprocess.run([str(systemctl),"--user","show","--property=LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec",
+        recovering_action = self.selected["action"] == "activate-existing-and-enroll"
+        properties = "LoadState,ActiveState,SubState,MainPID,FragmentPath,ControlGroup,MemoryMax,MemorySwapMax,TasksMax,CPUQuotaPerSecUSec"
+        if recovering_action:
+            properties += ",UnitFileState"
+        result = subprocess.run([str(systemctl),"--user","show","--property="+properties,
             "ai.xoxd.omux.service"],env=env,stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=remaining,check=False)
         require(type(starting) is bool)
@@ -399,18 +564,30 @@ class Admission:
             and not result.stderr and len(result.stdout) <= 16384)
         values = unique(line.split("=",1) for line in result.stdout.decode("ascii").splitlines())
         require(set(values) == {"LoadState","ActiveState","SubState","MainPID","FragmentPath","ControlGroup",
-            "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"})
+            "MemoryMax","MemorySwapMax","TasksMax","CPUQuotaPerSecUSec"} | ({"UnitFileState"} if recovering_action else set()))
         if starting_new:
             require(values["LoadState"] == "not-found" and values["ActiveState"] == "inactive"
                 and values["SubState"] == "dead" and values["MainPID"] == "0"
                 and values["FragmentPath"] == "" and values["ControlGroup"] == "")
             return {"active":False,"new_owned_service_admitted":True}
+        recovering = starting and self.selected["action"] == "activate-existing-and-enroll"
+        if recovering:
+            recovery_loaded_properties(values)
+            require(self.selected["ownership"] == "omux-installation"
+                and self.selected["permissions"]["activate_service"]
+                and len(self.recovery_empty) == 2 and all(not os.listdir(fd) for fd in self.recovery_empty))
+            self.owned_unit.verify_fragment(values["FragmentPath"])
+            return {"active":False,"owned_partial_install_admitted":True,"bounded":True}
         require(values["LoadState"] == "loaded" and values["ActiveState"] == "active"
             and values["SubState"] == "running" and values["MainPID"].isdecimal())
         fragment = canonical(values["FragmentPath"])
         selected = canonical(self.selected["service_path"])
-        require(fragment == selected or self.selected["ownership"] == "home-manager"
-            and fragment.resolve(strict=True) == selected.resolve(strict=True))
+        if self.selected["ownership"] == "omux-installation":
+            if self.owned_unit is None:
+                self.owned_unit = OwnedUnitCustody(self.selected)
+            self.owned_unit.verify_fragment(fragment)
+        else:
+            require(fragment == selected or fragment.resolve(strict=True) == selected.resolve(strict=True))
         pid = int(values["MainPID"])
         ticks = start_ticks(pid)
         name = values["ControlGroup"]
@@ -450,6 +627,9 @@ class Admission:
         return int(remaining)
 
     def close(self):
+        if getattr(self,"owned_unit",None) is not None:
+            self.owned_unit.close()
+            self.owned_unit = None
         for placeholder,path,witness in reversed(getattr(self,"created_sockets",[])):
             placeholder.close()
             if path.exists() and stable(path.stat(follow_symlinks=False)) == witness:
