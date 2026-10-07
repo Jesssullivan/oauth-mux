@@ -2,6 +2,8 @@
   "schema_version": 1,
   "architecture": "docs/plans/omux-native-account-lifecycle-reset-2026-10-02.md",
   "current": [
+    "docs/agent-notes/2026-10-07-standard-os-vault.md",
+    "docs/agent-notes/2026-10-07-vault-native-checkpoint.md",
     "docs/agent-notes/2026-10-07-sess-omux-private-enrollment.md",
     "AGENTS.md",
     "README.md",

@@ -48,6 +48,35 @@ enrollment and execution regression targets. These tests and actual new metadata
 Unlock/Prompt and resident custody readback are unrun at this source checkpoint.
 Earlier I10 tests cannot qualify this changed graph.
 
+## Neo SOP readback
+
+Read-only public Lab inspection on Neo identified source HEAD
+`ec51ffe238eb8919ec82b2a9d31507d7ac999df3`. Its current AGENTS.md assigns
+the host-local `become/password` leaf to sudo (R-C277/R-C288), not to a
+Secret Service collection. Searches of public Nix/host/Home Manager/role/script
+configuration and operation/agent notes found no declared keyring-unlock
+factor binding. This is inspected source scope, not proof of every host's
+private configuration or current collection state. Linux MCP OAuth storage
+being configured as file-based supplies no OS-vault password mapping.
+
+The first SSH reads refused before authentication because the installed
+system crypto policy named algorithms unsupported by the pinned SSH client.
+Root used the existing source-inspection `ssh_policy.operator_config` helper:
+bounded read-only public configuration copy, supported subset of the original
+permitted algorithms, existing owned GPG agent socket, strict existing host-key
+verification, batch mode and a thirty-second timeout. Successful source reads
+made no Neo edits, builds, service changes, key listing or secret reads.
+Authority/alternative receipt: root | explicit Neo public-source inspection |
+user instruction check on Neo | R-N12/R-N13 | pre-auth crypto-policy refusal |
+compatible read-only client configuration and successful public-source readback.
+
+I10 declared run `c4a92d60-dd85-4890-a5ee-a145d7b44525` ended with exits 3/3,
+empty descendants and preserved evidence. Receipt SHA256
+`76da81cd50345dc227808756144951fcd4a6b6e9d260c88c8af1e1c2a1364093`.
+Vault models, fresh-runtime consumer, enrollment guard and source receipt passed.
+Only docs_check failed on its unclassified I10 checkpoint note. This branch
+classifies both checkpoint notes before its own declared verification.
+
 ## Actual native outcome
 
 Frozen N4 `b332f596c711e45a7fea4ebcdae559f543cc3816` qualification/CLI attempt
