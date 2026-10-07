@@ -5821,13 +5821,27 @@ test "locked vault startup keeps bounded diagnostics and refuses all custody wor
     }
     for (control.methods) |method| {
         if (eql(method.name, "system.handshake") or eql(method.name, "system.health") or eql(method.name, "setup.readiness") or eql(method.name, "setup.evidence") or eql(method.name, "setup.plan")) continue;
-        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name, .params = .{} }, .{});
+        // Absent params is a valid envelope. An empty Zig tuple serializes
+        // as [], which the control wire contract correctly refuses first.
+        const request = try std.json.Stringify.valueAlloc(allocator, .{ .jsonrpc = "2.0", .id = 2, .method = method.name }, .{});
         defer allocator.free(request);
         const reply = try current.dispatch(allocator, request, method.channel);
         defer allocator.free(reply);
         var parsed = try std.json.parseFromSlice(std.json.Value, allocator, reply, .{});
         defer parsed.deinit();
         try std.testing.expectEqualStrings("VaultLocked", try control.string(control.get(parsed.value, "error").?, "message"));
+    }
+    for ([_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"source.connect\",\"params\":true}",
+    }) |malformed| {
+        const refusal = try current.dispatch(allocator, malformed, .control);
+        defer allocator.free(refusal);
+        var result = try std.json.parseFromSlice(std.json.Value, allocator, refusal, .{});
+        defer result.deinit();
+        const failure = control.get(result.value, "error").?;
+        try std.testing.expectEqualStrings("InvalidRequest", try control.string(failure, "message"));
+        try std.testing.expectEqual(@as(i64, -32600), control.get(failure, "code").?.integer);
     }
     const native_handshake = try current.dispatch(allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"system.handshake\"}", .adapter);
     defer allocator.free(native_handshake);
