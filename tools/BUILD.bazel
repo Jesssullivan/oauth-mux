@@ -1444,6 +1444,16 @@ exports_files([
     "codex_sdk_selection_repository.bzl",
 ])
 
+python_binary(
+    name = "codex_retained_sdk_export_run",
+    main = "codex_retained_sdk_export.py",
+    data = ["@omux_sdk_selection//:sdk-selection.json", "@omux_sdk_selection//:sdk-selection.sha256"],
+    args = ["--phase", "export", "--selection", "$(location @omux_sdk_selection//:sdk-selection.json)",
+            "--selection-sha-file", "$(location @omux_sdk_selection//:sdk-selection.sha256)"],
+    tags = ["manual", "no-remote", "no-cache"],
+)
+
+
 alias(name = "codex_retained_sdk_export", actual = ":codex_retained_sdk_export_producer")
 # Fresh experimental maintained-native carrier; fixed declared inputs/tools only.
 runtime_inputs_manifest(name = "fresh_native_runtime_files", srcs = "@omux_nix//:runtime_libraries")

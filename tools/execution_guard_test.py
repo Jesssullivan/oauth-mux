@@ -47,6 +47,19 @@ class FakeClock:
 
 
 class GuardTest(unittest.TestCase):
+    def test_sdk_export_run_is_one_exact_guarded_writer(self):
+        run = Path('/private/12345678-1234-1234-1234-123456789abc')
+        args = ['run','//tools:codex_retained_sdk_export_run']
+        command = bazel_command('/store/bazel',run,args)
+        self.assertIn('--run_env=OMUX_SDK_EXPORT_EPOCH='+str(run),command)
+        self.assertIn('--run_env=OMUX_EXECUTION_GUARD='+str(run),command)
+        self.assertNotIn('--nozip_undeclared_test_outputs',command)
+        self.assertEqual(command[-1],args[-1])
+        for changed in (args+['//:extra'],args+['--','--output=/tmp'],['run','//tools:codex_retained_sdk_qualify']):
+            with self.assertRaises(ValueError): bazel_command('/store/bazel',run,changed)
+        with self.assertRaises(ValueError): bazel_command('/store/bazel',run,args,profile='codex-live')
+        test = bazel_command('/store/bazel',run,['test','//tools:codex_retained_sdk_export'])
+        self.assertFalse(any(arg.startswith('--run_env=OMUX_SDK_EXPORT_EPOCH=') for arg in test))
     def test_pids_metadata_is_bounded_canonical_and_closed(self):
         from execution_guard import parse_pids_metadata
         self.assertEqual(parse_pids_metadata(b'512\n', 'pids.max'), 512)

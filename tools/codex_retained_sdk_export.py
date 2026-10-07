@@ -694,8 +694,18 @@ def main():
     parser.add_argument('--selection-sha-file')
     args = parser.parse_args()
     budget = Budget(args.deadline_unix if args.deadline_unix is not None else time.time()+900)
-    parent = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR'])
-    public_parent = open_dir(parent)
+    epoch = os.environ.get('OMUX_SDK_EXPORT_EPOCH')
+    if epoch is not None:
+        need(args.phase=='export' and epoch==os.environ.get('OMUX_EXECUTION_GUARD'),
+             'SDK export epoch must match guarded writer ownership')
+        parent = Path(epoch)
+        need(parent.is_absolute() and '..' not in parent.parts and
+             re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',parent.name),
+             'SDK export requires canonical guarded epoch')
+        public_parent = open_dir(parent,private=True)
+    else:
+        parent = Path(os.environ['TEST_UNDECLARED_OUTPUTS_DIR'])
+        public_parent = open_dir(parent)
     try:
         need(os.fstat(public_parent).st_uid==os.getuid(),'Bazel output parent ownership')
         # Bazel owns output-parent permissions; use only a fresh private child.
@@ -777,7 +787,8 @@ def main():
             == selection['registry_metadata'],'sealed registry metadata readback mismatch')
         selection['qualification_only'] = False
         selection['selection_sha256'] = args.selection_sha256
-        selection['producer'] = '//tools:codex_retained_sdk_export_producer'
+        selection['producer'] = ('//tools:codex_retained_sdk_export_run' if epoch is not None
+                                 else '//tools:codex_retained_sdk_export_producer')
         passes = budget.entry_counts()
         selection['counts'] = {'entries_read':sum(passes.values()),'bytes_read':budget.bytes,
                                'inventory_passes':passes,'max_entries_per_pass':MAX_FILES,'max_inventory_passes':3}

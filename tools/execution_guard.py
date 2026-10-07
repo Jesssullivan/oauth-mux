@@ -883,12 +883,13 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
 
 def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=None, source_dirty=None, nixpkgs_source=None, output_base=None, site_source=None, site_inventory=None, site_inventory_sha256=None, site_nixpkgs_source=None, codex_pack_directory=None, profile='standard', codex_recovery_source=None, codex_pristine_directory=None, codex_recovery_delta_directory=None, codex_owner_runtime_directory=None, codex_fresh_runtime_selection=None, codex_fresh_runtime_sha256=None, codex_fresh_runtime_bytes=None):
     format_base = ['run', '//:format', '--', 'src/main.zig', 'src/setup_collector.zig', 'src/setup_collector_tests.zig']
+    sdk_export_run = profile=='standard' and arguments==['run','//tools:codex_retained_sdk_export_run']
     formatter = profile == 'standard' and (arguments == format_base or
                                            arguments == format_base + ['src/engine.zig'] or
                                            arguments == ['run', '//:format', '--', 'src'] or
                                            arguments == ['run', '//delivery:linux_launcher_format', '--',
                                                          'delivery/linux_launcher.zig'])
-    if not arguments or (arguments[0] not in ('build', 'test') and not formatter):
+    if not arguments or (arguments[0] not in ('build', 'test') and not formatter and not sdk_export_run):
         raise ValueError('explicit Bazel verb required')
     # Do not accept startup flags/output-base overrides before the verb.
     # Strict local graph: no caller flags/config/remote execution/delegation.
@@ -952,6 +953,9 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
         live.selected(arguments)
         test_args += ['--test_env=' + live.VARIABLE + '=' + live.DESTINATION]
     threads = controller_thread_profile()
+    run_args = ['--run_env=OMUX_SDK_EXPORT_EPOCH='+str(run),
+                '--run_env=OMUX_EXECUTION_GUARD='+str(run)] if sdk_export_run else []
+    # Exactly one finite writer; no caller argv or other RUN labels admitted.
     return [bazel, '--batch', '--nosystem_rc', '--nohome_rc',
             '--host_jvm_args=-Xmx1536m', '--host_jvm_args=-XX:ActiveProcessorCount=2',
             '--noworkspace_rc', '--output_base=' + str(output_base or run / 'output-base')] + arguments[:1] + [
@@ -961,7 +965,7 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--spawn_strategy=' + ('linux-sandbox' if profile == 'codex-live' else 'sandboxed'), '--remote_executor=',
             '--remote_cache=', '--disk_cache=', '--sandbox_default_allow_network=false',
             '--enable_bzlmod', '--noenable_workspace', '--incompatible_strict_action_env',
-            '--@rules_zig//zig/settings:use_standalone_translate_c', '--lockfile_mode=error'] + cache_args + evaluation_args + site_args + pack_args + retained_args + test_args + provenance + arguments[1:]
+            '--@rules_zig//zig/settings:use_standalone_translate_c', '--lockfile_mode=error'] + cache_args + evaluation_args + site_args + pack_args + retained_args + test_args + run_args + provenance + arguments[1:]
 
 
 def yoga_command(bazel, run, arguments, admission, *, manager, source_commit=None, source_dirty=None):
