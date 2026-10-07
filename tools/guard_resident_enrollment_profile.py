@@ -27,6 +27,7 @@ PROOF_MEMORY = 4294967296 - RESIDENT_MEMORY
 PROOF_TASKS = 512 - RESIDENT_TASKS
 PROOF_CPU_PERCENT = 200 - RESIDENT_CPU_PERCENT
 DIAGNOSTIC_PHASES = frozenset(("unknown","arguments","namespace-directory","namespace-placeholders",
+    "session-bus-peer","session-manager-peer","session-bus-peer-recheck","session-manager-peer-recheck",
     "runtime-directory","session-parents","session-peers","private-manifest","manifest-schema",
     "control-directory","control-placeholder","product-directories","owned-unit","owned-update",
     "owned-first-start","existing-enrollment","namespace-recheck","manifest-recheck","placeholder-recheck",
@@ -564,8 +565,7 @@ class Admission:
                 require(os.fstat(fd).st_uid == os.getuid())
                 self.held.append(fd)
                 self.source_parents.append((path.parent,fd,stable(os.fstat(fd))))
-            self.diagnostic_phase = "session-peers"
-            self.socket_identities = {path:socket_witness(path) for path in self.sources.values()}
+            self.socket_identities = {path:self.session_peer_witness(path) for path in self.sources.values()}
             self.diagnostic_phase = "private-manifest"
             self.file = os.open("input.json",os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=self.directory)
             self.held.append(self.file)
@@ -629,6 +629,13 @@ class Admission:
             self.close()
             raise
 
+    def session_peer_witness(self,path,*,recheck=False):
+        # The roles come only from the two fixed source bindings. No pathname
+        # or caller value is emitted, and the witness/connection is unchanged.
+        role = "session-manager-peer" if path == self.sources[self.root/"systemd/private"] else "session-bus-peer"
+        self.diagnostic_phase = role+"-recheck" if recheck else role
+        return socket_witness(path)
+
     @diagnostic_method
     def recheck(self):
         self.diagnostic_phase = "namespace-recheck"
@@ -649,8 +656,7 @@ class Admission:
             self.diagnostic_phase = "placeholder-recheck"
             require(regular_mountpoint_witness(path,descriptor) == witness)
         for path,witness in self.socket_identities.items():
-            self.diagnostic_phase = "session-peer-recheck"
-            require(socket_witness(path) == witness)
+            require(self.session_peer_witness(path,recheck=True) == witness)
         for path,fd,witness in self.source_parents+self.product_directories:
             self.diagnostic_phase = "parent-recheck"
             require(stable(os.fstat(fd)) == witness == stable(path.stat(follow_symlinks=False)))

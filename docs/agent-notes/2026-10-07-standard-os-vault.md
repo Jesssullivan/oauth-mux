@@ -2,13 +2,15 @@
 title: Standard Secret Service setup and actual native build limit
 date: 2026-10-07
 status: active
-summary: Source-reviewed OS-mediated unlock avoids guessing a sudo factor; platform proof remains pending.
+summary: Installed Locked control and controller/runtime models passed; restoration encounters refused session IPC and vault binding remains operator-owned.
 refs:
   - TIN-2063
   - TIN-5338
   - TIN-1818
   - https://github.com/Jesssullivan/oauth-mux/pull/535
   - https://github.com/Jesssullivan/oauth-mux/pull/536
+  - https://github.com/Jesssullivan/oauth-mux/pull/537
+  - https://github.com/Jesssullivan/oauth-mux/pull/538
 ---
 
 Authority: user-authorized normal OS unlock via Lab SOPs and the explicit
@@ -282,3 +284,42 @@ required. No credentials, factor, native auth/history or provider operation.
 All three engine/docs/source tests passed on signed9e34. This proves the runtime phase/routing regression within model scope; installedI8 software remains unchanged. Root now applied independently reviewed diagnostic proposal164c6853b39737c3d04cbca169174d45c63c580f4fde52988dc58639766c678e. It adds only closed phase/symbolic errno projection through exact tagged exceptions, preserving admission predicates, ordering, OSError/ValueError categories, nested earliest tags, owned cleanup, service argv and limits. It never renders arbitrary error text or paths. Five meaningful new methods cover hostile exception rendering, partial Admission cleanup, manager query failure, nested qualification open and refused cgroup opens. Diagnostics/controller/docs/source tests are queued before any restoration diagnostic action. The prior cause remains unknown.
 
 Git receipt: root | own standard fork, explicit four controller/test files and existing classified note | R-N12/R-N13 | no active executor or service | invocation-local hooksPath=/dev/null and signed commit; Original index untouched.
+
+## Actual session refusal and operator handoff — 21:59 UTC
+
+All eight diagnostic/controller/docs/source tests passed on
+0e8757bda03e14efe536bd6b157aaaaae5435385 in dbf05e79-9d81-4e5c-ae07-b7905b6b4615;
+receipt SHA6f7eddce7605261f73ddff996a54673de102b6280e0690eb58651f26362bb8ff,
+evidence SHA6f9bccf6e46ce4327cd887a0dd56bdf7f99a996230c8ca3340122dac92abb5a1.
+Actual owned restoration then refused before epoch/manager query/service launch:
+operatorinputs/OSError, session-peers/ECONNREFUSED. Capture is retained in private
+operator storage; the redacted result is copied into the Original tracker/session
+note. The exact bus-versus-manager endpoint remains unknown at this checkpoint.
+No daemon cgroup/control socket/database appeared; pristine installation remains.
+
+The Neo operator owns two requested observations: identify the declared OS-vault
+unlock binding (role/path only, no factor values), and establish usable Sting
+user-session IPC using the Lab's own operational context. Root has not restarted
+shared D-Bus, a user manager, agent session or another owner's service. Public Lab
+SOP inspection found no narrow repair/binding recipe in its searched scope.
+Normal OS unlock and Omux custody/readiness must still be proved independently.
+
+Root applied independently reviewed peer-role refinement SHA
+118677740359ea94f71f589f5cdcc5b95c6bbb691dfc5a0b76e5b11b62281635:
+fixed bus/manager initial/recheck phase tags only, preserving original connection
+order, socket witness and refusal/cleanup. One meaningful regression uses owned
+synthetic AF_UNIX nonlistening sockets to prove actual ECONNREFUSED classification,
+FD/placeholder cleanup and preserved runtime endpoints; it never contacts a host
+bus. Five controller/docs/source regression targets are queued before capture.
+No speculative session repair, factor inference or changed admission is added.
+
+Separate native9 timed out under its original budget (9047cd6f, receipt SHA
+48feccb2542c7505567827215f1ddb266840c7635e85d1fb467a77bbe0a60fc1),
+with owned empty cleanup and input reverification. Schema10 is closed; no retry,
+cache adoption, native CLI/resume/accepted-history/live handoff claim follows.
+Zero retained enrolled accounts. All goal acceptance and publication states remain
+incomplete; source models and installed Locked control keep their exact scope.
+
+Git receipt: root | own standard fork, explicit two helper/model files and note |
+R-N12/R-N13 | prior payload ended/no active resident | invocation-local hooks
+bypass and signed commit; Original index remains untouched.
