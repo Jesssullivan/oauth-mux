@@ -123,7 +123,11 @@ def transition_graph(inventory):
         size += len(path.encode())
         require(size <= 128 * 1024, 'transition graph paths exceed bound')
         digest.update(path.encode() + b'\0' + bytes.fromhex(sha(value)))
-    return digest.hexdigest(), sorted(inventory)
+    # graph_digest hashes lexical paths but returns os.walk selection order:
+    # files in each directory precede its sorted descendant directories.
+    selected = sorted(inventory,
+        key=lambda path: (Path(path).parent.parts, Path(path).name))
+    return digest.hexdigest(), selected
 
 def controller_inventory(root, graph, deadline):
     from codex_sdk_profile import hash_regular

@@ -65,6 +65,40 @@ class CandidateAdmissionTests(unittest.TestCase):
             native.verify_readonly(actual, args, plan)
 
 class TransitionAmendmentModels(unittest.TestCase):
+    def test_transition_inventory_matches_actual_graph_digest_directory_order(self):
+        import hashlib
+        import codex_native_candidate_cache as cache
+        from guard_cache import graph_digest
+        # Actual graph_digest traverses a real tree. Deliberately create paths
+        # in reverse order; root files must precede lexical-earlier children.
+        selected = ['BUILD.bazel', 'flake.nix', 'a/BUILD.bazel',
+                    'a/deep/x.bzl', 'a-peer/BUILD.bazel', 'clients/linux/BUILD.bazel',
+                    'tools/a.py', 'tools/z.py', 'tools/nested/a.py']
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in reversed(selected):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(('actual declared input:' + name).encode())
+            actual = graph_digest(root)
+            self.assertEqual(actual[1], selected)
+            self.assertNotEqual(actual[1], sorted(selected))
+            inventory = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+                         for name in reversed(selected)}
+            self.assertEqual(cache.transition_graph(inventory), actual)
+            with patch('codex_native_candidate_cache.trusted_parent',
+                       side_effect=lambda path: os.open(path,
+                           os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)):
+                self.assertEqual(cache.controller_inventory(root, actual, None), inventory)
+                with self.assertRaisesRegex(ValueError, 'graph inventory mismatch'):
+                    cache.controller_inventory(root, (actual[0], sorted(selected)), None)
+            # Directory-order correction must not change the graph digest.
+            digest = hashlib.sha256()
+            for name in sorted(selected):
+                digest.update(name.encode() + bytes((0,))
+                              + bytes.fromhex(inventory[name]))
+            self.assertEqual(actual[0], digest.hexdigest())
+
     def model(self):
         import copy
         import hashlib
