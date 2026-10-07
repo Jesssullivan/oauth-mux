@@ -7,6 +7,8 @@ load(":home_manager_bundle_repository.bzl", "BUNDLE_SHA256", "BUNDLE_RECEIPT_SHA
 load(":cc_toolchain_environment_check.bzl", "cc_toolchain_environment_check")
 
 _CODEX_SDK_SOURCES = [
+    "codex_native_candidate_cache.py",
+    "codex_native_profile.py", "codex_live_source.py", "codex_retained_sdk_export.py",
     "codex_sdk_profile.py", "codex_fresh_source.py", "codex_recovery_delta.py",
     "fetch_codex_archives.py", "restore_pristine_inputs.py",
     "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:refresh_artifact.py",
@@ -47,6 +49,18 @@ python_test(
     tags = ["manual", "no-remote", "no-cache"],
     timeout = "long",
     target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+
+python_test(
+    name = "codex_native_candidate_cache_test",
+    main = "codex_native_candidate_cache_test.py",
+    srcs = _CODEX_SDK_SOURCES + ["guard_cache.py"],
+)
+
+python_test(
+    name = "codex_native_profile_test",
+    main = "codex_native_profile_test.py",
+    srcs = _CODEX_SDK_SOURCES,
 )
 python_test(
     name = "codex_owner_runtime_input_test",
@@ -1005,7 +1019,7 @@ python_binary(
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
     visibility = ["//visibility:public"],
 )
 
@@ -1382,3 +1396,50 @@ python_test(
     srcs = ["guard_codex_live_profile.py", "guard_dependency_profile.py",
             "guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
 )
+
+# Root first copies the exact reviewed UNAPPLIED.source.py bytes to the main
+# filename below. Patch digests are declared target arguments selected by
+# root after final native review, in text/completion/enrollment order.
+python_test(
+    name = "codex_live_source_producer",
+    main = "codex_live_source.py",
+    data = ["@omux_codex_live_source_inputs//:inputs"],
+    args = [
+        "--patch-sha256", "2d819f44ce06d6bb948ba99d72279267e8fc242c57d4bf746d3b95b907414cb7",
+        "--patch-sha256", "3851e3d5c1901cafa7cd0bae63a7ac84b1baac7b1f6be3102cc7b185e97ecd53",
+        "--patch-sha256", "84ec6ddc333361b4785ac0c9b0a212ce7b25f200fb22c30eb0abdc21883c5ec5",
+    ],
+    tags = ["manual"],
+    timeout = "long",
+)
+
+python_test(
+    name = "codex_live_source_test",
+    main = "codex_live_source_test.py",
+    srcs = ["codex_live_source.py"],
+)
+# Finite public read-only retained SDK producer. Manual, local, never remote.
+# Arguments come from the root-selected finite metadata repository.
+python_test(
+    name = "codex_retained_sdk_qualify",
+    main = "codex_retained_sdk_export.py",
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+python_test(
+    name = "codex_retained_sdk_export_producer",
+    main = "codex_retained_sdk_export.py",
+    data = ["@omux_sdk_selection//:sdk-selection.json", "@omux_sdk_selection//:sdk-selection.sha256"],
+    args = ["--phase", "export", "--selection", "$(location @omux_sdk_selection//:sdk-selection.json)",
+            "--selection-sha-file", "$(location @omux_sdk_selection//:sdk-selection.sha256)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    timeout = "long",
+)
+
+exports_files([
+    "codex_retained_sdk_export.py",
+    "codex_sdk_selection_repository.bzl",
+])
+
+alias(name = "codex_retained_sdk_export", actual = ":codex_retained_sdk_export_producer")

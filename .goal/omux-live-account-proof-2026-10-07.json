@@ -17,8 +17,8 @@
   "publication_authorized": false,
   "current_owned_execution": {
     "state": "none",
-    "last_epoch": "c556012e-bf08-4f14-8355-32bee408f4c6",
-    "last_result": "failed_native_checkpoint"
+    "last_epoch": "75c67e38-005d-4582-911c-a970f92508f2",
+    "last_result": "failed_at_sealed_custody_after_verified_enrollment"
   },
   "source_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
   "source_branch": "codex/omux-real-account-continuity-20261007",
@@ -31,7 +31,12 @@
     {
       "id": "one-hour-capability",
       "due": "2026-10-07T06:48:41Z",
-      "scope": "Identify and implement minimal enrollment, live execution and native portability gaps."
+      "scope": "Identify and implement minimal enrollment, live execution and native portability gaps.",
+      "result": {
+        "recorded_at": "2026-10-07T06:53:17Z",
+        "state": "minimum_source_implemented_models_passed_live_action_admitted",
+        "scope": "First-account proof/live admission and cold discovery source delivered locally; fresh source/SDK proposals ready. Real identities/native resume/handoff remain unproved."
+      }
     },
     {
       "id": "two-hour-account-launch",
@@ -95,5 +100,5 @@
     "Browser consent, Home Manager activation, Darwin and general support",
     "Signing, store publication, website publication and achieved SLOs"
   ],
-  "next_action": "Qualify enrollment/live admission models then run real first-account identity/custody/restart proof; diagnose native discovery OS failure independently."
+  "next_action": "Qualify applied fresh native source/SDK/controller models; repair SQLite file custody, then actual sealed enrollment retry and fresh native source/SDK production."
 }

@@ -541,7 +541,7 @@ DELEGATION_ENV = ('DBUS_SESSION_BUS_ADDRESS', 'DBUS_SYSTEM_BUS_ADDRESS',
 
 
 def blocked_paths(profile='standard'):
-    if profile not in ('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'site', 'yoga-toolbar', 'yoga-controller-delivery'):
+    if profile not in ('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery'):
         raise ValueError('unknown mask profile')
     # Mask containing directories: mounting over individual host sockets can
     # be prohibited by the host's mandatory-access policy. The directory mask
@@ -844,7 +844,7 @@ def selected_site_receipt(path, expected_sha256, state_root, coordination_root, 
 
 def verify(actual, cgroup, manager='user', isolation=None, profile='standard', runtime_seconds=None):
     for key, value in {**PROPERTIES, **(isolation or SANDBOX)}.items():
-        if key == 'RuntimeMaxUSec' and (profile == 'yoga-controller-delivery' or
+        if key == 'RuntimeMaxUSec' and (profile in ('yoga-controller-delivery', 'codex-native') or
                 profile in ('standard', 'codex-live') and runtime_seconds is not None):
             import yoga_delivery_settings as delivery_settings
             delivery_settings.effective_runtime(actual.get(key), runtime_seconds)
@@ -857,7 +857,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
             home = Path(pwd.getpwuid(os.getuid()).pw_dir)
             yoga.verify_masks(actual, home, actual.get('BindReadOnlyPaths', '').split())
         else:
-            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'yoga-controller-delivery', 'codex-live') else profile)
+            verify_system_masks(actual.get('TemporaryFileSystem', ''), profile='standard' if profile in ('codex-sdk', 'codex-native', 'yoga-controller-delivery', 'codex-live') else profile)
         if profile in ('installed-browser', 'site', 'yoga-toolbar') and '/etc/environment' not in {
                 path.lstrip('-') for path in actual.get('InaccessiblePaths', '').split()}:
             raise ValueError('host environment file mask missing')
@@ -1053,7 +1053,15 @@ def _main(argv, admission_resources):
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--initialize-state-dir', action='store_true')
     parser.add_argument('--coordination-dir', type=Path)
-    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live'), default='standard')
+    parser.add_argument('--profile', choices=('standard', 'dependency-prefetch', 'installed-browser', 'codex-sdk', 'codex-native', 'site', 'yoga-toolbar', 'yoga-controller-delivery', 'codex-live'), default='standard')
+    parser.add_argument('--native-mode')
+    parser.add_argument('--native-source-root', type=Path)
+    parser.add_argument('--native-source-sha256')
+    parser.add_argument('--native-export-root', type=Path)
+    parser.add_argument('--native-export-sha256')
+    parser.add_argument('--native-patch-sha256', action='append')
+    parser.add_argument('--native-owned-candidate-cache', action='store_true')
+    parser.add_argument('--native-cache-attempt', type=int)
     parser.add_argument('--yoga-delivery-epoch')
     parser.add_argument('--yoga-qualification', type=Path)
     parser.add_argument('--yoga-qualification-sha256')
@@ -1082,6 +1090,39 @@ def _main(argv, admission_resources):
     sdk = None
     sdk_plan = None
     sdk_source_verified_after = None
+    native_sdk = None
+    native_plan = None
+    native_verified_after = None
+    native_controller_graph = None
+    native_cache = None
+    native_inputs = (args.native_mode, args.native_source_root, args.native_source_sha256,
+                     args.native_export_root, args.native_export_sha256, args.native_patch_sha256)
+    if args.profile == 'codex-native':
+        if args.native_owned_candidate_cache != (args.native_cache_attempt is not None):
+            raise ValueError('native continuation requires explicit finite attempt')
+        if args.native_cache_attempt is not None and not 1 <= args.native_cache_attempt <= 6:
+            raise ValueError('native continuation is limited to six attempts')
+        import codex_native_profile as native_sdk
+        args.native_deadline = delivery_entry_deadline_ns / 10**9
+        if arguments or args.native_mode not in native_sdk.MODES or any(v is None for v in native_inputs):
+            raise ValueError('native profile requires finite mode and independent receipts')
+        if args.reuse_owned_cache or any(v is not None for v in (
+            getattr(args, 'codex_live_manifest', None),
+            args.repository_cache, args.nixpkgs_source, args.site_source, args.site_inventory,
+            args.site_inventory_sha256, args.site_nixpkgs_source, args.site_phase, args.site_qualification,
+            args.site_qualification_sha256, args.site_delivery_manifest, args.site_delivery_manifest_sha256,
+            args.codex_pack_directory, args.codex_recovery_source, args.codex_pristine_directory,
+            args.codex_recovery_delta_directory, args.codex_owner_runtime_directory,
+            args.sdk_lane, args.sdk_source_root, args.sdk_source_receipt_sha256, args.sdk_settings_root,
+            args.sdk_settings_receipt_sha256, args.sdk_bundle, args.sdk_bundle_receipt_sha256,
+            args.yoga_delivery_epoch, args.yoga_qualification, args.yoga_qualification_sha256,
+            args.yoga_deadline_monotonic_ns)):
+            raise ValueError('native profile refuses unrelated profile inputs and cache reuse')
+        if args.state_dir != native_sdk.STATE:
+            raise ValueError('native profile requires fixed fresh fast state')
+        arguments = [native_sdk.MODES[args.native_mode][0], *native_sdk.MODES[args.native_mode][1]]
+    elif any(v is not None for v in native_inputs) or args.native_owned_candidate_cache or args.native_cache_attempt is not None:
+        raise ValueError('native inputs are exclusive to native profile')
     site = None
     site_qualification = None
     site_bindings = {}
@@ -1217,7 +1258,7 @@ def _main(argv, admission_resources):
     if sdk and (args.sdk_bundle != Path('/srv/fast-local/jess/state/codex/omux-dependency-prefetch-20261005/052fde9c-7e07-490f-a940-fb11820f1d31/output-base/execroot/_main/bazel-out/k8-fastbuild/testlogs/tools/fetch_codex_archives_bundle/test.outputs/bundle') or
                args.sdk_bundle_receipt_sha256 != '1d3d34323a3e19fd7e640146bf0eba006881a9bdd2d376a0493153f4cd8d30a0'):
         raise ValueError('SDK requires the exact retained archive producer receipt')
-    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or delivery_settings or args.profile == 'codex-live' else args.profile
+    mask_profile = 'installed-browser' if yoga else 'standard' if sdk or native_sdk or delivery_settings or args.profile == 'codex-live' else args.profile
     DIAGNOSTIC_STAGE = 'privilege-metadata'
     sudo = None
     if args.manager == 'system':
@@ -1233,7 +1274,7 @@ def _main(argv, admission_resources):
     closure, native, closure_digest = closure_manifest(args.closure)
     bootstrap, host, bootstrap_digest = closure_manifest(args.bootstrap_closure)
     java = store_directory(args.java_home)
-    zig = None if site else store_directory(args.zig_sdk)
+    zig = None if site or native_sdk else store_directory(args.zig_sdk)
     if zig is not None:
         immutable(zig / 'zig')
     immutable(java / 'bin/java')
@@ -1246,7 +1287,7 @@ def _main(argv, admission_resources):
     if runner != immutable(Path(native['packages']['systemctl']['out']) / 'bin/systemd-run'):
         raise ValueError('systemd-run must match native closure')
     environment = {'OMUX_BAZEL_BOOTSTRAP_CLOSURE': str(bootstrap), 'JAVA_HOME': str(java)}
-    if not site:
+    if not site and not native_sdk:
         environment.update(OMUX_BAZEL_CLOSURE=str(closure), OMUX_ZIG_SDK=str(zig))
     if delivery_settings:
         delivery_settings.budget(delivery_entry_deadline_ns, 30 * 10**9)
@@ -1363,6 +1404,10 @@ def _main(argv, admission_resources):
             yoga.publish_repository_inventory(yoga_admission, run)
             command = yoga_command(bazel, run, arguments, yoga_admission, manager=args.manager,
                                    source_commit=args.source_commit, source_dirty=args.source_dirty)
+        elif native_sdk:
+            if bazel != native_sdk.BAZEL:
+                raise ValueError('native profile requires locked Bazel9')
+            command = []
         else:
             command = site.command(bazel, java, site_qualification, run / 'output-base',
                                args.site_phase, arguments, site_bindings, run) if site else bazel_command(bazel, run, arguments, args.repository_cache,
@@ -1376,6 +1421,49 @@ def _main(argv, admission_resources):
                                 codex_recovery_delta_directory=args.codex_recovery_delta_directory,
                                 codex_owner_runtime_directory=args.codex_owner_runtime_directory)
         workload_cwd = args.site_source if site else Path.cwd()
+        if native_sdk:
+            # PATH and Bash are explicit immutable bootstrap closure inputs.
+            locked_path = ':'.join(host['packages'][name]['out'] + '/bin' for name in ('bash', 'coreutils', 'python', 'git'))
+            bash = immutable(Path(host['packages']['bash']['out']) / 'bin/bash')
+            native_controller_graph = graph_digest(Path.cwd())
+            if args.native_owned_candidate_cache:
+                from codex_native_candidate_cache import Candidate
+                def previous_empty(previous):
+                    if previous['manager'] != args.manager:
+                        return False
+                    unit_name = previous['unit']
+                    if not re.fullmatch(r'omux-execution-[0-9a-f-]{36}\.service', unit_name):
+                        return False
+                    def query(parts):
+                        return controller_run(parts, operation='unit-readback', phase='qualification',
+                            diagnose=lambda row: None, deadline=args.native_deadline)
+                    listing = query([control, '--' + args.manager, 'list-units', '--all', '--plain', '--no-legend', unit_name])
+                    if listing.strip():
+                        actual_previous = properties(query([control, '--' + args.manager, 'show', '--all', unit_name]))
+                        if actual_previous.get('ActiveState') not in ('inactive', 'failed') or actual_previous.get('MainPID') != '0':
+                            return False
+                    group = previous['observed_properties'].get('ControlGroup')
+                    if not isinstance(group, str) or not group.startswith('/') or '..' in Path(group).parts:
+                        return False
+                    path = Path('/sys/fs/cgroup') / group.lstrip('/')
+                    try:
+                        pin = CgroupPin(path)
+                    except FileNotFoundError:
+                        return True
+                    try:
+                        identity = previous['original_cgroup_identity']
+                        return pin.identity == (identity['device'], identity['inode']) and pin.observe() == 'empty'
+                    finally:
+                        pin.close()
+                tools = {'bazel': bazel, 'python': python, 'systemd_run': runner, 'systemctl': control,
+                    'bootstrap': str(bootstrap), 'closure': str(closure), 'java': str(java), 'bash': bash}
+                native_cache = Candidate(args, run, tools, native_controller_graph, locked_path,
+                    args.manager, previous_empty)
+                resources.callback(native_cache.close)
+            native_plan = native_sdk.command(args, run, locked_path, bash, native_cache)
+            command = native_plan['argv']
+            workload_cwd = Path(native_plan['cwd'])
+            environment.update(native_plan['environment'])
         if site and args.repository_cache:
             command.insert(command.index(arguments[0]) + 1, '--repository_cache=' + str(args.repository_cache))
         if sdk:
@@ -1413,9 +1501,9 @@ def _main(argv, admission_resources):
         startup_history = []
         evidence = {'state': 'not-admitted' if arguments[0] == 'test' else 'not-applicable'}
         evidence_ok = arguments[0] != 'test'
-        lease = None
-        cache_key = None
-        cache_profile = None
+        lease = native_cache.lease if native_cache is not None else None
+        cache_key = native_cache.key if native_cache is not None else None
+        cache_profile = native_cache.facts() if native_cache is not None else None
         graph_sha256 = None
         graph_inputs = []
         supervisor_pid = os.getpid()
@@ -1442,6 +1530,8 @@ def _main(argv, admission_resources):
                     parts = [sudo, '-S', '-p', '', '--'] + parts
                 if delivery_settings or owner_input is not None or live_input is not None:
                     deadline = min(deadline, delivery_entry_deadline_ns / 10**9) if deadline is not None else delivery_entry_deadline_ns / 10**9
+                if native_sdk and phase != 'cleanup':
+                    deadline = min(deadline, args.native_deadline) if deadline is not None else args.native_deadline
                 return controller_run(parts, operation=operation, phase=phase, diagnose=diagnose,
                     stdin=descriptor if descriptor is not None else subprocess.DEVNULL,
                     timeout=timeout, deadline=deadline)
@@ -1454,6 +1544,8 @@ def _main(argv, admission_resources):
             signal.signal(sig, interrupted)
         try:
             graph_sha256, graph_inputs = graph_digest(Path.cwd())
+            if native_sdk and (graph_sha256, graph_inputs) != native_controller_graph:
+                raise ValueError('native controller graph changed before dispatch')
             if owner_input is not None:
                 owner_input.recheck()
             if live_input is not None:
@@ -1565,6 +1657,10 @@ def _main(argv, admission_resources):
                 launch += ['--property=InaccessiblePaths=-/etc/environment']
             if yoga:
                 launch += ['--property=BindReadOnlyPaths=' + yoga_admission['witness']['source'] + ':' + yoga_admission['witness']['destination']]
+            if native_sdk:
+                launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
+                if native_cache is not None:
+                    launch += ['--property=BindPaths=' + str(native_cache.lease.output_base)]
             if live_input is not None:
                 launch += ['--property=BindReadOnlyPaths=' + live_input.binding()]
             unset = DELEGATION_ENV + (('OMUX_ZIG_SDK', 'OMUX_BAZEL_CLOSURE', 'OMUX_SITE_BAZEL_CLOSURE') if site else ())
@@ -1583,6 +1679,9 @@ def _main(argv, admission_resources):
             settings.pop('RuntimeMaxUSec')
             settings.pop('TimeoutStopUSec')
             settings.update(CPUQuota='200%', RuntimeMaxSec='1200', TimeoutStopSec='10')
+            if native_sdk:
+                delivery_runtime_seconds = native_sdk.runtime(args)
+                settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
             if delivery_settings:
                 delivery_runtime_seconds = delivery_settings.runtime_seconds(delivery_entry_deadline_ns)
                 settings['RuntimeMaxSec'] = str(delivery_runtime_seconds)
@@ -1628,6 +1727,8 @@ def _main(argv, admission_resources):
             original_ticks = process_start_ticks(original_pid)
             verify(actual, cgroup, args.manager, isolation, args.profile,
                    runtime_seconds=delivery_runtime_seconds)
+            if native_sdk:
+                native_sdk.verify_readonly(actual, args, native_plan)
             if live_input is not None:
                 live.verify_binding(actual, live_input.binding())
                 observed_properties = live.receipt_properties(observed_properties, verified=True)
@@ -1683,6 +1784,8 @@ def _main(argv, admission_resources):
                         if yoga else time.monotonic() + 1200)
             if delivery_settings:
                 deadline = (delivery_entry_deadline_ns - delivery_settings.CLEANUP_RESERVE_NS) / 10**9
+            elif native_sdk:
+                deadline = args.native_deadline - 120
             elif owner_input is not None or live_input is not None:
                 deadline = (delivery_entry_deadline_ns - 30 * 10**9) / 10**9
             def iteration():
@@ -1766,6 +1869,20 @@ def _main(argv, admission_resources):
                     sdk_source_verified_after = True
                 except (OSError, ValueError):
                     sdk_source_verified_after = False
+            if native_sdk:
+                try:
+                    if graph_digest(Path.cwd()) != native_controller_graph:
+                        raise ValueError('native controller graph changed')
+                    native_sdk.verify_inputs(args)
+                    fd = native_sdk.trusted_parent(Path(native_plan['cwd']))
+                    try:
+                        receipt = native_sdk.validate_source(args.native_source_root, args.native_source_sha256, args.native_patch_sha256, args.native_deadline)
+                        native_sdk.verify_inventory(fd, receipt['source_inventory'], native_sdk.EXPORT_MODE_POLICY, on_read=lambda count: native_sdk.tick(args.native_deadline))
+                    finally:
+                        os.close(fd)
+                    native_verified_after = True
+                except (OSError, ValueError, KeyError, TypeError):
+                    native_verified_after = False
             if yoga:
                 try:
                     yoga.refresh(yoga_admission, Path(pwd.getpwuid(os.getuid()).pw_dir), graph_digest(Path.cwd())[0])
@@ -1814,6 +1931,8 @@ def _main(argv, admission_resources):
                 try:
                     manifest = capture_test_evidence(lease.output_base if lease else run / 'output-base',
                                                      run, arguments[1:], result, epoch_start_ns)
+                    if native_sdk:
+                        native_sdk.meaningful_tests(run, manifest, args.native_mode)
                     refused = {'copy-refused', 'directory-refused', 'over-budget', 'unsupported-label',
                                'file-budget-exhausted', 'changed-during-copy'}
                     evidence_ok = not any(row.get('state') in refused or
@@ -1844,6 +1963,8 @@ def _main(argv, admission_resources):
                 except (OSError, ValueError):
                     live_input_verified_after = False
             final_status = result if cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+            if native_verified_after is False:
+                final_status = 125
             if pids_cancellation is not None:
                 final_status = 125
             receipt = {'id': identifier, 'unit': unit, 'exit': final_status,
@@ -1853,6 +1974,11 @@ def _main(argv, admission_resources):
                        'source_commit': args.source_commit, 'source_dirty': args.source_dirty,
                        'manager': args.manager, 'host_identity_maps': identity_maps,
                        'profile': args.profile, 'coordination_directory': str(coordination),
+                       'native_sdk': {'mode': args.native_mode, 'plan': native_plan,
+                           'source_receipt_sha256': args.native_source_sha256,
+                           'export_receipt_sha256': args.native_export_sha256,
+                           'source_and_export_verified_after_cleanup': native_verified_after} if native_sdk else None,
+                       'native_candidate_cache': native_cache.facts() if native_cache is not None else None,
                        'codex_live_input': {'verified_after_cleanup': live_input_verified_after,
                            'selected_sources': live_input.count, 'source_content_read_by_guard': False} if live_input else None,
                        'codex_live_binding_readback': live_binding_readback,
@@ -1938,7 +2064,7 @@ def _main(argv, admission_resources):
                 os.close(directory)
             if lease is not None:
                 try:
-                    if cleanup and evidence_ok and sdk_source_verified_after is not False and site_source_verified_after is not False and owner_input_verified_after is not False:
+                    if cleanup and (evidence_ok or native_cache is not None) and (native_cache is None or native_cache.may_complete(cleanup, native_verified_after)) and native_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and owner_input_verified_after is not False:
                         lease.complete(True, hashlib.sha256((run / 'receipt.json').read_bytes()).hexdigest())
                 finally:
                     lease.close()

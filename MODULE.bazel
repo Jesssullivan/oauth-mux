@@ -138,3 +138,6 @@ register_toolchains("@omux_nix//:toolchain")
 
 apple_repository = use_repo_rule("//tools:apple_repository.bzl", "omux_apple_repository")
 apple_repository(name = "omux_apple")
+
+codex_live_inputs = use_repo_rule("//tools:codex_live_source_inputs.bzl", "codex_live_source_inputs")
+codex_live_inputs(name = "omux_codex_live_source_inputs")

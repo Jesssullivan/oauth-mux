@@ -250,5 +250,121 @@
     "provider_access": "User authorization unchanged",
     "models": "unrun at source checkpoint",
     "live": "unrun on repaired namespace"
+  },
+  "c3_models": {
+    "epoch": "588a4d73-a878-41d0-9147-8572fe9a07a4",
+    "source_commit": "2865cd974e4060ce1f352546ab40e5fd96b46d21",
+    "exit": 0,
+    "descendants_empty": true,
+    "targets": [
+      "//delivery:native_terminal_failure_test",
+      "//tools:guard_codex_live_profile_test",
+      "//tools:execution_guard_test",
+      "//:docs_check",
+      "//tools:runtime_source_receipt"
+    ],
+    "test_evidence": {
+      "bytes": 223308,
+      "files": 13,
+      "manifest": "test-evidence.json",
+      "sha256": "aeb7224e2da80ccd6d54ab7744c6bf17f25f593664f2feb4533ce3e0f395f0d5",
+      "state": "preserved"
+    },
+    "scope": "Five changed-path model/docs/source checks; no provider access."
+  },
+  "c3_live_admission": {
+    "epoch": "532339df-1b17-4c6a-afca-050a0f3cb75b",
+    "exit": 125,
+    "workload_exit": 125,
+    "descendants_empty": true,
+    "cleanup": {
+      "ownership": "verified",
+      "readback_attempts": 1,
+      "state": "empty",
+      "stop": "succeeded"
+    },
+    "controller_failure": null,
+    "test_evidence": {
+      "state": "not-admitted"
+    },
+    "live_input": {
+      "selected_sources": 1,
+      "source_content_read_by_guard": false,
+      "verified_after_cleanup": true
+    },
+    "epoch_start_ns": null,
+    "provider_calls": false,
+    "scope": "Service namespace now started; exact readback refused before workload gate. Owned stop/empty verified. Actual bind normalization unobserved because immediate evidence redaction and transient properties cleared on stop."
+  },
+  "c4_source": {
+    "commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "scope": "Accept only exact readonly directory source/destination with optional literal rbind normalization, emit closed shape predicates; no cap or credential-policy changes.",
+    "model_state": "running",
+    "live_state": "not_attempted"
+  },
+  "git_delivery_pre_action": {
+    "authority": "User-authorized signed fork source delivery/admin merge workflow; R-N12/R-N13. Per-command hooks advisory bypass only; passing C2/C3 checks and current C4 review/readbacks supply alternative.",
+    "source_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "branch": "codex/omux-real-account-continuity-20261007",
+    "repo": "Jesssullivan/oauth-mux",
+    "action": "Push signed source to fork branch and create draft reviewable PR; no release/store/site/provider capability claim.",
+    "main_base": "d829b3cdd91696a375a076970214fbf0621a5f6c",
+    "history_protected": true
+  },
+  "c4_live_terminal_0701": {
+    "authority": "User-authorized live account proof; AGENTS.md; R-N11/R-N12/R-N13",
+    "recorded_at": "2026-10-07T07:05:20Z",
+    "source_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "epoch": "75c67e38-005d-4582-911c-a970f92508f2",
+    "target": "//delivery:installed_codex_live_enrollment_test",
+    "exit": 3,
+    "workload_exit": 3,
+    "controller_failure": null,
+    "descendants_empty": true,
+    "actual_binding": {
+      "entry_count": 1,
+      "source_matches": true,
+      "destination_matches": true,
+      "option": "rbind",
+      "writable_bind_present": false
+    },
+    "result": "failed_at_sealed_custody_after_verified_enrollment",
+    "full_enrollment_receipt_emitted": false,
+    "source_contents_read_by_controller": false,
+    "evidence": {
+      "sha256": "1bcae701ae6fb8041f555d1aa0df3e32bb15842891b27ceff64b6534db8048b0",
+      "files": 2,
+      "bytes": 965
+    },
+    "actual_scope": "One authenticated source reached verified enrolled authority assertions; sealed custody/restart acceptance remains unpassed. Isolated state was removed by fixture.",
+    "next": "Fix restrictive SQLite metadata creation and add precise sealed predicate phases; fresh native source/SDK model qualification in parallel source work."
+  },
+  "c4_models_terminal": {
+    "epoch": "a642701e-2d61-4505-8359-d708e32538a7",
+    "source_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "passed": [
+      "//tools:guard_codex_live_profile_test",
+      "//tools:execution_guard_test"
+    ],
+    "exit": 0,
+    "descendants_empty": true
+  },
+  "fresh_native_source_checkpoint": {
+    "authority": "User-authorized implementation; root sole source/execution writer; R-N13",
+    "status": "applied_unverified",
+    "source_producer": "//tools:codex_live_source_producer",
+    "sdk_qualifier": "//tools:codex_retained_sdk_qualify",
+    "profile": "codex-native",
+    "candidate_cache": "new_owned_finite_six_attempt_continuation",
+    "unchanged_limits": true,
+    "retained_native_source_not_modified": true
+  },
+  "source_push_result": {
+    "branch": "codex/omux-real-account-continuity-20261007",
+    "remote_commit": "5323b2917b0569792048ba801b892074464c87d3",
+    "verified": true,
+    "pr_created": false,
+    "pr_connector_result": "403 Resource not accessible by integration",
+    "publication": false
   }
 }

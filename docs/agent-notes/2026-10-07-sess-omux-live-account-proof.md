@@ -41,3 +41,11 @@ with independent signed-commit verification, explicit staging, contained Bazel
 checks and exact source/tree readbacks. Global hooks/remotes remain untouched.
 
 Applied the reviewed failure-only terminal observation to `delivery/test_installed_native_tui.py` and `delivery/test_installed_legacy_native_tui.py`. It emits closed exit/message categories only before existing cleanup; it changes no native acceptance, timeout or ownership predicate. Its privacy models and original native checkpoint are still unrun on this source.
+
+## Actual first-source result and fresh native build preparation — 07:05 UTC
+
+C4 live epoch `75c67e38-005d-4582-911c-a970f92508f2` admitted the exact read-only directory binding, with actual systemd `rbind` normalization. Network-denied build actions succeeded. The installed daemon passed the fixture's authenticated one-account enrollment assertions, then failed at sealed custody. Controller/workload3; descendants empty; input reverified; no complete enrollment receipt. The isolated custody is removed. Runtime SQLite file creation currently has no explicit0600 precreation; a narrowly owned correction and precise closed predicate diagnostics are being prepared. No custody/restart/native/handoff gate closes from this failed run.
+
+Applied fresh native source/SDK producers and a fixed `codex-native` offline profile, with new owned candidate-cache continuation limited to six bounded attempts. This source is unverified until its targeted models pass. Retained source and historical output bases remain read-only; no limits rise. Second-account enrollment uses pinned app-server device-code support, avoiding callback listeners/forwarding; private visible code presentation remains in implementation. Ordinary launch/resume and real completed-turn handoff remain unproved.
+
+Signed C4 source was pushed and independently read back. The available GitHub PR connector returned403 `Resource not accessible by integration`; no new PR was created. This is a connector permission limitation, not an automatic approval rejection. Provider proof remains the priority while an existing authorized delivery route is investigated.
