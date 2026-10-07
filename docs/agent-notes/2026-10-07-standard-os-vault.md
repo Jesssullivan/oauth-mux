@@ -323,3 +323,32 @@ incomplete; source models and installed Locked control keep their exact scope.
 Git receipt: root | own standard fork, explicit two helper/model files and note |
 R-N12/R-N13 | prior payload ended/no active resident | invocation-local hooks
 bypass and signed commit; Original index remains untouched.
+
+## Exact operator endpoint and final model checkpoint — 22:02 UTC
+
+Peer-role/controller/docs/source checks passed5/5 on signed
+48621625f2972942d68084f75befe9b115a01eff in8c608ba7-2f33-431e-9761-e4878b4d905a,
+exits0/0, empty cleanup, preserved evidence, controller failure null.
+ReceiptSHA8be827f96471a0881ea92a4d6c17c82f300b00e11697e761afa18e019a2a20a7;
+evidenceSHAae556a9762bbcac2746957c67d664a17e7db7988cd1e97e2612513a23dd4c8fc.
+
+Actual identical start-existing on4862162 refused before an epoch or workload:
+operatorinputs/OSError, session-manager-peer/ECONNREFUSED. Exact target is
+/run/user/1000/systemd/private. The preceding user-bus peer witness passed in
+the frozen ordered admission; no bus protocol/service-owner/vault-ready claim
+is made. This supersedes the earlier unknown bus-versus-manager classification.
+The cause of manager endpoint refusal and actual manager health are unknown.
+
+Neo operator handoff: establish Sting's correct live user-manager endpoint/context
+using the Lab operational lane, and identify the declared OS-vault unlock binding
+(role/path only; never factor values). Preserve the exact owned Omux unit/software,
+pristine custody and working native auth/history. Root has not restarted a shared
+session or read a factor. After usable manager IPC, repeat qualified lightweight
+start; after independently usable vault readiness, use qualified existing-archive
+enrollment for the already authorized native context. No account-profile reinterview
+is needed. Second identity and genuine native handoff remain separate unmet gates.
+
+Current branch has signed source corrections with passing model evidence; no new
+runtime archive was installed. Original15-hour objective remains incomplete with
+missed checkpoint dates preserved. Native9 closure and failed receipts remain.
+This append is documentation only; changed docs/source checks remain required.
