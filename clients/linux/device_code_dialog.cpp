@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFont>
+#include <QRawFont>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -41,6 +42,16 @@ int runNativeDeviceDialog(QApplication &app, bool offlineTest) {
     if (::fstat(STDIN_FILENO, &input) != 0 || input.st_uid != ::getuid()
         || (!S_ISFIFO(input.st_mode) && !S_ISSOCK(input.st_mode))) return 1;
     if (!offlineTest && QGuiApplication::platformName() != QStringLiteral("wayland")) return 1;
+    if (!offlineTest) {
+        // The provider-free READY action uses the same isolated font selection
+        // as consent. Refuse unreadable glyphs before accepting a private code.
+        QFont selected(QStringLiteral("DejaVu Sans"));
+        const auto physical = QRawFont::fromFont(selected);
+        if (!physical.isValid() || physical.familyName() != QStringLiteral("DejaVu Sans")) return 1;
+        for (uint character = 0x21; character < 0x7f; ++character)
+            if (!physical.supportsCharacter(character)) return 1;
+        app.setFont(selected);
+    }
     const auto flags = ::fcntl(STDIN_FILENO, F_GETFL);
     if (flags < 0 || ::fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) != 0) return 1;
     QDialog dialog;

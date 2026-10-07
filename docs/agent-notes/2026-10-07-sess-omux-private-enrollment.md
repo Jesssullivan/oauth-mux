@@ -72,3 +72,15 @@ closure, Wayland/portal and READY/EOF evidence; no provider/login capability is
 inherited. Detailed closure-row provenance refinement and actual local/host
 qualification are still pending. This source checkpoint permits testing the
 unverified proposals; it cannot claim installed readiness or account consent.
+
+Actual diagnostic bd354d06 on a45455d establishes native exit0 and a refused
+version-format predicate: twelve public version bytes, empty stderr and observed
+digest 2dca53e0fb4af76276739965cd22a5ed3902c645b3d261a44b970db2cc1e2a08.
+The next predicate accepts only the exact pinned-source binary/version bytes and
+that digest. It does not broaden native runtime selection or claim schemas.
+
+Standalone dialog inputs now select the already declared immutable Qt library
+directory, sealed public font configuration, a new owned private empty HOME,
+and actual printable-ASCII font support before READY. Static review found no
+concrete blocker. Three new helper models and actual standalone ELF/Wayland
+qualification remain unrun; no desktop action or provider consent occurred.

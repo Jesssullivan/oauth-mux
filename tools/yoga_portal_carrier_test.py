@@ -1,6 +1,7 @@
 """Provider-free carrier models. All SSH/GIO/native process launches are mocked."""
 import contextlib
 import ctypes as C
+import fcntl
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import socket
 import stat
 import subprocess
 import threading
+import tempfile
 import time
 import unittest
 from types import SimpleNamespace
@@ -25,6 +27,47 @@ FRAME = json.dumps({"verification_url":URI.decode(),"user_code":"MODEL-NOT-A-SEC
 
 
 class Models(unittest.TestCase):
+    def test_standalone_dialog_runtime_seals_public_fonts_and_removes_only_owned_empty_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"dialog_path":directory+"/control","uid":os.getuid(),"wayland_socket":"wayland-model",
+                "qt_platform_plugin":"/declared/plugins/platforms/libqwayland.so"}
+            runtime = worker.DialogRuntime(config)
+            home = Path(runtime.environment["HOME"])
+            self.assertEqual(stat.S_IMODE(home.stat().st_mode),0o700)
+            self.assertEqual(runtime.environment["LD_LIBRARY_PATH"],worker.QT_LIBRARY_DIRECTORY)
+            payload = os.pread(runtime.fonts,4096,0)
+            self.assertIn(worker.FONT_DIRECTORY.encode(),payload)
+            self.assertNotIn(b"include",payload)
+            self.assertNotIn(b"cachedir",payload)
+            self.assertEqual(runtime.environment["FONTCONFIG_FILE"],"/proc/self/fd/"+str(runtime.fonts))
+            with self.assertRaises(OSError):
+                os.pwrite(runtime.fonts,b"changed",0)
+            self.assertTrue(fcntl.fcntl(runtime.fonts,fcntl.F_GET_SEALS)&fcntl.F_SEAL_WRITE)
+            runtime.close()
+            self.assertFalse(home.exists())
+            self.assertEqual(list(Path(directory).iterdir()),[])
+
+    def test_standalone_runtime_mkdir_collision_never_removes_existing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            name = "home-00000000-0000-0000-0000-000000000000"
+            existing = Path(directory)/name
+            existing.mkdir(mode=0o700)
+            with patch.object(worker.uuid,"uuid4",return_value="00000000-0000-0000-0000-000000000000"):
+                with self.assertRaises(FileExistsError):
+                    worker.DialogRuntime({"dialog_path":directory+"/control"})
+            self.assertTrue(existing.is_dir())
+
+    def test_standalone_runtime_refuses_nonempty_home_without_deleting_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"dialog_path":directory+"/control","uid":os.getuid(),"wayland_socket":"wayland-model",
+                "qt_platform_plugin":"/declared/plugins/platforms/libqwayland.so"}
+            runtime = worker.DialogRuntime(config)
+            home = Path(runtime.environment["HOME"])
+            (home/"unexpected-public-model").write_bytes(b"model")
+            with self.assertRaisesRegex(worker.Refusal,"dialog_runtime_not_empty"):
+                runtime.close()
+            self.assertEqual((home/"unexpected-public-model").read_bytes(),b"model")
+
     def test_operator_cancel_refuses_delivery_and_is_never_success(self):
         process = Mock(returncode=1)
         process.stdin,process.stdout = io.BytesIO(),io.BytesIO()
@@ -46,7 +89,8 @@ class Models(unittest.TestCase):
         process.wait.side_effect = [subprocess.TimeoutExpired("owned-model",5),subprocess.TimeoutExpired("owned-model",5),0]
         selected = {"uid":1000,"wayland_socket":"/run/user/1000/wayland-0",
             "qt_platform_plugin":"/declared/plugins/platforms/libqwayland-egl.so"}
-        with patch.object(worker.subprocess,"Popen",return_value=process),\
+        with patch.object(worker,"DialogRuntime",return_value=Mock(fonts=101,environment={})),\
+            patch.object(worker.subprocess,"Popen",return_value=process),\
             patch.object(worker.os,"pidfd_open",side_effect=OSError("synthetic")):
             with self.assertRaises(OSError):
                 worker.Dialog(3,selected,time.monotonic()+1)
@@ -61,14 +105,15 @@ class Models(unittest.TestCase):
         process.stdout.fileno.return_value = 42
         selected = {"uid":1000,"wayland_socket":"/run/user/1000/wayland-0",
             "qt_platform_plugin":"/declared/plugins/platforms/libqwayland-egl.so"}
-        with patch.object(worker.subprocess,"Popen",return_value=process) as launch,\
+        with patch.object(worker,"DialogRuntime",return_value=Mock(fonts=101,environment={"QT_QPA_PLATFORM":"wayland"})),\
+            patch.object(worker.subprocess,"Popen",return_value=process) as launch,\
             patch.object(worker.os,"pidfd_open",return_value=99),patch.object(worker.os,"close"),\
             patch.object(worker,"read_line",return_value=b"OMUX_NATIVE_DEVICE_DIALOG_READY"):
             dialog = worker.Dialog(7,selected,time.monotonic()+1)
             arguments = launch.call_args.args[0]
             environment = launch.call_args.kwargs["env"]
             self.assertEqual(arguments,["/proc/self/fd/7","--native-device-login-stdin"])
-            self.assertEqual(launch.call_args.kwargs["pass_fds"],(7,))
+            self.assertEqual(launch.call_args.kwargs["pass_fds"],(7,101))
             self.assertEqual(environment["QT_QPA_PLATFORM"],"wayland")
             self.assertNotIn("DBUS_SESSION_BUS_ADDRESS",environment)
             self.assertFalse(any("MODEL-NOT-A-SECRET" in str(value) for value in environment.values()))

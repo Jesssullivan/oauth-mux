@@ -4,6 +4,7 @@ No callback forwarding, auth files, browser automation or private frame output.
 The controller joins the exact new dialog to the qualified locked UI closure.
 """
 import ctypes as C
+import fcntl
 import hashlib
 import json
 import os
@@ -19,6 +20,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+import uuid
 import xml.etree.ElementTree as ET
 
 MAX_LINE = 16384
@@ -315,16 +317,77 @@ def held_dialog(path,expected):
             os.close(fd)
 
 
+QT_LIBRARY_DIRECTORY = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
+FONT_DIRECTORY = "/nix/store/0wcl9csd4li3na9z59j7g1igf2c1iz33-dejavu-fonts-minimal-2.37/share/fonts/truetype"
+
+
+class DialogRuntime:
+    """Fresh empty HOME plus sealed public-only font selection, never user config."""
+    def __init__(self,config):
+        self.parent = self.home = self.fonts = None
+        self.name = self.identity = None
+        parent = Path(config["dialog_path"]).parent
+        require(parent.is_absolute() and parent.resolve(strict=True) == parent,"dialog_runtime_selector")
+        try:
+            self.parent = os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            info = os.fstat(self.parent)
+            require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,"dialog_runtime_custody")
+            name = "home-"+str(uuid.uuid4())
+            os.mkdir(name,0o700,dir_fd=self.parent)
+            self.name = name
+            info = os.stat(name,dir_fd=self.parent,follow_symlinks=False)
+            self.identity = info.st_dev,info.st_ino
+            self.home = os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.parent)
+            info = os.fstat(self.home)
+            require((info.st_dev,info.st_ino) == self.identity,"dialog_runtime_changed")
+            require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,"dialog_runtime_custody")
+            self.fonts = os.memfd_create("omux-public-font-selection",os.MFD_CLOEXEC|os.MFD_ALLOW_SEALING)
+            payload = ('<?xml version="1.0"?><fontconfig><dir>'+FONT_DIRECTORY+'</dir></fontconfig>').encode("ascii")
+            require(os.write(self.fonts,payload) == len(payload),"dialog_font_selection_refused")
+            fcntl.fcntl(self.fonts,fcntl.F_ADD_SEALS,fcntl.F_SEAL_WRITE|fcntl.F_SEAL_GROW|fcntl.F_SEAL_SHRINK|fcntl.F_SEAL_SEAL)
+            self.environment = {"LANG":"C","LC_ALL":"C","PATH":"",
+                "HOME":str(parent/self.name),"XDG_CONFIG_HOME":str(parent/self.name/"config"),
+                "XDG_DATA_HOME":str(parent/self.name/"data"),"XDG_STATE_HOME":str(parent/self.name/"state"),
+                "XDG_CACHE_HOME":str(parent/self.name/"cache"),"XDG_CONFIG_DIRS":"/.omux-native-login-unavailable",
+                "XDG_DATA_DIRS":"/.omux-native-login-unavailable","FONTCONFIG_FILE":"/proc/self/fd/"+str(self.fonts),
+                "FONTCONFIG_PATH":"/.omux-native-login-unavailable","LD_LIBRARY_PATH":QT_LIBRARY_DIRECTORY,
+                "XDG_RUNTIME_DIR":"/run/user/"+str(config["uid"]),"WAYLAND_DISPLAY":config["wayland_socket"],
+                "QT_QPA_PLATFORM":"wayland","QT_STYLE_OVERRIDE":"Fusion","QT_QPA_PLATFORMTHEME":"",
+                "QT_PLUGIN_PATH":str(Path(config["qt_platform_plugin"]).parent.parent),
+                "QT_QPA_PLATFORM_PLUGIN_PATH":str(Path(config["qt_platform_plugin"]).parent),
+                "QT_LOGGING_RULES":"*.debug=false;*.info=false;*.warning=false;*.critical=false"}
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        try:
+            if self.name is not None:
+                current = os.stat(self.name,dir_fd=self.parent,follow_symlinks=False)
+                require(self.identity is not None and (current.st_dev,current.st_ino) == self.identity
+                    and current.st_uid == os.getuid() and stat.S_IMODE(current.st_mode) == 0o700,"dialog_runtime_changed")
+                if self.home is not None:
+                    held = os.fstat(self.home)
+                    require((held.st_dev,held.st_ino) == self.identity,"dialog_runtime_changed")
+                try:
+                    os.rmdir(self.name,dir_fd=self.parent)
+                except OSError:
+                    raise Refusal("dialog_runtime_not_empty") from None
+        finally:
+            for name in ("fonts","home","parent"):
+                fd = getattr(self,name)
+                if fd is not None:
+                    os.close(fd)
+                    setattr(self,name,None)
+            self.name = None
+
+
 class Dialog:
     def __init__(self,executable,config,until):
         self.process = self.pidfd = None
+        self.runtime = None
         self.until = until
         require(hasattr(os,"pidfd_open") and hasattr(signal,"pidfd_send_signal"),"dialog_pidfd_required")
-        environment = {"LANG":"C","LC_ALL":"C","PATH":"",
-            "XDG_RUNTIME_DIR":"/run/user/"+str(config["uid"]),"WAYLAND_DISPLAY":config["wayland_socket"],
-            "QT_QPA_PLATFORM":"wayland","QT_PLUGIN_PATH":str(Path(config["qt_platform_plugin"]).parent.parent),
-            "QT_QPA_PLATFORM_PLUGIN_PATH":str(Path(config["qt_platform_plugin"]).parent),
-            "QT_LOGGING_RULES":"*.debug=false;*.info=false;*.warning=false;*.critical=false"}
         # This constructor precedes Portal/GIO initialization: fork happens
         # before GIO can create threads. Parent death closes only our dialog.
         libc = C.CDLL(None)
@@ -335,10 +398,11 @@ class Dialog:
             if libc.prctl(1,signal.SIGTERM,0,0,0) != 0 or os.getppid() != owner:
                 os._exit(1)
         try:
+            self.runtime = DialogRuntime(config)
             self.process = subprocess.Popen(["/proc/self/fd/"+str(executable),"--native-device-login-stdin"],
-                executable="/proc/self/fd/"+str(executable),pass_fds=(executable,),
+                executable="/proc/self/fd/"+str(executable),pass_fds=(executable,self.runtime.fonts),
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
-                env=environment,umask=0o077,preexec_fn=owned_child)
+                env=self.runtime.environment,umask=0o077,preexec_fn=owned_child)
             self.pidfd = os.pidfd_open(self.process.pid)
             require(read_line(self.process.stdout.fileno(),min(until,time.monotonic()+30),128)
                 == b"OMUX_NATIVE_DEVICE_DIALOG_READY","dialog_not_ready")
@@ -371,6 +435,9 @@ class Dialog:
 
     def close(self,success=False):
         if self.process is None:
+            if getattr(self,"runtime",None) is not None:
+                self.runtime.close()
+                self.runtime = None
             return
         process,self.process = self.process,None
         cleanup_failed = False
@@ -400,6 +467,9 @@ class Dialog:
                 os.close(self.pidfd)
                 self.pidfd = None
         require(not cleanup_failed,"owned_dialog_cleanup_incomplete")
+        if getattr(self,"runtime",None) is not None:
+            self.runtime.close()
+            self.runtime = None
         if success:
             require(process.returncode == 0,"dialog_cancelled")
 

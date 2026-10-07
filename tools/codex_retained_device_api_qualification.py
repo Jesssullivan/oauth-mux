@@ -25,6 +25,12 @@ LOADER_SHA = "1640ec4d1cfcc3c19430b368cbbb057c5652eac340ecba12cf9dfbe2c3769d07"
 PRODUCER_SHA = "545727183aa4e361eb1967fa3599dd30e5fd38a78f68dad9fec74793f8f713ee"
 SOURCE_SHA = "e3c6d45bc93119ddf1da8bee6e02de3c7c3a3bbe52bb6d2664eb4b7b3d7b5273"
 SCHEMA_NAMES = ("ClientRequest.json", "v2/LoginAccountParams.json", "v2/LoginAccountResponse.json")
+RETAINED_VERSION = b"codex 0.0.0\n"
+RETAINED_VERSION_SHA = "2dca53e0fb4af76276739965cd22a5ed3902c645b3d261a44b970db2cc1e2a08"
+
+def version_contract(value):
+    # This retained binary is independently pinned; its version is not generic.
+    return value == RETAINED_VERSION and len(value) == 12 and sha(value) == RETAINED_VERSION_SHA
 DEADLINE = None
 PHASE = "admission"
 PHASES = ("admission", "archive", "output", "nativeversion", "schemageneration", "schemavalidation", "finalseal")
@@ -292,7 +298,7 @@ def main():
                 phase("nativeversion")
                 version, diagnostics = native(loader, backend, runtime/"lib/codex/lib", ["--version"],
                     environment, scratch)
-                version_matches = re.fullmatch(rb"codex-cli [0-9][0-9A-Za-z.+_-]{0,127}\n", version) is not None
+                version_matches = version_contract(version)
                 print("OMUX_RETAINED_NATIVE_VERSION_" + ("MATCH" if version_matches else "FORMAT-REFUSED"),
                     file=sys.stderr, flush=True)
                 require(version_matches)
