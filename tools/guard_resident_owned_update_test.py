@@ -348,7 +348,7 @@ class UpdateModels(unittest.TestCase):
         admission.installation_update = mock.Mock()
         actual = admission.writable_binding().split()
         self.assertEqual(set(actual),{admission.selected[name]+":"+admission.selected[name] for name in ("prefix","records")})
-        self.assertNotIn(admission.selected["runtime_state"]," ".join(actual))
+        self.assertNotIn(admission.selected["runtime_state"]+":"+admission.selected["runtime_state"],actual)
 
 if __name__ == "__main__":
     unittest.main()

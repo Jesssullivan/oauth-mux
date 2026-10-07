@@ -1022,6 +1022,7 @@ python_binary(
     name = "execution_guard",
     main = "execution_guard.py",
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
+            "guard_resident_vault_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
@@ -1032,6 +1033,7 @@ python_test(
     name = "execution_guard_test",
     main = "execution_guard_test.py",
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
+            "guard_resident_vault_profile.py",
             "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_codex_login_profile.py", "guard_native_login_ui_profile.py", "guard_resident_enrollment_profile.py", ":resident_owned_update_sources",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
@@ -1586,6 +1588,7 @@ python_test(
 )
 
 exports_files(["guard_resident_enrollment_profile.py"])
+exports_files(["guard_resident_vault_profile.py"])
 python_test(
     name = "guard_resident_enrollment_profile_test",
     main = "guard_resident_enrollment_profile_test.py",

@@ -7,6 +7,47 @@ load(":metadata_rules.bzl", "extension_metadata")
 load(":browser_proof_rules.bzl", "browser_runtime_authority")
 
 package(default_visibility = ["//visibility:public"])
+
+# Metadata first; unlock is a separate operator-selected, user-mapped RUN.
+cc_binary(
+    name = "resident_vault_metadata_observer",
+    srcs = ["resident_vault_metadata.c"],
+    deps = ["@omux_nix//:glib"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+cc_binary(
+    name = "resident_vault_control_client",
+    srcs = ["resident_vault_control.c"],
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_binary(
+    name = "resident_vault_metadata",
+    main = "resident_vault.py",
+    srcs = ["//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_metadata_observer", ":resident_vault_control_client", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["observe", "$(location :resident_vault_metadata_observer)", "$(location :resident_vault_control_client)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_binary(
+    name = "resident_vault_unlock",
+    main = "resident_vault.py",
+    srcs = ["//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_metadata_observer", ":resident_vault_control_client", "@omux_nix//:gnome_keyring_daemon"],
+    args = ["unlock", "$(location :resident_vault_metadata_observer)", "$(location :resident_vault_control_client)"],
+    tags = ["manual", "no-remote", "no-cache"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
+python_test(
+    name = "resident_vault_models",
+    main = "test_resident_vault.py",
+    srcs = ["resident_vault.py", "//tools:guard_resident_vault_profile.py", "//tools:guard_resident_enrollment_profile.py"],
+    data = [":resident_vault_control_client"],
+    args = ["$(location :resident_vault_control_client)"],
+    target_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"],
+)
 python_binary(
     name = "native_login_ui_qualification",
     main = "//tools:native_login_ui_qualification.py",

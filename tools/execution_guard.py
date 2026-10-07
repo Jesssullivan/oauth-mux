@@ -990,12 +990,17 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
 
 
 def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
-    import guard_resident_enrollment_profile as resident
+    if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
+        import guard_resident_vault_profile as resident
+    else:
+        import guard_resident_enrollment_profile as resident
     resident.finite(arguments,'system',admission.manifest,False)
-    command = bazel_command(bazel,run,['build',resident.LABEL],source_commit=source_commit,source_dirty=source_dirty)
+    command = bazel_command(bazel,run,['build',arguments[1]],source_commit=source_commit,source_dirty=source_dirty)
     command[command.index('build')] = 'run'
     command[command.index('--spawn_strategy=sandboxed')] = '--spawn_strategy=linux-sandbox'
     command[-1:-1] = ['--run_env='+key+'='+value for key,value in admission.environment().items()]
+    if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
+        command[-1:-1] = ['--run_env=OMUX_EXECUTION_GUARD='+str(run)]
     return command
 
 def native_login_ui_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
@@ -1168,6 +1173,7 @@ def _main(argv, admission_resources):
     parser.add_argument('--ui-prepare-os-qualification-sha256')
     parser.add_argument('--ui-prepare-control-sha256')
     parser.add_argument('--resident-enrollment-manifest')
+    parser.add_argument('--resident-vault-manifest')
     parser.add_argument('--manager', choices=('user', 'system'), default='user')
     parser.add_argument('--become-file', type=Path)
     parser.add_argument('--reuse-owned-cache', action='store_true')
@@ -1308,8 +1314,17 @@ def _main(argv, admission_resources):
             args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256)):
         raise ValueError('native-ui-input-exclusive-to-prepare-profile')
     if args.profile == 'resident-enrollment':
-        import guard_resident_enrollment_profile as login
-        login.finite(arguments,args.manager,args.resident_enrollment_manifest,args.reuse_owned_cache,
+        if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
+            import guard_resident_vault_profile as login
+            if args.resident_enrollment_manifest is not None:
+                raise ValueError('vault-input-exclusive-to-vault-label')
+            resident_manifest = args.resident_vault_manifest
+        else:
+            import guard_resident_enrollment_profile as login
+            if args.resident_vault_manifest is not None:
+                raise ValueError('vault-input-exclusive-to-vault-label')
+            resident_manifest = args.resident_enrollment_manifest
+        login.finite(arguments,args.manager,resident_manifest,args.reuse_owned_cache,
             (args.repository_cache,args.nixpkgs_source,args.site_source,args.codex_owner_runtime_directory,
              args.codex_live_manifest,args.codex_login_manifest,args.native_login_directory,
              args.ui_prepare_manifest,args.ui_prepare_output,args.codex_pack_directory,args.codex_recovery_source,
@@ -1319,7 +1334,7 @@ def _main(argv, admission_resources):
              args.sdk_lane,args.sdk_source_root,args.sdk_source_receipt_sha256,args.sdk_settings_root,
              args.sdk_settings_receipt_sha256,args.sdk_bundle,args.sdk_bundle_receipt_sha256,
              args.yoga_delivery_epoch,args.yoga_qualification,args.yoga_qualification_sha256,args.yoga_deadline_monotonic_ns))
-    elif args.resident_enrollment_manifest is not None:
+    elif args.resident_enrollment_manifest is not None or args.resident_vault_manifest is not None:
         raise ValueError('resident-input-exclusive-to-resident-profile')
     delivery_lock = None
     delivery_lock_verified_before_cleanup = None
@@ -1400,7 +1415,7 @@ def _main(argv, admission_resources):
         raise ValueError('SDK inputs are exclusive to the SDK profile')
     if os.environ.get('OMUX_EXECUTION_GUARD'):
         raise ValueError('recursive launcher reentry rejected')
-    isolation = {**SANDBOX, **login.finite(arguments,args.manager,args.resident_enrollment_manifest,False)} if args.profile == 'resident-enrollment' else {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
+    isolation = {**SANDBOX, **login.finite(arguments,args.manager,resident_manifest,False)} if args.profile == 'resident-enrollment' else {**SANDBOX, **site.phase_isolation(args.site_phase, arguments)} if site else {**SANDBOX, **selected_profile(args.profile, arguments,
         site_inputs=any((args.site_source, args.site_nixpkgs_source, args.site_inventory,
                          args.site_inventory_sha256, args.nixpkgs_source)),
         pack_input=args.codex_pack_directory is not None,
@@ -1494,7 +1509,10 @@ def _main(argv, admission_resources):
             (args.ui_prepare_manifest_sha256,args.ui_prepare_os_qualification_sha256,args.ui_prepare_control_sha256))
         admission_resources.callback(login_input.close)
     if args.profile == 'resident-enrollment':
-        login_input = login.Admission(args.resident_enrollment_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns)
+        if args.resident_vault_manifest is not None:
+            login_input = login.Admission(resident_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns,label=arguments[1])
+        else:
+            login_input = login.Admission(resident_manifest,Path(pwd.getpwuid(os.getuid()).pw_dir),delivery_entry_deadline_ns)
         admission_resources.callback(login_input.close)
         login_input.service_observation(control,starting=True)
     fresh_metadata = selected_fresh_inputs(args.profile, arguments, args.codex_pristine_directory,
@@ -2226,7 +2244,13 @@ def _main(argv, admission_resources):
                        'resident_enrollment': {'budget':login_input.facts,
                            'service_disposition':resident_disposition,'verified_after_cleanup':login_input_verified_after,
                            'native_support':False,'same_process_handoff_proven':False
-                       } if login_input and args.profile == 'resident-enrollment' else None,
+                       } if login_input and args.profile == 'resident-enrollment' and args.resident_vault_manifest is None else None,
+                       'resident_vault': {'budget':login_input.facts,
+                           'verified_after_cleanup':login_input_verified_after,
+                           'factor_contents_read_by_guard':False,'provider_invocation':False,
+                           'omux_wrapping_key_regeneration':False,'atomic_existing_collection_only':False,
+                           'native_support':False
+                       } if login_input and args.profile == 'resident-enrollment' and args.resident_vault_manifest is not None else None,
                        'codex_login_input': {
                            'verified_after_cleanup': login_input_verified_after,
                            'native_sha256': args.native_login_sha256,
