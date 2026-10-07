@@ -153,6 +153,16 @@ def schema(raw, label=LABEL):
             or label == LABEL and (not isinstance(value["model"], str)
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value["model"]))):
         raise ValueError("codex-live-private-input-schema")
+    if label == LABEL:
+        # Match the contained continuity fixture before Path can normalize a
+        # caller's selector. Credential content remains unread by admission.
+        for path in value["authorized_source_paths"]:
+            if (not 0 < len(path) <= 4096 or not path.startswith("/")
+                    or any(part in ("", ".", "..") for part in path.split("/")[1:])
+                    or str(Path(path)) != path or os.path.normpath(path) != path
+                    or not all(32 <= ord(char) < 127 for char in path)
+                    or "\\" in path):
+                raise ValueError("codex-live-private-input-selector")
     return value
 
 class Admission:
@@ -181,6 +191,7 @@ class Admission:
             if len(raw) != self.identities[0][5]:
                 raise ValueError("codex-live-private-input-read")
             value = schema(raw, self.label)
+            self.manifest_field_count = len(value)
             self.manifest_digest = hashlib.sha256(raw).digest()
             for path in value["authorized_source_paths"]:
                 selected_path = Path(path)
@@ -220,8 +231,14 @@ class Admission:
         raw = os.read(self.descriptors[0], MAX_MANIFEST + 1)
         if hashlib.sha256(raw).digest() != self.manifest_digest:
             raise ValueError("codex-live-private-input-changed")
-        return {"schemaVersion": 1, "selectedSources": self.count, "custodyVerified": True,
-                "sourceContentReadByGuard": False}
+        result = {"schemaVersion": 1, "selectedSources": self.count, "custodyVerified": True,
+                  "sourceContentReadByGuard": False}
+        if self.label == LABEL:
+            # Only finite public target/scope and counts leave admission. The
+            # model, private source selectors and manifest digest stay private.
+            result.update({"target": self.label, "scope": "two_source_continuity_input_admission",
+                           "manifestFields": self.manifest_field_count})
+        return result
 
     def runtime_seconds(self):
         remaining = (self.deadline_ns - time.monotonic_ns() - 30 * 10**9) // 10**9

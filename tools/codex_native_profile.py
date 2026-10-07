@@ -89,6 +89,11 @@ def copy_source(root, receipt, run):
 def command(args, run, locked_path, bash, candidate=None):
     source_io.DEADLINE = args.native_deadline
     receipt, exported = verify_inputs(args)
+    # validate_export has already qualified every explicitly selected public
+    # registry metadata byte against the retained MODULE lock's exact hashes.
+    registry_cache = exported['registry_cache']
+    require(Path(registry_cache) == args.native_export_root / 'registry-cache',
+            'registry cache must remain in the sealed qualified export')
     source = candidate.source if candidate is not None else copy_source(args.native_source_root, receipt, run)
     for name in ('home', 'home/cache', 'home/config', 'home/state'):
         (run / name).mkdir(mode=0o700)
@@ -103,7 +108,7 @@ def command(args, run, locked_path, bash, candidate=None):
     argv = [BAZEL, '--batch', '--output_user_root=' + str(run / 'user-root'), '--output_base=' + str(candidate.lease.output_base if candidate is not None else run / 'output-base'),
         '--host_jvm_args=-Xmx768m', '--host_jvm_args=-XX:ActiveProcessorCount=1', '--ignore_all_rc_files', verb,
         '--compilation_mode=opt', '--lockfile_mode=error', '--repository_disable_download',
-        '--repository_cache=', '--repo_contents_cache=', '--disk_cache=', '--remote_executor=', '--remote_cache=',
+        '--repository_cache=' + registry_cache, '--repo_contents_cache=', '--disk_cache=', '--remote_executor=', '--remote_cache=',
         '--experimental_remote_downloader=', '--bes_backend=', '--jobs=1', '--loading_phase_threads=2', '--legacy_globbing_threads=2',
         '--experimental_fsvc_threads=2', '--spawn_strategy=sandboxed', '--sandbox_default_allow_network=false',
         '--incompatible_strict_action_env', '--action_env=PATH=' + locked_path, '--repo_env=PATH=' + locked_path,

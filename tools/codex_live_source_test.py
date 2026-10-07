@@ -27,7 +27,7 @@ class NativeSourceTests(unittest.TestCase):
     def test_native_update_refuses_ambiguous_original_context(self):
         name = "codex-rs/core/src/client.rs"
         files = {name: ("100644", b"same\nsame\n")}
-        delta = b"*** Begin Patch\n*** Update File: /srv/fast-local/jess/git/oauth-mux-detach-20261007/codex-rs/core/src/client.rs\n@@\n-same\n+changed\n*** End Patch\n"
+        delta = b"*** Begin Patch\n*** Update File: codex-rs/core/src/client.rs\n@@\n-same\n+changed\n*** End Patch\n"
         with self.assertRaises(ValueError):
             source.apply_native_patch(files, delta)
         self.assertEqual(files[name][1], b"same\nsame\n")
@@ -35,7 +35,7 @@ class NativeSourceTests(unittest.TestCase):
     def test_ordered_changes_preserve_unrelated_original_bytes(self):
         name = "codex-rs/core/src/client.rs"
         files = {name: ("100644", b"first\nshared\nlast\n"), "keep": ("100644", b"retained\n")}
-        delta = b"*** Begin Patch\n*** Update File: /srv/fast-local/jess/git/oauth-mux-detach-20261007/codex-rs/core/src/client.rs\n@@\n-first\n+prepared\n shared\n@@\n-last\n+committed\n*** End Patch\n"
+        delta = b"*** Begin Patch\n*** Update File: codex-rs/core/src/client.rs\n@@\n-first\n+prepared\n shared\n@@\n-last\n+committed\n*** End Patch\n"
         result, paths = source.apply_native_patch(files, delta)
         self.assertEqual(result[name][1], b"prepared\nshared\ncommitted\n")
         self.assertEqual(result["keep"], files["keep"])
@@ -44,13 +44,13 @@ class NativeSourceTests(unittest.TestCase):
 
     def test_native_patch_cannot_expand_the_declared_path_boundary(self):
         for name in ("../../secret", "codex-rs/config/Cargo.toml", "/private", "MODULE.bazel"):
-            delta = ("*** Begin Patch\n*** Add File: /srv/fast-local/jess/git/oauth-mux-detach-20261007/" + name + "\n+x\n*** End Patch\n").encode()
+            delta = ("*** Begin Patch\n*** Add File: " + name + "\n+x\n*** End Patch\n").encode()
             with self.subTest(name=name), self.assertRaises(ValueError):
                 source.apply_native_patch({}, delta)
 
     def test_existing_new_module_cannot_be_replaced(self):
         name = "codex-rs/core/src/broker_text_context.rs"
-        delta = ("*** Begin Patch\n*** Add File: /srv/fast-local/jess/git/oauth-mux-detach-20261007/" + name + "\n+x\n*** End Patch\n").encode()
+        delta = ("*** Begin Patch\n*** Add File: " + name + "\n+x\n*** End Patch\n").encode()
         with self.assertRaises(ValueError):
             source.apply_native_patch({name: ("100644", b"retained\n")}, delta)
 

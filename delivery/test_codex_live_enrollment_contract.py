@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,38 @@ import test_installed_codex_live_enrollment as proof
 
 
 class EnrollmentContract(unittest.TestCase):
+    def test_sealed_metadata_queries_and_closed_predicate_phases(self):
+        facts = {key: self.receipt()[key] for key in
+                 ("source_handle", "account_handle", "grant_handle", "grant_generation")}
+        with sqlite3.connect(":memory:") as metadata:
+            metadata.execute("CREATE TABLE grants(account_id TEXT,grant_id TEXT,generation INTEGER,purpose TEXT,scope TEXT,renewal_owner TEXT,state TEXT,ciphertext BLOB)")
+            metadata.execute("CREATE TABLE snapshot(metadata_json TEXT)")
+            metadata.execute("INSERT INTO grants VALUES(?,?,?,?,?,?,?,?)",
+                             (facts["account_handle"], facts["grant_handle"], 1, "request",
+                              "https://chatgpt.com", "external", "ready", b"OMUXG001" + bytes(64)))
+            document = {"state": {"accounts": [{"identity": {"verified": True,
+                        "provider": "codex", "issuer": "https://chatgpt.com"}}]}}
+            metadata.execute("INSERT INTO snapshot VALUES(?)", (json.dumps(document),))
+            self.assertEqual(len(proof.sealed_metadata_facts(metadata, facts)), 32)
+            metadata.execute("UPDATE grants SET renewal_owner='omux'")
+            with self.assertRaises(ValueError):
+                proof.sealed_metadata_facts(metadata, facts)
+            self.assertEqual(proof.PHASE, "sealed-grant-context")
+            metadata.execute("UPDATE grants SET renewal_owner='external',ciphertext=?", (bytes(72),))
+            with self.assertRaises(ValueError):
+                proof.sealed_metadata_facts(metadata, facts)
+            self.assertEqual(proof.PHASE, "sealed-grant-envelope")
+            metadata.execute("UPDATE grants SET ciphertext=?", (b"OMUXG001" + bytes(64),))
+            document["state"]["accounts"][0]["identity"]["verified"] = False
+            metadata.execute("UPDATE snapshot SET metadata_json=?", (json.dumps(document),))
+            with self.assertRaises(ValueError):
+                proof.sealed_metadata_facts(metadata, facts)
+            self.assertEqual(proof.PHASE, "sealed-identity-verification")
+            metadata.execute("DELETE FROM grants")
+            with self.assertRaises(ValueError):
+                proof.sealed_metadata_facts(metadata, facts)
+            self.assertEqual(proof.PHASE, "sealed-grant-cardinality")
+
     def receipt(self):
         return {**proof.FIXED_FACTS, "source_handle": "1" * 64, "account_handle": "2" * 64,
                 "grant_handle": "3" * 64, "grant_generation": 1,

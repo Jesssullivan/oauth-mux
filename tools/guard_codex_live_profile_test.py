@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest import mock
 import guard_dependency_profile as profiles
 import guard_owner_runtime_input as retained
 import guard_codex_live_profile as live
@@ -71,6 +72,22 @@ class LiveAdmissionTests(unittest.TestCase):
         for value in invalid:
             with self.subTest(fields=list(value)), self.assertRaises(ValueError):
                 live.schema(json.dumps(value))
+
+    def test_continuity_source_selectors_refuse_normalization_before_metadata_open(self):
+        good = {"schema_version": 1, "model": "small-model",
+                "authorized_source_paths": ["/private/account-a/auth.json", "/private/account-b/auth.json"]}
+        for selector in ("relative/auth.json", "/private//account-a/auth.json",
+                         "/private/./account-a/auth.json", "/private/account-a/../account-b/auth.json",
+                         "/private/account-a/auth.json/", "/private/account-a/\\auth.json",
+                         "/private/account-a/\u007f.json", "/private/account-a/\u00e9.json",
+                         "/" + "x" * 4096):
+            value = {**good, "authorized_source_paths": [selector, good["authorized_source_paths"][1]]}
+            with self.subTest(selector=selector), self.assertRaises(ValueError):
+                live.schema(json.dumps(value), live.LABEL)
+        # The existing first-account enrollment manifest stays exactly the
+        # two-field one-source contract, with no new model requirement.
+        enrollment = {"schema_version": 1, "authorized_source_paths": [good["authorized_source_paths"][0]]}
+        self.assertEqual(live.schema(json.dumps(enrollment), live.ENROLLMENT_LABEL), enrollment)
 
     def test_bind_selector_refuses_systemd_grammar_ambiguity(self):
         self.assertEqual(live.binding_selector("/private/input.json"), "/private/input.json")
@@ -172,6 +189,85 @@ class LiveAdmissionTests(unittest.TestCase):
             redirect.symlink_to(directory,target_is_directory=True)
             with self.assertRaises(OSError):
                 live.open_manifest_directory(redirect/'input.json')
+
+    def test_continuity_two_sources_are_metadata_only_and_second_source_replacement_refuses(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as temporary:
+            root = Path(temporary)
+            repository = root / 'repository'
+            repository.mkdir(mode=0o700)
+            directory = root / 'inputs'
+            directory.mkdir(mode=0o700)
+            credentials = []
+            for index in range(2):
+                source = root / ('source-' + str(index))
+                source.mkdir(mode=0o700)
+                credential = source / 'auth.json'
+                credential.write_bytes(b'generated nonsecret source-content model')
+                credential.chmod(0o600)
+                credentials.append(credential)
+            manifest = directory / 'input.json'
+            manifest.write_text(json.dumps({'schema_version': 1, 'model': 'selected-model',
+                                           'authorized_source_paths': list(map(str, credentials))}))
+            manifest.chmod(0o600)
+            with mock.patch.object(live.os, 'read', wraps=os.read) as reads:
+                admission = live.Admission(manifest, repository, time.monotonic_ns() + 60 * 10**9,
+                                           ['test', live.LABEL])
+                try:
+                    facts = admission.recheck()
+                    self.assertEqual({call.args[0] for call in reads.call_args_list},
+                                     {admission.descriptors[0]})
+                    self.assertEqual(facts, {'schemaVersion': 1, 'selectedSources': 2,
+                                            'custodyVerified': True, 'sourceContentReadByGuard': False,
+                                            'target': live.LABEL, 'scope': 'two_source_continuity_input_admission',
+                                            'manifestFields': 3})
+                    for private in (str(root), 'selected-model', 'source-content'):
+                        self.assertNotIn(private, repr(facts))
+                    self.assertEqual(admission.binding(), str(directory) + ':/omux-live-inputs')
+                    credentials[1].rename(credentials[1].with_name('retired-auth.json'))
+                    credentials[1].write_bytes(b'generated replacement model')
+                    credentials[1].chmod(0o600)
+                    with self.assertRaises(ValueError):
+                        admission.recheck()
+                finally:
+                    admission.close()
+
+    def test_continuity_namespace_refuses_source_aliases_repository_inputs_and_manifest_siblings(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as temporary:
+            root = Path(temporary)
+            repository = root / 'repository'
+            repository.mkdir(mode=0o700)
+            inputs = root / 'inputs'
+            inputs.mkdir(mode=0o700)
+            source = root / 'source'
+            source.mkdir(mode=0o700)
+            first = source / 'auth.json'
+            first.write_bytes(b'generated nonsecret model')
+            first.chmod(0o600)
+            second = source / 'second.json'
+            second.write_bytes(b'generated second nonsecret model')
+            second.chmod(0o600)
+            manifest = inputs / 'input.json'
+            def refuse(paths, expected):
+                manifest.write_text(json.dumps({'schema_version': 1, 'model': 'small-model',
+                                               'authorized_source_paths': list(map(str, paths))}))
+                manifest.chmod(0o600)
+                with self.assertRaises(expected):
+                    live.Admission(manifest, repository, time.monotonic_ns() + 60 * 10**9,
+                                   ['test', live.LABEL])
+            linked = source / 'linked.json'
+            linked.symlink_to(first)
+            refuse([first, linked], ValueError)
+            linked.unlink()
+            linked.hardlink_to(first)
+            refuse([first, linked], ValueError)
+            linked.unlink()
+            owned = repository / 'auth.json'
+            owned.write_bytes(b'generated repository model')
+            owned.chmod(0o600)
+            refuse([first, owned], ValueError)
+            extra = inputs / 'unexpected'
+            extra.write_bytes(b'generated unrelated model')
+            refuse([first, second], ValueError)
 
 if __name__ == "__main__":
     unittest.main()

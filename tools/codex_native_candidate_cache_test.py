@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from guard_cache import write_marker
 from codex_native_candidate_cache import prior_receipt, completion_allowed, valid_attempt
 import codex_native_profile as native
@@ -24,7 +25,7 @@ class CandidateAdmissionTests(unittest.TestCase):
                     valid_attempt(attempt, previous)
 
     def test_new_candidate_requires_attempt_one(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, patch('codex_native_candidate_cache.trusted_directory', side_effect=lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)):
             state = Path(temp)
             cache = state / ('cache-v2-' + '1' * 64)
             self.assertIsNone(prior_receipt(state, cache, '1' * 64, 1))
@@ -32,7 +33,9 @@ class CandidateAdmissionTests(unittest.TestCase):
                 prior_receipt(state, cache, '1' * 64, 2)
 
     def test_dirty_cache_is_never_adopted(self):
-        with tempfile.TemporaryDirectory() as temp:
+        # Only shared Bazel temporary ancestors are substituted. Marker
+        # contents still pass the real held-descriptor owner/shape checks.
+        with tempfile.TemporaryDirectory() as temp, patch('codex_native_candidate_cache.trusted_directory', side_effect=lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)):
             state = Path(temp)
             key = '1' * 64
             cache = state / ('cache-v2-' + key)

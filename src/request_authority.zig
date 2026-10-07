@@ -43,6 +43,7 @@ pub const Attempt = struct {
 };
 pub const Record = struct { intent: Intent, first: Attempt, alternate: ?Attempt = null };
 pub const Snapshot = struct { records: []const Record = &.{} };
+pub const maximum_native_audit_records = 6;
 
 pub fn validateRequestId(value: []const u8) !void {
     if (value.len == 0 or value.len > 64) return error.InvalidRequestId;
@@ -124,6 +125,23 @@ pub const Ledger = struct {
     pub fn record(self: *const Ledger, key: Key) ?*const Record {
         for (self.records.items) |*item| if (sameKey(item.intent.key, key)) return item;
         return null;
+    }
+    /// Select immutable native attribution, including terminal fences whose
+    /// leases no longer exist. No cursor or partial page may imply completeness.
+    /// The actor authenticates the control channel and validates owner custody.
+    pub fn nativeAuditRecords(self: *const Ledger, allocator: std.mem.Allocator, application: []const u8, reference: native_owner.NativeRef, thread_id: []const u8) ![]*const Record {
+        try reference.validate();
+        if (thread_id.len == 0 or thread_id.len > native_owner.maximum_thread_bytes) return error.InvalidNativeAttachment;
+        var selected: [maximum_native_audit_records]*const Record = undefined;
+        var count: usize = 0;
+        for (self.records.items) |*row| {
+            const original = row.intent.native_ref orelse continue;
+            if (!original.same(reference) or !eql(row.intent.key.application, application) or !eql(row.intent.key.session_id, thread_id)) continue;
+            if (count == selected.len) return error.NativeAuditTooManyRecords;
+            selected[count] = row;
+            count += 1;
+        }
+        return allocator.dupe(*const Record, selected[0..count]);
     }
     pub fn attempt(self: *const Ledger, application: []const u8, lease_handle: []const u8) ?*const Attempt {
         for (self.records.items) |*item| {
@@ -408,6 +426,47 @@ const fixture_3: [64]u8 = @splat('3');
 const overlong_id: [129]u8 = @splat('x');
 const fixture: Intent = .{ .key = .{ .application = "codex", .session_id = "native-thread", .request_id = "request-1" }, .binding_id = "binding", .demand_fingerprint = &fixture_a };
 const rejection: Report = .{ .event = .rejected, .pre_acceptance = true, .response_started = false, .status = 429 };
+
+test "native audit selects exact attribution and refuses partial over-capacity pages without consuming fences" {
+    const allocator = std.testing.allocator;
+    var ledger = Ledger.init(allocator, 16);
+    defer ledger.deinit();
+    const reference: native_owner.NativeRef = .{ .owner_id = @splat(1), .adapter_epoch = 1, .endpoint_generation = 1, .thread_instance_generation = 1, .attachment_generation = 1 };
+    var attributed = fixture;
+    attributed.native_ref = reference;
+    for (0..maximum_native_audit_records) |index| {
+        const request_id = try std.fmt.allocPrint(allocator, "request-{d}", .{index});
+        defer allocator.free(request_id);
+        var lease_handle: [64]u8 = @splat('0');
+        lease_handle[0] = '1' + @as(u8, @intCast(index));
+        attributed.key.request_id = request_id;
+        _ = try ledger.issue(attributed, &lease_handle, &fixture_b, 1);
+    }
+    var foreign_reference = reference;
+    foreign_reference.attachment_generation += 1;
+    var foreign = fixture;
+    foreign.key.request_id = "foreign-request";
+    foreign.native_ref = foreign_reference;
+    _ = try ledger.issue(foreign, &fixture_a, &fixture_b, 1);
+    const reserved = ledger.reservedSnapshotBytes();
+    const selected = try ledger.nativeAuditRecords(allocator, "codex", reference, "native-thread");
+    defer allocator.free(selected);
+    try std.testing.expectEqual(@as(usize, maximum_native_audit_records), selected.len);
+    for (selected) |row| try std.testing.expect(row.intent.native_ref.?.same(reference));
+    const wrong_thread = try ledger.nativeAuditRecords(allocator, "codex", reference, "another-thread");
+    defer allocator.free(wrong_thread);
+    try std.testing.expectEqual(@as(usize, 0), wrong_thread.len);
+    const wrong_application = try ledger.nativeAuditRecords(allocator, "git", reference, "native-thread");
+    defer allocator.free(wrong_application);
+    try std.testing.expectEqual(@as(usize, 0), wrong_application.len);
+    try std.testing.expectEqual(reserved, ledger.reservedSnapshotBytes());
+    attributed.key.request_id = "seventh-request";
+    _ = try ledger.issue(attributed, &fixture_b, &fixture_b, 1);
+    const full_reserved = ledger.reservedSnapshotBytes();
+    try std.testing.expectError(error.NativeAuditTooManyRecords, ledger.nativeAuditRecords(allocator, "codex", reference, "native-thread"));
+    try std.testing.expectEqual(full_reserved, ledger.reservedSnapshotBytes());
+    try std.testing.expectEqual(@as(usize, 8), ledger.records.items.len);
+}
 
 test "safe alternate budget survives JSON snapshot and expired leases" {
     const allocator = std.testing.allocator;

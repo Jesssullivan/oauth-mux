@@ -26,6 +26,10 @@ PHASE = "private-context"
 PHASES = ("private-context", "manifest", "keyring-startup", "install", "daemon-startup",
           "artifact-verification", "source-connect", "source-reconcile", "verified-enrollment",
           "sealed-custody", "daemon-restart", "restart-verification", "ownership-uninstall",
+          "sealed-daemon-shutdown", "sealed-database-custody", "sealed-snapshot-binding",
+          "sealed-grant-query", "sealed-grant-cardinality", "sealed-grant-context",
+          "sealed-grant-envelope", "sealed-identity-query", "sealed-identity-verification",
+          "sealed-ciphertext-preservation",
           "receipt", "cleanup")
 MARKER = b"OMUX_INSTALLED_CODEX_LIVE_ENROLLMENT_OK\n"
 MANIFEST_PATH = "/omux-live-inputs/input.json"
@@ -221,27 +225,41 @@ def enrollment_facts(snapshot, source_id, now):
 
 
 def sealed_facts(state, facts):
+    global PHASE
+    PHASE = "sealed-database-custody"
     database = state / "state.sqlite"
     information = database.lstat()
     require(stat.S_ISREG(information.st_mode) and information.st_uid == os.getuid()
             and stat.S_IMODE(information.st_mode) == 0o600 and information.st_nlink == 1,
             "installed database custody differs")
     with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as metadata:
+        PHASE = "sealed-snapshot-binding"
         check_sealed_snapshot(metadata, state / "state.sqlite.authority")
-        rows = metadata.execute("SELECT account_id,grant_id,generation,purpose,scope,renewal_owner,state,ciphertext FROM grants").fetchall()
-        require(len(rows) == 1, "sealed grant cardinality differs")
-        row = rows[0]
-        require(row[:7] == (facts["account_handle"], facts["grant_handle"], facts["grant_generation"],
-                            "request", "https://chatgpt.com", "external", "ready")
-                and type(row[7]) is bytes and 48 < len(row[7]) <= MAX_FRAME + 48
-                and row[7][:8] == b"OMUXG001", "sealed access grant envelope differs")
-        # Select booleans and public provider/issuer only, never raw identity IDs.
-        identity = metadata.execute("SELECT json_extract(metadata_json,'$.state.accounts[0].identity.verified'),"
-                                    "json_extract(metadata_json,'$.state.accounts[0].identity.provider'),"
-                                    "json_extract(metadata_json,'$.state.accounts[0].identity.issuer'),"
-                                    "json_array_length(metadata_json,'$.state.accounts') FROM snapshot").fetchall()
-        require(identity == [(1, "codex", "https://chatgpt.com", 1)], "sealed authenticated identity differs")
-        return hashlib.sha256(row[7]).digest()
+        return sealed_metadata_facts(metadata, facts)
+
+
+def sealed_metadata_facts(metadata, facts):
+    global PHASE
+    PHASE = "sealed-grant-query"
+    rows = metadata.execute("SELECT account_id,grant_id,generation,purpose,scope,renewal_owner,state,ciphertext FROM grants").fetchall()
+    PHASE = "sealed-grant-cardinality"
+    require(len(rows) == 1, "sealed grant cardinality differs")
+    row = rows[0]
+    PHASE = "sealed-grant-context"
+    require(row[:7] == (facts["account_handle"], facts["grant_handle"], facts["grant_generation"],
+                        "request", "https://chatgpt.com", "external", "ready"), "sealed grant context differs")
+    PHASE = "sealed-grant-envelope"
+    require(type(row[7]) is bytes and 48 < len(row[7]) <= MAX_FRAME + 48
+            and row[7][:8] == b"OMUXG001", "sealed access grant envelope differs")
+    # Select booleans and public provider/issuer only, never raw identity IDs.
+    PHASE = "sealed-identity-query"
+    identity = metadata.execute("SELECT json_extract(metadata_json,'$.state.accounts[0].identity.verified'),"
+                                "json_extract(metadata_json,'$.state.accounts[0].identity.provider'),"
+                                "json_extract(metadata_json,'$.state.accounts[0].identity.issuer'),"
+                                "json_array_length(metadata_json,'$.state.accounts') FROM snapshot").fetchall()
+    PHASE = "sealed-identity-verification"
+    require(identity == [(1, "codex", "https://chatgpt.com", 1)], "sealed authenticated identity differs")
+    return hashlib.sha256(row[7]).digest()
 
 
 def inside(bundle, keyring, root):
@@ -285,7 +303,7 @@ def inside(bundle, keyring, root):
         def start():
             process = subprocess.Popen([str(prefix / "bin/omuxd"), "--state-dir", str(state)],
                                        env=environment, stdin=subprocess.DEVNULL,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, umask=0o077)
             try:
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
@@ -337,7 +355,7 @@ def inside(bundle, keyring, root):
                 break
             require(time.monotonic() < deadline and daemon.poll() is None, "verified enrollment deadline")
             time.sleep(0.1)
-        PHASE = "sealed-custody"
+        PHASE = "sealed-daemon-shutdown"
         stop(daemon, require_success=True)
         daemon = None
         ciphertext = sealed_facts(state, facts)
@@ -353,9 +371,12 @@ def inside(bundle, keyring, root):
         require(resumed == {"operation_id": None, "status": "reconciled"}
                 and enrollment_facts(cli("state.snapshot"), source_id, int(time.time())) == facts,
                 "unchanged source restart created a new grant generation")
+        PHASE = "sealed-daemon-shutdown"
         stop(daemon, require_success=True)
         daemon = None
-        require(sealed_facts(state, facts) == ciphertext, "restart changed encrypted grant bytes")
+        restarted_ciphertext = sealed_facts(state, facts)
+        PHASE = "sealed-ciphertext-preservation"
+        require(restarted_ciphertext == ciphertext, "restart changed encrypted grant bytes")
         PHASE = "ownership-uninstall"
         removed = install.uninstall(prefix, records)
         require(removed["preserved"] == [] and len(removed["removed"]) == len(record["files"]),

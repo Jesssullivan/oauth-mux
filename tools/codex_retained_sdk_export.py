@@ -22,6 +22,9 @@ BASELINE_SHA = 'e3c6d45bc93119ddf1da8bee6e02de3c7c3a3bbe52bb6d2664eb4b7b3d7b5273
 BASELINE_INVENTORY = '3400115fae8ef204f2ce085880b40887bcb14e2080236ba87a34be9b14fe7d3b'
 SCHEMA = 'omux-retained-native-sdk-export-v1'
 JDK = '/nix/store/siln89j8b6k5wdzw4asl69bma0k96nns-openjdk-headless-21.0.10+7'
+REGISTRY = Path('/home/jess/.cache/bazel-repo-cache')
+REGISTRY_MAX_ENTRIES, REGISTRY_MAX_FILE, REGISTRY_MAX_BYTES = 512, 1024*1024, 64*1024*1024
+REGISTRY_SCHEMA = 'omux-finite-bcr-registry-metadata-v1'
 MAX_REPOS, MAX_FILES, MAX_BYTES, MAX_FILE = 1600, 500000, 16*1024**3, 1024**3
 GRAPH = ('MODULE.bazel', 'MODULE.bazel.lock', 'codex-rs/Cargo.lock', 'codex-rs/Cargo.toml',
          'codex-rs/core/Cargo.toml','codex-rs/core/BUILD.bazel','codex-rs/config/BUILD.bazel',
@@ -230,6 +233,109 @@ def relocate_links(repositories):
     for key in links:
         resolve(key,set())
 
+def registry_metadata(lock_path, lock_sha256, cache_root, budget, *, sealed=False):
+    """Read only exact BCR metadata hashes declared by the verified baseline lock."""
+    parent = open_dir(Path(lock_path).parent)
+    try:
+        actual,size,raw = read_file(parent,Path(lock_path).name,budget,capture=True)
+        need(actual==lock_sha256 and size<=8*1024*1024,'registry lock byte pin')
+        lock = json.loads(raw,object_pairs_hook=unique)
+    finally:
+        os.close(parent)
+    hashes = lock['registryFileHashes']
+    need(isinstance(hashes,dict) and 0<len(hashes)<=REGISTRY_MAX_ENTRIES,'finite registry hash map')
+    rows, total = [], 0
+    for url, sha in sorted(hashes.items()):
+        budget.check()
+        budget.files += 1
+        need(budget.files <= MAX_FILES,'aggregate registry entry bound')
+        need(isinstance(url,str) and (url=='https://bcr.bazel.build/bazel_registry.json' or
+             re.fullmatch(r'https://bcr\.bazel\.build/modules/[a-z][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._+-]*/(?:MODULE\.bazel|source\.json)',url)),
+             'unselected non-BCR or non-metadata registry URL')
+        need(isinstance(sha,str) and re.fullmatch(r'[0-9a-f]{64}',sha),'registry SHA256 required')
+        relative = 'content_addressable/sha256/'+sha+'/file'
+        path = Path(cache_root)/relative
+        try:
+            parent = open_dir(path.parent)
+        except FileNotFoundError:
+            raise ValueError('missing exact public registry metadata digest '+sha) from None
+        try:
+            try:
+                info = os.stat('file',dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError:
+                raise ValueError('missing exact public registry metadata digest '+sha) from None
+            need(info.st_size<=REGISTRY_MAX_FILE,'registry metadata file bound')
+            if sealed:
+                need(stat.S_IMODE(info.st_mode)==0o444,'unsealed registry metadata')
+            try:
+                actual,size,raw = read_file(parent,'file',budget,capture=True)
+            except FileNotFoundError:
+                raise ValueError('missing exact public registry metadata digest '+sha) from None
+            need(actual==sha,'public registry metadata SHA256 mismatch')
+        finally:
+            os.close(parent)
+        # Decode public textual metadata only; never execute a module or fetch
+        # the archive URLs described inside inert source.json bytes.
+        decoded = raw.decode('utf-8')
+        if url.endswith('.json'):
+            need(isinstance(json.loads(decoded,object_pairs_hook=unique),dict),'registry JSON object required')
+        else:
+            need('\x00' not in decoded,'registry module must be textual metadata')
+        total += size
+        need(total<=REGISTRY_MAX_BYTES,'aggregate registry metadata byte bound')
+        rows.append({'url':url,'sha256':sha,'size':size,'path':relative,'mode':0o444})
+    if sealed:
+        expected = {row['sha256'] for row in rows}
+        for path, names in ((Path(cache_root),{'content_addressable'}),
+                            (Path(cache_root)/'content_addressable',{'sha256'}),
+                            (Path(cache_root)/'content_addressable'/'sha256',expected)):
+            parent = open_dir(path)
+            try:
+                need(stat.S_IMODE(os.fstat(parent).st_mode)==0o555 and set(os.listdir(parent))==names,
+                     'unsealed or unselected registry cache directory')
+            finally:
+                os.close(parent)
+        for sha in expected:
+            parent = open_dir(Path(cache_root)/'content_addressable'/'sha256'/sha)
+            try:
+                need(stat.S_IMODE(os.fstat(parent).st_mode)==0o555 and set(os.listdir(parent))=={'file'},
+                     'unselected registry cache marker or extra object')
+            finally:
+                os.close(parent)
+    return {'schema':REGISTRY_SCHEMA,'lock_sha256':lock_sha256,'files':rows,
+            'inventory_sha256':digest(canonical(rows)),'total_bytes':total}
+
+def copy_registry_metadata(selection, destination, budget):
+    need(selection['schema']==REGISTRY_SCHEMA,'registry metadata schema')
+    destination.mkdir(mode=0o700)
+    (destination/'content_addressable').mkdir(mode=0o700)
+    (destination/'content_addressable'/'sha256').mkdir(mode=0o700)
+    written = set()
+    for row in selection['files']:
+        budget.check()
+        sha = row['sha256']
+        if sha in written:
+            continue
+        need(re.fullmatch(r'[0-9a-f]{64}',sha) and row['path']=='content_addressable/sha256/'+sha+'/file',
+             'registry copy digest path binding')
+        path = destination/row['path']
+        path.parent.mkdir(mode=0o700)
+        parent = open_dir((REGISTRY/row['path']).parent)
+        try:
+            out = os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o400)
+            with os.fdopen(out,'wb') as stream:
+                actual,size,_ = read_file(parent,'file',budget,stream)
+                need(actual==sha and size==row['size'],'registry metadata changed during copy')
+                stream.flush(); os.fsync(stream.fileno())
+        finally:
+            os.close(parent)
+        os.chmod(path,0o444)
+        os.chmod(path.parent,0o555)
+        written.add(sha)
+    os.chmod(destination/'content_addressable'/'sha256',0o555)
+    os.chmod(destination/'content_addressable',0o555)
+    os.chmod(destination,0o555)
+
 def qualify(budget):
     fd = open_dir(BASELINE.parent)
     try:
@@ -299,7 +405,9 @@ def qualify(budget):
             'repositories':repositories,'inventory_sha256':digest(canonical(repositories)),
             'mapping_sha256':graph['MODULE.bazel.lock']['sha256'],'excluded':['_main','bazel_tools','*.marker'],
             'qualification_only':True,'nix_store_roots':[JDK],'modules':modules,
-            'nix_inventory':inventory(Path(JDK),budget)}
+            'nix_inventory':inventory(Path(JDK),budget),
+            'registry_metadata':registry_metadata(SOURCE/'MODULE.bazel.lock',
+                graph['MODULE.bazel.lock']['sha256'],REGISTRY,budget)}
 
 def load(path, sha, budget):
     fd = open_dir(Path(path).parent)
@@ -324,6 +432,10 @@ def validate_export(root, receipt_sha256, source_inventory_sha256, graph_files, 
         finally:
             os.close(parent)
     need(receipt['mapping_sha256']==graph_files['MODULE.bazel.lock']['sha256'],'mapping content binding')
+    registry_cache = root/'registry-cache'
+    registry = registry_metadata(root/'graph'/'MODULE.bazel.lock',
+        graph_files['MODULE.bazel.lock']['sha256'],registry_cache,budget,sealed=True)
+    need(registry==receipt['registry_metadata'],'registry metadata complete byte inventory mismatch')
     need(receipt['nix_store_roots']==[JDK] and inventory(Path(JDK),budget,sealed=True)==receipt['nix_inventory'],
          'immutable store bytes changed')
     repositories = {}
@@ -364,7 +476,8 @@ def validate_export(root, receipt_sha256, source_inventory_sha256, graph_files, 
              keywords[0].value.value==module,'module override declaration name')
         module_overrides[module] = repositories[name]
     return dict(repositories=repositories,module_overrides=module_overrides,inventory_sha256=receipt['inventory_sha256'],
-                mapping_sha256=receipt['mapping_sha256'],graph_files=receipt['graph_files'])
+                mapping_sha256=receipt['mapping_sha256'],graph_files=receipt['graph_files'],
+                registry_cache=str(registry_cache),registry_inventory_sha256=registry['inventory_sha256'])
 
 def main():
     parser = argparse.ArgumentParser()
@@ -439,6 +552,10 @@ def main():
                     os.chmod(destination/item['path'],0o555)
             os.chmod(destination,0o555)
             need(inventory(destination,budget,sealed=True)==repo['files'],'copy readback mismatch')
+        copy_registry_metadata(selection['registry_metadata'],root/'registry-cache',budget)
+        need(registry_metadata(root/'graph'/'MODULE.bazel.lock',
+            selection['graph_files']['MODULE.bazel.lock']['sha256'],root/'registry-cache',budget,sealed=True)
+            == selection['registry_metadata'],'sealed registry metadata readback mismatch')
         selection['qualification_only'] = False
         selection['selection_sha256'] = args.selection_sha256
         selection['producer'] = '//tools:codex_retained_sdk_export_producer'

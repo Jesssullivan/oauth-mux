@@ -79,8 +79,20 @@ class SourceMutationTests(unittest.TestCase):
                 'inventory_sha256': digest(canonical(rows))}
             graph = root / 'graph'
             graph.mkdir()
-            (graph / 'MODULE.bazel.lock').write_bytes(b'{}\n')
-            graph_files = {'MODULE.bazel.lock': {'sha256': digest(b'{}\n')}}
+            metadata_raw = canonical({'mirrors': []})
+            metadata_sha = digest(metadata_raw)
+            lock_raw = canonical({'registryFileHashes': {'https://bcr.bazel.build/bazel_registry.json': metadata_sha}})
+            (graph / 'MODULE.bazel.lock').write_bytes(lock_raw)
+            graph_files = {'MODULE.bazel.lock': {'sha256': digest(lock_raw)}}
+            registry_cache = root / 'registry-cache'
+            payload = registry_cache / 'content_addressable/sha256' / metadata_sha / 'file'
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(metadata_raw)
+            payload.chmod(0o444)
+            for folder, _, _ in os.walk(registry_cache, topdown=False):
+                Path(folder).chmod(0o555)
+            registry_metadata = sdk_export.registry_metadata(graph / 'MODULE.bazel.lock',
+                digest(lock_raw), registry_cache, Budget(time.time() + 60), sealed=True)
             nix_fixture = root / 'nix-fixture'
             nix_fixture.mkdir()
             (nix_fixture / 'tool').write_bytes(b'fixture tool\n')
@@ -89,7 +101,8 @@ class SourceMutationTests(unittest.TestCase):
             receipt = {'schema': SCHEMA, 'baseline_inventory_sha256': native.BASE_INVENTORY,
                 'graph_files': graph_files, 'qualification_only': False, 'repositories': [record],
                 'modules': {},
-                'inventory_sha256': digest(canonical([record])), 'mapping_sha256': digest(b'{}\n'),
+                'inventory_sha256': digest(canonical([record])), 'mapping_sha256': digest(lock_raw),
+                'registry_metadata': registry_metadata,
                 'nix_store_roots': [str(nix_fixture)],
                 'nix_inventory': inventory(nix_fixture, Budget(time.time() + 60), sealed=True)}
             raw = canonical(receipt)
@@ -112,6 +125,67 @@ class SourceMutationTests(unittest.TestCase):
                     validate_export(root, pin, native.BASE_INVENTORY, graph_files)
             repo.chmod(0o755)
             nix_fixture.chmod(0o755)
+            for folder, _, _ in os.walk(registry_cache):
+                Path(folder).chmod(0o755)
+
+class RegistryMetadataAdmissionTests(unittest.TestCase):
+    def test_actual_registry_bytes_missing_extra_and_outside_urls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            metadata_raw = canonical({'mirrors': []})
+            metadata_sha = digest(metadata_raw)
+            url = 'https://bcr.bazel.build/bazel_registry.json'
+            lock = root / 'MODULE.bazel.lock'
+            lock_raw = canonical({'registryFileHashes': {url: metadata_sha}})
+            lock.write_bytes(lock_raw)
+            cache = root / 'registry-cache'
+            sha_root = cache / 'content_addressable/sha256'
+            payload = sha_root / metadata_sha / 'file'
+            payload.parent.mkdir(parents=True)
+            payload.write_bytes(metadata_raw)
+            payload.chmod(0o444)
+            for folder, _, _ in os.walk(cache, topdown=False):
+                Path(folder).chmod(0o555)
+            def verify():
+                return sdk_export.registry_metadata(lock, digest(lock_raw), cache,
+                    Budget(time.time() + 60), sealed=True)
+            verified = verify()
+            self.assertEqual(verified['files'][0]['sha256'], metadata_sha)
+            payload.chmod(0o644)
+            payload.write_bytes(b'{"changed":true}')
+            payload.chmod(0o444)
+            with self.assertRaises(ValueError):
+                verify()
+            payload.chmod(0o644)
+            payload.write_bytes(metadata_raw)
+            payload.chmod(0o444)
+            payload.parent.chmod(0o755)
+            payload.unlink()
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                verify()
+            payload.write_bytes(metadata_raw)
+            payload.chmod(0o444)
+            payload.parent.chmod(0o555)
+            sha_root.chmod(0o755)
+            extra = sha_root / ('4' * 64)
+            extra.mkdir()
+            (extra / 'file').write_bytes(b'opaque unselected bytes')
+            (extra / 'file').chmod(0o444)
+            extra.chmod(0o555)
+            sha_root.chmod(0o555)
+            with self.assertRaises(ValueError):
+                verify()
+            sha_root.chmod(0o755)
+            extra.chmod(0o755)
+            (extra / 'file').unlink()
+            extra.rmdir()
+            sha_root.chmod(0o555)
+            lock_raw = canonical({'registryFileHashes': {'https://outside.invalid/modules/x/1.0/MODULE.bazel': metadata_sha}})
+            lock.write_bytes(lock_raw)
+            with self.assertRaises(ValueError):
+                verify()
+            for folder, _, _ in os.walk(cache):
+                Path(folder).chmod(0o755)
 
 if __name__ == '__main__':
     unittest.main()

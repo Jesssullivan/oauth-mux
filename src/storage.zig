@@ -4,6 +4,59 @@ const std = @import("std");
 const c = @import("c");
 const envelope = @import("envelope.zig");
 const recovery = @import("recovery.zig");
+const file_metadata = @import("platform/file_metadata.zig");
+
+/// Private creation precedes SQLite; existing files are never repaired/truncated.
+const DatabaseFile = struct {
+    allocator: std.mem.Allocator,
+    directory: std.c.fd_t,
+    identity: file_metadata.Metadata,
+    name: [:0]u8,
+    path: [:0]const u8,
+    existed: bool,
+
+    fn open(allocator: std.mem.Allocator, path: [:0]const u8, create: bool) !?DatabaseFile {
+        if (std.mem.eql(u8, path, ":memory:")) return null;
+        const parent = try allocator.dupeSentinel(u8, std.fs.path.dirname(path) orelse ".", 0);
+        defer allocator.free(parent);
+        const directory = std.c.open(parent.ptr, .{ .DIRECTORY = true, .NOFOLLOW = true, .CLOEXEC = true });
+        if (directory < 0) return error.DatabaseDirectoryUnavailable;
+        errdefer _ = std.c.close(directory);
+        const parent_metadata = try file_metadata.statFd(directory);
+        if (parent_metadata.uid != std.c.getuid() or parent_metadata.mode & 0o777 != 0o700) return error.UnsafeRecoveryDirectory;
+        const name = try allocator.dupeSentinel(u8, std.fs.path.basename(path), 0);
+        errdefer allocator.free(name);
+        var existed = true;
+        var file: std.c.fd_t = -1;
+        if (create) {
+            file = std.c.openat(directory, name.ptr, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true, .NOFOLLOW = true, .NONBLOCK = true, .CLOEXEC = true }, @as(std.c.mode_t, 0o600));
+            if (file >= 0) existed = false else if (std.posix.errno(file) != .EXIST) return error.DatabaseFileUnavailable;
+        }
+        // Never open/close an existing inode for preflight: that would release
+        // another Store's process-owned POSIX locks. Existing names use nofollow
+        // stat only; SQLite performs the sole actual existing-file open.
+        defer if (file >= 0) _ = std.c.close(file);
+        const identity = if (file >= 0) try file_metadata.statFd(file) else try file_metadata.statAt(directory, name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
+        const result: DatabaseFile = .{ .allocator = allocator, .directory = directory, .identity = identity, .name = name, .path = path, .existed = existed };
+        try result.recheck();
+        return result;
+    }
+
+    fn recheck(self: DatabaseFile) !void {
+        const held = self.identity;
+        const named = try file_metadata.statAt(self.directory, self.name.ptr, std.c.AT.SYMLINK_NOFOLLOW);
+        const resolved = try file_metadata.statAt(std.c.AT.FDCWD, self.path.ptr, std.c.AT.SYMLINK_NOFOLLOW);
+        for ([_]file_metadata.Metadata{ held, named, resolved }) |information| {
+            if (information.mode & std.c.S.IFMT != std.c.S.IFREG or information.uid != std.c.getuid() or information.mode & 0o777 != 0o600 or information.nlink != 1) return error.UnsafeDatabaseFile;
+        }
+        if (held.dev != named.dev or held.ino != named.ino or held.dev != resolved.dev or held.ino != resolved.ino) return error.DatabaseFileChanged;
+    }
+
+    fn close(self: DatabaseFile) void {
+        _ = std.c.close(self.directory);
+        self.allocator.free(self.name);
+    }
+};
 
 pub const RenewalOwner = enum { none, external, omux };
 pub const GrantPut = struct {
@@ -94,12 +147,12 @@ pub const Store = struct {
 
     fn openRootValidated(io: std.Io, allocator: std.mem.Allocator, path: [:0]const u8, key_id: []const u8, key: envelope.Key, validator: ?SnapshotValidator) !Store {
         if (key_id.len == 0 or key_id.len > 128) return error.InvalidKeyIdentity;
-        const existed = if (std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |_| true else |err| switch (err) {
-            error.FileNotFound => false,
-            else => return err,
-        };
+        const private_file = try DatabaseFile.open(allocator, path, true);
+        defer if (private_file) |file| file.close();
+        const existed = if (private_file) |file| file.existed else false;
         var db: ?*c.sqlite3 = null;
-        const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READWRITE | c.SQLITE_OPEN_CREATE | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
+        // SQLite must not recreate a removed disk name with its default mode.
+        const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READWRITE | (if (private_file == null) c.SQLITE_OPEN_CREATE else 0) | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
         if (result != c.SQLITE_OK) {
             if (db) |handle| _ = c.sqlite3_close(handle);
             try check(result);
@@ -111,6 +164,7 @@ pub const Store = struct {
         };
         var self: Store = .{ .allocator = allocator, .io = io, .db = db.?, .key = key, .key_id = owned_key_id, .owner_thread = std.Thread.getCurrentId() };
         errdefer self.close();
+        if (private_file) |file| try file.recheck();
         // Legacy refusal precedes journal-mode changes as well as schema or
         // authority writes, including a retained database in DELETE mode.
         const opening_version = try self.scalar("PRAGMA user_version;");
@@ -237,6 +291,8 @@ pub const Store = struct {
     /// OS-vault root. No key is guessed or created for an existing database.
     /// The caller owns the returned sentinel buffer and must free it.
     pub fn readRootId(allocator: std.mem.Allocator, path: [:0]const u8) ![:0]u8 {
+        const private_file = try DatabaseFile.open(allocator, path, false);
+        defer if (private_file) |file| file.close();
         var db: ?*c.sqlite3 = null;
         const result = c.sqlite3_open_v2(path.ptr, &db, c.SQLITE_OPEN_READONLY | c.SQLITE_OPEN_FULLMUTEX | c.SQLITE_OPEN_NOFOLLOW, null);
         defer {
@@ -244,6 +300,7 @@ pub const Store = struct {
         }
         try check(result);
         var stmt: ?*c.sqlite3_stmt = null;
+        if (private_file) |file| try file.recheck();
         try check(c.sqlite3_prepare_v2(db.?, "SELECT key_id FROM custody WHERE id=1;", -1, &stmt, null));
         defer finalize(stmt.?);
         try expectRow(stmt.?);
@@ -921,6 +978,54 @@ fn testPath(allocator: std.mem.Allocator, tmp: std.testing.TmpDir) ![:0]u8 {
     defer _ = std.c.close(directory);
     if (std.c.fchmod(directory, 0o700) != 0) return error.FixtureModeFailed;
     return std.fmt.allocPrintSentinel(allocator, ".zig-cache/tmp/{s}/custody.sqlite3", .{tmp.sub_path}, 0);
+}
+
+test "fresh SQLite custody is private under umask 022 and unsafe existing files are preserved" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try testPath(allocator, tmp);
+    defer allocator.free(path);
+    const prior_mask = std.c.umask(0o022);
+    defer _ = std.c.umask(prior_mask);
+    const key: envelope.Key = @splat(44);
+    {
+        var store = try Store.open(std.testing.io, allocator, path, key);
+        defer store.close();
+        _ = try store.commit(0, "{}", &.{});
+        for ([_][]const u8{ "", "-wal" }) |suffix| {
+            const named = try std.fmt.allocPrintSentinel(allocator, "{s}{s}", .{ path, suffix }, 0);
+            defer allocator.free(named);
+            const information = try file_metadata.statAt(std.c.AT.FDCWD, named.ptr, std.c.AT.SYMLINK_NOFOLLOW);
+            try std.testing.expectEqual(@as(u32, 0o600), information.mode & 0o777);
+            try std.testing.expectEqual(@as(u64, 1), information.nlink);
+        }
+    }
+    const before = try tmp.dir.readFileAlloc(std.testing.io, "custody.sqlite3", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(before);
+    const authority_before = try tmp.dir.readFileAlloc(std.testing.io, "custody.sqlite3.authority", allocator, .limited(1024));
+    defer allocator.free(authority_before);
+    const file = std.c.open(path.ptr, .{ .ACCMODE = .RDWR, .NOFOLLOW = true, .CLOEXEC = true });
+    if (file < 0) return error.FixtureOpenFailed;
+    defer _ = std.c.close(file);
+    if (std.c.fchmod(file, 0o644) != 0) return error.FixtureModeFailed;
+    try std.testing.expectError(error.UnsafeDatabaseFile, Store.open(std.testing.io, allocator, path, key));
+    try std.testing.expectError(error.UnsafeDatabaseFile, Store.readRootId(allocator, path));
+    const after = try tmp.dir.readFileAlloc(std.testing.io, "custody.sqlite3", allocator, .limited(4 * 1024 * 1024));
+    defer allocator.free(after);
+    const authority_after = try tmp.dir.readFileAlloc(std.testing.io, "custody.sqlite3.authority", allocator, .limited(1024));
+    defer allocator.free(authority_after);
+    try std.testing.expectEqualSlices(u8, before, after);
+    try std.testing.expectEqualSlices(u8, authority_before, authority_after);
+    try std.testing.expectEqual(@as(u32, 0o644), (try file_metadata.statFd(file)).mode & 0o777);
+    if (std.c.fchmod(file, 0o600) != 0) return error.FixtureModeFailed;
+    const alias = try std.fmt.allocPrintSentinel(allocator, "{s}.alias", .{path}, 0);
+    defer allocator.free(alias);
+    if (std.c.linkat(std.c.AT.FDCWD, path.ptr, std.c.AT.FDCWD, alias.ptr, 0) != 0) return error.FixtureLinkFailed;
+    try std.testing.expectError(error.UnsafeDatabaseFile, Store.open(std.testing.io, allocator, path, key));
+    if (std.c.unlink(alias.ptr) != 0) return error.FixtureLinkFailed;
+    if (std.c.symlink("custody.sqlite3", alias.ptr) != 0) return error.FixtureLinkFailed;
+    try std.testing.expectError(error.UnsafeDatabaseFile, Store.open(std.testing.io, allocator, alias, key));
 }
 
 /// Use SQLite's consistent backup view; the independent authority is never

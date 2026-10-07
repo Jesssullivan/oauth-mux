@@ -366,5 +366,54 @@
     "pr_created": false,
     "pr_connector_result": "403 Resource not accessible by integration",
     "publication": false
+  },
+  "linear_c4_terminal_pre_action": {
+    "authority": "User-authorized factual tracker reconciliation; R-N13",
+    "issue": "TIN-5338",
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "status_scope_preserved": true,
+    "source": "c6c05224637c52f4826278bc52a036521fdfec54",
+    "result_readback_pending": false
+  },
+  "linear_c4_terminal_readback": {
+    "issue": "TIN-5338",
+    "comment_id": "90787df4-1ff0-4384-b7fd-209c2604ae1d",
+    "body_exact": true,
+    "timestamp_correction": "07:12 prematurely supplied; corrected to actual observed 07:08 UTC and independently read back",
+    "status_scope_preserved": true
+  },
+  "c5_models_terminal": {
+    "authority": "AGENTS.md; R-N13",
+    "source_commit": "c6c05224637c52f4826278bc52a036521fdfec54",
+    "epoch": "ce68dbc9-edf6-4102-a11b-44722100a1e2",
+    "exit": 3,
+    "descendants_empty": true,
+    "passed": 6,
+    "failed": 2,
+    "failed_labels": [
+      "//tools:codex_live_source_test",
+      "//tools:codex_native_candidate_cache_test"
+    ],
+    "correction": "Root patch path rebasing incorrectly changed test fixture literals; restored relative names. Candidate fixture substitutes shared temporary ancestor only while retaining actual marker checks; production custody unchanged.",
+    "acceptance_closed": false
+  },
+  "c6_source_pre_action": {
+    "authority": "User-authorized implementation; AGENTS.md; R-N13",
+    "state": "applied_unverified",
+    "runtime": "src/storage.zig explicit private SQLite creation and existing-file refusal",
+    "proof": "delivery/test_installed_codex_live_enrollment.py precise custody phases; actual offline metadata models",
+    "audit": "integrations.nativeRequestAudit exact owner/ref/thread bounded six records",
+    "live_fixture": "13 models; explicit native text policy and no post-history detach claim",
+    "sdk": "Finite actual baseline-locked BCR metadata export; readonly selected fresh cache; no ambient cache or network fallback",
+    "formatter": {
+      "epoch": "0e4cd7a2-1b79-4915-a870-4947711365c6",
+      "source_commit": "c6c05224637c52f4826278bc52a036521fdfec54",
+      "source_dirty": true,
+      "target": "//:format",
+      "selection": "src",
+      "exit": 0,
+      "descendants_empty": true
+    },
+    "unchanged_limits": true
   }
 }
