@@ -57,9 +57,53 @@ def controller_thread_profile():
     return {'legacy_globbing_threads': 2, 'fsvc_threads': 2, 'loading_phase_threads': 2}
 
 
+CONTROLLER_STDERR_CATEGORIES = frozenset(('sudo-credential', 'sudo-authorization',
+    'client-parser', 'manager-property', 'permission', 'transport', 'unknown'))
+
+
+def controller_stderr_category(data):
+    """Classify bounded trusted-client stderr; retain neither text nor captured fields."""
+    if type(data) is not bytes or not 0 < len(data) <= 16384:
+        return 'unknown'
+    if any(byte < 32 and byte not in (9, 10, 13) or byte > 126 for byte in data):
+        return 'unknown'
+    lines = data.splitlines()
+    if len(lines) > 32 or any(len(line) > 4096 for line in lines):
+        return 'unknown'
+    categories = set()
+    for line in lines:
+        line = line.strip()
+        if line in (b'sudo: a password is required', b'sudo: no password was provided',
+                    b'sudo: authentication failure', b'Sorry, try again.') or re.fullmatch(
+                    rb'sudo: [1-9][0-9]{0,2} incorrect password attempts?', line):
+            categories.add('sudo-credential')
+        elif re.fullmatch(rb'(?:sudo: )?[^\r\n]{1,256} is not in the sudoers file[.]', line) or (
+                line.startswith(b'Sorry, user ') and b' is not allowed to execute ' in line):
+            categories.add('sudo-authorization')
+        elif line.startswith((b'Unknown assignment: ', b'Unknown options: ', b'Failed to parse ',
+                b'Invalid syntax for ', b"Missing argument after ':': ",
+                b'systemd-run: unrecognized option ', b'systemd-run: invalid option ')):
+            categories.add('client-parser')
+        elif line.startswith(b'Failed to start transient service unit: ') and (
+                re.fullmatch(rb'Failed to start transient service unit: (?:Source|Destination) path [^\r\n]* is not absolute[.]', line)
+                or line.endswith(b'Unknown mount flags.')):
+            categories.add('manager-property')
+        elif line.startswith((b'Failed to start transient service unit: ', b'Failed to connect to ')) and (
+                line.endswith((b'Access denied', b'Access denied.', b'Permission denied',
+                    b'Interactive authentication required.', b'Interactive authentication required',
+                    b'Operation not permitted'))):
+            categories.add('permission')
+        elif line.startswith((b'Failed to connect to ', b'Failed to set bus address: ')):
+            categories.add('transport')
+        elif line.startswith(b'Failed to start transient service unit: ') and line.endswith((
+                b'Connection refused', b'Connection timed out', b'Connection reset by peer',
+                b'Transport endpoint is not connected')):
+            categories.add('transport')
+    return next(iter(categories)) if len(categories) == 1 else 'unknown'
+
 def controller_diagnostic(error, operation, phase, timeout):
     """Finite categories only: transport data and exception text stay private."""
-    return {'operation': operation if operation in ('launch', 'unit-readback', 'unit-stop') else 'unknown',
+    row = {'operation': operation if operation in ('launch', 'unit-readback', 'unit-stop') else 'unknown',
             'phase': phase if phase in ('launch', 'startup', 'qualification', 'monitor', 'cleanup') else 'unknown',
             'exception': ('TimeoutExpired' if isinstance(error, subprocess.TimeoutExpired) else
                           'CalledProcessError' if isinstance(error, subprocess.CalledProcessError) else
@@ -67,6 +111,12 @@ def controller_diagnostic(error, operation, phase, timeout):
                           'SubprocessError' if isinstance(error, subprocess.SubprocessError) else 'Exception'),
             'timeout_seconds': timeout if isinstance(timeout, (int, float)) and
                 math.isfinite(timeout) and 0 <= timeout <= CONTROLLER_TIMEOUT else None}
+    if isinstance(error, subprocess.CalledProcessError):
+        code = error.returncode
+        category = getattr(error, 'controller_stderr_category', 'unknown')
+        row.update(exit_code=code if type(code) is int and -64 <= code <= 255 else None,
+                   stderr_category=category if category in CONTROLLER_STDERR_CATEGORIES else 'unknown')
+    return row
 
 
 def controller_run(parts, *, operation, phase, diagnose, stdin=subprocess.DEVNULL,
@@ -80,7 +130,10 @@ def controller_run(parts, *, operation, phase, diagnose, stdin=subprocess.DEVNUL
         outcome = invoke(parts, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          timeout=budget, check=False)
         if outcome.returncode:
-            raise subprocess.CalledProcessError(outcome.returncode, parts)
+            error = subprocess.CalledProcessError(outcome.returncode, parts)
+            error.controller_stderr_category = (controller_stderr_category(getattr(outcome, 'stderr', None))
+                if operation == 'launch' and phase == 'launch' else 'unknown')
+            raise error
         return outcome.stdout.decode()
     except (OSError, subprocess.SubprocessError) as error:
         diagnose(controller_diagnostic(error, operation, phase, budget))
@@ -989,6 +1042,13 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             '--@rules_zig//zig/settings:use_standalone_translate_c', '--lockfile_mode=error'] + cache_args + evaluation_args + site_args + pack_args + retained_args + test_args + run_args + provenance + arguments[1:]
 
 
+def login_writable_binding(admission, run, profile):
+    """An empty vault component must not become an empty systemd mount tuple."""
+    pieces = [admission.writable_binding()]
+    if profile == 'resident-enrollment':
+        pieces.append(str(run)+':'+str(run))
+    return ' '.join(piece for piece in pieces if piece)
+
 def resident_enrollment_command(bazel,run,arguments,admission,*,source_commit=None,source_dirty=None):
     if arguments in (['run','//delivery:resident_vault_metadata'],['run','//delivery:resident_vault_unlock']):
         import guard_resident_vault_profile as resident
@@ -1868,7 +1928,7 @@ def _main(argv, admission_resources):
             if login_input is not None:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(login_input.bindings())]
                 if args.profile in ('native-login-ui','resident-enrollment'):
-                    launch += ['--property=BindPaths=' + login_input.writable_binding() + ((' '+str(run)+':'+str(run)) if args.profile == 'resident-enrollment' else '')]
+                    launch += ['--property=BindPaths=' + login_writable_binding(login_input, run, args.profile)]
             if native_sdk:
                 launch += ['--property=BindReadOnlyPaths=' + ' '.join(native_sdk.readonly_paths(args, native_plan))]
                 if native_cache is not None:

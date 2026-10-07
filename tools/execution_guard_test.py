@@ -47,6 +47,58 @@ class FakeClock:
 
 
 class GuardTest(unittest.TestCase):
+    def test_controller_launch_stderr_has_closed_categories_and_no_private_values(self):
+        from execution_guard import controller_run
+        cases = (
+            (b'sudo: 1 incorrect password attempt\n', 'sudo-credential'),
+            (b'Sorry, user private-user is not allowed to execute private-command as root on private-host.\n', 'sudo-authorization'),
+            (b'Failed to parse MemoryMax= value private-value: Invalid argument\n', 'client-parser'),
+            (b'Unknown assignment: private-key=private-value\n', 'client-parser'),
+            (b'Failed to start transient service unit: Source path  is not absolute.\n', 'manager-property'),
+            (b'Failed to start transient service unit: Access denied\n', 'permission'),
+            (b'Failed to connect to system scope bus via local transport: Permission denied\n', 'permission'),
+            (b'Failed to connect to system scope bus via local transport: Connection refused\n', 'transport'),
+            (b'private-secret-value\n', 'unknown'),
+            (b'Unknown assignment: private\nsudo: 1 incorrect password attempt\n', 'unknown'),
+            (b'Unknown assignment: private\x00value', 'unknown'),
+            (b'x' * 16385, 'unknown'),
+        )
+        for stderr, category in cases:
+            rows = []
+            with self.subTest(category=category), self.assertRaises(subprocess.CalledProcessError) as raised:
+                controller_run(['private-argv'], operation='launch', phase='launch', diagnose=rows.append,
+                    invoke=Mock(return_value=SimpleNamespace(returncode=1, stdout=b'private-output', stderr=stderr)))
+            self.assertEqual(rows[0]['stderr_category'], category)
+            self.assertEqual(rows[0]['exit_code'], 1)
+            self.assertNotIn('private', str(rows))
+            self.assertIsNone(raised.exception.stderr)
+            self.assertIsNone(raised.exception.output)
+
+    def test_controller_stderr_is_not_classified_outside_launch(self):
+        from execution_guard import controller_run, controller_diagnostic
+        rows = []
+        with self.assertRaises(subprocess.CalledProcessError):
+            controller_run(['fixed'], operation='unit-readback', phase='monitor', diagnose=rows.append,
+                invoke=Mock(return_value=SimpleNamespace(returncode=3, stdout=b'', stderr=b'sudo: 1 incorrect password attempt')))
+        self.assertEqual((rows[0]['stderr_category'], rows[0]['exit_code']), ('unknown', 3))
+        error = subprocess.CalledProcessError(1000, ['private'])
+        error.controller_stderr_category = 'private-value'
+        row = controller_diagnostic(error, 'launch', 'launch', 15)
+        self.assertIsNone(row['exit_code'])
+        self.assertEqual(row['stderr_category'], 'unknown')
+
+    def test_login_writable_bindings_have_no_empty_mount_component(self):
+        from execution_guard import login_writable_binding
+        run = Path('/owned/epoch')
+        vault = SimpleNamespace(writable_binding=Mock(return_value=''))
+        self.assertEqual(login_writable_binding(vault, run, 'resident-enrollment'),
+                         '/owned/epoch:/owned/epoch')
+        enrollment = SimpleNamespace(writable_binding=Mock(return_value='/product:/product /state:/state'))
+        self.assertEqual(login_writable_binding(enrollment, run, 'resident-enrollment'),
+                         '/product:/product /state:/state /owned/epoch:/owned/epoch')
+        ui = SimpleNamespace(writable_binding=Mock(return_value='/ui:/ui'))
+        self.assertEqual(login_writable_binding(ui, run, 'native-login-ui'), '/ui:/ui')
+
     def test_sdk_export_run_is_one_exact_guarded_writer(self):
         run = Path('/private/12345678-1234-1234-1234-123456789abc')
         args = ['run','//tools:codex_retained_sdk_export_run']
