@@ -15,6 +15,7 @@ from codex_live_source import BASE_RECEIPT_SHA, BASE_INVENTORY, COMMIT, GRAPH, w
 
 BAZEL = '/nix/store/ia8gp7v2h790lwdx7a7p5clh063v0qy1-bazel-9.0.1/bin/bazel'
 BAZEL_VERSION = '9.0.1'
+MODULE_RESOLUTION_POLICY = 'locked-registry-module-identities-with-sealed-repository-overrides-v1'
 STATE = Path('/srv/fast-local/jess/state/codex/omux-native-candidate-20261007')
 CORE = '//codex-rs/core:core-unit-tests'
 CONFIG = '//codex-rs/config:config-unit-tests'
@@ -149,7 +150,8 @@ def command(args, run, locked_path, bash, candidate=None):
     require(isinstance(exported['module_overrides'], dict), 'qualified module overrides required')
     for name, directory in sorted(exported['module_overrides'].items()):
         require(re.fullmatch(r'[a-z][a-z0-9._-]{0,127}', name) and directory in exported['repositories'].values(), 'module override mapping refused')
-        argv.append('--override_module=' + name + '=' + directory)
+        # Registry MODULE bytes retain their locked version identities. Local
+        # repository bytes are already selected by exact override_repository.
     if args.native_mode == 'analysis':
         argv.append('--nobuild')
     if verb == 'test':

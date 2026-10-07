@@ -45,6 +45,47 @@ class SourceMutationTests(unittest.TestCase):
             self.assertEqual(version.stat().st_mode & 0o777,0o444)
 
     def test_dispatcher_selection_is_explicit_candidate_provenance(self):
+        self._check_dispatcher_selection_provenance()
+
+    def test_registry_modules_preserve_identity_while_repo_bytes_remain_sealed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run = root/'run'
+            run.mkdir(mode=0o700)
+            source = root/'sealed-source'
+            source.mkdir(mode=0o700)
+            selected_bytes = {'MODULE.bazel':b'bazel_dep(name="rules_rs",version="0.0.96")\n',
+                'MODULE.bazel.lock':b'{"lockFileVersion":26,"moduleExtensions":{}}\n'}
+            for name,value in selected_bytes.items():
+                (source/name).write_bytes(value)
+                (source/name).chmod(0o444)
+            args = SimpleNamespace(native_source_root=root/'input',
+                native_export_root=root/'export',native_deadline=None,native_mode='analysis')
+            repos = {name:str(args.native_export_root/'repositories'/name) for name in
+                ('aspect_tools_telemetry+','rules_rs+')}
+            exported = {'registry_cache':str(args.native_export_root/'registry-cache'),
+                'inventory_sha256':'2'*64,'mapping_sha256':'3'*64,'repositories':repos,
+                'module_overrides':{'aspect_tools_telemetry':repos['aspect_tools_telemetry+'],
+                    'rules_rs':repos['rules_rs+']}}
+            candidate = SimpleNamespace(source=source,root=root/'candidate',
+                lease=SimpleNamespace(output_base=root/'output-base'))
+            with patch.object(native,'verify_inputs',return_value=({'inventory_sha256':'1'*64},exported)):
+                plan = native.command(args,run,'/nix/store/locked-tool/bin',
+                    '/nix/store/i27rhb3nr65rkrwz36bchkwmav6ggsmn-bash-5.3p9/bin/bash',candidate)
+            self.assertEqual([arg for arg in plan['argv'] if arg.startswith('--override_repository=')],
+                ['--override_repository='+name+'='+repos[name] for name in sorted(repos)])
+            self.assertFalse(any(arg.startswith('--override_module=') for arg in plan['argv']))
+            self.assertIn('--lockfile_mode=error',plan['argv'])
+            self.assertIn('--repository_cache='+exported['registry_cache'],plan['argv'])
+            self.assertIn('--repository_disable_download',plan['argv'])
+            self.assertIn('--sandbox_default_allow_network=false',plan['argv'])
+            self.assertIn('--repo_contents_cache=',plan['argv'])
+            self.assertEqual(plan['mapping_sha256'],exported['mapping_sha256'])
+            for name,value in selected_bytes.items():
+                self.assertEqual((source/name).read_bytes(),value)
+                self.assertEqual((source/name).stat().st_mode & 0o777,0o444)
+
+    def _check_dispatcher_selection_provenance(self):
         args = SimpleNamespace(state_dir=candidate_cache.native.STATE,native_cache_attempt=1,
             native_source_root=Path('/public/source'),native_source_sha256='1'*64,
             native_patch_sha256=['2'*64,'3'*64,'4'*64],native_export_root=Path('/public/export'),
@@ -58,6 +99,7 @@ class SourceMutationTests(unittest.TestCase):
                 changed = candidate_cache.bindings(args,{'bazel':native.BAZEL},
                     ('9'*64,[]),'/nix/store/locked-tool/bin','system')
         self.assertEqual(selected['bazel_dispatcher_environment'],{'USE_BAZEL_VERSION':'9.0.1'})
+        self.assertEqual(selected['module_resolution_policy'],native.MODULE_RESOLUTION_POLICY)
         self.assertNotEqual(hashlib.sha256(candidate_cache.canonical(selected)).hexdigest(),
             hashlib.sha256(candidate_cache.canonical(changed)).hexdigest())
 
