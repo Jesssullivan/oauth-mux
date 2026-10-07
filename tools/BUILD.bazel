@@ -1019,9 +1019,9 @@ python_binary(
     name = "execution_guard",
     main = "execution_guard.py",
     srcs = ["system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
-            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
+            "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES + [":codex_fresh_live_support"],
     visibility = ["//visibility:public"],
 )
 
@@ -1029,7 +1029,7 @@ python_test(
     name = "execution_guard_test",
     main = "execution_guard_test.py",
     srcs = ["execution_guard.py", "system_mask_policy.py", "guard_cache.py", "guard_test_evidence.py", "guard_dependency_profile.py",
-            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py",
+            "guard_site_profile.py", "guard_owner_runtime_input.py", "codex_owner_runtime_input.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py",
             "site_coordinator_closure_qualification.py",
             "site_coordinator_qualification.py", "cached_nix_inventory.py", "verify_cached_nars.py"] + _CODEX_SDK_SOURCES + _YOGA_GUARD_SOURCES + _YOGA_DELIVERY_GUARD_SOURCES,
 )
@@ -1037,7 +1037,7 @@ python_test(
 python_test(
     name = "guard_dependency_profile_test",
     main = "guard_dependency_profile_test.py",
-    srcs = ["guard_dependency_profile.py", "guard_codex_live_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
+    srcs = ["guard_dependency_profile.py", "guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_yoga_delivery_profile.py"] + _CODEX_SDK_SOURCES,
 )
 python_test(
     name = "yoga_delivery_settings_test",
@@ -1395,7 +1395,7 @@ toolchain(
 python_test(
     name = "guard_codex_live_profile_test",
     main = "guard_codex_live_profile_test.py",
-    srcs = ["guard_codex_live_profile.py", "guard_dependency_profile.py",
+    srcs = ["guard_codex_live_profile.py", "guard_codex_fresh_live_profile.py", "guard_dependency_profile.py",
             "guard_owner_runtime_input.py", "codex_owner_runtime_input.py"],
 )
 
@@ -1489,4 +1489,25 @@ python_test(
     main = "codex_private_import_test.py",
     srcs = ["codex_retained_sdk_export.py"],
     tags = ["no-remote"],
+)
+
+# Pure shared fresh validators; the packaging action remains separate and manual.
+filegroup(
+    name = "codex_fresh_live_support",
+    srcs = ["codex_fresh_native_runtime.py","guard_fresh_native_runtime_input.py",
+        "//integrations/codex-owner-runtime:runtime_package.py","//delivery:portable.py"] + _CODEX_SDK_SOURCES,
+    visibility = ["//visibility:public"],
+)
+exports_files(["codex_live_fresh_runtime_repository.bzl","codex_live_fresh_runtime_repository_input.py"])
+python_test(
+    name = "guard_fresh_native_runtime_input_test",
+    main = "guard_fresh_native_runtime_input_test.py",
+    srcs = [":codex_fresh_live_support"],
+)
+python_test(
+    name = "guard_codex_fresh_live_profile_test",
+    main = "guard_codex_fresh_live_profile_test.py",
+    srcs = ["guard_codex_fresh_live_profile.py","guard_codex_live_profile.py","codex_live_fresh_runtime_repository_input.py",
+        "execution_guard.py","guard_cache.py","guard_test_evidence.py","guard_dependency_profile.py","system_mask_policy.py",
+        "guard_owner_runtime_input.py","codex_owner_runtime_input.py"],
 )

@@ -920,6 +920,11 @@ python_test(
             "pack.py", "install.py", "portable.py"],
 )
 
+# A fresh carrier is selected only by the exact guarded live action.
+config_setting(
+    name = "codex_live_fresh_runtime",
+    define_values = {"omux_codex_live_runtime": "fresh"},
+)
 # Opt-in real provider work; execution guard admits this exact target only.
 python_test(
     name = "installed_codex_live_continuity_test",
@@ -931,18 +936,37 @@ python_test(
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//integrations/codex-upstream:patch_io.py",
         "//integrations/codex-upstream:restore_source.py",
-    ],
+    ] + ["//tools:codex_fresh_live_support"],
     data = [
         ":default_instance_archive",
-        "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
-        "//integrations/codex-owner-runtime:runtime-receipt.json",
         "@omux_nix//:dbus_run_session", "@omux_nix//:dbus_daemon",
         "@omux_nix//:gnome_keyring_daemon",
-    ],
-    args = [
-        "$(location :default_instance_archive)",
-        "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
-        "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+    ] + select({
+        ":codex_live_fresh_runtime": [
+            "@omux_codex_live_fresh_runtime//:runtime.tar.gz",
+            "@omux_codex_live_fresh_runtime//:runtime-manifest.json",
+            "@omux_codex_live_fresh_runtime//:runtime-receipt.json",
+            "@omux_codex_live_fresh_runtime//:input-pin.json",
+        ],
+        "//conditions:default": [
+            "//integrations/codex-owner-runtime:codex-owner-runtime.tar.gz",
+            "//integrations/codex-owner-runtime:runtime-receipt.json",
+        ],
+    }),
+    args = select({
+        ":codex_live_fresh_runtime": [
+            "--runtime-kind=fresh",
+            "--runtime-pin=$(location @omux_codex_live_fresh_runtime//:input-pin.json)",
+            "$(location :default_instance_archive)",
+            "$(location @omux_codex_live_fresh_runtime//:runtime.tar.gz)",
+            "$(location @omux_codex_live_fresh_runtime//:runtime-receipt.json)",
+        ],
+        "//conditions:default": [
+            "$(location :default_instance_archive)",
+            "$(location //integrations/codex-owner-runtime:codex-owner-runtime.tar.gz)",
+            "$(location //integrations/codex-owner-runtime:runtime-receipt.json)",
+        ],
+    }) + [
         "$(location @omux_nix//:dbus_run_session)",
         "$(location @omux_nix//:dbus_daemon)",
         "$(location @omux_nix//:gnome_keyring_daemon)",
@@ -961,5 +985,5 @@ python_test(
         "native_resumed_checkpoint.py", "pack.py", "install.py", "portable.py",
         "//integrations/codex-owner-runtime:runtime_package.py",
         "//integrations/codex-upstream:patch_io.py", "//integrations/codex-upstream:restore_source.py",
-    ],
+    ] + ["//tools:codex_fresh_live_support"],
 )

@@ -881,7 +881,7 @@ def verify(actual, cgroup, manager='user', isolation=None, profile='standard', r
         raise ValueError('effective CPU quota rejected')
 
 
-def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=None, source_dirty=None, nixpkgs_source=None, output_base=None, site_source=None, site_inventory=None, site_inventory_sha256=None, site_nixpkgs_source=None, codex_pack_directory=None, profile='standard', codex_recovery_source=None, codex_pristine_directory=None, codex_recovery_delta_directory=None, codex_owner_runtime_directory=None):
+def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=None, source_dirty=None, nixpkgs_source=None, output_base=None, site_source=None, site_inventory=None, site_inventory_sha256=None, site_nixpkgs_source=None, codex_pack_directory=None, profile='standard', codex_recovery_source=None, codex_pristine_directory=None, codex_recovery_delta_directory=None, codex_owner_runtime_directory=None, codex_fresh_runtime_selection=None, codex_fresh_runtime_sha256=None, codex_fresh_runtime_bytes=None):
     format_base = ['run', '//:format', '--', 'src/main.zig', 'src/setup_collector.zig', 'src/setup_collector_tests.zig']
     formatter = profile == 'standard' and (arguments == format_base or
                                            arguments == format_base + ['src/engine.zig'] or
@@ -912,6 +912,15 @@ def bazel_command(bazel, run, arguments, repository_cache=None, source_commit=No
             codex_recovery_source, codex_pristine_directory, codex_recovery_delta_directory))
     retained_args = ['--repo_env=' + retained_variable + '=' +
                      (str(codex_owner_runtime_directory) if codex_owner_runtime_directory is not None else '')]
+    import guard_codex_fresh_live_profile as fresh_live
+    fresh_selected = fresh_live.finite(profile,arguments,codex_owner_runtime_directory,
+        codex_fresh_runtime_selection,codex_fresh_runtime_sha256,codex_fresh_runtime_bytes)
+    retained_args += ['--repo_env='+fresh_live.VARIABLE+'='+
+        (str(codex_fresh_runtime_selection) if fresh_selected else ''),
+        '--repo_env='+fresh_live.SHA_VARIABLE+'='+(codex_fresh_runtime_sha256 if fresh_selected else ''),
+        '--repo_env='+fresh_live.BYTES_VARIABLE+'='+(str(codex_fresh_runtime_bytes) if fresh_selected else '')]
+    if fresh_selected:
+        retained_args.append(fresh_live.DEFINE)
     pack_args = ['--repo_env=OMUX_CODEX_PACK_DIRECTORY=' + str(codex_pack_directory)] if codex_pack_directory else []
     if codex_pristine_directory is not None:
         pack_args += ['--repo_env=OMUX_CODEX_PRISTINE_DIRECTORY=' + str(codex_pristine_directory),
@@ -1079,6 +1088,9 @@ def _main(argv, admission_resources):
     parser.add_argument('--codex-recovery-delta-directory', type=Path)
     parser.add_argument('--codex-owner-runtime-directory', type=Path)
     parser.add_argument('--codex-live-manifest', type=Path)
+    parser.add_argument('--codex-fresh-runtime-selection')
+    parser.add_argument('--codex-fresh-runtime-sha256')
+    parser.add_argument('--codex-fresh-runtime-bytes',type=int)
     parser.add_argument('--manager', choices=('user', 'system'), default='user')
     parser.add_argument('--become-file', type=Path)
     parser.add_argument('--reuse-owned-cache', action='store_true')
@@ -1151,6 +1163,13 @@ def _main(argv, admission_resources):
     live_input = None
     live_input_verified_after = None
     live_binding_readback = None
+    fresh_input = None
+    fresh_input_verified_after = None
+    fresh_input_after = None
+    fresh_input_before = None
+    import guard_codex_fresh_live_profile as fresh_live
+    fresh_selected = fresh_live.finite(args.profile,arguments,args.codex_owner_runtime_directory,
+        args.codex_fresh_runtime_selection,args.codex_fresh_runtime_sha256,args.codex_fresh_runtime_bytes)
     if args.profile == 'codex-live':
         import guard_codex_live_profile as live
         live.finite(arguments, args.manager, args.codex_live_manifest,
@@ -1164,7 +1183,8 @@ def _main(argv, admission_resources):
                      args.sdk_lane, args.sdk_source_root, args.sdk_source_receipt_sha256,
                      args.sdk_settings_root, args.sdk_settings_receipt_sha256, args.sdk_bundle,
                      args.sdk_bundle_receipt_sha256, args.yoga_delivery_epoch,
-                     args.yoga_qualification, args.yoga_qualification_sha256, args.yoga_deadline_monotonic_ns))
+                     args.yoga_qualification, args.yoga_qualification_sha256, args.yoga_deadline_monotonic_ns),
+                    fresh_runtime=fresh_selected)
     elif args.codex_live_manifest is not None:
         raise ValueError('codex-live-input-exclusive-to-live-profile')
     delivery_lock = None
@@ -1317,6 +1337,12 @@ def _main(argv, admission_resources):
             Path.cwd() / 'integrations/codex-owner-runtime/runtime-receipt.json',
             Path.cwd(), delivery_entry_deadline_ns)
         admission_resources.callback(owner_input.close)
+    if fresh_selected:
+        from guard_fresh_native_runtime_input import Admission as FreshAdmission
+        fresh_input = FreshAdmission(args.codex_fresh_runtime_selection,args.codex_fresh_runtime_sha256,
+            args.codex_fresh_runtime_bytes,delivery_entry_deadline_ns)
+        fresh_input_before = dict(fresh_input.facts)
+        admission_resources.callback(fresh_input.close)
     if args.profile == 'codex-live':
         live_input = live.Admission(args.codex_live_manifest, Path.cwd(), delivery_entry_deadline_ns, arguments)
         admission_resources.callback(live_input.close)
@@ -1419,7 +1445,10 @@ def _main(argv, admission_resources):
                                 codex_recovery_source=args.codex_recovery_source,
                                 codex_pristine_directory=args.codex_pristine_directory,
                                 codex_recovery_delta_directory=args.codex_recovery_delta_directory,
-                                codex_owner_runtime_directory=args.codex_owner_runtime_directory)
+                                codex_owner_runtime_directory=args.codex_owner_runtime_directory,
+                                codex_fresh_runtime_selection=args.codex_fresh_runtime_selection,
+                                codex_fresh_runtime_sha256=args.codex_fresh_runtime_sha256,
+                                codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes)
         workload_cwd = args.site_source if site else Path.cwd()
         if native_sdk:
             # PATH and Bash are explicit immutable bootstrap closure inputs.
@@ -1546,6 +1575,8 @@ def _main(argv, admission_resources):
             graph_sha256, graph_inputs = graph_digest(Path.cwd())
             if native_sdk and (graph_sha256, graph_inputs) != native_controller_graph:
                 raise ValueError('native controller graph changed before dispatch')
+            if fresh_input is not None:
+                fresh_input.recheck()
             if owner_input is not None:
                 owner_input.recheck()
             if live_input is not None:
@@ -1637,7 +1668,10 @@ def _main(argv, admission_resources):
                                         codex_recovery_source=args.codex_recovery_source,
                                         codex_pristine_directory=args.codex_pristine_directory,
                                         codex_recovery_delta_directory=args.codex_recovery_delta_directory,
-                                codex_owner_runtime_directory=args.codex_owner_runtime_directory)
+                                codex_owner_runtime_directory=args.codex_owner_runtime_directory,
+                                codex_fresh_runtime_selection=args.codex_fresh_runtime_selection,
+                                codex_fresh_runtime_sha256=args.codex_fresh_runtime_sha256,
+                                codex_fresh_runtime_bytes=args.codex_fresh_runtime_bytes)
             if site and args.site_phase == 'lock':
                 site_lock_evidence['before'] = site.retain_lockfile(args.site_source, run,
                     site_snapshot['MODULE.bazel.lock'], 'before')
@@ -1662,7 +1696,8 @@ def _main(argv, admission_resources):
                 if native_cache is not None:
                     launch += ['--property=BindPaths=' + str(native_cache.lease.output_base)]
             if live_input is not None:
-                launch += ['--property=BindReadOnlyPaths=' + live_input.binding()]
+                live_binds = fresh_live.readonly_bindings(fresh_input,live_input.binding()) if fresh_input else [live_input.binding()]
+                launch += ['--property=BindReadOnlyPaths=' + ' '.join(live_binds)]
             unset = DELEGATION_ENV + (('OMUX_ZIG_SDK', 'OMUX_BAZEL_CLOSURE', 'OMUX_SITE_BAZEL_CLOSURE') if site else ())
             if yoga:
                 unset += ('DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE',
@@ -1711,7 +1746,7 @@ def _main(argv, admission_resources):
                                     'TemporaryFileSystem', 'InaccessiblePaths', 'BindReadOnlyPaths', 'BindPaths')}
             if live_input is not None:
                 observed_properties = live.receipt_properties(observed_properties)
-                live_binding_readback = live.binding_facts(actual, live_input.binding())
+                live_binding_readback = fresh_live.binding_facts(actual,live_binds) if fresh_input else live.binding_facts(actual,live_input.binding())
             name = actual.get('ControlGroup', '')
             if (not name.startswith('/') or '..' in Path(name).parts
                     or Path(name).name != unit or actual.get('Id') != unit):
@@ -1730,7 +1765,11 @@ def _main(argv, admission_resources):
             if native_sdk:
                 native_sdk.verify_readonly(actual, args, native_plan)
             if live_input is not None:
-                live.verify_binding(actual, live_input.binding())
+                if fresh_input is not None:
+                    fresh_live.verify_readonly(actual,live_binds)
+                    fresh_input.recheck()
+                else:
+                    live.verify_binding(actual,live_input.binding())
                 observed_properties = live.receipt_properties(observed_properties, verified=True)
                 live_input.recheck()
             exported = set(actual.get('Environment', '').split())
@@ -1962,7 +2001,13 @@ def _main(argv, admission_resources):
                     live_input_verified_after = graph_digest(Path.cwd()) == (graph_sha256, graph_inputs)
                 except (OSError, ValueError):
                     live_input_verified_after = False
-            final_status = result if cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
+            if fresh_input is not None:
+                try:
+                    fresh_input_after = fresh_input.recheck()
+                    fresh_input_verified_after = graph_digest(Path.cwd()) == (graph_sha256,graph_inputs)
+                except (OSError,ValueError):
+                    fresh_input_verified_after = False
+            final_status = result if fresh_input_verified_after is not False and cleanup and evidence_ok and live_input_verified_after is not False and sdk_source_verified_after is not False and site_source_verified_after is not False and yoga_verified_after is not False and delivery_verified_after is not False and owner_input_verified_after is not False and (not yoga or yoga_summary['executionPassed']) else 125
             if native_verified_after is False:
                 final_status = 125
             if pids_cancellation is not None:
@@ -1993,6 +2038,12 @@ def _main(argv, admission_resources):
                        'codex_pack_metadata': pack_digests,
                        'codex_recovery_source': str(args.codex_recovery_source) if args.codex_recovery_source else None,
                        'codex_fresh_public_inputs': fresh_metadata,
+                       'codex_fresh_runtime_input': {
+                           'before':fresh_input_before,'after':fresh_input_after,
+                           'verified_after_cleanup':fresh_input_verified_after,
+                           'original_deadline_monotonic_ns':delivery_entry_deadline_ns,
+                           'native_support':False,'provider_evaluation':False
+                       } if fresh_input else None,
                        'codex_owner_runtime_input': {'before': owner_input.facts(), 'after': owner_input_after,
                            'verified_after_cleanup': owner_input_verified_after,
                            'original_deadline_monotonic_ns': delivery_entry_deadline_ns,

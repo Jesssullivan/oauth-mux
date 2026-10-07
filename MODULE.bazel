@@ -144,3 +144,6 @@ codex_live_inputs(name = "omux_codex_live_source_inputs")
 
 # The operator instance is added only after independently qualified native outputs.
 fresh_native_package = use_repo_rule("//tools:codex_fresh_native_package_inputs.bzl", "codex_fresh_native_package_inputs")
+
+# Instantiate only after a successful independently pinned package run.
+fresh_live_runtime_inputs = use_repo_rule("//tools:codex_live_fresh_runtime_repository.bzl", "codex_live_fresh_runtime_repository")

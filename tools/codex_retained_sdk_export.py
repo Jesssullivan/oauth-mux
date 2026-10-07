@@ -196,10 +196,19 @@ def inventory(path, budget, output=None, sealed=False):
         before = os.fstat(fd)
         for name in sorted(os.listdir(fd)):
             budget.check(); budget.files += 1
-            need(budget.files <= MAX_FILES and name not in ('.git', 'action_cache', 'server', 'command.log')
-                 and '\n' not in name and '\x00' not in name, 'forbidden or excessive repository entry')
             rel = prefix + name
+            detail = ' root='+repr(str(path))+' path='+repr(rel)+' entries='+str(budget.files)+' bytes='+str(budget.bytes)
+            need(budget.files <= MAX_FILES,'public repository refusal: entry bound max='+str(MAX_FILES)+detail)
+            need(name not in ('.git','action_cache','command.log'),
+                 'public repository refusal: forbidden basename='+repr(name)+detail)
+            need('\n' not in name and '\x00' not in name,
+                 'public repository refusal: noncanonical basename'+detail)
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            public_server_scope = lease is not None or (sealed and Path(path).parent.name=='repositories' and
+                re.fullmatch(r'[A-Za-z0-9_+.~-]+',Path(path).name)) or (
+                Path(path)==Path(JDK) and rel=='lib/openjdk/lib/server')
+            need(name!='server' or public_server_scope and stat.S_ISDIR(info.st_mode),
+                 'public repository refusal: server must be an ordinary selected-public source directory'+detail)
             need(info.st_uid in (0,os.getuid()) and (stat.S_ISLNK(info.st_mode) or not info.st_mode & 0o022
                  or lease is not None and (lease.regular(info) or lease.directory(info))),
                  'public entry custody: path='+repr(rel)+' uid='+str(info.st_uid)+' mode='+oct(stat.S_IMODE(info.st_mode)))
@@ -452,7 +461,10 @@ def qualify(budget):
                 root,kind = target,'cache'
             else:
                 need(stat.S_ISDIR(info.st_mode),'repository root type')
-            rows = inventory(root,budget)
+            try:
+                rows = inventory(root,budget)
+            except ValueError as error:
+                raise ValueError('selected public repository '+name+': '+str(error)) from None
             module_file = next((item for item in rows if item['path']=='MODULE.bazel' and item['kind']=='file'),None)
             if module_file and (name.endswith('+') and '+' not in name[:-1] or name=='platforms'):
                 lease = public_import(root,False)

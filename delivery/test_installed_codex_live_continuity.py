@@ -52,6 +52,8 @@ def checked_native_rpc(endpoint, method, params):
             and isinstance(value["result"], dict), "live native envelope differs")
     return value["result"]
 TIMEOUT = 120
+FRESH_KIND = "omux-fresh-native-runtime-v1"
+MAX_PUBLIC_RUNTIME_METADATA = 16 * 1024 * 1024
 RECEIPT_KEYS = {"schema_version", "scope", "transition_reason", "application", "application_version", "model", "provider_usage_records",
                 "native_context_mode", "reasoning_summary", "reasoning_effort",
                 "minimum_reasoning_effort_verified", "native_detach_proven", "integration_restoration_proven",
@@ -65,6 +67,79 @@ RECEIPT_KEYS = {"schema_version", "scope", "transition_reason", "application", "
 
 def require(condition, message):
     support.require(condition, message)
+
+def runtime_arguments(arguments):
+    if arguments[:1] == ["--runtime-kind=fresh"]:
+        require(len(arguments) >= 2 and arguments[1].startswith("--runtime-pin="),
+                "fresh runtime requires independently admitted public input pin")
+        pin = arguments[1].split("=", 1)[1]
+        require(pin and not any(value.startswith("--runtime-") for value in arguments[2:]),
+                "runtime selector duplicated")
+        return "fresh", Path(pin).resolve(strict=True), arguments[2:]
+    require(not any(value.startswith("--runtime-") for value in arguments),
+            "unknown runtime selection")
+    return "retained", None, arguments
+
+def public_runtime_file(path, maximum):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        before = os.fstat(descriptor)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid()
+                and not before.st_mode & 0o022 and 0 < before.st_size <= maximum,
+                "public runtime input custody differs")
+        parts, length = [], 0
+        while length < before.st_size:
+            part = os.read(descriptor, min(1024 * 1024, before.st_size - length))
+            require(part, "public runtime input incomplete")
+            parts.append(part)
+            length += len(part)
+        stable = lambda info: (info.st_dev, info.st_ino, info.st_uid, info.st_mode,
+                               info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        require(stable(before) == stable(os.fstat(descriptor)), "public runtime input changed")
+        return b"".join(parts)
+    finally:
+        os.close(descriptor)
+
+def fresh_runtime_bundle(candidate, receipt, pin_path, verifier=None):
+    require(pin_path is not None, "fresh runtime public pin absent")
+    pin = json.loads(public_runtime_file(pin_path, 65536), object_pairs_hook=tui.strict_object)
+    fields = {"kind", "archive_sha256", "archive_bytes", "receipt_sha256", "receipt_bytes",
+              "manifest_sha256", "manifest_bytes"}
+    require(isinstance(pin, dict) and set(pin) == fields and pin["kind"] == FRESH_KIND,
+            "fresh runtime public pin schema differs")
+    for role, maximum in (("archive", support.runtime_package.MAX_ARCHIVE_BYTES),
+                          ("receipt", MAX_PUBLIC_RUNTIME_METADATA),
+                          ("manifest", MAX_PUBLIC_RUNTIME_METADATA)):
+        require(isinstance(pin[role + "_sha256"], str)
+                and re.fullmatch(r"[0-9a-f]{64}", pin[role + "_sha256"])
+                and type(pin[role + "_bytes"]) is int and 0 < pin[role + "_bytes"] <= maximum,
+                "fresh runtime public input pin differs")
+    payload = public_runtime_file(candidate, support.runtime_package.MAX_ARCHIVE_BYTES)
+    raw_receipt = public_runtime_file(receipt, MAX_PUBLIC_RUNTIME_METADATA)
+    require(len(payload) == pin["archive_bytes"] and hashlib.sha256(payload).hexdigest() == pin["archive_sha256"]
+            and len(raw_receipt) == pin["receipt_bytes"] and hashlib.sha256(raw_receipt).hexdigest() == pin["receipt_sha256"],
+            "fresh runtime differs from independently admitted input")
+    document = json.loads(raw_receipt, object_pairs_hook=tui.strict_object)
+    require(isinstance(document, dict) and document.get("kind") == FRESH_KIND,
+            "fresh runtime receipt kind differs")
+    if verifier is None:
+        import codex_fresh_native_runtime
+        verifier = codex_fresh_native_runtime.verify_runtime_files
+    manifest, files = verifier(payload, document)
+    encoded = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    require(manifest.get("kind") == FRESH_KIND and len(encoded) == pin["manifest_bytes"]
+            and hashlib.sha256(encoded).hexdigest() == pin["manifest_sha256"],
+            "fresh manifest differs from independently admitted input")
+    return manifest, files
+
+def runtime_identity(manifest, kind):
+    if kind == "retained":
+        return {"upstream_commit": manifest["candidate"]["upstream_commit"],
+                "candidate_patch_sha256": manifest["candidate"]["patch_sha256"]}
+    require(kind == "fresh" and manifest.get("kind") == FRESH_KIND,
+            "runtime identity kind differs")
+    return {"runtime_kind": FRESH_KIND, "upstream_commit": manifest["chain"]["upstream_commit"],
+            "candidate_patch_sha256s": manifest["chain"]["patch_sha256"]}
 
 def read_manifest():
     require(os.environ.get("OMUX_CODEX_LIVE_INPUT_MANIFEST") == "/omux-live-inputs/input.json",
@@ -119,7 +194,9 @@ def minimum_reasoning_effort(catalog, model):
     return min(efforts, key=EFFORT_RANK.__getitem__)
 
 def validate_receipt(value):
-    require(isinstance(value, dict) and set(value) == RECEIPT_KEYS,
+    fresh = isinstance(value, dict) and value.get("runtime_kind") == FRESH_KIND
+    keys = (RECEIPT_KEYS - {"candidate_patch_sha256"}) | {"runtime_kind", "candidate_patch_sha256s"} if fresh else RECEIPT_KEYS
+    require(isinstance(value, dict) and set(value) == keys,
             "redacted live receipt shape differs")
     fixed = {"schema_version": 1,
              "scope": "operator_drain_same_process_completed_turn_substitution",
@@ -138,11 +215,20 @@ def validate_receipt(value):
                 for key, expected in fixed.items()), "redacted live receipt predicates differ")
     require(isinstance(value["reasoning_effort"], str) and value["reasoning_effort"] in EFFORT_RANK,
             "redacted reasoning effort differs")
-    for key, width in (("upstream_commit", 40), ("candidate_patch_sha256", 64),
+    if fresh:
+        pins = value["candidate_patch_sha256s"]
+        require(isinstance(pins, list) and len(pins) == 3
+                and all(isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins),
+                "fresh runtime patch chain differs")
+    for key, width in (("upstream_commit", 40),
                        ("runtime_archive_sha256", 64)):
         require(isinstance(value[key], str)
                 and re.fullmatch(r"[0-9a-f]{" + str(width) + r"}", value[key]),
                 "redacted public source digest differs")
+    if not fresh:
+        require(isinstance(value["candidate_patch_sha256"], str)
+                and re.fullmatch(r"[0-9a-f]{64}", value["candidate_patch_sha256"]),
+                "redacted retained runtime identity differs")
     require(isinstance(value["application_version"], str)
             and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", value["application_version"]),
             "redacted native application version differs")
@@ -151,13 +237,26 @@ def validate_receipt(value):
             "redacted model selector differs")
 
 class LiveScenario:
-    def __init__(self, manifest):
+    def __init__(self, manifest, runtime_kind="retained", runtime_pin=None):
         self.manifest = manifest
         self.marker = MARKER
         self.sources = []
         self.accounts = []
         self.reasoning_effort = None
         self.cli_overrides = ()
+        require(runtime_kind in ("retained", "fresh")
+                and (runtime_pin is not None) == (runtime_kind == "fresh"), "runtime selection differs")
+        self.runtime_kind = runtime_kind
+        self.runtime_pin = runtime_pin
+        self.verified_runtime_identity = None
+
+    def read_runtime_bundle(self, candidate, receipt):
+        if self.runtime_kind == "fresh":
+            manifest, files = fresh_runtime_bundle(candidate, receipt, self.runtime_pin)
+        else:
+            manifest, files = support.runtime_package.read_runtime_bundle(candidate, receipt)
+        self.verified_runtime_identity = runtime_identity(manifest, self.runtime_kind)
+        return manifest, files
 
     def configure(self, config):
         contents = config.read_text()
@@ -355,7 +454,8 @@ class LiveScenario:
             require(terminal.process.pid == pid and tui.process_witness(pid) == witness
                     and tui.status(endpoint, thread) == observed,
                     "live substitution changed process or native custody")
-        manifest = json.loads(Path(receipt).read_bytes(), object_pairs_hook=tui.strict_object)
+        require(self.verified_runtime_identity is not None, "runtime verification identity absent")
+        manifest = json.loads(public_runtime_file(receipt, MAX_PUBLIC_RUNTIME_METADATA), object_pairs_hook=tui.strict_object)
         result = {"schema_version": 1,
                   "scope": "operator_drain_same_process_completed_turn_substitution",
                   "transition_reason": "operator_drain", "application": "omux-maintained-codex",
@@ -364,8 +464,7 @@ class LiveScenario:
                   "native_context_mode": "text_transcript_v1", "reasoning_summary": "none",
                   "reasoning_effort": self.reasoning_effort, "minimum_reasoning_effort_verified": True,
                   "native_detach_proven": False, "integration_restoration_proven": False,
-                  "upstream_commit": manifest["candidate"]["upstream_commit"],
-                  "candidate_patch_sha256": manifest["candidate"]["patch_sha256"],
+                  **self.verified_runtime_identity,
                   "runtime_archive_sha256": manifest["archive_sha256"],
                   "accounts": ["account_a", "account_b"], "submitted_turns": 2,
                   "accepted_completed_turns": 2, "tool_calls": 0,
@@ -381,13 +480,16 @@ def main():
     support.DEADLINE_SECONDS = 480
     tui.native_rpc = checked_native_rpc
     support.owned_endpoint = checked_owned_endpoint
-    if len(sys.argv) == 7 and sys.argv[1] == "--inside-live":
-        scenario = LiveScenario(read_manifest())
-        tui.inside(*(Path(value).resolve(strict=True) for value in sys.argv[2:]), live=scenario)
+    runtime_kind, runtime_pin, arguments = runtime_arguments(sys.argv[1:])
+    if len(arguments) == 6 and arguments[0] == "--inside-live":
+        scenario = LiveScenario(read_manifest(), runtime_kind, runtime_pin)
+        tui.inside(*(Path(value).resolve(strict=True) for value in arguments[1:]), live=scenario)
         return 0
-    require(len(sys.argv) == 7, "declared installed/native inputs required")
+    require(len(arguments) == 6, "declared installed/native inputs required")
     bundle, candidate, receipt, session, bus, keyring = (
-        Path(value).resolve(strict=True) for value in sys.argv[1:])
+        Path(value).resolve(strict=True) for value in arguments)
+    runtime_options = ([] if runtime_kind == "retained" else
+                       ["--runtime-kind=fresh", "--runtime-pin=" + str(runtime_pin)])
     read_manifest()  # Fail before any provider-capable daemon exists.
     with tempfile.TemporaryDirectory(prefix="omux-l-", dir="/tmp") as temporary:
         root = Path(temporary)
@@ -409,7 +511,7 @@ def main():
         process = subprocess.Popen([str(session), "--dbus-daemon=" + str(bus),
                                     "--config-file=" + str(configuration), "--", sys.executable,
                                     "-I", "-B", "-c", bootstrap, str(Path(__file__).absolute()),
-                                    "--inside-live", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
+                                    *runtime_options, "--inside-live", str(bundle), str(candidate), str(receipt), str(keyring), str(root)],
                                    env=environment, start_new_session=True, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, umask=0o077)
         code, output, diagnostics = support.bounded_private_session(process)

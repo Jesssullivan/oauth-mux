@@ -1,6 +1,9 @@
 """Provider-free predicates only; never invokes a daemon, native process or provider."""
 import copy
 import json
+import hashlib
+import os
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -102,6 +105,97 @@ class LiveContractTest(unittest.TestCase):
 
     def test_narrow_receipt_accepts_closed_predicates(self):
         fixture.validate_receipt(receipt())
+
+    def test_fresh_receipt_retains_three_patch_chain_without_forging_old_candidate_identity(self):
+        value = receipt()
+        del value["candidate_patch_sha256"]
+        value.update(runtime_kind=fixture.FRESH_KIND, candidate_patch_sha256s=["b" * 64, "d" * 64, "e" * 64])
+        fixture.validate_receipt(value)
+        for field, replacement in (("runtime_kind", "retained"), ("candidate_patch_sha256s", ["b" * 64]),
+                                   ("candidate_patch_sha256s", ["b" * 64, "d" * 64, "bad"])):
+            invalid = {**value, field: replacement}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                fixture.validate_receipt(invalid)
+        with self.assertRaises(ValueError):
+            fixture.validate_receipt({**value, "candidate_patch_sha256": "b" * 64})
+
+    def test_runtime_selection_preserves_default_and_refuses_implicit_or_duplicate_fresh_kind(self):
+        self.assertEqual(fixture.runtime_arguments(["bundle", "candidate", "receipt"]),
+                         ("retained", None, ["bundle", "candidate", "receipt"]))
+        with mock.patch.object(Path, "resolve", lambda self, **kwargs: self):
+            kind, pin, arguments = fixture.runtime_arguments([
+                "--runtime-kind=fresh", "--runtime-pin=/public/input-pin.json", "bundle"])
+            self.assertEqual((kind, pin, arguments), ("fresh", Path("/public/input-pin.json"), ["bundle"]))
+        for args in (["--runtime-kind=fresh"], ["--runtime-pin=/public/input-pin.json"],
+                     ["--runtime-kind=unknown"],
+                     ["--runtime-kind=fresh", "--runtime-pin=/public/input-pin.json", "--runtime-kind=fresh"]):
+            with self.subTest(arguments=args), self.assertRaises(ValueError):
+                fixture.runtime_arguments(args)
+
+    def test_actual_tui_runtime_reader_defaults_to_retained_and_live_reader_is_explicit(self):
+        class VerifiedStop(Exception):
+            pass
+        selected = mock.Mock(return_value=({}, {}))
+        with mock.patch.dict(fixture.tui.os.environ, {"OMUX_ISOLATED_VAULT_PROOF": "private-bus-private-xdg"}), \
+             mock.patch.object(fixture.support.runtime_package, "read_runtime_bundle", return_value=({}, {})) as retained, \
+             mock.patch.object(Path, "mkdir", side_effect=VerifiedStop):
+            with self.assertRaises(VerifiedStop):
+                fixture.tui.inside(Path("bundle"), Path("candidate"), Path("receipt"), Path("keyring"), Path("root"))
+            retained.assert_called_once_with(Path("candidate"), Path("receipt"))
+            retained.reset_mock()
+            with self.assertRaises(VerifiedStop):
+                fixture.tui.inside(Path("bundle"), Path("candidate"), Path("receipt"), Path("keyring"), Path("root"),
+                                   live=mock.Mock(read_runtime_bundle=selected))
+            selected.assert_called_once_with(Path("candidate"), Path("receipt"))
+            retained.assert_not_called()
+
+    def test_fresh_adapter_checks_independent_input_pins_before_verifier_and_manifest_identity_after(self):
+        with tempfile.TemporaryDirectory(dir=os.environ["TEST_TMPDIR"]) as temporary:
+            root = Path(temporary)
+            candidate, metadata, pin_path = (root / name for name in ("archive", "receipt.json", "input-pin.json"))
+            payload = b"generated nonsecret archive transport model"
+            document = {"kind": fixture.FRESH_KIND}
+            manifest = {"kind": fixture.FRESH_KIND, "files": {}, "chain": {
+                "upstream_commit": "a" * 40, "patch_sha256": ["b" * 64, "c" * 64, "d" * 64]}}
+            raw_receipt = json.dumps(document).encode()
+            raw_manifest = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+            pin = {"kind": fixture.FRESH_KIND}
+            for role, raw in (("archive", payload), ("receipt", raw_receipt), ("manifest", raw_manifest)):
+                pin[role + "_sha256"] = hashlib.sha256(raw).hexdigest()
+                pin[role + "_bytes"] = len(raw)
+            for path, raw in ((candidate, payload), (metadata, raw_receipt)):
+                path.write_bytes(raw)
+                path.chmod(0o600)
+            def write_pin(value):
+                pin_path.write_text(json.dumps(value))
+                pin_path.chmod(0o600)
+            write_pin(pin)
+            verifier = mock.Mock(return_value=(manifest, {}))
+            self.assertEqual(fixture.fresh_runtime_bundle(candidate, metadata, pin_path, verifier), (manifest, {}))
+            verifier.assert_called_once_with(payload, document)
+            for role in ("archive", "receipt"):
+                verifier.reset_mock()
+                write_pin({**pin, role + "_sha256": "0" * 64})
+                with self.subTest(role=role), self.assertRaises(ValueError):
+                    fixture.fresh_runtime_bundle(candidate, metadata, pin_path, verifier)
+                verifier.assert_not_called()
+            write_pin({**pin, "manifest_sha256": "0" * 64})
+            with self.assertRaises(ValueError):
+                fixture.fresh_runtime_bundle(candidate, metadata, pin_path, verifier)
+            write_pin({**pin, "archive_bytes": True})
+            with self.assertRaises(ValueError):
+                fixture.fresh_runtime_bundle(candidate, metadata, pin_path, verifier)
+            with self.assertRaises(ValueError):
+                fixture.fresh_runtime_bundle(candidate, metadata, None, verifier)
+
+    def test_fresh_identity_reads_actual_chain_and_retained_identity_stays_candidate_bound(self):
+        chain = {"upstream_commit": "a" * 40, "patch_sha256": ["b" * 64, "c" * 64, "d" * 64]}
+        self.assertEqual(fixture.runtime_identity({"kind": fixture.FRESH_KIND, "chain": chain}, "fresh"),
+                         {"runtime_kind": fixture.FRESH_KIND, "upstream_commit": chain["upstream_commit"],
+                          "candidate_patch_sha256s": chain["patch_sha256"]})
+        self.assertEqual(fixture.runtime_identity({"candidate": {"upstream_commit": "a" * 40,
+                                                                 "patch_sha256": "b" * 64}}, "retained"),
+                         {"upstream_commit": "a" * 40, "candidate_patch_sha256": "b" * 64})
 
     def test_receipt_rejects_broader_claims(self):
         for field in ("accepted_history_cold_resume_proven", "provider_rejection_handoff_proven",

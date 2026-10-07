@@ -9,6 +9,47 @@ from unittest.mock import patch
 import codex_retained_sdk_export as sdk
 
 class PrivateImportTests(unittest.TestCase):
+    def test_selected_public_server_directory_copy_retains_actual_bytes(self):
+        source = self.root/'server'
+        source.mkdir()
+        data = b'public source server implementation\n'
+        source.joinpath('implementation.txt').write_bytes(data)
+        destination = self.boundary/'repositories'/'fixture_public'
+        destination.mkdir(parents=True)
+        rows = sdk.inventory(self.root,self.budget(),output=destination)
+        for row in rows:
+            if row['kind']=='directory': os.chmod(destination/row['path'],0o555)
+        os.chmod(destination,0o555)
+        self.assertEqual((destination/'server'/'implementation.txt').read_bytes(),data)
+        self.assertIn({'path':'server','kind':'directory','mode':0o555},rows)
+        self.assertEqual(rows,sdk.inventory(destination,self.budget(),sealed=True))
+    def test_unselected_server_directory_and_selected_server_file_refuse(self):
+        outside = self.boundary/'outside'; outside.mkdir(); (outside/'server').mkdir()
+        with self.assertRaisesRegex(ValueError,'server must be'): sdk.inventory(outside,self.budget())
+        (self.root/'server').write_bytes(b'public')
+        with self.assertRaisesRegex(ValueError,'server must be'): sdk.inventory(self.root,self.budget())
+    def test_selected_server_symlink_refuses(self):
+        target = self.root/'ordinary'; target.mkdir()
+        os.symlink('ordinary',self.root/'server')
+        with self.assertRaisesRegex(ValueError,'server must be'): sdk.inventory(self.root,self.budget())
+    def test_forbidden_metadata_is_classified_without_omission(self):
+        for name in ('.git','action_cache','command.log'):
+            with self.subTest(name=name):
+                path = self.root/name; path.write_bytes(b'public fixture')
+                with self.assertRaisesRegex(ValueError,'forbidden basename'):
+                    sdk.inventory(self.root,self.budget())
+                path.unlink()
+    def test_noncanonical_entry_is_classified(self):
+        self.root.joinpath('public\nname').write_bytes(b'public')
+        with self.assertRaisesRegex(ValueError,'noncanonical basename'):
+            sdk.inventory(self.root,self.budget())
+    def test_existing_aggregate_entry_bound_still_refuses(self):
+        self.file()
+        budget = self.budget(); budget.files = sdk.MAX_FILES
+        with self.assertRaisesRegex(ValueError,'entry bound max=500000'):
+            sdk.inventory(self.root,budget)
+        self.assertEqual(budget.files,sdk.MAX_FILES+1)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.boundary = Path(self.temporary.name)

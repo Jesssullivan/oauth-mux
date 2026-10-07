@@ -24,11 +24,12 @@ def selected(arguments):
         raise ValueError("codex-live-exact-target")
     return {"PrivateNetwork": "no"}
 
-def finite(arguments, manager, manifest, runtime_directory, reuse, unrelated=()):
+def finite(arguments, manager, manifest, runtime_directory, reuse, unrelated=(), *, fresh_runtime=False):
     selected(arguments)
     if (manager != "system" or manifest is None
-            or (arguments[1] == LABEL and runtime_directory is None)
-            or (arguments[1] == ENROLLMENT_LABEL and runtime_directory is not None)
+            or (arguments[1] == LABEL and runtime_directory is None and not fresh_runtime)
+            or (arguments[1] == ENROLLMENT_LABEL and (runtime_directory is not None or fresh_runtime))
+            or (runtime_directory is not None and fresh_runtime)
             or reuse or any(unrelated)):
         raise ValueError("codex-live-private-input-profile")
 

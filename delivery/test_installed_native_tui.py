@@ -392,7 +392,8 @@ def inside(bundle, candidate, receipt, keyring, root, *, live=None):
     require(os.environ.get("OMUX_ISOLATED_VAULT_PROOF") == "private-bus-private-xdg",
             "disposable genuine vault context required")
     PHASE = "runtime-verification"
-    candidate_manifest, files = support.runtime_package.read_runtime_bundle(candidate, receipt)
+    reader = getattr(live, "read_runtime_bundle", None) if live is not None else None
+    candidate_manifest, files = (reader or support.runtime_package.read_runtime_bundle)(candidate, receipt)
     candidate_prefix = root / "candidate"
     candidate_prefix.mkdir(mode=0o700)
     for name, payload in files.items():

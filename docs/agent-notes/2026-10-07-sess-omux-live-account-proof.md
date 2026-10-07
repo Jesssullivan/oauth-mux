@@ -111,3 +111,19 @@ complete JSON schema subtrees and sealed output membership; retained009 cannot
 inherit this capability. Its operator input instance is deliberately absent
 until actual native outputs qualify. Neither the carrier nor its three focused
 models have run. Source delivery remains experimental and unshipped.
+
+C11 a268554 passed six of seven targets in 8614b6ac: full native-source
+regeneration, twelve SDK import models, three fresh-runtime models, five native
+profile models, docs and source. SDK qualification rejected LLVM's ordinary
+public server directory. The correction retains its full bytes and inventory
+within exact selected source, sealed repository and immutable JDK scope; bounds
+and metadata refusals remain unchanged. Six added models are still unrun.
+
+Fresh live admission now has a separate mutually exclusive operator-selected
+runtime route, independent public pins, exact readonly mounts and original
+deadline rechecks before launch and after cleanup. The continuity fixture uses
+the fresh full-chain/ELF verifier and emits its distinct three-patch identity;
+the retained branch and enrollment do not inherit fresh capability. Source
+and model additions require actual qualification; no native or provider handoff
+has run. The second-account device-API qualification passed separately on setup
+24ceac7 in 4b486be3 with empty descendants; no login occurred.
