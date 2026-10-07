@@ -34,7 +34,7 @@ class Models(unittest.TestCase):
             runtime = worker.DialogRuntime(config)
             home = Path(runtime.environment["HOME"])
             self.assertEqual(stat.S_IMODE(home.stat().st_mode),0o700)
-            self.assertEqual(runtime.environment["LD_LIBRARY_PATH"],worker.QT_LIBRARY_DIRECTORY)
+            self.assertEqual(runtime.environment["LD_LIBRARY_PATH"],":".join(worker.DIALOG_LIBRARY_DIRECTORIES))
             payload = os.pread(runtime.fonts,4096,0)
             self.assertIn(worker.FONT_DIRECTORY.encode(),payload)
             self.assertNotIn(b"include",payload)

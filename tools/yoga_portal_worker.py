@@ -318,6 +318,9 @@ def held_dialog(path,expected):
 
 
 QT_LIBRARY_DIRECTORY = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
+DIALOG_LIBRARY_DIRECTORIES = (QT_LIBRARY_DIRECTORY,
+    "/nix/store/fdqacryg2w9kiwb94c9rzfsyff4im8xj-libglvnd-1.7.0/lib",
+    "/nix/store/n1ykqk7ibmp4h5r4x5fng4cn9wjlgj9y-libxext-1.3.7/lib")
 FONT_DIRECTORY = "/nix/store/0wcl9csd4li3na9z59j7g1igf2c1iz33-dejavu-fonts-minimal-2.37/share/fonts/truetype"
 
 
@@ -350,7 +353,7 @@ class DialogRuntime:
                 "XDG_DATA_HOME":str(parent/self.name/"data"),"XDG_STATE_HOME":str(parent/self.name/"state"),
                 "XDG_CACHE_HOME":str(parent/self.name/"cache"),"XDG_CONFIG_DIRS":"/.omux-native-login-unavailable",
                 "XDG_DATA_DIRS":"/.omux-native-login-unavailable","FONTCONFIG_FILE":"/proc/self/fd/"+str(self.fonts),
-                "FONTCONFIG_PATH":"/.omux-native-login-unavailable","LD_LIBRARY_PATH":QT_LIBRARY_DIRECTORY,
+                "FONTCONFIG_PATH":"/.omux-native-login-unavailable","LD_LIBRARY_PATH":":".join(DIALOG_LIBRARY_DIRECTORIES),
                 "XDG_RUNTIME_DIR":"/run/user/"+str(config["uid"]),"WAYLAND_DISPLAY":config["wayland_socket"],
                 "QT_QPA_PLATFORM":"wayland","QT_STYLE_OVERRIDE":"Fusion","QT_QPA_PLATFORMTHEME":"",
                 "QT_PLUGIN_PATH":str(Path(config["qt_platform_plugin"]).parent.parent),

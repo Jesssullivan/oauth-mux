@@ -265,9 +265,16 @@ class ElfClosure:
             result["rpath"] = []
         return result
 
-    def directory(self,value,origin,control):
+    def directory(self,value,origin,control,defer_driver=False):
         self.tick()
         require(type(value) is str and bool(value),"dialog_elf_empty_search")
+        # This exact immutable GLX RUNPATH entry remains a denied search target.
+        # Keep its position but do not probe it when held/earlier fixed inputs
+        # resolve the name. resolve() calls without deferral before any probe.
+        if defer_driver and not control and value == "/run/opengl-driver/lib":
+            require(origin.startswith("/nix/store/")
+                and "/".join(origin.split("/")[:4]) in self.roots,"dialog_elf_deferred_search_owner")
+            return value
         if value == "$ORIGIN" or value.startswith("$ORIGIN/"):
             require(not control,"dialog_elf_control_origin_search")
             value = origin+value[len("$ORIGIN"):]
@@ -298,6 +305,7 @@ class ElfClosure:
             return physical
         for directory in directories:
             self.tick()
+            directory = self.directory(directory,"",False)
             candidate = directory+"/"+name
             if os.path.lexists(candidate):
                 # Ordered paths determine the first selection. A malformed or
@@ -317,11 +325,12 @@ class ElfClosure:
             require(self.member(metadata["interpreter"]) ==
                 "/nix/store/fjkx1l5cnskzrqacf08z7i8z17256w0j-glibc-2.42-61/lib/ld-linux-x86-64.so.2",
                 "dialog_elf_interpreter_differs")
-        directories = tuple(self.directory(value,str(Path(path).parent),control) for value in metadata["rpath"])
-        fixed = self.directory("/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib","",False)
+        directories = tuple(self.directory(value,str(Path(path).parent),control,
+            defer_driver=not control) for value in metadata["rpath"])
+        fixed = tuple(self.directory(value,"",False) for value in self.worker.DIALOG_LIBRARY_DIRECTORIES)
         before = () if metadata["runpath"] else directories+inherited
         after = directories if metadata["runpath"] else ()
-        search = tuple(dict.fromkeys(before+(fixed,)+after))
+        search = tuple(dict.fromkeys(before+fixed+after))
         ancestry = inherited if metadata["runpath"] else directories+inherited
         require(len(search) <= 1024 and len(ancestry) <= 1024,"dialog_elf_search_bound")
         for needed in metadata["needed"]:

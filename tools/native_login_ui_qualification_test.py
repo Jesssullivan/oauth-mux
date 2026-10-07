@@ -209,7 +209,7 @@ class ElfClosureModels(unittest.TestCase):
                 local.elf_parser_source(data.replace(marker,b"_MAX_FILE = "+expression))
 
     def graph(self,*,control_rpath=None,transitive_needed=("libc.so.6",),ambiguous=False,
-            child_rpath=True,path_tag=29,child_empty_tag=None,direct_libc=False):
+            child_rpath=True,path_tag=29,child_empty_tag=None,direct_libc=False,child_driver=False):
         rows = local.subset(Path(Preparation.inventory).read_bytes())
         roots = {row["path"] for row in rows}
         qt = "/nix/store/1q8sx67miwfn3ws5k7mkmkcjbym4akkp-qtbase-6.11.0/lib"
@@ -220,7 +220,8 @@ class ElfClosureModels(unittest.TestCase):
                 (qt,glibc) if control_rpath is None else control_rpath,path_tag),
             loader:elf_model(),glibc+"/libc.so.6":elf_model(("ld-linux-x86-64.so.2",),rpath=(glibc,)),
             qt+"/libQt6Core.so.6":elf_model(transitive_needed,
-                rpath=((glibc,) if child_rpath else ()) if child_empty_tag is None else ("",),
+                rpath=("/run/opengl-driver/lib",glibc) if child_driver else
+                    (((glibc,) if child_rpath else ()) if child_empty_tag is None else ("",)),
                 path_tag=29 if child_empty_tag is None else child_empty_tag),
             remote.PLUGIN:elf_model(("libQt6Core.so.6",),rpath=(qt,))}
         if ambiguous:
@@ -280,6 +281,7 @@ class ElfClosureModels(unittest.TestCase):
             inspector.names = {}
             with self.subTest(directories=directories),\
                 patch.object(remote.os.path,"lexists",return_value=True) as exists,\
+                patch.object(inspector,"directory",side_effect=lambda value,*args:value),\
                 patch.object(inspector,"member",side_effect=lambda value:value) as member:
                 selected = inspector.resolve("model.so.1",directories,"control")
                 self.assertEqual(selected,directories[0]+"/model.so.1")
@@ -307,6 +309,13 @@ class ElfClosureModels(unittest.TestCase):
 
     def test_direct_sibling_is_held_before_first_child_needs_it(self):
         self.graph(child_rpath=False,path_tag=29,direct_libc=True)
+
+    def test_driver_search_is_denied_if_a_new_lookup_reaches_it(self):
+        self.graph(child_driver=True,direct_libc=True)
+        with self.assertRaisesRegex(ValueError,"dialog_elf_nonclosure_search"):
+            self.graph(child_driver=True)
+        with self.assertRaisesRegex(ValueError,"dialog_elf_nonclosure_search"):
+            self.graph(control_rpath=("/run/opengl-driver/lib",))
 
     def test_loaded_name_reuses_held_file_before_any_new_search(self):
         inspector = object.__new__(remote.ElfClosure)
