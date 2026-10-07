@@ -98,7 +98,7 @@ def _selected_impl(ctx):
                     prefix = "lib"+crates[parts[8]]+"-"
                     leaf = parts[9]
                     decimal = leaf[len(prefix):-len(".rlib")] if leaf.startswith(prefix) and leaf.endswith(".rlib") else ""
-                    library = 0 < len(decimal) <= 20 and all([c in "0123456789" for c in decimal.elems()])
+                    library = 0 < len(decimal) and len(decimal) <= 20 and all([c in "0123456789" for c in decimal.elems()])
             qualified = value["files"]["qualification_run"]["path"]
             root = qualified[:-len("receipt.json")] if qualified.endswith("/receipt.json") else ""
             evidence = (source == root+"test-evidence.json") or (source.startswith(root+"test-evidence/") and len(parts) == 3 and all([c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-" for c in parts[2].elems()]))

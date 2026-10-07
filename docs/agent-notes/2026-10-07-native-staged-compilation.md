@@ -85,6 +85,14 @@ is manual and awaits genuine stage artifacts; it has not run on a fabricated tup
 Corrected producer and consumer execution remain pending. Static clearance
 does not establish model results or genuine A–D receipts.
 
+The first combined run on `a243e2db2ff1a2812743536aba73334c52613b8c`
+refused package loading before any test ran: two Starlark comparisons used
+Python's unsupported chained syntax. Invocation
+`860dcefc-dca3-41a7-ba5f-a7d66b0fa746` ended exit/workload 1 with preserved
+evidence and empty descendants. The source correction spells each range as
+two comparisons joined by `and`, preserving the finite 1–20 decimal suffix
+and 12–4120 input-member bounds. Corrected execution is still pending.
+
 No new native invocation or private selector is created. Phase feasibility,
 storage allocation and native completion remain unproved. Sting user-manager
 IPC and the declared OS-vault unlock binding remain independent prerequisites

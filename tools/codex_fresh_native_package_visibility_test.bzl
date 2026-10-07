@@ -6,7 +6,7 @@ def _impl(ctx):
     # input repository, and does not manufacture a model producer receipt.
     files = ctx.attr.inputs[DefaultInfo].files.to_list()
     names = [file.basename for file in files]
-    valid = 12 <= len(names) <= 4120 and len({name: True for name in names}) == len(names)
+    valid = 12 <= len(names) and len(names) <= 4120 and len({name: True for name in names}) == len(names)
     if valid:
         expected = ["package-selection.json", "package-selection.sha256", "input-aliases.json"]
         expected += ["input-" + str(index) for index in range(len(names) - 3)]
