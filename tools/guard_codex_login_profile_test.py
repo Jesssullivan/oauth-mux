@@ -1,6 +1,9 @@
 """Offline admission and private transport regressions; no provider/native run."""
 import json
 import os
+import socket
+import stat
+import tempfile
 from pathlib import Path
 import sys
 import time
@@ -180,7 +183,7 @@ class LoginProfileTests(unittest.TestCase):
             finally:
                 os.close(fd)
 
-    def test_agent_mountpoint_refuses_links_and_unowned_or_public_sockets(self):
+    def test_actual_agent_source_refuses_links_and_unowned_or_public_sockets(self):
         import socket
         import stat
         import tempfile
@@ -207,6 +210,76 @@ class LoginProfileTests(unittest.TestCase):
                     os.close(held)
             finally:
                 channel.close()
+
+    def test_agent_destination_regular_and_source_socket_have_separate_custody(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/"ssh-agent.sock"
+            path.touch(mode=0o600)
+            login.agent_mountpoint_custody(path.stat(follow_symlinks=False))
+            with self.assertRaises(ValueError):
+                login.placeholder_custody(path.stat(follow_symlinks=False))
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as channel:
+                actual = root/"actual-agent"
+                channel.bind(str(actual))
+                actual.chmod(0o600)
+                login.placeholder_custody(actual.stat(follow_symlinks=False))
+                with self.assertRaises(ValueError):
+                    login.agent_mountpoint_custody(actual.stat(follow_symlinks=False))
+            for change in ("data","mode","hardlink"):
+                path.write_bytes(b"")
+                path.chmod(0o600)
+                if change == "data":
+                    path.write_bytes(b"unexpected metadata")
+                elif change == "mode":
+                    path.chmod(0o700)
+                else:
+                    os.link(path,root/"second-link")
+                with self.subTest(change=change),self.assertRaises(ValueError):
+                    login.agent_mountpoint_custody(path.stat(follow_symlinks=False))
+            for uid in (os.getuid()+1,):
+                with self.assertRaises(ValueError):
+                    login.agent_mountpoint_custody(mock.Mock(st_mode=stat.S_IFREG|0o600,
+                        st_uid=uid,st_nlink=1,st_size=0))
+
+    def test_agent_regular_mountpoint_rechecks_held_named_identity_and_refuses_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/"ssh-agent.sock"
+            path.touch(mode=0o600)
+            parent = os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            held = os.open(path,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
+            try:
+                self.assertEqual(login.agent_mountpoint_identity(parent,held),live.identity(os.fstat(held)))
+                path.rename(root/"original")
+                path.touch(mode=0o600)
+                with self.assertRaises(ValueError):
+                    login.agent_mountpoint_identity(parent,held)
+                path.unlink()
+                path.symlink_to(root/"original")
+                with self.assertRaises(ValueError):
+                    login.agent_mountpoint_identity(parent,held)
+            finally:
+                os.close(held)
+                os.close(parent)
+
+    def test_selected_agent_leaf_requires_norbind_without_widening_native_directory_mounts(self):
+        admitted = object.__new__(login.Admission)
+        admitted.namespace,admitted.directory = Path("/private/input"),Path("/private/native")
+        admitted.agent_path = "/private/authorized-agent"
+        leaf = admitted.agent_path+":"+login.AGENT_DESTINATION
+        actual = {"BindReadOnlyPaths":" ".join(v if v.endswith(":norbind") else v+":rbind"
+            for v in admitted.bindings()),"BindPaths":""}
+        admitted.verify_bindings(actual)
+        self.assertIn(leaf+":norbind",admitted.bindings())
+        directory_binds = " ".join(v+":rbind" for v in admitted.bindings() if not v.endswith(":norbind"))
+        for selector in (leaf,leaf+":rbind",leaf+":rw",leaf+":unknown"):
+            with self.subTest(selector=selector),self.assertRaises(ValueError):
+                admitted.verify_bindings({**actual,"BindReadOnlyPaths":directory_binds+" "+selector})
+        for field,extra in (("BindReadOnlyPaths"," "+leaf+":norbind"),
+                ("BindReadOnlyPaths"," /private/other:/extra:norbind"),("BindPaths","/private/native:/private/native")):
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                admitted.verify_bindings({**actual,field:actual[field]+extra})
 
     def test_original_deadline_is_not_reset(self):
         admission = object.__new__(login.Admission)

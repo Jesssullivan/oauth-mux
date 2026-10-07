@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import socket
 import tempfile
 import time
 import unittest
@@ -69,6 +70,74 @@ class PrepareModels(unittest.TestCase):
                 ("BindReadOnlyPaths",actual["BindReadOnlyPaths"]+" "+actual["BindReadOnlyPaths"])):
             with self.subTest(key=key,value=value),self.assertRaises(ValueError):
                 admitted.verify_bindings({**actual,key:value})
+
+    def test_selected_agent_mountpoint_is_regular_while_actual_source_stays_socket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/"ssh-agent.sock"
+            path.touch(mode=0o600)
+            ui.agent_mountpoint_custody(path.stat(follow_symlinks=False))
+            with self.assertRaises(ValueError):
+                login.placeholder_custody(path.stat(follow_symlinks=False))
+            source = root/"actual-agent"
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as channel:
+                channel.bind(str(source))
+                source.chmod(0o600)
+                login.placeholder_custody(source.stat(follow_symlinks=False))
+                with self.assertRaises(ValueError):
+                    ui.agent_mountpoint_custody(source.stat(follow_symlinks=False))
+            for change in ("data","mode","hardlink"):
+                path.write_bytes(b"")
+                path.chmod(0o600)
+                if change == "data":
+                    path.write_bytes(b"unexpected metadata")
+                elif change == "mode":
+                    path.chmod(0o700)
+                else:
+                    os.link(path,root/"second-link")
+                with self.subTest(change=change),self.assertRaises(ValueError):
+                    ui.agent_mountpoint_custody(path.stat(follow_symlinks=False))
+
+    def test_selected_agent_mountpoint_rechecks_held_named_identity_and_refuses_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root/"ssh-agent.sock"
+            path.touch(mode=0o600)
+            parent = os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC)
+            held = os.open(path,os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC)
+            try:
+                self.assertEqual(ui.agent_mountpoint_identity(parent,held),ui.inputs.identity(os.fstat(held)))
+                path.rename(root/"held-original")
+                path.touch(mode=0o600)
+                with self.assertRaises(ValueError):
+                    ui.agent_mountpoint_identity(parent,held)
+                path.unlink()
+                path.symlink_to(root/"held-original")
+                with self.assertRaises(ValueError):
+                    ui.agent_mountpoint_identity(parent,held)
+            finally:
+                os.close(held)
+                os.close(parent)
+
+    def test_selected_agent_leaf_bind_is_exact_nonrecursive_with_original_output_scope(self):
+        admitted = object.__new__(ui.Admission)
+        admitted.namespace,admitted.output = Path("/private/prepare"),Path("/private/output")
+        admitted.agent_path = "/private/authorized-agent"
+        leaf = admitted.agent_path+":"+ui.AGENT_DESTINATION
+        actual = {"BindReadOnlyPaths":" ".join(v if v.endswith(":norbind") else v+":rbind"
+            for v in admitted.bindings()),"BindPaths":admitted.writable_binding()+":rbind"}
+        admitted.verify_bindings(actual)
+        self.assertIn(leaf+":norbind",admitted.bindings())
+        for selector in (leaf,leaf+":rbind",leaf+":rw",leaf+":unknown"):
+            changed = {**actual,"BindReadOnlyPaths":str(admitted.namespace)+":/omux-native-login-ui-prepare:rbind "+selector}
+            with self.subTest(selector=selector),self.assertRaises(ValueError):
+                admitted.verify_bindings(changed)
+        for field,extra in (("BindReadOnlyPaths"," "+leaf+":norbind"),
+                ("BindReadOnlyPaths"," /private/other:/extra:norbind"),("BindPaths"," /private/other:/extra")):
+            with self.subTest(field=field,extra=extra),self.assertRaises(ValueError):
+                admitted.verify_bindings({**actual,field:actual[field]+extra})
+        with self.assertRaises(ValueError):
+            ui.normalized_bindings(admitted.writable_binding()+":norbind")
 
     def test_failure_projection_copies_private_bind_data_and_never_renders_error(self):
         actual = {"BindReadOnlyPaths":"/private/input:/fixed","BindPaths":"/private/output:/fixed"}

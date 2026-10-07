@@ -136,15 +136,33 @@ def members(fd,expected):
         if names[-1] is not None or {entry.name for entry in names[:-1] if entry is not None} != set(expected):
             raise ValueError("native-ui-exact-namespace")
 
-def normalized_bindings(value):
+def agent_mountpoint_custody(info):
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) not in (0o400,0o600)
+            or info.st_nlink != 1 or info.st_size != 0):
+        raise ValueError("native-ui-agent-regular-mountpoint")
+
+def agent_mountpoint_identity(directory,descriptor):
+    held = os.fstat(descriptor)
+    named = os.stat("ssh-agent.sock",dir_fd=directory,follow_symlinks=False)
+    agent_mountpoint_custody(held)
+    agent_mountpoint_custody(named)
+    if inputs.identity(held) != inputs.identity(named):
+        raise ValueError("native-ui-agent-mountpoint-changed")
+    return inputs.identity(held)
+
+def normalized_bindings(value,leaf_bindings=()):
     result = []
+    leaf_bindings = set(leaf_bindings)
     for token in value.split():
         parts = token.split(":")
-        if len(parts) == 3 and parts[2] == "rbind":
-            parts.pop()
+        option = parts.pop() if len(parts) == 3 else None
         if len(parts) != 2:
             raise ValueError("native-ui-bind-refused")
-        result.append(":".join(parts))
+        binding = ":".join(parts)
+        if (option != "norbind" if binding in leaf_bindings else option not in (None,"rbind")):
+            raise ValueError("native-ui-bind-refused")
+        result.append(binding)
     if len(set(result)) != len(result):
         raise ValueError("native-ui-bind-refused")
     return set(result)
@@ -217,19 +235,11 @@ class Admission:
             self.os_receipt = settings.qualification(json.loads(raw,object_pairs_hook=inputs.unique_object))
             self.agent_path = self.value["ssh_auth_socket"]
             if self.agent_path is not None:
-                self.placeholder_fd = os.open("ssh-agent.sock",os.O_PATH|os.O_NOFOLLOW,dir_fd=self.namespace_fd)
+                if self.agent_path == str(self.namespace / "ssh-agent.sock"):
+                    raise ValueError("native-ui-agent-source-is-mountpoint")
+                self.placeholder_fd = os.open("ssh-agent.sock",os.O_PATH|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=self.namespace_fd)
                 self.fds.append(self.placeholder_fd)
-                login.placeholder_custody(os.fstat(self.placeholder_fd))
-                self.placeholder_identity = inputs.identity(os.fstat(self.placeholder_fd))
-                if self.agent_path != str(self.namespace / "ssh-agent.sock"):
-                    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as channel:
-                        channel.settimeout(2)
-                        try:
-                            channel.connect(str(self.namespace / "ssh-agent.sock"))
-                        except ConnectionRefusedError:
-                            pass
-                        else:
-                            raise ValueError("native-ui-live-placeholder-refused")
+                self.placeholder_identity = agent_mountpoint_identity(self.namespace_fd,self.placeholder_fd)
                 parent = retained.directory(Path(self.agent_path).parent)
                 try:
                     self.agent_fd = os.open(Path(self.agent_path).name,os.O_PATH|os.O_NOFOLLOW,dir_fd=parent)
@@ -296,8 +306,7 @@ class Admission:
         if self.agent_fd is not None:
             if (inputs.identity(os.fstat(self.agent_fd)) != self.agent_identity
                     or inputs.identity(os.stat(self.agent_path,follow_symlinks=False)) != self.agent_identity
-                    or inputs.identity(os.fstat(self.placeholder_fd)) != self.placeholder_identity
-                    or inputs.identity(os.stat("ssh-agent.sock",dir_fd=self.namespace_fd,follow_symlinks=False)) != self.placeholder_identity):
+                    or agent_mountpoint_identity(self.namespace_fd,self.placeholder_fd) != self.placeholder_identity):
                 raise ValueError("native-ui-agent-changed")
         return True
 
@@ -352,14 +361,16 @@ class Admission:
     def bindings(self):
         result = [str(self.namespace)+":/omux-native-login-ui-prepare"]
         if self.agent_path is not None:
-            result.append(self.agent_path+":"+AGENT_DESTINATION)
+            result.append(self.agent_path+":"+AGENT_DESTINATION+":norbind")
         return result
 
     def writable_binding(self):
         return str(self.output)+":"+OUTPUT_DESTINATION
 
     def verify_bindings(self,actual):
-        if (normalized_bindings(actual.get("BindReadOnlyPaths","")) != set(self.bindings())
+        leaves = [self.agent_path+":"+AGENT_DESTINATION] if self.agent_path is not None else []
+        if (normalized_bindings(actual.get("BindReadOnlyPaths",""),leaves)
+                != normalized_bindings(" ".join(self.bindings()),leaves)
                 or normalized_bindings(actual.get("BindPaths","")) != {self.writable_binding()}):
             raise ValueError("native-ui-effective-bind-refused")
 

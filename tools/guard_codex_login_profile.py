@@ -209,6 +209,37 @@ def placeholder_custody(info):
             or stat.S_IMODE(info.st_mode) not in (0o600, 0o700) or info.st_nlink != 1):
         raise ValueError("codex-login-private-agent-mountpoint")
 
+def agent_mountpoint_custody(info):
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) not in (0o400, 0o600)
+            or info.st_nlink != 1 or info.st_size != 0):
+        raise ValueError("codex-login-agent-regular-mountpoint")
+
+def agent_mountpoint_identity(directory, descriptor):
+    held = os.fstat(descriptor)
+    named = os.stat("ssh-agent.sock", dir_fd=directory, follow_symlinks=False)
+    agent_mountpoint_custody(held)
+    agent_mountpoint_custody(named)
+    if private_inputs.identity(held) != private_inputs.identity(named):
+        raise ValueError("codex-login-agent-mountpoint-changed")
+    return private_inputs.identity(held)
+
+def normalized_bindings(value, leaf_bindings=()):
+    result = []
+    leaf_bindings = set(leaf_bindings)
+    for token in value.split():
+        parts = token.split(":")
+        option = parts.pop() if len(parts) == 3 else None
+        if len(parts) != 2:
+            raise ValueError("codex-login-readonly-bind-refused")
+        binding = ":".join(parts)
+        if (option != "norbind" if binding in leaf_bindings else option not in (None, "rbind")):
+            raise ValueError("codex-login-readonly-bind-refused")
+        result.append(binding)
+    if len(set(result)) != len(result):
+        raise ValueError("codex-login-readonly-bind-refused")
+    return set(result)
+
 def namespace_id(info):
     return str(info.st_dev) + ":" + str(info.st_ino)
 
@@ -358,20 +389,11 @@ class Admission:
             self.placeholder_fd = None
             namespace_membership(self.namespace_fd, self.agent_path is not None)
             if self.agent_path is not None:
-                self.placeholder_fd = os.open("ssh-agent.sock", os.O_PATH | os.O_NOFOLLOW, dir_fd=self.namespace_fd)
+                if self.agent_path == str(self.namespace / "ssh-agent.sock"):
+                    raise ValueError("codex-login-agent-source-is-mountpoint")
+                self.placeholder_fd = os.open("ssh-agent.sock", os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.namespace_fd)
                 self.fds.append(self.placeholder_fd)
-                placeholder = os.fstat(self.placeholder_fd)
-                placeholder_custody(placeholder)
-                if self.agent_path != str(self.namespace / "ssh-agent.sock"):
-                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                        probe.settimeout(2)
-                        try:
-                            probe.connect(str(self.namespace / "ssh-agent.sock"))
-                        except ConnectionRefusedError:
-                            pass
-                        else:
-                            raise ValueError("codex-login-live-placeholder-refused")
-                self.placeholder_identity = private_inputs.identity(placeholder)
+                self.placeholder_identity = agent_mountpoint_identity(self.namespace_fd, self.placeholder_fd)
                 parent = retained.directory(Path(self.agent_path).parent)
                 try:
                     self.agent_fd = os.open(Path(self.agent_path).name, os.O_PATH | os.O_NOFOLLOW, dir_fd=parent)
@@ -408,9 +430,7 @@ class Admission:
                     or private_inputs.identity(os.fstat(self.namespace_fd)) != self.namespace_identity):
                 raise ValueError("codex-login-private-namespace-changed")
             if self.placeholder_fd is not None and (
-                    private_inputs.identity(os.fstat(self.placeholder_fd)) != self.placeholder_identity
-                    or private_inputs.identity(os.stat("ssh-agent.sock", dir_fd=named_namespace, follow_symlinks=False))
-                        != self.placeholder_identity):
+                    agent_mountpoint_identity(named_namespace, self.placeholder_fd) != self.placeholder_identity):
                 raise ValueError("codex-login-private-agent-mountpoint-changed")
         finally:
             os.close(named_namespace)
@@ -486,19 +506,13 @@ class Admission:
     def bindings(self):
         values = [str(self.namespace) + ":/omux-native-login", str(self.directory) + ":" + str(self.directory)]
         if self.agent_path is not None:
-            values.append(self.agent_path + ":" + AGENT_DESTINATION)
+            values.append(self.agent_path + ":" + AGENT_DESTINATION + ":norbind")
         return values
 
     def verify_bindings(self, actual):
-        normalized = []
-        for token in actual.get("BindReadOnlyPaths", "").split():
-            parts = token.split(":")
-            if len(parts) == 3 and parts[2] == "rbind":
-                parts = parts[:2]
-            if len(parts) != 2:
-                raise ValueError("codex-login-readonly-bind-refused")
-            normalized.append(":".join(parts))
-        if (len(normalized) != len(self.bindings()) or set(normalized) != set(self.bindings())
+        leaves = [self.agent_path + ":" + AGENT_DESTINATION] if self.agent_path is not None else []
+        if (normalized_bindings(actual.get("BindReadOnlyPaths", ""), leaves)
+                != normalized_bindings(" ".join(self.bindings()), leaves)
                 or actual.get("BindPaths", "").strip()):
             raise ValueError("codex-login-readonly-bind-refused")
 
