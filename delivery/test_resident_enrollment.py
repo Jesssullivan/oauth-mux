@@ -450,6 +450,40 @@ class ResidentContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             resident.selected_source(snapshot, resident.Path("/native/context/auth.json"))
 
+    def verified_authority_snapshot(self):
+        # Public metadata shape emitted by Engine.publicAccountView/publicSnapshot.
+        # Synthetic opaque handles only; no credential or raw identity fixture.
+        return {"accounts": [{"id": "b" * 64, "source_ids": ["a" * 64], "lifecycle": "active",
+                              "identity": {"provider": "codex", "verified": True}}],
+                "grants": [{"id": "c" * 64, "account_id": "b" * 64, "source_id": "a" * 64,
+                            "credential_kind": "oauth_access", "ownership": "external", "status": "ready",
+                            "audience": "https://chatgpt.com", "purposes": ["request", "account_read"],
+                            "provider_expires_at": None, "custody_expires_at": 1300, "generation": 7}],
+                "jobs": []}
+
+    def test_enrolled_authority_requires_strict_verified_public_identity(self):
+        snapshot = self.verified_authority_snapshot()
+        self.assertEqual(resident.enrolled_authority(snapshot, "a" * 64, 1000),
+                         {"source_handle": "a" * 64, "account_handle": "b" * 64,
+                          "grant_handle": "c" * 64, "grant_generation": 7})
+        for identity in ({"provider": "codex", "verified": False}, {"provider": "codex"},
+                         {"provider": "codex", "verified": 1}, {"provider": "codex", "verified": "true"},
+                         {"provider": "other", "verified": True}):
+            bad = copy.deepcopy(snapshot)
+            bad["accounts"][0]["identity"] = identity
+            with self.subTest(identity=identity), self.assertRaises(ValueError):
+                resident.enrolled_authority(bad, "a" * 64, 1000)
+
+    def test_verified_identity_does_not_waive_external_ready_unexpired_access_authority(self):
+        snapshot = self.verified_authority_snapshot()
+        for key, value in (("ownership", "omux"), ("status", "quarantined"),
+                           ("credential_kind", "oauth_refresh"), ("custody_expires_at", 1000),
+                           ("provider_expires_at", 1000), ("generation", True)):
+            bad = copy.deepcopy(snapshot)
+            bad["grants"][0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                resident.enrolled_authority(bad, "a" * 64, 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

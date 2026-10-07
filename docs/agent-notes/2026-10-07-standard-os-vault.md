@@ -222,3 +222,9 @@ The old carrier remains valid. Observation and Locked idle-stop policy do not
 change. This permits later restoration without rebuilding runtime/UI artifacts.
 The new delegation and changed action-join checks are queued; actual restoration
 is unrun. Earlier nine-target evidence remains bound to `6ae80bf`, not this delta.
+
+## Lightweight restoration models and verified enrollment metadata
+
+Six restoration/controller/source checks passed on7b1d5b12ed52733396c0baf55dd80808064559ce in83395652-c171-4e99-8609-1a8b92a56c30, exits0/0, empty cleanup, controller null, evidence preserved. Receipt SHA0263f75025c5e8455354be13396b1decae4282c6cf5a5fa87c66012d17763069; evidence415a0b8b4aa1feb9d500f318ca4fcc0d0369d69d8824ff8c64483e37626d7d28. Actual restoration is queued after frozen native6b/global9 releases full4GiB capacity.
+
+Source review found old enrollment acceptance identity={provider:codex} refused actual runtime provider+verified metadata. Root applied independently reviewed narrow proposal9124cd37138f0e413cb6ca8f1928537084c9e41c190c58455331d4cae471bd06: require exactly provider/verified and literal verifiedTrue; false, missing, integer1, stringtrue and wrong provider are refused. Existing source/account, active lifecycle, external ready access authority, expiry and generation checks remain. Shared Engine.publicAccountView emits this verified boolean across Setup23/I10/standard7b1. No runtime/archive/provider/credential/service changes. New enrollment contract tests are queued, not passing; prior checks retain their exact sources. Neo operator is identifying the OS vault binding; durable enrollment and live handoff remain unproved.

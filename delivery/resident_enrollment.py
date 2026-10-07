@@ -420,8 +420,10 @@ def enrolled_authority(snapshot, source_id, now):
         require(not any(job["status"] == "failed" for job in snapshot["jobs"]
                         if job["id"] == "reconcile-" + source_id))
         return None
-    require(len(accounts) == 1 and accounts[0]["identity"] == {"provider": "codex"}
-            and accounts[0]["lifecycle"] == "active")
+    require(len(accounts) == 1 and accounts[0]["lifecycle"] == "active")
+    identity = accounts[0]["identity"]
+    require(type(identity) is dict and set(identity) == {"provider", "verified"}
+            and identity["provider"] == "codex" and identity["verified"] is True)
     grants = [grant for grant in snapshot["grants"] if grant["source_id"] == source_id]
     require(len(grants) == 1)
     grant = grants[0]
